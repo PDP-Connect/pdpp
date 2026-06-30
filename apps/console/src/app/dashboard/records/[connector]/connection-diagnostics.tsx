@@ -27,7 +27,12 @@ import type {
   RefRenderedVerdict,
   RefSchedule,
 } from "../../lib/ref-client.ts";
-import { deriveRenderedSourceStatus, primaryRequiredAction } from "../../lib/source-actionability.ts";
+import {
+  deriveRenderedSourceStatus,
+  hasPrimaryOwnerLocalDeviceRemediation,
+  primaryOwnerActionRemediation,
+  primaryRequiredAction,
+} from "../../lib/source-actionability.ts";
 
 /**
  * Server-rendered diagnostics block for the connector detail page.
@@ -81,8 +86,7 @@ export function ConnectionDiagnostics({
   sourceInstances,
   sourceInstancesError,
 }: ConnectionDiagnosticsProps) {
-  const hasDeviceLocalRemediation =
-    renderedVerdict?.required_actions.some((action) => action.remediation?.target.kind === "local_device") ?? false;
+  const hasDeviceLocalRemediation = hasPrimaryOwnerLocalDeviceRemediation(renderedVerdict);
   const backgroundDrain = summarizeBackgroundLocalDeviceDrain({
     hasDeviceLocalRemediation,
     localDeviceProgress,
@@ -390,8 +394,7 @@ function ProjectedStateDiagnostics({
   // ritual that showed retry commands even when there were no failed uploads
   // (the owner-reported "matched: 0, nothing to do" dead end). Older references
   // that don't send `remediation` fall back to the legacy steps below.
-  const verdictRemediation =
-    renderedVerdict?.required_actions.find((action) => action.remediation)?.remediation ?? null;
+  const verdictRemediation = primaryOwnerActionRemediation(renderedVerdict);
   const forwardDisposition = formatForwardDisposition(connectionHealth.forward_disposition);
   const dominantCondition = formatDominantCondition(connectionHealth);
   const conditionById = new Map((connectionHealth.conditions ?? []).map((condition) => [condition.id, condition]));

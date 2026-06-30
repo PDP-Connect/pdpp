@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type {
   RefCollectionReportEntry,
@@ -23,6 +24,10 @@ const RECONNECT_PROMPT_RE = /reconnect|log in/i;
 const RESUME_FALSE_REASSURANCE_RE = /fills on the next successful run|resumes normally/i;
 const RESUME_NORMALLY_RE = /resume normally/i;
 const THROTTLING_RE = /throttling/i;
+const ACTIONABILITY_RENDERED_STATUS_RE = /actionability\.renderedStatus/;
+const RAW_VERDICT_TONE_RE = /rendered_verdict\.pill\.tone|verdict\.pill\.tone/;
+
+const SYNC_MODEL_SOURCE = readFileSync(new URL("./syncs-model.ts", import.meta.url), "utf8");
 
 // ─── Health fixtures ──────────────────────────────────────────────────────────
 
@@ -248,6 +253,15 @@ test("healthy connections produce no card and count their streams on schedule", 
   assert.equal(model.band.allClear, true);
   assert.equal(model.groups[0]?.health, "ok");
   assert.equal(model.groups[0]?.streams.length, 3);
+});
+
+test("syncs group health uses the shared source status instead of raw verdict tone", () => {
+  assert.match(SYNC_MODEL_SOURCE, ACTIONABILITY_RENDERED_STATUS_RE);
+  assert.doesNotMatch(
+    SYNC_MODEL_SOURCE,
+    RAW_VERDICT_TONE_RE,
+    "Runs must not remap raw rendered_verdict tone outside the shared source-actionability model"
+  );
 });
 
 test("connector-wide runs are not attributed to every same-type connection", () => {

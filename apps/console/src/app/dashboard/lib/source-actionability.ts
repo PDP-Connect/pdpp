@@ -1,6 +1,12 @@
 import { deriveFailureSummary, type FailureSummary } from "./connection-evidence.ts";
 import type { FormattedNextAction } from "./next-action.ts";
-import type { RefConnectorSummary, RefRenderedVerdict, RefRequiredAction, RefVerdictTone } from "./ref-client.ts";
+import type {
+  RefActionRemediation,
+  RefConnectorSummary,
+  RefRenderedVerdict,
+  RefRequiredAction,
+  RefVerdictTone,
+} from "./ref-client.ts";
 
 export type SourceWorkGroupId = "checking" | "needsOwner" | "review" | "systemIssue";
 
@@ -114,6 +120,16 @@ export function primaryOwnerSatisfiableAction(
 ): RefRequiredAction | null {
   const primary = primaryRequiredAction(verdict);
   return isOwnerSatisfiableAction(primary) ? primary : null;
+}
+
+export function primaryOwnerActionRemediation(
+  verdict: RefRenderedVerdict | null | undefined
+): RefActionRemediation | null {
+  return primaryOwnerSatisfiableAction(verdict)?.remediation ?? null;
+}
+
+export function hasPrimaryOwnerLocalDeviceRemediation(verdict: RefRenderedVerdict | null | undefined): boolean {
+  return primaryOwnerActionRemediation(verdict)?.target.kind === "local_device";
 }
 
 export function verdictRequiresOwnerNow(verdict: RefRenderedVerdict | null | undefined): boolean {

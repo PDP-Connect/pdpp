@@ -72,7 +72,7 @@ const OUTBOX_REMEDIATION_PASSES_PROGRESS = /summarizeOutboxStallRemediation\(con
 // mapping verdictRemediation.commands → the rendered steps. This is what fixes
 // the owner-reported "retry-dead-letters returned matched: 0" dead end for the
 // state_read_failed cause (whose commands carry only the re-run step).
-const REMEDIATION_DERIVES_FROM_VERDICT = /required_actions\.find\(\(action\) => action\.remediation\)\?\.remediation/;
+const REMEDIATION_DERIVES_FROM_VERDICT = /primaryOwnerActionRemediation\(renderedVerdict\)/;
 const REMEDIATION_PREFERS_VERDICT_COMMANDS = /verdictRemediation\s*\?\s*verdictRemediation\.commands\.map/;
 const REMEDIATION_THREADS_VERDICT_TO_PANEL = /verdictRemediation=\{verdictRemediation\}/;
 // The legacy dead-letter/doctor run-note must be gated OFF when a cause-specific
@@ -121,7 +121,7 @@ const RENDERED_VERDICT_FORWARD_TESTID = /data-testid="rendered-verdict-forward"/
 const RENDERED_VERDICT_PROGRESS_TESTID = /data-testid="rendered-verdict-progress"/;
 const DIAGNOSTICS_OPENS_FOR_DEVICE_LOCAL_RECOVERY = /open=\{hasDeviceLocalRemediation \|\| undefined\}/;
 const DIAGNOSTICS_HAS_DEVICE_LOCAL_REMEDIATION =
-  /const hasDeviceLocalRemediation =[\s\S]{0,160}action\.remediation\?\.target\.kind === "local_device"/;
+  /const hasDeviceLocalRemediation = hasPrimaryOwnerLocalDeviceRemediation\(renderedVerdict\)/;
 const BACKGROUND_DRAIN_SUMMARY_HELPER = /function summarizeBackgroundLocalDeviceDrain/;
 const BACKGROUND_DRAIN_PANEL = /function BackgroundLocalDeviceDrainPanel/;
 const BACKGROUND_DRAIN_TESTID = /data-testid="diagnostics-background-drain"/;
@@ -381,7 +381,7 @@ test("device-local recovery resolves a source-instance id before rendering copya
 test("device-local recovery opens Diagnostics so commands are immediately visible", async () => {
   const src = await readFile(DIAG_FILE, "utf8");
   assert.match(src, DIAGNOSTICS_HAS_DEVICE_LOCAL_REMEDIATION);
-  assert.match(src, DIAGNOSTICS_DEVICE_LOCAL_RECOVERY_PREDICATE);
+  assert.doesNotMatch(src, DIAGNOSTICS_DEVICE_LOCAL_RECOVERY_PREDICATE);
   assert.match(src, DIAGNOSTICS_OPENS_FOR_DEVICE_LOCAL_RECOVERY);
 });
 

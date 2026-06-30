@@ -26,14 +26,8 @@
 import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
 import { indexCollectionReportByStream } from "../lib/collection-report.ts";
 import type { FailureSummary } from "../lib/connection-evidence.ts";
-import type {
-  RefCollectionReportEntry,
-  RefConnectorSummary,
-  RefRenderedVerdict,
-  RefSchedule,
-  RunSummary,
-} from "../lib/ref-client.ts";
-import { projectSourceActionability, type SourceWorkItem } from "../lib/source-actionability.ts";
+import type { RefCollectionReportEntry, RefConnectorSummary, RefSchedule, RunSummary } from "../lib/ref-client.ts";
+import { projectSourceActionability, type SourceStatusFlag, type SourceWorkItem } from "../lib/source-actionability.ts";
 
 // ─── Rhythm tick type (mirrors the kit's RhythmTick) ──────────────────────────
 //
@@ -295,11 +289,8 @@ function connectionHealth(summary: FailureSummary | null): SyncGroupHealth {
   return summary ? "failing" : "ok";
 }
 
-function renderedVerdictGroupHealth(verdict: RefRenderedVerdict | null | undefined): SyncGroupHealth | null {
-  if (!verdict) {
-    return null;
-  }
-  return verdict.pill.tone === "amber" || verdict.pill.tone === "red" ? "failing" : "ok";
+function renderedStatusGroupHealth(status: SourceStatusFlag): SyncGroupHealth {
+  return status.kind === "blocked" || status.kind === "degraded" ? "failing" : "ok";
 }
 
 function connectorKind(connector: RefConnectorSummary): string {
@@ -620,7 +611,7 @@ export function buildSyncsViewModel(input: {
     const actionability = projectSourceActionability(connector);
     const summary = actionability.failureSummary;
     const work = actionability.work;
-    const renderedHealth = renderedVerdictGroupHealth(connector.rendered_verdict ?? null);
+    const renderedHealth = connector.rendered_verdict ? renderedStatusGroupHealth(actionability.renderedStatus) : null;
     const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
     const connectionRuns = connectionRunHistory({ connector, runs: input.runs });
     const { rows, lastFailed, lastRun } = buildSyncRows({ connector, connectionRuns, failing });

@@ -7,6 +7,8 @@ import type {
   RefRequiredAction,
 } from "./ref-client.ts";
 import {
+  hasPrimaryOwnerLocalDeviceRemediation,
+  primaryOwnerActionRemediation,
   projectSourceActionability,
   sourceWorkFromConnectors,
   verdictRequiresOwnerNow,
@@ -119,6 +121,61 @@ test("source actionability treats device-local owner recovery as owner-required 
   assert.equal(actionability.failureSummary?.ownerActionRequired, true);
   assert.equal(actionability.failureSummary?.actionLabel, "See recovery steps");
   assert.equal(actionability.failureSummary?.cta, "connection_detail");
+  assert.equal(hasPrimaryOwnerLocalDeviceRemediation(summary.rendered_verdict), true);
+  assert.equal(primaryOwnerActionRemediation(summary.rendered_verdict)?.target.kind, "local_device");
+});
+
+test("source actionability ignores secondary local-device remediation for owner-local diagnostics", () => {
+  const summary = connector({
+    rendered_verdict: verdict({
+      required_actions: [
+        action({ cta: "Reconnect this account", kind: "reauth" }),
+        action({
+          cta: "See recovery steps",
+          kind: "add_info",
+          remediation: {
+            cause: "dead_letter_backlog",
+            commands: [],
+            kind: "local_collector_recovery",
+            label: "Recover local collector uploads",
+            summary: "Recover saved records on the host that owns them.",
+            target: { identity_source: "source_instance_bindings", kind: "local_device" },
+          },
+          satisfied_when: { kind: "attention_resolved" },
+        }),
+      ],
+    }),
+  });
+
+  assert.equal(hasPrimaryOwnerLocalDeviceRemediation(summary.rendered_verdict), false);
+  assert.equal(primaryOwnerActionRemediation(summary.rendered_verdict), null);
+});
+
+test("source actionability ignores non-owner local-device remediation for owner-local diagnostics", () => {
+  const summary = connector({
+    rendered_verdict: verdict({
+      required_actions: [
+        action({
+          audience: "maintainer",
+          cta: "Connector code needs a fix",
+          kind: "code_fix",
+          remediation: {
+            cause: "stalled_unknown",
+            commands: [],
+            kind: "local_collector_recovery",
+            label: "Fix connector code",
+            summary: "Connector code needs a fix before owner recovery can proceed.",
+            target: { identity_source: "source_instance_bindings", kind: "local_device" },
+          },
+          satisfied_when: { kind: "none" },
+          terminal: true,
+        }),
+      ],
+    }),
+  });
+
+  assert.equal(hasPrimaryOwnerLocalDeviceRemediation(summary.rendered_verdict), false);
+  assert.equal(primaryOwnerActionRemediation(summary.rendered_verdict), null);
 });
 
 test("source actionability does not convert maintainer-primary work into owner work", () => {

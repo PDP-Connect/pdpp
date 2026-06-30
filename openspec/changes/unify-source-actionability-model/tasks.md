@@ -10,7 +10,7 @@
 - [x] 2.2 Update Standing Overview to render grouped source work with scoped counts.
 - [x] 2.3 Remove duplicate row construction between advisory owner actions and source issues.
 - [x] 2.4 Keep source links exact to connection identity.
-- [ ] 2.5 Route connection diagnostics verdict labels and owner-action CTAs through the shared source-actionability model.
+- [x] 2.5 Route connection diagnostics verdict labels and owner-action CTAs through the shared source-actionability model.
 
 ## 3. Tests
 
@@ -18,11 +18,11 @@
 - [x] 3.2 Cover the no-duplicate-row invariant for reviewable degraded rows.
 - [x] 3.3 Cover count/heading copy so hero group counts match visible group rows.
 - [x] 3.4 Run focused console view-model tests.
-- [ ] 3.5 Cover connection diagnostics freshness-aware rendered verdict labels and removal of the local verdict vocabulary.
+- [x] 3.5 Cover connection diagnostics freshness-aware rendered verdict labels and removal of the local verdict vocabulary.
 
 ## 4. Validation
 
 - [x] 4.1 Run `openspec validate unify-source-actionability-model --strict`.
 - [x] 4.2 Run targeted console tests.
 - [x] 4.3 Run console typecheck or record residual dependency blocker.
-- [ ] 4.4 Re-run `openspec validate unify-source-actionability-model --strict` after the diagnostics follow-up lands.
+- [x] 4.4 Re-run `openspec validate unify-source-actionability-model --strict` after the diagnostics follow-up lands.
