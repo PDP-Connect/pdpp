@@ -51,7 +51,10 @@
 
 ## 6. Out of scope (tracked separately)
 
-- [ ] 6.1 S-3 owner-session KDF (scrypt + per-server salt) — lane A3.
-- [ ] 6.2 S-4 / S-6 stderr-tail + connector-error redaction — lane A2.
-- [ ] 6.3 S-5 CIMD IP-guard hex-mapped/6to4 — lane A2.
-- [ ] 6.4 S-7 credential fingerprint width — lane A3.
+The following audit findings are explicitly outside this S-1/S-2 change and
+remain tracked separately:
+
+- S-3 owner-session KDF (scrypt + per-server salt) — lane A3.
+- S-4 / S-6 stderr-tail + connector-error redaction — lane A2.
+- S-5 CIMD IP-guard hex-mapped/6to4 — lane A2.
+- S-7 credential fingerprint width — lane A3.
