@@ -611,6 +611,15 @@ connection holds an active stored credential, and an empty-string environment
 variable value SHALL NEVER shadow a store-recovered value (the stored
 credential is merged last into the connector child environment).
 
+The reference implementation SHALL keep each connector's runtime credential
+mapping aligned with that connector's actual authentication inputs. If a
+connector authenticates through a stored username/password pair, the runtime
+registry SHALL accept that credential kind and inject the connector-declared
+username/password environment variables for the targeted connection. A stored
+credential kind mismatch SHALL be a mapping or migration defect unless the
+runtime registry explicitly declares a backward-compatible accepted variant for
+that connector.
+
 #### Scenario: Scheduled run succeeds with no credential env vars
 
 - **WHEN** a scheduled run begins for a connection with an active stored
@@ -621,6 +630,15 @@ credential is merged last into the connector child environment).
 - **AND** the run SHALL NOT raise a `credentials_required` interaction
 - **AND** the run SHALL behave identically to a manual run of the same
   connection.
+
+#### Scenario: Browser-backed username/password connection uses stored credentials
+
+- **WHEN** an Amazon, Chase, Reddit, or USAA connection holds an active stored
+  `username_password` credential
+- **THEN** scheduled, retry, and manual runs SHALL inject that connection's
+  username and password into the connector child environment
+- **AND** the run SHALL NOT ask the owner to reconnect solely because the host
+  process lacks deployment-wide credential env vars.
 
 #### Scenario: Credential resolution failure refuses the launch
 
@@ -957,4 +975,36 @@ This requirement applies to configured reference-server runs. It does not forbid
 - **WHEN** a connector is executed outside the configured reference-server connector-instance run path
 - **THEN** the connector MAY read connector-declared credential environment variables
 - **AND** that standalone behavior SHALL NOT be treated as satisfying source-scoped setup for a configured reference connection.
+
+### Requirement: Stream definitions SHALL be reusable across acquisition paths without weakening connection identity
+
+The reference implementation SHALL allow multiple connector types, setup methods, or acquisition paths to emit records for the same normalized stream definition when the stream semantics and record shape match. Record storage, runtime state, schedules, diagnostics, and grant-safe read attribution SHALL remain scoped to `connection_id` / `connector_instance_id`, not to the acquisition path alone.
+
+Multiple acquisition paths MAY populate the same logical connection only when an explicit source-identity rule proves they represent the same owner source or account. Without that proof, the paths SHALL remain separate connections that may share stream definitions.
+
+Acquisition-path metadata SHALL be treated as provenance in source binding, run, coverage, or record metadata. It SHALL NOT replace `connection_id` as the public read-surface source identity and SHALL NOT require clients to use a path selector for normal reads.
+
+#### Scenario: API and import paths share a stream definition
+
+- **WHEN** an API-backed connector and an import connector both emit a normalized stream with the same semantics and record shape
+- **THEN** the reference SHALL allow both connections to advertise and collect that stream definition
+- **AND** records from each path SHALL remain separated by their own `connection_id` unless an explicit source-identity rule links them.
+
+#### Scenario: Path identity is not proven
+
+- **WHEN** one acquisition path is based on an owner-provided export file and another path is based on provider OAuth
+- **THEN** the reference SHALL NOT silently merge those paths into one connection
+- **AND** owner and read surfaces SHALL continue to attribute records to the connection that collected or imported them.
+
+#### Scenario: Path identity is proven later
+
+- **WHEN** a later accepted change defines and implements a source-identity rule proving two acquisition paths represent the same owner source
+- **THEN** those paths MAY write through one logical connection
+- **AND** run and coverage metadata SHALL still preserve which acquisition path produced each batch or known gap.
+
+#### Scenario: Client reads shared stream names
+
+- **WHEN** a grant-authorized client reads or searches a stream name that appears under multiple connections
+- **THEN** the response SHALL expose grant-safe connection attribution
+- **AND** the client SHALL be able to disambiguate by `connection_id` without knowing acquisition-path internals.
 
