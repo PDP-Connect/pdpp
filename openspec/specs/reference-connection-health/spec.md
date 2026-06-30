@@ -854,92 +854,33 @@ correlating the same-stream pending detail gap.
 
 ### Requirement: The forward statement SHALL be derived from the disposition and required actions and SHALL NOT contradict them
 
-The synthesized `forward_statement` SHALL be a single sentence derived from the
-forward disposition and the primary required action; it SHALL NOT be independently
-authored copy that can drift from them. When the forward disposition is terminal,
-the `forward_statement` SHALL NOT claim that collection resumes or that a future run
-recovers the data. When the primary required action is owner-actionable, the
-`forward_statement` SHALL name what doing it achieves rather than implying the
-system will recover on its own.
+When a connection has terminal coverage gaps but current evidence proves the latest collection succeeded and the snapshot is degraded rather than blocked, the rendered verdict SHALL keep the coverage gap visible while avoiding total-failure copy. The pill SHALL render as degraded, and the forward statement SHALL describe known coverage gaps without claiming that collection failed to run or that a future run recovers terminal data.
 
-#### Scenario: Terminal disposition never claims resumed collection
+#### Scenario: Successful terminal coverage is degraded review, not total failure
 
-- **WHEN** the forward disposition for a stream is `terminal`
-- **THEN** the verdict's `forward_statement` SHALL NOT say that the next run, a
-  retry, or a refresh will recover that stream's data
-- **AND** it SHALL describe the terminal outcome and any maintainer-status path
-  honestly.
-
-#### Scenario: Owner-action statement matches the primary action
-
-- **WHEN** the primary required action is owner-actionable (for example
-  `refresh_now`)
-- **THEN** the `forward_statement` SHALL describe the result of the owner taking
-  that action
-- **AND** it SHALL NOT contradict the action's `kind`, `audience`, or `terminal`
-  value.
+**WHEN** a connection snapshot is degraded, has terminal coverage, and carries a current `CollectionSucceeded=true` condition
+**THEN** the rendered verdict pill is `Degraded`
+**AND** the primary maintainer-status action uses coverage-review copy rather than generic connector-code-fix copy
+**AND** the forward statement says the latest collection completed with known coverage gaps
+**AND** the verdict SHALL NOT claim that a retry, refresh, or next run recovers the terminal coverage gap.
 
 ### Requirement: Owner actions SHALL be a typed required-action list with derived terminality and one unified satisfaction contract
 
-The reference implementation SHALL promote the single owner-action CTA to a typed,
-ordered `required_actions[]` list (zero or many), ordered by urgency, where the
-first action is the primary and the remainder render behind a "+N more"
-disclosure. Each `RequiredAction` SHALL carry a `kind` drawn from the fixed
-taxonomy (`reauth`, `refresh_now`, `reattach_schedule`, `add_info`, `retry_gap`,
-`backfill`, `wait`, `code_fix`, `contact_support`), an `audience`
-(`owner` | `maintainer` | `none`), an `urgency` (`now` | `soon` | `verifying` |
-`overdue`), an `affects[]` list of stream ids, a `cta`, and a `terminal` flag.
-When the action drives a focused recovery panel, it MAY also carry an additive
-`remediation` payload naming the remediation `kind`, cause, primary label,
-summary, target identity source, and ordered non-secret command templates. Owner
-surfaces SHALL consume this payload instead of re-deriving local collector
-recovery steps from raw conditions. For local-device recovery, the target identity
-source SHALL point owner surfaces at existing source-instance bindings rather than
-inventing a host identity inside the synthesizer.
+The rendered verdict's primary required action SHALL remain the single action source consumed by owner surfaces. Owner surfaces SHALL NOT replace an owner-runnable required action with a generic run control. Owner surfaces SHALL render run-start controls only for required-action kinds that actually start a run from that surface, and SHALL route other owner-runnable actions to the appropriate detail flow.
 
-The `terminal` flag SHALL be DERIVED from the forward disposition
-(`terminal === (forward_disposition === "terminal")`) and SHALL NOT be an
-independent value; the existing `deriveForwardDisposition` projection SHALL remain
-the sole terminality oracle, and no required action SHALL carry a `terminal` value
-that disagrees with the disposition for its scope.
+When a server action starts or reports an existing run, the owner surface SHALL expose a concrete run-detail link whenever a run id is present. It SHALL preserve the full run id string returned or named by the server.
 
-Each `RequiredAction` SHALL carry exactly one `satisfied_when` value drawn from a
-single `SatisfactionContract` discriminated union
-(`credential_present_and_unrejected` | `schedule_attached_and_enabled` |
-`attention_resolved` | `confirming_run_succeeded` | `gap_recovered` |
-`backfill_window_covered` | `none`). There SHALL be one satisfaction mechanism for
-every kind, not per-kind bespoke logic. The `wait`, `code_fix`, and
-`contact_support` kinds SHALL carry `satisfied_when: { kind: "none" }` and SHALL NOT
-be owner-satisfiable. The `wait` kind, with `audience: "none"` and
-`satisfied_when: { kind: "none" }`, SHALL be the single representation for
-self-handled deferred work — deferred detail-gap drain, source-pressure cooldown,
-and in-flight syncing — and SHALL contribute `channel: "calm"` by construction.
+#### Scenario: Owner-runnable non-run action is not rendered as generic sync
 
-#### Scenario: Terminal flag agrees with the disposition oracle
+**WHEN** a source verdict's primary required action is owner-runnable but is not `refresh_now` or `retry_gap`
+**THEN** the Sources view renders it as a detail hint using the server-owned CTA
+**AND** the Sources view SHALL NOT render a generic `Sync now` button for that action.
 
-- **WHEN** a required action is built for a stream whose forward disposition is
-  `terminal`
-- **THEN** the action's `terminal` flag SHALL be `true`
-- **AND** for a stream whose disposition is not `terminal` the action's `terminal`
-  flag SHALL be `false`, with no independent terminality source.
+#### Scenario: Run-start result links to the concrete run
 
-#### Scenario: A connection needs two ordered actions
-
-- **WHEN** a connection both needs an owner refresh and has had a credential
-  rejected
-- **THEN** the verdict SHALL carry `required_actions[]` with both a `refresh_now`
-  and a `reauth` action ordered by urgency
-- **AND** the primary action SHALL render first and the second behind a "+N more"
-  disclosure.
-
-#### Scenario: Self-handled drain is a calm wait action
-
-- **WHEN** a connection's only outstanding work is detail gaps the system is itself
-  draining
-- **THEN** the verdict SHALL represent it as a single `wait` action with
-  `audience: "none"` and `satisfied_when: { kind: "none" }`
-- **AND** that action SHALL NOT raise `channel` above `calm` and SHALL NOT render an
-  owner button.
+**WHEN** the owner starts a run or the server reports a run is already active
+**THEN** the Sources view shows the run-start result inline
+**AND** when a run id is present, the result links to that run's detail route while preserving the full run id.
 
 ### Requirement: Repair SHALL self-heal and auto-resume onto the existing connection
 
@@ -1279,3 +1220,37 @@ device-backup, or browser-polyfill coverage is complete.
 - **THEN** both surfaces SHALL derive covered-through timestamp, partial
   coverage, duplicate-import, and missing-media status from the same projection
 - **AND** differences in copy or layout SHALL NOT change the underlying state.
+
+### Requirement: Owner source surfaces SHALL degrade transient read failures without premature alarm
+
+When the owner console cannot refresh the source list because a read fails, the source surface SHALL distinguish a transient first failure from a persistent failure.
+
+#### Scenario: First read failure during refresh
+
+- **WHEN** a Sources route refresh fails during a dynamic read
+- **AND** the console has not yet attempted its automatic recovery
+- **THEN** it SHALL render quiet retrying copy
+- **AND** it SHALL NOT render the explicit failure headline yet
+
+#### Scenario: Automatic recovery also fails
+
+- **WHEN** a Sources route refresh fails
+- **AND** the automatic recovery has already been attempted
+- **THEN** it SHALL render explicit read-failure copy
+- **AND** it SHALL offer a manual retry control
+
+#### Scenario: Last successful load timestamp
+
+- **WHEN** the read-failure boundary has a client-cached timestamp for the last clean render
+- **THEN** it MAY display that timestamp as the last successful load
+- **AND** it SHALL NOT claim to render cached source rows unless such rows are actually rendered
+
+### Requirement: Owner console SHALL consume the server-owned verdict without leaking local state across sources
+
+The Sources view SHALL key source-detail state by the selected source identity so row-local toasts, confirmation ceremonies, and transient action state from one source cannot appear on another source after selection changes.
+
+#### Scenario: Selecting another source clears local action state
+
+**WHEN** the owner switches the selected source in the Sources view
+**THEN** the rendered source-detail component remounts for the new source identity
+**AND** transient local state from the previously selected source is not shown on the new source.
