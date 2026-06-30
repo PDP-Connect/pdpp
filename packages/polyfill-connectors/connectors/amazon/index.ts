@@ -110,6 +110,7 @@ const SIGNIN_URL_RE = /\/ap\/(signin|challenge|mfa)/;
 const ORDERS_URL_RE = /\/your-orders|\/order-history/;
 const YEAR_VALUE_RE = /year-(\d{4})/;
 const DETAIL_URL_RE = /\/(?:gp\/your-account|fopo)\/order-details/;
+export const AMAZON_NO_ORDERS_TEXT_PATTERN = String.raw`you have not placed any orders|no orders found|0\s+orders\s+placed\s+in|looks like you didn['’]t place an order in`;
 
 export type AmazonDetailGapReason = "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
 
@@ -696,10 +697,10 @@ async function extractAndShapeCheckOrders(page: Page, emit: EmitFn): Promise<Lis
  */
 async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: number, emit: EmitFn): Promise<void> {
   const diag = await page
-    .evaluate((): ListPageDiagnostics => {
+    .evaluate((noOrdersTextPattern): ListPageDiagnostics => {
       // biome-ignore-start lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
       const CAPTCHA_RE = /captcha|robot|unusual traffic/i;
-      const NO_ORDERS_RE = /you have not placed any orders|no orders found/i;
+      const NO_ORDERS_RE = new RegExp(noOrdersTextPattern, "i");
       const WS = /\s+/g;
       // biome-ignore-end lint/performance/useTopLevelRegex: runs in browser context (page.evaluate); module-scoped regexes in Node cannot cross the bridge.
       return {
@@ -713,7 +714,7 @@ async function reportEmptyPageDiagnostics(page: Page, year: number, startIndex: 
         no_orders_text: NO_ORDERS_RE.test(document.body?.innerText || "").toString(),
         body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 240),
       };
-    })
+    }, AMAZON_NO_ORDERS_TEXT_PATTERN)
     .catch((): ListPageDiagnostics | null => null);
   const classification = classifyEmptyListPageDiagnostics(diag, startIndex);
   if (classification.action === "terminal") {

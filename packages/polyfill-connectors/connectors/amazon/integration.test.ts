@@ -33,6 +33,7 @@ import type { BrowserCollectContext } from "../../src/connector-runtime.ts";
 import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  AMAZON_NO_ORDERS_TEXT_PATTERN,
   buildOrderDetailGap,
   classifyDetailOutcome,
   classifyEmptyListPageDiagnostics,
@@ -55,6 +56,7 @@ import type { DetailItem, ListPageDiagnostics, ListPageOrder, OrderDetail } from
 const AMAZON_MANIFEST_PATH = new URL("../../manifests/amazon.json", import.meta.url);
 const AMAZON_INDEX_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
 const AMAZON_FOPO_DETAIL_FIXTURE = new URL("./__fixtures__/order-detail-fopo-minimal.html", import.meta.url);
+const AMAZON_EMPTY_YEAR_FIXTURE = new URL("./__fixtures__/orders-list-empty-year-with-carousel.html", import.meta.url);
 
 interface RecordingDeps {
   deps: EmitDeps;
@@ -455,6 +457,28 @@ test("classifyEmptyListPageDiagnostics: only proven terminal empty pages advance
     action: "abort",
     reason: "empty_first_page_without_terminal_signal",
   });
+});
+
+test("classifyEmptyListPageDiagnostics: current empty-year copy is terminal despite buy-again carousel sentinel", () => {
+  const html = readFileSync(AMAZON_EMPTY_YEAR_FIXTURE, "utf8");
+  const visibleText = html.replace(/<[^>]+>/g, " ");
+  const noOrdersRe = new RegExp(AMAZON_NO_ORDERS_TEXT_PATTERN, "i");
+
+  assert.match(visibleText, noOrdersRe);
+  assert.deepEqual(
+    classifyEmptyListPageDiagnostics(
+      makeEmptyPageDiagnostics({
+        any_card: 1,
+        no_orders_text: noOrdersRe.test(visibleText).toString(),
+        order_cards: 1,
+      }),
+      0
+    ),
+    {
+      action: "terminal",
+      reason: "no_orders_text",
+    }
+  );
 });
 
 // ─── planIncrementalYears ─────────────────────────────────────────────────
