@@ -1,6 +1,6 @@
 # reference-implementation-governance (delta)
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: single_use grant consumption MUST be proven at the HTTP boundary
 

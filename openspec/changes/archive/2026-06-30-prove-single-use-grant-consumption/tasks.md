@@ -31,5 +31,5 @@
       `✔ continuous grant: repeated token issuances …`).
 - [x] 4.2 Existing `single_use grants issue one token but allow reuse …` test
       still passes (no regression to pagination behavior).
-- [ ] 4.3 `tsc --noEmit` clean for changed files.
-- [ ] 4.4 Full pdpp.test.js suite green.
+- [x] 4.3 `tsc --noEmit` clean for changed files.
+- [x] 4.4 Full pdpp.test.js suite green.
