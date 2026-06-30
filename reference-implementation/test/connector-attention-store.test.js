@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { closeDb, initDb } from '../server/db.js';
+import { closeDb, getDb, initDb } from '../server/db.js';
 import {
   getConnectorAttentionProjection,
   projectConnectorSummaryConnectionHealth,
@@ -191,6 +191,84 @@ test('attention store suppresses expired open rows from the open list', withTemp
     connectorInstanceId: 'cin_chatgpt_a',
   });
   assert.deepEqual(open.map((row) => row.id), ['att_future_manual_action']);
+}));
+
+test('attention store expires due open rows in columns and record_json', withTempDb(async () => {
+  const store = createSqliteConnectorAttentionStore();
+  await store.upsertAttention({
+    record: createAttention({
+      id: 'att_expire_due',
+      dedupe_key: 'chatgpt:cin_chatgpt_a:interaction:manual_action:conversations',
+      connection_id: 'chatgpt',
+      run_id: 'run_old_failed',
+      reason_code: 'manual_action_required',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+      action_target: 'remote_surface',
+      expires_at: '2026-05-19T12:00:00.000Z',
+      now: '2026-05-19T11:50:00.000Z',
+    }),
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_a',
+  });
+
+  const expired = await store.expireDueAttentionForConnection({
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_a',
+    now: '2026-05-19T12:00:01.000Z',
+  });
+  assert.equal(expired.length, 1);
+  assert.equal(expired[0].lifecycle, 'expired');
+
+  const persisted = getDb()
+    .prepare('SELECT lifecycle, updated_at, record_json FROM connector_attention_records WHERE attention_id = ?')
+    .get('att_expire_due');
+  assert.equal(persisted.lifecycle, 'expired');
+  assert.equal(persisted.updated_at, '2026-05-19T12:00:01.000Z');
+  assert.equal(JSON.parse(persisted.record_json).lifecycle, 'expired');
+  assert.equal(JSON.parse(persisted.record_json).updated_at, '2026-05-19T12:00:01.000Z');
+
+  const open = await store.listOpenAttentionForConnection({
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_a',
+  });
+  assert.deepEqual(open, []);
+}));
+
+test('attention projection reconciles expired rows before returning open attention', withTempDb(async () => {
+  const store = getDefaultConnectorAttentionStore();
+  await store.upsertAttention({
+    record: createAttention({
+      id: 'att_projection_expired',
+      dedupe_key: 'amazon:cin_amazon_a:interaction:manual_action:orders',
+      connection_id: 'amazon',
+      run_id: 'run_old_failed',
+      reason_code: 'manual_action_required',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+      action_target: 'remote_surface',
+      expires_at: '2000-01-01T00:00:00.000Z',
+      now: '1999-12-31T23:59:00.000Z',
+    }),
+    connectorId: 'amazon',
+    connectorInstanceId: 'cin_amazon_a',
+  });
+
+  const projection = await getConnectorAttentionProjection('amazon', {
+    connectorInstanceId: 'cin_amazon_a',
+  });
+  assert.equal(projection.unreliable, false);
+  assert.deepEqual(projection.records, []);
+
+  const persisted = getDb()
+    .prepare('SELECT lifecycle, record_json FROM connector_attention_records WHERE attention_id = ?')
+    .get('att_projection_expired');
+  assert.equal(persisted.lifecycle, 'expired');
+  assert.equal(JSON.parse(persisted.record_json).lifecycle, 'expired');
 }));
 
 test('attention store scopes reads by connector_instance_id', withTempDb(async () => {

@@ -1129,6 +1129,12 @@ interface AttentionStoreProjection {
 }
 
 interface ConnectorAttentionStoreLike {
+  expireDueAttentionForConnection?(input: {
+    connectorId: string;
+    connectorInstanceId?: string;
+    limit?: number;
+    now?: string;
+  }): Promise<readonly AttentionRecord[]> | readonly AttentionRecord[];
   listOpenAttentionForConnection(input: {
     connectorId: string;
     connectorInstanceId?: string;
@@ -1152,12 +1158,25 @@ export async function getConnectorAttentionProjection(
 ): Promise<AttentionStoreProjection> {
   try {
     const store = getDefaultConnectorAttentionStore() as ConnectorAttentionStoreLike;
+    const now = new Date().toISOString();
     const request: { connectorId: string; connectorInstanceId?: string; limit?: number } = {
       connectorId,
       limit: 50,
     };
     if (options.connectorInstanceId !== undefined) {
       request.connectorInstanceId = options.connectorInstanceId;
+    }
+    try {
+      await Promise.resolve(
+        store.expireDueAttentionForConnection?.({
+          ...request,
+          limit: 200,
+          now,
+        })
+      );
+    } catch {
+      // The read path already filters expired rows. A hygiene-write failure must
+      // not turn an otherwise reliable read into an owner-facing unknown state.
     }
     const records = await Promise.resolve(store.listOpenAttentionForConnection(request));
     return { records, unreliable: false };
@@ -1412,7 +1431,7 @@ function isRetiredSetupAttempt(instance: ConnectorInstanceRow): boolean {
   return kind === "browser_enrollment_shell" || kind === "static_secret_draft" || kind === "manual_upload_draft";
 }
 
-async function retireExpiredBrowserEnrollmentShellsForDashboard(now: string): Promise<readonly string[]> {
+function retireExpiredBrowserEnrollmentShellsForDashboard(now: string): Promise<readonly string[]> {
   const store = getConnectorInstanceStore() as {
     listDraftBrowserEnrollmentShells(
       ownerSubjectId?: string | null
@@ -4101,7 +4120,7 @@ async function loadConnectorSummaryProjectionDeps(
   };
 }
 
-export async function listConnectorSummaries(
+export function listConnectorSummaries(
   controller?: ControllerLike | null,
   options: ListConnectorSummariesOptions = {}
 ): Promise<ConnectorSummary[]> {
@@ -4111,12 +4130,12 @@ export async function listConnectorSummaries(
     const now = Date.now();
     switch (decideConnectorSummariesCacheRead(cached, now)) {
       case "return_fresh":
-        return cached?.value ?? [];
+        return Promise.resolve(cached?.value ?? []);
       case "return_stale_refresh":
         if (!cached?.promise) {
           refreshConnectorSummariesCache(key, controller, options, cached);
         }
-        return cached?.value ?? [];
+        return Promise.resolve(cached?.value ?? []);
       case "await_refresh":
         if (cached?.promise) {
           return cached.promise;

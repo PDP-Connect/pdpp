@@ -41,6 +41,7 @@ const ALLOWED_TRANSITIONS = {
 
 const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
+const EXPIRE_DUE_LIMIT = 200;
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -125,6 +126,20 @@ function buildSqliteOpenPredicate(lifecycles) {
   return `lifecycle IN (${placeholders}) AND (expires_at IS NULL OR expires_at > ?)`;
 }
 
+function expiresAtOrBefore(expiresAt, now) {
+  const expiresMs = Date.parse(expiresAt);
+  const nowMs = Date.parse(now);
+  return Number.isFinite(expiresMs) && Number.isFinite(nowMs) && expiresMs <= nowMs;
+}
+
+function expiredRecord(record, now) {
+  return {
+    ...record,
+    lifecycle: 'expired',
+    updated_at: now,
+  };
+}
+
 const VALID_NOTIFICATION_STATES = new Set(['acknowledged', 'failed', 'pending', 'sent', 'suppressed']);
 
 function applyNotificationOutcomeToRecord(record, { outcome, reason, now }) {
@@ -206,6 +221,41 @@ export function createSqliteConnectorAttentionStore() {
         ),
       ];
       return rows.map(rowToRecord);
+    },
+
+    async expireDueAttentionForConnection({ connectorId, connectorInstanceId, now, limit } = {}) {
+      const id = nonEmptyString(connectorId);
+      if (!id) throw new Error('expireDueAttentionForConnection: connectorId is required');
+      const instance = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(id);
+      const updatedAt = nonEmptyString(now) || nowIso();
+      const bounded = clampLimit(limit ?? EXPIRE_DUE_LIMIT);
+      const rows = [
+        ...iterateDynamicSqlAcknowledged(
+          `SELECT attention_id, record_json, expires_at
+             FROM connector_attention_records
+            WHERE connector_id = ?
+              AND connector_instance_id = ?
+              AND lifecycle IN (${OPEN_LIFECYCLES.map(() => '?').join(', ')})
+              AND expires_at IS NOT NULL
+              AND expires_at <= ?
+            ORDER BY updated_at DESC
+            LIMIT ?`,
+          [id, instance, ...OPEN_LIFECYCLES, updatedAt, bounded],
+        ),
+      ];
+      const expired = [];
+      for (const row of rows) {
+        if (!expiresAtOrBefore(row.expires_at, updatedAt)) continue;
+        const next = expiredRecord(rowToRecord(row), updatedAt);
+        execDynamicSqlAcknowledged(
+          `UPDATE connector_attention_records
+              SET lifecycle = ?, updated_at = ?, record_json = ?
+            WHERE attention_id = ?`,
+          ['expired', updatedAt, JSON.stringify(next), row.attention_id],
+        );
+        expired.push(next);
+      }
+      return expired;
     },
 
     async transitionAttention({ attentionId, to, now }) {
@@ -335,6 +385,39 @@ export function createPostgresConnectorAttentionStore() {
         [id, instance, OPEN_LIFECYCLES, nowIso(), bounded],
       );
       return result.rows.map(rowToRecord);
+    },
+
+    async expireDueAttentionForConnection({ connectorId, connectorInstanceId, now, limit } = {}) {
+      const id = nonEmptyString(connectorId);
+      if (!id) throw new Error('expireDueAttentionForConnection: connectorId is required');
+      const instance = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(id);
+      const updatedAt = nonEmptyString(now) || nowIso();
+      const bounded = clampLimit(limit ?? EXPIRE_DUE_LIMIT);
+      const result = await postgresQuery(
+        `SELECT attention_id, record_json, expires_at
+           FROM connector_attention_records
+          WHERE connector_id = $1
+            AND connector_instance_id = $2
+            AND lifecycle = ANY($3::text[])
+            AND expires_at IS NOT NULL
+            AND expires_at <= $4
+          ORDER BY updated_at DESC
+          LIMIT $5`,
+        [id, instance, OPEN_LIFECYCLES, updatedAt, bounded],
+      );
+      const expired = [];
+      for (const row of result.rows) {
+        if (!expiresAtOrBefore(row.expires_at, updatedAt)) continue;
+        const next = expiredRecord(rowToRecord(row), updatedAt);
+        await postgresQuery(
+          `UPDATE connector_attention_records
+              SET lifecycle = $1, updated_at = $2, record_json = $3::jsonb
+            WHERE attention_id = $4`,
+          ['expired', updatedAt, JSON.stringify(next), row.attention_id],
+        );
+        expired.push(next);
+      }
+      return expired;
     },
 
     async transitionAttention({ attentionId, to, now }) {
