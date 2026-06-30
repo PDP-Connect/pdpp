@@ -17,6 +17,14 @@ The projection is a UI-facing derivation, not a new server state machine. It mus
 
 Overview renders the groups with headings that answer what the owner can do. Counts belong to the group they describe. The owner does not need to see or learn `attention`, `advisory`, `terminal_gap`, or `outbox` as UI taxonomy.
 
+The model also owns detail-page source health labels. A later audit found that
+the connection diagnostics surface still carried a local verdict tone-to-label
+table and could show a bare healthy/checking label where the shared model would
+show the server verdict label plus freshness context. That is a continuation of
+the same source-actionability boundary, not a separate product concept: any
+operator-facing source status or required-action summary should consume the
+shared projection unless it is explicitly showing lower-level evidence.
+
 ## Alternatives
 
 ### Promote all advisory rows to attention
@@ -38,3 +46,5 @@ Deferred. The server already owns the durable verdict contract. The failing beha
 - Maintainer-only code-fix rows appear as system/maintainer issues and do not render owner-runnable CTA copy.
 - Passive checking/unknown rows are visually muted and not counted as owner work.
 - Existing source detail links remain exact-connection links, not connector-type links.
+- Connection diagnostics renders status labels and owner-action CTAs through the
+  shared source-actionability model instead of a local verdict vocabulary.

@@ -853,3 +853,108 @@ per-account environment variables.
 - **AND** it SHALL NOT include the provider secret, provider access token, owner
   session cookie, browser session cookie, or any bearer-equivalent credential
 
+### Requirement: Connector instances MAY aggregate multiple acquisition paths under one logical connection
+
+The reference implementation SHALL allow one owner-facing connection to receive
+records for the same logical source through multiple acquisition paths when each
+path is represented by acquisition-batch provenance and records remain
+instance-scoped.
+
+Adding a second acquisition path SHALL NOT require a second owner-facing
+connection when the owner is strengthening coverage for the same logical source.
+
+#### Scenario: Historical and current acquisitions belong to one source
+
+- **WHEN** an owner uses an owner artifact to hydrate historical data for a
+  source
+- **AND** later authorizes a browser-polyfill, provider API, or device-sync path
+  for current data for the same source
+- **THEN** the reference MAY keep both acquisition paths under one connection
+- **AND** each accepted batch SHALL retain acquisition method and provenance
+- **AND** records from one acquisition path SHALL NOT overwrite sibling records
+  unless explicit identity rules say they are the same logical record.
+
+#### Scenario: Acquisition path targets a different account or device
+
+- **WHEN** an acquisition path refers to a different account, device, local
+  binding, or source identity
+- **THEN** the reference SHALL create or require a distinct connection or
+  source-instance identity rather than merging it into an existing connection by
+  connector type alone.
+
+#### Scenario: Owner adds another artifact to the same source
+
+- **WHEN** an owner imports another supported artifact for the same account,
+  profile, device, local binding, or source identity
+- **THEN** the reference SHALL allow that artifact to target the existing
+  manual/upload connection
+- **AND** it SHALL preserve a distinct acquisition-batch receipt for the new
+  artifact.
+
+#### Scenario: Existing manual source is visible during add-source
+
+- **WHEN** an owner starts the add-source flow for a connector that already has
+  manual/upload connections
+- **THEN** the reference SHALL offer those existing connections as import targets
+  before asking the owner to create another source identity
+- **AND** it SHALL still provide an explicit path to create a distinct source
+  for a different account, profile, device, or source identity.
+
+### Requirement: Same-stream writes from multiple acquisition paths SHALL be explicit and non-destructive
+
+When multiple acquisition paths write to the same stream for one connection, the reference SHALL preserve record identity, acquisition provenance, and coverage claim attribution.
+
+A later acquisition path SHALL NOT erase, tombstone, or hide records from an
+earlier path merely because the later path did not observe them.
+
+#### Scenario: Daily current-data path does not erase historical archive data
+
+- **WHEN** a historical owner-artifact batch populated records for a stream
+- **AND** a later daily provider API or browser-polyfill batch observes only a
+  current window for the same stream
+- **THEN** the current-data batch SHALL NOT tombstone or hide historical records
+  outside its declared coverage window
+- **AND** the reference SHALL keep the historical batch's coverage claim visible.
+
+#### Scenario: Full-refresh path has explicit coverage authority
+
+- **WHEN** a connector claims full-refresh coverage for a stream and acquisition
+  method
+- **THEN** any destructive reconciliation SHALL be limited to that declared
+  coverage authority
+- **AND** it SHALL NOT apply to records whose only evidence came from a distinct
+  acquisition method unless an explicit cross-method identity rule authorizes
+  that reconciliation.
+
+### Requirement: Configured provider-account runs SHALL require source-scoped credentials
+
+The reference implementation SHALL require configured connector-instance runs for static-secret or provider-account connectors to resolve provider-account credentials from source-scoped setup material for the targeted connection. Manual, scheduled, retry, and auto-resume run paths SHALL NOT use deployment-wide provider-account environment variables as a substitute for a missing source-scoped credential. A missing, revoked, or unrecoverable source-scoped credential SHALL fail closed before the connector child is spawned.
+
+This requirement applies to configured reference-server runs. It does not forbid standalone connector development or tests from passing connector-declared credential environment variables directly to a connector child outside a configured connector-instance run.
+
+#### Scenario: Configured run lacks a stored source credential
+
+- **WHEN** a manual or scheduled run is started for a configured static-secret connector instance with no active stored source credential
+- **THEN** the reference SHALL refuse the launch with a typed credential-unavailable failure
+- **AND** it SHALL NOT spawn a connector child
+- **AND** it SHALL NOT use deployment-wide provider-account environment variables to authenticate the source.
+
+#### Scenario: Configured run has a stored source credential
+
+- **WHEN** a manual or scheduled run is started for a configured static-secret connector instance with an active stored source credential
+- **THEN** the connector child SHALL receive the source-scoped credential environment fragment for that connection
+- **AND** that fragment SHALL override same-named deployment environment values for the child process
+- **AND** sibling connector instances SHALL NOT receive that connection's credential.
+
+#### Scenario: Connector is not a static-secret provider-account connector
+
+- **WHEN** a configured run is started for a connector whose setup material is not represented by the static-secret credential registry
+- **THEN** the static-secret resolver SHALL return no env fragment
+- **AND** other connection-scoped setup-material resolvers MAY satisfy the run according to their own contracts.
+
+#### Scenario: Standalone connector execution uses env credentials
+
+- **WHEN** a connector is executed outside the configured reference-server connector-instance run path
+- **THEN** the connector MAY read connector-declared credential environment variables
+- **AND** that standalone behavior SHALL NOT be treated as satisfying source-scoped setup for a configured reference connection.
+

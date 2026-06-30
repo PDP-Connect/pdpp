@@ -40,23 +40,17 @@ The reference runtime SHALL model browser streaming, URLs, QR codes, file prompt
 - **AND** the dashboard SHALL show that browser control is unavailable rather than implying that the owner can complete the action through a missing stream
 
 ### Requirement: Assistance lifecycle is durable and redacted
+
 The reference runtime SHALL expose assistance request, resolution, timeout, cancellation, and escalation transitions in the reference run timeline using safe machine-readable metadata. The reference timeline SHALL NOT persist submitted secrets, raw bearer URLs, durable credentials, or sensitive attachment payloads.
 
-#### Scenario: Assistance is requested
-- **WHEN** a connector emits a structured assistance request
-- **THEN** the reference timeline SHALL record the progress posture, owner action, response obligation, attachment kinds, sensitivity class, timeout metadata, and safe user-facing message
-- **AND** the timeline SHALL NOT include raw secret values or raw browser bearer targets
+#### Scenario: Background auth repair is required but not attempted
 
-#### Scenario: Assistance resolves automatically
-- **WHEN** an `act_elsewhere` assistance request completes because the connector observes the external approval
-- **THEN** the reference timeline SHALL record an assistance-resolved transition without requiring owner-submitted data
-
-#### Scenario: Assistance times out and escalates
-- **WHEN** a nonblocking assistance request can no longer make progress without explicit owner input
-- **THEN** the reference SHALL record an explicit timeout or escalation transition before presenting a blocking assistance request
+- **WHEN** a non-manual run detects that a source session is inactive and that repair requires owner participation
+- **THEN** the run SHALL record bounded terminal evidence that classifies the failure as credential or source-session repair
+- **AND** the run SHALL NOT emit repeated owner assistance or interaction prompts from the automatic path
 
 ### Requirement: Dashboard assistance UX is derived from state
-The reference dashboard SHALL derive assistance copy and controls from the structured assistance fields rather than from connector-specific string matching or from the presence of a pending interaction alone.
+The reference dashboard SHALL derive assistance copy and controls from the structured assistance fields and run terminal state rather than from connector-specific string matching or from the presence of a pending interaction alone.
 
 #### Scenario: Owner must approve elsewhere
 - **WHEN** the current assistance has progress posture `running`, owner action `act_elsewhere`, and response obligation `none`
@@ -71,6 +65,19 @@ The reference dashboard SHALL derive assistance copy and controls from the struc
 #### Scenario: Owner must operate a browser surface
 - **WHEN** the current assistance has progress posture `blocked`, owner action `operate_attachment`, response obligation `response_required`, and a `browser_surface` attachment
 - **THEN** the dashboard SHALL render the streaming companion entry point and browser-control instructions
+
+#### Scenario: Assistance is gone because the run failed
+- **WHEN** a stream companion page has no current browser assistance
+- **AND** the run terminal status is `failed`, `cancelled`, or `abandoned`
+- **THEN** the dashboard SHALL NOT render success or recovery copy
+- **AND** it SHALL direct the owner to the run timeline for the terminal details
+
+#### Scenario: Assistance is gone but the run is still active
+- **WHEN** a stream companion page has no current browser assistance
+- **AND** the run has no terminal status
+- **THEN** the dashboard SHALL NOT render success or recovery copy
+- **AND** it SHALL explain that no browser action is waiting at that moment
+- **AND** it SHALL revalidate the run status rather than remaining a static page
 
 ### Requirement: Existing interaction messages remain compatible during migration
 The reference runtime SHALL continue accepting existing `INTERACTION` messages while mapping them into the structured assistance model for timeline and dashboard behavior.
