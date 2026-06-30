@@ -28,7 +28,8 @@
 #
 # What this script DOES own (environmental, outside Patchright's scope):
 #   - The X display + openbox window class (n.eko contract).
-#   - The user-data-dir (so logins survive container restarts).
+#   - The user-data-dir; managed Chrome policy restores the prior session so
+#     session-cookie auth survives container restarts.
 #   - Window size matching NEKO_DESKTOP_SCREEN to avoid a torn viewport.
 #   - The --remote-debugging-port endpoint that connectOverCDP attaches to.
 

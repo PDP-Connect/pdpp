@@ -15,6 +15,7 @@
 - [x] Add focused runtime tests.
 - [x] Add focused ChatGPT auth-refresh test.
 - [x] Add regression coverage that auth extraction is sent as a literal browser expression.
+- [x] Add managed n.eko Chrome policy coverage for browser-session restart restore.
 - [x] Run focused tests.
 - [x] Run `openspec validate harden-chatgpt-session-reuse --strict`.
-- [ ] Deploy and run owner-attended immediate + one-hour ChatGPT validation before re-enabling schedule.
+- [ ] Deploy and run owner-attended immediate + one-hour + post-restart ChatGPT validation before closing the change.

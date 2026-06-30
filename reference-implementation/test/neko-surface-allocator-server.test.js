@@ -138,6 +138,16 @@ test("compose dynamic allocator command and stream template match reference imag
   assert.doesNotMatch(compose, /8080\/neko\/\{surface_id\}/);
 });
 
+test("managed n.eko Chrome policy restores prior browser session", async () => {
+  const policies = JSON.parse(await readFile(new URL("../../docker/neko/policies.json", import.meta.url), "utf8"));
+
+  assert.equal(
+    policies.RestoreOnStartup,
+    1,
+    "session-cookie auth must survive managed browser container restarts"
+  );
+});
+
 test("parses explicit n.eko profile owner uid and gid overrides", () => {
   const options = readNekoSurfaceAllocatorOptionsFromEnv({
     NEKO_IMAGE: "pdpp-neko:local",

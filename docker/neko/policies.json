@@ -19,6 +19,7 @@
   "BookmarkBarEnabled": false,
   "PasswordManagerEnabled": false,
   "BrowserLabsEnabled": false,
+  "RestoreOnStartup": 1,
   "URLAllowlist": [
     "file:///home/user/Downloads"
   ],
