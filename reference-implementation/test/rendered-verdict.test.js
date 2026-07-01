@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   CONNECTION_CONDITION_REASONS,
 } from '../runtime/connection-health.ts';
+import { progressMode } from '../runtime/connector-verdict-input.ts';
 import {
   synthesizeRenderedVerdict,
   toGrantScopedVerdict,
@@ -297,6 +298,35 @@ test('tone: stale-but-healthy stays health-green and carries a freshness annotat
   assert.equal(v.channel, 'advisory');
   assert.ok(v.annotations.some((a) => a.kind === 'freshness'));
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now'));
+});
+
+test('freshness annotation does not claim schedule refresh when the schedule is disabled', () => {
+  const mode = progressMode({
+    localDeviceBacked: false,
+    refresh: ASSISTED_REFRESH,
+    scheduled: false,
+    hasRecoveredDetailGaps: false,
+  });
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'idle',
+      axes: { freshness: 'stale' },
+      forward_disposition: 'owner_refresh_due',
+    }),
+    [stream()],
+    ASSISTED_REFRESH,
+    true,
+    {
+      mode,
+      retained_records: 100,
+      last_refreshed_at: '2026-06-29T12:00:00.000Z',
+      observed_at: '2026-07-01T12:00:00.000Z',
+    }
+  );
+  const freshness = v.annotations.find((annotation) => annotation.kind === 'freshness')?.text ?? '';
+  assert.equal(mode, 'manual');
+  assert.equal(freshness, 'Last refreshed 2 days ago.');
+  assert.doesNotMatch(freshness, /schedule/i);
 });
 
 test('tone: unknown freshness renders Checking rather than Healthy or Degraded', () => {

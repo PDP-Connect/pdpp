@@ -318,7 +318,7 @@ export function formatSchedule(schedule: RefSchedule | null): string {
  * secret or invents a method name.
  */
 function deriveAuthLine(
-  next: FormattedNextAction | null,
+  primaryAction: SourcePrimaryVerdictAction | null,
   isLocalDevicePush: boolean,
   manualUploadHref: string | null
 ): string {
@@ -328,7 +328,7 @@ function deriveAuthLine(
   if (manualUploadHref) {
     return "owner file import";
   }
-  if (next && next.variant === "structured" && next.label) {
+  if (primaryAction?.ownerRunnable && primaryAction.kind === "reauth") {
     return "owner action required";
   }
   return "session / stored credential";
@@ -408,10 +408,10 @@ function streamNamesForSource(
   return names;
 }
 
-function formatSourceListFacts(summary: RefConnectorSummary): string {
+function formatSourceListFacts(summary: RefConnectorSummary, streamCountOverride: number | null = null): string {
   const recordCount = Number.isFinite(summary.total_records) ? Math.max(0, Math.floor(summary.total_records)) : 0;
   const recordNoun = recordCount === 1 ? "record" : "records";
-  const streamCountRaw = summary.stream_count ?? summary.streams.length;
+  const streamCountRaw = streamCountOverride ?? summary.stream_count ?? summary.streams.length;
   const streamCount = Number.isFinite(streamCountRaw) ? Math.max(0, Math.floor(streamCountRaw)) : 0;
   const streamNoun = streamCount === 1 ? "stream" : "streams";
   return `${recordCount.toLocaleString()} ${recordNoun} · ${streamCount.toLocaleString()} ${streamNoun}`;
@@ -454,6 +454,14 @@ export function toSourceInstanceView(
   const isRunning =
     summary.last_run != null && (summary.last_run.status === "started" || summary.last_run.status === "in_progress");
   const manualUploadHref = manualUploadHrefForSource(summary, options.manifests);
+  const collectionFactsByStream = new Map(
+    [...indexCollectionReportByStream(summary.collection_report)].map(([stream, entry]) => [
+      stream,
+      formatStreamCollectionFacts(entry),
+    ])
+  );
+  const streamRecordsByStream = new Map((summary.stream_records ?? []).map((entry) => [entry.stream, entry]));
+  const sourceStreamNames = streamNamesForSource(summary, collectionFactsByStream, streamRecordsByStream);
 
   const baseDisplayName = formatConnectorNameForDisplay({
     connectorId,
@@ -477,27 +485,16 @@ export function toSourceInstanceView(
   const listKind = listKindForDisplayName(displayName, kind);
   let accountLine: string;
   if (hasFallbackLabel) {
-    accountLine = `Unnamed source · ${formatSourceListFacts(summary)}`;
+    accountLine = `Unnamed source · ${formatSourceListFacts(summary, sourceStreamNames.length)}`;
   } else {
-    accountLine = formatSourceListFacts(summary);
+    accountLine = formatSourceListFacts(summary, sourceStreamNames.length);
   }
-  const nextAction = actionability.nextAction;
   const primaryVerdictAction = actionability.primaryVerdictAction;
+  const nextAction = primaryVerdictAction?.ownerRunnable ? null : actionability.nextAction;
   const ownerActionCue = actionability.ownerActionCue;
   const status = actionability.renderedStatus;
 
-  const collectionFactsByStream = new Map(
-    [...indexCollectionReportByStream(summary.collection_report)].map(([stream, entry]) => [
-      stream,
-      formatStreamCollectionFacts(entry),
-    ])
-  );
-  const streamRecordsByStream = new Map((summary.stream_records ?? []).map((entry) => [entry.stream, entry]));
-  const streams: SourceStreamManifestRow[] = streamNamesForSource(
-    summary,
-    collectionFactsByStream,
-    streamRecordsByStream
-  ).map((name) => {
+  const streams: SourceStreamManifestRow[] = sourceStreamNames.map((name) => {
     const facts = collectionFactsByStream.get(name) ?? null;
     const retained = streamRecordsByStream.get(name) ?? null;
     return {
@@ -527,8 +524,8 @@ export function toSourceInstanceView(
 
   const passportFields: SourcePassportField[] = [
     ...(listKind ? [{ k: "type", value: kind, mono: false } satisfies SourcePassportField] : []),
-    { k: "config", value: `${summary.stream_count ?? summary.streams.length} streams`, mono: true },
-    { k: "auth", value: deriveAuthLine(nextAction, isLocalDevicePush, manualUploadHref) },
+    { k: "config", value: `${sourceStreamNames.length} streams`, mono: true },
+    { k: "auth", value: deriveAuthLine(primaryVerdictAction, isLocalDevicePush, manualUploadHref) },
     { k: "schedule", value: formatSchedule(summary.schedule), mono: true },
     { k: "last run", value: formatLastRun(summary.last_run), mono: true },
     { k: "records", value: summary.total_records.toLocaleString(), mono: true },

@@ -157,6 +157,9 @@ export function progressMode(input: {
   if (input.scheduled && input.hasRecoveredDetailGaps) {
     return "deferred";
   }
+  if (!input.scheduled) {
+    return "manual";
+  }
   if (isManualRefreshOnly(input.refresh)) {
     return "manual";
   }

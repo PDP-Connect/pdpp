@@ -259,6 +259,17 @@ Everything else is a secondary surface until it supports one of those jobs.
 
 Waspflow and Claude lanes are useful for breadth, but they are dangerous if they own acceptance. Workers produce reports, critique, implementation branches, screenshots, and red-team findings. The RI owner integrates, sets acceptance checks, and decides whether the result is SLVP ideal.
 
+### Iteration 10: Live Source-Card Projection Defects
+
+The 2026-07-01 owner review exposed defects that were plain in the live Sources/source-detail card:
+
+- `auth` rows said `owner action required` for manual refresh/retry review actions, conflating authentication repair with every owner-runnable verdict action.
+- `config` stream counts used `summary.stream_count` while the visible stream table used the union of manifest, retained, and collection-report streams.
+- Owner-runnable verdict actions rendered twice: once as a body `NextActionCta`, then again in the passport footer.
+- Paused sources could receive a stale annotation that said they refresh on schedule because rendered-verdict copy read static assisted-refresh policy instead of the already-projected schedule-enabled progress mode.
+
+The correction belongs in the shared projections, not in connector-specific copy. The model now derives auth only from reauth evidence, stream counts from the same stream set the card renders, and one owner action from the server-owned verdict. The rendered-verdict stale annotation uses progress mode so disabled schedules use owner-run/manual language.
+
 Current clawmeter posture makes this especially important: conserve Codex/OpenAI for integration and signoff; use Claude lanes for broad synthesis and independent review.
 
 ### Iteration 10: Owner Spine Synthesis

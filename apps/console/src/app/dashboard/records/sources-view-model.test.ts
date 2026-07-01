@@ -116,6 +116,10 @@ function manualUploadManifest(connectorId = "whatsapp") {
   };
 }
 
+function passportField(view: ReturnType<typeof toSourceInstanceView>, key: string): string | null | undefined {
+  return view.passportFields.find((field) => field.k === key)?.value;
+}
+
 test("deriveSourceStatus maps healthy/idle to a green dot", () => {
   assert.equal(deriveSourceStatus(health("healthy"), false).tone, "success");
   assert.equal(deriveSourceStatus(health("idle"), false).kind, "healthy");
@@ -220,9 +224,10 @@ test("toSourceInstanceView reads owner CTA from rendered_verdict required action
       }),
     })
   );
-  assert.equal(view.nextAction?.label, "Refresh now");
-  assert.equal(view.nextAction?.actionTarget, "connection_detail");
+  assert.equal(view.nextAction, null, "owner-runnable verdict actions are not duplicated as body CTAs");
   assert.equal(view.ownerActionCue?.label, "Refresh now");
+  assert.equal(view.primaryVerdictAction?.cta, "Refresh now");
+  assert.equal(view.primaryVerdictAction?.ownerRunnable, true);
 });
 
 test("toSourceInstanceView surfaces owner-runnable advisory action cues for source rows", () => {
@@ -276,7 +281,7 @@ test("toSourceInstanceView surfaces owner-runnable attention action cues for sou
     })
   );
 
-  assert.equal(view.nextAction?.label, "Reconnect");
+  assert.equal(view.nextAction, null, "reauth is rendered once as the footer/detail action");
   assert.deepEqual(view.ownerActionCue, { label: "Reconnect" });
   assert.equal(view.primaryVerdictAction?.ownerRunnable, true);
   assert.equal(view.primaryVerdictAction?.channel, "attention");
@@ -387,7 +392,8 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
     })
   );
   assert.equal(amazon.status.label, "Healthy · Last refreshed 31 days ago.");
-  assert.equal(amazon.nextAction?.label, "Refresh now");
+  assert.equal(amazon.nextAction, null);
+  assert.equal(amazon.primaryVerdictAction?.cta, "Refresh now");
 
   const chase = toSourceInstanceView(
     summary({
@@ -423,7 +429,73 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
     })
   );
   assert.equal(chase.status.label, "Degraded · Transactions stuck since Apr 22.");
-  assert.equal(chase.nextAction?.label, "Retry now");
+  assert.equal(chase.nextAction, null);
+  assert.equal(chase.primaryVerdictAction?.cta, "Retry now");
+});
+
+test("toSourceInstanceView does not label refresh/retry review actions as auth repair", () => {
+  for (const kind of ["refresh_now", "retry_gap"] as const) {
+    const view = toSourceInstanceView(
+      summary({
+        rendered_verdict: renderedVerdict({
+          channel: "advisory",
+          required_actions: [
+            {
+              affects: [],
+              audience: "owner",
+              cta: kind === "refresh_now" ? "Refresh now" : "Retry now",
+              kind,
+              satisfied_when: { kind: kind === "refresh_now" ? "confirming_run_succeeded" : "gap_recovered" },
+              terminal: false,
+              urgency: "soon",
+            },
+          ],
+        }),
+      })
+    );
+
+    assert.equal(passportField(view, "auth"), "session / stored credential");
+    assert.equal(view.nextAction, null);
+    assert.equal(view.primaryVerdictAction?.kind, kind);
+  }
+});
+
+test("toSourceInstanceView labels auth repair only for reauth owner actions", () => {
+  const view = toSourceInstanceView(
+    summary({
+      rendered_verdict: renderedVerdict({
+        channel: "attention",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Reconnect this account",
+            kind: "reauth",
+            satisfied_when: { kind: "credential_present_and_unrejected" },
+            terminal: false,
+            urgency: "now",
+          },
+        ],
+      }),
+    })
+  );
+
+  assert.equal(passportField(view, "auth"), "owner action required");
+  assert.equal(view.nextAction, null);
+  assert.equal(view.primaryVerdictAction?.kind, "reauth");
+});
+
+test("toSourceInstanceView uses the same stream count for config and stream table", () => {
+  const view = toSourceInstanceView(
+    summary({
+      stream_count: 5,
+      streams: ["conversations", "messages", "memories", "custom_gpts", "custom_instructions", "shared_conversations"],
+      stream_records: [{ stream: "messages", record_count: 133_848, last_updated: "2026-07-01T17:58:46.531Z" }],
+    })
+  );
+
+  assert.equal(passportField(view, "config"), "6 streams");
+  assert.equal(view.streams.length, 6);
 });
 
 test("buildSourcesRuntimeAdvisory renders one global runtime fault and ignores healthy runtime", () => {

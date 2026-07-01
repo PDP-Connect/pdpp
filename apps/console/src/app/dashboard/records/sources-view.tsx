@@ -485,6 +485,10 @@ function PassportActions({
     instance.primaryVerdictAction !== null && !instance.primaryVerdictAction.ownerRunnable
       ? instance.primaryVerdictAction
       : null;
+  const detailsTitle = sourceDetailsTitle({
+    hasManualUpload: Boolean(manualUploadHref),
+    hasNonOwnerVerdictAction: Boolean(nonOwnerVerdictAction),
+  });
 
   const handleSync = useCallback(() => {
     setToast({ kind: "none" });
@@ -534,17 +538,7 @@ function PassportActions({
           syncDisabled={syncDisabled}
         />
 
-        <Link
-          className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm"
-          href={instance.detailHref}
-          title={
-            nonOwnerVerdictAction
-              ? "Open runs, receipts, streams, and source settings for this source."
-              : manualUploadHref
-                ? "Open runs, receipts, streams, and source settings."
-                : "Reauthorize and credential controls live on the connection detail page."
-          }
-        >
+        <Link className="pdpp-btn pdpp-btn--ghost pdpp-btn--sm" href={instance.detailHref} title={detailsTitle}>
           {manualUploadHref || nonOwnerVerdictAction ? "Source details →" : "Reauthorize →"}
         </Link>
 
@@ -605,6 +599,16 @@ function PassportActions({
   );
 }
 
+function sourceDetailsTitle(input: { hasManualUpload: boolean; hasNonOwnerVerdictAction: boolean }): string {
+  if (input.hasNonOwnerVerdictAction) {
+    return "Open runs, receipts, streams, and source settings for this source.";
+  }
+  if (input.hasManualUpload) {
+    return "Open runs, receipts, streams, and source settings.";
+  }
+  return "Reauthorize and credential controls live on the connection detail page.";
+}
+
 function manualImportButtonLabel(instance: SourceInstanceView, isPending: boolean): string {
   if (instance.isRunning) {
     return "Import running";
@@ -648,8 +652,7 @@ function CollectionRunAction({
     );
   }
   if (
-    primaryVerdictAction !== null &&
-    primaryVerdictAction.ownerRunnable &&
+    primaryVerdictAction?.ownerRunnable &&
     (primaryVerdictAction.kind === "refresh_now" || primaryVerdictAction.kind === "retry_gap")
   ) {
     return (
@@ -664,17 +667,18 @@ function CollectionRunAction({
       </IcButton>
     );
   }
-  if (primaryVerdictAction !== null && primaryVerdictAction.ownerRunnable) {
+  if (primaryVerdictAction?.ownerRunnable) {
     return (
-      <span
-        className="rr-s-cta__hint"
+      <Link
+        className="pdpp-btn pdpp-btn--default pdpp-btn--sm"
         data-action-audience={primaryVerdictAction.audience}
         data-action-kind={primaryVerdictAction.kind}
         data-testid="sources-owner-verdict-action"
+        href={instance.detailHref}
         title="Open source details to complete this owner action."
       >
         {primaryVerdictAction.cta}
-      </span>
+      </Link>
     );
   }
   if (manualUploadHref) {

@@ -996,7 +996,7 @@ function freshnessAnnotationText(
     }
   }
   const refreshedAge = relativeDayAge(progress?.last_refreshed_at ?? null, progress?.observed_at ?? null);
-  if (isManualRefreshOnly(refresh)) {
+  if (progress?.mode === "manual" || isManualRefreshOnly(refresh)) {
     if (refreshedAge) {
       return `Last refreshed ${refreshedAge}.`;
     }
