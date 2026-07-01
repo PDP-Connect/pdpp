@@ -109,6 +109,8 @@ const PUSH_APPROVAL_DEFAULT_TIMEOUT_MS = 900_000;
 const PUSH_APPROVAL_TIMEOUT_ENV = "PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS";
 const BROWSER_LOGIN_DEFAULT_TIMEOUT_MS = 1_800_000;
 const BROWSER_LOGIN_TIMEOUT_ENV = "PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS";
+const CHATGPT_HOME_URL = "https://chatgpt.com/";
+const CHATGPT_ORIGIN_PROBE_EVERY_ATTEMPTS = 6;
 
 /**
  * Resolve the push-approval observation budget in ms. Honors a positive-integer
@@ -357,8 +359,72 @@ async function isLikelyChatGptPushApprovalPage(page: Page): Promise<boolean> {
   );
 }
 
-async function isChatGptSessionActive(page: Page): Promise<boolean> {
+function currentPageUrl(page: Page): string | null {
+  try {
+    const raw = page.url();
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function isChatGptOrigin(url: string | null): boolean {
+  if (!url) {
+    return false;
+  }
+  try {
+    return new URL(url).hostname === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
+
+async function isChatGptSessionActiveOnPage(page: Page): Promise<boolean> {
   return (await checkSession(page)) || (await checkLoggedInViaDOM(page));
+}
+
+async function activatePrimaryPageFromChatGptOriginProbe(page: Page): Promise<boolean> {
+  if (isChatGptOrigin(currentPageUrl(page))) {
+    return false;
+  }
+  let probePage: Page | null = null;
+  try {
+    probePage = await page.context().newPage();
+    await probePage
+      .goto(CHATGPT_HOME_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      })
+      .catch((): undefined => undefined);
+    await probePage.waitForTimeout(1000);
+    if (!(await isChatGptSessionActiveOnPage(probePage))) {
+      return false;
+    }
+
+    // The same browser context now has a live ChatGPT session. Move the primary
+    // connector page back to ChatGPT before collection starts; otherwise the
+    // collector would keep running API fetches from the auth.openai.com approval
+    // page that triggered the cross-origin probe.
+    await page
+      .goto(CHATGPT_HOME_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      })
+      .catch((): undefined => undefined);
+    await page.waitForTimeout(1000);
+    return await isChatGptSessionActiveOnPage(page);
+  } catch {
+    return false;
+  } finally {
+    await probePage?.close().catch((): undefined => undefined);
+  }
+}
+
+async function isChatGptSessionActive(page: Page, options: { allowOriginProbe?: boolean } = {}): Promise<boolean> {
+  if (await isChatGptSessionActiveOnPage(page)) {
+    return true;
+  }
+  return options.allowOriginProbe === true ? await activatePrimaryPageFromChatGptOriginProbe(page) : false;
 }
 
 async function isStoredCredentialRejectedPage(page: Page): Promise<boolean> {
@@ -462,7 +528,8 @@ async function pollSessionReadiness({
     if ((attempt + 1) % 12 === 0) {
       await checkpoint?.(`${waitingCheckpointDetailPrefix ?? waitingCheckpointPrefix}-${String(attempt + 1)}`);
     }
-    if (await isChatGptSessionActive(page)) {
+    const allowOriginProbe = attempt === 0 || (attempt + 1) % CHATGPT_ORIGIN_PROBE_EVERY_ATTEMPTS === 0;
+    if (await isChatGptSessionActive(page, { allowOriginProbe })) {
       return true;
     }
   }
@@ -521,7 +588,7 @@ export async function handleBrowserLoginAssistance({
     {
       ...(capture ? { capture } : {}),
       page,
-      message: CHATGPT_BROWSER_LOGIN_FALLBACK_MESSAGE,
+      message: assist ? CHATGPT_BROWSER_LOGIN_FALLBACK_MESSAGE : message,
       reason,
       timeoutSeconds: 1800,
     },

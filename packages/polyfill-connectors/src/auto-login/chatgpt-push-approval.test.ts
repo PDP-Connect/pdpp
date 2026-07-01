@@ -51,10 +51,13 @@ const visibleLocator: Pick<Locator, "click" | "count" | "fill" | "first" | "wait
 };
 
 interface PushApprovalPageOptions {
+  readonly context?: BrowserContext;
+  readonly onGoto?: (url: string) => void | Promise<void>;
   /** Called on each `page.waitForTimeout` — lets a test advance a logical clock. */
   readonly onWaitTimeout?: (ms: number) => void | Promise<void>;
   /** Returns true once the session should be observed active. */
   readonly sessionActive: () => boolean;
+  readonly url?: string;
 }
 
 /**
@@ -62,9 +65,15 @@ interface PushApprovalPageOptions {
  * resolve visible) and whose session readiness is test-controlled.
  */
 function makePushApprovalPage(opts: PushApprovalPageOptions): Page {
-  const fake: Pick<Page, "context" | "evaluate" | "getByText" | "waitForTimeout"> = {
+  const fake: Pick<
+    Page,
+    "close" | "context" | "evaluate" | "getByText" | "goto" | "isClosed" | "url" | "waitForTimeout"
+  > = {
     context(): BrowserContext {
-      return makeContext();
+      return opts.context ?? makeContext();
+    },
+    close(): Promise<void> {
+      return Promise.resolve();
     },
     evaluate(fn: unknown): Promise<unknown> {
       const active = opts.sessionActive();
@@ -78,11 +87,26 @@ function makePushApprovalPage(opts: PushApprovalPageOptions): Page {
     getByText(): Locator {
       return visibleLocator as Locator;
     },
+    goto(url: string): ReturnType<Page["goto"]> {
+      return Promise.resolve(opts.onGoto?.(url)).then(() => null);
+    },
+    isClosed(): boolean {
+      return false;
+    },
+    url(): string {
+      return opts.url ?? "https://chatgpt.com/";
+    },
     async waitForTimeout(ms: number): Promise<void> {
       await opts.onWaitTimeout?.(ms);
     },
   };
   return fake as Page;
+}
+
+function makeProbeContext(probePage: Page): BrowserContext {
+  return {
+    newPage: () => Promise.resolve(probePage),
+  } as BrowserContext;
 }
 
 // Logical clock: tests advance `value` so the watchdog's trip math (which reads
@@ -264,6 +288,57 @@ test("readiness during the non-blocking poll resolves the assistance and emits N
     assert.equal(interactions.length, 0, "auto-resume MUST NOT emit an INTERACTION");
     assert.equal(assistCalls, 1, "the non-blocking act_elsewhere assistance was requested once");
     assert.deepEqual(completes, [{ id: "asst_1", status: "resolved" }], "assistance resolved, not escalated");
+  } finally {
+    clearBudgetEnv(prior);
+  }
+});
+
+test("push-approval poll checks ChatGPT origin when approval page does not redirect", async () => {
+  const prior = process.env.PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS;
+  shortBudgetEnv();
+  try {
+    const interactions: InteractionRequest[] = [];
+    const primaryNavigations: string[] = [];
+    let probeOpened = 0;
+    let primaryOnChatGpt = false;
+    const chatGptProbePage = makePushApprovalPage({
+      sessionActive: () => true,
+      url: "https://chatgpt.com/",
+    });
+    const primaryPage = makePushApprovalPage({
+      context: makeProbeContext({
+        ...chatGptProbePage,
+        close: () => {
+          probeOpened++;
+          return Promise.resolve();
+        },
+      } as Page),
+      onGoto: (url) => {
+        primaryNavigations.push(url);
+        primaryOnChatGpt = url === "https://chatgpt.com/";
+      },
+      sessionActive: () => primaryOnChatGpt,
+      url: "https://auth.openai.com/push-auth-verification/test",
+    });
+
+    const result = await handlePushApproval({
+      checkpoint: () => Promise.resolve(),
+      page: primaryPage,
+      sendInteraction: recordingSendInteraction(interactions),
+    });
+
+    assert.equal(
+      result,
+      true,
+      "session on chatgpt.com should auto-resume even while approval page stays on auth origin"
+    );
+    assert.equal(interactions.length, 0, "origin-proved readiness MUST NOT require a Continue click");
+    assert.deepEqual(
+      primaryNavigations,
+      ["https://chatgpt.com/"],
+      "collector page is moved back to ChatGPT before collect()"
+    );
+    assert.equal(probeOpened, 1, "temporary ChatGPT-origin probe page is closed");
   } finally {
     clearBudgetEnv(prior);
   }
