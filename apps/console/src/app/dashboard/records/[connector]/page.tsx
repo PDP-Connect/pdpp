@@ -471,10 +471,12 @@ function ConnectorPageView({
   const renameSelector = connectorInstanceId ?? connectionId;
   // Static-secret connections support in-place credential update/repair.
   // Use connectorInstanceId when available (same connection the route is tracking).
-  // Browser-bound connections use the browser-session reconnect page instead —
-  // same connection_id preserved (Plaid update-mode), different surface.
+  // Browser-bound connectors that declare static-secret setup still use this
+  // path; browser-session reconnect is only the fallback for browser-bound
+  // connectors with no manifest-owned credential-capture surface.
+  const staticSecretCapture = staticSecretCredentialCaptureFromManifest(manifest);
   const credentialUpdateHref = (() => {
-    if (staticSecretCredentialCaptureFromManifest(manifest) !== null) {
+    if (staticSecretCapture !== null) {
       return updateCredentialHref(connectorId, connectorInstanceId ?? connectionId);
     }
     if (isBrowserBoundConnector(connectorId)) {
@@ -506,6 +508,7 @@ function ConnectorPageView({
             connectorId={connectorId}
             credentialUpdateHref={credentialUpdateHref}
             displayName={displayName}
+            hasStaticSecretCredentialUpdate={staticSecretCapture !== null}
             manualUploadHref={manualUploadHref}
             overview={overview}
             primaryAction={primaryAction}
@@ -614,6 +617,7 @@ function ConnectorHeaderActions({
   connectorId,
   credentialUpdateHref,
   displayName,
+  hasStaticSecretCredentialUpdate,
   manualUploadHref,
   overview,
   primaryAction,
@@ -628,6 +632,7 @@ function ConnectorHeaderActions({
   connectorId: string;
   credentialUpdateHref: string | null;
   displayName: string;
+  hasStaticSecretCredentialUpdate: boolean;
   manualUploadHref: string | null;
   overview: ConnectorOverview;
   primaryAction: PrimaryRowAction;
@@ -651,9 +656,10 @@ function ConnectorHeaderActions({
         All runs →
       </Link>
       {/* Update credential: visible on static-secret connections so the owner can
-          rotate a token without breaking the connection. Browser-bound repair
-          stays on the browser-session reconnect surface. */}
-      {credentialUpdateHref && !revoked && !isBrowserBoundConnector(connectorId) ? (
+          rotate credentials without breaking the connection. Browser-session
+          reconnect remains available only when no stored-credential surface is
+          declared for the connector. */}
+      {credentialUpdateHref && !revoked && hasStaticSecretCredentialUpdate ? (
         <Link
           className={buttonVariants({ variant: "ghost", size: "sm" })}
           href={credentialUpdateHref}

@@ -317,7 +317,7 @@ test(
   'a non-static-secret connector is refused at the seam',
   withStore(async (store) => {
     await assert.rejects(
-      () => resolveEnv(store, { connectorId: 'amazon', connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1' }),
+      () => resolveEnv(store, { connectorId: 'anthropic', connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1' }),
       (err) => err instanceof StaticSecretRunCredentialError && err.code === 'not_a_static_secret_connector',
     );
   }),

@@ -848,6 +848,20 @@ deployment documentation disguised as a button.
   source account or browser profile is authenticated before records are accepted
   for a new source.
 
+2026-07-01 stored-credential repair correction:
+
+- Browser-backed connectors with source-scoped username/password runtime support
+  must also declare manifest-owned credential capture. Otherwise a source with a
+  rejected stored credential can be routed to browser-session repair that cannot
+  update the credential blocking scheduled runs.
+- The static-secret owner form must treat `username_password` and
+  `secret_bundle` as sealed multi-field credential bundles. Capturing only the
+  first secret field is valid for single-secret connectors, but drops required
+  login fields for browser-backed username/password sources.
+- Source detail must expose the stored-credential update path proactively when a
+  connector declares it, not only after failure. Browser-session reconnect is the
+  fallback for browser-bound connectors with no manifest-owned credential surface.
+
 ### A3. Source inventory and status
 
 Use this for Sources, dashboard source summaries, stream lists, and source detail.

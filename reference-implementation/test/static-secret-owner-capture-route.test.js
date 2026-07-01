@@ -343,13 +343,13 @@ test('capture rejects foreign and non-static-secret connections without storing 
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
       await registerConnector(asUrl, 'gmail');
-      await registerConnector(asUrl, 'amazon');
+      await registerConnector(asUrl, 'anthropic');
       await seedInstance({
         connectorInstanceId: 'cin_gmail_foreign',
         connectorId: 'gmail',
         ownerSubjectId: 'owner_other',
       });
-      await seedInstance({ connectorInstanceId: 'cin_amazon_personal', connectorId: 'amazon' });
+      await seedInstance({ connectorInstanceId: 'cin_anthropic_personal', connectorId: 'anthropic' });
       const cookie = await login(asUrl);
 
       const foreign = await captureCredential(asUrl, cookie, 'cin_gmail_foreign', PERSONAL_SECRET);
@@ -357,7 +357,7 @@ test('capture rejects foreign and non-static-secret connections without storing 
       assert.equal(foreign.body?.error?.code, 'connector_instance_owner_mismatch');
       assert.ok(!foreign.text.includes(PERSONAL_SECRET));
 
-      const nonStatic = await captureCredential(asUrl, cookie, 'cin_amazon_personal', PERSONAL_SECRET);
+      const nonStatic = await captureCredential(asUrl, cookie, 'cin_anthropic_personal', PERSONAL_SECRET);
       assert.equal(nonStatic.status, 409);
       assert.equal(nonStatic.body?.error?.code, 'static_secret_credential_unsupported');
       assert.ok(!nonStatic.text.includes(PERSONAL_SECRET));
@@ -370,7 +370,7 @@ test('capture rejects foreign and non-static-secret connections without storing 
         env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_KEY },
       });
       assert.equal(await store.getMetadata('cin_gmail_foreign'), null);
-      assert.equal(await store.getMetadata('cin_amazon_personal'), null);
+      assert.equal(await store.getMetadata('cin_anthropic_personal'), null);
     });
   });
 });

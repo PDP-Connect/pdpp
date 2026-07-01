@@ -15,6 +15,40 @@
       }
     }
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "username_password",
+      "label": "ChatGPT sign-in details",
+      "description": "Seal the ChatGPT sign-in details for this source. The connector uses them only to help repair this source's browser session when an owner-started run needs login again.",
+      "submit_label": "Save ChatGPT credential and start first sync",
+      "fields": [
+        {
+          "name": "username",
+          "label": "ChatGPT email",
+          "type": "email",
+          "required": true,
+          "secret": true,
+          "autocomplete": "username",
+          "placeholder": "you@example.com",
+          "env": [
+            "CHATGPT_USERNAME"
+          ]
+        },
+        {
+          "name": "password",
+          "label": "ChatGPT password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "current-password",
+          "env": [
+            "CHATGPT_PASSWORD"
+          ]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [
       "manual_action"

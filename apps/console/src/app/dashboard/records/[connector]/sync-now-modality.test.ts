@@ -51,6 +51,12 @@ const FORCE_BUTTON_WARNING = /Bypasses the provider-pressure cooldown/;
 const MANUAL_UPLOAD_IMPORT_LINK = /Add another export/;
 const MANUAL_UPLOAD_REPROCESS_BUTTON = /idleLabel="Reprocess all exports"/;
 const MANUAL_UPLOAD_RUNNING_LABEL = /runningLabel="Import running"/;
+const STATIC_SECRET_CAPTURE_RESOLVED_ONCE =
+  /const staticSecretCapture = staticSecretCredentialCaptureFromManifest\(manifest\)/;
+const STATIC_SECRET_UPDATE_PRECEDES_BROWSER_SESSION =
+  /if \(staticSecretCapture !== null\) \{[\s\S]{0,180}return updateCredentialHref\(connectorId, connectorInstanceId \?\? connectionId\);[\s\S]{0,180}if \(isBrowserBoundConnector\(connectorId\)\) \{/;
+const STATIC_SECRET_UPDATE_CAPABILITY_PASSED = /hasStaticSecretCredentialUpdate=\{staticSecretCapture !== null\}/;
+const STATIC_SECRET_UPDATE_LINK_VISIBLE = /credentialUpdateHref && !revoked && hasStaticSecretCredentialUpdate/;
 const NON_SYNC_NOTICE = /return <PrimaryActionNotice action=\{primaryAction\} \/>/;
 const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;
 // The "Click Sync now" copy must be gated behind the owner-syncable branch of
@@ -84,6 +90,14 @@ test("rendered verdict owner action owns the header before generic sync fallback
   assert.match(src, RENDERED_VERDICT_ACTION_TESTID);
   assert.match(src, RENDERED_VERDICT_STATUS_TESTID);
   assert.match(src, RENDERED_VERDICT_ACTION_PRECEDES_SYNC);
+});
+
+test("stored-credential sources repair credentials before browser-session fallback", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, STATIC_SECRET_CAPTURE_RESOLVED_ONCE);
+  assert.match(src, STATIC_SECRET_UPDATE_PRECEDES_BROWSER_SESSION);
+  assert.match(src, STATIC_SECRET_UPDATE_CAPABILITY_PASSED);
+  assert.match(src, STATIC_SECRET_UPDATE_LINK_VISIBLE);
 });
 
 test("SyncNowButton renders only inside owner-actionable branches", async () => {

@@ -15,6 +15,39 @@
       }
     }
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "username_password",
+      "label": "USAA sign-in details",
+      "description": "Seal the USAA sign-in details for this source. The connector uses them only for this source's browser-backed collection.",
+      "submit_label": "Save USAA credential and start first sync",
+      "fields": [
+        {
+          "name": "username",
+          "label": "USAA online ID",
+          "type": "text",
+          "required": true,
+          "secret": true,
+          "autocomplete": "username",
+          "env": [
+            "USAA_USERNAME"
+          ]
+        },
+        {
+          "name": "password",
+          "label": "USAA password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "current-password",
+          "env": [
+            "USAA_PASSWORD"
+          ]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [
       "manual_action"

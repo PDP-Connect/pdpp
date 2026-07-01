@@ -15,6 +15,39 @@
       }
     }
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "username_password",
+      "label": "Reddit sign-in details",
+      "description": "Seal the Reddit sign-in details for this source. The connector uses them only for this source's browser-backed collection.",
+      "submit_label": "Save Reddit credential and start first sync",
+      "fields": [
+        {
+          "name": "username",
+          "label": "Reddit username",
+          "type": "text",
+          "required": true,
+          "secret": true,
+          "autocomplete": "username",
+          "env": [
+            "REDDIT_USERNAME"
+          ]
+        },
+        {
+          "name": "password",
+          "label": "Reddit password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "current-password",
+          "env": [
+            "REDDIT_PASSWORD"
+          ]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [
       "credentials"

@@ -8,9 +8,9 @@ import {
   captureStaticSecretCredential,
   createStaticSecretDraftConnection,
   getStaticSecretSetup,
-  type StaticSecretSetup,
   StaticSecretValidationError,
 } from "../../../lib/ref-client.ts";
+import { buildStaticSecretPayload, collectStaticSecretSetupFields } from "./static-secret-payload.ts";
 
 function asString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
@@ -84,24 +84,6 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : "Static-secret setup failed.";
 }
 
-function firstSecretField(setup: StaticSecretSetup) {
-  return setup.credential_capture.fields.find((field) => field.secret) ?? null;
-}
-
-function collectSetupFields(setup: StaticSecretSetup, formData: FormData): Record<string, string> {
-  const fields: Record<string, string> = {};
-  for (const field of setup.credential_capture.fields) {
-    if (field.secret) {
-      continue;
-    }
-    const value = asString(formData.get(field.name));
-    if (value) {
-      fields[field.name] = value;
-    }
-  }
-  return fields;
-}
-
 // Credential replacement on an EXISTING connection — preserves connection_id,
 // history, schedule, and records. Architecturally identical to the capture step
 // in createStaticSecretConnectionAction, but skips draft-connection creation and
@@ -124,24 +106,18 @@ export async function replaceStaticSecretCredentialAction(formData: FormData) {
       })
     );
   }
-  const secretField = firstSecretField(setup);
-  if (!secretField) {
-    redirect(
-      pageHrefWithConnectionId(connectorId, connectionId, { error: "Connector setup is missing a secret field." })
-    );
+  const payload = buildStaticSecretPayload(setup, formData);
+  if (!payload.ok) {
+    redirect(pageHrefWithConnectionId(connectorId, connectionId, { error: payload.error }));
   }
-  const secret = asString(formData.get(secretField.name));
-  if (!secret) {
-    redirect(pageHrefWithConnectionId(connectorId, connectionId, { error: "Provider secret is required." }));
-  }
-  const setupFields = collectSetupFields(setup, formData);
+  const setupFields = collectStaticSecretSetupFields(setup, formData);
 
   let target: string;
   try {
     const captured = await captureStaticSecretCredential({
       connectionId,
       credentialKind: setup.credential_kind,
-      secret,
+      secret: payload.secret,
     });
     const runId = await runIdAfterCapture(connectionId, captured);
     revalidatePath("/dashboard/records");
@@ -191,15 +167,11 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
       })
     );
   }
-  const secretField = firstSecretField(setup);
-  if (!secretField) {
-    redirect(pageHref(connectorId, { error: "Connector setup is missing a secret field." }));
+  const payload = buildStaticSecretPayload(setup, formData);
+  if (!payload.ok) {
+    redirect(pageHref(connectorId, { error: payload.error }));
   }
-  const secret = asString(formData.get(secretField.name));
-  if (!secret) {
-    redirect(pageHref(connectorId, { error: "Provider secret is required." }));
-  }
-  const setupFields = collectSetupFields(setup, formData);
+  const setupFields = collectStaticSecretSetupFields(setup, formData);
 
   let draftConnectionId: string | null = null;
   let target: string;
@@ -209,7 +181,7 @@ export async function createStaticSecretConnectionAction(formData: FormData) {
     const captured = await captureStaticSecretCredential({
       connectionId: draft.connection_id,
       credentialKind: setup.credential_kind,
-      secret,
+      secret: payload.secret,
     });
     const runId = await runIdAfterCapture(draft.connection_id, captured);
     revalidatePath("/dashboard/records");

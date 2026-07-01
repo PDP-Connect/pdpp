@@ -116,7 +116,10 @@ test("no browser-bound or API/network connector is one-click-creatable", async (
   const catalog = buildConnectorCatalog(await loadCommittedManifests());
   for (const entry of catalog) {
     if (entry.modality === "browser_bound" && entry.disposition !== "browser_collector_manual") {
-      assert.equal(entry.disposition, "browser_bound_runbook");
+      assert.ok(
+        entry.disposition === "browser_bound_runbook" || entry.disposition === "static_secret_connect",
+        `${entry.connectorKey} must be browser runbook or source-scoped credential capture, got ${entry.disposition}`
+      );
       assert.equal(entry.enrollmentKey, undefined);
     }
     if (entry.modality === "api_network") {
@@ -351,13 +354,13 @@ test("claude-code manifest slug maps to the claude_code enrollment key", async (
   assert.equal(claudeCode.enrollmentKey, "claude_code");
 });
 
-test("amazon is the manual browser-collector entry with a deep-link", async () => {
+test("amazon defaults to source-scoped credential capture, not manual browser enrollment", async () => {
   const catalog = buildConnectorCatalog(await loadCommittedManifests());
   const amazon = catalog.find((e) => e.connectorKey === "amazon");
   assert.ok(amazon, "amazon must be in the catalog");
   assert.equal(amazon.modality, "browser_bound");
-  assert.equal(amazon.disposition, "browser_collector_manual");
-  assert.equal(amazon.enrollmentKey, "amazon");
+  assert.equal(amazon.disposition, "static_secret_connect");
+  assert.equal(amazon.enrollmentKey, undefined);
 });
 
 test("the grouping helpers partition the catalog without overlap or loss", async () => {
@@ -375,9 +378,9 @@ test("the grouping helpers partition the catalog without overlap or loss", async
   ];
   const total = groups.reduce((sum, g) => sum + g.length, 0);
   assert.equal(total, catalog.length, "every entry must land in exactly one render group");
-  // At least one of each proven path so the picker demonstrably shows both.
+  // At least one of each supported path class that still has committed entries.
   assert.ok(localCollectorEntries(catalog).length >= 2, "claude_code + codex");
-  assert.equal(browserCollectorEntries(catalog).length, 1, "amazon only");
+  assert.equal(browserCollectorEntries(catalog).length, 0, "credential capture is now the default browser-backed path");
   assert.ok(browserBoundRunbookEntries(catalog).length >= 1);
   assert.equal(
     staticSecretConnectEntries(catalog).length,

@@ -15,6 +15,39 @@
       }
     }
   },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "username_password",
+      "label": "Chase sign-in details",
+      "description": "Seal the Chase sign-in details for this source. The connector uses them only for this source's browser-backed collection.",
+      "submit_label": "Save Chase credential and start first sync",
+      "fields": [
+        {
+          "name": "username",
+          "label": "Chase username",
+          "type": "text",
+          "required": true,
+          "secret": true,
+          "autocomplete": "username",
+          "env": [
+            "CHASE_USERNAME"
+          ]
+        },
+        {
+          "name": "password",
+          "label": "Chase password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "current-password",
+          "env": [
+            "CHASE_PASSWORD"
+          ]
+        }
+      ]
+    }
+  },
   "capabilities": {
     "human_interaction": [
       "otp",
