@@ -39,6 +39,7 @@ let lexicalPgSearchAvailability = 'unavailable';
 const SEMANTIC_VECTOR_INDEXED_DIMENSIONS = 384;
 const SEMANTIC_HNSW_INDEX_NAME = 'idx_pg_semantic_search_embedding_hnsw';
 const SEMANTIC_HOT_HNSW_INDEX_PREFIX = 'idx_pg_semantic_hnsw_hot_';
+const RECORDS_BLOB_SEARCH_INDEX_LOCK_ID = '8022352479012001';
 
 function semanticVectorMigrationBatchSize() {
   const parsed = Number.parseInt(process.env.PDPP_PG_SEMANTIC_MIGRATION_BATCH_SIZE || '', 10);
@@ -2226,7 +2227,6 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
       await client.query('ALTER TABLE semantic_search_backfill_progress ADD CONSTRAINT semantic_search_backfill_progress_pkey PRIMARY KEY(connector_instance_id, stream)');
     }
 
-    await ensurePostgresRecordsBlobSearchInstanceIndexes(client);
     await client.query('COMMIT');
   } catch (err) {
     try {
@@ -2234,40 +2234,126 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     } catch {}
     throw err;
   }
+  await ensurePostgresRecordsBlobSearchInstanceIndexes(client);
 }
 
 async function ensurePostgresRecordsBlobSearchInstanceIndexes(client) {
-  await client.query('DROP INDEX IF EXISTS idx_pg_records_lookup');
-  await client.query('DROP INDEX IF EXISTS idx_pg_records_stream_version');
-  await client.query('DROP INDEX IF EXISTS idx_pg_records_stream_cursor');
-  await client.query('DROP INDEX IF EXISTS idx_pg_record_changes_record');
-  await client.query('DROP INDEX IF EXISTS idx_pg_blob_bindings_record');
-  await client.query('DROP INDEX IF EXISTS idx_pg_semantic_search_scope');
-  // semantic_time on EXISTING records tables: add (idempotent), DEFAULT '' so the
-  // boot migration is O(1) (no mass UPDATE on the live multi-million-row table —
-  // that bloat/lock is avoided). Existing rows keep ''; the substrate read
-  // COALESCEs '' -> emitted_at, so the merged-timeline sort is no worse than the
-  // prior order until the chunked per-record semantic backfill (Step B) populates
-  // the real values. New writes set semantic_time at ingest.
-  await client.query("ALTER TABLE records ADD COLUMN IF NOT EXISTS semantic_time TEXT NOT NULL DEFAULT ''");
-  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_lookup ON records(connector_instance_id, stream, record_key)');
-  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_version ON records(connector_instance_id, stream, version)');
-  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_cursor ON records(connector_instance_id, stream, deleted, cursor_value, primary_key_text)');
-  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_connector_stream_deleted ON records(connector_id, stream, deleted)');
-  // EXPRESSION index matching the Explore read ORDER BY EXACTLY. The read sorts
-  // by COALESCE(NULLIF(semantic_time, ''), emitted_at) (un-backfilled rows fall
-  // back to emitted_at) — a plain semantic_time index does NOT back that
-  // expression, so the planner would Seq Scan + Sort the whole records table on
-  // every page. The expression index keeps the hot path index-backed BEFORE the
-  // Step-B backfill. Verified via EXPLAIN: Index Scan, no Sort.
-  await client.query("CREATE INDEX IF NOT EXISTS idx_pg_records_semantic_time ON records(connector_instance_id, stream, (COALESCE(NULLIF(semantic_time, ''), emitted_at)) DESC, record_key DESC)");
-  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version)');
-  // Covers the bounded version-stats hot path: MAX(emitted_at) / COUNT grouped
-  // by (connector_instance_id, stream). The record-keyed index above omits
-  // emitted_at, so MAX(emitted_at) otherwise forces a per-row heap visit.
-  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_emitted ON record_changes(connector_instance_id, stream, emitted_at)');
-  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key)');
-  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope ON semantic_search_blob(connector_instance_id, scope_key)');
+  await withPostgresAdvisoryLock(client, RECORDS_BLOB_SEARCH_INDEX_LOCK_ID, async () => {
+    // semantic_time on EXISTING records tables: add (idempotent), DEFAULT '' so the
+    // boot migration is O(1) (no mass UPDATE on the live multi-million-row table —
+    // that bloat/lock is avoided). Existing rows keep ''; the substrate read
+    // COALESCEs '' -> emitted_at, so the merged-timeline sort is no worse than the
+    // prior order until the chunked per-record semantic backfill (Step B) populates
+    // the real values. New writes set semantic_time at ingest.
+    await client.query("ALTER TABLE records ADD COLUMN IF NOT EXISTS semantic_time TEXT NOT NULL DEFAULT ''");
+    await ensurePostgresIndexDefinition(client, {
+      name: 'idx_pg_records_lookup',
+      createSql: 'CREATE INDEX IF NOT EXISTS idx_pg_records_lookup ON records(connector_instance_id, stream, record_key)',
+      expectedFragments: ['records USING btree (connector_instance_id, stream, record_key)'],
+    });
+    await ensurePostgresIndexDefinition(client, {
+      name: 'idx_pg_records_stream_version',
+      createSql: 'CREATE INDEX IF NOT EXISTS idx_pg_records_stream_version ON records(connector_instance_id, stream, version)',
+      expectedFragments: ['records USING btree (connector_instance_id, stream, version)'],
+    });
+    await ensurePostgresIndexDefinition(client, {
+      name: 'idx_pg_records_stream_cursor',
+      createSql: 'CREATE INDEX IF NOT EXISTS idx_pg_records_stream_cursor ON records(connector_instance_id, stream, deleted, cursor_value, primary_key_text)',
+      expectedFragments: ['records USING btree (connector_instance_id, stream, deleted, cursor_value, primary_key_text)'],
+    });
+    await ensurePostgresIndexDefinition(client, {
+      name: 'idx_pg_records_connector_stream_deleted',
+      createSql: 'CREATE INDEX IF NOT EXISTS idx_pg_records_connector_stream_deleted ON records(connector_id, stream, deleted)',
+      expectedFragments: ['records USING btree (connector_id, stream, deleted)'],
+    });
+    // EXPRESSION index matching the Explore read ORDER BY EXACTLY. The read sorts
+    // by COALESCE(NULLIF(semantic_time, ''), emitted_at) (un-backfilled rows fall
+    // back to emitted_at) — a plain semantic_time index does NOT back that
+    // expression, so the planner would Seq Scan + Sort the whole records table on
+    // every page. The expression index keeps the hot path index-backed BEFORE the
+    // Step-B backfill. Verified via EXPLAIN: Index Scan, no Sort.
+    await ensurePostgresIndexDefinition(client, {
+      name: 'idx_pg_records_semantic_time',
+      createSql: "CREATE INDEX IF NOT EXISTS idx_pg_records_semantic_time ON records(connector_instance_id, stream, (COALESCE(NULLIF(semantic_time, ''), emitted_at)) DESC, record_key DESC)",
+      expectedFragments: [
+        "records USING btree (connector_instance_id, stream, COALESCE(NULLIF(semantic_time, ''::text), emitted_at) DESC, record_key DESC)",
+      ],
+    });
+    await ensurePostgresIndexDefinition(client, {
+      name: 'idx_pg_record_changes_record',
+      createSql: 'CREATE INDEX IF NOT EXISTS idx_pg_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version)',
+      expectedFragments: ['record_changes USING btree (connector_instance_id, stream, record_key, version)'],
+    });
+    // Covers the bounded version-stats hot path: MAX(emitted_at) / COUNT grouped
+    // by (connector_instance_id, stream). The record-keyed index above omits
+    // emitted_at, so MAX(emitted_at) otherwise forces a per-row heap visit.
+    await ensurePostgresIndexDefinition(client, {
+      name: 'idx_pg_record_changes_emitted',
+      createSql: 'CREATE INDEX IF NOT EXISTS idx_pg_record_changes_emitted ON record_changes(connector_instance_id, stream, emitted_at)',
+      expectedFragments: ['record_changes USING btree (connector_instance_id, stream, emitted_at)'],
+    });
+    await ensurePostgresIndexDefinition(client, {
+      name: 'idx_pg_blob_bindings_record',
+      createSql: 'CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key)',
+      expectedFragments: ['blob_bindings USING btree (connector_instance_id, stream, record_key)'],
+    });
+    await ensurePostgresIndexDefinition(client, {
+      name: 'idx_pg_semantic_search_scope',
+      createSql: 'CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope ON semantic_search_blob(connector_instance_id, scope_key)',
+      expectedFragments: ['semantic_search_blob USING btree (connector_instance_id, scope_key)'],
+    });
+  });
+}
+
+async function withPostgresAdvisoryLock(client, lockId, fn) {
+  await client.query('SELECT pg_advisory_lock($1::bigint)', [lockId]);
+  try {
+    return await fn();
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1::bigint)', [lockId]).catch(() => {});
+  }
+}
+
+function normalizePostgresIndexDefinition(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function assertSafePostgresIndexName(indexName) {
+  if (!/^[a-z][a-z0-9_]*$/.test(indexName)) {
+    throw new Error(`unsafe postgres index name: ${indexName}`);
+  }
+}
+
+async function readPostgresIndexDefinition(client, indexName) {
+  const existing = await client.query(
+    `SELECT pg_get_indexdef(idx.oid) AS definition, ix.indisvalid AS valid, ix.indisready AS ready
+       FROM pg_class idx
+       JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+       JOIN pg_index ix ON ix.indexrelid = idx.oid
+      WHERE ns.nspname = current_schema()
+        AND idx.relname = $1
+      LIMIT 1`,
+    [indexName],
+  );
+  return existing.rows[0] ?? null;
+}
+
+async function ensurePostgresIndexDefinition(client, { name, createSql, expectedFragments }) {
+  assertSafePostgresIndexName(name);
+  const existing = await readPostgresIndexDefinition(client, name);
+  const normalizedDefinition = normalizePostgresIndexDefinition(existing?.definition);
+  const matchesExpected =
+    existing?.valid === true &&
+    existing?.ready === true &&
+    expectedFragments.every((fragment) =>
+      normalizedDefinition.includes(normalizePostgresIndexDefinition(fragment))
+    );
+
+  if (matchesExpected) return;
+  if (existing) {
+    await client.query(`DROP INDEX IF EXISTS ${name}`);
+  }
+  await client.query(createSql);
 }
 
 async function ensurePostgresLexicalScopedGinIndex(client, log = () => {}) {
