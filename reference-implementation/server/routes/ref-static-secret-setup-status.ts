@@ -167,12 +167,23 @@ function bindingKind(sourceBinding: unknown): string | null {
   return typeof kind === "string" ? kind : null;
 }
 
-function setupKindFromBinding(sourceBinding: unknown): ConnectionSetupKind {
+function setupKindForConnection(
+  sourceBinding: unknown,
+  manifest: ConnectorManifestLike
+): ConnectionSetupKind {
   const kind = bindingKind(sourceBinding);
   if (kind === "manual_upload" || kind === "manual_upload_draft") {
     return "manual_upload";
   }
   if (kind === "static_secret_draft") {
+    return "static_secret";
+  }
+  // Active legacy sources created before the draft-binding setup path do not
+  // carry `static_secret_draft`, but their connector manifest still owns the
+  // credential-capture contract. Classify them from the manifest so repair
+  // status can show stored credential evidence instead of falling back to
+  // unknown setup material.
+  if (staticSecretCredentialCaptureFromManifest(manifest)) {
     return "static_secret";
   }
   return "unknown";
@@ -393,7 +404,7 @@ export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStati
         }
         const manifest = await ctx.resolveRegisteredConnectorManifest(instance.connectorId);
         const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
-        const setupKind = setupKindFromBinding(instance.sourceBinding);
+        const setupKind = setupKindForConnection(instance.sourceBinding, manifest);
         const credentialMeta =
           setupKind === "static_secret" ? await credentialStore.getMetadata(namespace.connectorInstanceId) : null;
         const requestedRunId = firstQueryValue(req.query?.run_id);

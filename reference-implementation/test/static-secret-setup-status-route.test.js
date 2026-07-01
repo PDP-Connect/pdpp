@@ -473,6 +473,46 @@ test('setup status flips to active once first ingest accepts records', async () 
   });
 });
 
+test('active static-secret source without draft binding still surfaces credential repair state', async () => {
+  await withCredentialKey(TEST_KEY, async () => {
+    await withOpenServer(async ({ asUrl, rsUrl }) => {
+      await registerConnector(asUrl, 'gmail');
+      const cookie = '';
+      const ownerToken = await issueOwnerToken(asUrl);
+
+      const created = await createDraft(asUrl, cookie, 'gmail');
+      const connectionId = created.body.connection_id;
+      await capture(asUrl, cookie, connectionId);
+
+      const ingested = await ingest(rsUrl, ownerToken, 'gmail', connectionId, 'messages', [
+        { id: 'm1', emitted_at: '2026-06-10T00:00:00.000Z', subject: 'hello' },
+      ]);
+      assert.equal(ingested.status, 200, ingested.text);
+
+      getDb()
+        .prepare(`UPDATE connector_instances SET source_binding_json = '{}' WHERE connector_instance_id = ?`)
+        .run(connectionId);
+
+      const rotated = await capture(asUrl, cookie, connectionId);
+      assert.equal(rotated.status, 200, rotated.text);
+      seedActiveRun(connectionId, 'gmail', 'run_status_legacy_rotation');
+
+      const status = await getStatus(asUrl, cookie, connectionId, 'run_status_legacy_rotation');
+      assert.equal(status.status, 200, status.text);
+      assert.equal(status.body.status, 'active');
+      assert.equal(status.body.setup_kind, 'static_secret');
+      assert.equal(status.body.setup_state, 'active');
+      assert.equal(status.body.running, true);
+      assert.equal(status.body.credential.present, true);
+      assert.equal(status.body.credential.rotated_at, rotated.body.credential.rotated_at);
+      assert.equal(status.body.setup_material.kind, 'static_secret');
+      assert.equal(status.body.setup_material.present, true);
+      assert.equal(status.body.setup_material.captured_at, rotated.body.credential.rotated_at);
+      clearActiveRun(connectionId);
+    });
+  });
+});
+
 test('manual/upload setup status shows committed acquisition-batch counts after ingest', async () => {
   await withOpenServer(async ({ asUrl, rsUrl }) => {
     await registerConnector(asUrl, 'google_maps');
