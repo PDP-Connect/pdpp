@@ -467,10 +467,12 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         credential_kind TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
         sealed_secret TEXT NOT NULL,
         fingerprint TEXT,
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'rejected')),
         captured_at TEXT NOT NULL,
         rotated_at TEXT,
-        revoked_at TEXT
+        revoked_at TEXT,
+        rejected_at TEXT,
+        rejection_reason TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instance_credentials_owner_status
         ON connector_instance_credentials(owner_subject_id, status);
@@ -572,6 +574,48 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
           ALTER TABLE connector_instance_credentials
             ADD CONSTRAINT connector_instance_credentials_credential_kind_check
             CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password'));
+        END IF;
+      END $$;
+
+      ALTER TABLE connector_instance_credentials
+        ADD COLUMN IF NOT EXISTS rejected_at TEXT;
+      ALTER TABLE connector_instance_credentials
+        ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+
+      -- Existing Postgres deployments may carry the original active/revoked
+      -- status CHECK. Widen it in place so provider-rejected stored
+      -- credentials can pause stale retries without conflating with owner
+      -- revocation.
+      DO $$
+      DECLARE
+        credential_status_constraint_name TEXT;
+        credential_status_constraint_def TEXT;
+      BEGIN
+        FOR credential_status_constraint_name, credential_status_constraint_def IN
+          SELECT conname, pg_get_constraintdef(oid)
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%status%'
+             AND pg_get_constraintdef(oid) LIKE '%active%'
+             AND pg_get_constraintdef(oid) LIKE '%revoked%'
+        LOOP
+          IF credential_status_constraint_def NOT LIKE '%rejected%' THEN
+            EXECUTE format('ALTER TABLE connector_instance_credentials DROP CONSTRAINT %I', credential_status_constraint_name);
+          END IF;
+        END LOOP;
+
+        IF NOT EXISTS (
+          SELECT 1
+            FROM pg_constraint
+           WHERE conrelid = 'connector_instance_credentials'::regclass
+             AND contype = 'c'
+             AND pg_get_constraintdef(oid) LIKE '%status%'
+             AND pg_get_constraintdef(oid) LIKE '%rejected%'
+        ) THEN
+          ALTER TABLE connector_instance_credentials
+            ADD CONSTRAINT connector_instance_credentials_status_check
+            CHECK (status IN ('active', 'revoked', 'rejected'));
         END IF;
       END $$;
 

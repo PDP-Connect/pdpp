@@ -6214,7 +6214,7 @@ rl.on('line', (line) => {
     const asUrl = `http://localhost:${asPort}`;
 
     const { connectorPath, cleanup } = createTestConnector([
-      { type: 'DONE', status: 'failed', records_emitted: 0, error: { message: 'rate limited', retryable: true, code: 'upstream_rate_limit' } },
+      { type: 'DONE', status: 'failed', records_emitted: 0, error: { message: 'rate limited', retryable: true, hint: 'upstream_rate_limit' } },
     ]);
 
     try {
@@ -6234,7 +6234,7 @@ rl.on('line', (line) => {
         (err) => {
           capturedError = err;
           assert.equal(err.failure_reason, 'connector_protocol_violation');
-          assert.match(err.message, /Connector emitted invalid DONE\.error: unsupported fields code/);
+          assert.match(err.message, /Connector emitted invalid DONE\.error: unsupported fields hint/);
           assert.equal(err.checkpoint_summary.records_flushed, 0);
           assert.equal(err.checkpoint_summary.buffered_records_dropped, 0);
           assert.equal(err.checkpoint_summary.commit_status, 'not_committed');

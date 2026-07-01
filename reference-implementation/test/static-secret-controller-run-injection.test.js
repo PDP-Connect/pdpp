@@ -131,7 +131,7 @@ function freshDb(t) {
   });
 }
 
-function makeController(calls) {
+function makeController(calls, overrides = {}) {
   return createController({
     connectorPathResolver: () => "/tmp/connector.ts",
     logger: { error: () => {}, warn: () => {} },
@@ -141,6 +141,7 @@ function makeController(calls) {
       calls.push(opts);
       return Promise.resolve({ status: "succeeded", records_emitted: 0 });
     },
+    ...overrides,
   });
 }
 
@@ -205,6 +206,61 @@ test("a captured ChatGPT username/password credential is injected into the conne
     CHATGPT_PASSWORD: "chatgpt password here",
     CHATGPT_USERNAME: "owner@example.com",
   });
+});
+
+test("a connector credential_rejected terminal marks the injected stored credential rejected", async (t) => {
+  freshDb(t);
+  seedConnectorInstance({
+    connectorInstanceId: "cin_chatgpt",
+    ownerSubjectId: "owner_1",
+    connectorId: CHATGPT_CONNECTOR,
+  });
+  const store = captureStore();
+  await store.capture({
+    connectorInstanceId: "cin_chatgpt",
+    ownerSubjectId: "owner_1",
+    credentialKind: "username_password",
+    secret: JSON.stringify({
+      password: "stale chatgpt password",
+      username: "owner@example.com",
+    }),
+    now: "2026-06-01T12:00:00.000Z",
+  });
+
+  const calls = [];
+  const controller = makeController(calls, {
+    markStaticSecretCredentialRejected: async ({ connectorInstanceId, rejectedAt, reason }) => {
+      await captureStore().markRejected({ connectorInstanceId, rejectedAt, reason });
+    },
+    runConnectorImpl: (opts) => {
+      calls.push(opts);
+      return Promise.resolve({
+        status: "failed",
+        records_emitted: 0,
+        connector_error: {
+          code: "credential_rejected",
+          message: "provider rejected stored credential",
+          retryable: false,
+        },
+      });
+    },
+  });
+  await controller.runNow(CHATGPT_CONNECTOR, {
+    connectorInstanceId: "cin_chatgpt",
+    manifest: CHATGPT_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_chatgpt_rejected",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].staticSecretEnv, {
+    CHATGPT_PASSWORD: "stale chatgpt password",
+    CHATGPT_USERNAME: "owner@example.com",
+  });
+  const meta = await store.getMetadata("cin_chatgpt");
+  assert.equal(meta.status, "rejected");
+  assert.equal(meta.rejectionReason, "provider rejected stored credential");
 });
 
 test("a captured Amazon username/password credential is injected into the connector run", async (t) => {

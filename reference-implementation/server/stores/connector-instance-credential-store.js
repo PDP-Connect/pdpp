@@ -20,6 +20,8 @@ import {
  *
  * Lifecycle (design Decision 7) is kept distinct from the connection lifecycle:
  *   - capture / rotate: write or replace the sealed secret (status active);
+ *   - reject: flip status to 'rejected' after the provider definitively refuses
+ *     the stored secret; future runs fail closed until owner re-capture;
  *   - revoke: flip status to 'revoked' so runs fail closed, without deleting the
  *     connection or its records;
  *   - delete: remove the row entirely so no orphaned secret survives a deleted
@@ -90,6 +92,9 @@ function projectMetadata(row) {
     capturedAt: row.captured_at,
     rotatedAt: row.rotated_at ?? null,
     revokedAt: row.revoked_at ?? null,
+    rejected: row.status === 'rejected',
+    rejectedAt: row.rejected_at ?? null,
+    rejectionReason: row.rejection_reason ?? null,
   };
 }
 
@@ -129,6 +134,8 @@ function buildStore({ run, read, cipherFactory }) {
         capturedAt,
         rotatedAt,
         revokedAt: null,
+        rejectedAt: null,
+        rejectionReason: null,
       });
       return store.getMetadata(connectorInstanceId);
     },
@@ -165,6 +172,13 @@ function buildStore({ run, read, cipherFactory }) {
           `Credential for '${connectorInstanceId}' does not belong to owner '${ownerSubjectId}'.`,
         );
       }
+      if (row.status === 'rejected') {
+        throw new ConnectorInstanceCredentialError(
+          'credential_rejected',
+          `The static-secret credential for connection '${connectorInstanceId}' was rejected by the provider; ` +
+            'the owner must re-capture a valid credential before runs can authenticate.',
+        );
+      }
       if (row.status !== 'active') {
         throw new ConnectorInstanceCredentialError(
           'credential_revoked',
@@ -174,6 +188,21 @@ function buildStore({ run, read, cipherFactory }) {
       }
       const plaintext = cipher().open(row.sealed_secret);
       return { secret: plaintext, credentialKind: row.credential_kind };
+    },
+
+    /**
+     * Mark the stored credential as provider-rejected after a run that actually
+     * used the stored secret receives a definitive invalid-credential response.
+     * This is distinct from revoke: the owner did not choose to disable the
+     * connection, but stale bytes must not be retried indefinitely.
+     */
+    async markRejected({ connectorInstanceId, rejectedAt, reason }) {
+      await run.markRejected({
+        connectorInstanceId,
+        rejectedAt,
+        reason: typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 500) : null,
+      });
+      return store.getMetadata(connectorInstanceId);
     },
 
     /**
@@ -222,6 +251,15 @@ export function createSqliteConnectorInstanceCredentialStore({ env = process.env
           record.capturedAt,
           record.rotatedAt,
           record.revokedAt,
+          record.rejectedAt,
+          record.rejectionReason,
+        ]);
+      },
+      async markRejected({ connectorInstanceId, rejectedAt, reason }) {
+        exec(referenceQueries.connectorInstanceCredentialsMarkRejectedByInstance, [
+          rejectedAt,
+          reason,
+          connectorInstanceId,
         ]);
       },
       async revoke({ connectorInstanceId, revokedAt }) {
@@ -241,7 +279,7 @@ export function createPostgresConnectorInstanceCredentialStore({ env = process.e
       async getRaw(connectorInstanceId) {
         const result = await postgresQuery(
           `SELECT connector_instance_id, owner_subject_id, credential_kind, sealed_secret, fingerprint,
-                  status, captured_at, rotated_at, revoked_at
+                  status, captured_at, rotated_at, revoked_at, rejected_at, rejection_reason
            FROM connector_instance_credentials
            WHERE connector_instance_id = $1`,
           [connectorInstanceId],
@@ -254,9 +292,9 @@ export function createPostgresConnectorInstanceCredentialStore({ env = process.e
         await postgresQuery(
           `INSERT INTO connector_instance_credentials(
              connector_instance_id, owner_subject_id, credential_kind, sealed_secret, fingerprint,
-             status, captured_at, rotated_at, revoked_at
+             status, captured_at, rotated_at, revoked_at, rejected_at, rejection_reason
            )
-           VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            ON CONFLICT(connector_instance_id) DO UPDATE SET
              owner_subject_id = excluded.owner_subject_id,
              credential_kind = excluded.credential_kind,
@@ -264,7 +302,9 @@ export function createPostgresConnectorInstanceCredentialStore({ env = process.e
              fingerprint = excluded.fingerprint,
              status = excluded.status,
              rotated_at = excluded.rotated_at,
-             revoked_at = excluded.revoked_at`,
+             revoked_at = excluded.revoked_at,
+             rejected_at = excluded.rejected_at,
+             rejection_reason = excluded.rejection_reason`,
           [
             record.connectorInstanceId,
             record.ownerSubjectId,
@@ -275,13 +315,27 @@ export function createPostgresConnectorInstanceCredentialStore({ env = process.e
             record.capturedAt,
             record.rotatedAt,
             record.revokedAt,
+            record.rejectedAt,
+            record.rejectionReason,
           ],
+        );
+      },
+      async markRejected({ connectorInstanceId, rejectedAt, reason }) {
+        await postgresQuery(
+          `UPDATE connector_instance_credentials
+           SET status = 'rejected',
+               rejected_at = $1,
+               rejection_reason = $2,
+               revoked_at = NULL
+           WHERE connector_instance_id = $3
+             AND status <> 'revoked'`,
+          [rejectedAt, reason, connectorInstanceId],
         );
       },
       async revoke({ connectorInstanceId, revokedAt }) {
         await postgresQuery(
           `UPDATE connector_instance_credentials
-           SET status = 'revoked', revoked_at = $1
+           SET status = 'revoked', revoked_at = $1, rejected_at = NULL, rejection_reason = NULL
            WHERE connector_instance_id = $2 AND status <> 'revoked'`,
           [revokedAt, connectorInstanceId],
         );

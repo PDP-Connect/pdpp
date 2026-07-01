@@ -5,6 +5,7 @@ import {
   CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE,
   CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE,
   CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE,
+  CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE,
   chatGptAllowsInteractiveAuthRepair,
   chatGptPushApprovalAssistance,
   ensureChatGptSession,
@@ -249,6 +250,7 @@ test("ChatGPT initial auth probe emits bounded diagnostic before credential logi
 
     await assert.rejects(
       ensureChatGptSession({
+        allowInteractiveAuthRepair: false,
         context: {} as never,
         page: page as never,
         progress: (message) => {
@@ -257,10 +259,10 @@ test("ChatGPT initial auth probe emits bounded diagnostic before credential logi
         },
         sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
       }),
-      /CHATGPT_USERNAME\/PASSWORD not set/u
+      /chatgpt_session_required/u
     );
 
-    assert.equal(progressMessages.length, 1);
+    assert.equal(progressMessages.length, 2);
     assert.doesNotMatch(progressMessages[0] ?? "", /private-conversation-id/u);
     const diagnostic = extractAuthProbeDiagnostic(progressMessages[0] ?? "");
     assert.deepEqual(diagnostic, {
@@ -405,7 +407,7 @@ test("ChatGPT scheduled auth repair fails before credential login or owner promp
   );
 });
 
-test("ChatGPT manual auth repair keeps the credential-login path enabled", async () => {
+test("ChatGPT manual auth repair can use the secure browser without storing a password", async () => {
   await withEnvValues(
     {
       CHATGPT_PASSWORD: undefined,
@@ -414,7 +416,54 @@ test("ChatGPT manual auth repair keeps the credential-login path enabled", async
       PDPP_RUN_TRIGGER_KIND: "manual",
     },
     async () => {
+      const assistanceMessages: string[] = [];
+      let sessionProbeCount = 0;
       const page = {
+        evaluate: (fn: (...args: never[]) => unknown) => {
+          const source = String(fn);
+          if (source.includes("/api/auth/session")) {
+            sessionProbeCount += 1;
+            return Promise.resolve(sessionProbeCount >= 2 ? { user: { id: "owner" } } : null);
+          }
+          if (source.includes("querySelectorAll")) {
+            return Promise.resolve({
+              dom_logged_in: false,
+              has_login_or_signup: true,
+              has_sidebar: false,
+              has_user_menu: false,
+            });
+          }
+          return Promise.resolve(false);
+        },
+        goto: () => Promise.resolve(null),
+        getByText: () => ({
+          first() {
+            return this;
+          },
+          waitFor: () => Promise.reject(new Error("not visible")),
+        }),
+        url: () => "https://chatgpt.com/",
+        waitForTimeout: async () => undefined,
+      };
+
+      const ok = await ensureChatGptSession({
+        assist: (req) => {
+          assistanceMessages.push(req.message);
+          return Promise.resolve("assist_1");
+        },
+        completeAssistance: () => Promise.resolve(),
+        context: {} as never,
+        page: page as never,
+        progress: () => Promise.resolve(),
+        sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+      });
+
+      assert.equal(ok, true);
+      assert.deepEqual(assistanceMessages, [
+        "Finish ChatGPT login in the streaming companion. PDPP will continue automatically after ChatGPT confirms the session.",
+      ]);
+
+      const inactivePage = {
         evaluate: (fn: (...args: never[]) => unknown) => {
           const source = String(fn);
           if (source.includes("/api/auth/session")) {
@@ -434,26 +483,106 @@ test("ChatGPT manual auth repair keeps the credential-login path enabled", async
         url: () => "https://chatgpt.com/",
         waitForTimeout: async () => undefined,
       };
-
-      await assert.rejects(
-        ensureChatGptSession({
-          context: {} as never,
-          page: page as never,
-          progress: () => Promise.resolve(),
-          sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
-        }),
-        /CHATGPT_USERNAME\/PASSWORD not set/u
-      );
-
       await assert.rejects(
         ensureChatGptSession({
           allowInteractiveAuthRepair: false,
           context: {} as never,
-          page: page as never,
+          page: inactivePage as never,
           progress: () => Promise.resolve(),
           sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
         }),
         /chatgpt_session_required/u
+      );
+    }
+  );
+});
+
+test("ChatGPT rejected stored password fails before push approval or browser assistance", async () => {
+  await withEnvValues(
+    {
+      CHATGPT_PASSWORD: "stale password",
+      CHATGPT_USERNAME: "owner@example.test",
+      PDPP_RUN_AUTOMATION_MODE: "assisted",
+      PDPP_RUN_TRIGGER_KIND: "manual",
+    },
+    async () => {
+      let passwordSubmitted = false;
+      const page = {
+        evaluate: (fn: (...args: never[]) => unknown) => {
+          const source = String(fn);
+          if (source.includes("/api/auth/session")) {
+            return Promise.resolve(null);
+          }
+          if (source.includes("querySelectorAll")) {
+            return Promise.resolve({
+              dom_logged_in: false,
+              has_login_or_signup: true,
+              has_sidebar: false,
+              has_user_menu: false,
+            });
+          }
+          return Promise.resolve(false);
+        },
+        getByRole: () => ({
+          click: () => Promise.resolve(),
+          first() {
+            return this;
+          },
+          waitFor: () => Promise.resolve(),
+        }),
+        getByText: (text: RegExp) => ({
+          first() {
+            return this;
+          },
+          waitFor: () =>
+            passwordSubmitted && text.test("Incorrect email address or password")
+              ? Promise.resolve()
+              : Promise.reject(new Error("not visible")),
+        }),
+        goto: () => Promise.resolve(null),
+        locator: (selector: string) => {
+          const count =
+            selector.includes('input[type="email"]') ||
+            selector.includes('input[type="password"]') ||
+            selector.includes('button[type="submit"]') ||
+            selector.includes(":text-is")
+              ? 1
+              : 0;
+          const locator = {
+            click: () => {
+              if (selector.includes('button[type="submit"]') || selector.includes(":text-is")) {
+                passwordSubmitted = true;
+              }
+              return Promise.resolve();
+            },
+            count: () => Promise.resolve(count),
+            fill: () => Promise.resolve(),
+            first() {
+              return locator;
+            },
+            waitFor: () => (count > 0 ? Promise.resolve() : Promise.reject(new Error("not visible"))),
+          };
+          return locator;
+        },
+        url: () => "https://chatgpt.com/",
+        waitForTimeout: async () => undefined,
+      };
+
+      await assert.rejects(
+        ensureChatGptSession({
+          assist: async () => {
+            await Promise.resolve();
+            throw new Error("rejected stored password must not request owner assistance");
+          },
+          context: {} as never,
+          page: page as never,
+          progress: () => Promise.resolve(),
+          sendInteraction: async () => {
+            await Promise.resolve();
+            throw new Error("rejected stored password must not ask for push approval or OTP");
+          },
+        }),
+        new RegExp(CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE)
       );
     }
   );

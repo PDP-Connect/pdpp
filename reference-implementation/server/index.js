@@ -1349,6 +1349,17 @@ function buildControllerStaticSecretRunEnvResolver() {
   };
 }
 
+function buildControllerStaticSecretCredentialRejectionMarker() {
+  return async ({ connectorInstanceId, reason, rejectedAt }) => {
+    const credentialStore = createRequestConnectorInstanceCredentialStore();
+    await credentialStore.markRejected({
+      connectorInstanceId,
+      rejectedAt,
+      reason,
+    });
+  };
+}
+
 function buildControllerManualUploadRunEnvResolver() {
   return async ({ connectorInstanceId }) => {
     const instance = await createRequestConnectorInstanceStore().get(connectorInstanceId);
@@ -4989,6 +5000,7 @@ export async function startServer(opts = {}) {
       clearNonce: (args) => runTargetRegistry.clearNonce(args),
     },
     resolveStaticSecretRunEnv: buildConnectionScopedRunEnvResolver(),
+    markStaticSecretCredentialRejected: buildControllerStaticSecretCredentialRejectionMarker(),
   });
   await controller.reconcileBrowserSurfaceLeasesAfterBoot();
   let schedulerManager = null;

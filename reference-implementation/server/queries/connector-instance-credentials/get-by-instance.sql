@@ -8,7 +8,9 @@ SELECT
   status,
   captured_at,
   rotated_at,
-  revoked_at
+  revoked_at,
+  rejected_at,
+  rejection_reason
 FROM connector_instance_credentials
 WHERE connector_instance_id = ?
 LIMIT 1;

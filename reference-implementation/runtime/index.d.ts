@@ -141,7 +141,7 @@ export interface RuntimeRunConnectorResult {
   automation_mode?: RuntimeRunAutomationMode | null;
   checkpoint_summary?: Record<string, unknown> | null;
   connector_diagnostics?: ConnectorRunDiagnostics;
-  connector_error?: { message?: string; retryable?: boolean | null } | null;
+  connector_error?: { code?: string | null; message?: string; retryable?: boolean | null } | null;
   failure_message?: string;
   failure_origin?: RuntimeFailureOrigin;
   known_gaps?: Record<string, unknown>[] | null;

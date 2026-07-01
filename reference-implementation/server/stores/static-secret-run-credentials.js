@@ -50,7 +50,7 @@ export class StaticSecretRunCredentialError extends Error {
  *   optional stored login credential.
  * @throws {StaticSecretRunCredentialError} on a configuration/usage error.
  * @throws {ConnectorInstanceCredentialError} (fail closed) when the credential
- *   is absent or revoked.
+ *   is absent, revoked, or provider-rejected.
  */
 export async function resolveStaticSecretRunEnv({
   connectorId,
@@ -85,7 +85,8 @@ export async function resolveStaticSecretRunEnv({
     !Array.isArray(sourceBinding) &&
     (sourceBinding.kind === 'browser_collector' || sourceBinding.kind === 'browser_enrollment_shell');
   // recoverSecret throws ConnectorInstanceCredentialError with code
-  // 'credential_not_found' or 'credential_revoked' — the fail-closed path. We
+  // 'credential_not_found', 'credential_revoked', or 'credential_rejected' —
+  // the fail-closed path. We
   // let it propagate for true static-secret sources so the run is refused
   // rather than started with no/stale credential. Browser-session connections
   // can optionally use stored login credentials, but their primary credential is
@@ -98,7 +99,7 @@ export async function resolveStaticSecretRunEnv({
     if (
       browserSessionSource &&
       err instanceof ConnectorInstanceCredentialError &&
-      (err.code === 'credential_not_found' || err.code === 'credential_revoked')
+      (err.code === 'credential_not_found' || err.code === 'credential_revoked' || err.code === 'credential_rejected')
     ) {
       return null;
     }

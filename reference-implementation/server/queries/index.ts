@@ -221,6 +221,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // connector-instance row). Sealed secrets only; never projected to reads.
   readonly connectorInstanceCredentialsDeleteByInstance: MutationQuery;
   readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
+  readonly connectorInstanceCredentialsMarkRejectedByInstance: MutationQuery;
   readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
   readonly connectorInstanceCredentialsUpsert: MutationQuery;
   readonly connectorInstancesGetByBinding: ReadOneQuery;

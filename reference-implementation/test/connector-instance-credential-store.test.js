@@ -334,6 +334,88 @@ test('initDb widens legacy credential_kind CHECK without dropping stored credent
   }
 });
 
+test('initDb widens legacy credential status CHECK and preserves stored credentials', async () => {
+  const dbPath = join(mkdtempSync(join(tmpdir(), 'pdpp-credential-status-migration-')), 'ref.sqlite');
+  initDb(dbPath);
+  try {
+    seedConnectorInstance({ connectorInstanceId: 'cin_existing', ownerSubjectId: 'owner_1', connectorId: 'gmail' });
+    const firstStore = createSqliteConnectorInstanceCredentialStore({ env: envWithKey() });
+    await firstStore.capture({
+      connectorInstanceId: 'cin_existing',
+      ownerSubjectId: 'owner_1',
+      credentialKind: 'app_password',
+      secret: APP_PASSWORD,
+      now: NOW,
+    });
+    getDb().exec(`
+      ALTER TABLE connector_instance_credentials RENAME TO connector_instance_credentials_new_status;
+      DROP INDEX IF EXISTS idx_connector_instance_credentials_owner_status;
+
+      CREATE TABLE connector_instance_credentials (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+        sealed_secret         TEXT NOT NULL,
+        fingerprint           TEXT,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+        captured_at           TEXT NOT NULL,
+        rotated_at            TEXT,
+        revoked_at            TEXT,
+        FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+      );
+
+      INSERT INTO connector_instance_credentials(
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at
+      FROM connector_instance_credentials_new_status;
+
+      DROP TABLE connector_instance_credentials_new_status;
+      CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
+        ON connector_instance_credentials(owner_subject_id, status);
+    `);
+  } finally {
+    closeDb();
+  }
+
+  const migrations = [];
+  initDb(dbPath, { onSchemaMigration: (event) => migrations.push(event) });
+  try {
+    assert.ok(
+      migrations.some((event) => event.name === 'connector_credential_status_rejected' && event.rebuilt === true),
+      'legacy status CHECK should be widened on boot',
+    );
+    const store = createSqliteConnectorInstanceCredentialStore({ env: envWithKey() });
+    assert.equal((await store.recoverSecret({ connectorInstanceId: 'cin_existing' })).secret, APP_PASSWORD);
+    const rejected = await store.markRejected({
+      connectorInstanceId: 'cin_existing',
+      rejectedAt: LATER,
+      reason: 'provider rejected stored credential',
+    });
+    assert.equal(rejected.status, 'rejected');
+    assert.equal(rejected.rejectedAt, LATER);
+  } finally {
+    closeDb();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Lifecycle: rotate / revoke / delete — no resurrection
 // ---------------------------------------------------------------------------
@@ -393,6 +475,37 @@ test(
 );
 
 test(
+  'provider rejection fails runs closed; recovery throws; row + metadata survive',
+  withDb(async () => {
+    seedConnectorInstance({ connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1', connectorId: 'gmail' });
+    const store = createSqliteConnectorInstanceCredentialStore({ env: envWithKey() });
+    await store.capture({
+      connectorInstanceId: 'cin_a',
+      ownerSubjectId: 'owner_1',
+      credentialKind: 'app_password',
+      secret: APP_PASSWORD,
+      now: NOW,
+    });
+    const rejected = await store.markRejected({
+      connectorInstanceId: 'cin_a',
+      rejectedAt: LATER,
+      reason: 'provider rejected stored credential',
+    });
+    assert.equal(rejected.status, 'rejected');
+    assert.equal(rejected.rejected, true);
+    assert.equal(rejected.rejectedAt, LATER);
+    assert.equal(rejected.rejectionReason, 'provider rejected stored credential');
+    assert.equal(await store.hasActiveCredential('cin_a'), false);
+    await assert.rejects(
+      () => store.recoverSecret({ connectorInstanceId: 'cin_a' }),
+      (err) => err instanceof ConnectorInstanceCredentialError && err.code === 'credential_rejected',
+    );
+    const meta = await store.getMetadata('cin_a');
+    assert.equal(meta.status, 'rejected');
+  }),
+);
+
+test(
   'a revoked credential does not implicitly resurrect; only explicit re-capture restores it',
   withDb(async () => {
     seedConnectorInstance({ connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1', connectorId: 'gmail' });
@@ -418,6 +531,39 @@ test(
     });
     assert.equal(recaptured.status, 'active');
     assert.equal(recaptured.revokedAt, null);
+    assert.equal((await store.recoverSecret({ connectorInstanceId: 'cin_a' })).secret, ROTATED_PASSWORD);
+  }),
+);
+
+test(
+  'a rejected credential does not implicitly resurrect; explicit re-capture clears rejection',
+  withDb(async () => {
+    seedConnectorInstance({ connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1', connectorId: 'gmail' });
+    const store = createSqliteConnectorInstanceCredentialStore({ env: envWithKey() });
+    await store.capture({
+      connectorInstanceId: 'cin_a',
+      ownerSubjectId: 'owner_1',
+      credentialKind: 'app_password',
+      secret: APP_PASSWORD,
+      now: NOW,
+    });
+    await store.markRejected({
+      connectorInstanceId: 'cin_a',
+      rejectedAt: LATER,
+      reason: 'provider rejected stored credential',
+    });
+    assert.equal((await store.getMetadata('cin_a')).status, 'rejected');
+    const recaptured = await store.capture({
+      connectorInstanceId: 'cin_a',
+      ownerSubjectId: 'owner_1',
+      credentialKind: 'app_password',
+      secret: ROTATED_PASSWORD,
+      now: LATEST,
+    });
+    assert.equal(recaptured.status, 'active');
+    assert.equal(recaptured.rejected, false);
+    assert.equal(recaptured.rejectedAt, null);
+    assert.equal(recaptured.rejectionReason, null);
     assert.equal((await store.recoverSecret({ connectorInstanceId: 'cin_a' })).secret, ROTATED_PASSWORD);
   }),
 );

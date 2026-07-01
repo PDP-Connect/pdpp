@@ -8,9 +8,11 @@ INSERT INTO connector_instance_credentials(
   status,
   captured_at,
   rotated_at,
-  revoked_at
+  revoked_at,
+  rejected_at,
+  rejection_reason
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(connector_instance_id)
 DO UPDATE SET
   owner_subject_id = excluded.owner_subject_id,
@@ -19,4 +21,6 @@ DO UPDATE SET
   fingerprint = excluded.fingerprint,
   status = excluded.status,
   rotated_at = excluded.rotated_at,
-  revoked_at = excluded.revoked_at;
+  revoked_at = excluded.revoked_at,
+  rejected_at = excluded.rejected_at,
+  rejection_reason = excluded.rejection_reason;

@@ -287,7 +287,7 @@ export type EmittedMessage =
       type: "DONE";
       status: "succeeded" | "failed";
       records_emitted: number;
-      error?: { message: string; retryable: boolean };
+      error?: { code?: string; message: string; retryable: boolean };
     }
   | {
       type: "INTERACTION";

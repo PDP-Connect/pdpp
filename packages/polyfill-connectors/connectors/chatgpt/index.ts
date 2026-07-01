@@ -25,7 +25,7 @@ import {
   createAdaptiveLane,
   currentAdaptiveLaneRunContext,
 } from "../../src/adaptive-lane.ts";
-import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
+import { CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE, ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
@@ -109,6 +109,13 @@ export const normalizeChatGptTerminalError: NormalizeTerminalError = ({
   retryable,
 }: TerminalErrorDetails): TerminalErrorDetails => {
   const diagnostic = scrubChatGptTerminalDiagnostic(message);
+  if (message.includes(CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE)) {
+    return {
+      code: "credential_rejected",
+      message: `chatgpt_preprogress_failure: refresh_credentials: ${diagnostic}`,
+      retryable: false,
+    };
+  }
   if (CHATGPT_AUTH_FAILURE_RE.test(message)) {
     return {
       message: `chatgpt_preprogress_failure: refresh_credentials: ${diagnostic}`,

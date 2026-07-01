@@ -170,6 +170,38 @@ test(
 );
 
 test(
+  'a browser-session source ignores a rejected optional static login credential',
+  withStore(async (store) => {
+    const sourceBinding = {
+      connector_id: 'chatgpt',
+      enrollment_completed_at: '2026-06-01T12:01:00.000Z',
+      enrollment_expires_at: '2026-06-01T14:00:00.000Z',
+      kind: 'browser_collector',
+    };
+    seedConnectorInstance({ connectorInstanceId: 'cin_chatgpt', ownerSubjectId: 'owner_1', connectorId: 'chatgpt', sourceBinding });
+    await store.capture({
+      connectorInstanceId: 'cin_chatgpt',
+      ownerSubjectId: 'owner_1',
+      credentialKind: 'username_password',
+      secret: 'not-used-after-rejection',
+      now: NOW,
+    });
+    await store.markRejected({
+      connectorInstanceId: 'cin_chatgpt',
+      rejectedAt: LATER,
+      reason: 'provider rejected stored credential',
+    });
+    const env = await resolveEnv(store, {
+      connectorId: 'chatgpt',
+      connectorInstanceId: 'cin_chatgpt',
+      ownerSubjectId: 'owner_1',
+      sourceBinding,
+    });
+    assert.equal(env, null);
+  }),
+);
+
+test(
   'a revoked credential fails the run closed; a run cannot authenticate with a stale secret',
   withStore(async (store) => {
     seedConnectorInstance({ connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1', connectorId: 'gmail' });
@@ -184,6 +216,29 @@ test(
     await assert.rejects(
       () => resolveEnv(store, { connectorId: 'gmail', connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1' }),
       (err) => err instanceof ConnectorInstanceCredentialError && err.code === 'credential_revoked',
+    );
+  }),
+);
+
+test(
+  'a rejected credential fails the run closed; a run cannot keep retrying stale provider credentials',
+  withStore(async (store) => {
+    seedConnectorInstance({ connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1', connectorId: 'gmail' });
+    await store.capture({
+      connectorInstanceId: 'cin_a',
+      ownerSubjectId: 'owner_1',
+      credentialKind: 'app_password',
+      secret: APP_PASSWORD,
+      now: NOW,
+    });
+    await store.markRejected({
+      connectorInstanceId: 'cin_a',
+      rejectedAt: LATER,
+      reason: 'provider rejected stored credential',
+    });
+    await assert.rejects(
+      () => resolveEnv(store, { connectorId: 'gmail', connectorInstanceId: 'cin_a', ownerSubjectId: 'owner_1' }),
+      (err) => err instanceof ConnectorInstanceCredentialError && err.code === 'credential_rejected',
     );
   }),
 );

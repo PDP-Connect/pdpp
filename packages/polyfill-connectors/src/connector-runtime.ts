@@ -217,6 +217,7 @@ export interface ProbeSessionArgs {
 }
 
 export interface TerminalErrorDetails {
+  code?: string;
   message: string;
   retryable: boolean;
 }

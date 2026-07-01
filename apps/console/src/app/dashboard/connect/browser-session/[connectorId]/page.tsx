@@ -132,7 +132,8 @@ export default async function BrowserSessionConnectPage({
               </li>
               <li>
                 Log in to <strong className="text-foreground">{displayName}</strong> in that browser, exactly as you
-                would on your own machine. PDPP captures the session cookie — no credentials are stored.
+                would on your own machine. PDPP stores the browser session state needed for this source; it does not
+                store the password you type into the provider page.
               </li>
               <li>Once login is detected, the browser closes and collection resumes automatically.</li>
             </ol>

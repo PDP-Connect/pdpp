@@ -206,10 +206,12 @@ CREATE TABLE IF NOT EXISTS connector_instance_credentials (
   credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
   sealed_secret         TEXT NOT NULL,
   fingerprint           TEXT,
-  status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'rejected')),
   captured_at           TEXT NOT NULL,
   rotated_at            TEXT,
   revoked_at            TEXT,
+  rejected_at           TEXT,
+  rejection_reason      TEXT,
   FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
 );
 
@@ -2913,10 +2915,12 @@ function migrateConnectorCredentialKindCheck(raw, opts = {}) {
         credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
         sealed_secret         TEXT NOT NULL,
         fingerprint           TEXT,
-        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'rejected')),
         captured_at           TEXT NOT NULL,
         rotated_at            TEXT,
         revoked_at            TEXT,
+        rejected_at           TEXT,
+        rejection_reason      TEXT,
         FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
       );
 
@@ -2929,7 +2933,9 @@ function migrateConnectorCredentialKindCheck(raw, opts = {}) {
         status,
         captured_at,
         rotated_at,
-        revoked_at
+        revoked_at,
+        rejected_at,
+        rejection_reason
       )
       SELECT
         connector_instance_id,
@@ -2940,7 +2946,9 @@ function migrateConnectorCredentialKindCheck(raw, opts = {}) {
         status,
         captured_at,
         rotated_at,
-        revoked_at
+        revoked_at,
+        NULL,
+        NULL
       FROM connector_instance_credentials_old_kind;
 
       DROP TABLE connector_instance_credentials_old_kind;
@@ -2953,6 +2961,87 @@ function migrateConnectorCredentialKindCheck(raw, opts = {}) {
   const result = migration();
   if (typeof opts.onSchemaMigration === 'function') {
     opts.onSchemaMigration({ name: 'connector_credential_kind_check', ...result });
+  }
+  return result;
+}
+
+// Widen the connector_instance_credentials.status CHECK to preserve the
+// provider-rejected lifecycle separately from owner revocation. The two
+// rejected_* columns carry bounded non-secret repair evidence; sealed_secret is
+// copied byte-for-byte.
+function migrateConnectorCredentialStatusRejected(raw, opts = {}) {
+  const table = raw.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instance_credentials'`
+  ).get();
+  if (!table?.sql) return { rebuilt: false };
+  const columns = raw.prepare(`PRAGMA table_info(connector_instance_credentials)`).all();
+  const columnNames = new Set(columns.map((column) => column.name));
+  const hasRejectedStatus = table.sql.includes("'rejected'");
+  const hasRejectedAt = columnNames.has('rejected_at');
+  const hasRejectionReason = columnNames.has('rejection_reason');
+  if (hasRejectedStatus && hasRejectedAt && hasRejectionReason) {
+    return { rebuilt: false };
+  }
+
+  const rejectedAtSelect = hasRejectedAt ? 'rejected_at' : 'NULL';
+  const rejectionReasonSelect = hasRejectionReason ? 'rejection_reason' : 'NULL';
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instance_credentials RENAME TO connector_instance_credentials_old_status_rejected;
+      DROP INDEX IF EXISTS idx_connector_instance_credentials_owner_status;
+
+      CREATE TABLE connector_instance_credentials (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        credential_kind       TEXT NOT NULL CHECK (credential_kind IN ('app_password', 'personal_access_token', 'secret_bundle', 'username_password')),
+        sealed_secret         TEXT NOT NULL,
+        fingerprint           TEXT,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'rejected')),
+        captured_at           TEXT NOT NULL,
+        rotated_at            TEXT,
+        revoked_at            TEXT,
+        rejected_at           TEXT,
+        rejection_reason      TEXT,
+        FOREIGN KEY(connector_instance_id) REFERENCES connector_instances(connector_instance_id) ON DELETE CASCADE
+      );
+
+      INSERT INTO connector_instance_credentials(
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at,
+        rejected_at,
+        rejection_reason
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        credential_kind,
+        sealed_secret,
+        fingerprint,
+        status,
+        captured_at,
+        rotated_at,
+        revoked_at,
+        ${rejectedAtSelect},
+        ${rejectionReasonSelect}
+      FROM connector_instance_credentials_old_status_rejected;
+
+      DROP TABLE connector_instance_credentials_old_status_rejected;
+      CREATE INDEX IF NOT EXISTS idx_connector_instance_credentials_owner_status
+        ON connector_instance_credentials(owner_subject_id, status);
+    `);
+    return { rebuilt: true };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_credential_status_rejected', ...result });
   }
   return result;
 }
@@ -3413,6 +3502,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindBrowserCollector(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesStatusDraft(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorCredentialKindCheck(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorCredentialStatusRejected(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
   raw.exec(

@@ -49,6 +49,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Page } from "playwright";
 import { currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
+import { CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE } from "../../src/auto-login/chatgpt.ts";
 import type { CollectContext, EmittedMessage } from "../../src/connector-runtime.ts";
 import { RetryExhaustedError, retryHttp } from "../../src/http-retry.ts";
 import { ProviderBudgetController } from "../../src/provider-budget.ts";
@@ -108,6 +109,17 @@ test("CHATGPT_RETRYABLE_ERROR_PATTERN treats retry-budget exhaustion as retryabl
 });
 
 test("normalizeChatGptTerminalError maps pre-progress auth failures to refresh_credentials", () => {
+  assert.deepEqual(
+    normalizeChatGptTerminalError({
+      message: CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE,
+      retryable: false,
+    }),
+    {
+      code: "credential_rejected",
+      message: `chatgpt_preprogress_failure: refresh_credentials: ${CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE}`,
+      retryable: false,
+    }
+  );
   assert.deepEqual(
     normalizeChatGptTerminalError({
       message: "chatgpt_session_failed: apiFetch got 401 on GET /conversation/abc (auth - not retryable)",

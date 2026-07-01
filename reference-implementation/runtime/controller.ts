@@ -45,10 +45,7 @@ import {
   type SchedulerRunHistoryRecord,
   type SchedulerStore,
 } from "../server/stores/scheduler-store.ts";
-import {
-  createBrowserSurfaceManager,
-  type BrowserSurfaceReadinessProbe,
-} from "./browser-surface/index.ts";
+import { createBrowserSurfaceManager, type BrowserSurfaceReadinessProbe } from "./browser-surface/index.ts";
 import { runConnector } from "./index.js";
 import type { RequiredAction } from "./rendered-verdict.ts";
 import {
@@ -400,6 +397,14 @@ export interface ControllerOptions {
   detailGapStore?: ConnectorDetailGapReadStore;
   logger?: ControllerLogger;
   /**
+   * Optional credential lifecycle transition called after a connector run that
+   * actually used a stored static secret reports a definitive provider
+   * rejection. The controller owns the timing because it alone knows both
+   * facts: the per-run secret env was injected, and the terminal connector
+   * result carried `connector_error.code === "credential_rejected"`.
+   */
+  markStaticSecretCredentialRejected?: MarkStaticSecretCredentialRejected;
+  /**
    * Maximum wall-clock milliseconds a single run may remain active before the
    * watchdog force-finalizes it with a `run.failed` (reason: `run_timed_out`).
    * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` env var, or 3 600 000 ms (1 hour)
@@ -469,6 +474,15 @@ export type StaticSecretRunEnvResolver = (args: {
   readonly connectorInstanceId: string;
   readonly ownerSubjectId: string;
 }) => Promise<Record<string, string> | null> | Record<string, string> | null;
+
+export type MarkStaticSecretCredentialRejected = (args: {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly ownerSubjectId: string;
+  readonly reason: string | null;
+  readonly rejectedAt: string;
+  readonly runId: string;
+}) => Promise<void> | void;
 
 export interface Controller {
   autoResumeSatisfiedActions(input: AutoResumeSatisfiedActionsInput): Promise<AutoResumeSatisfiedActionsResult>;
@@ -2805,6 +2819,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const staticSecretEnv = opts.resolveStaticSecretRunEnv
       ? await opts.resolveStaticSecretRunEnv({ connectorId, connectorInstanceId, ownerSubjectId })
       : null;
+    const usedStaticSecret = Boolean(staticSecretEnv && Object.keys(staticSecretEnv).length > 0);
 
     const acquireResult = browserSurfaceLeaseManager?.isManagedConnector(connectorId)
       ? await browserSurface.acquireManagedBrowserSurfaceForRun({
@@ -2935,6 +2950,31 @@ export function createController(opts: ControllerOptions = {}): Controller {
           cancelSignal: cancellation.signal,
         })
       )
+      .then(async (result) => {
+        if (
+          usedStaticSecret &&
+          result?.connector_error?.code === "credential_rejected" &&
+          opts.markStaticSecretCredentialRejected
+        ) {
+          try {
+            await opts.markStaticSecretCredentialRejected({
+              connectorId,
+              connectorInstanceId,
+              ownerSubjectId,
+              reason: typeof result.connector_error.message === "string" ? result.connector_error.message : null,
+              rejectedAt: nowIso(),
+              runId,
+            });
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            log.warn?.(
+              `[controller] failed to mark stored credential rejected for ${connectorId} ` +
+                `(connection=${connectorInstanceId}, run_id=${runId}): ${message}`
+            );
+          }
+        }
+        return result;
+      })
       .catch(async (err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         log.error?.(

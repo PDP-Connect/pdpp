@@ -77,6 +77,8 @@ const LOG_IN_NAME = /^log in$/i;
 const RESEND_PROMPT_TEXT = /resend prompt/i;
 const SENT_NOTIFICATION_TEXT = /sent a notification/i;
 const TRY_WITH_EMAIL_TEXT = /try with email/i;
+const STORED_CREDENTIAL_REJECTION_TEXT =
+  /incorrect email address or password|incorrect password|invalid password|wrong password|email or password is incorrect/i;
 export const CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE =
   "ChatGPT sent an app approval notification. Approve it in the ChatGPT app; PDPP will continue automatically after ChatGPT confirms the session.";
 export const CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE = CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE;
@@ -88,6 +90,8 @@ export const CHATGPT_BROWSER_LOGIN_FALLBACK_MESSAGE =
   "ChatGPT login still is not active. Finish login in the streaming companion, then click Continue here.";
 export const CHATGPT_SESSION_REQUIRED_NON_INTERACTIVE_MESSAGE =
   "chatgpt_session_required: ChatGPT session is not active; start an owner-attended manual refresh to repair authentication.";
+export const CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE =
+  "chatgpt_stored_credential_rejected: ChatGPT rejected the stored username/password credential.";
 const PUSH_APPROVAL_POLL_INTERVAL_MS = 5000;
 const BROWSER_LOGIN_POLL_INTERVAL_MS = 5000;
 /**
@@ -355,6 +359,10 @@ async function isLikelyChatGptPushApprovalPage(page: Page): Promise<boolean> {
 
 async function isChatGptSessionActive(page: Page): Promise<boolean> {
   return (await checkSession(page)) || (await checkLoggedInViaDOM(page));
+}
+
+async function isStoredCredentialRejectedPage(page: Page): Promise<boolean> {
+  return await hasVisibleText(page, STORED_CREDENTIAL_REJECTION_TEXT);
 }
 
 function classifyChatGptRoute(page: Page): ChatGptRouteClass {
@@ -766,6 +774,10 @@ async function submitPasswordAndHandleSecondFactor({
   await page.waitForTimeout(5000);
   await capture?.captureDom(page, "auth-after-password-submit");
 
+  if (await isStoredCredentialRejectedPage(page)) {
+    throw new Error(CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE);
+  }
+
   if (
     await handlePushApproval({
       ...(assist ? { assist } : {}),
@@ -874,33 +886,48 @@ async function driveLoginFormAndConfirm({
   throw new Error("chatgpt_login_post_submit_failed");
 }
 
-export async function ensureChatGptSession({
+async function repairWithManualBrowserLogin({
   assist,
-  allowInteractiveAuthRepair,
   capture,
   checkpoint,
   completeAssistance,
-  context: _context,
   page,
   progress,
   sendInteraction,
-}: EnsureChatGptSessionArgs): Promise<boolean> {
-  if (await navigateAndProbeSession(page, progress)) {
-    return true;
-  }
+}: Pick<
+  EnsureChatGptSessionArgs,
+  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+>): Promise<boolean> {
+  await openChatGptLogin(page);
+  return await handleBrowserLoginAssistance({
+    ...(assist ? { assist } : {}),
+    ...(capture ? { capture } : {}),
+    ...checkpointOption(checkpoint),
+    ...(completeAssistance ? { completeAssistance } : {}),
+    page,
+    ...(progress ? { progress } : {}),
+    reason: "login",
+    sendInteraction,
+  });
+}
 
-  const interactiveAuthRepairAllowed = allowInteractiveAuthRepair ?? chatGptAllowsInteractiveAuthRepair();
-  if (!interactiveAuthRepairAllowed) {
-    await progress?.("ChatGPT session is not active; automatic refresh will not start interactive auth repair.");
-    throw new Error(CHATGPT_SESSION_REQUIRED_NON_INTERACTIVE_MESSAGE);
-  }
-
-  const email = process.env.CHATGPT_USERNAME;
-  const password = process.env.CHATGPT_PASSWORD;
-  if (!(email && password)) {
-    throw new Error("CHATGPT_USERNAME/PASSWORD not set");
-  }
-
+async function driveStoredCredentialAuthRepair({
+  assist,
+  capture,
+  checkpoint,
+  completeAssistance,
+  email,
+  page,
+  password,
+  progress,
+  sendInteraction,
+}: Pick<
+  EnsureChatGptSessionArgs,
+  "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+> & {
+  readonly email: string;
+  readonly password: string;
+}): Promise<boolean> {
   await openChatGptLogin(page);
   await clickIntermediateLogin(page);
   // If the expected login UI is missing (e.g. a Cloudflare challenge), the
@@ -930,6 +957,52 @@ export async function ensureChatGptSession({
     page,
     password,
     ...(progress ? { progress } : {}),
+    sendInteraction,
+  });
+}
+
+export async function ensureChatGptSession({
+  assist,
+  allowInteractiveAuthRepair,
+  capture,
+  checkpoint,
+  completeAssistance,
+  context: _context,
+  page,
+  progress,
+  sendInteraction,
+}: EnsureChatGptSessionArgs): Promise<boolean> {
+  if (await navigateAndProbeSession(page, progress)) {
+    return true;
+  }
+
+  const interactiveAuthRepairAllowed = allowInteractiveAuthRepair ?? chatGptAllowsInteractiveAuthRepair();
+  if (!interactiveAuthRepairAllowed) {
+    await progress?.("ChatGPT session is not active; automatic refresh will not start interactive auth repair.");
+    throw new Error(CHATGPT_SESSION_REQUIRED_NON_INTERACTIVE_MESSAGE);
+  }
+
+  const email = process.env.CHATGPT_USERNAME;
+  const password = process.env.CHATGPT_PASSWORD;
+  const hooks = sessionAssistanceHooks({ assist, capture, checkpoint, completeAssistance, progress });
+  if (!(email && password)) {
+    if (
+      await repairWithManualBrowserLogin({
+        ...hooks,
+        page,
+        sendInteraction,
+      })
+    ) {
+      return true;
+    }
+    throw new Error("chatgpt_login_post_submit_failed");
+  }
+
+  return await driveStoredCredentialAuthRepair({
+    ...hooks,
+    email,
+    page,
+    password,
     sendInteraction,
   });
 }
