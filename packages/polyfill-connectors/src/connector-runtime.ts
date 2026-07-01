@@ -631,13 +631,41 @@ export function runConnector(config: RunConnectorConfig): void {
 
   const readStart = (): Promise<StartMessage> =>
     new Promise((resolve, reject) => {
-      rl.once("line", (line: string) => {
-        try {
-          resolve(JSON.parse(line) as StartMessage);
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
+      let settled = false;
+      const cleanup = (): void => {
+        rl.off("line", onLine);
+        rl.off("close", onClose);
+        process.stdin.off("end", onClose);
+        process.stdin.off("error", onError);
+      };
+      const settle = (fn: () => void): void => {
+        if (settled) {
+          return;
         }
-      });
+        settled = true;
+        cleanup();
+        fn();
+      };
+      const onLine = (line: string): void => {
+        settle(() => {
+          try {
+            resolve(JSON.parse(line) as StartMessage);
+          } catch (err) {
+            reject(err instanceof Error ? err : new Error(String(err)));
+          }
+        });
+      };
+      const onClose = (): void => {
+        settle(() => reject(new Error("Missing START message before stdin closed")));
+      };
+      const onError = (err: Error): void => {
+        settle(() => reject(new Error(`Missing START message before stdin error: ${err.message}`)));
+      };
+
+      rl.once("line", onLine);
+      rl.once("close", onClose);
+      process.stdin.once("end", onClose);
+      process.stdin.once("error", onError);
     });
 
   const requestDetailGapPage: BaseCollectContext["requestDetailGapPage"] = (req = {}) => {

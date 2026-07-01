@@ -40,6 +40,8 @@ interface ImportResult {
   timedOut: boolean;
 }
 
+interface EntrypointResult extends ImportResult {}
+
 /** Spawn `tsx -e "import('<connector>/index.ts')"` and wait for exit.
  *  Stdin is 'ignore' so if the runtime fires, it can't receive a START
  *  and will park forever — surfacing as timedOut=true. */
@@ -60,6 +62,53 @@ function importConnectorInChild(connectorRelPath: string): Promise<ImportResult>
         ...process.env,
         // Ensure the child has a clean env for patchright; we're not
         // running browsers, just importing the module.
+        PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+      },
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString();
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolvePromise({ code: null, signal: "SIGKILL", stderr, stdout, timedOut: true });
+    }, IMPORT_TIMEOUT_MS);
+
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolvePromise({ code, signal, stderr, stdout, timedOut: false });
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolvePromise({
+        code: null,
+        signal: null,
+        stderr: `spawn error: ${err.message}\n${stderr}`,
+        stdout,
+        timedOut: false,
+      });
+    });
+  });
+}
+
+/** Spawn a real connector entrypoint with stdin closed. This exercises the
+ * protocol bootstrap path, not a module import. */
+function runConnectorEntrypointWithClosedStdin(connectorRelPath: string): Promise<EntrypointResult> {
+  return new Promise((resolvePromise) => {
+    const absPath = join(PACKAGE_ROOT, connectorRelPath);
+    const child = spawn(process.execPath, ["--import", "tsx/esm", absPath], {
+      cwd: PACKAGE_ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
         PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
         PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
       },
@@ -119,4 +168,15 @@ test("importing claude_code/index.ts (non-browser connector) in a child process 
     0,
     `child exited non-zero: code=${result.code} signal=${result.signal} stderr=${result.stderr}`
   );
+});
+
+test("a connector entrypoint with closed stdin fails closed instead of hanging before START", {
+  timeout: IMPORT_TIMEOUT_MS + 5000,
+}, async () => {
+  const result = await runConnectorEntrypointWithClosedStdin("connectors/github/index.ts");
+  assert.equal(result.timedOut, false, `child hung: stderr=${result.stderr}`);
+  assert.equal(result.code, 1, `expected fail-closed exit code 1: stdout=${result.stdout} stderr=${result.stderr}`);
+  assert.match(result.stdout, /"type":"DONE"/, "missing START should emit a terminal DONE envelope");
+  assert.match(result.stdout, /"status":"failed"/, "missing START should fail the DONE envelope");
+  assert.match(result.stdout, /Missing START message before stdin closed/);
 });
