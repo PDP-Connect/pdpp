@@ -27,6 +27,11 @@ First-party polyfill connector manifests MAY declare `capabilities.refresh_polic
 - **AND** an automatic run that cannot reuse the session SHALL fail or defer before submitting credentials, requesting OTP, requesting external app approval, or opening manual browser handoff
 - **AND** an owner-started manual run MAY perform the interactive auth repair path.
 
+#### Scenario: Browser-session repair has no stored login credential
+- **WHEN** an owner-started manual browser-session repair has no active stored login credential
+- **THEN** the connector MAY still hand the secure browser to the owner for manual login
+- **AND** the connector SHALL NOT silently store credentials typed into that provider page.
+
 #### Scenario: A future spec wants portable scheduling semantics
 - **WHEN** refresh policy hints need to become interoperable across implementations
 - **THEN** the vocabulary SHALL be promoted through a separate Collection Profile or companion-spec change
@@ -1004,3 +1009,19 @@ The polyfill connector package postinstall SHALL skip optional Patchright Chromi
 - **WHEN** package installation runs on a host where Patchright does not publish the requested Chromium build
 - **AND** strict browser-download proof is requested
 - **THEN** postinstall SHALL fail
+
+### Requirement: Failed connector DONE errors MAY carry bounded terminal codes
+
+The polyfill runtime SHALL accept an optional non-secret `code` on failed `DONE.error` objects. The runtime SHALL validate the code as a bounded identifier, preserve it in the run result and terminal evidence, and reject unsupported or secret-like error metadata.
+
+#### Scenario: Connector reports credential rejection
+
+- **WHEN** a connector emits `DONE` with `status="failed"` and `error.code="credential_rejected"`
+- **THEN** the runtime SHALL preserve `credential_rejected` as a bounded terminal error code
+- **AND** it SHALL still require a non-empty safe error message and explicit retryable flag
+
+#### Scenario: Unsupported error metadata is rejected
+
+- **WHEN** a connector emits a failed `DONE.error` object with fields other than the supported bounded fields
+- **THEN** the runtime SHALL reject the message as a protocol violation
+- **AND** it SHALL NOT persist arbitrary connector-authored metadata.

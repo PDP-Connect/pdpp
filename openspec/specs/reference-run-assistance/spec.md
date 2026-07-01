@@ -49,6 +49,18 @@ The reference runtime SHALL expose assistance request, resolution, timeout, canc
 - **THEN** the run SHALL record bounded terminal evidence that classifies the failure as credential or source-session repair
 - **AND** the run SHALL NOT emit repeated owner assistance or interaction prompts from the automatic path
 
+#### Scenario: Stored credential is rejected before assistance
+
+- **WHEN** a connector receives a connection-scoped stored credential and the provider definitively rejects it
+- **THEN** the run SHALL record bounded terminal evidence with a stable non-secret credential-rejection code
+- **AND** it SHALL NOT ask the owner for unrelated app approval, OTP, or browser assistance for that same rejected credential attempt
+
+#### Scenario: Owner manual repair uses browser session
+
+- **WHEN** an owner-attended browser-session repair starts without an active stored login credential
+- **THEN** the reference MAY ask the owner to operate the secure browser
+- **AND** the resulting repair SHALL be represented as browser-session state unless the owner explicitly submits a stored-credential capture flow.
+
 ### Requirement: Dashboard assistance UX is derived from state
 The reference dashboard SHALL derive assistance copy and controls from the structured assistance fields and run terminal state rather than from connector-specific string matching or from the presence of a pending interaction alone.
 
