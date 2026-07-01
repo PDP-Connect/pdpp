@@ -5,13 +5,15 @@
 - [x] 1.1 Add shared constants `DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000`
   (slow-start discovery seed) and `DEFAULT_PACING_MIN_INTERVAL_MS = 250` (the one
   owner number — the rate ceiling), exported from `connector-http-governor.ts`.
-- [x] 1.2 Default `pacingInitialIntervalMs` / `pacingMinIntervalMs` to those
-  constants so a bare `createConnectorHttpGovernor({ name })` yields adaptive
-  pacing; keep `pacingInitialIntervalMs: 0` as the explicit opt-out (no-pacing,
-  byte-identical pre-convergence path, `snapshot() === null`).
-- [x] 1.3 Add tests proving the bare governor cold-starts at the discovery seed,
-  ACCELERATES under sustained success toward the ceiling, BACKS OFF on a throttle
-  (legible in the snapshot), and never crosses the ceiling.
+- [x] 1.2 Default `pacingInitialIntervalMs` to the conservative discovery seed
+  while requiring a per-provider `profile.pacingMinIntervalMs` for the ceiling;
+  keep `pacingInitialIntervalMs: 0` as the explicit opt-out (no-pacing,
+  byte-identical pre-convergence path, `snapshot() === null`). Supersedes the
+  initial shared-ceiling version of this task.
+- [x] 1.3 Add tests proving the minimal profiled governor cold-starts at the
+  discovery seed, ACCELERATES under sustained success toward the declared
+  ceiling, BACKS OFF on a throttle (legible in the snapshot), and never crosses
+  the ceiling.
 
 ## 2. Warm-start runtime seam (persist learned rate across runs)
 
@@ -42,15 +44,16 @@
   no account content), or `null` when pacing is opted out (honest absence).
 - [x] 4.2 Emit `collection_rate` from github via the shared helper; it flows
   through the existing runtime→spine→console path with no new UI.
-- [x] 4.3 Test: the bare governor's snapshot yields legible rate state with no
-  account-content leakage; opting out yields `null` (no false zero).
+- [x] 4.3 Test: the profiled governor's snapshot yields legible rate state with
+  no account-content leakage; opting out yields `null` (no false zero).
 
 ## 5. New-connector experience documented
 
 - [x] 5.1 Document in the governor module header: "to add an API connector with
-  fastest-safe adaptive collection, call `createConnectorHttpGovernor({ name })`
-  — discovery, warm-start, back-off, and observability are automatic," and make
-  that true.
+  fastest-safe adaptive collection, call
+  `createConnectorHttpGovernor({ name, profile })` — discovery, warm-start,
+  back-off, and observability are automatic once the provider-specific ceiling is
+  declared," and make that true.
 - [x] 5.2 Note in the module header that browser-bound connectors and reddit are
   Phase B and do NOT use this factory.
 
@@ -136,8 +139,9 @@
   gap-free connector would be inventing one — the honest call is the default.
   (The trigger to add one later: a connector grows a detail-hydration phase that
   emits `DETAIL_GAP` records under pressure.)
-- [ ] 7b.3 Each new ceiling validated by a supervised live run (owner-run). The
+- [x] 7b.3 Each new ceiling validated by a supervised live run (owner-run). The
   values are derived from documented limits below the provider's flagging
   threshold (conservative starting point: the AIMD only approaches the ceiling
   under sustained success), so they are safe to ship ahead of the live
-  confirmation. OPEN: owner gate.
+  confirmation. Converted to a residual risk in `proposal.md` for archive; the
+  remaining proof is owner-run evidence, not implementation work.

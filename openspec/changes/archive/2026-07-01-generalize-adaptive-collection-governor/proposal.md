@@ -28,18 +28,17 @@ here.
 
 ## What Changes
 
-- **Adaptive collection is the DEFAULT in `createConnectorHttpGovernor`.** The
-  factory's `pacingInitialIntervalMs` now defaults to a conservative slow-start
-  discovery seed (`DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000`) and
-  `pacingMinIntervalMs` to the shared rate ceiling
-  (`DEFAULT_PACING_MIN_INTERVAL_MS = 250`) — ChatGPT's live-calibrated values
-  hoisted as the shared defaults. The AIMD machinery (`recordSuccess` additive
-  increase, `recordThrottle` multiplicative decrease) was already wired into the
-  factory's request path; flipping the default from 0 turns it on. The same bare
-  `createConnectorHttpGovernor({ name })` call now yields slow-start discovery →
-  accelerate-under-success → ceiling-bounded back-off. Pass
-  `pacingInitialIntervalMs: 0` to opt OUT (the pre-convergence byte-identical
-  no-pacing path).
+- **Adaptive collection is the DEFAULT after a connector declares its provider
+  profile.** The factory's `pacingInitialIntervalMs` defaults to a conservative
+  slow-start discovery seed (`DEFAULT_PACING_INITIAL_INTERVAL_MS = 1000`). The
+  rate ceiling no longer has a cross-provider default: the connector MUST pass a
+  required `ProviderPacingProfile` whose `pacingMinIntervalMs` is derived from
+  that provider's documented or observed limits. The same minimal
+  `createConnectorHttpGovernor({ name, profile })` call yields slow-start
+  discovery → accelerate-under-success → ceiling-bounded back-off. Omitting the
+  profile is a type/build error with a runtime backstop for untyped callers.
+  Pass `pacingInitialIntervalMs: 0` to opt OUT (the pre-convergence
+  byte-identical no-pacing path).
 
 - **Warm-start persistence as a runtime concern via a clean seam.** The governor
   exposes `snapshot()` (the live rate state) and three shared, framework-owned
@@ -80,4 +79,12 @@ here.
 - NOT touched (other workstreams / Phase B): `auth.js`, `apps/console` UI,
   browser-bound connectors (amazon/chase/usaa), reddit.
 - No live calibration in this change: ChatGPT's proven values become the shared
-  defaults; a supervised live run per new connector is owner-run.
+  reference for the control-loop shape, while each API connector declares its
+  own audited ceiling; a supervised live run per new connector is owner-run.
+
+## Residual Risks
+
+- The six new API-connector ceilings are derived from documented provider limits
+  and are safe to ship, but they have not each been confirmed by an owner
+  supervised live calibration run. That proof remains owner-run evidence, not an
+  implementation blocker.

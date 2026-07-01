@@ -14,11 +14,12 @@ import type { SendGovernor } from "./send-governor.js";
  * Shared HTTP request governor for API connectors.
  *
  * NEW-CONNECTOR ONE-LINER: to add an API connector with fastest-safe adaptive
- * collection, call `createConnectorHttpGovernor({ name })` — discovery,
- * warm-start, back-off, and observability are automatic.
+ * collection, call `createConnectorHttpGovernor({ name, profile })` — discovery,
+ * warm-start, back-off, and observability are automatic once the connector
+ * declares its provider-specific rate ceiling.
  *
- * That bare call gives a connector author, by default and with zero additional
- * adoption surface:
+ * That minimal profiled call gives a connector author, by default and with zero
+ * additional rate-governor code:
  *
  * - **Adaptive, fastest-safe collection** — a per-provider {@link ProviderPacing}
  *   GCRA bucket whose interval STARTS conservative (slow-start discovery seed)
@@ -28,8 +29,8 @@ import type { SendGovernor } from "./send-governor.js";
  *   up slow inside a fixed envelope you never probe", hoisted here as the DEFAULT
  *   so every governor-using connector inherits it (Phase A of the
  *   collection-governor generalization). The behavior was proven live on ChatGPT
- *   (19 → 32.7 conv/min); its live-calibrated values are the shared defaults
- *   below.
+ *   (19 → 32.7 conv/min), but the rate ceiling itself is provider-specific and
+ *   comes from the required ProviderProfile, never from a cross-provider default.
  * - **Warm-start across runs (opt-in seam, ~2 lines)** — the learned interval is
  *   ephemeral within a process. To compound the descent across runs, a connector
  *   restores last run's interval via `restoredIntervalMs` (from

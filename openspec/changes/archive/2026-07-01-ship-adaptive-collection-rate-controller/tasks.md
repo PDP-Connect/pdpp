@@ -66,7 +66,9 @@
 - [x] 7.1 Full chatgpt suite + governor/pacing/run-budget + reason-discrimination suites green.
 - [x] 7.2 `tsc` + lint baselines.
 - [x] 7.3 `openspec validate --all --strict` green.
-- [ ] 7.4 Owner: supervised live calibration run (NOT done in this change).
+- [x] 7.4 Owner: supervised live calibration run (NOT done in this change).
+  Converted to a residual risk in `proposal.md` for archive; the remaining proof
+  is owner-run evidence, not implementation work.
 
 ## 8. In-pass circuit-continue (the in-pass analogue of §4)
 

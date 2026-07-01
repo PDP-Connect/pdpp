@@ -84,3 +84,10 @@ an operator.
     progress events, neutralize concurrency-AIMD.
   - `apps/console/src/app/dashboard/records/[connector]/` — Collection rate readout.
 - No live calibration in this change: the supervised live run is owner-run.
+
+## Residual Risks
+
+- The adaptive controller has code, simulation, and focused connector-test proof,
+  but the supervised live calibration run remains owner-run evidence. This is
+  preserved as a residual risk rather than keeping the completed implementation
+  change open indefinitely.

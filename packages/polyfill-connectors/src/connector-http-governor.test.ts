@@ -231,18 +231,19 @@ test("connector governor: terminal abort status surfaces without rate_limited mi
 // ─── Adaptive collection is the DEFAULT (Phase A shared-primitive parity) ─────
 //
 // The six API connectors (github/notion/oura/spotify/strava/ynab) each construct
-// their governor with the bare `createConnectorHttpGovernor({ name, ... })` call.
-// These tests prove that bare call now yields the full adaptive behavior the
-// ChatGPT detail path proved live (slow-start discovery → AIMD accelerate-under-
-// success → ceiling-bounded back-off) WITH NO per-connector pacing config — the
-// generalization deliverable.
+// their governor with the minimal profiled
+// `createConnectorHttpGovernor({ name, profile, ... })` call. These tests prove
+// that profiled call yields the full adaptive behavior the ChatGPT detail path
+// proved live (slow-start discovery → AIMD accelerate-under-success →
+// ceiling-bounded back-off) with no per-connector rate-governor code beyond the
+// declared ProviderProfile.
 
-test("adaptive default: a bare governor cold-starts at the shared discovery seed and exposes a snapshot", () => {
+test("adaptive default: a profiled governor cold-starts at the shared discovery seed and exposes a snapshot", () => {
   // The exact shape the six connectors ship — no pacing args beyond the
   // required profile (which each connector declares; here the test profile).
   const g = createConnectorHttpGovernor({ name: "oura", maxAttempts: 1, profile: TEST_PROFILE });
   const snap = g.snapshot();
-  assert.ok(snap, "a bare governor has live rate state by default (pacing is on)");
+  assert.ok(snap, "a profiled governor has live rate state by default (pacing is on)");
   assert.equal(
     snap.intervalMs,
     DEFAULT_PACING_INITIAL_INTERVAL_MS,
@@ -251,14 +252,14 @@ test("adaptive default: a bare governor cold-starts at the shared discovery seed
   assert.equal(
     snap.minIntervalMs,
     DEFAULT_PACING_MIN_INTERVAL_MS,
-    "the one owner number — the rate ceiling — is the shared default"
+    "the rate ceiling comes from the declared ProviderProfile"
   );
   assert.equal(snap.lastBackoff, null, "no back-off has fired on a fresh governor");
 });
 
-test("adaptive default: sustained success ACCELERATES the bare governor toward the ceiling (the proven adaptive behavior)", async () => {
+test("adaptive default: sustained success ACCELERATES the profiled governor toward the ceiling (the proven adaptive behavior)", async () => {
   const slept: number[] = [];
-  // Bare call — the shape the six connectors ship. No pacing config.
+  // Minimal profiled call — the shape the six connectors ship. No extra pacing config.
   const g = createConnectorHttpGovernor({
     name: "github",
     profile: TEST_PROFILE,
@@ -279,7 +280,7 @@ test("adaptive default: sustained success ACCELERATES the bare governor toward t
   assert.ok(after >= DEFAULT_PACING_MIN_INTERVAL_MS, "acceleration never crosses the rate ceiling");
 });
 
-test("adaptive default: a throttle BACKS OFF the bare governor and the back-off is legible in the snapshot", async () => {
+test("adaptive default: a throttle BACKS OFF the profiled governor and the back-off is legible in the snapshot", async () => {
   const g = createConnectorHttpGovernor({
     name: "spotify",
     profile: TEST_PROFILE,
@@ -330,7 +331,7 @@ test("adaptive default: pacingInitialIntervalMs:0 opts OUT (no snapshot, byte-id
 
 test("warm-start seam: round-trip — a run persists its learned interval; the next run restores it via the shared helpers", async () => {
   const now = 1_000_000;
-  // Run 1: bare governor, accelerate under success, then persist.
+  // Run 1: profiled governor, accelerate under success, then persist.
   const g1 = createConnectorHttpGovernor({
     name: "strava",
     profile: TEST_PROFILE,
@@ -463,7 +464,7 @@ test("warm-start staleness window: a learned interval persisted 7h ago is discar
 
 // ─── collection_rate observability (legible rate for ALL governor connectors) ─
 
-test("observability: buildCollectionRateProgress turns a bare governor's snapshot into legible rate state carrying no account content", () => {
+test("observability: buildCollectionRateProgress turns a profiled governor's snapshot into legible rate state carrying no account content", () => {
   const g = createConnectorHttpGovernor({ name: "ynab", maxAttempts: 1, profile: TEST_PROFILE });
   const rate = buildCollectionRateProgress(g);
   assert.ok(rate, "any governor-using connector can surface collection_rate");

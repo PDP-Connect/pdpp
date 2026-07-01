@@ -700,24 +700,37 @@ and SHALL NOT be misread as source pressure by the scheduler.
 - **AND** the cross-run source-pressure cooldown governor SHALL NOT be armed by
   that deferral
 
-### Requirement: The shared connector HTTP governor SHALL provide adaptive, fastest-safe collection by default
+### Requirement: The shared connector HTTP governor SHALL provide adaptive, fastest-safe collection from a declared provider profile
 
 The shared API-connector HTTP governor (`createConnectorHttpGovernor`) SHALL,
-when constructed with only a connector name, yield an adaptive rate controller:
-it SHALL enter from a conservative slow-start discovery interval, accelerate
-under sustained success (AIMD additive increase toward the rate ceiling), and
-back off multiplicatively on a throttle signal — never crossing the
-owner-authored rate ceiling. A connector author SHALL obtain this behavior with
-no per-connector rate code beyond the bare factory call. The factory SHALL also
-provide an explicit opt-out (a zero discovery interval) that disables pacing
-entirely and preserves the pre-convergence byte-identical no-wait path.
+when constructed with a connector name and a required per-provider pacing
+profile, yield an adaptive rate controller: it SHALL enter from a conservative
+slow-start discovery interval, accelerate under sustained success (AIMD
+additive increase toward the rate ceiling), and back off multiplicatively on a
+throttle signal — never crossing the declared provider rate ceiling. A connector
+author SHALL obtain this behavior with no per-connector rate code beyond the
+minimal profiled factory call. The rate ceiling SHALL come from the connector's
+own provider profile; omitting that profile SHALL fail at the type boundary and
+at runtime for untyped callers rather than silently borrowing another provider's
+number. The factory SHALL also provide an explicit opt-out (a zero discovery
+interval) that disables pacing entirely and preserves the pre-convergence
+byte-identical no-wait path.
 
-#### Scenario: A bare governor cold-starts adaptive
+#### Scenario: A minimal profiled governor cold-starts adaptive
 
-- **WHEN** a connector constructs the governor with only its name
+- **WHEN** a connector constructs the governor with its name and declared
+  provider pacing profile
 - **THEN** the governor SHALL cold-start at the shared conservative discovery
   interval
 - **AND** its live rate snapshot SHALL be available (pacing is on by default)
+- **AND** its rate ceiling SHALL come from the declared provider profile
+
+#### Scenario: Missing provider profile fails closed
+
+- **WHEN** a connector constructs the governor without a provider pacing profile
+- **THEN** the build/type gate SHALL reject the call
+- **AND** an untyped runtime caller SHALL receive a loud startup error rather
+  than a silent shared default
 
 #### Scenario: Sustained success accelerates the rate toward the ceiling
 
@@ -1154,3 +1167,178 @@ Existing assisted-after-owner-auth style hints MAY be honored as compatibility m
 - **WHEN** the owner explicitly starts a repair flow for a connection whose manifest supports browser-session repair
 - **THEN** the runtime MAY ask the owner to operate a secure browser session
 - **AND** any resulting readiness SHALL be recorded as connection evidence, not as an update to the connector manifest.
+
+### Requirement: The send governor's learned rate SHALL be the sole rate authority, not a fixed launch-jitter floor
+
+SHALL the polyfill-runtime's single pre-flight send governor take its
+inter-request rate from the folded GCRA pacing signal, NOT from a fixed
+launch-jitter floor. When a connector configures both a launch-jitter window and
+a GCRA pacing hint, the launch-jitter window SHALL be small enough (an epsilon
+anti-phase-lock noise band, on the order of tens of milliseconds) that it never
+exceeds the controller's learned inter-request interval. The send governor's
+pre-flight wait SHALL be the maximum of the epsilon jitter and the pacing delay;
+since the epsilon jitter is bounded well below the slowest learned interval, the
+learned interval is the binding rate authority whenever the controller has
+slowed below the epsilon band.
+
+A fixed launch-jitter floor that can exceed the controller's learned interval,
+capping throughput regardless of what the controller learns, SHALL be treated as
+a defect: it is a manual throttle, not a controller signal, and a single serial
+collector has no competing flows for which a jitter floor has any convergence
+role.
+
+#### Scenario: Learned interval below the jitter band binds the rate
+
+- **WHEN** the controller has learned an inter-request interval shorter than the
+  configured launch-jitter maximum
+- **THEN** the launch-jitter window SHALL be an epsilon band, so the effective
+  pre-flight wait tracks the larger of epsilon and the learned interval
+- **AND** the learned interval SHALL bind the rate, never a fixed floor larger
+  than it
+
+#### Scenario: A jitter floor that exceeds the learned interval is a defect
+
+- **WHEN** a connector is configured with a launch-jitter minimum larger than the
+  controller's reachable minimum interval
+- **THEN** the composition SHALL be treated as a defect
+- **AND** the runtime SHALL NOT ship a default configuration whose launch-jitter
+  floor exceeds the controller's reachable minimum interval
+
+### Requirement: The adaptive rate SHALL have exactly one owner-authored number: the rate ceiling
+
+SHALL the polyfill-runtime expose exactly one owner-authored safety number for
+the adaptive rate loop: the rate ceiling, expressed as the minimum inter-request
+interval the controller's additive-increase is forbidden to cross. The ceiling
+SHALL be a single configurable value with a safe default set below the provider's
+estimated behavioral-flagging threshold. The controller's additive increase
+SHALL floor at the ceiling and never go faster. In-flight concurrency SHALL
+remain a hard, non-adaptive ceiling of 1; any concurrency-AIMD machinery SHALL be
+inert under `maxConcurrency === 1` and SHALL NOT act as a second adaptive control
+dimension.
+
+#### Scenario: Additive increase floors at the rate ceiling
+
+- **WHEN** the controller observes sustained success and additively reduces its
+  interval toward the ceiling
+- **THEN** the interval SHALL never drop below the configured minimum interval
+- **AND** the effective rate SHALL never exceed the ceiling rate
+
+#### Scenario: Concurrency is a frozen ceiling, not a controller
+
+- **WHEN** the detail lane runs with `maxConcurrency === 1`
+- **THEN** the concurrency-increase path SHALL be inert
+- **AND** concurrency SHALL NOT be a second adaptive variable alongside the rate
+
+### Requirement: The controller's learned rate SHALL persist across runs with a staleness guard
+
+SHALL the polyfill-runtime persist the controller's learned inter-request
+interval to durable connector state at run end and restore it at the next run's
+start, so the AIMD descent compounds across runs instead of resetting to a cold
+authored interval at every run boundary. The restore SHALL be guarded by a
+staleness window: when the gap since the last run exceeds the guard, the
+controller SHALL discard the stale learned interval and resume from the
+conservative cold-start discovery interval. The restored interval SHALL never be
+faster than the configured rate ceiling.
+
+#### Scenario: A fresh resume restores the prior run's learned interval
+
+- **WHEN** a run starts and durable state carries a learned interval written
+  recently
+- **THEN** the controller SHALL resume near the prior run's learned interval, not
+  the cold default
+- **AND** the restored interval SHALL be clamped to be no faster than the rate
+  ceiling
+
+#### Scenario: A stale resume falls back to the cold discovery interval
+
+- **WHEN** a run starts and the durable learned interval is older than the
+  staleness guard
+- **THEN** the controller SHALL discard it and resume from the conservative
+  cold-start discovery interval
+
+### Requirement: A transient source-pressure circuit during recovery SHALL NOT terminate a run with remaining budget
+
+SHALL the polyfill-runtime, when gap recovery stops short because a transient
+source-pressure circuit opened and not because the run budget is exhausted,
+continue to the forward walk while run budget remains, rather than terminating
+the entire run. The run SHALL defer to the next run only when the run budget is
+genuinely exhausted. The durable-gap invariant SHALL be preserved: recovery
+items not hydrated this run SHALL remain recorded as resumable `DETAIL_GAP`
+records regardless of whether the forward walk proceeds.
+
+#### Scenario: Source-pressure recovery stop with budget continues to forward walk
+
+- **WHEN** gap recovery stops with pending items because a source-pressure
+  circuit opened, and run budget remains
+- **THEN** the run SHALL proceed to the forward walk rather than returning early
+- **AND** the un-hydrated recovery items SHALL remain durable `DETAIL_GAP`
+  records for the next run
+
+#### Scenario: Genuine budget exhaustion still defers
+
+- **WHEN** gap recovery consumes the run budget
+- **THEN** the run SHALL defer to the next run without starting the forward walk
+- **AND** the deferral SHALL carry a budget-exhaustion reason disjoint from the
+  source-pressure reason set
+
+### Requirement: A transient upstream-pressure circuit during a detail pass SHALL be waited out within run budget, not treated as budget exhaustion
+
+SHALL the polyfill-runtime, when the upstream-pressure circuit breaker opens
+during a detail pass, distinguish that transient back-off from genuine run-budget
+exhaustion. On `circuit_open` the runtime SHALL wait out the circuit's cool-down,
+bounded by the remaining run budget, and then resume the same detail work rather
+than deferring the entire remaining tail and finishing the run. Only when the run
+budget is genuinely exhausted, or a bounded number of consecutive cool-down
+waits is reached as a forward-progress guard, SHALL the runtime defer the
+remaining tail as durable `DETAIL_GAP` records and finish.
+
+#### Scenario: An open circuit with budget remaining waits out the cool-down and resumes
+
+- **WHEN** the upstream-pressure circuit opens during a detail pass and run
+  budget remains
+- **THEN** the runtime SHALL wait the circuit's cool-down, bounded by the
+  remaining run budget, and then resume collecting the same detail work
+- **AND** the run SHALL NOT defer the entire remaining tail and finish on the
+  first circuit trip
+
+#### Scenario: Genuine budget exhaustion during the wait defers the tail
+
+- **WHEN** the run budget is reached while waiting out an open circuit
+- **THEN** the runtime SHALL stop waiting and defer the remaining conversations
+  as durable resumable `DETAIL_GAP` records
+- **AND** the deferral reason SHALL be a run-cap reason disjoint from the
+  source-pressure reason set
+
+#### Scenario: A circuit that keeps re-opening converges to a bounded defer
+
+- **WHEN** the circuit re-opens on every cool-down wait across the bounded cycle
+  guard, with run budget still notionally remaining
+- **THEN** the runtime SHALL defer the remaining tail as durable `DETAIL_GAP`
+  records rather than waiting unbounded
+- **AND** the wait loop SHALL make forward progress every cycle so it can never
+  spin indefinitely
+
+### Requirement: The adaptive controller's live rate state SHALL be legible to an operator
+
+SHALL the polyfill-runtime surface the adaptive rate controller's live state so
+an operator can see the adaptation. During a run the runtime SHALL emit the
+controller's current inter-request interval, equivalent effective rate,
+configured ceiling rate, and last back-off event with its reason as structured
+run-trace progress, redacting all conversation/account content. The connection
+diagnostics surface SHALL render a small honest collection-rate readout,
+degrading to an explicit unknown when controller state is unavailable.
+
+#### Scenario: Controller state is emitted as redacted run-trace progress
+
+- **WHEN** the controller speeds up on success or backs off on throttle during a
+  run
+- **THEN** the runtime SHALL emit a structured progress event carrying the
+  current interval, the ceiling, and on back-off the reason
+- **AND** the event SHALL NOT carry conversation ids, titles, tokens, or other
+  account content
+
+#### Scenario: The console readout degrades honestly when state is absent
+
+- **WHEN** the connection-detail surface has no controller rate state to show
+- **THEN** the collection-rate readout SHALL render an explicit unknown
+- **AND** it SHALL NOT render a false zero or a false green

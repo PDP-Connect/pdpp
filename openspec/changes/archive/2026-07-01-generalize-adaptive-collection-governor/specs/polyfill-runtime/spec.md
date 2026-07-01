@@ -1,23 +1,36 @@
 ## ADDED Requirements
 
-### Requirement: The shared connector HTTP governor SHALL provide adaptive, fastest-safe collection by default
+### Requirement: The shared connector HTTP governor SHALL provide adaptive, fastest-safe collection from a declared provider profile
 
 The shared API-connector HTTP governor (`createConnectorHttpGovernor`) SHALL,
-when constructed with only a connector name, yield an adaptive rate controller:
-it SHALL enter from a conservative slow-start discovery interval, accelerate
-under sustained success (AIMD additive increase toward the rate ceiling), and
-back off multiplicatively on a throttle signal — never crossing the
-owner-authored rate ceiling. A connector author SHALL obtain this behavior with
-no per-connector rate code beyond the bare factory call. The factory SHALL also
-provide an explicit opt-out (a zero discovery interval) that disables pacing
-entirely and preserves the pre-convergence byte-identical no-wait path.
+when constructed with a connector name and a required per-provider pacing
+profile, yield an adaptive rate controller: it SHALL enter from a conservative
+slow-start discovery interval, accelerate under sustained success (AIMD
+additive increase toward the rate ceiling), and back off multiplicatively on a
+throttle signal — never crossing the declared provider rate ceiling. A connector
+author SHALL obtain this behavior with no per-connector rate code beyond the
+minimal profiled factory call. The rate ceiling SHALL come from the connector's
+own provider profile; omitting that profile SHALL fail at the type boundary and
+at runtime for untyped callers rather than silently borrowing another provider's
+number. The factory SHALL also provide an explicit opt-out (a zero discovery
+interval) that disables pacing entirely and preserves the pre-convergence
+byte-identical no-wait path.
 
-#### Scenario: A bare governor cold-starts adaptive
+#### Scenario: A minimal profiled governor cold-starts adaptive
 
-- **WHEN** a connector constructs the governor with only its name
+- **WHEN** a connector constructs the governor with its name and declared
+  provider pacing profile
 - **THEN** the governor SHALL cold-start at the shared conservative discovery
   interval
 - **AND** its live rate snapshot SHALL be available (pacing is on by default)
+- **AND** its rate ceiling SHALL come from the declared provider profile
+
+#### Scenario: Missing provider profile fails closed
+
+- **WHEN** a connector constructs the governor without a provider pacing profile
+- **THEN** the build/type gate SHALL reject the call
+- **AND** an untyped runtime caller SHALL receive a loud startup error rather
+  than a silent shared default
 
 #### Scenario: Sustained success accelerates the rate toward the ceiling
 
