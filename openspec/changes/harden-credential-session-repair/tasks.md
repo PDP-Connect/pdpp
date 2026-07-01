@@ -34,5 +34,13 @@
 - [x] 6.1 Run targeted polyfill tests.
 - [x] 6.2 Run targeted reference-implementation tests.
 - [x] 6.3 Run OpenSpec strict validation.
-- [ ] 6.4 Merge/deploy only after no active connector runs.
-- [ ] 6.5 Verify live ChatGPT no longer reuses a rejected stored password and can become healthy through owner repair.
+- [x] 6.4 Merge/deploy only after no active connector runs.
+- [x] 6.5 Verify live ChatGPT no longer reuses a rejected stored password.
+- [ ] 6.6 Verify post-repair ChatGPT collection after the owner reconnects the account.
+
+Live evidence, 2026-07-01:
+
+- Deployed `c48887188` as `v0.18.12-29-gc48887188` after confirming `controller_active_runs` was empty.
+- Controlled run `run_1782883228302` reached the definitive provider rejection path: ChatGPT showed incorrect password and the terminal gap carried `chatgpt_stored_credential_rejected`.
+- The stored `username_password` credential for `cin_11deac1e728b244aaeb56765` changed from `active` to `rejected` at `2026-07-01T05:20:54.503Z`.
+- Owner-facing verdict for that connection is now `Can't collect` with required action `Reconnect this account` and satisfaction condition `credential_present_and_unrejected`.
