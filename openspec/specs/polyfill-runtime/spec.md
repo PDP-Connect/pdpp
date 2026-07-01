@@ -21,10 +21,30 @@ First-party polyfill connector manifests MAY declare `capabilities.refresh_polic
 - **WHEN** a connector can refresh safely with durable credentials, local files, or low-friction API access
 - **THEN** its refresh policy MAY recommend automatic refresh with an appropriate interval
 
+#### Scenario: Automatic browser refresh depends on reusable owner-authenticated session state
+- **WHEN** a browser connector recommends automatic refresh only after owner-authenticated browser state exists
+- **THEN** the connector SHALL treat automatic runs as session-reuse-only unless a later accepted connector policy explicitly permits background auth repair
+- **AND** an automatic run that cannot reuse the session SHALL fail or defer before submitting credentials, requesting OTP, requesting external app approval, or opening manual browser handoff
+- **AND** an owner-started manual run MAY perform the interactive auth repair path.
+
 #### Scenario: A future spec wants portable scheduling semantics
 - **WHEN** refresh policy hints need to become interoperable across implementations
 - **THEN** the vocabulary SHALL be promoted through a separate Collection Profile or companion-spec change
 - **AND** this reference/polyfill metadata SHALL NOT be retroactively treated as normative PDPP core protocol
+
+### Requirement: Runtime SHALL expose bounded run automation metadata to connector children
+
+The polyfill runtime SHALL pass the current run trigger kind and automation mode to connector child processes using bounded non-secret metadata. The metadata SHALL be sufficient for a connector to distinguish owner-started auth repair from unattended/session-reuse automatic collection.
+
+#### Scenario: Scheduled connector child receives automation metadata
+- **WHEN** the reference runtime starts a connector child for a scheduled run
+- **THEN** the child environment SHALL include the scheduled trigger kind and the projected automation mode
+- **AND** those values SHALL NOT contain owner tokens, credentials, record contents, browser bearer URLs, or raw grant payloads.
+
+#### Scenario: Manual connector child receives automation metadata
+- **WHEN** the reference runtime starts a connector child for an owner-started manual run
+- **THEN** the child environment SHALL include the manual trigger kind and projected automation mode
+- **AND** a connector MAY use that metadata to allow owner-interactive auth repair for that run.
 
 ### Requirement: Browser-backed connectors SHALL acquire browsers exclusively through the isolated patchright launcher
 
@@ -984,4 +1004,3 @@ The polyfill connector package postinstall SHALL skip optional Patchright Chromi
 - **WHEN** package installation runs on a host where Patchright does not publish the requested Chromium build
 - **AND** strict browser-download proof is requested
 - **THEN** postinstall SHALL fail
-
