@@ -20,7 +20,7 @@
     "credential_capture": {
       "kind": "username_password",
       "label": "ChatGPT sign-in details",
-      "description": "Seal the ChatGPT sign-in details for this source. The connector uses them only to help repair this source's browser session when an owner-started run needs login again.",
+      "description": "Seal the ChatGPT sign-in details for this source. The connector may use them only during owner-mediated credential or session recovery for this connection; scheduled runs reuse current session evidence and do not prompt for credentials.",
       "submit_label": "Save ChatGPT credential and start first sync",
       "fields": [
         {
@@ -63,7 +63,7 @@
       "bot_detection_sensitivity": "high",
       "background_safe": true,
       "assisted_after_owner_auth": true,
-      "rationale": "ChatGPT requires owner-authenticated browser state. Automatic refresh reuses an active session only; owner-started manual refresh repairs auth when ChatGPT requires app approval, OTP, or browser action."
+      "rationale": "ChatGPT requires owner-authenticated browser state. Automatic refresh is session-reuse-only; owner-mediated repair handles provider login challenges through runtime assistance evidence."
     },
     "public_listing": {
       "listed": true,

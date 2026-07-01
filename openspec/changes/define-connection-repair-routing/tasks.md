@@ -10,6 +10,7 @@
 - [x] 2.2 Classify each field as stable mechanism, scheduling policy, runtime binding, observed state, provider-specific instruction, or compatibility hint.
 - [x] 2.3 Identify any field currently used to imply live readiness, repair state, or owner actionability.
 - [x] 2.4 Document which compatibility fields remain supported and which are replaced by stable mechanism plus evidence-derived repair routing.
+- [x] 2.5 Audit all shipped manifest files: 33 first-party polyfill manifests and 4 reference fixture manifests.
 
 ## 3. Implementation
 
@@ -25,4 +26,5 @@
 - [x] 4.2 Add tests proving scheduled runs defer owner-mediated repair while owner-started repair can complete and auto-resume.
 - [x] 4.3 Add tests proving expired or superseded prompts do not dominate current actionability and do not make a connection falsely healthy.
 - [x] 4.4 Add tests proving connector-specific progress/error strings do not decide owner actionability.
-- [x] 4.5 Run focused reference/polyfill tests plus OpenSpec validation.
+- [x] 4.5 Add a first-party manifest honesty regression test for setup/repair copy and coarse interaction posture.
+- [x] 4.6 Run focused reference/polyfill tests plus OpenSpec validation.

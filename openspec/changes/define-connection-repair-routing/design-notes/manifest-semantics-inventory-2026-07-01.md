@@ -47,6 +47,39 @@ Scores below use `1` low and `5` high.
 - `connection-health.ts` uses `interaction_posture` to classify stale-but-otherwise-green assisted connectors as non-urgent owner-refresh advisories rather than degraded failures.
 - `rendered-verdict.ts` already has a `satisfied_when` contract for owner actions. That is the right closeout mechanism.
 
+## Manifest Audit Result
+
+Audited 37 shipped manifest files:
+
+- 33 first-party polyfill manifests under `packages/polyfill-connectors/manifests/`;
+- 4 reference fixture manifests under `reference-implementation/manifests/`.
+
+The reference fixture manifests do not carry setup or repair-routing semantics;
+they remain fixture/seed manifests. The polyfill manifest fleet already uses the
+right stable fields: `runtime_requirements.bindings`, `setup.modality`,
+`setup.credential_capture`, `setup.manual_or_upload`,
+`capabilities.refresh_policy`, `capabilities.human_interaction`, and
+`capabilities.public_listing`.
+
+One manifest contained over-specific live/provider repair copy:
+
+- `chatgpt.json` described using stored sign-in details to "help repair" a
+  browser session "when an owner-started run needs login again" and named app
+  approval, OTP, or browser action in refresh-policy rationale.
+
+The fix keeps the stable policy but removes live-state/provider-page claims:
+
+- automatic ChatGPT refresh is session-reuse-only;
+- owner-mediated repair handles provider login challenges through runtime
+  assistance evidence;
+- scheduled runs reuse current session evidence and do not prompt for
+  credentials.
+
+The durable guard is `setup-repair-manifest-honesty.test.ts`, which fails if
+setup or refresh-policy copy starts claiming current connection state, and if
+interaction declarations drift beyond the coarse stable capability/posture
+vocabulary.
+
 ## Preliminary Decision
 
 The schema can give up provider-specific auth-state knowledge without materially hurting UX. It should keep coarse product-surface classes and stable setup/runtime mechanisms. It should not try to answer "is this connection currently logged in?" or "which provider challenge is showing?" from manifest data.
