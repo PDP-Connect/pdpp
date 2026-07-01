@@ -43,6 +43,12 @@ For browser-session connectors, a rejected optional stored login secret is ignor
 
 Automatic ChatGPT runs still probe the existing session and stop before interactive auth repair when the session is inactive. This change does not re-enable background password submission or app-approval prompting.
 
+### 6. Scheduled stored-credential repair is a deferred state
+
+When scheduled run assembly cannot recover a connection-scoped stored credential because it is missing, revoked, or provider-rejected, the scheduler marks that connection as needs-human and records a skipped repair state instead of a failed connector run. This preserves the fail-closed guarantee: no connector child is spawned and no deployment-wide credential fallback is possible. It also prevents the scheduler from deepening failure/backoff history every hour for an already-known owner-repair condition.
+
+Other resolver errors remain failed run records. A helper wiring bug, unsupported connector classification, or credential-store outage is not owner repair evidence and should not be silently suppressed.
+
 ## Alternatives
 
 ### Age out owner-action rows
@@ -69,4 +75,5 @@ Rejected. It would surprise the owner and blur browser-session repair with store
 - ChatGPT incorrect-password UI emits a typed `credential_rejected` failed `DONE.error`.
 - Runtime accepts and persists the bounded error code, and controller marking rejects only credentials actually injected into the run.
 - Owner repair copy says browser repair captures session state and does not store passwords typed into the browser.
+- Scheduled static-secret recovery errors with owner-repair credential codes emit skipped needs-human records, do not spawn the connector, and do not repeat credential recovery on later automatic ticks.
 - OpenSpec strict validation and targeted tests pass.

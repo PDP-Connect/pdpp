@@ -349,6 +349,37 @@ function buildCredentialResolutionFailure(
   };
 }
 
+const OWNER_REPAIR_CREDENTIAL_CODES = new Set(["credential_not_found", "credential_revoked", "credential_rejected"]);
+
+function ownerRepairCredentialCode(err: unknown): string | null {
+  if (!err || typeof err !== "object" || !("code" in err)) {
+    return null;
+  }
+  const code = (err as { code?: unknown }).code;
+  return typeof code === "string" && OWNER_REPAIR_CREDENTIAL_CODES.has(code) ? code : null;
+}
+
+function buildCredentialResolutionOwnerActionSkip(
+  connectorId: string,
+  code: string,
+  message: string,
+  connectorInstanceId?: string
+): RunRecord {
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `needs_human_attention: ${code}: ${message}`,
+    attempt: 0,
+  };
+}
+
 function buildBackoffClearedEvent(connectorId: string, resumedAt: string, connectorInstanceId?: string): RunRecord {
   const payload = JSON.stringify({ resumed_at: resumedAt });
   return {
@@ -818,6 +849,13 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+        const ownerRepairCode = ownerRepairCredentialCode(err);
+        if (!isManual && ownerRepairCode) {
+          markNeedsHuman(connectorId, connectorInstanceId);
+          return recordAndNotify(
+            buildCredentialResolutionOwnerActionSkip(connectorId, ownerRepairCode, message, connectorInstanceId)
+          );
+        }
         return recordAndNotify(buildCredentialResolutionFailure(connectorId, message, connectorInstanceId));
       }
     }

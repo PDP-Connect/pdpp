@@ -15,6 +15,13 @@ The reference implementation SHALL model connection health as raw facts normaliz
 **THEN** the reference implementation SHALL mark that stored credential as rejected with a non-secret reason and timestamp
 **AND** future run credential recovery SHALL treat that credential as unavailable until explicit owner capture or rotation writes a new active credential.
 
+#### Scenario: Scheduled run defers rejected credential recovery
+
+**WHEN** a scheduled run cannot recover a connection-scoped stored credential because the credential is missing, revoked, or provider-rejected
+**THEN** the reference implementation SHALL NOT spawn the connector with a stale credential or deployment-wide fallback secret
+**AND** it SHALL record a skipped owner-repair state instead of a failed connector run
+**AND** later automatic ticks SHALL NOT keep retrying the same unavailable credential while the connection remains marked as needing owner repair.
+
 #### Scenario: Explicit credential rotation clears rejection
 
 **WHEN** the owner captures or rotates a valid credential for a connection whose prior credential was rejected

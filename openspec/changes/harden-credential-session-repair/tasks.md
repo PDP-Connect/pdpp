@@ -36,7 +36,8 @@
 - [x] 6.3 Run OpenSpec strict validation.
 - [x] 6.4 Merge/deploy only after no active connector runs.
 - [x] 6.5 Verify live ChatGPT no longer reuses a rejected stored password.
-- [ ] 6.6 Verify post-repair ChatGPT collection after the owner reconnects the account.
+- [x] 6.6 Verify post-repair ChatGPT collection after the owner reconnects the account.
+- [x] 6.7 Add scheduler regression coverage that rejected stored credentials produce owner-repair skips, not repeated automatic failures.
 
 Live evidence, 2026-07-01:
 
@@ -44,3 +45,6 @@ Live evidence, 2026-07-01:
 - Controlled run `run_1782883228302` reached the definitive provider rejection path: ChatGPT showed incorrect password and the terminal gap carried `chatgpt_stored_credential_rejected`.
 - The stored `username_password` credential for `cin_11deac1e728b244aaeb56765` changed from `active` to `rejected` at `2026-07-01T05:20:54.503Z`.
 - Owner-facing verdict for that connection is now `Can't collect` with required action `Reconnect this account` and satisfaction condition `credential_present_and_unrejected`.
+- Owner-attended repair run `run_1782872690957` completed at `2026-07-01T02:29:37.461Z` and collected ChatGPT records after the owner completed the secure-browser login flow.
+- Immediate follow-up run `run_1782873029952` completed at `2026-07-01T02:30:44.645Z` with no owner interaction and `api_session_user=true`, proving same-browser-process session reuse.
+- A forced browser-process restart probe then lost ChatGPT API-session auth and requested interaction, matching the documented residual risk that ChatGPT API sessions are not restart-durable browser-profile state.

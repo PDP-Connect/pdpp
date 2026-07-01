@@ -11,6 +11,7 @@ Prior-art research in `docs/research/connector-credential-session-repair-prior-a
 - Mark connection-scoped stored credentials rejected only when a run actually used that stored credential and the connector reports definitive rejection.
 - Let browser-session repair proceed without silently storing passwords typed into the secure browser.
 - Keep automatic ChatGPT runs session-reuse-only: no background password submission or repeated owner prompts.
+- Suppress repeated scheduled launches after stored-credential recovery reaches a provider-repair lifecycle state.
 
 ## Capabilities
 
@@ -25,3 +26,4 @@ Modified:
 - Runtime protocol widens failed `DONE.error` with bounded optional code metadata.
 - ChatGPT auto-login emits a typed stored-credential rejection on definitive invalid-password UI.
 - Owner UI copy clarifies that browser repair captures session state, not passwords typed into the browser.
+- Scheduled runs treat rejected, revoked, or missing stored credentials as owner-repair skips rather than connector failures.

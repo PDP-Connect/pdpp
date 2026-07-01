@@ -515,7 +515,7 @@ test('a store row suppresses credentials_required on the scheduled path (and its
   }
 });
 
-test('scheduled launch fails closed when source-scoped credential is missing (no child spawned)', async () => {
+test('scheduled launch defers for owner repair when source-scoped credential is missing (no child spawned)', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-sched-fail-closed-'));
   const { connectorPath, snapshotPath } = writeEnvSnapshotConnector(tmpDir, 'github', ['GITHUB_PERSONAL_ACCESS_TOKEN']);
   const completedRuns = [];
@@ -549,9 +549,9 @@ test('scheduled launch fails closed when source-scoped credential is missing (no
     scheduler.stop();
 
     const [record] = completedRuns;
-    assert.equal(record.status, 'failed');
-    assert.equal(record.failureReason, 'static_secret_credential_unavailable');
-    assert.match(record.error, /static_secret_credential_unavailable/);
+    assert.equal(record.status, 'skipped');
+    assert.equal(record.failureReason, undefined);
+    assert.match(record.error, /^needs_human_attention: credential_not_found:/);
     assert.match(record.error, /credential is stored/);
     // The connector child must never have been spawned.
     assert.throws(() => readFileSync(snapshotPath, 'utf8'), /ENOENT/);
