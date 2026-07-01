@@ -2327,7 +2327,7 @@ export async function runConnector(opts) {
     },
   });
   if (typeof onStarted === 'function') {
-    onStarted({ run_id: runId, trace_id: traceContext.trace_id });
+    onStarted({ run_id: runId, trace_id: traceContext.trace_id, scenario_id: traceContext.scenario_id });
   }
 
   // Collect new STATE checkpoints

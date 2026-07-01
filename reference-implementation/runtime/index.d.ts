@@ -71,7 +71,7 @@ export interface RuntimeRunConnectorOptions {
   manifest: Record<string, unknown>;
   onInteraction?: (...args: unknown[]) => unknown;
   onProgress?: (message: unknown) => void;
-  onStarted?: ((info: { run_id: string; trace_id: string }) => void) | null;
+  onStarted?: ((info: { run_id: string; trace_id: string; scenario_id?: string }) => void) | null;
   ownerToken: string;
   persistState?: boolean;
   /**

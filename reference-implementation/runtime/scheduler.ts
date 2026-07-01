@@ -24,14 +24,11 @@ import {
   projectRunAutomationPolicy,
   type RunTriggerKind,
 } from "./run-automation-policy.ts";
-import { createPreRunGate } from "./scheduler/pre-run-gate.ts";
 import { createDispatchGovernor } from "./scheduler/dispatch-governor.ts";
+import { createPreRunGate } from "./scheduler/pre-run-gate.ts";
 import { createRunExecutor } from "./scheduler/run-executor.ts";
-import { type PendingPressureGap } from "./scheduler-source-pressure-cooldown.ts";
-import {
-  isTerminalGrantFailure,
-  type TerminalReason,
-} from "./scheduler-retry-classifier.ts";
+import { isTerminalGrantFailure, type TerminalReason } from "./scheduler-retry-classifier.ts";
+import type { PendingPressureGap } from "./scheduler-source-pressure-cooldown.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -368,7 +365,12 @@ export interface SchedulerOptions {
   runManagedConnectorViaController?: RunManagedConnectorViaController | null;
   schedulerStore?: Pick<
     SchedulerStore,
-    "appendRunHistory" | "listLastRunTimes" | "listRunHistory" | "upsertLastRunTime"
+    | "appendRunHistory"
+    | "deleteActiveRun"
+    | "listLastRunTimes"
+    | "listRunHistory"
+    | "upsertActiveRun"
+    | "upsertLastRunTime"
   >;
   setState?: SetStateHandler;
 }
@@ -528,7 +530,6 @@ function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
 
 // ─── Skip-record builders ───────────────────────────────────────────────────
 
-
 /**
  * Fail-closed refusal record: the connection HAS a stored static-secret
  * credential the resolver could not turn into a run env (revoked, deleted, or
@@ -553,6 +554,7 @@ function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
 //   - `schedule.gave_up: <json>`            — one-shot on cooling_off → blocked
 
 export * from "./scheduler-readiness.ts";
+
 import { defaultReadinessChecker } from "./scheduler-readiness.ts";
 
 // ─── createScheduler ────────────────────────────────────────────────────────

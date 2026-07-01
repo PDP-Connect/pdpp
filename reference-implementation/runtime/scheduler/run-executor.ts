@@ -28,10 +28,6 @@ import {
   type RunAutomationMode,
   type RunTriggerKind,
 } from "../run-automation-policy.ts";
-import {
-  shouldRetryRunFailure,
-  type RunConnectorError,
-} from "../scheduler-retry-classifier.ts";
 import type {
   ConnectorError,
   ConnectorSchedule,
@@ -49,6 +45,7 @@ import type {
   SchedulerOptions,
   SetStateHandler,
 } from "../scheduler.ts";
+import { type RunConnectorError, shouldRetryRunFailure } from "../scheduler-retry-classifier.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
 
@@ -76,10 +73,10 @@ export interface RunExecutorDeps {
   referenceBaseUrl: string | null;
   resolveStaticSecretRunEnv: ResolveStaticSecretRunEnv | null;
   rsUrl: string;
-  runtime: RunExecutorRuntimeState;
   runManagedConnectorViaController: RunManagedConnectorViaController | null;
+  runtime: RunExecutorRuntimeState;
   schedulerStore:
-    | Pick<NonNullable<SchedulerOptions["schedulerStore"]>, "appendRunHistory">
+    | Pick<NonNullable<SchedulerOptions["schedulerStore"]>, "appendRunHistory" | "deleteActiveRun" | "upsertActiveRun">
     | null
     | undefined;
   setState: SetStateHandler;
@@ -219,7 +216,7 @@ interface RunConnectorCall {
   manifest: SchedulerManifest;
   onInteraction: InteractionHandler;
   onProgress: () => void;
-  onStarted?: (run: { run_id?: string | null; trace_id?: string | null }) => void;
+  onStarted?: (run: { run_id?: string | null; scenario_id?: string | null; trace_id?: string | null }) => void;
   ownerToken: string;
   persistState: boolean;
   recoveryOnly?: boolean;
@@ -228,6 +225,32 @@ interface RunConnectorCall {
   state: Record<string, unknown> | null;
   staticSecretEnv?: Record<string, string> | null;
   triggerKind?: RunTriggerKind;
+}
+
+interface StartedRunInfo {
+  runId: string;
+  scenarioId: string;
+  traceId: string;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function readStartedRunInfo(run: Parameters<NonNullable<RunConnectorCall["onStarted"]>>[0]): StartedRunInfo | null {
+  const runId = nonEmptyString(run?.run_id);
+  if (!runId) {
+    return null;
+  }
+  const traceId = nonEmptyString(run?.trace_id);
+  if (!traceId) {
+    return null;
+  }
+  return {
+    runId,
+    scenarioId: nonEmptyString(run?.scenario_id) ?? "default",
+    traceId,
+  };
 }
 
 async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorResult> {
@@ -538,11 +561,49 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     call: RunConnectorCall,
     attempt: number
   ): Promise<AttemptOutcome> {
-    const { maxRetries = 2 } = schedule;
+    const { connectorId, connectorInstanceId = connectorId, maxRetries = 2 } = schedule;
     const startedAt = nowIso();
+    let activeRunId: string | null = null;
+    let activeRunRegistration: Promise<void> | null = null;
+    const originalOnStarted = call.onStarted;
+    const activeRunStore =
+      schedulerStore &&
+      typeof schedulerStore.upsertActiveRun === "function" &&
+      typeof schedulerStore.deleteActiveRun === "function"
+        ? schedulerStore
+        : null;
+
+    const callWithActiveLease: RunConnectorCall = {
+      ...call,
+      onStarted: (run) => {
+        originalOnStarted?.(run);
+        if (!activeRunStore) {
+          return;
+        }
+        const startedRun = readStartedRunInfo(run);
+        if (!startedRun) {
+          return;
+        }
+        activeRunId = startedRun.runId;
+        activeRunRegistration = Promise.resolve(
+          activeRunStore.upsertActiveRun({
+            connector_instance_id: connectorInstanceId,
+            connector_id: connectorId,
+            run_id: startedRun.runId,
+            run_generation: attempt,
+            trace_id: startedRun.traceId,
+            scenario_id: startedRun.scenarioId,
+            started_at: startedAt,
+          })
+        ).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[scheduler] failed to persist active run for ${connectorId}: ${message}`);
+        });
+      },
+    };
 
     try {
-      const result = await invokeRunConnector(call);
+      const result = await invokeRunConnector(callWithActiveLease);
       const candidateError: RunConnectorError = {
         failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
         terminal_reason: result.terminal_reason || null,
@@ -561,6 +622,16 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         return { kind: "retry", error };
       }
       return { kind: "give-up", error };
+    } finally {
+      if (activeRunId && activeRunStore) {
+        await activeRunRegistration;
+        await Promise.resolve(activeRunStore.deleteActiveRun(connectorInstanceId, activeRunId)).catch(
+          (err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[scheduler] failed to clear active run ${activeRunId} for ${connectorId}: ${message}`);
+          }
+        );
+      }
     }
   }
 
