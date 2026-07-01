@@ -300,6 +300,27 @@ test('tone: stale-but-healthy stays health-green and carries a freshness annotat
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now'));
 });
 
+test('connection-level terminal disposition is not erased by a retryable stream row', () => {
+  const snap = snapshot({
+    state: 'degraded',
+    axes: { coverage: 'terminal_gap', freshness: 'stale' },
+    forward_disposition: 'terminal',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: 'retryable_gap', gap_retryable: true, priority: 'required' })],
+    MANUAL_REFRESH,
+    true
+  );
+
+  assert.equal(v.detail.forward_disposition, 'terminal');
+  assert.equal(v.pill.tone, 'red');
+  assert.equal(v.forward_statement, 'This connector needs a code fix before it can collect again.');
+  assert.equal(v.required_actions[0]?.kind, 'code_fix');
+  assert.equal(v.required_actions[0]?.terminal, true);
+  assert.notEqual(v.required_actions[0]?.kind, 'retry_gap');
+});
+
 test('freshness annotation does not claim schedule refresh when the schedule is disabled', () => {
   const mode = progressMode({
     localDeviceBacked: false,

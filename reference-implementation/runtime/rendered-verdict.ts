@@ -514,8 +514,8 @@ function connectionDisposition(
   // stream contributes only when its disposition is `terminal` (a lost stream is
   // lost regardless of priority). This keeps disposition and coverage consistent so
   // a trivially-stale optional stream does not amber the whole connection.
-  let worstRank = -1;
-  let worst: ForwardDisposition = "complete";
+  let worstRank = TONE_RANK[dispositionTone(snapshot.forward_disposition)];
+  let worst: ForwardDisposition = snapshot.forward_disposition;
   for (const stream of streams) {
     const disposition = streamDisposition(stream, snapshot, refresh);
     const counts = stream.priority === "required" || disposition === "terminal";
