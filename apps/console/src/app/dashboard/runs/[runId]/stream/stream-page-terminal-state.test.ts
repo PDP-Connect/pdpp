@@ -20,6 +20,10 @@ const INSTANCE_SCOPED_SUMMARY_MATCH_RE =
   /c\.connector_id === connectorId &&\s*\(c\.connector_instance_id === connectorInstanceId \|\| c\.connection_id === connectorInstanceId\)/;
 const CONNECTOR_TYPE_FALLBACK_RE =
   /instanceMatch \?\? summaries\.data\.find\(\(c\) => c\.connector_id === connectorId\)/;
+const BROWSER_ASSISTANCE_STREAM_KIND_RE =
+  /interactionKind="manual_action"[\s\S]{0,180}interactionMessage=\{streamableAssistance\.message\}/;
+const BROWSER_ASSISTANCE_RESPONSE_CONTRACT_RE =
+  /interactionRequiresResponse=\{streamableAssistance\.responseContract === "response_required"\}/;
 
 test("no-assistance stream state distinguishes success, terminal failure, and active runs", () => {
   assert.equal(selectNoAssistanceStreamState({ terminalStatus: "completed" }), "resolved");
@@ -61,4 +65,9 @@ test("stream page labels multi-account runs by connection instance before connec
   assert.match(pageSource, RUN_STATUS_INSTANCE_CONTEXT_RE);
   assert.match(pageSource, INSTANCE_SCOPED_SUMMARY_MATCH_RE);
   assert.match(pageSource, CONNECTOR_TYPE_FALLBACK_RE);
+});
+
+test("stream page opens browser-surface assistance without assuming a response is required", () => {
+  assert.match(pageSource, BROWSER_ASSISTANCE_STREAM_KIND_RE);
+  assert.match(pageSource, BROWSER_ASSISTANCE_RESPONSE_CONTRACT_RE);
 });

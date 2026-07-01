@@ -129,6 +129,7 @@ export default async function RunInteractionStreamPage({
         interactionId="preview-interaction"
         interactionKind="manual_action"
         interactionMessage="Strava is asking you to confirm a 2FA code from your Authenticator app. Enter the six-digit code in the browser below to let collection continue."
+        interactionRequiresResponse
         runId={runId}
       />
     );
@@ -189,8 +190,9 @@ export default async function RunInteractionStreamPage({
     <StreamSurface
       connector={connector}
       interactionId={streamableAssistance.id}
-      interactionKind={streamableAssistance.kind}
+      interactionKind="manual_action"
       interactionMessage={streamableAssistance.message}
+      interactionRequiresResponse={streamableAssistance.responseContract === "response_required"}
       runId={runId}
     />
   );

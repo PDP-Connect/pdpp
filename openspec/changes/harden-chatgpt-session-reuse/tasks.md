@@ -17,6 +17,7 @@
 - [x] Add regression coverage that auth extraction is sent as a literal browser expression.
 - [x] Add managed n.eko Chrome policy coverage for browser-session restart restore.
 - [x] Add ChatGPT browser-login assistance coverage proving owner-completed login auto-resumes without an explicit interaction response.
+- [x] Add dashboard stream coverage proving no-response browser-surface assistance opens the streaming companion without a submit/continue control.
 - [x] Run focused tests.
 - [x] Run `openspec validate harden-chatgpt-session-reuse --strict`.
 - [x] Live-prove owner-attended repair followed by immediate no-owner-action reuse on the same n.eko browser process.

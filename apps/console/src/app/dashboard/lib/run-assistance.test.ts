@@ -94,6 +94,29 @@ test("browser-surface assistance with a registered surface remains streamable", 
   assert.equal(streamable.id, "assist_1");
 });
 
+test("no-response browser-surface assistance is streamable without becoming a value prompt", () => {
+  const events = [
+    event("run.assistance_requested", {
+      assistance_request_id: "assist_1",
+      attachments: [{ kind: "browser_surface", role: "streaming_companion" }],
+      message: "Finish login in the browser. Collection continues automatically.",
+      owner_action: "operate_attachment",
+      progress_posture: "blocked",
+      response_contract: "none",
+    }),
+  ];
+
+  const current = getCurrentRunAssistance(events);
+  const streamable = getCurrentBrowserSurfaceAssistance(events);
+
+  assert.ok(current);
+  assert.equal(current.responseContract, "none");
+  assert.equal(requiresBrowserSurfaceAssistance(current), true);
+  assert.ok(streamable);
+  assert.equal(streamable.id, "assist_1");
+  assert.equal(streamable.responseContract, "none");
+});
+
 test("passive app-push assistance is not treated as browser-surface work", () => {
   const events = [
     event("run.assistance_requested", {

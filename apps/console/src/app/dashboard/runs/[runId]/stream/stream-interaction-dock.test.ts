@@ -27,11 +27,10 @@ const oldCloseLabelPattern = /aria-label=\{`Close \$\{connectorName\} browser`\}
 // immediately, so unprotected behavior is unchanged.
 const cornerRoutesThroughGuardPattern = /<CornerControls[\s\S]{0,200}onClose=\{handleCloseRequest\}/;
 // The guard is gated on a pending interaction, derived from the same
-// SUPPORTED_KINDS predicate (manual_action/otp) that renders the dock — not a
-// new ad-hoc predicate. When pending it arms the confirm bubble and returns
-// WITHOUT calling onClose.
+// response-required browser work. No-response browser assistance can still show
+// the stream without rendering a fake Continue dock.
 const guardGatedOnPendingPattern =
-  /const interactionPending = SUPPORTED_KINDS\.has\(interactionKind\);[\s\S]{0,400}if \(interactionPending\) \{[\s\S]{0,200}setCloseConfirmArmed\(true\);[\s\S]{0,40}return;/;
+  /const interactionPending = interactionRequiresResponse && SUPPORTED_KINDS\.has\(interactionKind\);[\s\S]{0,400}if \(interactionPending\) \{[\s\S]{0,200}setCloseConfirmArmed\(true\);[\s\S]{0,40}return;/;
 // Only the explicit "End browser session" press in the bubble actually closes.
 const confirmEndsSessionPattern = /handleCloseConfirm = useCallback\(\(\) => \{[\s\S]{0,200}onClose\(\);/;
 // The native, lint-banned window.confirm must NOT be used as the guard.
@@ -46,6 +45,8 @@ const guardFallsThroughWhenIdlePattern = /if \(interactionPending\) \{[\s\S]{0,2
 // the close guard: it only flips `collapsed`, never arms the close bubble or
 // ends the session.
 const hideDoesNotArmClosePattern = /onClick=\{\(\) => setCollapsed\(true\)\}/;
+const responseRequiredDockGatePattern =
+  /if \(!\(interactionRequiresResponse && \(interactionKind === "otp" \|\| interactionKind === "manual_action"\)\)\) \{[\s\S]{0,80}return null;/;
 
 test("manual browser step controls distinguish hiding from completion", () => {
   assert.match(source, manualCompletionLabelPattern);
@@ -71,8 +72,8 @@ test("the stream-killer corner control names itself as ending the session", () =
 test("ending the session while a manual/browser interaction is pending is guarded", () => {
   // The corner X must route through the guarded handler, not raw onClose.
   assert.match(source, cornerRoutesThroughGuardPattern);
-  // The guard is gated on the same SUPPORTED_KINDS predicate that renders the
-  // dock, and arms-then-returns rather than closing immediately.
+  // The guard is gated on response-required browser work and arms-then-returns
+  // rather than closing immediately.
   assert.match(source, guardGatedOnPendingPattern);
   // Only the explicit confirmation actually ends the session.
   assert.match(source, confirmEndsSessionPattern);
@@ -95,4 +96,9 @@ test("hiding instructions does not arm the close guard or end the session", () =
   // touch the close-confirm state or submit/end the session.
   assert.match(source, hideDoesNotArmClosePattern);
   assert.doesNotMatch(source, hideButtonSubmitPattern);
+});
+
+test("no-response browser assistance opens the stream without a continue dock", () => {
+  assert.match(source, responseRequiredDockGatePattern);
+  assert.match(source, guardGatedOnPendingPattern);
 });

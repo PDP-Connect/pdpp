@@ -168,7 +168,6 @@ export function requiresBrowserSurfaceAssistance(assistance: CurrentRunAssistanc
   return (
     assistance.progressPosture === "blocked" &&
     assistance.ownerAction === "operate_attachment" &&
-    assistance.responseContract === "response_required" &&
     hasBrowserSurfaceAttachment(assistance)
   );
 }

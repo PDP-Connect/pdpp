@@ -115,6 +115,7 @@ interface StreamSurfaceProps {
   interactionId: string;
   interactionKind: string;
   interactionMessage: string;
+  interactionRequiresResponse?: boolean;
   pollForResolution?: boolean;
   runId: string;
 }
@@ -1356,6 +1357,7 @@ export function StreamSurface({
   interactionId,
   interactionKind,
   interactionMessage,
+  interactionRequiresResponse = true,
   pollForResolution = true,
   runId,
 }: StreamSurfaceProps) {
@@ -1473,6 +1475,7 @@ export function StreamSurface({
         interactionId={interactionId}
         interactionKind={interactionKind}
         interactionMessage={interactionMessage}
+        interactionRequiresResponse={interactionRequiresResponse}
         onClose={() => {
           setOpen(false);
           // Clear the minted session so the next "Open browser" click mints
@@ -1574,6 +1577,7 @@ interface StreamOverlayProps {
   interactionId: string;
   interactionKind: string;
   interactionMessage: string;
+  interactionRequiresResponse: boolean;
   onClose: () => void;
   onStatus: (status: ConnectionStatus) => void;
   open: boolean;
@@ -1587,6 +1591,7 @@ function StreamOverlay({
   interactionId,
   interactionKind,
   interactionMessage,
+  interactionRequiresResponse,
   onClose,
   onStatus,
   open,
@@ -1622,6 +1627,7 @@ function StreamOverlay({
               interactionId={interactionId}
               interactionKind={interactionKind}
               interactionMessage={interactionMessage}
+              interactionRequiresResponse={interactionRequiresResponse}
               onClose={onClose}
               onStatus={onStatus}
               runId={runId}
@@ -1646,6 +1652,7 @@ interface StreamStageProps {
   interactionId: string;
   interactionKind: string;
   interactionMessage: string;
+  interactionRequiresResponse: boolean;
   onClose: () => void;
   onStatus: (status: ConnectionStatus) => void;
   runId: string;
@@ -1669,6 +1676,7 @@ function StreamStage({
   interactionId,
   interactionKind,
   interactionMessage,
+  interactionRequiresResponse,
   onClose,
   onStatus,
   runId,
@@ -3004,15 +3012,11 @@ function StreamStage({
     setClipboardSheetOpen(true);
   }, [clipboardPolicy.surface, logDebug]);
 
-  // Ending the browser session is destructive — it tears down the live
-  // session and abandons whatever login/manual step is mid-flight. When a
-  // manual_action or otp interaction is pending (the same predicate that makes
-  // the StreamInteractionDock render), an accidental corner-X click would
-  // silently kill that in-progress step. Guard it: the first click arms an
-  // inline confirmation bubble instead of closing; only an explicit "End
-  // browser session" press in that bubble tears the session down. When nothing
-  // is pending, the corner X closes immediately — behavior is unchanged.
-  const interactionPending = SUPPORTED_KINDS.has(interactionKind);
+  // Ending a response-required browser session is destructive — it tears down
+  // the live session and abandons whatever login/manual step is mid-flight.
+  // No-response assistance (for example ChatGPT browser login polling) may be
+  // hidden without sending any connector response.
+  const interactionPending = interactionRequiresResponse && SUPPORTED_KINDS.has(interactionKind);
   const handleCloseRequest = useCallback(() => {
     if (interactionPending) {
       logDebug("neko.corner.close", { phase: "close-guard-armed", interactionKind });
@@ -3106,6 +3110,7 @@ function StreamStage({
       <StreamInteractionDock
         interactionId={interactionId}
         interactionKind={interactionKind}
+        interactionRequiresResponse={interactionRequiresResponse}
         message={interactionMessage}
         runId={runId}
       />
@@ -4978,11 +4983,13 @@ function CloseConfirmBubble({
 function StreamInteractionDock({
   interactionId,
   interactionKind,
+  interactionRequiresResponse,
   message,
   runId,
 }: {
   interactionId: string;
   interactionKind: string;
+  interactionRequiresResponse: boolean;
   message: string;
   runId: string;
 }) {
@@ -4992,7 +4999,7 @@ function StreamInteractionDock({
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  if (!(interactionKind === "otp" || interactionKind === "manual_action")) {
+  if (!(interactionRequiresResponse && (interactionKind === "otp" || interactionKind === "manual_action"))) {
     return null;
   }
 
