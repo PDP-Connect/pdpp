@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Browser-backed connector page preservation SHALL be explicit and outcome-scoped
 

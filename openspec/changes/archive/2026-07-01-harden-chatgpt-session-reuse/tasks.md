@@ -23,4 +23,17 @@
 - [x] Run `openspec validate harden-chatgpt-session-reuse --strict`.
 - [x] Live-prove owner-attended repair followed by immediate no-owner-action reuse on the same n.eko browser process.
 - [x] Live-prove forced n.eko restart does not preserve ChatGPT API-session auth; document this as a residual risk instead of a closeout criterion.
-- [ ] Deploy the browser-login auto-resume fix and run an owner-attended repair validation before closing the change.
+- [x] Deploy the browser-login auto-resume fix and run an owner-attended repair validation before closing the change.
+
+Live evidence, 2026-07-01:
+
+- Owner-attended ChatGPT repair run `run_1782872690957` completed at
+  `2026-07-01T02:29:37.461Z` and collected records after the owner completed
+  the secure-browser login flow.
+- Immediate follow-up run `run_1782873029952` completed at
+  `2026-07-01T02:30:44.645Z` with no owner interaction and
+  `api_session_user=true`, proving same-browser-process session reuse.
+- Forced browser-process restart probe `run_1782873061583` lost
+  ChatGPT API-session auth and requested interaction, so post-restart
+  API-session survival remains the explicit residual risk documented in the
+  design.

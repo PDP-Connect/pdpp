@@ -9,6 +9,8 @@ The reference dashboard SHALL derive assistance copy and controls from the struc
 - **AND** it SHALL NOT render a submit, continue, or interaction-response control
 - **AND** the run SHALL continue to rely on connector-observed completion rather than an owner-submitted response
 
+## ADDED Requirements
+
 ### Requirement: Browser-surface assistance can mint a stream without an interaction
 The reference implementation SHALL allow an owner to open the streaming companion for current no-response browser-surface assistance without requiring a pending interaction response.
 

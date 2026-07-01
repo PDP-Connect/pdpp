@@ -55,9 +55,11 @@
 - [x] 5.3 `git diff --check` clean.
 - [x] 5.4 `tsc --noEmit` clean; `ultracite check` on changed files clean.
 
-## Residual (owner-only)
+## Residual Risks
 
-- [ ] R.1 Live ChatGPT run where approval lands after the old 180s window
-      confirms auto-resume without an owner click and no watchdog trip.
-      (Requires real credentials + push device; recorded as a residual risk,
-      not blocking.)
+- A live ChatGPT run where approval lands after the old 180s window would further
+  confirm auto-resume without an owner click and no watchdog trip. That requires
+  real credentials plus a push device and is recorded as an owner-only residual
+  risk, not a blocking implementation task. Code-level coverage already proves
+  the extended observation window, per-tick checkpointing, no-interaction
+  auto-resume, and escalation ordering.

@@ -64,32 +64,11 @@ The reference runtime SHALL expose assistance request, resolution, timeout, canc
 ### Requirement: Dashboard assistance UX is derived from state
 The reference dashboard SHALL derive assistance copy and controls from the structured assistance fields and run terminal state rather than from connector-specific string matching or from the presence of a pending interaction alone.
 
-#### Scenario: Owner must approve elsewhere
-- **WHEN** the current assistance has progress posture `running`, owner action `act_elsewhere`, and response obligation `none`
-- **THEN** the dashboard SHALL show passive waiting copy that explains the external approval
-- **AND** it SHALL NOT show a required browser-stream or submit button unless an explicit fallback state is active
-
-#### Scenario: Owner must provide a value
-- **WHEN** the current assistance has progress posture `blocked`, owner action `provide_value`, and response obligation `response_required`
-- **THEN** the dashboard SHALL render an input form derived from the assistance schema
-- **AND** it SHALL treat secret inputs as ephemeral run responses rather than durable credentials
-
-#### Scenario: Owner must operate a browser surface
-- **WHEN** the current assistance has progress posture `blocked`, owner action `operate_attachment`, response obligation `response_required`, and a `browser_surface` attachment
+#### Scenario: Browser surface is needed but no response is required
+- **WHEN** the current assistance has progress posture `blocked`, owner action `operate_attachment`, response obligation `none`, and a `browser_surface` attachment
 - **THEN** the dashboard SHALL render the streaming companion entry point and browser-control instructions
-
-#### Scenario: Assistance is gone because the run failed
-- **WHEN** a stream companion page has no current browser assistance
-- **AND** the run terminal status is `failed`, `cancelled`, or `abandoned`
-- **THEN** the dashboard SHALL NOT render success or recovery copy
-- **AND** it SHALL direct the owner to the run timeline for the terminal details
-
-#### Scenario: Assistance is gone but the run is still active
-- **WHEN** a stream companion page has no current browser assistance
-- **AND** the run has no terminal status
-- **THEN** the dashboard SHALL NOT render success or recovery copy
-- **AND** it SHALL explain that no browser action is waiting at that moment
-- **AND** it SHALL revalidate the run status rather than remaining a static page
+- **AND** it SHALL NOT render a submit, continue, or interaction-response control
+- **AND** the run SHALL continue to rely on connector-observed completion rather than an owner-submitted response
 
 ### Requirement: Existing interaction messages remain compatible during migration
 The reference runtime SHALL continue accepting existing `INTERACTION` messages while mapping them into the structured assistance model for timeline and dashboard behavior.
@@ -153,4 +132,54 @@ The run interaction stream SHALL use the run's connection instance identity when
 
 - **WHEN** a run stream has only a `connector_id`
 - **THEN** the stream MAY fall back to connector-type display copy
+
+### Requirement: Externally-approvable observation windows SHALL auto-resume across their full budget without an owner response
+
+The reference SHALL continue to observe completion of an externally-approvable
+owner action across the entire non-blocking observation budget, and SHALL
+continue the run automatically when completion is observed during that budget,
+resolving the assistance without requiring an owner-submitted response. The
+reference SHALL escalate to a blocking owner action only after the observation
+budget is exhausted.
+
+#### Scenario: Approval completes during the non-blocking observation budget
+- **WHEN** a connector represents an externally-approvable owner action as a non-blocking assistance request and polls for completion
+- **AND** completion (for example session readiness) is observed at any point within the observation budget
+- **THEN** the reference SHALL continue the run automatically without emitting a blocking interaction
+- **AND** the reference SHALL record an assistance-resolved transition without requiring owner-submitted data
+
+#### Scenario: Observation budget is exhausted before completion is observed
+- **WHEN** the observation budget for a non-blocking externally-approvable assistance request elapses with no observed completion
+- **THEN** the reference SHALL record an assistance-escalated transition before presenting a blocking owner action
+- **AND** the reference SHALL then present the blocking owner action as a fallback
+
+### Requirement: A non-blocking observation window SHALL NOT be killed by the session-establishment watchdog
+
+The reference SHALL ensure that a connector legitimately waiting in a
+non-blocking observation window during session establishment reports
+forward-progress to the session-establishment watchdog, so the run is not failed
+closed while it is observing an external approval it can complete automatically.
+The watchdog SHALL still fail a genuinely stalled session establishment that
+reports no forward progress.
+
+#### Scenario: Connector polls an external approval longer than the watchdog deadline
+- **WHEN** a connector observes an externally-approvable action by polling during session establishment
+- **AND** the polling window is longer than the session-establishment watchdog's no-progress deadline
+- **THEN** the connector SHALL report forward-progress to the watchdog on each poll iteration
+- **AND** the reference SHALL NOT fail the run closed for lack of session-establishment progress while the poll is making progress
+
+#### Scenario: Session establishment genuinely stalls
+- **WHEN** session establishment makes no forward progress for longer than the watchdog deadline and no owner interaction is open
+- **THEN** the reference SHALL fail the run closed via the session-establishment watchdog as today
+
+### Requirement: Browser-surface assistance can mint a stream without an interaction
+The reference implementation SHALL allow an owner to open the streaming companion for current no-response browser-surface assistance without requiring a pending interaction response.
+
+#### Scenario: No-response browser assistance has a ready leased surface
+- **WHEN** a run has current assistance with response obligation `none`, owner action `operate_attachment`, and a `browser_surface` attachment
+- **AND** a ready browser-surface lease is active for that run
+- **AND** the owner requests a stream session using that assistance id
+- **THEN** the reference implementation SHALL mint a stream session for the leased browser surface
+- **AND** it SHALL NOT require `run.interaction_required` to be pending
+- **AND** it SHALL reject stale assistance ids or missing/non-ready browser surfaces
 
