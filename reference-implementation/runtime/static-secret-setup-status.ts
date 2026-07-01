@@ -66,6 +66,7 @@ export interface SetupStatusCredentialMetadata {
   readonly capturedAt?: string | null;
   readonly credentialKind?: string | null;
   readonly present: boolean;
+  readonly rotatedAt?: string | null;
 }
 
 export type ConnectionSetupKind = "manual_upload" | "static_secret" | "unknown";
@@ -159,6 +160,7 @@ export interface ConnectionSetupStatus {
     readonly present: boolean;
     readonly credential_kind: string | null;
     readonly captured_at: string | null;
+    readonly rotated_at: string | null;
   };
   readonly display_name: string | null;
   // The canonical health state this setup_state projects onto.
@@ -228,6 +230,10 @@ function runIsFailure(run: SetupStatusRun | null): boolean {
 
 function runIsRunning(run: SetupStatusRun | null): boolean {
   return run != null && typeof run.status === "string" && RUNNING_STATUSES.has(run.status);
+}
+
+function credentialUpdatedAt(credential: SetupStatusCredentialMetadata | null): string | null {
+  return credential?.rotatedAt ?? credential?.capturedAt ?? null;
 }
 
 export type ProjectStaticSecretSetupStatusInput = ProjectConnectionSetupStatusInput;
@@ -303,7 +309,7 @@ function defaultSetupMaterial(
       kind: "static_secret",
       label: "Provider credential",
       present: credential?.present === true,
-      capturedAt: credential?.capturedAt ?? null,
+      capturedAt: credentialUpdatedAt(credential),
     };
   }
   return { kind: "unknown", label: "Setup material", present: false, capturedAt: null };
@@ -397,6 +403,7 @@ export function projectConnectionSetupStatus(input: ProjectConnectionSetupStatus
       present: input.credential?.present === true,
       credential_kind: input.credential?.credentialKind ?? null,
       captured_at: input.credential?.capturedAt ?? null,
+      rotated_at: input.credential?.rotatedAt ?? null,
     },
     run: run
       ? {

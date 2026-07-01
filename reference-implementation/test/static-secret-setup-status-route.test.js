@@ -446,6 +446,22 @@ test('setup status flips to active once first ingest accepts records', async () 
       assert.equal(active.body.health_state, 'healthy');
       assert.equal(active.body.pending, false);
 
+      const rotated = await capture(asUrl, cookie, connectionId);
+      assert.equal(rotated.status, 200, rotated.text);
+      assert.equal(typeof rotated.body.credential.rotated_at, 'string');
+      assert.notEqual(rotated.body.credential.rotated_at, null);
+      seedActiveRun(connectionId, 'gmail', 'run_status_credential_rotation');
+      const verifying = await getStatus(asUrl, cookie, connectionId, 'run_status_credential_rotation');
+      assert.equal(verifying.status, 200, verifying.text);
+      assert.equal(verifying.body.status, 'active');
+      assert.equal(verifying.body.setup_state, 'active');
+      assert.equal(verifying.body.running, true);
+      assert.equal(verifying.body.run.run_id, 'run_status_credential_rotation');
+      assert.equal(verifying.body.credential.captured_at, active.body.credential.captured_at);
+      assert.equal(verifying.body.credential.rotated_at, rotated.body.credential.rotated_at);
+      assert.equal(verifying.body.setup_material.captured_at, rotated.body.credential.rotated_at);
+      clearActiveRun(connectionId);
+
       const schedule = await server.controller.getSchedule('gmail', {
         connectorInstanceId: connectionId,
       });

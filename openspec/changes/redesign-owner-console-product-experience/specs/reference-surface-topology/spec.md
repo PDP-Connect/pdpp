@@ -245,6 +245,13 @@ Setup, first sync, local-collector recovery, provider/browser setup, upload drai
 - **AND** the setup flow SHALL NOT read deployment-wide provider-account credentials to satisfy the source
 - **AND** the setup flow SHALL show whether the source account identity has been verified before reporting setup success
 
+#### Scenario: An existing source credential is replaced
+
+- **WHEN** an owner updates the stored provider credential for an already-active source
+- **THEN** the setup-status surface SHALL distinguish credential saved, verification sync running, verification failed, and verification completed
+- **AND** it SHALL NOT report final setup success solely because the source was already active before the credential replacement
+- **AND** the source SHALL preserve existing records while the replacement credential is being verified
+
 #### Scenario: A browser-backed setup offers ephemeral login cleanup
 
 - **WHEN** a browser-backed setup offers an option to clear session or credential material after collection

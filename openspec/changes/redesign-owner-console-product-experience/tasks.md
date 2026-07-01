@@ -129,3 +129,4 @@
 - [x] 9.16 Scope Add source/setup read failures to a setup-specific error boundary so setup routes do not render the parent Sources-list refresh fallback.
 - [x] 9.17 Make the owner connector-summary route list/detail coherent for multi-account connectors by hydrating run-backed verdict evidence instead of using singleton-only shallow run mode.
 - [x] 9.18 Make browser-backed setup stream pages connection-scoped and progress-aware: when a setup run is already collecting, the owner sees the exact source and latest progress instead of a stale preparing-browser state or another account with the same connector type.
+- [x] 9.19 Make stored-credential replacement status honest: an already-active source that receives a replacement credential shows saved/running/failed/verified state from a post-replacement run instead of reusing first-sync success copy.

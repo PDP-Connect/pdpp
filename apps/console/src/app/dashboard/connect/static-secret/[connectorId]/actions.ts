@@ -55,22 +55,31 @@ function statusHref(connectionId: string, runId: string | null, identity?: strin
   return suffix ? `${base}?${suffix}` : base;
 }
 
-function autoResumeRunId(capture: {
-  auto_resume?: { confirming_run: { run_id?: string } | null } | null;
-}): string | null {
+interface AutoResumeResult {
+  confirming_run: { run_id?: string } | null;
+  status?: string | null;
+}
+
+interface StaticSecretCaptureResult {
+  auto_resume?: AutoResumeResult | null;
+}
+
+function autoResumeRunId(capture: StaticSecretCaptureResult): string | null {
   const runId = capture.auto_resume?.confirming_run?.run_id;
   return typeof runId === "string" && runId.length > 0 ? runId : null;
 }
 
-async function runIdAfterCapture(
-  connectionId: string,
-  capture: { auto_resume?: { confirming_run: { run_id?: string } | null } | null }
-): Promise<string | null> {
+function shouldStartRunAfterCapture(capture: StaticSecretCaptureResult): boolean {
+  const autoResume = capture.auto_resume;
+  return autoResume == null || autoResume.status === "no_satisfied_action";
+}
+
+async function runIdAfterCapture(connectionId: string, capture: StaticSecretCaptureResult): Promise<string | null> {
   const autoRunId = autoResumeRunId(capture);
   if (autoRunId) {
     return autoRunId;
   }
-  if ("auto_resume" in capture) {
+  if (!shouldStartRunAfterCapture(capture)) {
     return null;
   }
   const started = (await runConnectionNow(connectionId)) as {

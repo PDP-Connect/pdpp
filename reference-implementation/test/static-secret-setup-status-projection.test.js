@@ -95,6 +95,24 @@ test('active instance projects active -> healthy and not pending', () => {
   assert.equal(status.pending, false);
 });
 
+test('credential rotation metadata stays visible on setup status', () => {
+  const status = projectStaticSecretSetupStatus({
+    instance: { ...baseInstance, status: 'active' },
+    credential: {
+      present: true,
+      credentialKind: 'app_password',
+      capturedAt: '2026-06-10T00:01:00.000Z',
+      rotatedAt: '2026-06-11T00:01:00.000Z',
+    },
+    activeRun: null,
+    lastRun: null,
+    identityFieldName: 'account_email',
+  });
+  assert.equal(status.credential.captured_at, '2026-06-10T00:01:00.000Z');
+  assert.equal(status.credential.rotated_at, '2026-06-11T00:01:00.000Z');
+  assert.equal(status.setup_material.captured_at, '2026-06-11T00:01:00.000Z');
+});
+
 test('paused and revoked instances reflect their status and stay idle', () => {
   for (const instanceStatus of ['paused', 'revoked']) {
     const status = projectStaticSecretSetupStatus({

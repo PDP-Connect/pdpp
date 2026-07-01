@@ -71,6 +71,7 @@ interface CredentialMetadata {
   readonly capturedAt?: string | null;
   readonly credentialKind?: string | null;
   readonly present?: boolean;
+  readonly rotatedAt?: string | null;
 }
 
 interface ConnectorInstanceCredentialStore {
@@ -199,7 +200,7 @@ function setupMaterialFromBinding(
       kind: "static_secret",
       label: "Provider credential",
       present: credentialMeta?.present === true,
-      capturedAt: credentialMeta?.capturedAt ?? null,
+      capturedAt: credentialMeta?.rotatedAt ?? credentialMeta?.capturedAt ?? null,
     };
   }
   return { kind: "unknown", label: "Setup material", present: false, capturedAt: null };
@@ -424,6 +425,7 @@ export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStati
                 present: credentialMeta.present === true,
                 credentialKind: credentialMeta.credentialKind ?? null,
                 capturedAt: credentialMeta.capturedAt ?? null,
+                rotatedAt: credentialMeta.rotatedAt ?? null,
               }
             : null,
           activeRun,

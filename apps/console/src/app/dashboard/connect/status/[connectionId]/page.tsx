@@ -26,6 +26,66 @@ interface StatusDescription {
   tone: "active" | "failed" | "pending";
 }
 
+const RUN_FAILURE_STATUSES = new Set(["failed", "errored", "error", "cancelled", "canceled", "aborted"]);
+const RUN_SUCCESS_STATUSES = new Set(["completed", "succeeded", "success"]);
+
+function timeMs(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function runStartedAfterCredentialRotation(status: ConnectionSetupStatus): boolean {
+  const rotatedAt = timeMs(status.credential.rotated_at);
+  const startedAt = timeMs(status.run?.started_at);
+  return rotatedAt !== null && startedAt !== null && startedAt >= rotatedAt;
+}
+
+function statusRunIsFailure(status: ConnectionSetupStatus): boolean {
+  const runStatus = status.run?.status;
+  return typeof runStatus === "string" && RUN_FAILURE_STATUSES.has(runStatus);
+}
+
+function statusRunIsSuccess(status: ConnectionSetupStatus): boolean {
+  const runStatus = status.run?.status;
+  return typeof runStatus === "string" && RUN_SUCCESS_STATUSES.has(runStatus);
+}
+
+function describeActiveConnectionState(status: ConnectionSetupStatus): StatusDescription {
+  if (status.setup_kind === "static_secret" && runStartedAfterCredentialRotation(status)) {
+    if (status.running) {
+      return {
+        tone: "pending",
+        headline: "Credential saved",
+        detail:
+          "A sync is running now to verify the updated credential. Existing records remain available while it runs.",
+      };
+    }
+    if (statusRunIsFailure(status)) {
+      return {
+        tone: "failed",
+        headline: "Credential saved, sync failed",
+        detail:
+          "The updated credential was saved, but the verification sync failed. Re-enter it or open the run timeline for the exact failure.",
+      };
+    }
+    if (statusRunIsSuccess(status)) {
+      return {
+        tone: "active",
+        headline: "Connection active",
+        detail: "The updated credential was verified by a completed sync. Records are available.",
+      };
+    }
+  }
+  return {
+    tone: "active",
+    headline: "Connection active",
+    detail: "Records are available for this account.",
+  };
+}
+
 function describeImportState(status: ConnectionSetupStatus): StatusDescription {
   switch (status.setup_state) {
     case "active":
@@ -76,11 +136,7 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
 function describeConnectionState(status: ConnectionSetupStatus): StatusDescription {
   switch (status.setup_state) {
     case "active":
-      return {
-        tone: "active",
-        headline: "Connection active",
-        detail: "The first sync accepted records. This account is now a working connection.",
-      };
+      return describeActiveConnectionState(status);
     case "first_sync_running":
       return {
         tone: "pending",

@@ -37,6 +37,7 @@ const CAPTURE_SECRET = /captureStaticSecretCredential\(\{/;
 const AUTO_RESUME = /auto_resume/;
 const RUN_ID_AFTER_CAPTURE = /runIdAfterCapture\(/;
 const LEGACY_RUN_FALLBACK = /runConnectionNow\(connectionId\)/;
+const NO_AUTO_RESUME_FIELD_SUPPRESSION = /"auto_resume"\s+in\s+capture[\s\S]{0,120}return null/;
 const STATUS_SURFACE_PATH = /\/dashboard\/connect\/status\//;
 const STATUS_HREF_CALL = /statusHref\(/;
 const NO_NOTICE_REDIRECT = /notice:\s*"first_sync_started"/;
@@ -53,6 +54,9 @@ const STATUS_CONNECTION_ID = /connection_id/;
 const STATUS_NOT_FOUND = /notFound\(\)/;
 const STATUS_NO_PASSWORD_INPUT = /type="password"/;
 const STATUS_NO_SECRET_INPUT = /name="secret"/;
+const ROTATED_AT = /rotated_at/;
+const CREDENTIAL_VERIFICATION_COPY = /A sync is running now to verify the updated credential/;
+const NO_UNPROVEN_FIRST_SYNC_COPY = /The first sync accepted records/;
 const LEGACY_REDIRECT = /\/dashboard\/connect\/status\/\$\{encodeURIComponent/;
 
 test("static-secret page is an owner-session capture form, not an agent secret prompt", async () => {
@@ -87,6 +91,7 @@ test("static-secret action redirects to the durable setup-status surface, not a 
   assert.match(src, AUTO_RESUME);
   assert.match(src, RUN_ID_AFTER_CAPTURE);
   assert.match(src, LEGACY_RUN_FALLBACK);
+  assert.doesNotMatch(src, NO_AUTO_RESUME_FIELD_SUPPRESSION);
   // The success and the draft-created-then-failed paths both land on the
   // durable per-connection status surface, keyed on the real connection id.
   assert.match(src, STATUS_SURFACE_PATH);
@@ -110,6 +115,9 @@ test("durable setup-status page reads the connection-scoped status route and sur
   assert.match(src, STATUS_FAILED_STATE);
   assert.match(src, STATUS_LAST_ERROR);
   assert.match(src, STATUS_CONNECTION_ID);
+  assert.match(src, ROTATED_AT);
+  assert.match(src, CREDENTIAL_VERIFICATION_COPY);
+  assert.doesNotMatch(src, NO_UNPROVEN_FIRST_SYNC_COPY);
   // 404s a missing connection rather than fabricating a status.
   assert.match(src, STATUS_NOT_FOUND);
   // No provider-specific copy and no secret-bearing input on a read-only

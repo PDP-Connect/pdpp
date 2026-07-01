@@ -1773,6 +1773,7 @@ export interface ConnectionSetupStatus {
     captured_at: string | null;
     credential_kind: string | null;
     present: boolean;
+    rotated_at: string | null;
   };
   display_name: string | null;
   health_state: string;
