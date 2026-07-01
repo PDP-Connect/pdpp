@@ -25,11 +25,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserContext, Locator, Page } from "playwright";
 import {
+  type AssistanceRequest,
   type InteractionRequest,
   type InteractionResponse,
   makeSessionEstablishWatchdog,
 } from "../connector-runtime.ts";
-import { handlePushApproval } from "./chatgpt.ts";
+import { chatGptBrowserLoginAssistance, handleBrowserLoginAssistance, handlePushApproval } from "./chatgpt.ts";
 
 // ─── fakes ──────────────────────────────────────────────────────────────────
 
@@ -120,6 +121,10 @@ function shortBudgetEnv(): void {
   // Keep the poll attempt count tiny so tests that exhaust the budget do not
   // loop 180 times. 15s / 5s interval = 3 attempts.
   process.env.PDPP_CHATGPT_PUSH_APPROVAL_TIMEOUT_MS = "15000";
+}
+
+function shortBrowserLoginBudgetEnv(): void {
+  process.env.PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS = "15000";
 }
 
 function clearBudgetEnv(prior: string | undefined): void {
@@ -335,3 +340,103 @@ test("budget exhausted with no readiness even after the fallback returns false",
     clearBudgetEnv(prior);
   }
 });
+
+// ─── 4. browser-login assistance auto-resumes without owner click ───────────
+
+test("browser-login assistance resolves when readiness appears and emits NO interaction", async () => {
+  const prior = process.env.PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS;
+  shortBrowserLoginBudgetEnv();
+  try {
+    const interactions: InteractionRequest[] = [];
+    const assistanceRequests: AssistanceRequest[] = [];
+    const completes: Array<{ id: string; status: string }> = [];
+
+    let polls = 0;
+    const page = makePushApprovalPage({
+      sessionActive: () => polls >= 2,
+      onWaitTimeout: () => {
+        polls++;
+      },
+    });
+
+    const result = await handleBrowserLoginAssistance({
+      assist: (req) => {
+        assistanceRequests.push(req);
+        return Promise.resolve("asst_login");
+      },
+      checkpoint: () => Promise.resolve(),
+      completeAssistance: (id, status) => {
+        completes.push({ id, status });
+        return Promise.resolve();
+      },
+      page,
+      sendInteraction: recordingSendInteraction(interactions),
+    });
+
+    assert.equal(result, true, "readiness observed -> resume");
+    assert.equal(interactions.length, 0, "auto-resume MUST NOT wait for an owner INTERACTION response");
+    assert.equal(assistanceRequests.length, 1, "browser-login assistance was requested once");
+    assert.equal(assistanceRequests[0]?.owner_action, "operate_attachment");
+    assert.deepEqual(assistanceRequests[0]?.attachments, [{ kind: "browser_surface", role: "streaming_companion" }]);
+    assert.deepEqual(completes, [{ id: "asst_login", status: "resolved" }]);
+  } finally {
+    clearBrowserLoginBudgetEnv(prior);
+  }
+});
+
+test("browser-login budget exhaustion escalates before blocking manual_action fallback", async () => {
+  const prior = process.env.PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS;
+  shortBrowserLoginBudgetEnv();
+  try {
+    const events: string[] = [];
+    const interactions: InteractionRequest[] = [];
+
+    let manualActionDone = false;
+    const page = makePushApprovalPage({
+      sessionActive: () => manualActionDone,
+    });
+
+    const result = await handleBrowserLoginAssistance({
+      assist: () => Promise.resolve("asst_login"),
+      checkpoint: () => Promise.resolve(),
+      completeAssistance: (_id, status) => {
+        events.push(`complete:${status}`);
+        return Promise.resolve();
+      },
+      page,
+      sendInteraction: (req) => {
+        events.push(`interaction:${req.kind}`);
+        interactions.push(req);
+        manualActionDone = true;
+        return Promise.resolve({
+          request_id: req.request_id ?? "x",
+          status: "success",
+          type: "INTERACTION_RESPONSE",
+        });
+      },
+    });
+
+    assert.equal(result, true, "post-fallback readiness re-check passes");
+    assert.equal(interactions.length, 1, "fallback interaction is emitted only after the assistance budget");
+    assert.deepEqual(events, ["complete:escalated", "interaction:manual_action"]);
+  } finally {
+    clearBrowserLoginBudgetEnv(prior);
+  }
+});
+
+test("chatGptBrowserLoginAssistance carries browser attachment and timeout", () => {
+  const assistance = chatGptBrowserLoginAssistance({ PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS: "120000" });
+
+  assert.equal(assistance.owner_action, "operate_attachment");
+  assert.equal(assistance.response_contract, "none");
+  assert.equal(assistance.timeout_seconds, 120);
+  assert.deepEqual(assistance.attachments, [{ kind: "browser_surface", role: "streaming_companion" }]);
+});
+
+function clearBrowserLoginBudgetEnv(prior: string | undefined): void {
+  if (prior === undefined) {
+    delete process.env.PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS;
+  } else {
+    process.env.PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS = prior;
+  }
+}

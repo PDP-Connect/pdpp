@@ -27,12 +27,12 @@ The polyfill runtime SHALL close browser run pages by default after both success
 **THEN** the next acquire SHALL skip remote page-target cleanup
 **AND** the runtime SHALL reuse an existing non-blank page when one is available.
 
-### Requirement: Managed browser profiles SHALL restore session-backed auth after restart
+### Requirement: Managed browser profiles SHALL configure browser-supported session restore honestly
 
-The managed n.eko browser image SHALL configure Chrome to restore the prior browser session on startup when using a persistent profile directory. The reference runtime SHALL NOT rely on profile directory persistence alone for sources whose authenticated state can be carried by browser session cookies or session-scoped browser state.
+The managed n.eko browser image SHALL configure Chrome to restore the prior browser session on startup when using a persistent profile directory. The reference runtime SHALL NOT rely on profile directory persistence alone as proof that a provider API session survived restart, because some sources carry authenticated API state in process- or session-scoped browser state that is not restored by profile files alone.
 
-#### Scenario: Managed browser restarts with a persistent profile
+#### Scenario: Managed browser starts with a persistent profile
 
 **WHEN** a managed n.eko surface starts with a persistent Chrome profile directory
 **THEN** Chrome SHALL be configured to restore the prior browser session
-**AND** session-cookie-backed source auth SHALL have a browser-supported path to survive container restart.
+**AND** connector auth probes SHALL remain authoritative for deciding whether source collection may proceed.

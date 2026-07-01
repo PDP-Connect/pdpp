@@ -16,6 +16,9 @@
 - [x] Add focused ChatGPT auth-refresh test.
 - [x] Add regression coverage that auth extraction is sent as a literal browser expression.
 - [x] Add managed n.eko Chrome policy coverage for browser-session restart restore.
+- [x] Add ChatGPT browser-login assistance coverage proving owner-completed login auto-resumes without an explicit interaction response.
 - [x] Run focused tests.
 - [x] Run `openspec validate harden-chatgpt-session-reuse --strict`.
-- [ ] Deploy and run owner-attended immediate + one-hour + post-restart ChatGPT validation before closing the change.
+- [x] Live-prove owner-attended repair followed by immediate no-owner-action reuse on the same n.eko browser process.
+- [x] Live-prove forced n.eko restart does not preserve ChatGPT API-session auth; document this as a residual risk instead of a closeout criterion.
+- [ ] Deploy the browser-login auto-resume fix and run an owner-attended repair validation before closing the change.
