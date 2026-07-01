@@ -51,7 +51,8 @@ const SOURCE_STATUS_DOT_RE = /data-tone=\{instance\.status\.tone\}/;
 const SOURCE_STATUS_LABEL_SR_RE = /instance\.status\.label/;
 const SOURCE_ACTIONABILITY_PROJECTION_RE = /const actionability = projectSourceActionability\(summary\)/;
 const RENDERED_VERDICT_STATUS_RE = /const status = actionability\.renderedStatus/;
-const RENDERED_VERDICT_ACTION_RE = /const nextAction = actionability\.nextAction/;
+const RENDERED_VERDICT_PRIMARY_ACTION_RE = /const primaryVerdictAction = actionability\.primaryVerdictAction/;
+const RENDERED_VERDICT_NEXT_ACTION_RE = /actionability\.nextAction/;
 const RUNTIME_ADVISORY_MODEL_RE = /buildSourcesRuntimeAdvisory\(response\.runtime\)/;
 const RUNTIME_ADVISORY_PROP_RE = /runtimeAdvisory=\{runtimeAdvisory\}/;
 const RUNTIME_ADVISORY_RENDER_RE = /data-testid="sources-runtime-advisory"/;
@@ -150,7 +151,8 @@ test("Sources projection reads rendered verdict status/action and keeps inspecti
   const view = await readFile(VIEW_FILE, "utf8");
   assert.match(model, SOURCE_ACTIONABILITY_PROJECTION_RE);
   assert.match(model, RENDERED_VERDICT_STATUS_RE);
-  assert.match(model, RENDERED_VERDICT_ACTION_RE);
+  assert.match(model, RENDERED_VERDICT_PRIMARY_ACTION_RE);
+  assert.match(model, RENDERED_VERDICT_NEXT_ACTION_RE);
   assert.doesNotMatch(view, INSPECTION_LAYER_FIELDS_RE);
 });
 

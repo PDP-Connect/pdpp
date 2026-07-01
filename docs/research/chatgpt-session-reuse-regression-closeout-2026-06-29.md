@@ -90,3 +90,45 @@ target is:
 - owner repair is explicit and deliberate;
 - after repair, the system validates immediate and delayed reuse before calling
   the connection healthy for automatic collection.
+
+## 2026-07-01 follow-up evidence
+
+This note was revisited on 2026-07-01 after additional live repair and schedule
+evidence. The durable conclusion did not change: the original regression was a
+session-continuity/auth-truth-source chain, not one selector or one password
+prompt.
+
+Additional fixes that matter to the proof:
+
+- The browser surface now restores persisted session state on startup.
+- ChatGPT session probing runs on the ChatGPT origin before deciding whether a
+  page is actually authenticated.
+- Credential repair retry storms are suppressed; scheduled collection does not
+  repeatedly start interactive repair when the current state says owner repair
+  is needed.
+- Source-scoped credential repair state is visible to the owner surface instead
+  of reading as a generic run failure.
+
+Additional live evidence:
+
+- After owner repair, scheduled ChatGPT runs on 2026-07-01 completed
+  successfully without a new owner prompt.
+- A later 2026-07-01 failure with `connector_exit_without_done` was traced to a
+  connector-runtime startup bug affecting multiple connectors, not to ChatGPT
+  auth. That separate missing-`START` runtime bug was fixed by making connector
+  children fail closed when stdin closes before `START`; the live container now
+  emits a bounded failed `DONE` instead of hanging.
+- After the missing-`START` deploy, the affected schedules were resumed and a
+  scheduler pass showed no active runs and no connector child processes.
+
+Current confidence:
+
+- High that the owner-notification storm and logged-in-but-failed-collection
+  failure modes identified in this report are fixed.
+- High that the runtime no longer leaves hot connector children alive when
+  `START` is missing.
+- Medium, not absolute, for long-term ChatGPT durability because ChatGPT's
+  web/API behavior can change without notice. Future regressions should be
+  investigated against this layered model: browser session persistence, origin
+  probe truth, auth token extraction, scheduled repair policy, and runtime child
+  liveness.
