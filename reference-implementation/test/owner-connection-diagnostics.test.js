@@ -11,7 +11,8 @@
  *
  *   - a trusted owner-agent bearer reads ONE connection's diagnostics by
  *     `connection_id` and receives the typed health classification, last run,
- *     last successful run, last ingest time, schedule state, and freshness;
+ *     last successful run, last ingest time, schedule state, freshness, and the
+ *     rendered verdict / required-action projection shared with the console;
  *   - the response is connection-scoped: it carries no device-exporter subsystem
  *     state and no sibling-connection rows, even when the owner has two active
  *     connections for the same connector (the over-broad sharing the design
@@ -237,6 +238,12 @@ test('owner-agent bearer reads connection-scoped diagnostics by connection_id an
     assert.ok('last_ingest_at' in body, 'response carries last_ingest_at');
     assert.ok('schedule' in body, 'response carries schedule');
     assert.ok('freshness' in body, 'response carries freshness');
+    assert.ok(body?.rendered_verdict, 'response carries rendered_verdict');
+    assert.ok(body.rendered_verdict.pill, 'rendered_verdict carries pill');
+    assert.ok(
+      Array.isArray(body.rendered_verdict.required_actions),
+      'diagnostics carries the shared required-action projection',
+    );
 
     const audit = findInspectAuditEvent(resp);
     assert.equal(audit.actor_type, 'owner_agent');

@@ -94,6 +94,47 @@ test('assisted-after-owner-auth policy schedules unattended and reserves auth re
   assert.equal(manual.notification_posture, 'action_required');
 });
 
+test('same assisted browser manifest handles valid, expired, and restored session evidence without manifest mutation', () => {
+  const policy = {
+    assisted_after_owner_auth: true,
+    background_safe: true,
+    interaction_posture: 'manual_action_likely',
+    recommended_mode: 'automatic',
+  };
+
+  const validSession = projectRunAutomationPolicy({
+    refreshPolicy: policy,
+    humanAttentionNeeded: false,
+    triggerKind: 'scheduled',
+  });
+  assert.equal(validSession.allowed_to_start, true);
+  assert.equal(validSession.automation_mode, 'unattended');
+
+  const expiredSession = projectRunAutomationPolicy({
+    refreshPolicy: policy,
+    humanAttentionNeeded: true,
+    triggerKind: 'scheduled',
+  });
+  assert.equal(expiredSession.allowed_to_start, false);
+  assert.equal(expiredSession.automation_mode, 'ask_before_run');
+  assert.equal(expiredSession.requires_owner_approval, true);
+
+  const ownerRepair = projectRunAutomationPolicy({
+    refreshPolicy: policy,
+    humanAttentionNeeded: true,
+    triggerKind: 'manual',
+  });
+  assert.equal(ownerRepair.allowed_to_start, true);
+  assert.equal(ownerRepair.automation_mode, 'assisted');
+
+  const restoredSession = projectRunAutomationPolicy({
+    refreshPolicy: policy,
+    humanAttentionNeeded: false,
+    triggerKind: 'scheduled',
+  });
+  assert.deepEqual(restoredSession, validSession);
+});
+
 test('automation mode copy is owner-facing and non-empty', () => {
   for (const mode of ['unattended', 'assisted', 'ask_before_run', 'manual_only']) {
     assert.match(automationModeCopy(mode), /\S/);

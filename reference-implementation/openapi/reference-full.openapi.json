@@ -20970,6 +20970,10 @@
                     "freshness": {
                       "type": "object",
                       "additionalProperties": true
+                    },
+                    "rendered_verdict": {
+                      "type": "object",
+                      "additionalProperties": true
                     }
                   },
                   "required": [
@@ -20983,7 +20987,8 @@
                     "last_successful_run",
                     "last_ingest_at",
                     "schedule",
-                    "freshness"
+                    "freshness",
+                    "rendered_verdict"
                   ]
                 }
               }
@@ -21484,6 +21489,10 @@
                     "freshness": {
                       "type": "object",
                       "additionalProperties": true
+                    },
+                    "rendered_verdict": {
+                      "type": "object",
+                      "additionalProperties": true
                     }
                   },
                   "required": [
@@ -21497,7 +21506,8 @@
                     "last_successful_run",
                     "last_ingest_at",
                     "schedule",
-                    "freshness"
+                    "freshness",
+                    "rendered_verdict"
                   ]
                 }
               }

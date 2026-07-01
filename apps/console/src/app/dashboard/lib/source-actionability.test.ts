@@ -209,6 +209,42 @@ test("source actionability does not convert maintainer-primary work into owner w
   assert.equal(actionability.failureSummary?.ownerActionRequired, false);
 });
 
+test("source actionability does not infer owner repair from reconnect copy without an owner-satisfiable action", () => {
+  const actionability = projectSourceActionability(
+    connector({
+      rendered_verdict: verdict({
+        channel: "attention",
+        forward_statement: "Reconnect this account and collection resumes.",
+        required_actions: [],
+      }),
+    })
+  );
+
+  assert.equal(actionability.work?.group, "systemIssue");
+  assert.equal(actionability.nextAction, null);
+  assert.equal(actionability.primaryVerdictAction, null);
+  assert.equal(actionability.failureSummary?.ownerActionRequired, false);
+});
+
+test("source actionability treats provider-specific auth prose as inert without structured action evidence", () => {
+  const actionability = projectSourceActionability(
+    connector({
+      connector_id: "chatgpt",
+      display_name: "ChatGPT",
+      rendered_verdict: verdict({
+        channel: "calm",
+        forward_statement: "Password reset, browser login, OTP, and push approval text here are diagnostics only.",
+        pill: { label: "Healthy", tone: "green" },
+        required_actions: [],
+      }),
+    })
+  );
+
+  assert.equal(actionability.work, null);
+  assert.equal(actionability.nextAction, null);
+  assert.equal(actionability.failureSummary, null);
+});
+
 test("source actionability resolves per-stream owner action availability from action_ref", () => {
   const actionability = projectSourceActionability(
     connector({

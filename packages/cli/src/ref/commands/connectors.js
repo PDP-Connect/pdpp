@@ -5,15 +5,16 @@ import { resolveFormat, writeData, writeEnvelopeWarnings } from '../output.js';
 
 // Operator-facing summary projection. Mirrors the evidence the dashboard renders
 // in `apps/console/src/app/dashboard/lib/ref-client.ts` (RefConnectorSummary +
-// RefConnectionHealthSnapshot + RefNextAction). The reference server has
-// already redacted secret-bearing fields (e.g. `action_target` for
-// `sensitivity: "secret"` attention rows); we surface what arrives, with no
-// inference.
+// RefConnectionHealthSnapshot + RefRenderedVerdict). The reference server has
+// already redacted secret-bearing fields; we surface what arrives, with no
+// connector-string inference.
 function projectSummaryRow(summary) {
   const health = summary?.connection_health || {};
   const axes = health.axes || {};
   const badges = health.badges || {};
   const nextAction = summary?.next_action || health.next_action || null;
+  const verdict = summary?.rendered_verdict || null;
+  const primaryAction = Array.isArray(verdict?.required_actions) ? (verdict.required_actions[0] ?? null) : null;
   const schedule = summary?.schedule || null;
   const lastRun = summary?.last_run || null;
   const lastSuccess = summary?.last_successful_run || null;
@@ -39,6 +40,15 @@ function projectSummaryRow(summary) {
     dominant_condition_origin: dominantCondition?.origin ?? null,
     supporting_condition_ids: Array.isArray(health.supporting_condition_ids) ? health.supporting_condition_ids : [],
     unknown_reasons: Array.isArray(health.unknown_reasons) ? health.unknown_reasons : [],
+    rendered_verdict_label: verdict?.pill?.label ?? null,
+    rendered_verdict_tone: verdict?.pill?.tone ?? null,
+    rendered_verdict_channel: verdict?.channel ?? null,
+    rendered_verdict_statement: verdict?.forward_statement ?? null,
+    primary_action_kind: primaryAction?.kind ?? null,
+    primary_action_audience: primaryAction?.audience ?? null,
+    primary_action_cta: primaryAction?.cta ?? null,
+    primary_action_satisfied_when: primaryAction?.satisfied_when?.kind ?? null,
+    primary_action_terminal: primaryAction?.terminal ?? null,
     next_action_source: nextAction?.source ?? 'none',
     next_action_reason: nextAction?.reason_code ?? null,
     next_action_owner_action: nextAction?.owner_action ?? null,
@@ -141,7 +151,10 @@ function projectSummaryTableRow(row) {
     stale: row.stale,
     reason_code: row.reason_code,
     dominant_condition_reason: row.dominant_condition_reason,
-    next_action_reason: row.next_action_reason,
+    rendered_verdict_label: row.rendered_verdict_label,
+    rendered_verdict_tone: row.rendered_verdict_tone,
+    primary_action_kind: row.primary_action_kind,
+    primary_action_cta: row.primary_action_cta,
     latest_acquisition_status: row.latest_acquisition_status,
     latest_acquisition_method: row.latest_acquisition_method,
     latest_acquisition_accepted: row.latest_acquisition_accepted,

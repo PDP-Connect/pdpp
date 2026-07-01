@@ -443,8 +443,9 @@ const OwnerConnectionDiagnosticsHealthSchema = {
 // `GET /v1/owner/connections/{connectionId}/diagnostics`. Connection-scoped by
 // construction: every field describes exactly the one configured connection the
 // `connection_id` addresses — last run status, last successful run, last
-// successful ingest time, current schedule state, freshness, and the typed
-// health classification. It carries NO device-exporter subsystem state and NO
+// successful ingest time, current schedule state, freshness, typed health
+// classification, and the rendered verdict / required-action projection shared
+// with the console. It carries NO device-exporter subsystem state and NO
 // sibling-connection state, which is the boundary that lets it ship under the
 // owner-bearer adapter where device-rooted diagnostics cannot. See
 // openspec/changes/add-owner-agent-control-surface.
@@ -476,6 +477,7 @@ const OwnerConnectionDiagnosticsSchema = {
       ],
     },
     freshness: { type: "object", additionalProperties: true },
+    rendered_verdict: { type: "object", additionalProperties: true },
   },
   required: [
     "object",
@@ -489,6 +491,7 @@ const OwnerConnectionDiagnosticsSchema = {
     "last_ingest_at",
     "schedule",
     "freshness",
+    "rendered_verdict",
   ],
 };
 
@@ -1021,12 +1024,7 @@ const RecordVersionStatsRowSchema = {
     // `reference-implementation/server/version-disposition.js`.
     version_remediation: {
       type: "string",
-      enum: [
-        "none",
-        "content_fingerprint_pending",
-        "owner_migration_pending",
-        "owner_retention_policy",
-      ],
+      enum: ["none", "content_fingerprint_pending", "owner_migration_pending", "owner_retention_policy"],
     },
   },
   required: [

@@ -4329,9 +4329,9 @@ export async function getConnectorDetail(
 // therefore over-broad for a `connection_id`-addressed read.
 //
 // The response carries the last run status, last successful run, last successful
-// ingest time, current schedule state, freshness, and the typed connection
-// health classification (the canonical `ConnectionHealthState` taxonomy the
-// connector-health-surface research captured) — all for exactly one binding.
+// ingest time, current schedule state, freshness, the typed connection health
+// classification, and the same rendered verdict / required-action projection
+// the console uses — all for exactly one binding.
 // Returns `null` when no configured connection matches the id, so the caller can
 // map a miss to a typed 404 instead of fabricating an empty diagnostic.
 
@@ -4363,6 +4363,7 @@ export interface OwnerConnectionDiagnostics {
   readonly last_run: OwnerConnectionDiagnosticsRun | null;
   readonly last_successful_run: OwnerConnectionDiagnosticsRun | null;
   readonly object: "owner_connection_diagnostics";
+  readonly rendered_verdict: RenderedVerdict;
   readonly schedule: { readonly enabled: boolean; readonly interval_seconds: number | null } | null;
 }
 
@@ -4425,6 +4426,7 @@ export async function getOwnerConnectionDiagnostics(
     },
     last_run: projectDiagnosticsRun(summary.last_run),
     last_successful_run: projectDiagnosticsRun(summary.last_successful_run),
+    rendered_verdict: summary.rendered_verdict,
     // Last successful ingest time for push-mode (local-device) connections.
     // `null` for scheduler-managed connections with no device heartbeat, which
     // is the honest "no ingest evidence on this connection" state — never a

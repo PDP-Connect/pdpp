@@ -21,10 +21,11 @@
 // owner-bearer adapter precisely because it is broader than one connection.
 //
 // The response carries the connection's last run status, last successful run,
-// last successful ingest time, current schedule state, freshness, and the typed
-// health classification (`healthy` / `degraded` / `blocked` / `cooling_off` /
-// `idle` / `needs_attention` / `unknown` — the canonical connection-health
-// taxonomy the connector-health-surface research captured).
+// last successful ingest time, current schedule state, freshness, typed health
+// classification, and the same rendered verdict / required-action projection
+// that the console consumes (`healthy` / `degraded` / `blocked` /
+// `cooling_off` / `idle` / `needs_attention` / `unknown` — the canonical
+// connection-health taxonomy the connector-health-surface research captured).
 //
 // Instance scoping (design.md #5, tasks 6.1-6.3):
 //   - the `:connectionId` route is addressed by a single `connection_id`

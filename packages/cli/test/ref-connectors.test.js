@@ -67,6 +67,45 @@ const SUMMARY_FIXTURE = {
     response_contract: 'response_required',
     source: 'structured',
   },
+  rendered_verdict: {
+    pill: { label: "Needs you", tone: "red" },
+    channel: "attention",
+    annotations: [],
+    forward_statement: "Reconnect this account and collection resumes.",
+    required_actions: [
+      {
+        kind: "reauth",
+        audience: "owner",
+        urgency: "now",
+        affects: [],
+        cta: "Reconnect this account",
+        terminal: false,
+        satisfied_when: { kind: "credential_present_and_unrejected" },
+      },
+    ],
+    streams: [],
+    progress: { headline: "Reconnect this account.", detail: null, facts: [] },
+    detail: {
+      forward_disposition: "resumable",
+      suppressed: [],
+      primary_cause: null,
+      coverage: null,
+      freshness: null,
+      attention: null,
+      outbox: null,
+      remote_surface: null,
+    },
+    trace: {
+      tone_cause: "red",
+      tone_inputs: [],
+      channel_cause: "owner_action",
+      suppressed_evidence: [],
+      detail_destinations: [],
+      primary_action_kind: "reauth",
+      satisfied_when: "credential_present_and_unrejected",
+      runtime_capped: false,
+    },
+  },
   acquisition_coverage: {
     latest_batch: {
       accepted_count: 12,
@@ -184,6 +223,15 @@ test('ref connectors list: projects summary fields in JSON list', async () => {
   assert.equal(row.dominant_condition_origin, 'runtime');
   assert.deepEqual(row.supporting_condition_ids, ['AttentionClear:otp_required', 'SourceCoverageComplete:partial']);
   assert.deepEqual(row.unknown_reasons, []);
+  assert.equal(row.rendered_verdict_label, 'Needs you');
+  assert.equal(row.rendered_verdict_tone, 'red');
+  assert.equal(row.rendered_verdict_channel, 'attention');
+  assert.equal(row.rendered_verdict_statement, 'Reconnect this account and collection resumes.');
+  assert.equal(row.primary_action_kind, 'reauth');
+  assert.equal(row.primary_action_audience, 'owner');
+  assert.equal(row.primary_action_cta, 'Reconnect this account');
+  assert.equal(row.primary_action_satisfied_when, 'credential_present_and_unrejected');
+  assert.equal(row.primary_action_terminal, false);
   assert.equal(row.next_action_source, 'structured');
   assert.equal(row.next_action_reason, 'otp_required');
   assert.equal(row.next_action_owner_action, 'provide_value');
@@ -242,7 +290,9 @@ test('ref connectors list: table format includes projected columns', async () =>
   assert.match(captured.stdout, /dominant_condition_reason/);
   assert.match(captured.stdout, /github/);
   assert.match(captured.stdout, /needs_attention/);
-  assert.match(captured.stdout, /otp_required/);
+  assert.match(captured.stdout, /primary_action_kind/);
+  assert.match(captured.stdout, /reauth/);
+  assert.match(captured.stdout, /Reconnect this account/);
   assert.match(captured.stdout, /latest_acquisition_status/);
   assert.match(captured.stdout, /owner_artifact/);
   assert.doesNotMatch(captured.stdout, /Owner action is required before collection can continue/);
@@ -286,6 +336,8 @@ test('ref connectors list: handles missing axes / next_action without crashing',
   assert.equal(row.dominant_condition_id, null);
   assert.equal(row.dominant_condition_reason, null);
   assert.deepEqual(row.supporting_condition_ids, []);
+  assert.equal(row.rendered_verdict_label, null);
+  assert.equal(row.primary_action_kind, null);
   assert.equal(row.next_action_source, 'none');
   assert.equal(row.next_action_target, null);
   assert.deepEqual(row.unknown_reasons, ['no_runs']);
@@ -310,6 +362,9 @@ test('ref connectors show: returns projected row for connector id', async () => 
   assert.equal(parsed.connector_id, 'github');
   assert.equal(parsed.state, 'needs_attention');
   assert.equal(parsed.dominant_condition_reason, 'otp_required');
+  assert.equal(parsed.rendered_verdict_label, 'Needs you');
+  assert.equal(parsed.primary_action_kind, 'reauth');
+  assert.equal(parsed.primary_action_cta, 'Reconnect this account');
   assert.equal(parsed.next_action_source, 'structured');
   assert.equal(parsed.latest_acquisition_status, 'committed');
   assert.equal(parsed.latest_acquisition_accepted, 12);

@@ -232,6 +232,43 @@ function assertAllInvariants(verdict, snap, runtimeOk) {
   }
 }
 
+test('expired attention alone does not create an owner action, but unresolved credential evidence still does', () => {
+  const expiredAttention = condition({
+    current: false,
+    expires_at: '2026-06-30T00:00:00.000Z',
+    id: 'AttentionClear:attention_required',
+    reason: 'attention_required',
+    severity: 'blocked',
+    status: 'false',
+    type: 'AttentionClear',
+  });
+
+  const promptOnly = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { attention: 'none' },
+      conditions: [expiredAttention],
+      state: 'healthy',
+    }),
+    [stream()],
+    null,
+    true
+  );
+  assert.equal(promptOnly.required_actions.length, 0);
+
+  const unresolvedCredential = synthesizeRenderedVerdict(
+    snapshot({
+      axes: { attention: 'none' },
+      conditions: [expiredAttention, credentialRejectedCondition()],
+      state: 'blocked',
+    }),
+    [stream()],
+    null,
+    true
+  );
+  assert.equal(unresolvedCredential.required_actions[0]?.kind, 'reauth');
+  assert.equal(unresolvedCredential.required_actions[0]?.satisfied_when.kind, 'credential_present_and_unrejected');
+});
+
 // ─── 3.1 / 3.2 pill tone worst-wins ──────────────────────────────────────────
 
 test('pure: identical inputs produce identical verdicts', () => {
