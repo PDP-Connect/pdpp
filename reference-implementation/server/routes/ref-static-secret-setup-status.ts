@@ -116,6 +116,9 @@ export interface MountRefStaticSecretSetupStatusContext {
   // Window-independent terminal status for a run by run_id: "failed" |
   // "completed" | "cancelled" | "abandoned" | null (still running / unknown).
   getRunTerminalStatus(runId: string): Promise<string | null>;
+  // Bounded lookup of the run.start event timestamp, used to prove whether a
+  // terminal verification run belongs to the current credential rotation.
+  getRunStartedAt(runId: string): Promise<string | null>;
   handleError(res: unknown, err: unknown): void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
@@ -349,12 +352,14 @@ async function resolveRunEvidence(
     return { activeRun: null, lastRun: null };
   }
   const failed = TERMINAL_FAILURE.has(terminal);
+  const startedAt = await ctx.getRunStartedAt(requestedRunId);
   return {
     activeRun: null,
     lastRun: {
       runId: requestedRunId,
       status: failed ? "failed" : terminal,
       failureReason: failed ? terminal : null,
+      startedAt,
     },
   };
 }

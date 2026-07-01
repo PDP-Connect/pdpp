@@ -297,6 +297,28 @@ async function emitTerminalRunEvent(connectorId, runId, status) {
   });
 }
 
+async function emitStartedRunEvent(connectorId, runId, occurredAt = '2026-06-10T00:02:00.000Z') {
+  await emitSpineEvent({
+    event_type: 'run.started',
+    occurred_at: occurredAt,
+    trace_id: 'trc_status_started',
+    scenario_id: 'default',
+    actor_type: 'runtime',
+    actor_id: connectorId,
+    object_type: 'run',
+    object_id: runId,
+    status: 'started',
+    run_id: runId,
+    source_kind: 'connector',
+    source_id: connectorId,
+    data: {
+      boot_epoch: '11111111-1111-4111-8111-111111111111',
+      seq: 1,
+      source: { kind: 'connector', id: connectorId },
+    },
+  });
+}
+
 test('pending static-secret setup is visible before any records are accepted', async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
@@ -461,6 +483,20 @@ test('setup status flips to active once first ingest accepts records', async () 
       assert.equal(verifying.body.credential.rotated_at, rotated.body.credential.rotated_at);
       assert.equal(verifying.body.setup_material.captured_at, rotated.body.credential.rotated_at);
       clearActiveRun(connectionId);
+
+      const failedRunId = 'run_status_credential_rotation_failed';
+      await emitStartedRunEvent('gmail', failedRunId, '9999-01-01T00:00:00.000Z');
+      await emitTerminalRunEvent('gmail', failedRunId, 'failed');
+      const failedVerification = await getStatus(asUrl, cookie, connectionId, failedRunId);
+      assert.equal(failedVerification.status, 200, failedVerification.text);
+      assert.equal(failedVerification.body.status, 'active');
+      assert.equal(failedVerification.body.setup_state, 'active');
+      assert.equal(failedVerification.body.running, false);
+      assert.equal(failedVerification.body.run.run_id, failedRunId);
+      assert.equal(failedVerification.body.run.status, 'failed');
+      assert.equal(failedVerification.body.run.started_at, '9999-01-01T00:00:00.000Z');
+      assert.ok(Date.parse(failedVerification.body.run.started_at) > Date.parse(rotated.body.credential.rotated_at));
+      assert.equal(failedVerification.body.credential.rotated_at, rotated.body.credential.rotated_at);
 
       const schedule = await server.controller.getSchedule('gmail', {
         connectorInstanceId: connectionId,

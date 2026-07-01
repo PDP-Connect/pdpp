@@ -3695,6 +3695,7 @@ function buildAsApp(opts = {}) {
     resolveOwnerConnectorNamespace,
     getOwnerSubjectId,
     getRunTerminalStatus,
+    getRunStartedAt: async (runId) => (await getRunStartedEvent(runId))?.occurred_at ?? null,
   });
 
   // Provider-authorization lifecycle: initiate + callback routes.
