@@ -228,14 +228,15 @@ export function createDefaultStreamingCompanionFactory({
     throw new Error('createDefaultStreamingCompanionFactory: no WebSocket constructor available');
   }
 
-  return ({ run_id, interaction_id, browser_session_id }) => {
+  return ({ run_id, interaction_id, browser_session_id, target = null }) => {
     if (typeof run_id !== 'string' || run_id.length === 0) return null;
     if (typeof interaction_id !== 'string' || interaction_id.length === 0) return null;
+    const resolveTarget = target ? () => target : resolveTargetForInteraction;
     return createResolvedCompanion({
       run_id,
       interaction_id,
       browser_session_id,
-      resolveTargetForInteraction,
+      resolveTargetForInteraction: resolveTarget,
       WebSocketCtor,
       fetchImpl,
       logger,

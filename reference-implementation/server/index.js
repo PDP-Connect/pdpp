@@ -3338,6 +3338,8 @@ function buildAsApp(opts = {}) {
     streamingSessions,
     companionFactory: streamingCompanionFactory,
     makeBrowserSessionId: opts.makeStreamingBrowserSessionId,
+    listRunEventsPage: (runId, pageOpts) => listSpineEventsPage('run', runId, pageOpts),
+    browserSurfaceLeaseManager: opts.browserSurfaceLeaseManager,
     nekoProxyAllowedHosts:
       opts.nekoProxyAllowedHosts || process.env.PDPP_NEKO_PROXY_ALLOWED_HOSTS || '',
     isNekoProxyTargetApproved: (target, { session }) =>
@@ -4960,7 +4962,13 @@ export async function startServer(opts = {}) {
   // for Mode-A (in-process runtime) streaming registration. The buildAsApp
   // call below receives the same instance; routes are attached there as
   // before. See reference-implementation/server/streaming/run-target-registry.js.
-  const browserSurfaceControllerOptions = await resolveNekoBrowserSurfaceControllerOptions();
+  const resolvedBrowserSurfaceControllerOptions = await resolveNekoBrowserSurfaceControllerOptions();
+  const browserSurfaceControllerOptions = opts.browserSurfaceLeaseManager
+    ? {
+        ...resolvedBrowserSurfaceControllerOptions,
+        browserSurfaceLeaseManager: opts.browserSurfaceLeaseManager,
+      }
+    : resolvedBrowserSurfaceControllerOptions;
   const runTargetRegistry = createRunTargetRegistry({
     logger: opts.streamingLogger,
     isNekoDescriptorApproved: (descriptor, context) =>

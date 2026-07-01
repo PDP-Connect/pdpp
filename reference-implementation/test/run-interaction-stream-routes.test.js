@@ -25,10 +25,16 @@ import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from '@openda
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 
-function makeLeaseManager({ surfaceHealth = 'ready', initialActiveLease = false } = {}) {
+function makeLeaseManager({
+  connectorId = 'chatgpt',
+  profileKey = 'profile_dynamic_1',
+  runId = 'run_dynamic_1',
+  surfaceHealth = 'ready',
+  initialActiveLease = false,
+} = {}) {
   return new BrowserSurfaceLeaseManager({
     config: {
-      managedConnectors: new Set(['chatgpt']),
+      managedConnectors: new Set([connectorId]),
       surfaceCap: 1,
       leaseWaitTimeoutMs: 60_000,
       idleTtlMs: 300_000,
@@ -44,8 +50,8 @@ function makeLeaseManager({ surfaceHealth = 'ready', initialActiveLease = false 
       {
         surface_id: 'surface_dynamic_1',
         backend: 'neko',
-        profile_key: 'profile_dynamic_1',
-        connector_id: 'chatgpt',
+        profile_key: profileKey,
+        connector_id: connectorId,
         cdp_url: 'http://neko:9222',
         stream_base_url: 'http://10.88.0.4:6080/_ref/browser-surfaces/surface_dynamic_1',
         health: surfaceHealth,
@@ -59,9 +65,9 @@ function makeLeaseManager({ surfaceHealth = 'ready', initialActiveLease = false 
           {
             lease_id: 'lease_dynamic_1',
             surface_id: 'surface_dynamic_1',
-            connector_id: 'chatgpt',
-            profile_key: 'profile_dynamic_1',
-            run_id: 'run_dynamic_1',
+            connector_id: connectorId,
+            profile_key: profileKey,
+            run_id: runId,
             status: 'leased',
             priority_class: 'scheduled_refresh',
             requested_at: '2026-05-12T11:00:00.000Z',
@@ -126,13 +132,30 @@ async function waitForPendingInteraction(asUrl, runId, timeoutMs = 5000) {
   throw new Error(`Timed out waiting for pending interaction on run ${runId}`);
 }
 
+async function waitForAssistanceRequest(asUrl, runId, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { body } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`);
+    if (body && Array.isArray(body.data)) {
+      const requested = body.data.find((event) => event.event_type === 'run.assistance_requested');
+      if (requested) return requested;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for assistance on run ${runId}`);
+}
+
 async function waitForRunTerminal(asUrl, runId, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { body } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`);
     if (body && Array.isArray(body.data)) {
       const terminal = body.data.find(
-        (event) => event.event_type === 'run.completed' || event.event_type === 'run.failed',
+        (event) =>
+          event.event_type === 'run.completed' ||
+          event.event_type === 'run.failed' ||
+          event.event_type === 'run.cancelled' ||
+          event.event_type === 'run.abandoned',
       );
       if (terminal) return body;
     }
@@ -169,6 +192,41 @@ rl.on('line', (line) => {
     process.exit(0);
   }
 });
+`,
+    'utf8',
+  );
+  return path;
+}
+
+function buildNoResponseBrowserAssistanceConnector(tmpDir) {
+  const path = join(tmpDir, 'connector-assistance.mjs');
+  writeFileSync(
+    path,
+    `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin, terminal: false });
+let started = false;
+rl.on('line', (line) => {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (msg.type === 'START' && !started) {
+    started = true;
+    process.stdout.write(JSON.stringify({
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_stream_1',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'none',
+      sensitivity: 'non_secret',
+      message: 'Finish login in the browser surface.',
+      attachments: [{ kind: 'browser_surface', role: 'streaming_companion' }],
+      timeout_seconds: 60,
+    }) + '\\n');
+  }
+});
+process.on('SIGTERM', () => process.exit(0));
+process.on('SIGINT', () => process.exit(0));
+setInterval(() => {}, 1000);
 `,
     'utf8',
   );
@@ -214,14 +272,17 @@ function makeMockNekoCompanion(upstreamOrigin, options = {}) {
 async function withHarness(options, fn) {
   const harnessOptions = options || {};
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-ref-stream-'));
-  const connectorPath = buildManualActionConnector(tmpDir, harnessOptions);
+  const connectorPath =
+    typeof harnessOptions.buildConnector === 'function'
+      ? harnessOptions.buildConnector(tmpDir)
+      : buildManualActionConnector(tmpDir, harnessOptions);
   const companions = [];
-  const streamingCompanionFactory = ({ browser_session_id, run_id, interaction_id }) => {
+  const streamingCompanionFactory = ({ browser_session_id, run_id, interaction_id, target = null }) => {
     const companion =
       typeof harnessOptions.makeCompanion === 'function'
-        ? harnessOptions.makeCompanion({ browser_session_id, run_id, interaction_id })
+        ? harnessOptions.makeCompanion({ browser_session_id, run_id, interaction_id, target })
         : createMockCompanion({ browser_session_id });
-    companions.push({ companion, browser_session_id, run_id, interaction_id });
+    companions.push({ companion, browser_session_id, run_id, interaction_id, target });
     return companion;
   };
   const server = await startServer({
@@ -231,11 +292,13 @@ async function withHarness(options, fn) {
     dbPath: ':memory:',
     connectorPathResolver: () => connectorPath,
     streamingCompanionFactory,
+    browserSurfaceLeaseManager: harnessOptions.browserSurfaceLeaseManager,
     nekoProxyAutoLogin: harnessOptions.nekoProxyAutoLogin,
     isNekoProxyTargetApproved: harnessOptions.isNekoProxyTargetApproved,
   });
   const asUrl = `http://localhost:${server.asPort}`;
-  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifestName = harnessOptions.manifestName || 'spotify';
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${manifestName}.json`), 'utf8'));
   try {
     await registerConnector(asUrl, spotifyManifest);
     await fn({ server, asUrl, spotifyManifest, companions });
@@ -360,6 +423,131 @@ test('mint accepts a pending manual_action interaction', async () => {
     assert.equal(assistanceCancelled.interaction_id, pending.interaction_id);
     assert.equal(assistanceCancelled.data.status, 'cancelled');
   });
+});
+
+test('mint accepts current no-response browser-surface assistance backed by a leased surface', async () => {
+  const connectorId = 'https://registry.pdpp.org/connectors/spotify';
+  const leaseManager = makeLeaseManager({ connectorId });
+  await withHarness(
+    {
+      browserSurfaceLeaseManager: leaseManager,
+      buildConnector: buildNoResponseBrowserAssistanceConnector,
+    },
+    async ({ asUrl, spotifyManifest, companions }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      try {
+        const acquired = leaseManager.acquire({
+          connectorId,
+          runId: started.run_id,
+          profileKey: 'profile_dynamic_1',
+        });
+        assert.equal(acquired.lease.status, 'leased');
+
+        const assistance = await waitForAssistanceRequest(asUrl, started.run_id);
+        assert.equal(assistance.data.assistance_request_id, 'asst_stream_1');
+        assert.equal(assistance.data.response_contract, 'none');
+        assert.equal(assistance.data.owner_action, 'operate_attachment');
+        assert.equal(assistance.data.progress_posture, 'blocked');
+
+        const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            interaction_id: 'asst_stream_1',
+            viewport: { width: 800, height: 600 },
+          }),
+        });
+        assert.equal(mint.status, 201, JSON.stringify(mint.body));
+        assert.equal(mint.body.object, 'run_interaction_stream_session');
+        assert.equal(mint.body.interaction_id, 'asst_stream_1');
+        assert.equal(mint.body.run_id, started.run_id);
+        assertNoRawBackendAuthority(mint.body);
+
+        const tracked = companions.find((c) => c.run_id === started.run_id);
+        assert.ok(tracked, 'companion factory captured the assistance stream');
+        assert.equal(tracked.interaction_id, 'asst_stream_1');
+        assert.equal(tracked.target.backend, 'neko');
+        assert.equal(tracked.target.lease_id, acquired.lease.lease_id);
+        assert.equal(tracked.target.surface_id, acquired.lease.surface_id);
+        assert.equal(tracked.target.interaction_id, 'asst_stream_1');
+      } finally {
+        await fetch(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/cancel`, { method: 'POST' });
+        await waitForRunTerminal(asUrl, started.run_id);
+      }
+    },
+  );
+});
+
+test('mint refuses a stale no-response browser-surface assistance id', async () => {
+  const connectorId = 'https://registry.pdpp.org/connectors/spotify';
+  const leaseManager = makeLeaseManager({ connectorId });
+  await withHarness(
+    {
+      browserSurfaceLeaseManager: leaseManager,
+      buildConnector: buildNoResponseBrowserAssistanceConnector,
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      try {
+        leaseManager.acquire({
+          connectorId,
+          runId: started.run_id,
+          profileKey: 'profile_dynamic_1',
+        });
+        await waitForAssistanceRequest(asUrl, started.run_id);
+
+        const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            interaction_id: 'asst_stream_stale',
+            viewport: { width: 800, height: 600 },
+          }),
+        });
+        assert.equal(mint.status, 409);
+        assert.equal(mint.body.error.code, 'no_pending_interaction');
+      } finally {
+        await fetch(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/cancel`, { method: 'POST' });
+        await waitForRunTerminal(asUrl, started.run_id);
+      }
+    },
+  );
+});
+
+test('mint refuses current no-response browser-surface assistance without a ready surface', async () => {
+  const connectorId = 'https://registry.pdpp.org/connectors/spotify';
+  const leaseManager = makeLeaseManager({ connectorId, surfaceHealth: 'starting' });
+  await withHarness(
+    {
+      browserSurfaceLeaseManager: leaseManager,
+      buildConnector: buildNoResponseBrowserAssistanceConnector,
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      try {
+        leaseManager.acquire({
+          connectorId,
+          runId: started.run_id,
+          profileKey: 'profile_dynamic_1',
+        });
+        await waitForAssistanceRequest(asUrl, started.run_id);
+
+        const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            interaction_id: 'asst_stream_1',
+            viewport: { width: 800, height: 600 },
+          }),
+        });
+        assert.equal(mint.status, 503);
+        assert.equal(mint.body.error.code, 'streaming_companion_unavailable');
+      } finally {
+        await fetch(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/cancel`, { method: 'POST' });
+        await waitForRunTerminal(asUrl, started.run_id);
+      }
+    },
+  );
 });
 
 test('mint accepts a pending otp interaction for browser-backed verification flows', async () => {

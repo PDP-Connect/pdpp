@@ -8,6 +8,8 @@ The live repair also exposed an owner-flow gap. The post-submit login fallback e
 
 The first deployed no-response assistance run exposed the companion-page half of the same contract. The runtime emitted `run.assistance_requested` with `owner_action=operate_attachment`, `response_contract=none`, and a `browser_surface` attachment, but the stream page treated browser-surface assistance as streamable only when a response was required. The owner saw "No browser action is waiting" while the live browser still needed login.
 
+The follow-up live run exposed the route half of that contract. After the dashboard rendered the stream entry point, the stream mint route still returned `409 no_pending_interaction` because it only accepted `run.interaction_required` ids. No-response browser assistance intentionally has an assistance id and an active browser-surface lease, not a pending interaction.
+
 ## Decision
 
 Add a narrow `BrowserConfig.preservePageOnFailure` runtime option. ChatGPT opts into it with `preservePageOnSuccess`; other connectors keep the existing cleanup semantics.
@@ -20,6 +22,8 @@ Make ChatGPT post-submit browser-login fallback match the push-approval path: em
 
 Make the dashboard stream projection honor the same structured assistance contract. Browser-surface assistance is streamable whenever the owner action is `operate_attachment` and a browser-surface attachment is available, regardless of whether the response contract is `response_required` or `none`. The stream viewer renders submit/continue controls only for response-required assistance. For no-response browser assistance, the owner can operate the live browser while the connector keeps polling for completion.
 
+Make the stream mint route honor that same contract. It accepts either a pending browser-backed interaction or the current no-response browser-surface assistance id when a ready browser-surface lease is active for the run. It mints against the leased n.eko surface descriptor and still fails closed for stale ids, missing or non-ready surfaces, and unrelated runs.
+
 ## Alternatives
 
 - Preserve failed pages for every browser connector: rejected. Banking and commerce connectors should still clean up failed pages by default.
@@ -29,6 +33,7 @@ Make the dashboard stream projection honor the same structured assistance contra
 - Keep profiles persistent but do not restore browser session state: rejected. It only works until a restart; `RestoreOnStartup` improves tab restoration, but live evidence shows it is not sufficient by itself for ChatGPT API-session survival.
 - Require the owner to click a "done" control after completing ChatGPT browser login: rejected for the primary path. The connector can directly observe the authoritative session probe and should resume without a redundant owner acknowledgment. A blocking manual action remains as an escalation fallback when the probe never becomes active.
 - Treat `response_contract=none` browser assistance as passive timeline copy only: rejected. It hides the very browser surface the owner must operate.
+- Mint stream sessions only from pending interactions: rejected. That preserves the old model but makes no-response browser assistance impossible to operate.
 
 ## Acceptance Checks
 
@@ -37,6 +42,7 @@ Make the dashboard stream projection honor the same structured assistance contra
 - n.eko image-policy tests prove managed Chrome restores the prior browser session on startup.
 - ChatGPT tests prove post-submit browser-login assistance auto-resumes without an `INTERACTION` response when the API session becomes active.
 - Dashboard tests prove no-response browser-surface assistance opens the streaming companion without rendering a submit/continue control.
+- Streaming-route tests prove no-response browser-surface assistance can mint a stream session from a ready leased surface without a pending interaction.
 - Focused ChatGPT and runtime tests pass.
 - Live validation after owner-attended repair proves immediate no-owner-action reuse before closing the change.
 - Post-restart ChatGPT API-session survival is a residual risk unless a later change introduces a provider-supported credential/session authority beyond the browser process.

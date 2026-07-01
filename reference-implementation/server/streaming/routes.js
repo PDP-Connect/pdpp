@@ -321,6 +321,8 @@ async function resolveCompanionBackend(companion) {
  * @param {Function} deps.makeBrowserSessionId optional id minter for tests
  * @param {Function} deps.now                  optional clock for tests
  * @param {Function} deps.emitTimelineEvent    optional override for tests; defaults to emitSpineEvent
+ * @param {Function} deps.listRunEventsPage    optional bounded run timeline reader for no-response assistance minting
+ * @param {object} deps.browserSurfaceLeaseManager optional active browser-surface lease manager
  * @param {string} deps.nekoProxyPath          same-origin n.eko proxy path
  * @param {string|string[]} deps.nekoProxyAllowedHosts non-loopback n.eko hosts allowed for proxying
  * @param {Function} deps.isNekoProxyTargetApproved dynamic n.eko proxy approval hook
@@ -335,6 +337,8 @@ export function registerStreamingRoutes({
   makeBrowserSessionId,
   now = () => Date.now(),
   emitTimelineEvent = emitSpineEvent,
+  listRunEventsPage = null,
+  browserSurfaceLeaseManager = null,
   nekoProxyPath = DEFAULT_NEKO_PROXY_PATH,
   nekoProxyAllowedHosts = [],
   isNekoProxyTargetApproved = null,
@@ -423,6 +427,138 @@ export function registerStreamingRoutes({
       // Spine emit best-effort: refusing to mint over a logging error would
       // give worse UX than a missing diagnostic event.
     }
+  }
+
+  function mintError(status, code, message, param = null) {
+    const err = new Error(message);
+    err.status = status;
+    err.code = code;
+    err.param = param;
+    return err;
+  }
+
+  function eventData(event) {
+    return event && event.data && typeof event.data === 'object' && !Array.isArray(event.data)
+      ? event.data
+      : {};
+  }
+
+  function eventAssistanceId(event) {
+    const data = eventData(event);
+    return typeof data.assistance_request_id === 'string' && data.assistance_request_id.length > 0
+      ? data.assistance_request_id
+      : typeof event?.interaction_id === 'string' && event.interaction_id.length > 0
+        ? event.interaction_id
+        : null;
+  }
+
+  function hasBrowserSurfaceAttachment(data) {
+    return Array.isArray(data.attachments) && data.attachments.some((attachment) =>
+      attachment && typeof attachment === 'object' && attachment.kind === 'browser_surface'
+    );
+  }
+
+  function currentNoResponseBrowserAssistanceId(events) {
+    const terminalIds = new Set();
+    for (const event of events) {
+      if (
+        event?.event_type === 'run.assistance_cancelled' ||
+        event?.event_type === 'run.assistance_escalated' ||
+        event?.event_type === 'run.assistance_resolved' ||
+        event?.event_type === 'run.assistance_timed_out'
+      ) {
+        const id = eventAssistanceId(event);
+        if (id) terminalIds.add(id);
+      }
+    }
+
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (!event || event.event_type !== 'run.assistance_requested') continue;
+      const id = eventAssistanceId(event);
+      if (!id || terminalIds.has(id)) continue;
+      const data = eventData(event);
+      if (
+        data.progress_posture === 'blocked' &&
+        data.owner_action === 'operate_attachment' &&
+        data.response_contract === 'none' &&
+        hasBrowserSurfaceAttachment(data)
+      ) {
+        return id;
+      }
+    }
+    return null;
+  }
+
+  async function isCurrentNoResponseBrowserAssistance(runId, assistanceId) {
+    if (typeof listRunEventsPage !== 'function') return false;
+    const page = await listRunEventsPage(runId, { cursor: null, limit: 5000 });
+    const events = Array.isArray(page?.events) ? page.events : Array.isArray(page?.data) ? page.data : [];
+    return currentNoResponseBrowserAssistanceId(events) === assistanceId;
+  }
+
+  function buildBrowserSurfaceAssistanceTarget(runId, assistanceId) {
+    if (!browserSurfaceLeaseManager || typeof browserSurfaceLeaseManager.listLeases !== 'function') {
+      return null;
+    }
+    const lease = browserSurfaceLeaseManager
+      .listLeases()
+      .find((candidate) => candidate?.run_id === runId && candidate.status === 'leased');
+    if (!lease?.surface_id || typeof browserSurfaceLeaseManager.getSurface !== 'function') {
+      return null;
+    }
+    const surface = browserSurfaceLeaseManager.getSurface(lease.surface_id);
+    if (!surface || surface.health !== 'ready') return null;
+    if (surface.surface_id !== lease.surface_id) return null;
+    if (surface.connector_id !== lease.connector_id) return null;
+    if (surface.active_lease_id !== lease.lease_id) return null;
+    if (surface.profile_key !== lease.profile_key) return null;
+    if (!surface.stream_base_url) return null;
+    return {
+      backend: 'neko',
+      base_url: surface.stream_base_url,
+      ...(surface.cdp_url ? { cdp_http_url: surface.cdp_url } : {}),
+      surface_id: surface.surface_id,
+      lease_id: lease.lease_id,
+      profile_key: lease.profile_key,
+      interaction_id: assistanceId,
+    };
+  }
+
+  async function resolveMintScope(runId, interactionId) {
+    const pending = controller.getPendingInteraction(runId);
+    if (pending) {
+      if (pending.interaction_id !== interactionId) {
+        throw mintError(
+          409,
+          'interaction_id_mismatch',
+          `Pending interaction is ${pending.interaction_id}, not ${interactionId}`,
+          'interaction_id',
+        );
+      }
+      if (!['manual_action', 'otp'].includes(pending.kind)) {
+        throw mintError(
+          409,
+          'stream_not_supported_for_kind',
+          `Streaming is not supported for interaction kind ${pending.kind}`,
+        );
+      }
+      return { kind: pending.kind, target: null };
+    }
+
+    if (await isCurrentNoResponseBrowserAssistance(runId, interactionId)) {
+      const target = buildBrowserSurfaceAssistanceTarget(runId, interactionId);
+      if (!target) {
+        throw mintError(
+          503,
+          'streaming_companion_unavailable',
+          'A browser-surface assistance request is current, but no ready browser surface is available for this run.',
+        );
+      }
+      return { kind: 'manual_action', target };
+    }
+
+    throw mintError(409, 'no_pending_interaction', 'No pending interaction for this run');
   }
 
   function getNekoProxySession(token) {
@@ -608,31 +744,7 @@ body>p{display:none!important}
         if (!interactionId) {
           return pdppError(res, 400, 'invalid_request', 'interaction_id is required', 'interaction_id');
         }
-        const pending = controller.getPendingInteraction(runId);
-        if (!pending) {
-          return pdppError(res, 409, 'no_pending_interaction', 'No pending interaction for this run');
-        }
-        if (pending.interaction_id !== interactionId) {
-          return pdppError(
-            res,
-            409,
-            'interaction_id_mismatch',
-            `Pending interaction is ${pending.interaction_id}, not ${interactionId}`,
-            'interaction_id',
-          );
-        }
-        // Streaming companion is for browser-backed interactions. `manual_action`
-        // is always browser-backed; `otp` may also need a browser surface when
-        // the source asks for a code inside a live login flow. Credentials stay
-        // form-only and must not receive a browser stream token.
-        if (!['manual_action', 'otp'].includes(pending.kind)) {
-          return pdppError(
-            res,
-            409,
-            'stream_not_supported_for_kind',
-            `Streaming is not supported for interaction kind ${pending.kind}`,
-          );
-        }
+        const mintScope = await resolveMintScope(runId, interactionId);
         // Fail closed when no real CDP companion is configured. The viewer
         // must not receive a token that only errors at attach time; that
         // makes the dashboard primary action a dead button.
@@ -680,6 +792,7 @@ body>p{display:none!important}
             run_id: runId,
             interaction_id: interactionId,
             browser_session_id: effectiveBrowserSessionId,
+            target: mintScope.target,
           });
           companions.set(effectiveBrowserSessionId, companion);
           // Layer-D wiring: subscribe to the process-local remote-telemetry
@@ -718,7 +831,7 @@ body>p{display:none!important}
               browser_session_id: effectiveBrowserSessionId,
               expires_at_ms: session.expires_at,
               viewport,
-              kind: pending.kind,
+              kind: mintScope.kind,
             },
           });
         }
@@ -736,6 +849,9 @@ body>p{display:none!important}
           viewport_path: `/_ref/run-interaction-streams/${encodeURIComponent(token)}/viewport`,
         });
       } catch (err) {
+        if (err && typeof err.status === 'number' && typeof err.code === 'string') {
+          return pdppError(res, err.status, err.code, err.message, err.param || null);
+        }
         return pdppError(res, 500, 'api_error', err.message || 'mint failed');
       }
     },
