@@ -179,7 +179,7 @@ The reference runtime controller SHALL resolve local connector paths determinist
 
 ### Requirement: Scheduler SHALL preserve runtime results and avoid unsafe retries
 
-The reference scheduler SHALL preserve runtime result metadata in history, stats, and completion callbacks while preventing overlapping runs for the same connector and avoiding retries for deterministic failures. The reference attention read model SHALL NOT surface expired non-terminal owner-action rows as current unresolved attention.
+The reference scheduler SHALL preserve runtime result metadata in history, stats, completion callbacks, and active-run liveness while preventing overlapping runs for the same connector and avoiding retries for deterministic failures. The reference attention read model SHALL NOT surface expired non-terminal owner-action rows as current unresolved attention.
 
 #### Scenario: Run succeeds
 
@@ -228,6 +228,27 @@ The reference scheduler SHALL preserve runtime result metadata in history, stats
 - **WHEN** refresh policy, backoff, overlap prevention, or human-attention state prevents a scheduled run from starting
 - **THEN** the reference SHALL preserve an inspectable skip or delay reason in schedule/run history
 - **AND** manual `run now` SHALL remain available unless the connector is already active
+
+#### Scenario: Direct scheduled run publishes active liveness
+
+- **WHEN** the scheduler launches a direct `runConnector` attempt for a
+  connector instance
+- **AND** the runtime emits `run.started` with the run id and trace id
+- **THEN** the scheduler SHALL persist an active-run liveness record for that
+  connector instance using the same active-run registry read by run summary
+  projection
+- **AND** the liveness record SHALL remain present until the attempt settles
+- **AND** the liveness record SHALL be removed after the attempt reaches a
+  terminal success or failure
+
+#### Scenario: Direct scheduled run remains active before terminal
+
+- **WHEN** a direct scheduled run has emitted `run.started`
+- **AND** it has not yet emitted `run.completed`, `run.failed`,
+  `run.cancelled`, or `run.abandoned`
+- **THEN** run summary projection SHALL classify it as in progress while its
+  active-run liveness record is present
+- **AND** it SHALL NOT classify the run as `orphaned_started_run`
 
 ### Requirement: Scheduler SHALL handle single-use and disabled grants conservatively
 The reference scheduler SHALL treat `single_use` grants and deterministic grant lifecycle failures as reference orchestration concerns rather than connector wire-protocol extensions.
@@ -333,4 +354,3 @@ messages); the route SHALL NOT expose connector secrets or bearer tokens.
 - **WHEN** a run's in-flight task rejects after the runtime has already
   recorded a terminal spine event for that run
 - **THEN** the controller SHALL NOT emit a second terminal event for the run
-
