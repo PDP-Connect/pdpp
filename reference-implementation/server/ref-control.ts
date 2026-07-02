@@ -476,6 +476,15 @@ export interface ConnectorSummary {
   readonly connector_id: string;
   readonly connector_instance_id: string;
   readonly display_name: string;
+  /**
+   * The connection's source kind and non-secret source-binding kind. Owner
+   * surfaces route repair BINDING-FIRST from this: a browser-session binding
+   * (`browser_collector`/`browser_enrollment_shell`) repairs by browser/session
+   * repair, not static-secret credential capture, even when the connector also
+   * supports a static secret. Connection-scoped fact, not a connector capability.
+   */
+  readonly source_kind: string;
+  readonly source_binding_kind: string | null;
   readonly freshness: Freshness;
   readonly last_run: ConnectorRunSummary | null;
   readonly last_successful_run: ConnectorRunSummary | null;
@@ -4037,6 +4046,8 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     connector_id: connectorId,
     connector_instance_id: connectorInstanceId,
     display_name: instance.displayName || connectorDisplayName,
+    source_kind: instance.sourceKind,
+    source_binding_kind: connectionBindingKind(instance),
     local_device_progress: localDeviceProgress,
     manifest_version: manifest.version || null,
     next_action: connectionHealth.next_action,
@@ -4078,6 +4089,42 @@ type CredentialMetadataRead =
   | { readonly ok: true; readonly metadata: CredentialStoreMetadata | null }
   | { readonly ok: false };
 
+// Connection binding kinds whose PRIMARY auth is an owner-authenticated browser
+// session, not a stored credential. A connection bound this way repairs by
+// browser/session repair (re-establish the session), never by static-secret
+// credential capture — even when the connector also supports a username_password
+// static secret at the connector level (e.g. a ChatGPT connection that logs in
+// via SSO through the browser). Keeping this as a connection-scoped binding fact,
+// not a connector capability, is the "connection-binding-first repair selection"
+// rule from define-connection-repair-routing.
+const BROWSER_SESSION_BINDING_KINDS = new Set(["browser_collector", "browser_enrollment_shell"]);
+
+function connectionBindingKind(instance: ConnectorInstanceRow): string | null {
+  const binding = instance.sourceBinding;
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    return null;
+  }
+  const kind = (binding as { readonly kind?: unknown }).kind;
+  return typeof kind === "string" ? kind : null;
+}
+
+function connectionIsBrowserSessionBound(instance: ConnectorInstanceRow): boolean {
+  const kind = connectionBindingKind(instance);
+  return kind !== null && BROWSER_SESSION_BINDING_KINDS.has(kind);
+}
+
+// True when THIS connection is bound as static-secret and therefore repairs by
+// stored-credential capture/rotation. A connection is static-secret-bound when
+// the connector is static-secret-capable AND the connection is NOT browser-
+// session-bound. (A future explicit auth-mode conversion would set the binding
+// accordingly; this reads the binding, never guesses from the connector alone.)
+function connectionIsStaticSecretBound(
+  instance: ConnectorInstanceRow,
+  staticSecretCapable: boolean
+): boolean {
+  return staticSecretCapable && !connectionIsBrowserSessionBound(instance);
+}
+
 // Map manifest static-secret capability plus the non-secret credential-store
 // read onto the honest `ConnectionCredentialEvidence` shape the
 // `CredentialsValid` projection consumes. Never reads/logs the secret — only
@@ -4096,10 +4143,18 @@ type CredentialMetadataRead =
 //     true for a `revoked` status — an unresolved credential problem, not "no
 //     credential ever captured").
 function deriveCredentialEvidence(
-  staticSecretCapable: unknown,
+  staticSecretBound: boolean,
   read: CredentialMetadataRead
 ): ConnectionCredentialEvidence | null {
-  if (!staticSecretCapable) {
+  // Connection-binding-first: only a connection actually bound as static-secret
+  // gets credential-presence evidence. A browser-session/browser_collector
+  // connection authenticates by owner-authenticated browser session, NOT a
+  // stored credential — for it, an absent credential row is normal, not a
+  // repair need, so it must NOT project `credential_required`. Its repair is
+  // browser/session repair, surfaced through run/session evidence + binding-first
+  // console routing, never static-secret capture — even if the connector also
+  // has connector-level username_password support.
+  if (!staticSecretBound) {
     return null;
   }
   if (!read.ok) {
@@ -4146,12 +4201,16 @@ async function projectConnectorSummaryForInstance(
     connectorInstanceId,
     deps.retainedSizeSnapshot
   );
-  // Static-secret capability is a manifest-only fact (no store read needed to
-  // decide it). Only static-secret-capable connectors can have a stored
-  // credential, so the store is consulted only when capable — cheaper for the
-  // (majority) non-static-secret connectors and keeps `credential: null`
-  // (never `{ capable: false, ... }`) behavior for them unchanged.
-  const staticSecretCapture = staticSecretCredentialCaptureFromManifest(manifest);
+  // Connection-binding-first: credential-presence evidence is read only for a
+  // connection actually BOUND as static-secret — the connector being static-
+  // secret-capable is necessary but not sufficient. A browser-session
+  // (`browser_collector`/`browser_enrollment_shell`) connection authenticates by
+  // browser session, so its absent credential row is normal, not a repair need;
+  // the store is not consulted and `credential` stays `null` (no false
+  // `credential_required`). Its repair routes to browser/session repair via
+  // run/session evidence + binding-first console routing.
+  const staticSecretCapable = staticSecretCredentialCaptureFromManifest(manifest) !== null;
+  const staticSecretBound = connectionIsStaticSecretBound(instance, staticSecretCapable);
   const [
     schedule,
     lastRun,
@@ -4193,7 +4252,7 @@ async function projectConnectorSummaryForInstance(
     }),
     getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
     getAcquisitionCoverageSummary(connectorInstanceId),
-    staticSecretCapture
+    staticSecretBound
       ? getConnectorCredentialStore()
           .getMetadata(connectorInstanceId)
           // Discriminate success (metadata may be null = no row) from a store
@@ -4204,11 +4263,12 @@ async function projectConnectorSummaryForInstance(
           .catch((): CredentialMetadataRead => ({ ok: false }))
       : Promise.resolve<CredentialMetadataRead>({ ok: true, metadata: null }),
   ]);
-  // Non-static-secret connectors: the ternary above already resolved
-  // `{ ok: true, metadata: null }`, and `deriveCredentialEvidence` returns
-  // `null` because `staticSecretCapture` is null — so `credential` stays `null`
-  // (evidence omitted) for them, unchanged.
-  const credential = deriveCredentialEvidence(staticSecretCapture, credentialMetadata);
+  // Connections that are not static-secret-bound (browser-session connections,
+  // or non-static-secret connectors): the ternary above resolved
+  // `{ ok: true, metadata: null }` and `deriveCredentialEvidence` returns `null`
+  // because `staticSecretBound` is false — so `credential` stays `null` (evidence
+  // omitted), unchanged, and no `credential_required` is fabricated for them.
+  const credential = deriveCredentialEvidence(staticSecretBound, credentialMetadata);
   const refreshPolicy = extractRefreshPolicy(manifest);
   const nowIso = new Date().toISOString();
   // Adaptive rate controller snapshot: read from the latest run's terminal

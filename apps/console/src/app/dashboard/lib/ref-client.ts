@@ -566,6 +566,16 @@ export interface RefConnectorSummary {
   connector_id: string;
   connector_instance_id?: string;
   display_name: string;
+  /**
+   * The connection's source kind and non-secret source-binding kind. Owner
+   * surfaces route repair BINDING-FIRST: a browser-session binding
+   * (`browser_collector`/`browser_enrollment_shell`) repairs by browser/session
+   * repair, not static-secret credential capture, even when the connector also
+   * supports a static secret. Optional on the mirror: a reference predating the
+   * field omits it and the console falls back to connector-level modality.
+   */
+  source_kind?: string;
+  source_binding_kind?: string | null;
   freshness: Record<string, unknown>;
   last_run: RefConnectorRunSummary | null;
   last_successful_run: RefConnectorRunSummary | null;

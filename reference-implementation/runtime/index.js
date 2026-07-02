@@ -1859,15 +1859,6 @@ export async function runConnector(opts) {
     staticSecretEnv = null,
     triggerKind = null,
     automationMode = null,
-    // When true, the owner explicitly chose to re-establish a browser session
-    // (an explicit, separately-labeled secondary repair action) rather than a
-    // plain owner-present run. Threaded to the connector child as
-    // `PDPP_RUN_OWNER_SESSION_REPAIR=1`. Absent/false, a browser-bound +
-    // static-secret-capable connection with no reusable session and no stored
-    // credential routes owner repair to durable credential capture instead of a
-    // one-off interactive browser login. See
-    // openspec/changes/route-credentialless-repair-to-capture.
-    ownerSessionRepair = false,
     // Optional owner-cancel signal. The controller passes one AbortSignal per
     // run; aborting it requests cooperative cancellation of THIS run only. The
     // runtime records a non-terminal `run.cancel_requested` event and
@@ -1939,7 +1930,6 @@ export async function runConnector(opts) {
   const runAutomationEnv = {
     ...(triggerKind ? { PDPP_RUN_TRIGGER_KIND: triggerKind } : {}),
     ...(automationMode ? { PDPP_RUN_AUTOMATION_MODE: automationMode } : {}),
-    ...(ownerSessionRepair ? { PDPP_RUN_OWNER_SESSION_REPAIR: '1' } : {}),
   };
 
   // Spawn connector process. Connectors may be .ts (source-only) or .js

@@ -31,7 +31,7 @@ import {
   summarizeStreakDots,
   syncActionIdleLabel,
 } from "../../lib/connection-evidence.ts";
-import { isBrowserBoundConnector } from "../../lib/connection-modality.ts";
+import { isBrowserBoundConnector, isBrowserSessionBoundConnection } from "../../lib/connection-modality.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { isRevokedConnection } from "../../lib/records-list-classification.ts";
 import {
@@ -144,6 +144,8 @@ interface ConnectorPageModel {
   recentRuns: RunSummary[];
   schedule: RefSchedule | null;
   scheduleError: string | null;
+  /** Connection-scoped source-binding kind for binding-first repair routing. */
+  sourceBindingKind: string | null;
   sourceInstances: DeviceSourceInstance[];
   sourceInstancesError: string | null;
   streams: StreamSummary[];
@@ -537,6 +539,7 @@ function buildRecoveryDemoModel(): ConnectorPageModel {
     connectorId: "claude_code",
     connectorInstanceId: connectionId,
     deviceLabels: ["workstation"],
+    sourceBindingKind: null,
     displayName: "Claude Code workstation",
     headerCount: "464 records, 2 streams",
     manifest: {
@@ -646,6 +649,9 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     overview,
     providerOrigin,
     recentRuns,
+    // Connection-scoped binding kind, so repair routing is binding-first (a
+    // browser-session connection reconnects its session, not a static secret).
+    sourceBindingKind: summary.source_binding_kind ?? null,
     streams,
     totalRecords,
     ...diagnostics,
@@ -715,6 +721,7 @@ function ConnectorPageView({
     recentRuns,
     schedule,
     scheduleError,
+    sourceBindingKind,
     sourceInstances,
     sourceInstancesError,
     streams,
@@ -724,13 +731,20 @@ function ConnectorPageView({
   // Stable rename selector: prefer the explicit instance id, fall back to the
   // connection id. Both address the same connection on the backend route.
   const renameSelector = connectorInstanceId ?? connectionId;
-  // Static-secret connections support in-place credential update/repair.
-  // Use connectorInstanceId when available (same connection the route is tracking).
-  // Browser-bound connectors that declare static-secret setup still use this
-  // path; browser-session reconnect is only the fallback for browser-bound
-  // connectors with no manifest-owned credential-capture surface.
+  // Connection-binding-first repair routing. A connection BOUND as a browser
+  // session (`browser_collector`/`browser_enrollment_shell`) authenticates by
+  // owner-authenticated browser session, so its repair is browser/session
+  // repair — even when the connector ALSO supports a static-secret credential
+  // (e.g. a ChatGPT connection that logs in via SSO through the browser). Only a
+  // connection that is NOT browser-session-bound routes to static-secret capture.
+  // The connection binding wins over the connector-level static-secret capability
+  // and `isBrowserBoundConnector` facts.
+  const sessionBound = isBrowserSessionBoundConnection(sourceBindingKind);
   const staticSecretCapture = staticSecretCredentialCaptureFromManifest(manifest);
   const credentialUpdateHref = (() => {
+    if (sessionBound) {
+      return browserSessionReconnectHref(connectorId, connectorInstanceId ?? connectionId);
+    }
     if (staticSecretCapture !== null) {
       return updateCredentialHref(connectorId, connectorInstanceId ?? connectionId);
     }
@@ -763,7 +777,7 @@ function ConnectorPageView({
             connectorId={connectorId}
             credentialUpdateHref={credentialUpdateHref}
             displayName={displayName}
-            hasStaticSecretCredentialUpdate={staticSecretCapture !== null}
+            hasStaticSecretCredentialUpdate={staticSecretCapture !== null && !sessionBound}
             manualUploadHref={manualUploadHref}
             overview={overview}
             primaryAction={primaryAction}

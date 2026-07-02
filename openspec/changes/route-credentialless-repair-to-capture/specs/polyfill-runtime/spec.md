@@ -4,7 +4,7 @@
 
 First-party polyfill connector manifests MAY declare `capabilities.refresh_policy` as reference/runtime metadata describing recommended scheduling posture. These hints SHALL NOT be treated as finalized PDPP core protocol semantics in this tranche.
 
-For a connection whose connector is static-secret-capable, owner-mediated repair with no usable stored credential and no reusable session SHALL route to durable credential capture for the existing connection as the primary owner action. A one-off interactive browser login SHALL NOT be the silent default for that case. A secure browser hand-off MAY still be offered, but only as an explicit, clearly-labeled secondary session-repair action.
+Owner-mediated repair selection SHALL be connection-binding-first: a connection bound as a browser session (`source_binding.kind` a browser-session kind such as `browser_collector` or `browser_enrollment_shell`) SHALL repair by browser/session repair, NOT static-secret credential capture, even when the connector also declares a static-secret (e.g. username_password) setup. Static-secret credential capture SHALL be the repair only for a connection actually bound as static-secret, or after the owner explicitly converts the connection's auth mode. Connector-level static-secret capability alone SHALL NOT route a browser-session-bound connection to credential capture.
 
 #### Scenario: Connector declares a refresh policy
 - **WHEN** a polyfill manifest includes `capabilities.refresh_policy`
@@ -26,20 +26,24 @@ For a connection whose connector is static-secret-capable, owner-mediated repair
 - **AND** an automatic run that cannot reuse the session SHALL fail or defer before submitting credentials, requesting OTP, requesting external app approval, or opening manual browser handoff
 - **AND** an owner-started manual run MAY perform the interactive auth repair path.
 
-#### Scenario: Static-secret-capable connection has no usable credential and no reusable session
-- **WHEN** an owner-started run for a static-secret-capable connection finds no reusable session AND no usable stored credential
-- **THEN** the runtime SHALL surface durable credential capture for the existing connection as the primary owner repair action
-- **AND** it SHALL NOT silently open a one-off interactive browser login as the default repair
-- **AND** a secure browser hand-off MAY be offered only as an explicit, separately-labeled session-repair action.
+#### Scenario: Browser-session-bound connection repairs by session, not credential capture
+- **WHEN** a connection is bound as a browser session (a browser-session `source_binding.kind`) and needs repair
+- **AND** the connector ALSO supports a static-secret credential at the connector level
+- **THEN** the owner-facing repair SHALL be browser/session repair for that connection
+- **AND** it SHALL NOT be static-secret credential capture, because the connection authenticates by owner-authenticated browser session, not a stored credential.
 
-#### Scenario: Browser-session repair has no stored login credential
-- **WHEN** an owner-started manual browser-session repair has no active stored login credential AND the connector is not static-secret-capable
-- **THEN** the connector MAY hand the secure browser to the owner for manual login
-- **AND** the connector SHALL NOT silently store credentials typed into that provider page.
+#### Scenario: Static-secret-bound connection with no usable credential
+- **WHEN** a connection is bound as static-secret and has no usable stored credential
+- **THEN** the owner-facing repair SHALL be durable credential capture for the existing connection
+- **AND** a static-secret run that cannot resolve a usable credential SHALL fail closed before starting the connector, rather than falling through to a browser login.
 
 #### Scenario: Reusable session needs no credential prompt
-- **WHEN** a static-secret-capable browser connection has a valid reusable owner-authenticated session
+- **WHEN** a browser-session-bound connection has a valid reusable owner-authenticated session
 - **THEN** the run SHALL proceed on the reused session without prompting the owner for a credential or opening a repair action.
+
+#### Scenario: Browser-session repair does not store provider-page passwords
+- **WHEN** an owner operates a secure browser to repair a browser-session-bound connection
+- **THEN** the connector SHALL NOT silently store credentials typed into that provider page as a stored credential.
 
 #### Scenario: A future spec wants portable scheduling semantics
 - **WHEN** refresh policy hints need to become interoperable across implementations

@@ -17,6 +17,7 @@ import {
   BROWSER_BOUND_CONNECTORS,
   BROWSER_BOUND_RUNBOOK_PATH,
   isBrowserBoundConnector,
+  isBrowserSessionBoundConnection,
   isSupportedBrowserCollectorConnector,
   isSupportedLocalCollectorConnector,
   SUPPORTED_BROWSER_COLLECTOR_CONNECTORS,
@@ -145,6 +146,19 @@ test("isBrowserBoundConnector narrows only the browser-bound keys", () => {
   assert.equal(isBrowserBoundConnector(""), false);
   assert.equal(isBrowserBoundConnector(null), false);
   assert.equal(isBrowserBoundConnector(undefined), false);
+});
+
+test("isBrowserSessionBoundConnection classifies a connection by its source-binding kind, not the connector", () => {
+  // Browser-session bindings repair by session repair, NOT static-secret capture,
+  // even for a connector (like chatgpt) that also supports a username_password.
+  assert.equal(isBrowserSessionBoundConnection("browser_collector"), true);
+  assert.equal(isBrowserSessionBoundConnection("browser_enrollment_shell"), true);
+  // Static-secret / account bindings are NOT session-bound → credential capture.
+  assert.equal(isBrowserSessionBoundConnection("static_secret_draft"), false);
+  assert.equal(isBrowserSessionBoundConnection("account"), false);
+  assert.equal(isBrowserSessionBoundConnection("default_account"), false);
+  assert.equal(isBrowserSessionBoundConnection(null), false);
+  assert.equal(isBrowserSessionBoundConnection(undefined), false);
 });
 
 test("isBrowserBoundConnector also accepts the registry-URL fallback form", () => {

@@ -127,3 +127,25 @@ export function isBrowserBoundConnector(connectorId: string | null | undefined):
 
 /** The browser-bound runbook path, surfaced verbatim by console guidance. */
 export const BROWSER_BOUND_RUNBOOK_PATH = SHARED_BROWSER_BOUND_RUNBOOK_PATH;
+
+/**
+ * Connection source-binding kinds whose PRIMARY auth is an owner-authenticated
+ * browser session, not a stored credential. A connection bound this way repairs
+ * by browser/session repair (re-establish the session) — NOT static-secret
+ * credential capture — even when the connector also supports a username_password
+ * static secret at the connector level (e.g. a ChatGPT connection that logs in
+ * via SSO through the browser). Mirrors the server-side
+ * `BROWSER_SESSION_BINDING_KINDS` in `ref-control.ts`; the two must stay in sync.
+ */
+const BROWSER_SESSION_BINDING_KINDS = new Set(["browser_collector", "browser_enrollment_shell"]);
+
+/**
+ * True when THIS connection is bound as a browser session (from its
+ * connection-scoped `source_binding_kind`), so repair must route to
+ * browser/session repair rather than static-secret credential capture. This is
+ * the connection-binding-first discriminator; it takes precedence over the
+ * connector-level `isBrowserBoundConnector`/static-secret-capability facts.
+ */
+export function isBrowserSessionBoundConnection(sourceBindingKind: string | null | undefined): boolean {
+  return typeof sourceBindingKind === "string" && BROWSER_SESSION_BINDING_KINDS.has(sourceBindingKind);
+}

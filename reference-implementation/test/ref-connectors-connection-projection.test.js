@@ -742,10 +742,12 @@ function seedBrowserBoundStaticSecretConnector() {
     .run(CHATGPT_SHAPED_CONNECTOR_ID, JSON.stringify(manifest), NOW);
 }
 
-test('ChatGPT-shaped browser_collector connection with no credential routes to capture, not a browser stream', withTmpDb(async () => {
+test('ChatGPT-shaped browser_collector connection with no credential does NOT project credential_required (binding-first: session repair, not static-secret capture)', withTmpDb(async () => {
   seedBrowserBoundStaticSecretConnector();
   // Mirror the live dondochaka shape exactly: source_kind is `account`, and the
-  // browser_collector fact lives in source_binding.kind (not source_kind).
+  // browser_collector fact lives in source_binding.kind (not source_kind). This
+  // connection logs in via the browser session (e.g. Google SSO), so an absent
+  // credential row is normal — NOT a "capture a username/password" repair need.
   await seedInstance({
     connectorInstanceId: CHATGPT_SHAPED_INSTANCE_ID,
     connectorId: CHATGPT_SHAPED_CONNECTOR_ID,
@@ -756,31 +758,44 @@ test('ChatGPT-shaped browser_collector connection with no credential routes to c
   });
 
   const scoped = await getConnectorSummaryForRoute(CHATGPT_SHAPED_INSTANCE_ID);
-  assert.ok(scoped, 'the browser_collector static-secret connection projects a summary');
+  assert.ok(scoped, 'the browser_collector connection projects a summary');
 
-  // 1. Honest credential evidence: no usable stored credential -> credential_required.
+  // Binding-first: the connection is browser-session-bound, so credential-store
+  // absence MUST NOT project credential_required (that would route the owner to
+  // static-secret credential capture for a connection with no stored credential
+  // to capture — the SSO case). Its repair is browser/session repair.
+  const credentialRequired = scoped.connection_health.conditions?.find(
+    (c) => c.type === 'CredentialsValid' && c.reason === CONNECTION_CONDITION_REASONS.CREDENTIAL_REQUIRED,
+  );
+  assert.equal(credentialRequired, undefined, 'browser-session connection must not project credential_required');
+
+  // The connection carries its browser-session binding so owner surfaces route
+  // repair binding-first (browser/session repair, not static-secret capture).
+  assert.equal(scoped.source_binding_kind, 'browser_collector');
+}));
+
+test('static-secret-BOUND connection with no credential DOES project credential_required (capture path preserved)', withTmpDb(async () => {
+  // Same static-secret-capable + browser-bound connector, but this connection is
+  // bound as `account` (NOT browser_collector) — the static-secret path, like
+  // ChatGPT - everyone@ (default_account). Here credential capture IS the repair.
+  seedBrowserBoundStaticSecretConnector();
+  await seedInstance({
+    connectorInstanceId: 'cin_account_static_secret',
+    connectorId: CHATGPT_SHAPED_CONNECTOR_ID,
+    displayName: 'ChatGPT - account static secret',
+    sourceKind: 'account',
+    sourceBindingKey: 'account-static-secret',
+    sourceBinding: { kind: 'account' },
+  });
+
+  const scoped = await getConnectorSummaryForRoute('cin_account_static_secret');
+  assert.ok(scoped);
   const credentials = scoped.connection_health.conditions?.find(
     (c) => c.type === 'CredentialsValid' && c.status === 'false',
   );
   assert.ok(credentials, 'a CredentialsValid=false condition is projected');
   assert.equal(credentials.reason, CONNECTION_CONDITION_REASONS.CREDENTIAL_REQUIRED);
-
-  // 2. The owner-facing rendered verdict routes to a credential reauth/capture
-  //    action satisfied by a present, unrejected credential — NOT a browser
-  //    stream. reauth's satisfied_when proves capture is the durable close.
-  const verdict = scoped.rendered_verdict;
-  assert.ok(verdict, 'a rendered verdict is projected');
-  const primary = verdict.required_actions?.[0];
-  assert.ok(primary, 'the verdict carries a primary required action');
-  assert.equal(primary.kind, 'reauth');
-  assert.equal(primary.satisfied_when?.kind, 'credential_present_and_unrejected');
-
-  // 3. No required action is a browser-stream/browser-session operation. The
-  //    taxonomy has no browser_session/browser_stream kind at all, so credential
-  //    absence can never surface a one-off browser login as the owner CTA.
-  for (const action of verdict.required_actions ?? []) {
-    assert.doesNotMatch(String(action.kind), /browser/iu);
-  }
+  assert.equal(scoped.source_binding_kind, 'account');
 }));
 
 // False-positive guard: a credential-store READ FAILURE must NOT be read as

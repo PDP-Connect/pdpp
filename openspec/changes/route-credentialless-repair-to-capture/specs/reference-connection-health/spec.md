@@ -4,7 +4,7 @@
 
 The reference implementation SHALL model connection health as raw facts normalized into typed conditions and then into a derived projection.
 
-The credential-readiness condition SHALL distinguish "no usable stored credential" from "stored credential rejected" as durable connection evidence, derived from credential-presence evidence for the connection rather than inferred solely from a transient run reason code. Both project as an owner reauth/capture action, but with honest, non-conflated reason and copy. A credential-readiness or session-readiness condition SHALL NOT project the connection healthy or idle merely because a credential-shaped run reason code aged out; it SHALL remain derived from durable credential-presence and session-readiness evidence until readiness is proven.
+Stored-credential-presence evidence SHALL be connection-binding-scoped: it applies only to a connection that is bound as static-secret. For such a connection the credential-readiness condition SHALL distinguish "no usable stored credential" from "stored credential rejected" as durable connection evidence, derived from credential-presence evidence rather than inferred solely from a transient run reason code; both project as an owner reauth/capture action, with honest, non-conflated reason and copy. A connection bound as a browser session SHALL NOT project a "no usable stored credential" condition from an absent credential row, because it authenticates by owner-authenticated browser session rather than a stored credential. A credential-readiness or session-readiness condition SHALL NOT project the connection healthy or idle merely because a credential-shaped run reason code aged out; it SHALL remain derived from durable evidence until readiness is proven.
 
 #### Scenario: Raw credential failure becomes typed evidence
 
@@ -13,10 +13,17 @@ The credential-readiness condition SHALL distinguish "no usable stored credentia
 
 #### Scenario: No usable credential is honest evidence distinct from rejection
 
-**WHEN** a static-secret-capable connection has no usable stored credential (never captured, or superseded) and no evidence that a stored credential was provider-rejected
+**WHEN** a static-secret-BOUND connection has no usable stored credential (never captured, or superseded) and no evidence that a stored credential was provider-rejected
 **THEN** the reference implementation SHALL record a `CredentialsValid` condition whose reason is a distinct "credential required" reason, not the "credential rejected" reason
 **AND** the owner-facing message and remediation SHALL describe capturing a credential for the existing connection rather than asserting the source rejected a credential
 **AND** the projected owner action SHALL be an owner reauth/capture action for the same connection.
+
+#### Scenario: Browser-session-bound connection does not project credential_required
+
+**WHEN** a connection is bound as a browser session (a browser-session `source_binding.kind`) and has no stored credential row
+**AND** the connector also supports a static-secret credential at the connector level
+**THEN** the reference implementation SHALL NOT record a "credential required" `CredentialsValid` condition from the absent credential row
+**AND** the connection's repair SHALL be surfaced as browser/session repair rather than static-secret credential capture.
 
 #### Scenario: Stored credential rejection becomes durable connection evidence
 
