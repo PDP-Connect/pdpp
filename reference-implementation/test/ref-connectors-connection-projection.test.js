@@ -6,17 +6,23 @@ import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { emitSpineEvent } from '../lib/spine.ts';
+import { CONNECTION_CONDITION_REASONS } from '../runtime/connection-health.ts';
 import { getConnectorSummaryForRoute, invalidateConnectorSummariesCache, listConnectorSummaries } from '../server/ref-control.ts';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
+import { CREDENTIAL_ENCRYPTION_KEY_ENV } from '../server/stores/credential-encryption.js';
+import { createSqliteConnectorInstanceCredentialStore } from '../server/stores/connector-instance-credential-store.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/connection-first-records';
+const STATIC_SECRET_CONNECTOR_ID = 'https://test.pdpp.dev/connectors/connection-first-static-secret';
 const WORK_INSTANCE_ID = 'cin_test_connection_first_work';
 const PERSONAL_INSTANCE_ID = 'cin_test_connection_first_personal';
 const REVOKED_INSTANCE_ID = 'cin_test_connection_first_revoked';
+const STATIC_SECRET_INSTANCE_ID = 'cin_test_connection_first_static_secret';
 const NOW = '2026-05-20T12:00:00.000Z';
 const REVOKED_AT = '2026-06-10T19:10:28.476Z';
+const TEST_CREDENTIAL_KEY = 'ref-connectors-connection-projection-test-key';
 
 function withTmpDb(fn) {
   return async () => {
@@ -50,6 +56,45 @@ function seedConnector() {
     .run(CONNECTOR_ID, JSON.stringify(manifest), NOW);
 }
 
+// A static-secret-capable connector manifest (declares `setup.credential_capture`),
+// so `staticSecretCredentialCaptureFromManifest` resolves non-null and the
+// connection-summary projection consults the real credential store.
+function seedStaticSecretConnector() {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: STATIC_SECRET_CONNECTOR_ID,
+    version: '1.0.0',
+    display_name: 'Connection First Static Secret',
+    capabilities: {
+      public_listing: { listed: true, status: 'test' },
+    },
+    setup: {
+      credential_capture: {
+        kind: 'app_password',
+        fields: [{ name: 'app_password', label: 'App password', secret: true }],
+      },
+    },
+    streams: [{ name: 'messages', primary_key: ['id'] }],
+  };
+  getDb()
+    .prepare('INSERT INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)')
+    .run(STATIC_SECRET_CONNECTOR_ID, JSON.stringify(manifest), NOW);
+}
+
+async function withCredentialKey(value, fn) {
+  const old = process.env[CREDENTIAL_ENCRYPTION_KEY_ENV];
+  process.env[CREDENTIAL_ENCRYPTION_KEY_ENV] = value;
+  try {
+    return await fn();
+  } finally {
+    if (old === undefined) {
+      delete process.env[CREDENTIAL_ENCRYPTION_KEY_ENV];
+    } else {
+      process.env[CREDENTIAL_ENCRYPTION_KEY_ENV] = old;
+    }
+  }
+}
+
 async function seedInstances({ sourceKind = 'local_device' } = {}) {
   await seedInstance({
     connectorInstanceId: WORK_INSTANCE_ID,
@@ -69,6 +114,7 @@ async function seedInstances({ sourceKind = 'local_device' } = {}) {
 
 async function seedInstance({
   connectorInstanceId,
+  connectorId = CONNECTOR_ID,
   displayName,
   sourceKind = 'local_device',
   sourceBindingKey,
@@ -79,7 +125,7 @@ async function seedInstance({
   await store.upsert({
     connectorInstanceId,
     ownerSubjectId: 'owner_local',
-    connectorId: CONNECTOR_ID,
+    connectorId,
     displayName,
     status,
     sourceKind,
@@ -618,4 +664,209 @@ test('connection summary surfaces a recovered count from the durable count-by-st
     null,
     'all-time recovered count is not mislabeled as last-run progress',
   );
+}));
+
+// Proves the credential-evidence WIRING (not just the pure projection, which
+// `connection-health.test.js` already covers): a static-secret-capable
+// connection with no stored credential row must project `credential_required`
+// through the real `listConnectorSummaries` / `getConnectorSummaryForRoute`
+// read model, which reads non-secret metadata from the real credential store
+// (`getConnectorCredentialStore().getMetadata`) inside
+// `projectConnectorSummaryForInstance`.
+test('connection summary projects credential_required for a static-secret connection with no stored credential', withTmpDb(async () => {
+  seedStaticSecretConnector();
+  await seedInstance({
+    connectorInstanceId: STATIC_SECRET_INSTANCE_ID,
+    connectorId: STATIC_SECRET_CONNECTOR_ID,
+    displayName: 'Static secret account',
+    sourceKind: 'account',
+    sourceBindingKey: 'static-secret',
+    sourceBinding: { kind: 'account' },
+  });
+
+  const summaries = await listConnectorSummaries();
+  const work = summaries.find((row) => row.connector_instance_id === STATIC_SECRET_INSTANCE_ID);
+  assert.ok(work, 'static-secret connection projects a summary');
+
+  const credentials = work.connection_health.conditions?.find(
+    (c) => c.type === 'CredentialsValid' && c.status === 'false',
+  );
+  assert.ok(credentials, 'a CredentialsValid=false condition is projected');
+  assert.equal(credentials.reason, CONNECTION_CONDITION_REASONS.CREDENTIAL_REQUIRED);
+  assert.equal(credentials.remediation?.action, 'refresh_credentials');
+
+  // The scoped route resolves through the same projection and must agree.
+  const scoped = await getConnectorSummaryForRoute(STATIC_SECRET_INSTANCE_ID);
+  assert.ok(scoped);
+  const scopedCredentials = scoped.connection_health.conditions?.find(
+    (c) => c.type === 'CredentialsValid' && c.status === 'false',
+  );
+  assert.equal(scopedCredentials?.reason, CONNECTION_CONDITION_REASONS.CREDENTIAL_REQUIRED);
+}));
+
+// ChatGPT-shaped case (Tim's live symptom): a connector that is BOTH
+// static-secret-capable AND browser-bound, enrolled with a `browser_collector`
+// binding, with no stored credential. The steady-state repair the owner is
+// routed to MUST be a durable credential reauth/capture action — NOT a
+// browser-stream action. (The one-off browser stream was a *runtime* behavior,
+// fixed in auto-login/chatgpt.ts; the projection here proves the owner-facing
+// CTA is credential capture, and that no browser-session action kind exists to
+// be selected instead.)
+const CHATGPT_SHAPED_CONNECTOR_ID = 'connection_first_browser_static_secret';
+const CHATGPT_SHAPED_INSTANCE_ID = 'cin_browser_static_secret';
+
+function seedBrowserBoundStaticSecretConnector() {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: CHATGPT_SHAPED_CONNECTOR_ID,
+    version: '1.0.0',
+    display_name: 'Browser + Static Secret',
+    capabilities: { public_listing: { listed: true, status: 'test' } },
+    // Static-secret-capable: has a credential_capture surface.
+    setup: {
+      modality: 'static_secret',
+      credential_capture: {
+        kind: 'username_password',
+        fields: [
+          { name: 'username', label: 'Email', secret: true },
+          { name: 'password', label: 'Password', secret: true },
+        ],
+      },
+    },
+    // Browser-bound: requires a browser runtime binding (like chatgpt.json).
+    runtime_requirements: { bindings: { network: { required: true }, browser: { required: true } } },
+    streams: [{ name: 'messages', primary_key: ['id'] }],
+  };
+  getDb()
+    .prepare('INSERT INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)')
+    .run(CHATGPT_SHAPED_CONNECTOR_ID, JSON.stringify(manifest), NOW);
+}
+
+test('ChatGPT-shaped browser_collector connection with no credential routes to capture, not a browser stream', withTmpDb(async () => {
+  seedBrowserBoundStaticSecretConnector();
+  // Mirror the live dondochaka shape exactly: source_kind is `account`, and the
+  // browser_collector fact lives in source_binding.kind (not source_kind).
+  await seedInstance({
+    connectorInstanceId: CHATGPT_SHAPED_INSTANCE_ID,
+    connectorId: CHATGPT_SHAPED_CONNECTOR_ID,
+    displayName: 'ChatGPT - dondochaka-like',
+    sourceKind: 'account',
+    sourceBindingKey: 'browser-static-secret',
+    sourceBinding: { kind: 'browser_collector', device: 'personal' },
+  });
+
+  const scoped = await getConnectorSummaryForRoute(CHATGPT_SHAPED_INSTANCE_ID);
+  assert.ok(scoped, 'the browser_collector static-secret connection projects a summary');
+
+  // 1. Honest credential evidence: no usable stored credential -> credential_required.
+  const credentials = scoped.connection_health.conditions?.find(
+    (c) => c.type === 'CredentialsValid' && c.status === 'false',
+  );
+  assert.ok(credentials, 'a CredentialsValid=false condition is projected');
+  assert.equal(credentials.reason, CONNECTION_CONDITION_REASONS.CREDENTIAL_REQUIRED);
+
+  // 2. The owner-facing rendered verdict routes to a credential reauth/capture
+  //    action satisfied by a present, unrejected credential — NOT a browser
+  //    stream. reauth's satisfied_when proves capture is the durable close.
+  const verdict = scoped.rendered_verdict;
+  assert.ok(verdict, 'a rendered verdict is projected');
+  const primary = verdict.required_actions?.[0];
+  assert.ok(primary, 'the verdict carries a primary required action');
+  assert.equal(primary.kind, 'reauth');
+  assert.equal(primary.satisfied_when?.kind, 'credential_present_and_unrejected');
+
+  // 3. No required action is a browser-stream/browser-session operation. The
+  //    taxonomy has no browser_session/browser_stream kind at all, so credential
+  //    absence can never surface a one-off browser login as the owner CTA.
+  for (const action of verdict.required_actions ?? []) {
+    assert.doesNotMatch(String(action.kind), /browser/iu);
+  }
+}));
+
+// False-positive guard: a credential-store READ FAILURE must NOT be read as
+// "no stored credential". Only a successful getMetadata returning null means
+// no row. A transient store/DB error must fall back to prior run-reason-derived
+// behavior (evidence unavailable), never a false owner "reconnect" prompt.
+test('credential-store read failure does NOT project credential_required (evidence unavailable, not "no credential")', withTmpDb(async () => {
+  seedBrowserBoundStaticSecretConnector();
+  await seedInstance({
+    connectorInstanceId: CHATGPT_SHAPED_INSTANCE_ID,
+    connectorId: CHATGPT_SHAPED_CONNECTOR_ID,
+    displayName: 'ChatGPT - store read failure',
+    sourceKind: 'account',
+    sourceBindingKey: 'browser-static-secret',
+    sourceBinding: { kind: 'browser_collector', device: 'personal' },
+  });
+
+  // Force the credential-store read to throw: drop the credential table so
+  // `getMetadata`'s SELECT fails. This is the read-failure path, distinct from
+  // "no row" (an empty-but-present table).
+  getDb().prepare('DROP TABLE connector_instance_credentials').run();
+  invalidateConnectorSummariesCache();
+
+  const scoped = await getConnectorSummaryForRoute(CHATGPT_SHAPED_INSTANCE_ID);
+  assert.ok(scoped, 'the summary still projects (store failure is non-fatal)');
+
+  // The credential axis must NOT be projected as blocked/credential_required on
+  // a mere read failure. With no credential-shaped run evidence either, the
+  // honest projection is unknown (not-probed) — never a false reconnect prompt.
+  const credentialRequired = scoped.connection_health.conditions?.find(
+    (c) => c.type === 'CredentialsValid' && c.reason === CONNECTION_CONDITION_REASONS.CREDENTIAL_REQUIRED,
+  );
+  assert.equal(credentialRequired, undefined, 'a store read failure must not surface credential_required');
+
+  const credentialsFalse = scoped.connection_health.conditions?.find(
+    (c) => c.type === 'CredentialsValid' && c.status === 'false',
+  );
+  assert.equal(credentialsFalse, undefined, 'no CredentialsValid=false condition from a read failure alone');
+
+  // And no owner reauth CTA is fabricated from the read failure.
+  for (const action of scoped.rendered_verdict?.required_actions ?? []) {
+    assert.notEqual(action.kind, 'reauth');
+  }
+}));
+
+// Same wiring, the rejected-credential branch: a captured-then-rejected
+// credential must project `credential_rejected`, distinct from
+// `credential_required`, proving the projection reads the store's `rejected`
+// status rather than only presence.
+test('connection summary projects credential_rejected for a static-secret connection whose stored credential was rejected', withTmpDb(async () => {
+  seedStaticSecretConnector();
+  await seedInstance({
+    connectorInstanceId: STATIC_SECRET_INSTANCE_ID,
+    connectorId: STATIC_SECRET_CONNECTOR_ID,
+    displayName: 'Static secret account',
+    sourceKind: 'account',
+    sourceBindingKey: 'static-secret',
+    sourceBinding: { kind: 'account' },
+  });
+
+  await withCredentialKey(TEST_CREDENTIAL_KEY, async () => {
+    const credentialStore = createSqliteConnectorInstanceCredentialStore({
+      env: { [CREDENTIAL_ENCRYPTION_KEY_ENV]: TEST_CREDENTIAL_KEY },
+    });
+    await credentialStore.capture({
+      connectorInstanceId: STATIC_SECRET_INSTANCE_ID,
+      ownerSubjectId: 'owner_local',
+      credentialKind: 'app_password',
+      secret: 'synthetic-app-password',
+      now: NOW,
+    });
+    await credentialStore.markRejected({
+      connectorInstanceId: STATIC_SECRET_INSTANCE_ID,
+      rejectedAt: '2026-05-20T12:05:00.000Z',
+      reason: 'provider_rejected_synthetic',
+    });
+
+    const summaries = await listConnectorSummaries();
+    const work = summaries.find((row) => row.connector_instance_id === STATIC_SECRET_INSTANCE_ID);
+    assert.ok(work, 'static-secret connection projects a summary');
+
+    const credentials = work.connection_health.conditions?.find(
+      (c) => c.type === 'CredentialsValid' && c.status === 'false',
+    );
+    assert.ok(credentials, 'a CredentialsValid=false condition is projected');
+    assert.equal(credentials.reason, CONNECTION_CONDITION_REASONS.CREDENTIAL_REJECTED);
+    assert.equal(credentials.remediation?.action, 'refresh_credentials');
+  });
 }));

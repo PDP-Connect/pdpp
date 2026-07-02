@@ -97,6 +97,7 @@ export const CONNECTION_CONDITION_REASONS = Object.freeze({
   COLLECTION_SUCCEEDED_LOCAL_DEVICE: "collection_succeeded_local_device",
   COVERAGE_UNKNOWN: "coverage_unknown",
   CREDENTIAL_REJECTED: "credential_rejected",
+  CREDENTIAL_REQUIRED: "credential_required",
   CREDENTIALS_ACCEPTED: "credentials_accepted",
   CREDENTIALS_NOT_PROBED: "credentials_not_probed",
   EXTERNAL_TOOL_UNAVAILABLE: "external_tool_unavailable",
@@ -1009,6 +1010,25 @@ export interface ConnectionActivityEvidence {
   readonly active: boolean;
 }
 
+/**
+ * Durable stored-credential presence evidence for a connection whose connector
+ * can store a credential (a static-secret-capable connector). It is derived from
+ * the connector-instance credential store, not from a transient run reason code,
+ * so the credential-readiness condition can honestly distinguish "no usable
+ * stored credential" (`present: false`) from "stored credential the provider
+ * rejected" (`present: true, rejected: true`). Omit/`null` when the connector
+ * cannot store a credential or the store was not consulted — the projection then
+ * preserves its prior run-reason-derived behavior.
+ */
+export interface ConnectionCredentialEvidence {
+  /** True when the connector can store a credential for this connection. */
+  readonly capable: boolean;
+  /** True when an active (non-rejected, non-revoked) stored credential exists. */
+  readonly present: boolean;
+  /** True when a stored credential exists but the provider rejected it. */
+  readonly rejected?: boolean;
+}
+
 export interface ComputeConnectionHealthInput {
   readonly activity: ConnectionActivityEvidence | null;
   readonly attention: ConnectionAttentionEvidence | null;
@@ -1021,6 +1041,14 @@ export interface ComputeConnectionHealthInput {
    */
   readonly collectionRate?: CollectionRateSnapshot | null;
   readonly coverage: ConnectionCoverageEvidence | null;
+  /**
+   * Durable stored-credential presence evidence. When provided, it lets the
+   * credential-readiness condition distinguish "no usable stored credential"
+   * from "stored credential rejected" and keeps the credential axis from healing
+   * merely because a credential-shaped run reason code aged out. Omit/`null`
+   * preserves the prior run-reason-derived behavior.
+   */
+  readonly credential?: ConnectionCredentialEvidence | null;
   /**
    * Source-pressure detail-gap backlog evidence. The projection derives the
    * additive {@link DetailGapBacklog} rollup from it via
@@ -1728,29 +1756,78 @@ function collectionSucceededCondition(input: ComputeConnectionHealthInput): Conn
   });
 }
 
+// A blocked `CredentialsValid` condition for "no usable stored credential": the
+// connection can store a credential but none is currently usable (never captured,
+// or superseded). Distinct from rejection — nothing was rejected because nothing
+// was stored — so the copy and remediation name capturing a credential for the
+// existing connection. Still an owner reauth/capture action downstream.
+function credentialRequiredCondition(): ConnectionHealthCondition {
+  return condition({
+    type: "CredentialsValid",
+    status: "false",
+    severity: "blocked",
+    reason: CONDITION_REASON.CREDENTIAL_REQUIRED,
+    message: "No usable stored credential for this connection.",
+    origin: "readiness",
+    sensitivity: "secret_redacted",
+    remediation: {
+      action: "refresh_credentials",
+      label: "Reconnect this account",
+      retryable: false,
+      target: "credentials",
+    },
+  });
+}
+
+// A blocked `CredentialsValid` condition for a rejected stored credential.
+// The remediation label matches the rendered verdict's single reconnect CTA
+// ("Reconnect this account"). A rejected credential is ONE owner action; the
+// older "Reconnect or update …" phrasing read as two, which the owner flagged as
+// confusing (PR #164 / unify-source-attention-count-and-labels). See
+// reference-connection-health: "Owner actions SHALL be a typed required-action
+// list … one unified satisfaction contract".
+function credentialRejectedCondition(reason: string | null): ConnectionHealthCondition {
+  return condition({
+    type: "CredentialsValid",
+    status: "false",
+    severity: "blocked",
+    reason: normalizeConditionReason(reason, CONDITION_REASON.CREDENTIAL_REJECTED),
+    message: "The source rejected the configured credentials.",
+    origin: "readiness",
+    sensitivity: "secret_redacted",
+    remediation: {
+      action: "refresh_credentials",
+      label: "Reconnect this account",
+      retryable: false,
+      target: "credentials",
+    },
+  });
+}
+
 function credentialsValidCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   const reason = firstReasonCode(input);
+  const credential = input.credential ?? null;
+  const credentialAbsent = credential?.capable === true && credential.present !== true;
+  const credentialRejectedDurably = credential?.capable === true && credential.rejected === true;
+  // A credential-shaped run reason is present: classify honestly by durable
+  // credential-presence evidence when we have it. No usable stored credential ->
+  // "credential required" (capture one); otherwise -> rejected (prior behavior,
+  // and the default when no credential evidence is supplied).
   if (reason && isCredentialReason(reason)) {
-    return condition({
-      type: "CredentialsValid",
-      status: "false",
-      severity: "blocked",
-      reason: normalizeConditionReason(reason, CONDITION_REASON.CREDENTIAL_REJECTED),
-      message: "The source rejected the configured credentials.",
-      origin: "readiness",
-      sensitivity: "secret_redacted",
-      remediation: {
-        action: "refresh_credentials",
-        // Match the rendered verdict's single reconnect CTA ("Reconnect this
-        // account"). A rejected credential is ONE owner action; the older
-        // "Reconnect or update …" phrasing read as two, which the owner flagged
-        // as confusing. See reference-connection-health: "Owner actions SHALL be
-        // a typed required-action list … one unified satisfaction contract".
-        label: "Reconnect this account",
-        retryable: false,
-        target: "credentials",
-      },
-    });
+    if (credentialAbsent && !credentialRejectedDurably) {
+      return credentialRequiredCondition();
+    }
+    return credentialRejectedCondition(reason);
+  }
+  // No current credential-shaped run reason. When durable credential evidence
+  // shows an unresolved credential state, the connection SHALL still project that
+  // repair need rather than healing merely because the run reason aged out (or a
+  // never-run connection has no reason at all). Evidence-derived, not age-derived.
+  if (credentialRejectedDurably) {
+    return credentialRejectedCondition(null);
+  }
+  if (credentialAbsent) {
+    return credentialRequiredCondition();
   }
   if (input.run?.latestStatus === "succeeded") {
     return condition({

@@ -92,6 +92,17 @@ export const CHATGPT_SESSION_REQUIRED_NON_INTERACTIVE_MESSAGE =
   "chatgpt_session_required: ChatGPT session is not active; start an owner-attended manual refresh to repair authentication.";
 export const CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE =
   "chatgpt_stored_credential_rejected: ChatGPT rejected the stored username/password credential.";
+// Emitted when an owner-present run finds no reusable session AND no stored
+// credential, and the owner has NOT explicitly chosen browser session-repair.
+// The durable repair for a static-secret-capable connection in this state is to
+// capture a credential for the existing connection, not a one-off interactive
+// browser login. This message intentionally matches CHATGPT_AUTH_FAILURE_RE
+// ("credentials"/"CHATGPT_USERNAME/PASSWORD not set") so the runtime routes it to
+// the `refresh_credentials` recovery hint (the owner reauth/capture action),
+// rather than presenting the throwaway login as the default. The owner can still
+// re-establish the session explicitly (see chatGptOwnerChoseSessionRepair).
+export const CHATGPT_CREDENTIAL_CAPTURE_REQUIRED_MESSAGE =
+  "chatgpt_credential_capture_required: credentials: no reusable ChatGPT session and no stored credential; capture a credential for this connection to reconnect.";
 const PUSH_APPROVAL_POLL_INTERVAL_MS = 5000;
 const BROWSER_LOGIN_POLL_INTERVAL_MS = 5000;
 /**
@@ -223,6 +234,18 @@ export function chatGptAllowsInteractiveAuthRepair(env: NodeJS.ProcessEnv = proc
     return true;
   }
   return triggerKind === "manual";
+}
+
+// True only when the owner explicitly chose to re-establish the browser session
+// (an explicit, separately-labeled secondary repair action), as opposed to a
+// plain owner-present run. When false (the default), an owner-present run with no
+// reusable session and no stored credential SHALL route to durable credential
+// capture rather than silently opening a one-off interactive browser login. The
+// runtime sets `PDPP_RUN_OWNER_SESSION_REPAIR=1` when the owner drives the
+// browser session-repair path. Absent the flag, credential capture is primary.
+export function chatGptOwnerChoseSessionRepair(env: NodeJS.ProcessEnv = process.env): boolean {
+  const flag = env.PDPP_RUN_OWNER_SESSION_REPAIR?.trim();
+  return flag === "1" || flag === "true";
 }
 
 async function checkSession(page: Page): Promise<boolean> {
@@ -1053,6 +1076,18 @@ export async function ensureChatGptSession({
   const password = process.env.CHATGPT_PASSWORD;
   const hooks = sessionAssistanceHooks({ assist, capture, checkpoint, completeAssistance, progress });
   if (!(email && password)) {
+    // No reusable session AND no stored credential. The durable primary repair
+    // for this static-secret-capable connection is to capture a credential for
+    // the existing connection, so route to credential capture by default rather
+    // than silently opening a one-off interactive browser login. The one-off
+    // login remains available only when the owner explicitly chose to
+    // re-establish the browser session (a separately-labeled secondary action).
+    if (!chatGptOwnerChoseSessionRepair()) {
+      await progress?.(
+        "ChatGPT session is not active and no credential is stored; capture a credential for this connection to reconnect."
+      );
+      throw new Error(CHATGPT_CREDENTIAL_CAPTURE_REQUIRED_MESSAGE);
+    }
     if (
       await repairWithManualBrowserLogin({
         ...hooks,

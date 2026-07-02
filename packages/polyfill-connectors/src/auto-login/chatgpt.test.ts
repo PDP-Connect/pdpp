@@ -407,13 +407,71 @@ test("ChatGPT scheduled auth repair fails before credential login or owner promp
   );
 });
 
-test("ChatGPT manual auth repair can use the secure browser without storing a password", async () => {
+test("ChatGPT manual repair with no stored credential routes to credential capture by default (not a silent browser login)", async () => {
   await withEnvValues(
     {
       CHATGPT_PASSWORD: undefined,
       CHATGPT_USERNAME: undefined,
       PDPP_RUN_AUTOMATION_MODE: "assisted",
       PDPP_RUN_TRIGGER_KIND: "manual",
+      // Owner did NOT explicitly choose browser session-repair.
+      PDPP_RUN_OWNER_SESSION_REPAIR: undefined,
+    },
+    async () => {
+      const assistanceMessages: string[] = [];
+      const loggedOutPage = {
+        evaluate: (fn: (...args: never[]) => unknown) => {
+          const source = String(fn);
+          if (source.includes("/api/auth/session")) {
+            return Promise.resolve(null);
+          }
+          if (source.includes("querySelectorAll")) {
+            return Promise.resolve({
+              dom_logged_in: false,
+              has_login_or_signup: true,
+              has_sidebar: false,
+              has_user_menu: false,
+            });
+          }
+          return Promise.resolve(false);
+        },
+        goto: () => Promise.resolve(null),
+        url: () => "https://chatgpt.com/",
+        waitForTimeout: async () => undefined,
+      };
+
+      // Default owner-present run: no reusable session, no stored credential, and
+      // the owner did not opt into session-repair -> route to durable credential
+      // capture (throws capture-required), NOT a silent one-off browser login.
+      await assert.rejects(
+        ensureChatGptSession({
+          assist: (req) => {
+            assistanceMessages.push(req.message);
+            return Promise.resolve("assist_1");
+          },
+          completeAssistance: () => Promise.resolve(),
+          context: {} as never,
+          page: loggedOutPage as never,
+          progress: () => Promise.resolve(),
+          sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+        }),
+        /chatgpt_credential_capture_required/u
+      );
+      // No browser-login assistance was ever presented in the default path.
+      assert.deepEqual(assistanceMessages, []);
+    }
+  );
+});
+
+test("ChatGPT explicit owner session-repair uses the secure browser without storing a password", async () => {
+  await withEnvValues(
+    {
+      CHATGPT_PASSWORD: undefined,
+      CHATGPT_USERNAME: undefined,
+      PDPP_RUN_AUTOMATION_MODE: "assisted",
+      PDPP_RUN_TRIGGER_KIND: "manual",
+      // Owner explicitly chose to re-establish the browser session.
+      PDPP_RUN_OWNER_SESSION_REPAIR: "1",
     },
     async () => {
       const assistanceMessages: string[] = [];

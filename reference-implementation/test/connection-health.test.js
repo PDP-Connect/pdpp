@@ -211,6 +211,81 @@ test('blocked: current credential rejection is readiness evidence without waitin
   assert.equal(credentials?.message.includes('github_auth_failed'), false);
 });
 
+// ─── Honest no-usable-credential vs rejected credential (route-credentialless-repair-to-capture) ───
+
+test('credential: no usable stored credential projects credential_required, not rejected', () => {
+  const snap = computeConnectionHealth(
+    input({
+      // A credential-shaped run reason is present, but durable evidence shows the
+      // connection has no usable stored credential (never captured). This is
+      // "capture a credential", NOT "the source rejected a credential".
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'chatgpt_session_failed' }),
+      credential: { capable: true, present: false },
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.reason, CONNECTION_CONDITION_REASONS.CREDENTIAL_REQUIRED);
+  assert.equal(credentials?.message, 'No usable stored credential for this connection.');
+  assert.equal(credentials?.remediation?.action, 'refresh_credentials');
+  assert.equal(credentials?.remediation?.label, 'Reconnect this account');
+  // The dishonest "rejected" copy must not appear when nothing was stored.
+  assert.doesNotMatch(credentials?.message ?? '', /rejected/i);
+});
+
+test('credential: a rejected stored credential projects credential_rejected', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'auth_expired' }),
+      credential: { capable: true, present: true, rejected: true },
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.message, 'The source rejected the configured credentials.');
+  assert.equal(credentials?.remediation?.action, 'refresh_credentials');
+});
+
+test('credential: never-run connection with no stored credential still projects credential_required', () => {
+  // No run reason at all (never ran) — durable credential evidence alone drives
+  // the honest repair need, so setup and health/verdict surfaces agree.
+  const snap = computeConnectionHealth(
+    input({ run: null, credential: { capable: true, present: false } })
+  );
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.reason, CONNECTION_CONDITION_REASONS.CREDENTIAL_REQUIRED);
+  assert.equal(snap.state, 'blocked');
+});
+
+test('credential: repair state does not heal by age — rejection persists after the run reason ages out', () => {
+  // The credential-shaped run reason has aged out (no reason code), but durable
+  // evidence still says the stored credential was rejected. The connection SHALL
+  // keep projecting the unresolved credential condition, not idle/healthy.
+  const snap = computeConnectionHealth(
+    input({ run: null, credential: { capable: true, present: true, rejected: true } })
+  );
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.reason, CONNECTION_CONDITION_REASONS.CREDENTIAL_REJECTED);
+  assert.notEqual(snap.state, 'idle');
+  assert.notEqual(snap.state, 'healthy');
+});
+
+test('credential: absent credential evidence preserves prior run-reason-derived behavior', () => {
+  // No credential evidence supplied (existing callers): a credential-shaped run
+  // reason still yields the rejected condition exactly as before.
+  const snap = computeConnectionHealth(
+    input({ run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'github_auth_failed' }) })
+  );
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.reason, 'github_auth_failed');
+  assert.equal(credentials?.message, 'The source rejected the configured credentials.');
+});
+
 test('conditions: credential diagnostics redact token-shaped source details', () => {
   const secret = 'ghp_abcdefghijklmnopqrstuvwxyz123456';
   const snap = computeConnectionHealth(

@@ -17,6 +17,7 @@ import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface/profile
 import {
   type CollectionRateSnapshot,
   type ConnectionAttentionEvidence,
+  type ConnectionCredentialEvidence,
   type ConnectionDetailGapBacklogEvidence,
   type ConnectionHealthSnapshot,
   type ConnectionLocalDeviceCollectionEvidence,
@@ -48,6 +49,7 @@ import {
   retireExpiredBrowserEnrollmentShells,
 } from "./browser-enrollment-shell-retirement.ts";
 import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
+import { staticSecretCredentialCaptureFromManifest } from "./connection-setup-plan.ts";
 import { getSqliteStoreCacheIdentity } from "./db.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
@@ -68,6 +70,10 @@ import {
 import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.js";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
+import {
+  createPostgresConnectorInstanceCredentialStore,
+  createSqliteConnectorInstanceCredentialStore,
+} from "./stores/connector-instance-credential-store.js";
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -1318,6 +1324,15 @@ async function listRegisteredConnectorRows(): Promise<readonly ConnectorRow[]> {
 
 function getConnectorInstanceStore() {
   return isPostgresStorageBackend() ? createPostgresConnectorInstanceStore() : createSqliteConnectorInstanceStore();
+}
+
+// Non-secret credential-store read for the connection-summary projection.
+// Reads ONLY `getMetadata` (status/present/rejected). Never calls
+// `recoverSecret`; the plaintext never enters this module.
+function getConnectorCredentialStore() {
+  return isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceCredentialStore()
+    : createSqliteConnectorInstanceCredentialStore();
 }
 
 function getAcquisitionBatchStore() {
@@ -3308,6 +3323,17 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * (coarse) fallback.
    */
   readonly attentionRecords?: readonly AttentionRecord[];
+  /**
+   * Durable stored-credential presence evidence for this connection, read from
+   * the connector-instance credential store (never the secret itself). Passed
+   * straight through to {@link computeConnectionHealth} so the
+   * `CredentialsValid` condition can distinguish "no usable stored credential"
+   * from "stored credential rejected" instead of relying solely on a transient
+   * run reason code. `null`/omitted preserves the prior run-reason-derived
+   * behavior (e.g. connectors that cannot store a credential, or callers that
+   * have not been wired to read the store).
+   */
+  readonly credential?: ConnectionCredentialEvidence | null;
   readonly freshness: Freshness;
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
@@ -3457,6 +3483,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     backoff: scheduleEvidence.backoffEvidence.backoff,
     collectionRate: input.collectionRate ?? null,
     coverage,
+    credential: input.credential ?? null,
     detailGapBacklog,
     freshness: { axis: freshnessAxis },
     localDeviceCollection,
@@ -3890,6 +3917,15 @@ interface ConnectorSummarySynthesisInput {
   readonly collectionRate: Awaited<ReturnType<typeof readLatestCollectionRateForRun>>;
   readonly connectorId: string;
   readonly connectorInstanceId: string;
+  /**
+   * Durable stored-credential presence evidence for this connection, pre-
+   * fetched by the caller (kept out of this function so it stays a pure
+   * projection over already-resolved inputs; see
+   * {@link projectConnectorSummaryForInstance}). `null` for connectors that
+   * cannot store a static-secret credential, or when the store was not
+   * consulted.
+   */
+  readonly credential: ConnectionCredentialEvidence | null;
   readonly detailGaps: Awaited<ReturnType<typeof getConnectorDetailGapProjection>>;
   readonly instance: ConnectorInstanceRow;
   readonly lastRun: ConnectorRunSummary | null;
@@ -3912,6 +3948,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     collectionRate,
     connectorId,
     connectorInstanceId,
+    credential,
     detailGaps,
     instance,
     lastRun,
@@ -3945,6 +3982,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const connectionHealth = projectConnectorSummaryConnectionHealth({
     attentionRecords: attention.records,
     collectionRate,
+    credential,
     freshness,
     lastRun,
     lastSuccessfulRun,
@@ -4019,6 +4057,63 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   };
 }
 
+// Non-secret credential-store metadata shape read by `getMetadata` (see
+// `stores/connector-instance-credential-store.js` `projectMetadata`). Only the
+// fields this projection needs; never carries `sealed_secret`.
+interface CredentialStoreMetadata {
+  readonly present?: boolean;
+  readonly rejected?: boolean;
+  readonly status?: string | null;
+}
+
+// Distinct result of the non-secret credential-store read, so a store READ
+// FAILURE is never conflated with a genuine NO-ROW result. A failed read must
+// not project "no usable credential" (which would falsely tell the owner to
+// reconnect a credentialed connection); it yields evidence-unavailable instead,
+// preserving the prior run-reason-derived behavior.
+//   - { ok: true,  metadata: null }   → getMetadata succeeded, no stored row.
+//   - { ok: true,  metadata: {...} }  → getMetadata succeeded, stored row.
+//   - { ok: false }                   → getMetadata threw (store/DB error).
+type CredentialMetadataRead =
+  | { readonly ok: true; readonly metadata: CredentialStoreMetadata | null }
+  | { readonly ok: false };
+
+// Map manifest static-secret capability plus the non-secret credential-store
+// read onto the honest `ConnectionCredentialEvidence` shape the
+// `CredentialsValid` projection consumes. Never reads/logs the secret — only
+// `getMetadata`'s projected `present`/`status`/`rejected` fields.
+//
+//   - Not static-secret-capable: `null` (prior run-reason-derived behavior
+//     preserved unchanged for these connectors).
+//   - Store read FAILED (`read.ok === false`): `null` — evidence unavailable,
+//     NOT "no credential". A transient store/DB error must never surface as an
+//     owner "reconnect" prompt; the projection falls back to run-reason evidence.
+//   - Read succeeded, no stored row (`metadata === null`): `present: false` —
+//     genuinely no usable stored credential (never captured, or deleted).
+//   - Read succeeded, stored row present: `present` is true only when the
+//     store's own `present` flag says so AND the status is not
+//     `rejected`/`revoked`; `rejected` mirrors the store's `rejected` flag (also
+//     true for a `revoked` status — an unresolved credential problem, not "no
+//     credential ever captured").
+function deriveCredentialEvidence(
+  staticSecretCapable: unknown,
+  read: CredentialMetadataRead
+): ConnectionCredentialEvidence | null {
+  if (!staticSecretCapable) {
+    return null;
+  }
+  if (!read.ok) {
+    return null;
+  }
+  const metadata = read.metadata;
+  if (!metadata) {
+    return { capable: true, present: false };
+  }
+  const rejected = metadata.rejected === true || metadata.status === "revoked";
+  const present = metadata.present === true && !rejected;
+  return { capable: true, present, rejected };
+}
+
 // Project one configured connection into its summary, or `null` when the
 // connection is not a public reference connector / has no registered manifest.
 // This is the single source of truth for a connection-summary item: both
@@ -4051,6 +4146,12 @@ async function projectConnectorSummaryForInstance(
     connectorInstanceId,
     deps.retainedSizeSnapshot
   );
+  // Static-secret capability is a manifest-only fact (no store read needed to
+  // decide it). Only static-secret-capable connectors can have a stored
+  // credential, so the store is consulted only when capable — cheaper for the
+  // (majority) non-static-secret connectors and keeps `credential: null`
+  // (never `{ capable: false, ... }`) behavior for them unchanged.
+  const staticSecretCapture = staticSecretCredentialCaptureFromManifest(manifest);
   const [
     schedule,
     lastRun,
@@ -4061,6 +4162,7 @@ async function projectConnectorSummaryForInstance(
     remoteSurface,
     localCoverage,
     acquisitionCoverage,
+    credentialMetadata,
   ] = await Promise.all([
     getScheduleFrom(controller, connectorId, { connectorInstanceId }),
     hydrateRunSummaries
@@ -4091,7 +4193,22 @@ async function projectConnectorSummaryForInstance(
     }),
     getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
     getAcquisitionCoverageSummary(connectorInstanceId),
+    staticSecretCapture
+      ? getConnectorCredentialStore()
+          .getMetadata(connectorInstanceId)
+          // Discriminate success (metadata may be null = no row) from a store
+          // READ FAILURE. A failure must not be read as "no credential"; it
+          // yields evidence-unavailable so the projection keeps its prior
+          // run-reason behavior instead of a false owner reconnect prompt.
+          .then((metadata): CredentialMetadataRead => ({ ok: true, metadata }))
+          .catch((): CredentialMetadataRead => ({ ok: false }))
+      : Promise.resolve<CredentialMetadataRead>({ ok: true, metadata: null }),
   ]);
+  // Non-static-secret connectors: the ternary above already resolved
+  // `{ ok: true, metadata: null }`, and `deriveCredentialEvidence` returns
+  // `null` because `staticSecretCapture` is null — so `credential` stays `null`
+  // (evidence omitted) for them, unchanged.
+  const credential = deriveCredentialEvidence(staticSecretCapture, credentialMetadata);
   const refreshPolicy = extractRefreshPolicy(manifest);
   const nowIso = new Date().toISOString();
   // Adaptive rate controller snapshot: read from the latest run's terminal
@@ -4109,6 +4226,7 @@ async function projectConnectorSummaryForInstance(
     collectionRate,
     connectorId,
     connectorInstanceId,
+    credential,
     detailGaps,
     instance,
     lastRun,
@@ -4272,6 +4390,17 @@ export async function getConnectorDetail(
   const connectionHealth = projectConnectorSummaryConnectionHealth({
     attentionRecords: attention.records,
     collectionRate,
+    // No per-connection `credential` evidence here BY DESIGN: this is the
+    // connector-keyed catalog detail path (`GET /_ref/connectors/:connectorId`,
+    // no `connectorInstanceId`), not a per-connection repair surface. Credential
+    // presence is per-connection, so it cannot be resolved here without smearing
+    // one connection's credential state across sibling connections of the same
+    // connector. Every owner-facing connection-repair surface (Sources list,
+    // connection detail, Runs) instead flows through `getConnectorSummaryForRoute`
+    // -> `projectConnectorSummaryForInstance`, which IS wired with credential
+    // evidence. Omitting it here preserves the prior run-reason-derived behavior
+    // (safe no-op) and is correct for a connector-catalog view. See
+    // openspec/changes/route-credentialless-repair-to-capture.
     freshness,
     lastRun,
     lastSuccessfulRun,
