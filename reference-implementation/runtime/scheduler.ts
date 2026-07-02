@@ -343,11 +343,13 @@ export interface SchedulerOptions {
   isNeedsHuman?: IsNeedsHumanHandler;
   markNeedsHuman?: NeedsHumanHandler;
   /**
-   * Maximum wall-clock budget for a direct scheduler connector attempt.
+   * Maximum no-progress budget for a direct scheduler connector attempt.
    *
    * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` when set, otherwise four hours.
-   * `Infinity` disables the scheduler attempt watchdog. Managed browser-surface
-   * runs route through controller.runNow and use the controller watchdog.
+   * `Infinity` disables the scheduler attempt watchdog. Valid connector
+   * progress resets the budget, so long-running attempts are allowed when they
+   * continue publishing progress. Managed browser-surface runs route through
+   * controller.runNow and use the controller watchdog.
    */
   maxRunWallClockMs?: number;
   onHumanRequiredStateEscalation?: HumanRequiredStateEscalationHandler;

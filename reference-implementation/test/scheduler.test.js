@@ -109,6 +109,41 @@ rl.on('line', (line) => {
   return connectorPath;
 }
 
+function writeSlowProgressConnector(tmpDir, name = 'slow-progress-connector.mjs') {
+  const connectorPath = join(tmpDir, name);
+  writeFileSync(connectorPath, `
+import { createInterface } from 'node:readline';
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'START') return;
+  let count = 0;
+  const timer = setInterval(() => {
+    count += 1;
+    process.stdout.write(JSON.stringify({
+      type: 'PROGRESS',
+      message: 'still working',
+      stream: 'items',
+      count
+    }) + '\\n');
+    if (count >= 4) {
+      clearInterval(timer);
+      setTimeout(() => {
+        process.stdout.write(JSON.stringify({
+          type: 'DONE',
+          status: 'succeeded',
+          records_emitted: 0
+        }) + '\\n', () => process.exit(0));
+      }, 40);
+    }
+  }, 40);
+});
+`, 'utf8');
+  return connectorPath;
+}
+
 function readAttempts(path) {
   try {
     return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean);
@@ -753,6 +788,67 @@ test('scheduler timeout beats connector DONE emitted during shutdown', async () 
     assert.equal(timeline.data.some((event) => event.event_type === 'run.completed'), false);
     const failed = timeline.data.find((event) => event.event_type === 'run.failed');
     assert.equal(failed?.data?.reason, 'run_timed_out');
+  } finally {
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scheduler progress watchdog allows long direct runs that keep reporting progress', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'scheduler-progress-watchdog-test',
+    version: '1.0.0',
+    display_name: 'Scheduler Progress Watchdog Test Connector',
+    streams: [{ name: 'items', fields: [{ name: 'id', type: 'string' }] }],
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-progress-watchdog-'));
+  const connectorPath = writeSlowProgressConnector(tmpDir);
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_progress_watchdog_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 60_000,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      maxRunWallClockMs: 100,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => scheduler.getHistory().some((record) => record.status === 'succeeded'), 5000);
+    scheduler.stop();
+
+    const [record] = scheduler.getHistory().filter((entry) => entry.connectorId === manifest.connector_id);
+    assert.equal(record.status, 'succeeded');
+    assert.equal(record.terminalReason, null);
+    assert.equal(
+      scheduler.getHistory().some((entry) => entry.terminalReason === 'run_timed_out'),
+      false,
+      'valid connector progress must reset the scheduler watchdog'
+    );
+
+    const timeline = await waitForRunTerminalEvent(asUrl, record.runId);
+    assert.equal(
+      timeline.data.filter((event) => event.event_type === 'run.progress_reported').length >= 4,
+      true,
+      'runtime should persist connector progress events'
+    );
+    const completed = timeline.data.find((event) => event.event_type === 'run.completed');
+    assert.ok(completed, 'expected a completed terminal event');
   } finally {
     await closeServer(server);
     rmSync(tmpDir, { recursive: true, force: true });

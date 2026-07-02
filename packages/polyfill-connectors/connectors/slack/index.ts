@@ -50,7 +50,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -239,6 +239,92 @@ async function emitMessageRecordScopedByChannel(deps: {
   await deps.emitRecord("messages", deps.record, { skipResourceFilter: true });
 }
 
+interface SlackdumpProgressSnapshot {
+  archiveBytes: number;
+  channels: number | null;
+  maxChunkId: number | null;
+  messages: number | null;
+}
+
+function existingFileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+function countSqliteRows(db: DatabaseSync, sql: string): number | null {
+  const [row] = safeAll<{ value: number }>(db, sql);
+  const value = row?.value;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+export function readSlackdumpProgressSnapshot(sqlitePath: string): SlackdumpProgressSnapshot | null {
+  const archiveBytes =
+    existingFileSize(sqlitePath) + existingFileSize(`${sqlitePath}-wal`) + existingFileSize(`${sqlitePath}-shm`);
+  if (archiveBytes === 0) {
+    return null;
+  }
+
+  let messages: number | null = null;
+  let channels: number | null = null;
+  let maxChunkId: number | null = null;
+  try {
+    const db = new DatabaseSync(sqlitePath, { readOnly: true });
+    try {
+      messages = countSqliteRows(db, "SELECT COUNT(*) AS value FROM MESSAGE");
+      channels = countSqliteRows(db, "SELECT COUNT(*) AS value FROM CHANNEL");
+      maxChunkId = countSqliteRows(
+        db,
+        `
+        SELECT MAX(value) AS value
+        FROM (
+          SELECT MAX(CHUNK_ID) AS value FROM MESSAGE
+          UNION ALL
+          SELECT MAX(CHUNK_ID) AS value FROM CHANNEL
+        )
+        `
+      );
+    } finally {
+      db.close();
+    }
+  } catch {
+    // The archive may be temporarily locked or mid-creation while slackdump is
+    // writing. File growth is still a valid no-progress signal.
+  }
+
+  return { archiveBytes, channels, maxChunkId, messages };
+}
+
+function slackdumpProgressChanged(
+  previous: SlackdumpProgressSnapshot | null,
+  current: SlackdumpProgressSnapshot | null
+): boolean {
+  if (!current) {
+    return false;
+  }
+  if (!previous) {
+    return true;
+  }
+  return (
+    current.archiveBytes !== previous.archiveBytes ||
+    current.channels !== previous.channels ||
+    current.maxChunkId !== previous.maxChunkId ||
+    current.messages !== previous.messages
+  );
+}
+
+function formatSlackdumpProgress(label: string, snapshot: SlackdumpProgressSnapshot): string {
+  const facts = [
+    `archive_bytes=${snapshot.archiveBytes}`,
+    snapshot.messages == null ? null : `messages=${snapshot.messages}`,
+    snapshot.channels == null ? null : `channels=${snapshot.channels}`,
+    snapshot.maxChunkId == null ? null : `max_chunk=${snapshot.maxChunkId}`,
+  ].filter(Boolean);
+  return `Slack slackdump ${label} progress: ${facts.join(" ")}`;
+}
+
 // Default timeout accommodates long-lived workspaces (10+ years) where a
 // first-run archive of DMs + history can run 6-20h depending on file count
 // and Slack rate-limit bursts. The cost of a too-high default is only "late
@@ -248,26 +334,64 @@ export function runSlackdump(
   args: string[],
   {
     env,
+    progress,
+    progressIntervalMs = Number(process.env.SLACKDUMP_PROGRESS_INTERVAL_MS) || 60_000,
+    progressLabel = args[0] ?? "run",
+    sqlitePath,
     timeoutMs = Number(process.env.SLACKDUMP_TIMEOUT_MS) || 24 * 60 * 60 * 1000,
-  }: { env: NodeJS.ProcessEnv; timeoutMs?: number }
+  }: {
+    env: NodeJS.ProcessEnv;
+    progress?: CollectContext["progress"];
+    progressIntervalMs?: number;
+    progressLabel?: string;
+    sqlitePath?: string;
+    timeoutMs?: number;
+  }
 ): Promise<SlackdumpRunResult> {
   return new Promise((resolve, reject) => {
     const bin = resolveSlackdumpBin();
     const child = spawn(bin, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let lastProgressSnapshot: SlackdumpProgressSnapshot | null = sqlitePath
+      ? readSlackdumpProgressSnapshot(sqlitePath)
+      : null;
     child.stdout?.on("data", (d: Buffer) => {
       stdout += d.toString();
     });
     child.stderr?.on("data", (d: Buffer) => {
       stderr += d.toString();
     });
+    const progressTimer =
+      progress && sqlitePath && Number.isFinite(progressIntervalMs) && progressIntervalMs > 0
+        ? setInterval(() => {
+            const snapshot = readSlackdumpProgressSnapshot(sqlitePath);
+            if (!slackdumpProgressChanged(lastProgressSnapshot, snapshot)) {
+              return;
+            }
+            lastProgressSnapshot = snapshot;
+            if (!snapshot) {
+              return;
+            }
+            progress(formatSlackdumpProgress(progressLabel, snapshot), {
+              ...(snapshot.messages == null ? {} : { count: snapshot.messages }),
+              stream: "messages",
+            }).catch(() => undefined);
+          }, progressIntervalMs)
+        : null;
+    progressTimer?.unref?.();
     const t = setTimeout(() => {
+      if (progressTimer) {
+        clearInterval(progressTimer);
+      }
       child.kill();
       reject(new Error("slackdump_timeout"));
     }, timeoutMs);
     child.on("exit", (code) => {
       clearTimeout(t);
+      if (progressTimer) {
+        clearInterval(progressTimer);
+      }
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
@@ -276,6 +400,9 @@ export function runSlackdump(
     });
     child.on("error", (e) => {
       clearTimeout(t);
+      if (progressTimer) {
+        clearInterval(progressTimer);
+      }
       if (isErrnoException(e) && e.code === "ENOENT") {
         reject(new Error(formatSlackdumpMissingError(bin)));
         return;
@@ -733,6 +860,7 @@ interface RunArchiveDeps {
   priorArchive: string | undefined;
   progress: CollectContext["progress"];
   resumeTarget: string | null;
+  sqlitePath: string;
   timeFrom: string | null;
   timeTo: string | null;
   useResume: boolean;
@@ -759,7 +887,12 @@ async function runArchiveOrResume(deps: RunArchiveDeps): Promise<void> {
       `p${opts.LOOKBACK_DAYS}d`,
       resumeTarget,
     ];
-    await runSlackdump(args, { env: childEnv });
+    await runSlackdump(args, {
+      env: childEnv,
+      progress,
+      progressLabel: "resume",
+      sqlitePath: deps.sqlitePath,
+    });
     return;
   }
   const args = buildArchiveArgs({
@@ -770,7 +903,12 @@ async function runArchiveOrResume(deps: RunArchiveDeps): Promise<void> {
     timeFrom: deps.timeFrom,
     timeTo: deps.timeTo,
   });
-  await runSlackdump(args, { env: childEnv });
+  await runSlackdump(args, {
+    env: childEnv,
+    progress,
+    progressLabel: "archive",
+    sqlitePath: deps.sqlitePath,
+  });
 }
 
 // ─── Cross-stream messages pass (sqlite-free, testable) ───────────────
@@ -1502,6 +1640,7 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
         priorArchive: deps.priorArchive,
         progress,
         resumeTarget: deps.resumeTarget,
+        sqlitePath: deps.sqlitePath,
         timeFrom: deps.timeFrom,
         timeTo: deps.timeTo,
         useResume: deps.useResume,

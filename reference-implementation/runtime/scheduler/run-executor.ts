@@ -265,6 +265,7 @@ async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorR
 
 interface AttemptWatchdog {
   clear(): void;
+  markProgress(): void;
   readonly signal: AbortSignal;
   timedOut(): boolean;
 }
@@ -284,12 +285,22 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
   let timedOut = false;
   let timer: NodeJS.Timeout | null = null;
 
-  if (Number.isFinite(maxRunWallClockMs) && maxRunWallClockMs > 0) {
+  const arm = () => {
+    if (!(Number.isFinite(maxRunWallClockMs) && maxRunWallClockMs > 0) || timedOut || cancellation.signal.aborted) {
+      return;
+    }
+    if (timer) {
+      clearTimeout(timer);
+    }
     timer = setTimeout(() => {
       timedOut = true;
       cancellation.abort("run_timed_out");
     }, maxRunWallClockMs);
     timer.unref?.();
+  };
+
+  if (Number.isFinite(maxRunWallClockMs) && maxRunWallClockMs > 0) {
+    arm();
   }
 
   return {
@@ -299,6 +310,9 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
         timer = null;
       }
     },
+    markProgress() {
+      arm();
+    },
     signal: cancellation.signal,
     timedOut() {
       return timedOut;
@@ -307,7 +321,7 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
 }
 
 function runTimedOutError(result: RunConnectorResult, maxRunWallClockMs: number): RunConnectorError {
-  const message = `Scheduler run exceeded the ${maxRunWallClockMs}ms wall-clock budget.`;
+  const message = `Scheduler run exceeded the ${maxRunWallClockMs}ms progress watchdog budget.`;
   return {
     connector_error: result.connector_error || { message },
     failure_reason: "run_timed_out",
@@ -721,6 +735,10 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       onStarted: (run) => {
         originalOnStarted?.(run);
         activeRunLease.register(run);
+      },
+      onProgress: () => {
+        watchdog.markProgress();
+        call.onProgress();
       },
     };
 

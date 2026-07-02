@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -106,6 +106,55 @@ test("runSlackdump: maps ENOENT to actionable missing-binary guidance", async ()
       process.env.SLACKDUMP_BIN = prior;
     }
   }
+});
+
+test("runSlackdump: emits safe archive-growth progress while child is running", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "pdpp-slackdump-progress-"));
+  const fakeSlackdump = join(tmpDir, "fake-slackdump.mjs");
+  const sqlitePath = join(tmpDir, "slackdump.sqlite");
+  const progressEvents: Array<{ extra: unknown; message: string }> = [];
+  const priorBin = process.env.SLACKDUMP_BIN;
+
+  await writeFile(
+    fakeSlackdump,
+    `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+
+setTimeout(() => {
+  writeFileSync(process.env.TEST_SQLITE_PATH + "-wal", "archive grew");
+}, 25);
+setTimeout(() => process.exit(0), 100);
+`,
+    "utf8"
+  );
+  await chmod(fakeSlackdump, 0o755);
+  process.env.SLACKDUMP_BIN = fakeSlackdump;
+
+  try {
+    await runSlackdump(["resume"], {
+      env: { ...process.env, TEST_SQLITE_PATH: sqlitePath },
+      progress: (message, extra = {}) => {
+        progressEvents.push({ extra, message });
+        return Promise.resolve();
+      },
+      progressIntervalMs: 10,
+      progressLabel: "resume",
+      sqlitePath,
+      timeoutMs: 1000,
+    });
+  } finally {
+    if (priorBin === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = priorBin;
+    }
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+
+  assert.ok(progressEvents.length >= 1, "expected archive-growth progress");
+  assert.match(progressEvents[0]?.message ?? "", /Slack slackdump resume progress:/);
+  assert.match(progressEvents[0]?.message ?? "", /archive_bytes=/);
+  assert.equal((progressEvents[0]?.extra as { stream?: unknown } | undefined)?.stream, "messages");
 });
 
 test("slack manifest unsupported-in-mode streams match connector safety-net skips", async () => {
