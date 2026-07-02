@@ -65,6 +65,8 @@ OpenSpec design notes:
 - `openspec/changes/redesign-owner-console-product-experience/design-notes/owner-spine-charter-synthesis-20260618.md`
 - `openspec/changes/redesign-owner-console-product-experience/design-notes/feedback-refresh-20260619.md`
 - `openspec/changes/redesign-owner-console-product-experience/design-notes/surface-architecture-and-truth-packets-20260701.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/safe-demo-atlas-supplement-20260701.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/runs-explore-merge-owner-review-packet-20260701.md`
 
 ## 2. Leadership Aperture
 
@@ -331,6 +333,28 @@ Accepted decisions:
 The packet also converts the technical truth matrix into implementation
 contracts for counts, drill-through, full visibility, CTA subject scoping, and
 setup/recovery liveness.
+
+### Iteration 14: Safe Demo Atlas Supplement
+
+The 2026-07-01 safe-demo atlas supplement captures deterministic Dashboard,
+Sources, and Syncs/Runs screenshots from seeded dev-only fixtures. It proves
+that the safe screenshot path works without live owner data, and it corrected a
+private host-style fixture label to a role-neutral workstation label.
+
+This does not close the full atlas gate. Add Data, Explore, source recovery,
+Grants/Connect AI Apps, fresh-owner onboarding, tracked browser console/network
+receipts, and data-truth probes remain open.
+
+### Iteration 15: Runs And Explore Merge Owner-Review Packet
+
+The 2026-07-01 owner-review packet prepares the two remaining route merger
+decisions. It recommends retaining Syncs/Runs as a secondary activity/evidence
+view subordinate to Sources, and keeping Explore separate from stream record
+routes while sharing record rendering, URL/filter helpers, and record-detail
+links.
+
+Tasks 2.5 and 2.6 remain open until the owner reviews and accepts or revises the
+recommendations.
 
 ## 8. Essential Surface Model
 
