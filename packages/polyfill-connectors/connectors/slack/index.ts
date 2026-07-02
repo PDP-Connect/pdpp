@@ -459,6 +459,8 @@ interface SlackOpts {
   SKIP_FILES: boolean;
 }
 
+export const SLACK_RETRYABLE_FAILURE_RE = /ECONN|ETIMEDOUT|timeout|slackdump_exit_6/i;
+
 function extractCredentials(credentials: Record<string, string>): SlackCredentials {
   const workspace = credentials.SLACK_WORKSPACE;
   const token = credentials.SLACK_TOKEN;
@@ -1710,7 +1712,7 @@ async function runRequestedStreams(
 if (isMainModule(import.meta.url)) {
   runConnector({
     name: "slack",
-    retryablePattern: /ECONN|timeout/i,
+    retryablePattern: SLACK_RETRYABLE_FAILURE_RE,
     timeRangeField: "sent_at",
     validateRecord,
     auth: {

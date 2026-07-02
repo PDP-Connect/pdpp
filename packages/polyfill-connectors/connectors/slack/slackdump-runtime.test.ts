@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
-import { formatSlackdumpMissingError, runSlackdump, UNAVAILABLE_STREAMS } from "./index.ts";
+import { formatSlackdumpMissingError, runSlackdump, SLACK_RETRYABLE_FAILURE_RE, UNAVAILABLE_STREAMS } from "./index.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
@@ -106,6 +106,11 @@ test("runSlackdump: maps ENOENT to actionable missing-binary guidance", async ()
       process.env.SLACKDUMP_BIN = prior;
     }
   }
+});
+
+test("slack retry classification treats slackdump exit 6 as resumable", () => {
+  assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("slackdump failed: slackdump_exit_6: conversations.history 500"), true);
+  assert.equal(SLACK_RETRYABLE_FAILURE_RE.test("parser error: unexpected token in archive"), false);
 });
 
 test("runSlackdump: emits safe archive-growth progress while child is running", async () => {
