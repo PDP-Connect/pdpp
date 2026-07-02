@@ -28,12 +28,12 @@
 
 - [x] 2.1 Decide the owner-facing noun for configured data-producing instances and document the internal/API term mapping.
 - [x] 2.2 Produce a route/nav/headline inventory showing current noun drift.
-- [ ] 2.3 Decide which current surfaces remain primary, which merge, which demote, and which become evidence layers.
-- [ ] 2.4 Identify route aliases or redirects needed for backwards compatibility.
+- [x] 2.3 Decide which current surfaces remain primary, which merge, which demote, and which become evidence layers.
+- [x] 2.4 Identify route aliases or redirects needed for backwards compatibility.
 - [ ] 2.5 Produce an owner-reviewed prior-art memo and mock before deciding whether Runs/Syncs merges into Sources or remains a secondary activity view.
 - [ ] 2.6 Produce an owner-reviewed prior-art memo and mock before deciding whether Explore and stream-scoped record views fully merge or remain separate with shared rendering.
-- [ ] 2.7 Resolve the Source / Source instance / collector / device hierarchy in owner language, including whether one Source can intentionally have multiple collectors and how that nesting is shown.
-- [ ] 2.8 Define the owner-route hygiene plan, including whether `/dashboard` remains an implementation prefix, which clean owner routes should exist, and which compatibility redirects are required.
+- [x] 2.7 Resolve the Source / Source instance / collector / device hierarchy in owner language, including whether one Source can intentionally have multiple collectors and how that nesting is shown.
+- [x] 2.8 Define the owner-route hygiene plan, including whether `/dashboard` remains an implementation prefix, which clean owner routes should exist, and which compatibility redirects are required.
 - [x] 2.9 Produce hard-problem charters for Sources/Syncs/Runs, Add Data, Explore, Recovery, Grants/Connect, Evidence timelines, and fresh-owner onboarding before broad UI implementation.
 
 ## 3. Journey Atlas
@@ -54,12 +54,12 @@
 - [x] 4.4 Classify grant package count and internal source leakage.
 - [x] 4.5 Classify run/detail/trace navigation and artifact visibility gaps.
 - [x] 4.6 Add safe reproduction or inspection commands for each classified gap.
-- [ ] 4.7 Convert the technical-probe findings into implementation packets for Amazon sample labeling, GitHub first-sync/status honesty, collector coverage diagnostics, grant-package internal filtering, and trace/package pivots.
-- [ ] 4.8 Add a counts contract packet that distinguishes total held, current filtered result, current page or preview, latest-run yield, and latest-run-with-new-data yield.
-- [ ] 4.9 Add a drill-through packet for every owner-visible rollup count, including dashboard attention, runs/syncs review counts, grant package counts, credential token counts, and read counts.
-- [ ] 4.10 Add a full-visibility packet that replaces owner-facing caps with pagination, virtualization, or a direct full-set path; "showing N of M" is accepted only as a preview label, not as the terminal answer.
-- [ ] 4.11 Add a CTA subject-scoping packet covering "View records", "Explore", "Review", "Reauthorize", "Open Runs", trace links, deployment metadata links, and source/provider setup actions.
-- [ ] 4.12 Add a setup/recovery liveness packet covering first-sync auto-refresh, recovery CLI progress, upload-drain progress, and terminal reconciliation.
+- [x] 4.7 Convert the technical-probe findings into implementation packets for Amazon sample labeling, GitHub first-sync/status honesty, collector coverage diagnostics, grant-package internal filtering, and trace/package pivots.
+- [x] 4.8 Add a counts contract packet that distinguishes total held, current filtered result, current page or preview, latest-run yield, and latest-run-with-new-data yield.
+- [x] 4.9 Add a drill-through packet for every owner-visible rollup count, including dashboard attention, runs/syncs review counts, grant package counts, credential token counts, and read counts.
+- [x] 4.10 Add a full-visibility packet that replaces owner-facing caps with pagination, virtualization, or a direct full-set path; "showing N of M" is accepted only as a preview label, not as the terminal answer.
+- [x] 4.11 Add a CTA subject-scoping packet covering "View records", "Explore", "Review", "Reauthorize", "Open Runs", trace links, deployment metadata links, and source/provider setup actions.
+- [x] 4.12 Add a setup/recovery liveness packet covering first-sync auto-refresh, recovery CLI progress, upload-drain progress, and terminal reconciliation.
 
 ## 5. Implementation Wave Planning
 
@@ -84,9 +84,9 @@
 - [x] 6.1 Use waspflow lanes for review, research, screenshots, and narrow implementation packets only after acceptance checks are written.
 - [x] 6.2 Run adversarial review on the master plan before implementation begins.
 - [ ] 6.3 Run adversarial review on each substantive implementation tranche before merge/deploy readiness.
-- [ ] 6.4 Keep clawmeter and provider budget in the decision loop; use Claude lanes for breadth when OpenAI budget is hot.
-- [ ] 6.5 Apply the rabbit-hole filter before dispatching implementation lanes; defer real but low-promise-impact defects unless they are tiny opportunistic fixes inside an accepted tranche.
-- [ ] 6.6 Require every implementation tranche to pass the owner-spine alignment gate before merge readiness.
+- [x] 6.4 Keep clawmeter and provider budget in the decision loop; use Claude lanes for breadth when OpenAI budget is hot.
+- [x] 6.5 Apply the rabbit-hole filter before dispatching implementation lanes; defer real but low-promise-impact defects unless they are tiny opportunistic fixes inside an accepted tranche.
+- [x] 6.6 Require every implementation tranche to pass the owner-spine alignment gate before merge readiness.
 
 ## 7. Validation
 
@@ -100,7 +100,7 @@
 - [x] 8.2 A reviewer can map every P0 feedback item to a journey row, root cause, and first planned wave.
 - [x] 8.3 A worker can receive a future implementation packet without rediscovering the product model.
 - [x] 8.4 The plan explicitly says what evidence is required before a UI deploy.
-- [ ] 8.5 The plan distinguishes what internal agents can prove from what requires the owner or external user walkthroughs.
+- [x] 8.5 The plan distinguishes what internal agents can prove from what requires the owner or external user walkthroughs.
 - [x] 8.6 The plan explicitly preserves full record visibility: no worker may close a count/sample defect by only changing copy if the owner still cannot navigate to the complete backing record set.
 - [x] 8.7 The plan treats unreviewed surfaces named by the owner, including schedules, deployment, device exporters, event subscriptions, and Connect AI Apps, as unaudited surfaces rather than implicitly complete.
 - [x] 8.8 A reviewer can read Appendix A and identify the SLVP interaction standard for product gestalt, record workbench, setup, source inventory, recovery, access review, evidence timelines, and craft.

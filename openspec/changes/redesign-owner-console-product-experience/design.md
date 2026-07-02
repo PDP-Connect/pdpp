@@ -64,6 +64,7 @@ OpenSpec design notes:
 - `openspec/changes/redesign-owner-console-product-experience/design-notes/friction-to-slvp-direction-20260618.md`
 - `openspec/changes/redesign-owner-console-product-experience/design-notes/owner-spine-charter-synthesis-20260618.md`
 - `openspec/changes/redesign-owner-console-product-experience/design-notes/feedback-refresh-20260619.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/surface-architecture-and-truth-packets-20260701.md`
 
 ## 2. Leadership Aperture
 
@@ -272,7 +273,7 @@ The correction belongs in the shared projections, not in connector-specific copy
 
 Current clawmeter posture makes this especially important: conserve Codex/OpenAI for integration and signoff; use Claude lanes for broad synthesis and independent review.
 
-### Iteration 10: Owner Spine Synthesis
+### Iteration 11: Owner Spine Synthesis
 
 The hard-surface charters for Sources/Syncs/Runs, Explore/stream records, Add Data/setup, Recovery/liveness, Grants/Connect, Evidence timelines, and fresh-owner onboarding were accepted only after an adversarial alignment review.
 
@@ -288,7 +289,7 @@ The accepted synthesis is not seven page redesigns. It is one owner spine:
 
 This synthesis is the alignment gate for implementation. A page-local improvement that does not improve the owner spine is deferred unless it is a tiny opportunistic fix inside an accepted tranche. This is the concrete guard against the failure mode the owner identified: many correct local fixes that still do not create a console he would feel confident sharing.
 
-### Iteration 11: Final Gate Model
+### Iteration 12: Final Gate Model
 
 The final plan replaces "tests passed" as a completion proxy with named gate artifacts:
 
@@ -304,6 +305,32 @@ The final plan replaces "tests passed" as a completion proxy with named gate art
 - live deploy smoke with the same journey
 
 This is slower than a grep gate but faster than a week of reactive churn.
+
+### Iteration 13: Surface Architecture And Truth Packets
+
+The 2026-07-01 follow-up packet resolves the remaining foundation decisions that
+do not require new owner screenshots or a human-reviewed mock.
+
+Accepted decisions:
+
+- Sources, Add Data, Explore, and Grants/Connect AI Apps remain primary owner
+  surfaces.
+- Runs/Syncs, traces, schedules, device exporters, deployment, and owner tokens
+  remain useful but are evidence or administration surfaces unless the owner
+  intentionally enters them.
+- Runs/Syncs is retained as a secondary activity view until a human-reviewed mock
+  proves that its useful per-run and per-stream facts survive demotion or merge.
+- Explore and stream-scoped record views remain separate destinations with a
+  shared record model until a human-reviewed mock proves full merger is better.
+- `/dashboard` remains the implementation prefix for now; clean owner aliases
+  may be added only through subject-preserving route helpers.
+- Source is the owner-facing configured data-producing instance. Connector type,
+  collector, device, credential, and schedule are properties or supporting
+  concepts unless one of them is the owner's active repair/setup subject.
+
+The packet also converts the technical truth matrix into implementation
+contracts for counts, drill-through, full visibility, CTA subject scoping, and
+setup/recovery liveness.
 
 ## 8. Essential Surface Model
 
