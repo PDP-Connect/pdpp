@@ -174,11 +174,11 @@ test('owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazon.connector_id, 'amazon');
     assert.equal(amazon.display_name, 'Amazon');
     assert.equal(amazon.connector_modality, 'browser_bound');
-    assert.equal(amazon.setup_plan.setup_modality, 'browser_bound');
+    assert.equal(amazon.setup_plan.setup_modality, 'static_secret');
     assert.equal(amazon.setup_plan.support_state, 'proof_gated');
-    assert.equal(amazon.setup_plan.next_step_kind, 'enroll_browser_collector');
-    assert.equal(amazon.setup_plan.proof_gate, 'browser_collector_live_proof_missing');
-    assert.equal(amazon.setup_plan.runbook_path, 'docs/operator/browser-collector-proof-runbook.md');
+    assert.equal(amazon.setup_plan.next_step_kind, 'capture_static_secret');
+    assert.equal(amazon.setup_plan.proof_gate, 'static_secret_live_proof_missing');
+    assert.equal(amazon.setup_plan.runbook_path, 'docs/operator/static-secret-connection-runbook.md');
     assert.equal(amazon.connection_count, 1);
     assert.equal(amazon.connections[0].object, 'owner_connection_summary');
     assert.equal(amazon.connections[0].connection_id, 'cin_amazon_personal');
@@ -190,7 +190,7 @@ test('owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazonInitiate.status, 'unsupported');
     assert.equal(amazonInitiate.method, null);
     assert.equal(amazonInitiate.url, null);
-    assert.match(amazonInitiate.reason, /browser-collector enrollment primitive/i);
+    assert.match(amazonInitiate.reason, /static provider secret|static-secret/i);
 
     // Local-collector templates are discoverable even before a connection is
     // registered, because they live in the reference local-collector catalog.

@@ -409,9 +409,9 @@ test('two drafts for one connector are two distinct connection_ids', async () =>
 test('draft create is rejected for a non-static-secret connector', async () => {
   await withCredentialKey(TEST_KEY, async () => {
     await withServer(async ({ asUrl }) => {
-      await registerConnector(asUrl, 'reddit');
+      await registerConnector(asUrl, 'whatsapp');
       const cookie = await login(asUrl);
-      const { status, body, resp } = await createDraft(asUrl, cookie, 'reddit');
+      const { status, body, resp } = await createDraft(asUrl, cookie, 'whatsapp');
       assert.equal(status, 409);
       assert.equal(body?.error?.code, 'static_secret_credential_unsupported');
       const audit = findDraftAudit(resp, 'failed');

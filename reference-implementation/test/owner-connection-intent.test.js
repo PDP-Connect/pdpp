@@ -307,7 +307,7 @@ test('the minted enrollment code is genuine: exchanging it materializes a real c
   });
 });
 
-test('owner-agent initiating a browser-bound connector (Amazon) gets a typed unsupported, not a faked success', async () => {
+test('owner-agent initiating Amazon gets browser runtime class plus static-secret proof gate', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     // Amazon must be a registered connector for its manifest (and thus its
@@ -330,24 +330,18 @@ test('owner-agent initiating a browser-bound connector (Amazon) gets a typed uns
     assert.equal(status, 201);
     assert.equal(body.connector_key, 'amazon');
     assert.equal(body.connector_modality, 'browser_bound');
-    assert.equal(body.setup_modality, 'browser_bound');
+    assert.equal(body.setup_modality, 'static_secret');
     assert.equal(body.support_state, 'proof_gated');
-    assert.equal(body.proof_gate, 'browser_collector_live_proof_missing');
-    assert.match(body.runbook_path, /browser-collector-proof-runbook\.md$/);
+    assert.equal(body.proof_gate, 'static_secret_live_proof_missing');
+    assert.match(body.runbook_path, /static-secret-connection-runbook\.md$/);
     assert.equal(body.connection_active, false);
-    assert.equal(body.next_step.kind, 'manual_runbook');
-    assert.match(body.next_step.runbook_path, /browser-collector-proof-runbook\.md$/);
-    assert.match(body.next_step.reason, /browser/i);
-    assert.match(body.next_step.reason, /browser_collector|primitive/i);
-    // Honesty: the reason must point at the owner-run procedure that works today
-    // (the runbook), not loop the owner back to a dashboard that lists Amazon as
-    // unsupported. It must also state that the primitive ships and only committed
-    // live proof is pending — not imply the whole primitive is missing.
-    assert.match(body.next_step.reason, /browser-collector-proof-runbook\.md/);
-    assert.match(body.next_step.reason, /already ships|proof/i);
-    // The route must NOT yet mint browser enrollment material. Per the proof
-    // gate, the flip to an actual `enroll_browser_collector` payload lands with
-    // committed live proof, not via copy.
+    assert.equal(body.next_step.kind, 'capture_static_secret');
+    assert.equal(body.next_step.capture_endpoint, '/dashboard/connect/static-secret/amazon');
+    assert.match(body.next_step.runbook_path, /static-secret-connection-runbook\.md$/);
+    assert.match(body.next_step.reason, /static provider secret|static-secret/i);
+    // The route must NOT mint browser enrollment material. Amazon's current
+    // setup contract captures the owner-provided credential first; the browser
+    // runtime remains a collection dependency, not the setup primitive.
     assert.notEqual(body.next_step.kind, 'enroll_browser_collector');
     assert.equal(Object.hasOwn(body.next_step, 'enrollment_code'), false);
 
@@ -355,7 +349,7 @@ test('owner-agent initiating a browser-bound connector (Amazon) gets a typed uns
     assert.equal(audit.status, 'succeeded');
     assert.equal(audit.data?.connector_key, 'amazon');
     assert.equal(audit.data?.connector_modality, 'browser_bound');
-    assert.equal(audit.data?.next_step_kind, 'manual_runbook');
+    assert.equal(audit.data?.next_step_kind, 'capture_static_secret');
   });
 });
 
@@ -375,7 +369,7 @@ test('owner-agent initiating a browser-bound connector (Amazon) gets a typed uns
 // This is the acceptance-permitted form of 5.3: the browser-collector enrollment
 // primitive's live proof is still pending, so the honest second-account outcome
 // is a typed `manual_runbook`/`browser_bound` next step describing the owner-run
-// browser-assistance step. The response does NOT claim the agent can complete
+// static-secret capture step. The response does NOT claim the agent can complete
 // provider login/2FA by bearer authority.
 test('a trusted owner agent initiates an Amazon SECOND account up to the owner-mediated next step', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
@@ -422,19 +416,15 @@ test('a trusted owner agent initiates an Amazon SECOND account up to the owner-m
     assert.equal(body.object, 'owner_connection_intent');
     assert.equal(body.connector_key, 'amazon');
     assert.equal(body.connector_modality, 'browser_bound');
-    assert.equal(body.setup_modality, 'browser_bound');
+    assert.equal(body.setup_modality, 'static_secret');
     assert.equal(body.support_state, 'proof_gated');
-    assert.equal(body.proof_gate, 'browser_collector_live_proof_missing');
+    assert.equal(body.proof_gate, 'static_secret_live_proof_missing');
     assert.equal(body.connection_active, false);
-    assert.equal(body.next_step.kind, 'manual_runbook');
-    assert.match(body.next_step.runbook_path, /browser-collector-proof-runbook\.md$/);
-    // The reason describes the browser-assistance step the owner / local
-    // environment performs (spec "Connector requires browser assistance"): it
-    // names the browser-bound nature and points at the owner-run procedure.
-    assert.match(body.next_step.reason, /browser/i);
-    assert.match(body.next_step.reason, /browser-collector-proof-runbook\.md/);
-    // It must NOT claim the agent can complete login/2FA by bearer authority, and
-    // it must NOT yet mint the one-click enroll payload (gated on live proof).
+    assert.equal(body.next_step.kind, 'capture_static_secret');
+    assert.equal(body.next_step.capture_endpoint, '/dashboard/connect/static-secret/amazon');
+    assert.match(body.next_step.runbook_path, /static-secret-connection-runbook\.md$/);
+    assert.match(body.next_step.reason, /static provider secret|static-secret/i);
+    // It must NOT claim the agent can complete login/2FA by bearer authority.
     assert.notEqual(body.next_step.kind, 'enroll_browser_collector');
     assert.equal(Object.hasOwn(body.next_step, 'enrollment_code'), false);
     assert.doesNotMatch(
@@ -460,7 +450,7 @@ test('a trusted owner agent initiates an Amazon SECOND account up to the owner-m
     assert.equal(afterAmazonRows[0].connection_id, 'cin_amazon_personal');
 
     // --- Audit: the second-account initiation is recorded as a non-secret,
-    // owner-agent, browser_bound, unsupported event with no bearer/secret leak.
+    // owner-agent, browser_bound/static-secret event with no bearer/secret leak.
     const audit = findIntentAuditEvent(resp);
     assert.equal(audit.actor_type, 'owner_agent');
     assert.equal(audit.subject_id, OWNER_SUBJECT_ID);
@@ -468,7 +458,7 @@ test('a trusted owner agent initiates an Amazon SECOND account up to the owner-m
     assert.equal(audit.data?.actor_kind, 'owner_agent');
     assert.equal(audit.data?.connector_key, 'amazon');
     assert.equal(audit.data?.connector_modality, 'browser_bound');
-    assert.equal(audit.data?.next_step_kind, 'manual_runbook');
+    assert.equal(audit.data?.next_step_kind, 'capture_static_secret');
     assert.equal(audit.data?.operation, 'initiate_connection');
     assert.equal(audit.data?.display_name_supplied, true);
     // The owner-supplied label is never persisted in audit evidence.
