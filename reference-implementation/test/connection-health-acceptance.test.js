@@ -738,6 +738,48 @@ test('acceptance 7.3: underscore-separated OTP failure text is owner-recoverable
   assert.equal(snap.forward_disposition, 'resumable');
 });
 
+test('acceptance 7.3: live-shaped OTP timeout plus checkpoint retry stays recoverable', () => {
+  const run = failedRun({
+    failure_reason: 'connector_reported_failed',
+    known_gaps: [
+      {
+        kind: 'interaction_required',
+        reason: 'interaction_timeout',
+        severity: 'actionable',
+        stream: null,
+        message: 'Chase sent a 2FA code. Reply with it.',
+        recovery_hint: { action: 'manual_action_required', retryable: false },
+      },
+      {
+        kind: 'run_failed',
+        reason: 'connector_reported_failed',
+        severity: 'actionable',
+        stream: null,
+        message: 'chase_session_failed: chase_otp_not_provided',
+        recovery_hint: { action: 'unknown', retryable: false },
+      },
+      {
+        kind: 'checkpoint_commit',
+        reason: 'not_committed',
+        severity: 'actionable',
+        stream: null,
+        message: 'Staged stream state was not committed',
+        recovery_hint: { action: 'retry_by_runtime', retryable: true },
+      },
+    ],
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: null,
+    schedule: null,
+  });
+
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.coverage, 'retryable_gap');
+  assert.equal(snap.forward_disposition, 'resumable');
+});
+
 test('acceptance 7.3: succeeded run with pending durable detail gap is degraded, never healthy', () => {
   const run = succeededRun();
   const snap = projectConnectorSummaryConnectionHealth({

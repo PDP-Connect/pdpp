@@ -1673,6 +1673,10 @@ function isOwnerRecoverableKnownGap(gap: unknown): boolean {
   return OWNER_RECOVERABLE_GAP_RE.test(gapClassifierText(gap));
 }
 
+function isRuntimeRetryableKnownGap(gap: unknown): boolean {
+  return gapRecoveryAction(gap) === "retry_by_runtime";
+}
+
 function isKnownSkipShadowedByPendingDetailGap(gap: unknown, pendingStreams: ReadonlySet<string>): boolean {
   if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
     return false;
@@ -1707,6 +1711,9 @@ function hasTerminalKnownGap(
       return false;
     }
     if (isOwnerRecoverableKnownGap(gap)) {
+      return false;
+    }
+    if (isRuntimeRetryableKnownGap(gap)) {
       return false;
     }
     const severity = (gap as { severity?: unknown }).severity;
@@ -2395,6 +2402,9 @@ function isRetryableKnownGap(gap: unknown): boolean {
     return false;
   }
   if (isOwnerRecoverableKnownGap(gap)) {
+    return true;
+  }
+  if (isRuntimeRetryableKnownGap(gap)) {
     return true;
   }
   const severity = (gap as { severity?: unknown }).severity;
