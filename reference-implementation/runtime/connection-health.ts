@@ -1741,7 +1741,12 @@ function credentialsValidCondition(input: ComputeConnectionHealthInput): Connect
       sensitivity: "secret_redacted",
       remediation: {
         action: "refresh_credentials",
-        label: "Reconnect or update the source credentials",
+        // Match the rendered verdict's single reconnect CTA ("Reconnect this
+        // account"). A rejected credential is ONE owner action; the older
+        // "Reconnect or update …" phrasing read as two, which the owner flagged
+        // as confusing. See reference-connection-health: "Owner actions SHALL be
+        // a typed required-action list … one unified satisfaction contract".
+        label: "Reconnect this account",
         retryable: false,
         target: "credentials",
       },

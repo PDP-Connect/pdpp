@@ -27,7 +27,13 @@ import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/
 import { indexCollectionReportByStream } from "../lib/collection-report.ts";
 import type { FailureSummary } from "../lib/connection-evidence.ts";
 import type { RefCollectionReportEntry, RefConnectorSummary, RefSchedule, RunSummary } from "../lib/ref-client.ts";
-import { projectSourceActionability, type SourceStatusFlag, type SourceWorkItem } from "../lib/source-actionability.ts";
+import {
+  EMPTY_SOURCE_WORK_GROUPS,
+  projectSourceActionability,
+  sourceAttentionHeadline,
+  type SourceStatusFlag,
+  type SourceWorkItem,
+} from "../lib/source-actionability.ts";
 
 // ─── Rhythm tick type (mirrors the kit's RhythmTick) ──────────────────────────
 //
@@ -478,7 +484,13 @@ function buildHealthBand(input: {
   projections: readonly SyncProjection[];
 }): HealthBand {
   const onSchedule = input.groups.filter((g) => g.health === "ok").reduce((sum, g) => sum + g.totalStreamCount, 0);
-  const needYourHand = input.projections.filter((projection) => projection.work?.group === "needsOwner").length;
+  // "Need your hand" is the SHARED attention headline — the same derivation the
+  // dashboard hero uses — so the two surfaces can never disagree on how many
+  // sources need the owner. It counts ONLY the needs-you group.
+  const needsOwner = input.projections
+    .map((projection) => projection.work)
+    .filter((item): item is SourceWorkItem => item?.group === "needsOwner");
+  const needYourHand = sourceAttentionHeadline({ ...EMPTY_SOURCE_WORK_GROUPS, needsOwner }).needsYou;
   const needsReview = input.failureCards.length;
   return {
     onSchedule,

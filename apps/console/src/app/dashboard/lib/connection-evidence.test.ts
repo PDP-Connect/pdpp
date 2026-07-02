@@ -383,7 +383,7 @@ test("formatDominantCondition surfaces only false dominant evidence", () => {
           sensitivity: "secret_redacted",
           remediation: {
             action: "refresh_credentials",
-            label: "Reconnect or update the source credentials",
+            label: "Reconnect this account",
             retryable: false,
             target: "credentials",
           },
@@ -984,7 +984,7 @@ test("deriveConnectionStatusDisplay: blocked connection surfaces dominant condit
           sensitivity: "secret_redacted",
           remediation: {
             action: "refresh_credentials",
-            label: "Reconnect or update the source credentials",
+            label: "Reconnect this account",
             retryable: false,
             target: "credentials",
           },

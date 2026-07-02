@@ -25,6 +25,7 @@ import {
 } from "@pdpp/brand-react";
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
+import { SOURCE_WORK_GROUP_COPY } from "../lib/source-actionability.ts";
 import type {
   DuplicateSyncGroup,
   FailureCard,
@@ -42,26 +43,17 @@ const FAILURE_SECTION_ORDER = ["needsOwner", "review", "systemIssue", "checking"
 
 type FailureSection = (typeof FAILURE_SECTION_ORDER)[number];
 
+// The four source-attention groups draw their label + note from the ONE shared
+// map (`SOURCE_WORK_GROUP_COPY`) so Runs and the dashboard render identical
+// category copy. Only "other" is local to this surface.
 const FAILURE_SECTION_COPY: Record<FailureSection, { label: string; note: string }> = {
-  needsOwner: {
-    label: "Needs you",
-    note: "These sources cannot make progress until you act.",
-  },
-  review: {
-    label: "Worth reviewing",
-    note: "These are owner-runnable refresh or retry actions, not broken sources.",
-  },
-  systemIssue: {
-    label: "System or connector issue",
-    note: "These need a connector or reference fix before coverage is complete.",
-  },
-  checking: {
-    label: "Checking",
-    note: "The reference is still deciding the current source state.",
-  },
+  needsOwner: SOURCE_WORK_GROUP_COPY.needsOwner,
+  review: SOURCE_WORK_GROUP_COPY.review,
+  systemIssue: SOURCE_WORK_GROUP_COPY.systemIssue,
+  checking: SOURCE_WORK_GROUP_COPY.checking,
   other: {
     label: "Other source work",
-    note: "These need review, but did not map to a source-attention group.",
+    note: "Worth a look when you have a moment.",
   },
 };
 

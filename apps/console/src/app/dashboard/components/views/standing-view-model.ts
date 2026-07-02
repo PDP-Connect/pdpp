@@ -22,6 +22,8 @@ import type {
   TraceSummary,
 } from "../../lib/ref-client.ts";
 import {
+  SOURCE_WORK_GROUP_COPY,
+  sourceAttentionHeadline,
   type SourceWorkGroups,
   type SourceWorkItem,
   sourceWorkFromConnectors,
@@ -171,6 +173,8 @@ export interface AttentionRowView {
 export interface SourceWorkSectionView {
   countLabel: string;
   id: SourceWorkItem["group"];
+  /** One-line "who acts / how urgent" note, from the shared group copy. */
+  note: string;
   rows: AttentionRowView[];
   title: string;
   tone: "muted" | "owner" | "review" | "system";
@@ -793,7 +797,9 @@ function workItemFromReview(item: AdvisoryOwnerActionConnection): SourceWorkItem
     id: `review:${item.routeId}`,
     label: item.label,
     routeId: item.routeId,
-    statusLabel: "is ready for review",
+    // The concrete action is the row copy; statusLabel mirrors it as a neutral
+    // fallback rather than the "ready for review" taxonomy phrasing.
+    statusLabel: item.actionLabel,
     what: item.what,
   };
 }
@@ -837,8 +843,12 @@ function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRow
   let what: string;
   if (item.group === "needsOwner") {
     what = `${item.label} needs you`;
+  } else if (item.group === "review" && item.actionLabel) {
+    // The non-urgent group reads as the CONCRETE available action ("Amazon:
+    // Refresh now"), not a taxonomy noun ("Amazon is ready for review").
+    what = `${item.label}: ${item.actionLabel}`;
   } else if (item.group === "review") {
-    what = `${item.label} is ready for review`;
+    what = `${item.label}: action available`;
   } else {
     what = `${item.label} ${item.statusLabel}`;
   }
@@ -863,7 +873,8 @@ function toSourceWorkSections(
   if (groups.needsOwner.length > 0) {
     sections.push({
       id: "needsOwner",
-      title: "Needs you",
+      title: SOURCE_WORK_GROUP_COPY.needsOwner.label,
+      note: SOURCE_WORK_GROUP_COPY.needsOwner.note,
       countLabel: pluralSource(groups.needsOwner.length),
       tone: "owner",
       rows: groups.needsOwner.map((item) => sourceWorkRow(item, hrefs)),
@@ -872,7 +883,8 @@ function toSourceWorkSections(
   if (groups.review.length > 0) {
     sections.push({
       id: "review",
-      title: "Worth reviewing",
+      title: SOURCE_WORK_GROUP_COPY.review.label,
+      note: SOURCE_WORK_GROUP_COPY.review.note,
       countLabel: pluralSource(groups.review.length),
       tone: "review",
       rows: groups.review.map((item) => sourceWorkRow(item, hrefs)),
@@ -881,7 +893,8 @@ function toSourceWorkSections(
   if (groups.systemIssues.length > 0 || overviewIssues.length > 0) {
     sections.push({
       id: "systemIssue",
-      title: "System or connector issue",
+      title: SOURCE_WORK_GROUP_COPY.systemIssue.label,
+      note: SOURCE_WORK_GROUP_COPY.systemIssue.note,
       countLabel: pluralSource(groups.systemIssues.length + overviewIssues.length),
       tone: "system",
       rows: [...groups.systemIssues.map((item) => sourceWorkRow(item, hrefs)), ...overviewIssues],
@@ -890,7 +903,8 @@ function toSourceWorkSections(
   if (groups.checking.length > 0) {
     sections.push({
       id: "checking",
-      title: "Checking",
+      title: SOURCE_WORK_GROUP_COPY.checking.label,
+      note: SOURCE_WORK_GROUP_COPY.checking.note,
       countLabel: pluralSource(groups.checking.length),
       tone: "muted",
       rows: groups.checking.map((item) => sourceWorkRow(item, hrefs)),
@@ -987,20 +1001,23 @@ function buildPartialDataHero(loadIssues: readonly string[], hrefs: StandingHref
 function buildAdvisoryHero(actions: AdvisoryOwnerActionConnection[], hrefs: StandingHrefs): StandingHero {
   const [only] = actions;
   if (actions.length === 1 && only) {
+    // Lead with the CONCRETE action the owner can run ("Refresh now" / "Retry
+    // now"), not the "ready for review" taxonomy phrasing.
+    const action = only.actionLabel ?? "Run the available action";
     return {
       tone: "decide",
-      kicker: "One source is ready for review",
-      line: { text: `${only.label} `, emphasis: "is ready for review", tail: "." },
+      kicker: "One optional action is available",
+      line: { text: `${only.label}: `, emphasis: action, tail: "." },
       sub: only.what,
-      cta: { label: "Review source", href: hrefs.connection(only.routeId), human: true },
+      cta: { label: action, href: hrefs.connection(only.routeId), human: true },
     };
   }
   return {
     tone: "decide",
-    kicker: `${actions.length} sources are ready for review`,
-    line: { text: "Source updates ", emphasis: "are available", tail: "." },
-    sub: "Review refreshes and retries in Sources. Records remain available.",
-    cta: { label: "Review sources", href: hrefs.sources },
+    kicker: `${actions.length} optional actions are available`,
+    line: { text: "Refreshes and retries ", emphasis: "are available", tail: "." },
+    sub: "Nothing is broken — run these refreshes and retries when you like. Records remain available.",
+    cta: { label: "See available actions", href: hrefs.sources },
   };
 }
 
@@ -1037,7 +1054,11 @@ export function computeHero(input: StandingInputs): StandingHero {
   if (input.pendingApprovals.length > 0) {
     return buildDecideHero(input.pendingApprovals, input.hrefs);
   }
-  if (sourceWork.needsOwner.length > 0) {
+  // The hero headline "needs you" number is the SHARED attention headline — the
+  // same derivation the Runs band uses — so the dashboard and Runs can never
+  // disagree on how many sources need the owner. It counts ONLY the needs-you
+  // group; review/system/checking render as clearly-secondary rows below.
+  if (sourceAttentionHeadline(sourceWork).needsYou > 0) {
     return buildFailureHero(
       sourceWork.needsOwner.map((item) => ({
         actionLabel: item.actionLabel ?? "Review source",
@@ -1057,7 +1078,7 @@ export function computeHero(input: StandingInputs): StandingHero {
   if (sourceWork.review.length > 0) {
     return buildAdvisoryHero(
       sourceWork.review.map((item) => ({
-        actionLabel: item.actionLabel ?? "Review source",
+        actionLabel: item.actionLabel ?? "Run available action",
         label: item.label,
         routeId: item.routeId,
         what: item.what,

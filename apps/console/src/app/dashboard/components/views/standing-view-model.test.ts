@@ -496,9 +496,10 @@ test("advisory owner actions surface non-urgent Amazon retry work without calm a
 
   const data = buildStandingData(baseInputs({ advisoryOwnerActions }));
   assert.equal(data.hero.tone, "decide");
-  assert.equal(data.hero.kicker, "One source is ready for review");
-  assert.equal(data.hero.line.emphasis, "is ready for review");
-  assert.equal(data.hero.cta?.label, "Review source");
+  assert.equal(data.hero.kicker, "One optional action is available");
+  assert.equal(data.hero.line.emphasis, "Retry detail gap");
+  assert.equal(data.hero.line.text, "Amazon - Personal: ");
+  assert.equal(data.hero.cta?.label, "Retry detail gap");
   assert.equal(data.hero.cta?.href, HREFS.connection("cin_amazon"));
   assert.doesNotMatch(`${data.hero.kicker} ${data.hero.line.text} ${data.hero.line.emphasis}`, NOT_NEEDS_YOU_RE);
   assert.doesNotMatch(
@@ -659,7 +660,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(data.sourceWorkSections[0]?.title, "Needs you");
   assert.equal(data.sourceWorkSections[0]?.countLabel, "3 sources");
   assert.equal(data.sourceWorkSections[0]?.rows.length, 3);
-  assert.equal(data.sourceWorkSections[1]?.title, "Worth reviewing");
+  assert.equal(data.sourceWorkSections[1]?.title, "Available actions");
   assert.equal(data.sourceWorkSections[1]?.countLabel, "1 source");
   assert.equal(data.sourceWorkSections[2]?.title, "System or connector issue");
   assert.equal(data.sourceWorkSections[3]?.title, "Checking");
@@ -697,7 +698,7 @@ test("reviewable degraded source appears once rather than as review plus source 
   assert.equal(sourceWork.review.length, 1);
   assert.equal(sourceWork.systemIssues.length, 0);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]?.what, "Amazon - Personal is ready for review");
+  assert.equal(rows[0]?.what, "Amazon - Personal: Retry now");
 });
 
 test("source actionability follows primary-action parity with push policy", () => {

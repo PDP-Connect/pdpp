@@ -78,6 +78,51 @@ export const EMPTY_SOURCE_WORK_GROUPS: SourceWorkGroups = {
   systemIssues: [],
 };
 
+/**
+ * The single owner-facing label + one-line note for each source-attention work
+ * group. Both the dashboard standing view and the Runs/Syncs view consume THIS
+ * map so the four categories read identically everywhere and the axis that
+ * separates them — who must act, and how urgent — is stated once, to the owner.
+ * Do not re-author these per surface (that drift is exactly what the owner
+ * flagged as "hard to distinguish"). See `reference-connection-health`:
+ * "Owner Surfaces SHALL Share One Projection Contract".
+ */
+export const SOURCE_WORK_GROUP_COPY: Record<SourceWorkGroupId, { label: string; note: string }> = {
+  needsOwner: {
+    label: "Needs you",
+    note: "Requires your input before collection can continue.",
+  },
+  review: {
+    label: "Available actions",
+    note: "Optional refreshes and retries you can start.",
+  },
+  systemIssue: {
+    label: "System or connector issue",
+    note: "PDPP needs to fix or retry this; no account action is needed from you.",
+  },
+  checking: {
+    label: "Checking",
+    note: "PDPP is checking this source before asking you to do anything.",
+  },
+};
+
+/** The one owner-facing meaning of the headline "needs you" attention number. */
+export interface SourceAttentionHeadline {
+  /** Count of sources genuinely blocked on the owner's action (the needs-you group). */
+  needsYou: number;
+}
+
+/**
+ * The single derivation of the headline "how many sources need YOUR action"
+ * number. The dashboard hero and the Runs band both call this so they cannot
+ * diverge. It counts ONLY the owner-required (needs-you) group; the review,
+ * system-issue, and checking groups are secondary and are never summed into
+ * this headline (owner decision 2026-07-02).
+ */
+export function sourceAttentionHeadline(groups: SourceWorkGroups): SourceAttentionHeadline {
+  return { needsYou: groups.needsOwner.length };
+}
+
 const UNDERSCORE_RE = /_/g;
 
 const VERDICT_TONE_STATUS: Record<RefVerdictTone, Pick<SourceStatusFlag, "dot" | "kind" | "tone">> = {
@@ -308,7 +353,10 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
     return itemFromConnector(connector, "review", {
       actionLabel: ownerAction.cta,
       deviceLocal: ownerAction.remediation?.target.kind === "local_device",
-      statusLabel: "is ready for review",
+      // The concrete CTA (`ownerAction.cta`, e.g. "Refresh now" / "Retry now")
+      // carries the row copy; the statusLabel is a neutral fallback, never the
+      // "ready for review" taxonomy phrasing.
+      statusLabel: ownerAction.cta,
       what: verdict.forward_statement,
     });
   }
