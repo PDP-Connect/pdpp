@@ -685,6 +685,33 @@ test('acceptance 7.3: succeeded run with transient known_gap projects retryable_
   assert.equal(snap.axes.coverage, 'retryable_gap');
 });
 
+test('acceptance 7.3: manual-action known_gap projects retryable_gap, not terminal code-fix coverage', () => {
+  const run = failedRun({
+    failure_reason: 'connector_reported_failed',
+    known_gaps: [
+      {
+        kind: 'interaction_required',
+        reason: 'interaction_timeout',
+        severity: 'actionable',
+        stream: null,
+        message: 'The owner prompt timed out before a code was provided.',
+        recovery_hint: { action: 'manual_action_required', retryable: false },
+      },
+    ],
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: null,
+    schedule: null,
+  });
+
+  assertHeadline(snap, 'degraded');
+  assert.notEqual(snap.state, 'healthy');
+  assert.equal(snap.axes.coverage, 'retryable_gap');
+  assert.equal(snap.forward_disposition, 'resumable');
+});
+
 test('acceptance 7.3: succeeded run with pending durable detail gap is degraded, never healthy', () => {
   const run = succeededRun();
   const snap = projectConnectorSummaryConnectionHealth({

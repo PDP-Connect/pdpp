@@ -1652,6 +1652,10 @@ function gapRecoveryAction(gap: unknown): string | null {
   return null;
 }
 
+function isOwnerRecoverableKnownGap(gap: unknown): boolean {
+  return gapRecoveryAction(gap) === "manual_action_required";
+}
+
 function isKnownSkipShadowedByPendingDetailGap(gap: unknown, pendingStreams: ReadonlySet<string>): boolean {
   if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
     return false;
@@ -1683,6 +1687,9 @@ function hasTerminalKnownGap(
       return true;
     }
     if (isKnownSkipShadowedByPendingDetailGap(gap, pendingStreams)) {
+      return false;
+    }
+    if (isOwnerRecoverableKnownGap(gap)) {
       return false;
     }
     const severity = (gap as { severity?: unknown }).severity;
@@ -2369,6 +2376,9 @@ async function getConnectorLocalCoverageAxis(
 function isRetryableKnownGap(gap: unknown): boolean {
   if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
     return false;
+  }
+  if (isOwnerRecoverableKnownGap(gap)) {
+    return true;
   }
   const severity = (gap as { severity?: unknown }).severity;
   return severity === "transient";

@@ -297,6 +297,27 @@ test('owner-wire: no terminal run but one current stream gap is coherent retryab
   assert.notEqual(verdict.forward_statement, 'Checking coverage before deciding what the next run should do.');
 });
 
+test('owner-wire: timed-out manual action is retryable owner work, not connector-code work', () => {
+  const verdict = synthesizeConnectorVerdict({
+    snapshot: degradedRetryableSnapshot(),
+    report: collectionReport({
+      collected: 0,
+      considered: 'unknown',
+      coverage_condition: 'unknown',
+      pending_detail_gaps: 0,
+    }),
+    manifestStreams: manifestStreams(),
+    refresh: { backgroundSafe: false, interactionPosture: 'otp_likely', recommendedMode: 'manual' },
+    progress: null,
+  });
+
+  assert.equal(verdict.pill.tone, 'amber');
+  assert.equal(verdict.channel, 'advisory');
+  assert.equal(verdict.forward_statement, 'Retry now to give the recoverable gap another run.');
+  assert.ok(verdict.required_actions.some((action) => action.kind === 'retry_gap'));
+  assert.ok(!verdict.required_actions.some((action) => action.kind === 'code_fix'));
+});
+
 // ─── grant-scope isolation ────────────────────────────────────────────────────
 
 test('owner-wire: toGrantScopedVerdict strips detail and trace', () => {
