@@ -119,6 +119,7 @@ const DOWNLOAD_RESPONSE_HINT_RE = /filename|attachment|octet-stream|x-ofx|qfx/iu
 const CHASE_DOWNLOAD_ROUTE_RE = /downloadAccountTransactions|confirmDownloadAccountActivity/iu;
 const NO_ACTIVITY_CONFIRMATION_RE = /we couldn't find any activity that matched the date range you chose/iu;
 const CHASE_QFX_FILE_TYPE_COMBOBOX_NAME_RE = /file type/i;
+const CHASE_QFX_ACTIVITY_COMBOBOX_NAME_RE = /activity/i;
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
 export const CHASE_QFX_ACTIVITY_SELECT_SELECTORS = [
@@ -130,6 +131,7 @@ export const CHASE_QFX_FILE_TYPE_SELECT_SELECTORS = [
   "#select-downloadFileTypeOption",
 ] as const;
 export const CHASE_QFX_FILE_TYPE_SELECT_SELECTOR = CHASE_QFX_FILE_TYPE_SELECT_SELECTORS.join(", ");
+export const CHASE_QFX_ACTIVITY_SELECT_SELECTOR = CHASE_QFX_ACTIVITY_SELECT_SELECTORS.join(", ");
 const TIME_RANGE_FIELD_BY_STREAM: Record<string, string> = {
   balances: "as_of",
   current_activity: "activity_date",
@@ -191,12 +193,39 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
 // We use the visible labels as locators (Playwright's `getByRole('option')`
 // pierces shadow DOM).
 async function selectActivity(page: Page, optionLabel: string): Promise<void> {
-  await page.locator(CHASE_QFX_ACTIVITY_SELECT_SELECTORS.join(", ")).first().click({ timeout: CLICK_TIMEOUT_MS });
+  await clickActivityControl(page);
   const opt = page.getByRole("option", {
     name: new RegExp(`^${optionLabel}$`, "i"),
   });
   await opt.waitFor({ state: "visible", timeout: OPTION_WAIT_MS });
   await opt.click({ timeout: OPTION_WAIT_MS });
+}
+
+// Open the Activity mds-select. Chase re-renders and occasionally re-ids the
+// download form's controls, so the CSS-id click alone is brittle. Mirror the
+// two-tier strategy used for File Type: CSS ids first, then the semantic label.
+async function clickActivityControl(page: Page): Promise<void> {
+  try {
+    await page.locator(CHASE_QFX_ACTIVITY_SELECT_SELECTOR).first().click({ timeout: CLICK_TIMEOUT_MS });
+    return;
+  } catch (selectorErr) {
+    try {
+      await page
+        .getByRole("combobox", {
+          name: CHASE_QFX_ACTIVITY_COMBOBOX_NAME_RE,
+        })
+        .first()
+        .click({ timeout: CLICK_TIMEOUT_MS });
+      return;
+    } catch (semanticErr) {
+      throw new Error(
+        `activity_control_unavailable: selector=${CHASE_QFX_ACTIVITY_SELECT_SELECTOR}: ${truncate(
+          errMessage(selectorErr),
+          ERROR_MESSAGE_SLICE
+        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
+      );
+    }
+  }
 }
 
 /**

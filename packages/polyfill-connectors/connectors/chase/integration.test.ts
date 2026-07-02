@@ -49,6 +49,7 @@ import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  CHASE_QFX_ACTIVITY_SELECT_SELECTOR,
   CHASE_QFX_ACTIVITY_SELECT_SELECTORS,
   CHASE_QFX_FILE_TYPE_SELECT_SELECTOR,
   CHASE_QFX_FILE_TYPE_SELECT_SELECTORS,
@@ -111,6 +112,26 @@ test("QFX dropdown selectors support both observed Chase id families", () => {
   assert.equal(htmlMatchesAnySelector(oldFixture, CHASE_QFX_FILE_TYPE_SELECT_SELECTORS), true);
   assert.equal(htmlMatchesAnySelector(currentFixture, CHASE_QFX_ACTIVITY_SELECT_SELECTORS), true);
   assert.equal(htmlMatchesAnySelector(currentFixture, CHASE_QFX_FILE_TYPE_SELECT_SELECTORS), true);
+  assert.equal(htmlMatchesAnySelector(oldFixture, [CHASE_QFX_ACTIVITY_SELECT_SELECTOR]), true);
+  assert.equal(htmlMatchesAnySelector(currentFixture, [CHASE_QFX_ACTIVITY_SELECT_SELECTOR]), true);
+});
+
+test("Activity control exposes an accessible-label fallback when the CSS id churns", () => {
+  const rehomedFixture = `<mds-select id="downloadActivitySelectorV3" label="Activity"></mds-select>`;
+
+  assert.equal(
+    htmlMatchesAnySelector(rehomedFixture, CHASE_QFX_ACTIVITY_SELECT_SELECTORS),
+    false,
+    "expected the CSS id selectors to miss a re-homed control"
+  );
+  const { document } = parseHTML(rehomedFixture);
+  const control = document.querySelector("mds-select");
+  assert.ok(control, "expected an mds-select control in the fixture");
+  assert.match(
+    control.getAttribute("label") ?? "",
+    /activity/i,
+    "expected the accessible label the combobox fallback keys on to be present"
+  );
 });
 
 test("QFX form-loaded wait uses the same file-type selector family as selection", () => {
