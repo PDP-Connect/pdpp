@@ -6,6 +6,7 @@ type TerminalNonGrantReason =
   | "authentication_error"
   | "connector_protocol_violation"
   | "connector_reported_cancelled"
+  | "run_timed_out"
   | "permission_error";
 
 type TerminalReason = TerminalGrantFailureReason | TerminalNonGrantReason;
@@ -43,6 +44,7 @@ const NON_RETRYABLE_FAILURE_REASONS: ReadonlySet<string> = new Set([
   "grant_invalid",
   "grant_revoked",
   "permission_error",
+  "run_timed_out",
 ]);
 
 const NON_RETRYABLE_TERMINAL_REASONS: ReadonlySet<TerminalReason> = new Set<TerminalReason>([
@@ -86,4 +88,11 @@ function isTerminalGrantFailure(reason: string | null | undefined): reason is Te
 }
 
 export type { RunConnectorError, TerminalNonGrantReason, TerminalReason };
-export { isRetryableHttpStatus, NON_RETRYABLE_FAILURE_REASONS, NON_RETRYABLE_TERMINAL_REASONS, shouldRetryRunFailure, TERMINAL_GRANT_FAILURE_REASONS, isTerminalGrantFailure };
+export {
+  isRetryableHttpStatus,
+  isTerminalGrantFailure,
+  NON_RETRYABLE_FAILURE_REASONS,
+  NON_RETRYABLE_TERMINAL_REASONS,
+  shouldRetryRunFailure,
+  TERMINAL_GRANT_FAILURE_REASONS,
+};

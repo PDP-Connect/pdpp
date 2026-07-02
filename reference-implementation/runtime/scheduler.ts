@@ -342,6 +342,14 @@ export interface SchedulerOptions {
   isManagedConnector?: IsManagedConnectorHandler;
   isNeedsHuman?: IsNeedsHumanHandler;
   markNeedsHuman?: NeedsHumanHandler;
+  /**
+   * Maximum wall-clock budget for a direct scheduler connector attempt.
+   *
+   * Defaults to `PDPP_MAX_RUN_WALL_CLOCK_MS` when set, otherwise four hours.
+   * `Infinity` disables the scheduler attempt watchdog. Managed browser-surface
+   * runs route through controller.runNow and use the controller watchdog.
+   */
+  maxRunWallClockMs?: number;
   onHumanRequiredStateEscalation?: HumanRequiredStateEscalationHandler;
   onInteraction: InteractionHandler;
   onRunComplete?: RunCompleteHandler;
@@ -409,6 +417,26 @@ function normalizeScheduleIntervalMs(intervalMs: number): number {
     return 60_000;
   }
   return intervalMs;
+}
+
+function resolveMaxRunWallClockMs(value: number | undefined, envValue: string | undefined): number {
+  if (value !== undefined) {
+    if (Number.isFinite(value) || value === Number.POSITIVE_INFINITY) {
+      return value;
+    }
+    throw new Error(`maxRunWallClockMs must be finite, Infinity, or undefined; got ${value}`);
+  }
+  if (envValue !== undefined) {
+    if (envValue === "Infinity") {
+      return Number.POSITIVE_INFINITY;
+    }
+    const parsed = Number(envValue);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error(`PDPP_MAX_RUN_WALL_CLOCK_MS must be a non-negative number or "Infinity", got ${envValue}`);
+    }
+    return parsed;
+  }
+  return 14_400_000;
 }
 
 // ─── Core runtime state ─────────────────────────────────────────────────────
@@ -589,11 +617,16 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getNonPressureRecoverableCount = async () => 0,
     getLastSuccessfulRunAt = async () => null,
     isManagedConnector = () => false,
+    maxRunWallClockMs,
     resolveStaticSecretRunEnv = null,
     runManagedConnectorViaController = null,
   } = opts;
 
   const runtime = buildRuntime();
+  const schedulerMaxRunWallClockMs = resolveMaxRunWallClockMs(
+    maxRunWallClockMs,
+    process.env.PDPP_MAX_RUN_WALL_CLOCK_MS
+  );
   let hydrationStarted = false;
 
   function recordAndNotify(record: RunRecord): RunRecord {
@@ -660,6 +693,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     handleGrantFailureDisable,
     isManagedConnector,
     markNeedsHuman,
+    maxRunWallClockMs: schedulerMaxRunWallClockMs,
     onInteraction,
     onRunComplete,
     persistLastRunTime,

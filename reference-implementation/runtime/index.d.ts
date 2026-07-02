@@ -53,14 +53,16 @@ export interface RuntimeRunConnectorOptions {
    */
   browserSurfaceLease?: RuntimeBrowserSurfaceLease | null;
   /**
-   * Owner-cancel signal for this run. The controller passes one `AbortSignal`
-   * per run; aborting it requests cooperative cancellation of THIS run only.
+   * Cancellation signal for this run. The controller passes one `AbortSignal`
+   * per run for owner cancellation; the scheduler may pass one for a run
+   * timeout. Aborting it requests cooperative cancellation of THIS run only.
    * The runtime records a non-terminal `run.cancel_requested` event, terminates
    * the connector child via the graceful-then-`SIGKILL` escalation, and (when
    * the child exits without `DONE`) resolves the run terminal as
    * `run.cancelled` with `owner_cancelled` / `owner_cancel_forced`. Abort after
    * a terminal event is recorded is a no-op.
-   * See add-owner-run-cancellation-control.
+   * A signal reason of `"run_timed_out"` is recorded as a runtime timeout
+   * rather than owner cancellation.
    */
   cancelSignal?: AbortSignal | null;
   collectionMode?: RuntimeCollectionMode;

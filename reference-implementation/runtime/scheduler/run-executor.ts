@@ -66,6 +66,7 @@ export interface RunExecutorDeps {
   handleGrantFailureDisable: (reason: string | null | undefined, connectorInstanceId: string) => void;
   isManagedConnector: IsManagedConnectorHandler;
   markNeedsHuman: NeedsHumanHandler;
+  maxRunWallClockMs: number;
   onInteraction: InteractionHandler;
   onRunComplete: RunCompleteHandler;
   persistLastRunTime: (connectorId: string, connectorInstanceId: string, lastRunTimeMs: number) => void;
@@ -209,6 +210,7 @@ function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
 
 interface RunConnectorCall {
   automationMode?: RunAutomationMode;
+  cancelSignal?: AbortSignal | null;
   collectionMode: "full_refresh" | "incremental";
   connectorId: string;
   connectorInstanceId?: string;
@@ -259,6 +261,114 @@ async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorR
   // (retry classifier + record builders) — they only read documented fields.
   const raw = await runConnector(call);
   return raw as RunConnectorResult;
+}
+
+interface AttemptWatchdog {
+  clear(): void;
+  readonly signal: AbortSignal;
+  timedOut(): boolean;
+}
+
+type ActiveRunStore = Pick<NonNullable<SchedulerOptions["schedulerStore"]>, "deleteActiveRun" | "upsertActiveRun">;
+
+function activeRunStoreFrom(schedulerStore: RunExecutorDeps["schedulerStore"]): ActiveRunStore | null {
+  return schedulerStore &&
+    typeof schedulerStore.upsertActiveRun === "function" &&
+    typeof schedulerStore.deleteActiveRun === "function"
+    ? schedulerStore
+    : null;
+}
+
+function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
+  const cancellation = new AbortController();
+  let timedOut = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  if (Number.isFinite(maxRunWallClockMs) && maxRunWallClockMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      cancellation.abort("run_timed_out");
+    }, maxRunWallClockMs);
+    timer.unref?.();
+  }
+
+  return {
+    clear() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+    signal: cancellation.signal,
+    timedOut() {
+      return timedOut;
+    },
+  };
+}
+
+function runTimedOutError(result: RunConnectorResult, maxRunWallClockMs: number): RunConnectorError {
+  const message = `Scheduler run exceeded the ${maxRunWallClockMs}ms wall-clock budget.`;
+  return {
+    connector_error: result.connector_error || { message },
+    failure_reason: "run_timed_out",
+    message,
+    run_id: result.run_id ?? null,
+    terminal_reason: "run_timed_out",
+    trace_id: result.trace_id ?? null,
+  };
+}
+
+function createActiveRunLease(input: {
+  readonly attempt: number;
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly startedAt: string;
+  readonly store: ActiveRunStore | null;
+}): {
+  clear(): Promise<void>;
+  register(run: Parameters<NonNullable<RunConnectorCall["onStarted"]>>[0]): void;
+} {
+  let activeRunId: string | null = null;
+  let activeRunRegistration: Promise<void> | null = null;
+
+  return {
+    async clear() {
+      if (!(activeRunId && input.store)) {
+        return;
+      }
+      await activeRunRegistration;
+      await Promise.resolve(input.store.deleteActiveRun(input.connectorInstanceId, activeRunId)).catch(
+        (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[scheduler] failed to clear active run ${activeRunId} for ${input.connectorId}: ${message}`);
+        }
+      );
+    },
+    register(run) {
+      if (!input.store) {
+        return;
+      }
+      const startedRun = readStartedRunInfo(run);
+      if (!startedRun) {
+        return;
+      }
+      activeRunId = startedRun.runId;
+      activeRunRegistration = Promise.resolve(
+        input.store.upsertActiveRun({
+          connector_instance_id: input.connectorInstanceId,
+          connector_id: input.connectorId,
+          run_id: startedRun.runId,
+          run_generation: input.attempt,
+          trace_id: startedRun.traceId,
+          scenario_id: startedRun.scenarioId,
+          started_at: input.startedAt,
+        })
+      ).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist active run for ${input.connectorId}: ${message}`);
+      });
+    },
+  };
 }
 
 // ─── Record builders ──────────────────────────────────────────────────────────
@@ -504,6 +614,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     handleGrantFailureDisable,
     isManagedConnector,
     markNeedsHuman,
+    maxRunWallClockMs,
     onInteraction,
     onRunComplete,
     persistLastRunTime,
@@ -594,47 +705,30 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
   ): Promise<AttemptOutcome> {
     const { connectorId, connectorInstanceId = connectorId, maxRetries = 2 } = schedule;
     const startedAt = nowIso();
-    let activeRunId: string | null = null;
-    let activeRunRegistration: Promise<void> | null = null;
     const originalOnStarted = call.onStarted;
-    const activeRunStore =
-      schedulerStore &&
-      typeof schedulerStore.upsertActiveRun === "function" &&
-      typeof schedulerStore.deleteActiveRun === "function"
-        ? schedulerStore
-        : null;
+    const activeRunLease = createActiveRunLease({
+      attempt,
+      connectorId,
+      connectorInstanceId,
+      startedAt,
+      store: activeRunStoreFrom(schedulerStore),
+    });
+    const watchdog = createAttemptWatchdog(maxRunWallClockMs);
 
     const callWithActiveLease: RunConnectorCall = {
       ...call,
+      cancelSignal: watchdog.signal,
       onStarted: (run) => {
         originalOnStarted?.(run);
-        if (!activeRunStore) {
-          return;
-        }
-        const startedRun = readStartedRunInfo(run);
-        if (!startedRun) {
-          return;
-        }
-        activeRunId = startedRun.runId;
-        activeRunRegistration = Promise.resolve(
-          activeRunStore.upsertActiveRun({
-            connector_instance_id: connectorInstanceId,
-            connector_id: connectorId,
-            run_id: startedRun.runId,
-            run_generation: attempt,
-            trace_id: startedRun.traceId,
-            scenario_id: startedRun.scenarioId,
-            started_at: startedAt,
-          })
-        ).catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`[scheduler] failed to persist active run for ${connectorId}: ${message}`);
-        });
+        activeRunLease.register(run);
       },
     };
 
     try {
       const result = await invokeRunConnector(callWithActiveLease);
+      if (watchdog.timedOut()) {
+        return { kind: "give-up", error: runTimedOutError(result, maxRunWallClockMs) };
+      }
       const candidateError: RunConnectorError = {
         failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
         terminal_reason: result.terminal_reason || null,
@@ -654,15 +748,8 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       }
       return { kind: "give-up", error };
     } finally {
-      if (activeRunId && activeRunStore) {
-        await activeRunRegistration;
-        await Promise.resolve(activeRunStore.deleteActiveRun(connectorInstanceId, activeRunId)).catch(
-          (err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error(`[scheduler] failed to clear active run ${activeRunId} for ${connectorId}: ${message}`);
-          }
-        );
-      }
+      watchdog.clear();
+      await activeRunLease.clear();
     }
   }
 

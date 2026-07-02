@@ -2348,12 +2348,12 @@ export async function runConnector(opts) {
   let pendingInteraction = null;
   let terminalEventRecorded = false;
   let doneMessage = null;
-  // Owner-cancel intent for this run. Set when `cancelSignal` aborts before a
-  // terminal event is recorded. `ownerCancelForced` flips to true if the
-  // connector child ignored graceful termination and had to be SIGKILL'd, so
-  // the terminal `run.cancelled` event can distinguish a clean owner cancel
-  // from a forced one. See add-owner-run-cancellation-control design.
+  // Cancellation intent for this run. Owner cancellation records
+  // `run.cancel_requested` and terminals as `run.cancelled`; scheduler timeout
+  // records `run.failed` with `run_timed_out`. `ownerCancelForced` flips to true
+  // if the connector child ignored graceful termination and had to be SIGKILL'd.
   let ownerCancelRequested = false;
+  let runTimedOut = false;
   let ownerCancelForced = false;
   const knownGaps = [];
   const durableDetailGaps = [];
@@ -2760,39 +2760,43 @@ export async function runConnector(opts) {
       terminateTimer.unref?.();
     }
 
-    // Owner-cancel signal wiring. Aborting `cancelSignal` requests cancellation
-    // of THIS run only: record intent, emit a non-terminal `run.cancel_requested`
-    // event, and trigger the graceful-then-SIGKILL escalation above. Abort after
+    // Cancellation signal wiring. Aborting `cancelSignal` requests cancellation
+    // of THIS run only. Owner cancellation records a non-terminal
+    // `run.cancel_requested`; scheduler timeout records no owner event and
+    // terminals as `run.failed` / `run_timed_out`. Abort after
     // a terminal event is recorded is a no-op (the run already ended). The
     // listener is removed in cleanupChildHandles so a settled run does not leak
     // it on the controller's shared AbortController.
-    function handleOwnerCancel() {
-      if (terminalEventRecorded || ownerCancelRequested) return;
-      ownerCancelRequested = true;
-      // Emit the audit marker without blocking the terminate path; the terminal
-      // `run.cancelled` event is emitted later by the close handler.
-      emitSpineEvent({
-        event_type: 'run.cancel_requested',
-        trace_id: traceContext.trace_id,
-        scenario_id: traceContext.scenario_id,
-        actor_type: 'owner',
-        actor_id: connectorId,
-        object_type: 'run',
-        object_id: runId,
-        status: 'cancel_requested',
-        run_id: runId,
-        data: { source: runSource, ...(triggerKind ? { trigger_kind: triggerKind } : {}) },
-      }).catch((err) => {
-        onProgress({ type: 'spine_error', error: err?.message || String(err) });
-      });
-      onProgress({ type: 'cancel_requested', run_id: runId });
+    function handleCancellation() {
+      if (terminalEventRecorded || ownerCancelRequested || runTimedOut) return;
+      runTimedOut = cancelSignal?.reason === 'run_timed_out';
+      if (!runTimedOut) {
+        ownerCancelRequested = true;
+        // Emit the audit marker without blocking the terminate path; the terminal
+        // `run.cancelled` event is emitted later by the close handler.
+        emitSpineEvent({
+          event_type: 'run.cancel_requested',
+          trace_id: traceContext.trace_id,
+          scenario_id: traceContext.scenario_id,
+          actor_type: 'owner',
+          actor_id: connectorId,
+          object_type: 'run',
+          object_id: runId,
+          status: 'cancel_requested',
+          run_id: runId,
+          data: { source: runSource, ...(triggerKind ? { trigger_kind: triggerKind } : {}) },
+        }).catch((err) => {
+          onProgress({ type: 'spine_error', error: err?.message || String(err) });
+        });
+        onProgress({ type: 'cancel_requested', run_id: runId });
+      }
       terminateChild();
     }
     if (cancelSignal) {
       if (cancelSignal.aborted) {
-        handleOwnerCancel();
+        handleCancellation();
       } else {
-        cancelSignal.addEventListener('abort', handleOwnerCancel, { once: true });
+        cancelSignal.addEventListener('abort', handleCancellation, { once: true });
       }
     }
 
@@ -2801,7 +2805,7 @@ export async function runConnector(opts) {
       cleanedUp = true;
       clearTerminateTimer();
       if (cancelSignal) {
-        cancelSignal.removeEventListener('abort', handleOwnerCancel);
+        cancelSignal.removeEventListener('abort', handleCancellation);
       }
       // The run reached a terminal path; this child's group no longer needs
       // the parent-exit sweep. Removing it here keeps the registry bounded to
@@ -3593,10 +3597,43 @@ export async function runConnector(opts) {
       // exposed through grant-scoped /v1 surfaces.
       const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw);
 
+      async function recordRunTimedOutTerminal() {
+        finalStatus = 'failed';
+        await closeOpenStructuredAssistance('cancelled', { reason: 'run_timed_out' });
+        await emitSpineEvent({
+          event_type: 'run.failed',
+          trace_id: traceContext.trace_id,
+          scenario_id: traceContext.scenario_id,
+          actor_type: 'runtime',
+          actor_id: connectorId,
+          object_type: 'run',
+          object_id: runId,
+          status: 'failed',
+          run_id: runId,
+          data: buildRunTerminalData({
+            recordsEmitted: totalEmitted,
+            exitCode: code,
+            reason: 'run_timed_out',
+            connectorError: null,
+            failureOrigin: 'runtime',
+            failureMessage: 'Run exceeded its scheduler wall-clock budget.',
+          }),
+        });
+        onProgress({
+          type: 'done',
+          status: 'failed',
+          records_emitted: totalEmitted,
+          exit_code: code,
+          reason: 'run_timed_out',
+        });
+      }
+
       try {
         await waitForQueueDrain();
         if (!terminalEventRecorded) {
-          if (doneMessage) {
+          if (runTimedOut) {
+            await recordRunTimedOutTerminal();
+          } else if (doneMessage) {
             const exitCodeMismatch = validateDoneExitCode(doneMessage, code);
             if (exitCodeMismatch) {
               finalStatus = 'failed';
@@ -3819,7 +3856,9 @@ export async function runConnector(opts) {
         // stop rather than a null/failure reason. The spine terminal event
         // already carries the same reason.
         const closeTerminalReason =
-          finalStatus === 'cancelled' && ownerCancelRequested && !doneMessage
+          runTimedOut
+            ? 'run_timed_out'
+            : finalStatus === 'cancelled' && ownerCancelRequested && !doneMessage
             ? (ownerCancelForced ? 'owner_cancel_forced' : 'owner_cancelled')
             : derivedTerminal.reason;
         const closeTerminalPhase = derivedTerminal.phase;

@@ -69,12 +69,66 @@ rl.on('line', (line) => {
   return { attemptsPath, connectorPath };
 }
 
+function writeHangingConnector(tmpDir, name = 'hanging-connector.mjs') {
+  const connectorPath = join(tmpDir, name);
+  writeFileSync(connectorPath, `
+import { createInterface } from 'node:readline';
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'START') return;
+  setInterval(() => {}, 1000);
+});
+`, 'utf8');
+  return connectorPath;
+}
+
+function writeDoneOnSigtermConnector(tmpDir, name = 'done-on-sigterm-connector.mjs') {
+  const connectorPath = join(tmpDir, name);
+  writeFileSync(connectorPath, `
+import { createInterface } from 'node:readline';
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+process.on('SIGTERM', () => {
+  process.stdout.write(JSON.stringify({
+    type: 'DONE',
+    status: 'succeeded',
+    records_emitted: 0,
+  }) + '\\n', () => process.exit(0));
+});
+
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'START') return;
+  setInterval(() => {}, 1000);
+});
+`, 'utf8');
+  return connectorPath;
+}
+
 function readAttempts(path) {
   try {
     return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean);
   } catch {
     return [];
   }
+}
+
+async function waitForRunTerminalEvent(asUrl, runId, timeoutMs = 5000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const { body } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`);
+    if (body.data?.some((event) =>
+      ['run.completed', 'run.failed', 'run.cancelled', 'run.abandoned'].includes(event.event_type)
+    )) {
+      return body;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for terminal event for ${runId}`);
 }
 
 async function closeHttpServer(server) {
@@ -576,6 +630,132 @@ test('scheduler hydrates persisted history without bypassing a fresh persisted l
     assert.equal(completedRuns.length, 0);
   } finally {
     await closeServer(server);
+  }
+});
+
+test('scheduler direct runs timeout, terminal, and clear durable active-run rows', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'scheduler-timeout-test',
+    version: '1.0.0',
+    display_name: 'Scheduler Timeout Test Connector',
+    streams: [{ name: 'items', fields: [{ name: 'id', type: 'string' }] }],
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-timeout-'));
+  const connectorPath = writeHangingConnector(tmpDir);
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const activeRuns = new Map();
+  const appendedHistory = [];
+  const completedRuns = [];
+
+  try {
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_timeout_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 60_000,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      maxRunWallClockMs: 100,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+      schedulerStore: {
+        appendRunHistory: async (record) => appendedHistory.push(record),
+        deleteActiveRun: async (connectorInstanceId, runId) => {
+          const current = activeRuns.get(connectorInstanceId);
+          if (current?.run_id === runId) activeRuns.delete(connectorInstanceId);
+        },
+        listLastRunTimes: async () => [],
+        listRunHistory: async () => [],
+        upsertActiveRun: async (record) => {
+          activeRuns.set(record.connector_instance_id, record);
+        },
+        upsertLastRunTime: async () => {},
+      },
+    });
+
+    scheduler.start();
+    await waitFor(() => scheduler.getHistory().some((record) => record.terminalReason === 'run_timed_out'), 5000);
+    scheduler.stop();
+
+    const [record] = scheduler.getHistory().filter((entry) => entry.terminalReason === 'run_timed_out');
+    assert.equal(record.status, 'failed');
+    assert.equal(record.failureReason, 'run_timed_out');
+    assert.equal(record.connectorId, manifest.connector_id);
+    assert.ok(record.runId, 'timed-out record preserves run_id');
+    assert.equal(activeRuns.size, 0, 'timeout cleanup clears durable active-run row');
+    assert.equal(completedRuns.at(-1)?.terminalReason, 'run_timed_out');
+    assert.equal(appendedHistory.at(-1)?.terminalReason, 'run_timed_out');
+
+    const timeline = await waitForRunTerminalEvent(asUrl, record.runId);
+    const failed = timeline.data.find((event) => event.event_type === 'run.failed');
+    assert.equal(failed?.data?.reason, 'run_timed_out');
+  } finally {
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scheduler timeout beats connector DONE emitted during shutdown', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'scheduler-timeout-done-test',
+    version: '1.0.0',
+    display_name: 'Scheduler Timeout DONE Test Connector',
+    streams: [{ name: 'items', fields: [{ name: 'id', type: 'string' }] }],
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-timeout-done-'));
+  const connectorPath = writeDoneOnSigtermConnector(tmpDir);
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_timeout_done_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 60_000,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      maxRunWallClockMs: 100,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => scheduler.getHistory().some((record) => record.terminalReason === 'run_timed_out'), 5000);
+    scheduler.stop();
+
+    const [record] = scheduler.getHistory().filter((entry) => entry.terminalReason === 'run_timed_out');
+    assert.equal(record.status, 'failed');
+    assert.equal(record.failureReason, 'run_timed_out');
+    assert.ok(record.runId, 'timed-out record preserves run_id');
+
+    const timeline = await waitForRunTerminalEvent(asUrl, record.runId);
+    assert.equal(timeline.data.some((event) => event.event_type === 'run.completed'), false);
+    const failed = timeline.data.find((event) => event.event_type === 'run.failed');
+    assert.equal(failed?.data?.reason, 'run_timed_out');
+  } finally {
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
