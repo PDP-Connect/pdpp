@@ -7,9 +7,11 @@ import type {
   RefRequiredAction,
 } from "./ref-client.ts";
 import {
+  SOURCE_WORK_GROUP_COPY,
   hasPrimaryOwnerLocalDeviceRemediation,
   primaryOwnerActionRemediation,
   projectSourceActionability,
+  sourceAttentionHeadline,
   sourceWorkFromConnectors,
   verdictRequiresOwnerNow,
 } from "./source-actionability.ts";
@@ -308,4 +310,80 @@ test("source actionability skips revoked connections by status or timestamp", ()
     groups.needsOwner.map((item) => item.routeId),
     ["cin_live"]
   );
+});
+
+test("source actionability headline counts only needs-owner work and exposes stable group copy", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({ connection_id: "cin_owner_a", display_name: "Owner A" }),
+    connector({ connection_id: "cin_owner_b", display_name: "Owner B" }),
+    connector({
+      connection_id: "cin_review",
+      display_name: "Review source",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Healthy", tone: "green" },
+        forward_statement: "Run a refresh to bring this up to date.",
+        required_actions: [
+          action({
+            cta: "Refresh now",
+            kind: "refresh_now",
+            satisfied_when: { kind: "confirming_run_succeeded" },
+            urgency: "soon",
+          }),
+        ],
+      }),
+    }),
+    connector({
+      connection_id: "cin_system",
+      display_name: "System source",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Degraded", tone: "amber" },
+        forward_statement: "Connector code needs a fix before this can collect again.",
+        required_actions: [
+          action({
+            audience: "maintainer",
+            cta: "Connector code needs a fix",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+          }),
+        ],
+      }),
+    }),
+    connector({
+      connection_id: "cin_checking",
+      display_name: "Checking source",
+      rendered_verdict: verdict({
+        channel: "calm",
+        pill: { label: "Checking", tone: "grey" },
+        forward_statement: "Checking freshness before calling this current.",
+        required_actions: [],
+      }),
+    }),
+  ]);
+
+  assert.equal(groups.needsOwner.length, 2);
+  assert.equal(groups.review.length, 1);
+  assert.equal(groups.systemIssues.length, 1);
+  assert.equal(groups.checking.length, 1);
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 2);
+  assert.deepEqual(SOURCE_WORK_GROUP_COPY, {
+    needsOwner: {
+      label: "Needs you",
+      note: "Requires your input before collection can continue.",
+    },
+    review: {
+      label: "Available actions",
+      note: "Optional refreshes and retries you can start.",
+    },
+    systemIssue: {
+      label: "System or connector issue",
+      note: "PDPP needs to fix or retry this; no account action is needed from you.",
+    },
+    checking: {
+      label: "Checking",
+      note: "PDPP is checking this source before asking you to do anything.",
+    },
+  });
 });

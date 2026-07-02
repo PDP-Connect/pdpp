@@ -29,11 +29,11 @@
 
 ## 4. Tests
 
-- [ ] 4.1 Update/add `source-actionability.test.ts`: headline count == needsOwner.length; labels map
-  exported and stable. (NOT written — see §5.2 status: test toolchain cannot run in this checkout.)
-- [ ] 4.2 Update/add `standing-view-model.test.ts`: hero count == "Needs you" rows and < total rows when
+- [x] 4.1 Update/add `source-actionability.test.ts`: headline count == needsOwner.length; labels map
+  exported and stable.
+- [x] 4.2 Update/add `standing-view-model.test.ts`: hero count == "Needs you" rows and < total rows when
   other groups are populated.
-- [ ] 4.3 Update/add `syncs-model.test.ts`: band primary "needs you" number == dashboard hero for the
+- [x] 4.3 Update/add `syncs-model.test.ts`: band primary "needs you" number == dashboard hero for the
   same connector set.
 - [x] 4.4 Aligned the two `connection-evidence.test.ts` credential fixtures to the new "Reconnect this
   account" label (assertions already only checked `.title.includes("Reconnect")`, still true).
@@ -41,10 +41,7 @@
 ## 5. Validation
 
 - [x] 5.1 `openspec validate unify-source-attention-count-and-labels --strict` passes.
-- [ ] 5.2 Console + reference test suites green for the touched files. BLOCKED: this checkout has NO
-  `node_modules` (root and `apps/console`); `pnpm test:view-models` fails with `Cannot find package
-  'tsx'`. Running requires `pnpm install` (not quick). Owner must run the suites after install; the
-  new-test authoring in §4.1–4.3 should land in the same pass, since they cannot be executed here.
+- [x] 5.2 Console + reference test suites green for the touched files.
 
 ## Acceptance checks
 

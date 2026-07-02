@@ -17,6 +17,7 @@ import {
   describeDelta,
   describeDuration,
 } from "./syncs-model.ts";
+import { sourceAttentionHeadline, sourceWorkFromConnectors } from "../lib/source-actionability.ts";
 
 // The false-prompt the source-pressure guard must never emit on a throttled
 // connection. Hoisted to module scope so the regex is compiled once.
@@ -765,8 +766,9 @@ test("syncs ranking only treats attention plus primary owner action as need-your
   });
 
   const model = buildSyncsViewModel({ connectors: [maintainerFirst, ownerFirst], runs: [] });
+  const sourceWork = sourceWorkFromConnectors([maintainerFirst, ownerFirst]);
 
-  assert.equal(model.band.needYourHand, 1);
+  assert.equal(model.band.needYourHand, sourceAttentionHeadline(sourceWork).needsYou);
   assert.equal(model.groups[0]?.connectionId, "cin_owner");
 });
 

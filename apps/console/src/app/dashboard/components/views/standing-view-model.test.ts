@@ -8,7 +8,11 @@ import type {
   RunSummary,
   TraceSummary,
 } from "../../lib/ref-client.ts";
-import { EMPTY_SOURCE_WORK_GROUPS, sourceWorkFromConnectors } from "../../lib/source-actionability.ts";
+import {
+  EMPTY_SOURCE_WORK_GROUPS,
+  sourceAttentionHeadline,
+  sourceWorkFromConnectors,
+} from "../../lib/source-actionability.ts";
 import {
   advisoryOwnerActionsFromConnectors,
   attentionConnectionsFromConnectors,
@@ -655,6 +659,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(sourceWork.review.length, 1);
   assert.equal(sourceWork.systemIssues.length, 1);
   assert.equal(sourceWork.checking.length, 1);
+  assert.equal(sourceAttentionHeadline(sourceWork).needsYou, sourceWork.needsOwner.length);
   assert.equal(data.hero.tone, "alarm");
   assert.equal(data.hero.kicker, "3 things need you");
   assert.equal(data.sourceWorkSections[0]?.title, "Needs you");
