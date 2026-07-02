@@ -17,6 +17,6 @@
 
 ## 3. Live Closeout
 
-- [ ] 3.1 Deploy the fix.
-- [ ] 3.2 Verify live active runs drain or terminal instead of remaining stuck.
-- [ ] 3.3 Verify the source attention list reflects only current owner actions, actionable reviews, or real connector/runtime failures.
+- [x] 3.1 Deploy the fix.
+- [x] 3.2 Verify live active runs drain or terminal instead of remaining stuck.
+- [x] 3.3 Verify the source attention list reflects only current owner actions, actionable reviews, or real connector/runtime failures.
