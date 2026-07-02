@@ -1,0 +1,23 @@
+{
+  "captured_at": "2026-07-02T00:57:53.367Z",
+  "url": "http://127.0.0.1:3111/dashboard/grants?demo=atlas",
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "mobile": true
+  },
+  "events": [
+    {
+      "kind": "console",
+      "level": "info",
+      "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+      "timestamp": "2026-07-02T00:57:52.423Z"
+    },
+    {
+      "kind": "console",
+      "level": "log",
+      "text": "[HMR] connected",
+      "timestamp": "2026-07-02T00:57:52.506Z"
+    }
+  ]
+}

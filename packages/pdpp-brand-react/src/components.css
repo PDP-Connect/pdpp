@@ -2539,6 +2539,31 @@
   flex-shrink: 0;
 }
 
+.rr-x-see-all-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.rr-x-see-all {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.rr-x-see-all:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
 .rr-x-help {
   position: relative;
 }

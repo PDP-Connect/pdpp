@@ -3,8 +3,11 @@ const REGISTRY_CONNECTOR_HOST = "registry.pdpp.org";
 const REGISTRY_CONNECTOR_PATH_PREFIX = "/connectors/";
 
 const CONNECTOR_KEY_ALIASES = new Map<string, string>([
+  ["amazon", "Amazon"],
+  ["chatgpt", "ChatGPT"],
   ["claude_code", "claude-code"],
   ["claude-code", "claude-code"],
+  ["gmail", "Gmail"],
   ["google-maps", "Google Maps"],
   ["google_maps", "Google Maps"],
   ["google-maps-data-portability", "Google Maps (Data Portability)"],
@@ -97,7 +100,10 @@ export function formatSourceForDisplay(source: SourceDisplayInput | null | undef
   }
   const kind = normalizeText(source.kind) || "connector";
   const rawId = normalizeText(source.id) || normalizeText(source.connector_id);
-  const id = kind === "connector" ? formatConnectorKeyForDisplay(rawId) : formatIdentityForDisplay(rawId);
+  if (kind === "connector") {
+    return formatConnectorKeyForDisplay(rawId);
+  }
+  const id = formatIdentityForDisplay(rawId);
   return `${kind}:${id}`;
 }
 

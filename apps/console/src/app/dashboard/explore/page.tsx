@@ -62,6 +62,7 @@ export default async function RecordsExplorerPage({
   searchParams,
 }: {
   searchParams: Promise<{
+    demo?: string;
     q?: string;
     connection?: string | string[];
     // EXCLUDED connections/streams (the facet "is not" toggle / `-con:` operator).
@@ -92,6 +93,20 @@ export default async function RecordsExplorerPage({
     anchor?: string;
   }>;
 }) {
+  const params = await searchParams;
+  if (process.env.NODE_ENV !== "production" && params.demo === "atlas") {
+    const demo = await import("./explore-demo-data.ts");
+    return (
+      <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
+        <ExploreCanvas
+          data={demo.buildExploreDemoData()}
+          explorePath={dashboardRoutes.section.explore}
+          order="newest"
+          peekRelationships={null}
+        />
+      </RecordroomShellWithPalette>
+    );
+  }
   // Empty-query loads still need the DAL gate; verifying once up front keeps
   // the empty shell consistent with the search route.
   await verifyDashboardSession();
@@ -100,7 +115,6 @@ export default async function RecordsExplorerPage({
   // in the fan-out.
   await getOwnerToken();
 
-  const params = await searchParams;
   const requestedOrder = params.order === "oldest" ? "oldest" : "newest";
 
   try {

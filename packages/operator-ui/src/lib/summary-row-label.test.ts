@@ -34,11 +34,10 @@ test("runRowLabel falls back source -> provider -> 'Run'", () => {
   assert.equal(runRowLabel({ connector_id: "   " }), "Run", "whitespace-only fields are treated as absent");
 });
 
-test("runRowLabel strips the kind prefix from a source label", () => {
-  // formatSourceForDisplay yields `connector:<key>`; the row headline must not
-  // carry the `connector:` noise.
+test("runRowLabel uses the source display label without technical kind prefixes", () => {
+  // Connector-backed source rows must not carry technical `connector:` noise.
   const label = runRowLabel({ source: { kind: "connector", id: "gmail" } });
-  assert.equal(label, "gmail");
+  assert.equal(label, "Gmail");
   assert.ok(!label.includes(":"));
 });
 
@@ -57,7 +56,7 @@ test("traceRowLabel prefers source, then provider, then client, then kind", () =
 
 test("grantRowLabel prefers source, then connector, then client, then provider", () => {
   assert.equal(grantRowLabel({ source: { kind: "connector", id: "slack" } }), "slack");
-  assert.equal(grantRowLabel({ connector_id: "gmail" }), "gmail");
+  assert.equal(grantRowLabel({ connector_id: "gmail" }), "Gmail");
   assert.equal(
     grantRowLabel({ client: { client_name: "Claude" }, client_id: "cli_42" }),
     "Claude",

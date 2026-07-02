@@ -26,6 +26,7 @@ interface Params {
   approval_error?: string;
   client_id?: string;
   cursor?: string;
+  demo?: string;
   peek?: string;
   q?: string;
   source_id?: string;
@@ -86,21 +87,28 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
   let result: ListResponse<GrantSummary>;
   let approvals: ListResponse<PendingApproval>;
   let peekEnvelope: Awaited<ReturnType<typeof getGrantTimeline>> = null;
-  try {
-    [result, approvals] = await Promise.all([listGrants(filters), listPendingApprovals()]);
-    if (params.peek) {
-      peekEnvelope = await getGrantTimeline(params.peek);
+  if (process.env.NODE_ENV !== "production" && params.demo === "atlas") {
+    const demo = await import("./grants-demo-data.ts");
+    const demoData = demo.buildGrantsDemoData();
+    result = demoData.grants;
+    approvals = demoData.approvals;
+  } else {
+    try {
+      [result, approvals] = await Promise.all([listGrants(filters), listPendingApprovals()]);
+      if (params.peek) {
+        peekEnvelope = await getGrantTimeline(params.peek);
+      }
+    } catch (err) {
+      if (err instanceof ReferenceServerUnreachableError) {
+        return (
+          <RecordroomShellWithPalette>
+            <PageHeader title="Grants" />
+            <ServerUnreachable />
+          </RecordroomShellWithPalette>
+        );
+      }
+      throw err;
     }
-  } catch (err) {
-    if (err instanceof ReferenceServerUnreachableError) {
-      return (
-        <RecordroomShellWithPalette>
-          <PageHeader title="Grants" />
-          <ServerUnreachable />
-        </RecordroomShellWithPalette>
-      );
-    }
-    throw err;
   }
 
   const ownerLoginUrl = getOwnerLoginPath();

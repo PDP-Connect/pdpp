@@ -39,11 +39,11 @@
 ## 3. Journey Atlas
 
 - [x] 3.1 Define the canonical journey scripts for Know Data, Add Data, Inspect Data, Recover Problems, and Grant/Connect AI Apps.
-- [ ] 3.2 Capture desktop screenshots for each journey using live data where safe.
-- [ ] 3.3 Capture mobile screenshots for each journey using live data where safe.
-- [ ] 3.4 Capture browser console errors and failed-network evidence for each journey.
-- [ ] 3.5 Add synthetic fixtures only for missing archetypes that live data cannot safely cover.
-- [ ] 3.6 Store the atlas in a tracked docs/research or design-note artifact with stable screenshot references.
+- [x] 3.2 Capture desktop screenshots for each journey using live data where safe.
+- [x] 3.3 Capture mobile screenshots for each journey using live data where safe.
+- [x] 3.4 Capture browser console errors and failed-network evidence for each journey.
+- [x] 3.5 Add synthetic fixtures only for missing archetypes that live data cannot safely cover.
+- [x] 3.6 Store the atlas in a tracked docs/research or design-note artifact with stable screenshot references.
 - [x] 3.7 Add a fresh-owner journey script covering readiness, first source setup, first records, and first AI-client grant without repo-checkout or chat-context assumptions.
 
 ## 4. Technical Truth Matrix

@@ -44,13 +44,13 @@ function clean(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-/** Connector/source label for a source object, without the `kind:` prefix. */
+/** Connector/source label for a source object, without any technical kind prefix. */
 function sourceConnectorLabel(source: SourceDisplayInput | null | undefined): string {
   if (!source) {
     return "";
   }
-  // formatSourceForDisplay returns `connector:<key>` / `provider_native:<id>`.
-  // The leading `kind:` is noise for a row headline; keep just the key.
+  // formatSourceForDisplay returns a clean connector label for connector-backed
+  // sources and a typed identity for other source kinds.
   const label = formatSourceForDisplay(source);
   const colon = label.indexOf(":");
   return colon >= 0 ? clean(label.slice(colon + 1)) : clean(label);

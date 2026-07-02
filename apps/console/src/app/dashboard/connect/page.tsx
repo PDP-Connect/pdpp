@@ -15,6 +15,7 @@ const TRAILING_SLASH_RE = /\/+$/;
 
 interface PageParams {
   client_identity?: string;
+  demo?: string;
   error?: string;
   notice?: string;
 }
@@ -233,22 +234,39 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   const params = await searchParams;
   let origin: string;
   let identities: CimdClientDocument[] = [];
-  try {
-    const [resolvedOrigin, resolvedIdentities] = await Promise.all([
-      getReferencePublicOrigin(),
-      listCimdClientDocuments(),
-    ]);
-    origin = resolvedOrigin;
-    identities = resolvedIdentities.data;
-  } catch (err) {
-    if (err instanceof ReferenceServerUnreachableError) {
-      return (
-        <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
-          <ServerUnreachable />
-        </RecordroomShellWithPalette>
-      );
+  if (process.env.NODE_ENV !== "production" && params.demo === "atlas") {
+    origin = "https://pdpp.example.test";
+    identities = [
+      {
+        client_id: "https://pdpp.example.test/oauth/clients/cli-demo",
+        client_name: "Claude Code on workstation",
+        created_at: "2026-07-01T12:00:00.000Z",
+        document_id: "cimd_demo_cli",
+        logo_uri: null,
+        object: "cimd_client_metadata_document",
+        redirect_uris: ["http://localhost:3118/callback"],
+        token_endpoint_auth_method: "none",
+        updated_at: "2026-07-01T12:00:00.000Z",
+      },
+    ];
+  } else {
+    try {
+      const [resolvedOrigin, resolvedIdentities] = await Promise.all([
+        getReferencePublicOrigin(),
+        listCimdClientDocuments(),
+      ]);
+      origin = resolvedOrigin;
+      identities = resolvedIdentities.data;
+    } catch (err) {
+      if (err instanceof ReferenceServerUnreachableError) {
+        return (
+          <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
+            <ServerUnreachable />
+          </RecordroomShellWithPalette>
+        );
+      }
+      throw err;
     }
-    throw err;
   }
   const targets = buildConnectTargets(origin);
   const selected =

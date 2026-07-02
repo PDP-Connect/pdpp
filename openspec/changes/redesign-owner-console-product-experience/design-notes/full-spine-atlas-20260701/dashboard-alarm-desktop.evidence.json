@@ -1,0 +1,29 @@
+{
+  "label": "dashboard-alarm",
+  "viewport": "desktop",
+  "url": "http://localhost:3111/dashboard?demo=alarm",
+  "width": 1280,
+  "height": 900,
+  "events": [
+    {
+      "kind": "console",
+      "level": "info",
+      "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+    },
+    {
+      "kind": "console",
+      "level": "log",
+      "text": "[HMR] connected"
+    },
+    {
+      "kind": "console",
+      "level": "log",
+      "text": "[Fast Refresh] rebuilding"
+    },
+    {
+      "kind": "console",
+      "level": "log",
+      "text": "[Fast Refresh] done in 764ms"
+    }
+  ]
+}

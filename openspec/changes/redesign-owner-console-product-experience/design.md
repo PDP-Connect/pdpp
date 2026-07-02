@@ -67,6 +67,8 @@ OpenSpec design notes:
 - `openspec/changes/redesign-owner-console-product-experience/design-notes/surface-architecture-and-truth-packets-20260701.md`
 - `openspec/changes/redesign-owner-console-product-experience/design-notes/safe-demo-atlas-supplement-20260701.md`
 - `openspec/changes/redesign-owner-console-product-experience/design-notes/runs-explore-merge-owner-review-packet-20260701.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/full-spine-atlas-20260701.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/full-spine-atlas-review-20260701.md`
 
 ## 2. Leadership Aperture
 
@@ -355,6 +357,27 @@ links.
 
 Tasks 2.5 and 2.6 remain open until the owner reviews and accepts or revises the
 recommendations.
+
+### Iteration 16: Full Spine Evidence Atlas
+
+The 2026-07-01 full-spine atlas captures desktop and mobile screenshots plus
+browser console/network evidence for Dashboard, Sources, Syncs/Runs, Add Data,
+Explore, source recovery, Connect AI Apps, and Grants.
+
+The atlas uses live data only where safe seeded demo states already exist and
+dev-only synthetic fixtures for private or missing archetypes. Those fixtures
+are guarded by `NODE_ENV !== "production"` and explicit demo query params.
+
+The atlas found and fixed two local defects: Explore full-set escape links now
+wrap instead of concatenating, and connector-backed Grants source captions no
+longer expose `connector:` as normal owner copy.
+
+An independent adversarial review returned LAND for this atlas tranche and
+preserved residuals in `full-spine-atlas-review-20260701.md`.
+
+This closes the screenshot/browser-evidence atlas gap. It does not close the
+owner-return gate, data-truth probes, or the owner-reviewed route-merge
+decisions.
 
 ## 8. Essential Surface Model
 

@@ -11,6 +11,7 @@ import { listConnectorManifests } from "../../lib/rs-client.ts";
 export const dynamic = "force-dynamic";
 
 interface PageParams {
+  demo?: string;
   source_q?: string;
 }
 
@@ -52,19 +53,24 @@ export default async function AddSourcePage({ searchParams }: { searchParams: Pr
   const params = await searchParams;
   let catalog: ConnectorCatalogEntry[] = [];
   let existingSourcesByConnector: Record<string, ExistingSourceSetupLink[]> = {};
-  try {
-    const [manifests, summaries] = await Promise.all([listConnectorManifests(), listConnectorSummaries()]);
-    catalog = buildConnectorCatalog(manifests);
-    existingSourcesByConnector = buildExistingSourcesByConnector(summaries.data);
-  } catch (err) {
-    if (err instanceof ReferenceServerUnreachableError) {
-      return (
-        <RecordroomShellWithPalette>
-          <ServerUnreachable />
-        </RecordroomShellWithPalette>
-      );
+  if (process.env.NODE_ENV !== "production" && params.demo === "atlas") {
+    const demo = await import("./add-source-demo-data.ts");
+    ({ catalog, existingSourcesByConnector } = demo.buildAddSourceDemoCatalog());
+  } else {
+    try {
+      const [manifests, summaries] = await Promise.all([listConnectorManifests(), listConnectorSummaries()]);
+      catalog = buildConnectorCatalog(manifests);
+      existingSourcesByConnector = buildExistingSourcesByConnector(summaries.data);
+    } catch (err) {
+      if (err instanceof ReferenceServerUnreachableError) {
+        return (
+          <RecordroomShellWithPalette>
+            <ServerUnreachable />
+          </RecordroomShellWithPalette>
+        );
+      }
+      throw err;
     }
-    throw err;
   }
   const sourceQuery = typeof params.source_q === "string" ? params.source_q.trim() : "";
   return (
