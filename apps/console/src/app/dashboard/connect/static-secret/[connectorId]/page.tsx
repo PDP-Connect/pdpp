@@ -71,9 +71,9 @@ export default async function StaticSecretConnectPage({
     return firstValue(resolvedSearchParams[`field_${field.name}`]);
   }
 
-  const pageTitle = isReplaceMode ? `Update ${setup.display_name} credential` : `Add ${setup.display_name}`;
+  const pageTitle = isReplaceMode ? `Reconnect ${setup.display_name}` : `Add ${setup.display_name}`;
   const pageDescription = isReplaceMode
-    ? "Replace the stored credential for this connection. Records, history, and schedule are preserved — only the sealed secret is updated."
+    ? "Enter the credential this connection should use. Records, history, and schedule stay attached to the same connection."
     : "Seal the provider secret from this owner session and start the first sync. The account keeps its own connection identity and credentials.";
   const backHref =
     isReplaceMode && pageParams.connectionId
@@ -170,7 +170,7 @@ export default async function StaticSecretConnectPage({
             <div>
               <IcButton type="submit" variant="human">
                 {isReplaceMode
-                  ? "Update credential and run sync"
+                  ? "Reconnect account and run sync"
                   : (setup.credential_capture.submit_label ?? "Create connection and start first sync")}
               </IcButton>
             </div>
@@ -181,9 +181,9 @@ export default async function StaticSecretConnectPage({
       {isReplaceMode ? (
         <Callout
           className="mt-5"
-          description="Replacing the credential does not affect your collected records, schedule, or connection history. The connection resumes with the new credential on the next sync."
+          description="Reconnect uses the submitted credential for this connection. It does not change collected records, schedule, or history."
           surface="human"
-          title="Records and history are preserved"
+          title="This keeps the same connection"
         />
       ) : (
         <Callout

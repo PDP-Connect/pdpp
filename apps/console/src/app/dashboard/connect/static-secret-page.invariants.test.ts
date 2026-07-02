@@ -24,6 +24,10 @@ const NOREFERRER = /rel="noreferrer"/;
 const OPEN_HELP_COPY = /Open provider setup page in a new tab/;
 const SECRET_BOUNDARY_COPY = /agents, MCP clients, REST reads, audit payloads, or the dashboard/;
 const STORAGE_NOT_READY_COPY = /Credential storage is not ready/;
+const RECONNECT_REPAIR_TITLE = /Reconnect \$\{setup\.display_name\}/;
+const RECONNECT_REPAIR_SUBMIT = /Reconnect account and run sync/;
+const STALE_REPAIR_TITLE = /Update \$\{setup\.display_name\} credential/;
+const STALE_REPAIR_SUBMIT = /Update credential and run sync/;
 const NO_CONNECTOR_BRANCH = /connectorId\s*===/;
 const NO_PROVIDER_COPY = /\bGmail\b|\bGitHub\b|app password|personal access token/i;
 const NO_INGEST_COPY = /hidden until ingest accepts records/i;
@@ -74,6 +78,10 @@ test("static-secret page is an owner-session capture form, not an agent secret p
   assert.doesNotMatch(src, NO_PROVIDER_COPY);
   assert.match(src, SECRET_BOUNDARY_COPY);
   assert.match(src, STORAGE_NOT_READY_COPY);
+  assert.match(src, RECONNECT_REPAIR_TITLE);
+  assert.match(src, RECONNECT_REPAIR_SUBMIT);
+  assert.doesNotMatch(src, STALE_REPAIR_TITLE);
+  assert.doesNotMatch(src, STALE_REPAIR_SUBMIT);
   assert.doesNotMatch(src, NO_INGEST_COPY);
   assert.doesNotMatch(src, NO_ENV_VAR_COPY);
   // The page must no longer carry a transient post-submit notice as the only
