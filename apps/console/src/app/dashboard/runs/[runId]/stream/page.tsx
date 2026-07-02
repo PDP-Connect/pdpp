@@ -14,6 +14,7 @@ import {
 import {
   getCurrentBrowserSurfaceAssistance,
   getCurrentRunAssistance,
+  hasActiveBrowserSurface,
   requiresBrowserSurfaceAssistance,
 } from "../../../lib/run-assistance.ts";
 import { NoAssistanceRunPoller } from "./no-assistance-run-poller.tsx";
@@ -183,6 +184,9 @@ export default async function RunInteractionStreamPage({
         />
       );
     }
+    if (hasActiveBrowserSurface(envelope.events)) {
+      return <PreparingBrowserSurface connector={connector} runId={runId} />;
+    }
     return <RunContinuingSurface connector={connector} runId={runId} />;
   }
 
@@ -239,11 +243,34 @@ function RunContinuingSurface({ connector, runId }: { connector: ConnectorContex
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
       <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
-        <NoAssistanceRunPoller />
+        <NoAssistanceRunPoller runId={runId} />
         <p className="pdpp-eyebrow text-muted-foreground">run continuing</p>
         <h1 className="pdpp-heading mt-3 text-balance text-foreground">No browser action is waiting.</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">
           {subject} is still being checked. Open the run timeline to follow the latest status.
+        </p>
+        <a
+          className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"
+          href={`/dashboard/runs/${encodeURIComponent(runId)}`}
+        >
+          Open run timeline
+        </a>
+      </section>
+    </main>
+  );
+}
+
+function PreparingBrowserSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
+  const subject = connector?.displayName ?? "This run";
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
+      <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
+        <NoAssistanceRunPoller runId={runId} />
+        <p className="pdpp-eyebrow text-muted-foreground">secure browser starting</p>
+        <h1 className="pdpp-heading mt-3 text-balance text-foreground">Preparing the secure browser.</h1>
+        <p className="mt-3 text-muted-foreground text-sm leading-6">
+          {subject} has started a browser-session repair. This page will open the browser controls as soon as the run
+          asks for your input.
         </p>
         <a
           className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"

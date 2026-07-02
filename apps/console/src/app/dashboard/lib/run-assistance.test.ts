@@ -4,6 +4,7 @@ import type { SpineEvent } from "./ref-client.ts";
 import {
   getCurrentBrowserSurfaceAssistance,
   getCurrentRunAssistance,
+  hasActiveBrowserSurface,
   hasAvailableBrowserSurfaceAttachment,
   requiresBrowserSurfaceAssistance,
 } from "./run-assistance.ts";
@@ -133,4 +134,43 @@ test("passive app-push assistance is not treated as browser-surface work", () =>
   assert.ok(current);
   assert.equal(requiresBrowserSurfaceAssistance(current), false);
   assert.equal(getCurrentBrowserSurfaceAssistance(events), null);
+});
+
+test("active browser-surface events keep stream fallback in the browser-preparing state", () => {
+  const events = [
+    event("run.browser_surface_requested", {
+      browser_surface: {
+        browser_surface_status: "waiting_for_browser_surface",
+        browser_surface_wait_reason: "capacity_full",
+      },
+    }),
+    event("run.browser_surface_ready", {
+      browser_surface: {
+        browser_surface_status: "leased",
+        browser_surface_lease_id: "lease_1",
+      },
+    }),
+    event("run.started", {
+      automation_mode: "assisted",
+    }),
+  ];
+
+  assert.equal(hasActiveBrowserSurface(events), true);
+});
+
+test("terminal browser-surface events do not keep stream fallback in the browser-preparing state", () => {
+  const events = [
+    event("run.browser_surface_ready", {
+      browser_surface: {
+        browser_surface_status: "leased",
+      },
+    }),
+    event("run.browser_surface_released", {
+      browser_surface: {
+        browser_surface_status: "released",
+      },
+    }),
+  ];
+
+  assert.equal(hasActiveBrowserSurface(events), false);
 });

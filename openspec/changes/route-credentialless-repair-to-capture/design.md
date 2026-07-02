@@ -27,27 +27,35 @@ Proven live and in code on `main`:
 
 ## Decision
 
-Keep the `browser_collector` session-reuse happy path (a valid reusable session needs no
-credential — correct, and central to the browser-collector enrollment primitive). Change only the
-**no reusable session AND no usable credential** case for **static-secret-capable** connections:
+Keep the `browser_collector` session-reuse happy path (a valid reusable session needs no stored
+credential). Route repair by the connection's binding, not by the connector's global capabilities:
 
-1. **Primary repair is durable credential capture, not a silent one-off browser login.** When an
-   owner-present run for a static-secret-capable connection finds no reusable session and no usable
-   stored credential, the runtime SHALL surface credential capture for the existing connection as the
-   primary owner action (repair-required evidence), rather than silently opening a throwaway
-   interactive browser login. The secure browser hand-off remains available as an explicit, labeled
-   secondary "re-establish session" path — never the default triggered purely by credential absence.
+1. **Browser-session-bound connections repair by browser session.** When an owner-present run for a
+   browser-session-bound connection finds no reusable session and no stored credential, the runtime
+   SHALL use the owner-operated secure browser to re-establish that session. It SHALL NOT route the
+   connection to static-secret credential capture merely because the connector can support static
+   credentials for other connections.
 
-2. **Honest, durable credential evidence.** Connection health SHALL distinguish `credential_required`
-   (no usable stored credential for a connector that can store one) from `credential_rejected` (a
-   stored credential the provider rejected), derived from durable credential-presence evidence passed
-   into the health computation — not inferred solely from a transient run reason code. Both project as
-   an owner reauth/capture action; the copy and reason differ honestly.
+2. **Static-secret-bound connections repair by credential capture.** When a static-secret-bound
+   connection has no usable stored credential, the run SHALL fail closed before starting the connector
+   and the owner action SHALL be credential capture/rotation for that same connection.
 
-3. **No age-only healing.** A credential/session repair condition SHALL NOT project healthy/idle
+3. **Credential evidence is scoped to static-secret bindings.** Connection health SHALL distinguish
+   `credential_required` (no usable stored credential for a static-secret-bound connection) from
+   `credential_rejected` (a stored credential the provider rejected), derived from durable
+   credential-presence evidence passed into the health computation. A browser-session-bound
+   connection with no credential row SHALL NOT project `credential_required`.
+
+4. **Browser-session repair has an explicit pre-assistance state.** A launched browser-session repair
+   can have `run.started` and a ready browser surface before it emits `run.assistance_requested`.
+   During that interval owner-facing stream surfaces SHALL show that the secure browser is being
+   prepared and continue checking for browser-surface assistance, not a generic "no browser action"
+   fallback.
+
+5. **No age-only healing.** A credential/session repair condition SHALL NOT project healthy/idle
    merely because a credential-shaped run reason code aged out. It stays derived from durable
-   credential-presence + session-readiness evidence until readiness is proven (a successful run or a
-   captured/active credential), consistent with the archived "closed by proof, not by age" rule.
+   credential-presence + session-readiness evidence until readiness is proven (a successful run or an
+   active credential/session), consistent with the archived "closed by proof, not by age" rule.
 
 ## Why This Is SLVP-Aligned And Generic
 
@@ -55,49 +63,50 @@ Plaid update-mode, Nylas `invalid_grant`, Zapier/Airbyte all repair the existing
 observed credential/session state and separate connector auth *configuration* from each connection's
 current state. The durable primary for a connection that can hold a credential is "provide/rotate the
 credential," and session re-establishment is an explicit alternative — not a silent per-run login.
-This change is connector-agnostic: it keys on "static-secret-capable + no reusable session + no usable
-credential," a class multiple connectors (chatgpt today; any hybrid browser+static-secret connector
-tomorrow) fall into. No ChatGPT-specific branch, manifest enum, or provider-page vocabulary is added.
+This change is connector-agnostic: it keys on the connection's binding
+(`browser_collector`/`browser_enrollment_shell` vs. static-secret), not on ChatGPT, Google SSO, or
+provider-page vocabulary. Hybrid connectors can support both mechanisms without forcing every
+connection into the same repair path.
 
 ## Scope Boundaries
 
-- Does NOT change the invariant-tested routing PRIORITY (stored-credential repair before browser
-  fallback); it makes the *no-credential* case route to capture instead of a silent login.
+- Does NOT add provider-specific auth semantics or a ChatGPT-specific branch.
 - Does NOT change the `browser_collector` session-reuse happy path or the browser-collector
   enrollment primitive (separate open change `add-browser-collector-enrollment-primitive`).
 - Does NOT change PDPP Core. Console visual layout is owned by
   `redesign-owner-console-product-experience`; this change only requires the shared projection and
-  copy to be honest and to route to capture.
+  copy to route browser-session repair to a usable browser-session handoff.
 
 ## Alternatives Considered
 
 - **Fail the resolver closed for all `browser_collector` bindings on missing credential.** Rejected:
-  it would break the legitimate session-reuse happy path (a valid session needs no credential) and
-  contradicts the browser-collector enrollment primitive. The correct discriminator is "no reusable
-  session AND no usable credential," which is only knowable after the session probe — so the routing
-  fix lives at the connector session-repair branch and the projection, not only the resolver.
-- **Copy-only fix (rename the remediation label).** Rejected as insufficient: it leaves the one-off
-  browser login as the actual repair and leaves health projecting "rejected" for a never-stored
-  credential and oscillating with run recency.
+  it would break the legitimate session-reuse happy path and the browser-collector enrollment
+  primitive.
+- **Route all static-secret-capable connectors to credential capture.** Rejected: connector-level
+  capability is not connection-level state. A browser-session-bound SSO connection may have no
+  password to capture.
+- **Copy-only fix.** Rejected as insufficient: it leaves the repair route and stream fallback capable
+  of sending the owner to the wrong or dead-end surface.
 
 ## Acceptance Checks
 
-- A static-secret-capable connection with a `browser_collector` binding, no reusable session, and no
-  stored credential, on an owner-present run, surfaces credential capture as the primary repair; it
-  does not silently open a one-off interactive browser login as the default. (The secure browser
-  hand-off, if offered, is an explicit secondary session-repair action.)
-- The same connection with a **valid reusable session** runs without prompting for a credential
-  (happy path preserved).
-- Connection health reports `credential_required` (not `credential_rejected`) for a connection with no
+- A browser-session-bound connection with no reusable session and no stored credential starts
+  browser-session repair, not static-secret credential capture.
+- The same connection with a valid reusable session runs without prompting for a credential.
+- A static-secret-bound connection with no usable stored credential routes to credential capture and
+  fails closed before connector start.
+- Connection health reports `credential_required` only for a static-secret-bound connection with no
   usable stored credential, and `credential_rejected` only when a stored credential was actually
-  rejected; both yield an owner reauth/capture action.
+  rejected.
+- A browser-session repair run that has started but has not yet emitted assistance shows a
+  browser-preparing state and transitions into the stream once browser-surface assistance appears.
 - After a credential-shaped run failure, the connection does NOT project healthy/idle once the run
   reason code ages out; the credential/session repair state persists until proof of readiness.
 - A scheduled/unattended run for the same connection defers (records repair-required evidence) and
   does not open any interactive login. (Already implemented; guarded by a regression test.)
 - Browser-session repair never silently stores a password typed into the provider page.
-- A non-ChatGPT static-secret pattern (e.g. a static-secret connector with no browser binding, no
-  credential row) still fails closed / routes to capture — proving the rule is not ChatGPT-specific.
+- A non-ChatGPT static-secret pattern still fails closed / routes to capture, proving the rule is not
+  ChatGPT-specific.
 
 ## Residual Risks
 

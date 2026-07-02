@@ -35,3 +35,11 @@ Owner-mediated repair for a browser-session-bound connection SHALL be browser/se
 - **WHEN** an owner-attended browser-session repair starts without an active stored login credential
 - **THEN** the reference MAY ask the owner to operate the secure browser
 - **AND** the resulting repair SHALL be represented as browser-session state unless the owner explicitly submits a stored-credential capture flow.
+
+#### Scenario: Browser-session repair preserves the pre-assistance state
+
+- **WHEN** an owner-attended browser-session repair run has started and has an active browser surface
+- **AND** the run has not yet emitted the current browser-surface assistance request
+- **THEN** owner-facing stream surfaces SHALL present the browser repair as preparing or waiting for browser input
+- **AND** they SHALL continue checking the run timeline for a current browser-surface assistance request
+- **AND** they SHALL NOT present the generic "no browser action" state for that browser-session repair path.

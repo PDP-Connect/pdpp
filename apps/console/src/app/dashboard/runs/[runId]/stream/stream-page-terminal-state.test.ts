@@ -13,7 +13,13 @@ const RESOLVED_SURFACE_GATE_RE = /noAssistanceState === "resolved"[\s\S]{0,120}<
 const ENDED_SURFACE_GATE_RE =
   /noAssistanceState === "ended"[\s\S]{0,360}<RunEndedSurface[\s\S]{0,360}resolveNoAssistanceEndedTerminalStatus/;
 const CONTINUING_SURFACE_RE = /<RunContinuingSurface/;
-const CONTINUING_POLLER_RE = /<NoAssistanceRunPoller \/>/;
+const CONTINUING_POLLER_RE = /<NoAssistanceRunPoller runId=\{runId\} \/>/;
+const PREPARING_BROWSER_SURFACE_GATE_RE =
+  /hasActiveBrowserSurface\(envelope\.events\)[\s\S]{0,120}<PreparingBrowserSurface/;
+const PREPARING_BROWSER_SURFACE_COPY_RE = /Preparing the secure browser\./;
+const POLLER_TIMELINE_PROBE_RE = /fetch\(`\/_ref\/runs\/\$\{encodeURIComponent\(runId\)\}\/timeline`/;
+const POLLER_STREAM_READY_RE = /getCurrentBrowserSurfaceAssistance\(timelineEventsFrom\(body\)\) !== null/;
+const POLLER_HARD_RELOAD_RE = /window\.location\.reload\(\)/;
 const RUN_STATUS_INSTANCE_CONTEXT_RE =
   /const connectorInstanceId =\s*runStatus\?\.connector_instance_id \?\? getConnectorInstanceIdFromTimeline\(envelope\.events\);/;
 const INSTANCE_SCOPED_SUMMARY_MATCH_RE =
@@ -57,6 +63,8 @@ test("stream page does not render resolved copy solely because assistance disapp
   assert.match(pageSource, TERMINAL_STATUS_SELECTOR_RE);
   assert.match(pageSource, RESOLVED_SURFACE_GATE_RE);
   assert.match(pageSource, ENDED_SURFACE_GATE_RE);
+  assert.match(pageSource, PREPARING_BROWSER_SURFACE_GATE_RE);
+  assert.match(pageSource, PREPARING_BROWSER_SURFACE_COPY_RE);
   assert.match(pageSource, CONTINUING_SURFACE_RE);
   assert.match(pageSource, CONTINUING_POLLER_RE);
 });
@@ -70,4 +78,12 @@ test("stream page labels multi-account runs by connection instance before connec
 test("stream page opens browser-surface assistance without assuming a response is required", () => {
   assert.match(pageSource, BROWSER_ASSISTANCE_STREAM_KIND_RE);
   assert.match(pageSource, BROWSER_ASSISTANCE_RESPONSE_CONTRACT_RE);
+});
+
+test("no-assistance poller explicitly transitions into current browser assistance", () => {
+  const pollerSource = readFileSync(fileURLToPath(new URL("./no-assistance-run-poller.tsx", import.meta.url)), "utf8");
+
+  assert.match(pollerSource, POLLER_TIMELINE_PROBE_RE);
+  assert.match(pollerSource, POLLER_STREAM_READY_RE);
+  assert.match(pollerSource, POLLER_HARD_RELOAD_RE);
 });

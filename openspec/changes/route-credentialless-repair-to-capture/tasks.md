@@ -18,6 +18,7 @@
 - [x] 3.2 Console `records/[connector]/page.tsx`: route the repair destination binding-first — a browser-session-bound connection reconnects its session; only a non-session connection routes to static-secret capture. Suppress the static-secret update affordance for session-bound connections.
 - [x] 3.3 Shared `isBrowserSessionBoundConnection` classifier (console) mirrors the server `BROWSER_SESSION_BINDING_KINDS`.
 - [x] 3.4 Connector session-repair branch (`auto-login/chatgpt.ts`) is UNCHANGED behaviorally: a browser-session connection with no reusable session and no stored credential correctly performs the interactive browser login (its session repair); a static-secret-bound connection fails closed in `resolveStaticSecretRunEnv` before the run starts.
+- [x] 3.5 Run-stream fallback: while a browser-session repair run has an active browser surface but has not yet emitted the assistance request, show a browser-preparing state and poll the timeline for browser-surface assistance instead of showing the generic "no browser action" fallback.
 
 ## 4. Verification
 
@@ -27,6 +28,7 @@
 - [x] 4.4 Age-only-healing preserved; absent-evidence backcompat preserved.
 - [x] 4.5 Console routing invariant: detail-page repair routing is binding-first (session before static-secret); `isBrowserSessionBoundConnection` unit test.
 - [x] 4.6 Run focused reference/polyfill/console tests plus `openspec validate --strict`.
+- [x] 4.7 Stream regression tests: active browser-surface events keep the page in browser-preparing state; the no-assistance poller detects current browser-surface assistance and reloads into the stream.
 
 ## Acceptance checks
 

@@ -37,6 +37,13 @@ const ASSISTANCE_TERMINAL_EVENTS = new Set([
   "run.assistance_resolved",
   "run.assistance_timed_out",
 ]);
+const BROWSER_SURFACE_TERMINAL_STATUSES = new Set([
+  "cancelled",
+  "deferred",
+  "expired",
+  "released",
+  "surface_failed",
+]);
 
 export function getCurrentRunAssistance(events: SpineEvent[]): CurrentRunAssistance | null {
   const completedLegacyInteractions = getCompletedLegacyInteractions(events);
@@ -80,6 +87,18 @@ export function getCurrentBrowserSurfaceAssistance(events: SpineEvent[]): Curren
   }
   const completedLegacyInteractions = getCompletedLegacyInteractions(events);
   return findCurrentLegacyInteraction(events, completedLegacyInteractions, isStreamableBrowserSurfaceAssistance);
+}
+
+export function hasActiveBrowserSurface(events: SpineEvent[]): boolean {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event?.event_type.startsWith("run.browser_surface_")) {
+      continue;
+    }
+    const status = readBrowserSurfaceStatus(event);
+    return status ? !BROWSER_SURFACE_TERMINAL_STATUSES.has(status) : false;
+  }
+  return false;
 }
 
 function getCompletedLegacyInteractions(events: SpineEvent[]): Set<string> {
@@ -217,6 +236,14 @@ function getEventAssistanceId(event: SpineEvent): string | null {
     stringField(event.data?.interaction_id) ??
     stringField(event.interaction_id)
   );
+}
+
+function readBrowserSurfaceStatus(event: SpineEvent): string | null {
+  const browserSurface = event.data?.browser_surface;
+  if (browserSurface && typeof browserSurface === "object" && !Array.isArray(browserSurface)) {
+    return stringField((browserSurface as Record<string, unknown>).browser_surface_status) ?? stringField(event.status);
+  }
+  return stringField(event.status);
 }
 
 function parseAttachments(value: unknown): AssistanceAttachment[] {
