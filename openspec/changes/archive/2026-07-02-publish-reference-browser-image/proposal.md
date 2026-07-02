@@ -39,3 +39,11 @@ correct; it was simply never added to the CI publish matrix.
 - Railway-core, Fly.io, and quickstart paths are unaffected.
 - No new Dockerfile stages or changes to the `reference-browser` target itself.
 - `.env.docker` and gitignored override files are not modified.
+
+## Residual Risks
+
+- Owner/platform publish verification remains a residual live check: trigger or
+  inspect `ghcr.io/vana-com/pdpp/reference-browser:main` with package access and
+  verify the image contains the pinned Patchright browser directory. Anonymous
+  GHCR inspection returned `401 Unauthorized`, so this archive does not claim a
+  fresh package-pull proof.

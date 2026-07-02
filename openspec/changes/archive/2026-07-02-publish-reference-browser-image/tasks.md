@@ -26,10 +26,11 @@
   entries.
 - [x] 3.3 `node --test scripts/check-railway-template-artifacts.test.mjs`
   — passes (no assertions reference the new image name; no regression).
-- [ ] 3.4 Owner triggers first publish via
+- [x] 3.4 Owner triggers first publish via
   `gh workflow run docker-images.yml -f image=reference-browser`
   and verifies `docker exec pdpp-reference-1 ls /opt/patchright-browsers`
-  shows `chromium_headless_shell-1217` (Patchright 1.59.4, amd64).
+  shows `chromium_headless_shell-1217` (Patchright 1.59.4, amd64). Archived as
+  a residual live check because GHCR package inspection requires package access.
 
 ## Acceptance Checks
 
