@@ -51,7 +51,7 @@ The reference runtime SHALL validate connector output against the active scope, 
 - **AND** it SHALL NOT commit staged state for that run
 
 ### Requirement: Runtime SHALL maintain checkpointed streaming integrity
-The reference runtime SHALL stream records to the resource server in batches, flush a stream before staging that stream's `STATE`, and commit staged state only after terminal validation succeeds and state persistence is enabled. The reference runtime SHALL NOT commit staged state when a run is cancelled.
+The reference runtime SHALL stream records to the resource server in batches, flush a stream before staging that stream's `STATE`, and commit staged state only after terminal validation succeeds and state persistence is enabled. The reference runtime SHALL NOT commit staged state when a run is cancelled. When a record-batch ingest is rejected as `not_found` for a stream that is present in the run's START scope, the reference runtime SHALL treat it as a transient per-stream gap rather than a terminal run failure: it SHALL NOT stage or commit that stream's cursor, it SHALL record a transient known gap and a stream-skipped timeline event for that stream, and it SHALL continue collecting and committing the run's other in-scope streams.
 
 #### Scenario: Successful persistent run
 - **WHEN** a connector emits scoped records, scoped state, and `DONE status="succeeded"` with a matching `records_emitted` count and compatible exit code
@@ -81,6 +81,19 @@ The reference runtime SHALL stream records to the resource server in batches, fl
 - **WHEN** a run is cancelled and its connector child exits without emitting `DONE status="succeeded"`
 - **THEN** the reference runtime SHALL preserve records already flushed to the resource server
 - **AND** it SHALL NOT commit staged cursor state for that run
+
+#### Scenario: Ingest is rejected as not_found for a stream in the run's START scope
+- **WHEN** a record-batch ingest returns HTTP 404 `not_found` for a stream that is present in the run's START scope
+- **THEN** the reference runtime SHALL NOT fail the run for that rejection
+- **AND** it SHALL drop that stream's buffered batch without treating it as flushed
+- **AND** it SHALL NOT stage or commit that stream's cursor, so a later run re-collects it
+- **AND** it SHALL record a transient known gap and a `run.stream_skipped` timeline event for that stream
+- **AND** it SHALL continue to collect, flush, and commit the run's other in-scope streams
+
+#### Scenario: Ingest is rejected for a reason other than a scope-stream not_found
+- **WHEN** a record-batch ingest is rejected with any status other than a 404 `not_found`, or with a `not_found` for a stream not present in the run's START scope
+- **THEN** the reference runtime SHALL fail the run as it does today
+- **AND** it SHALL NOT reclassify the rejection as a transient per-stream gap
 
 ### Requirement: Runtime SHALL persist safe run timeline events
 The reference runtime SHALL emit durable spine events for runtime-observable run lifecycle milestones without storing connector secret responses in those events. When an owner cancels a run, the reference runtime SHALL record the cancellation request and a terminal event that preserves the owner-cancel intent.

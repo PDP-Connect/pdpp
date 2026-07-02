@@ -46,3 +46,9 @@ the whole run.
   transient gap, and negative cases (non-404, non-scope) staying terminal.
 - No live data mutated, no deploy. Trigger (stale-writer) is tracked separately as
   an owner action in the diagnosis report.
+
+## Residual Risks
+
+- Owner-only stale-writer / D1 trigger validation remains a residual live check.
+  The runtime blast-radius fix is merged and covered by deterministic tests; this
+  change does not claim to eliminate the separate operational stale-writer cause.

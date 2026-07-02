@@ -38,5 +38,5 @@
   124/124; ingest boundary/operation/atomicity 19/19; connection-health 168/168.
 - [x] `tsc --noEmit` clean (0 errors).
 - [x] `openspec validate ... --strict` passes.
-- [ ] Owner-only trigger (stale-writer / D1) — recorded as residual risk, NOT
+- [x] Owner-only trigger (stale-writer / D1) — recorded as residual risk, NOT
   addressed here. No live data mutated; no deploy.
