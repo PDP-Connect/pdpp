@@ -7,6 +7,8 @@ TBD - created by archiving change add-connector-refresh-policy-controls. Update 
 
 First-party polyfill connector manifests MAY declare `capabilities.refresh_policy` as reference/runtime metadata describing recommended scheduling posture. These hints SHALL NOT be treated as finalized PDPP core protocol semantics in this tranche.
 
+Owner-mediated repair selection SHALL be connection-binding-first: a connection bound as a browser session (`source_binding.kind` a browser-session kind such as `browser_collector` or `browser_enrollment_shell`) SHALL repair by browser/session repair, NOT static-secret credential capture, even when the connector also declares a static-secret (e.g. username_password) setup. Static-secret credential capture SHALL be the repair only for a connection actually bound as static-secret, or after the owner explicitly converts the connection's auth mode. Connector-level static-secret capability alone SHALL NOT route a browser-session-bound connection to credential capture.
+
 #### Scenario: Connector declares a refresh policy
 - **WHEN** a polyfill manifest includes `capabilities.refresh_policy`
 - **THEN** the policy SHALL identify a recommended mode and an owner-readable rationale
@@ -27,10 +29,24 @@ First-party polyfill connector manifests MAY declare `capabilities.refresh_polic
 - **AND** an automatic run that cannot reuse the session SHALL fail or defer before submitting credentials, requesting OTP, requesting external app approval, or opening manual browser handoff
 - **AND** an owner-started manual run MAY perform the interactive auth repair path.
 
-#### Scenario: Browser-session repair has no stored login credential
-- **WHEN** an owner-started manual browser-session repair has no active stored login credential
-- **THEN** the connector MAY still hand the secure browser to the owner for manual login
-- **AND** the connector SHALL NOT silently store credentials typed into that provider page.
+#### Scenario: Browser-session-bound connection repairs by session, not credential capture
+- **WHEN** a connection is bound as a browser session (a browser-session `source_binding.kind`) and needs repair
+- **AND** the connector ALSO supports a static-secret credential at the connector level
+- **THEN** the owner-facing repair SHALL be browser/session repair for that connection
+- **AND** it SHALL NOT be static-secret credential capture, because the connection authenticates by owner-authenticated browser session, not a stored credential.
+
+#### Scenario: Static-secret-bound connection with no usable credential
+- **WHEN** a connection is bound as static-secret and has no usable stored credential
+- **THEN** the owner-facing repair SHALL be durable credential capture for the existing connection
+- **AND** a static-secret run that cannot resolve a usable credential SHALL fail closed before starting the connector, rather than falling through to a browser login.
+
+#### Scenario: Reusable session needs no credential prompt
+- **WHEN** a browser-session-bound connection has a valid reusable owner-authenticated session
+- **THEN** the run SHALL proceed on the reused session without prompting the owner for a credential or opening a repair action.
+
+#### Scenario: Browser-session repair does not store provider-page passwords
+- **WHEN** an owner operates a secure browser to repair a browser-session-bound connection
+- **THEN** the connector SHALL NOT silently store credentials typed into that provider page as a stored credential.
 
 #### Scenario: A future spec wants portable scheduling semantics
 - **WHEN** refresh policy hints need to become interoperable across implementations
@@ -1366,3 +1382,56 @@ connector-runtime startup failures.
 - **THEN** the connector SHALL fail the run through the bounded failed `DONE`
   path
 - **AND** it SHALL remove startup listeners after the failure settles
+
+### Requirement: A connector served a pending detail gap it hydrates SHALL emit DETAIL_GAP_RECOVERED
+
+A connector SHALL emit exactly one `DETAIL_GAP_RECOVERED` message, carrying a
+served gap's `gap_id`, for each pending `DETAIL_GAP` row it was served at `START`
+(`ctx.detailGaps`) whose detail it reaches and hydrates during the run.
+"Hydrates"
+means the connector successfully reached the parent record's detail source for
+the run's window, including a source-limited empty result (e.g. a 0-row detail
+fetch) — an empty result for a reached key is coverage, not a failure.
+
+The `gap_id` in `DETAIL_GAP_RECOVERED` SHALL be a `gap_id` the runtime served
+this run. A connector SHALL NOT emit `DETAIL_GAP_RECOVERED` for a served gap
+whose detail it did not reach; such a gap SHALL remain served and fall through to
+the runtime's existing served-but-unrecovered reset (back to `pending`). A
+connector SHALL NOT synthesize a `gap_id` for a gap the runtime did not serve.
+
+This makes explicit the recovery half of the detail-gap lifecycle that the
+run-cap requirement already relies on ("a later run SHALL recover the deferred
+records"): without a `DETAIL_GAP_RECOVERED` the durable gap row is reset to
+`pending` after the run and the source is projected as permanently degraded even
+though its detail was fully collected.
+
+#### Scenario: A reached account-detail gap is recovered on retry
+
+- **WHEN** a connector is served a pending `DETAIL_GAP` for record key K at
+  `START`
+- **AND** the run reaches and hydrates K's detail (including a 0-row result)
+- **THEN** the connector SHALL emit `DETAIL_GAP_RECOVERED` with the served gap's
+  `gap_id`
+- **AND** the runtime SHALL mark that `connector_detail_gaps` row `recovered`
+  with `recovered_run_id` set to the current run
+
+#### Scenario: A served gap whose detail is not reached stays pending
+
+- **WHEN** a connector is served a pending `DETAIL_GAP` for record key K at
+  `START`
+- **AND** the run does not reach K's detail (K still fails, or K is not among the
+  keys considered this run)
+- **THEN** the connector SHALL NOT emit `DETAIL_GAP_RECOVERED` for K's gap
+- **AND** the served gap SHALL remain durable and be reset to `pending` after the
+  run so a later run retries it
+
+#### Scenario: Chase recovers a served account gap on a successful retry
+
+- **WHEN** the Chase connector is served a pending `transactions` `DETAIL_GAP`
+  with `detail_locator {kind: chase.account, account_id: A}` at `START`
+- **AND** the run enumerates account A and parses its QFX (including a
+  0-transaction QFX)
+- **THEN** the connector SHALL emit `DETAIL_GAP_RECOVERED` with the served gap's
+  `gap_id` and `stream` `transactions`
+- **AND** it SHALL NOT emit `DETAIL_GAP_RECOVERED` for any account it did not
+  reach
