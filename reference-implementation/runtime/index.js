@@ -457,6 +457,7 @@ const GAP_SEVERITIES = new Set(['actionable', 'informational', 'recoverable', 't
 const INFORMATIONAL_GAP_REASONS = new Set(['not_available_in_mode', 'out_of_scope', 'user_disabled']);
 const TRANSIENT_GAP_REASONS = new Set([
   'http_429',
+  'manifest_stream_unresolved',
   'rate_limited',
   'retry_exhausted',
   'temporary_unavailable',
@@ -1037,6 +1038,28 @@ class ProtocolViolation extends Error {
     }
     return out;
   }
+}
+
+/**
+ * True when an ingest failure is the transient-manifest-drift case that is safe
+ * to reclassify as a per-stream gap: an HTTP 404 `not_found` in the ingest
+ * `http_response` phase, for a stream the runtime already admitted into START
+ * scope (`isInStartScope`). The START-scope gate is load-bearing — it proves the
+ * stream survived `buildStartScope`'s manifest check, so a not_found can only mean
+ * the RS's manifest read disagrees with the runtime's (drift), never a genuine
+ * "connector emits an undeclared stream" schema error (which is rejected earlier,
+ * before ingest). Every other status/code stays terminal. See OpenSpec change
+ * harden-ingest-against-transient-manifest-drift.
+ */
+export function isTransientManifestDriftIngestFailure(err, stream, isInStartScope) {
+  return Boolean(
+    err
+    && err.response_status === 404
+    && err.pdpp_error_code === 'not_found'
+    && err.ingest_failure?.phase === 'http_response'
+    && typeof stream === 'string'
+    && isInStartScope(stream),
+  );
 }
 
 function classifyRuntimeFailure(err) {
@@ -2366,6 +2389,13 @@ export async function runConnector(opts) {
   let runTimedOut = false;
   let ownerCancelForced = false;
   const knownGaps = [];
+  // Streams whose batch ingest was rejected as not_found for a stream the runtime
+  // already validated present in the manifest at START (transient manifest drift
+  // between the runtime's START read and the RS's ingest read). Such streams are
+  // skipped as a transient per-stream gap: their cursor is NOT staged/committed so
+  // the next run re-collects them once the RS manifest row re-heals. See OpenSpec
+  // change harden-ingest-against-transient-manifest-drift.
+  const driftSkippedStreams = new Set();
   const durableDetailGaps = [];
   // First-sighting idempotency for run.detail_gap_recorded: gap_ids already
   // emitted as `recorded` THIS run. Closes the resumed-run-stdout-replay edge
@@ -2614,7 +2644,57 @@ export async function runConnector(opts) {
     }
   }
 
+  // Record a transient per-stream gap for a stream whose ingest was rejected as
+  // not_found despite passing the runtime's START-scope manifest check (transient
+  // manifest drift). Mirrors the SKIP_RESULT gap+event path so the drift is
+  // legible in the timeline, and marks the stream so its cursor is not committed.
+  async function recordManifestDriftStreamSkip(stream, err) {
+    driftSkippedStreams.add(stream);
+    const skippedManifestStream = manifestByStream.get(stream) || null;
+    const gap = buildKnownGap({
+      kind: 'stream_skipped',
+      stream,
+      reason: 'manifest_stream_unresolved',
+      message: 'Resource server rejected ingest as not_found for a manifest-declared stream (transient manifest drift); stream deferred to the next run.',
+      recoveryHint: 'retry_by_runtime',
+      explicitSelection: Boolean(explicitlyRequestedStreams?.has(stream)),
+      unsupportedInDefaultScope: streamUnsupportedInDefaultScope(skippedManifestStream),
+      diagnostics: {
+        http_status: err?.ingest_failure?.http_status ?? err?.response_status ?? null,
+        phase: err?.ingest_failure?.phase ?? null,
+      },
+    });
+    appendKnownGap(gap);
+    await emitSpineEventTracked({
+      event_type: 'run.stream_skipped',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      actor_type: 'runtime',
+      actor_id: connectorId,
+      object_type: 'run',
+      object_id: runId,
+      status: 'skipped',
+      run_id: runId,
+      stream_id: stream,
+      data: {
+        source: runSource,
+        stream,
+        reason: 'manifest_stream_unresolved',
+        message: gap.message || null,
+        known_gap: gap,
+        ...(gap.diagnostics ? { diagnostics: gap.diagnostics } : {}),
+      },
+    });
+    onProgress({ type: 'stream_skipped', stream, reason: 'manifest_stream_unresolved' });
+  }
+
   async function flushBatch(stream) {
+    // Already deferred this run for transient manifest drift: don't re-POST (it
+    // would just 404 again). Drop any further buffered records for the stream.
+    if (driftSkippedStreams.has(stream)) {
+      recordBatch[stream] = [];
+      return;
+    }
     const batch = recordBatch[stream];
     if (!batch || !batch.length) return;
     const ndjson = batch.map(r => JSON.stringify(r)).join('\n');
@@ -2631,7 +2711,27 @@ export async function runConnector(opts) {
       },
       body: ndjson,
     });
-    const result = await readIngestResponse(resp, stream, batch.length);
+    let result;
+    try {
+      result = await readIngestResponse(resp, stream, batch.length);
+    } catch (err) {
+      // Transient manifest drift: the RS rejected this stream's ingest as
+      // not_found even though the runtime already validated the stream against
+      // the manifest at START (`scopeByStream` membership proves it survived
+      // buildStartScope's manifest check). The two manifest reads (runtime START
+      // vs RS ingest) momentarily disagree because the persisted connectors row
+      // is stale. Degrade to a transient per-stream gap instead of aborting the
+      // whole run: drop this batch, skip the cursor, keep the other streams.
+      // Any other status/code — and any not_found for a stream not in START
+      // scope (unreachable via the RECORD path) — stays terminal. See OpenSpec
+      // change harden-ingest-against-transient-manifest-drift.
+      if (isTransientManifestDriftIngestFailure(err, stream, (s) => scopeByStream.has(s))) {
+        await recordManifestDriftStreamSkip(stream, err);
+        recordBatch[stream] = [];
+        return;
+      }
+      throw err;
+    }
     totalFlushed += batch.length;
     await emitSpineEventTracked({
       event_type: 'run.batch_ingested',
@@ -2975,6 +3075,14 @@ export async function runConnector(opts) {
 
           // Flush records for this stream before persisting state
           await flushBatch(msg.stream);
+          // Transient manifest drift: this stream's batch was rejected as
+          // not_found for a manifest-declared stream and recorded as a per-stream
+          // gap. Do NOT stage its cursor — leaving it uncommitted makes the next
+          // run re-collect the stream once the RS manifest row re-heals. Skipping
+          // the `run.state_staged` event keeps the timeline honest (no advance).
+          if (driftSkippedStreams.has(msg.stream)) {
+            break;
+          }
           newState[msg.stream] = msg.cursor;
           await emitSpineEventTracked({
             event_type: 'run.state_staged',
