@@ -1111,6 +1111,32 @@ test('golden: Chase — degraded/advisory with a retryable transactions gap', ()
   assert.ok(!/can't|terminal/i.test(row.statement));
 });
 
+test('golden: Amazon order_items stream name does not trip calm/advisory count invariant', () => {
+  const snap = snapshot({
+    state: 'degraded',
+    axes: { freshness: 'stale', coverage: 'retryable_gap' },
+    forward_disposition: 'resumable',
+    last_success_at: '2026-06-30T23:05:36.032Z',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [
+      stream({ stream_id: 'order_items', coverage: 'retryable_gap', gap_retryable: true }),
+      stream({ stream_id: 'orders', coverage: 'unknown' }),
+    ],
+    MANUAL_REFRESH,
+    true,
+    { mode: 'manual', retained_records: 6525 }
+  );
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'advisory');
+  assert.equal(v.trace.channel_cause, 'owner_optional_or_status:retry_gap');
+  assert.ok(v.annotations.some((a) => a.kind === 'freshness' && a.text === 'Order items stuck since Jun 30.'));
+  assert.equal(v.required_actions[0]?.kind, 'retry_gap');
+  assert.equal(v.forward_statement, 'Retry now to give the recoverable gap another run.');
+});
+
 test('golden: broken but recently successful source says last successful refresh, not Fresh yesterday', () => {
   const snap = snapshot({
     state: 'blocked',

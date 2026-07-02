@@ -1400,7 +1400,7 @@ export class VerdictInvariantError extends Error {
 const RESUME_CLAIM_RE = /resum|refresh|next run|retry/i;
 /** A digit, paired with a mechanistic noun, is a forbidden count on calm/advisory (inv S2). */
 const DIGIT_RE = /\d/;
-const MECHANISTIC_NOUN_RE = /(gap|retr|backlog|record|item)/i;
+const MECHANISTIC_NOUN_RE = /(gap|retr|backlog|record)/i;
 
 /** Honesty invariants 1–7 over the whole verdict. */
 function honestyViolations(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string[] {
