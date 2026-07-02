@@ -1444,3 +1444,72 @@ test('runtime preserves no-commit behavior for failed, cancelled, and protocol-v
     });
   }
 }));
+
+// Chase-shaped end-to-end: a successful retry that emits DETAIL_GAP_RECOVERED for
+// the served account gap (the exact message packages/polyfill-connectors chase
+// now emits) clears the matching pending transactions gap and leaves an
+// unmatched pending gap untouched. Proves the durable half of the Chase fix
+// against a real store + real runtime, without driving Playwright.
+test('chase 0-transaction retry recovers the matching served account gap and leaves an unmatched gap pending', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+
+  // The account the retry reaches (matches the served gap it recovers).
+  const matched = await store.upsertPendingGap({
+    connectorId: 'chase',
+    grantId: 'grant_chase',
+    stream: 'transactions',
+    parentStream: 'accounts',
+    recordKey: '1212486749',
+    detailLocator: { kind: 'chase.account', account_id: '1212486749' },
+    reason: 'temporary_unavailable',
+  });
+  // A second pending gap for a different account the run never reaches. It must
+  // stay pending — recovery must not clear unrelated gaps.
+  const unmatched = await store.upsertPendingGap({
+    connectorId: 'chase',
+    grantId: 'grant_chase',
+    stream: 'transactions',
+    parentStream: 'accounts',
+    recordKey: '9999999999',
+    detailLocator: { kind: 'chase.account', account_id: '9999999999' },
+    reason: 'temporary_unavailable',
+  });
+
+  // The chase connector, on a 0-transaction successful parse of the reached
+  // account, emits exactly this DETAIL_GAP_RECOVERED for the served gap_id.
+  const { connectorPath, cleanup } = createConnector([
+    { type: 'DETAIL_GAP_RECOVERED', reference_only: true, gap_id: matched.gap_id, stream: 'transactions', record_key: '1212486749' },
+    { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+  ]);
+
+  try {
+    const result = await runConnector({
+      connectorPath,
+      connectorId: 'chase',
+      grantId: 'grant_chase',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'accounts' }, { name: 'transactions' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+    assert.equal(result.status, 'succeeded');
+  } finally {
+    cleanup();
+  }
+
+  const matchedRow = await store.getGapById(matched.gap_id);
+  assert.equal(matchedRow.status, 'recovered', 'the reached account gap moves to recovered');
+  assert.ok(matchedRow.recovered_run_id, 'recovered_run_id is set on the recovered gap');
+
+  const unmatchedRow = await store.getGapById(unmatched.gap_id);
+  assert.equal(unmatchedRow.status, 'pending', 'the unreached account gap stays pending — no collateral recovery');
+  assert.equal(unmatchedRow.recovered_run_id, null, 'the unmatched gap never gets a recovered_run_id');
+
+  const pending = await store.listPendingGaps({ connectorId: 'chase', grantId: 'grant_chase', streams: ['transactions'] });
+  assert.deepEqual(
+    pending.map((g) => g.record_key).sort(),
+    ['9999999999'],
+    'only the unmatched account remains pending after the retry'
+  );
+}));

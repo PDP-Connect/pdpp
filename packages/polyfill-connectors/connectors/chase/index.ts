@@ -1004,6 +1004,13 @@ export interface EmitDeps {
   progress: ProgressFn;
   requested: RequestedScopes;
   resFilters: Map<string, ReadonlySet<string> | null>;
+  /** Pending account-level detail gaps the runtime served this run at START,
+   *  keyed by `account_id` → served `gap_id`. When the normal QFX pass reaches
+   *  one of these accounts (hydrated or source-limited no-activity), the
+   *  connector emits `DETAIL_GAP_RECOVERED` with the served `gap_id` so the
+   *  durable gap moves to `recovered` instead of being reset to `pending` by
+   *  runtime cleanup. Empty on an ordinary run with no served gaps. */
+  servedAccountGaps?: ReadonlyMap<string, string> | undefined;
   tmpDir: string;
   /** Per-transaction fingerprint cursor (excludes the run-clock
    *  `fetched_at`). Shared across all accounts for the whole transactions
@@ -1710,6 +1717,81 @@ export async function emitTransactionsDetailCoverage(
   );
 }
 
+/**
+ * Build the `account_id → served gap_id` lookup from the pending detail gaps the
+ * runtime served this run at START (`ctx.detailGaps`). Filtered to Chase
+ * account-level transaction gaps — the exact shape `buildAccountDetailGap`
+ * writes: `stream === "transactions"`, `detail_locator.kind === "chase.account"`,
+ * and a non-empty `account_id`. Any other served gap (a different connector's
+ * locator, a non-transactions stream, a malformed locator) is ignored so the
+ * connector can only ever recover a gap it actually understands. Sourcing the
+ * `gap_id` from the served gap — never synthesizing one — is what guarantees the
+ * connector cannot mark an unrelated or unserved gap recovered.
+ */
+export function buildServedAccountGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
+): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const gap of detailGaps) {
+    if (gap.stream !== "transactions" || gap.status !== "pending") {
+      continue;
+    }
+    const locator = gap.detail_locator;
+    if (!locator || locator.kind !== "chase.account") {
+      continue;
+    }
+    const accountId = locator.account_id;
+    if (typeof accountId !== "string" || accountId.length === 0 || typeof gap.gap_id !== "string" || !gap.gap_id) {
+      continue;
+    }
+    // First served gap per account wins; the runtime serves at most one pending
+    // gap per (instance, stream, record_key) so a duplicate would be a store
+    // anomaly, not an expected state.
+    if (!lookup.has(accountId)) {
+      lookup.set(accountId, gap.gap_id);
+    }
+  }
+  return lookup;
+}
+
+/**
+ * Emit `DETAIL_GAP_RECOVERED` for each served account gap whose account this run
+ * reached. An account is "reached" when its QFX pass produced a `hydrated`
+ * outcome (parsed, including a 0-transaction ledger) or a `no_activity` outcome
+ * (source-limited completeness) — both are real coverage of that account's
+ * ledger for the window, mirroring how `emitTransactionsDetailCoverage` counts
+ * them as `hydrated_keys`. A `gap` outcome is left on the `DETAIL_GAP` re-emit
+ * path in `runTransactionsAndBalances` and is never recovered here. A served gap
+ * whose account was not reached (still failing, or no longer enumerated) is left
+ * untouched so the runtime's existing served-but-unrecovered reset returns it to
+ * `pending` — lose-no-data preserved.
+ */
+export async function recoverServedAccountGaps(
+  deps: EmitDeps,
+  outcomes: readonly AccountDetailOutcome[]
+): Promise<void> {
+  const served = deps.servedAccountGaps;
+  if (!served || served.size === 0) {
+    return;
+  }
+  for (const outcome of outcomes) {
+    if (outcome.kind !== "hydrated" && outcome.kind !== "no_activity") {
+      continue;
+    }
+    const gapId = served.get(outcome.accountId);
+    if (!gapId) {
+      continue;
+    }
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gapId,
+      stream: "transactions",
+      record_key: outcome.accountId,
+    });
+  }
+}
+
 async function runTransactionsAndBalances(
   deps: EmitDeps,
   page: Page,
@@ -1730,6 +1812,11 @@ async function runTransactionsAndBalances(
       await deps.emit(buildAccountDetailGap(outcome));
     }
   }
+  // Recover any served pending gaps whose account we reached this run, then
+  // declare per-account coverage. Recovery is emitted before coverage so the
+  // spine's recovered-gap events precede the run's coverage summary, matching
+  // Amazon/ChatGPT ordering (recovery pass → coverage).
+  await recoverServedAccountGaps(deps, outcomes);
   await emitTransactionsDetailCoverage(deps, outcomes);
 }
 
@@ -2119,6 +2206,7 @@ if (isMainModule(import.meta.url)) {
         progress,
         requested,
         resFilters,
+        servedAccountGaps: buildServedAccountGapLookup(ctx.detailGaps),
         tmpDir,
         txState,
         transactionsFingerprintCursor,
