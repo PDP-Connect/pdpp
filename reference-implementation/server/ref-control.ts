@@ -1652,8 +1652,25 @@ function gapRecoveryAction(gap: unknown): string | null {
   return null;
 }
 
+function gapClassifierText(gap: unknown): string {
+  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+    return "";
+  }
+  const fields = gap as { kind?: unknown; message?: unknown; reason?: unknown };
+  return [fields.kind, fields.reason, fields.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ");
+}
+
+const OWNER_RECOVERABLE_GAP_RE = /\b(otp|mfa|2fa|manual|captcha|anti bot)\b/;
+
 function isOwnerRecoverableKnownGap(gap: unknown): boolean {
-  return gapRecoveryAction(gap) === "manual_action_required";
+  if (gapRecoveryAction(gap) === "manual_action_required") {
+    return true;
+  }
+  return OWNER_RECOVERABLE_GAP_RE.test(gapClassifierText(gap));
 }
 
 function isKnownSkipShadowedByPendingDetailGap(gap: unknown, pendingStreams: ReadonlySet<string>): boolean {
