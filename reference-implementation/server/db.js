@@ -3509,7 +3509,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)
       WHERE run_id IS NOT NULL
-        AND event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned')`
+        AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')`
   );
   // Boot-epoch reconciliation idempotency: at most one run.abandoned per
   // orphaned run.started.event_id. A retry of the boot reconciler hits

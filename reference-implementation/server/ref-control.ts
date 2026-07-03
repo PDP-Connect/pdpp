@@ -704,7 +704,7 @@ interface RunTerminalEventRow {
 
 /**
  * Read a run's terminal-event payload (the `run.completed` / `run.failed` /
- * `run.cancelled` spine event) without scanning the run's full event list. The
+ * `run.browser_surface_failed` / `run.cancelled` spine event) without scanning the run's full event list. The
  * single SQL lookup is bounded by the SQL `LIMIT 1` clause; for runs without a
  * terminal event yet (still in progress, or controller_restarted), returns
  * `null`.
@@ -722,6 +722,7 @@ async function readRunTerminalEventData(runId: string): Promise<Record<string, u
          WHERE run_id = $1
            AND (event_type = 'run.completed'
                 OR event_type = 'run.failed'
+                OR event_type = 'run.browser_surface_failed'
                 OR event_type = 'run.cancelled')
          ORDER BY event_seq DESC
          LIMIT 1`,

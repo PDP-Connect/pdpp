@@ -383,6 +383,64 @@ test("does not create beyond the configured host port range", async () => {
   );
 });
 
+test("retries the next host port when Docker reports a start-time port collision", async () => {
+  const docker = new FakeDocker();
+  docker.failStartForHostPort(59000);
+  const service = new NekoSurfaceAllocatorService({
+    ...BASE_OPTIONS,
+    docker,
+    fetchImpl: readyFetch(),
+    webrtcHostPortStart: 59000,
+    webrtcHostPortEnd: 59001,
+  });
+
+  const surface = await service.ensureSurface({
+    surfaceId: "surface_1",
+    connectorId: "amazon",
+    profileKey: "amazon:connection_1",
+  });
+
+  assert.equal(surface.health, "ready");
+  assert.equal(surface.allocator_metadata.host_port, "59001");
+  assert.equal(docker.containers.size, 1);
+  assert.equal([...docker.containers.values()][0].hostPort, 59001);
+  assert.ok(
+    docker.calls.some((call) => call.path === "/containers/container_1" && call.init.method === "DELETE"),
+    "the failed created container must be removed before retrying another port",
+  );
+  assert.deepEqual(
+    docker.calls
+      .filter((call) => call.path === "/containers/create")
+      .map((call) => call.init.body.Labels[`${LABEL}.webrtc_host_port`]),
+    ["59000", "59001"],
+  );
+});
+
+test("host port allocation treats labeled created containers without published ports as used", async () => {
+  const docker = new FakeDocker();
+  docker.addOwnedContainerWithoutPublishedPorts("created_1", {
+    [`${LABEL}.owner`]: "pdpp-reference",
+    [`${LABEL}.surface_id`]: "other_surface",
+    [`${LABEL}.webrtc_host_port`]: "59000",
+  });
+  const service = new NekoSurfaceAllocatorService({
+    ...BASE_OPTIONS,
+    docker,
+    fetchImpl: readyFetch(),
+    webrtcHostPortStart: 59000,
+    webrtcHostPortEnd: 59001,
+  });
+
+  const surface = await service.ensureSurface({
+    surfaceId: "surface_1",
+    connectorId: "amazon",
+    profileKey: "amazon:connection_1",
+  });
+
+  assert.equal(surface.health, "ready");
+  assert.equal(surface.allocator_metadata.host_port, "59001");
+});
+
 test("reports starting until n.eko, CDP, and Chromium probes pass", async () => {
   const docker = new FakeDocker();
   const service = new NekoSurfaceAllocatorService({
@@ -558,6 +616,7 @@ class FakeDocker {
   containers = new Map();
   nextId = 1;
   foreignInspectIds = new Set();
+  startFailurePorts = new Set();
   omitPortBindingsWhenStopped = false;
   removeOnStop = false;
 
@@ -595,7 +654,14 @@ class FakeDocker {
     }
     const startMatch = path.match(/^\/containers\/([^/]+)\/start$/);
     if (startMatch) {
-      this.containers.get(startMatch[1]).running = true;
+      const container = this.containers.get(startMatch[1]);
+      if (this.startFailurePorts.has(container.hostPort)) {
+        throw new NekoSurfaceAllocatorServiceError(
+          "docker_http_error",
+          `Docker POST /containers/${startMatch[1]}/start returned HTTP 500: failed to bind host port 0.0.0.0:${container.hostPort}/tcp: address already in use`,
+        );
+      }
+      container.running = true;
       return null;
     }
     const stopMatch = path.match(/^\/containers\/([^/]+)\/stop$/);
@@ -657,6 +723,22 @@ class FakeDocker {
       network: BASE_OPTIONS.network,
       listAsOwned: false,
     });
+  }
+
+  addOwnedContainerWithoutPublishedPorts(id, labels) {
+    this.containers.set(id, {
+      id,
+      labels,
+      name: "created-without-published-ports",
+      running: false,
+      hostPort: undefined,
+      network: BASE_OPTIONS.network,
+      listAsOwned: true,
+    });
+  }
+
+  failStartForHostPort(port) {
+    this.startFailurePorts.add(port);
   }
 
   addOwnedSummaryForForeignInspect(id, surfaceId) {

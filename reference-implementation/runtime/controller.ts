@@ -2003,7 +2003,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         SELECT 1 AS present
         FROM spine_events
         WHERE run_id = $1
-          AND event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned')
+          AND event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
         LIMIT 1
         `,
         [runId]

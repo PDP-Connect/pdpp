@@ -26,6 +26,8 @@ const PROFILE_DIRECTORY_MODE = 0o700;
 const LEADING_SLASH_RE = /^\//;
 const TRAILING_SLASHES_RE = /\/+$/;
 const DOCKER_HTTP_404_RE = /\bHTTP 404\b/;
+const DOCKER_PORT_BIND_RE =
+  /\b(address already in use|port is already allocated|failed to bind host port|driver failed programming external connectivity)\b/i;
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -153,10 +155,11 @@ export class DockerEngineHttpClient implements DockerEngineTransport {
           res.on("end", () => {
             const payload = Buffer.concat(chunks).toString("utf8");
             if (!okStatuses.has(res.statusCode ?? 0)) {
+              const suffix = payload.length === 0 ? "" : `: ${payload.slice(0, 500)}`;
               reject(
                 new NekoSurfaceAllocatorServiceError(
                   "docker_http_error",
-                  `Docker ${method} ${path} returned HTTP ${String(res.statusCode)}`
+                  `Docker ${method} ${path} returned HTTP ${String(res.statusCode)}${suffix}`
                 )
               );
               return;
@@ -304,38 +307,50 @@ export class NekoSurfaceAllocatorService {
       }
     }
 
-    const port = await this.#allocateHostPort();
-    const names = this.#resourceNames(request);
-    await this.#prepareProfileDirectory(names.profilePath);
-    const labels = this.#labelsForRequest(request, names, port);
-    const created = await this.#docker.requestJson("/containers/create", {
-      method: "POST",
-      query: { name: names.containerName },
-      body: {
-        Image: this.#options.image,
-        Labels: labels,
-        Env: this.#containerEnv(request, port),
-        Healthcheck: this.#containerHealthcheck(),
-        ExposedPorts: {
-          [`${String(this.#options.containerHttpPort)}/tcp`]: {},
-          [`${String(this.#options.containerCdpPort)}/tcp`]: {},
-          [`${String(port)}/tcp`]: {},
-          [`${String(port)}/udp`]: {},
-        },
-        HostConfig: {
-          Binds: [`${names.profilePath}:/home/user/.config/chromium`],
-          NetworkMode: this.#options.network,
-          PortBindings: {
-            [`${String(port)}/tcp`]: [{ HostPort: String(port) }],
-            [`${String(port)}/udp`]: [{ HostPort: String(port) }],
+    const skippedPorts = new Set<number>();
+    for (;;) {
+      const port = await this.#allocateHostPort(skippedPorts);
+      const names = this.#resourceNames(request);
+      await this.#prepareProfileDirectory(names.profilePath);
+      const labels = this.#labelsForRequest(request, names, port);
+      const created = await this.#docker.requestJson("/containers/create", {
+        method: "POST",
+        query: { name: names.containerName },
+        body: {
+          Image: this.#options.image,
+          Labels: labels,
+          Env: this.#containerEnv(request, port),
+          Healthcheck: this.#containerHealthcheck(),
+          ExposedPorts: {
+            [`${String(this.#options.containerHttpPort)}/tcp`]: {},
+            [`${String(this.#options.containerCdpPort)}/tcp`]: {},
+            [`${String(port)}/tcp`]: {},
+            [`${String(port)}/udp`]: {},
+          },
+          HostConfig: {
+            Binds: [`${names.profilePath}:/home/user/.config/chromium`],
+            NetworkMode: this.#options.network,
+            PortBindings: {
+              [`${String(port)}/tcp`]: [{ HostPort: String(port) }],
+              [`${String(port)}/udp`]: [{ HostPort: String(port) }],
+            },
           },
         },
-      },
-      okStatuses: [201],
-    });
-    const containerId = readCreatedContainerId(created);
-    await this.#startContainer(containerId);
-    return this.#surfaceFromInspect(await this.#inspectContainer(containerId), { request });
+        okStatuses: [201],
+      });
+      const containerId = readCreatedContainerId(created);
+      try {
+        await this.#startContainer(containerId);
+      } catch (error) {
+        await this.#removeContainer(containerId);
+        if (isDockerPortBindError(error)) {
+          skippedPorts.add(port);
+          continue;
+        }
+        throw error;
+      }
+      return this.#surfaceFromInspect(await this.#inspectContainer(containerId), { request });
+    }
   }
 
   async getSurfaceStatus(surfaceId: string): Promise<BrowserSurface | null> {
@@ -560,10 +575,14 @@ export class NekoSurfaceAllocatorService {
     await this.#options.profileFilesystem.chmod(profilePath, PROFILE_DIRECTORY_MODE);
   }
 
-  async #allocateHostPort(): Promise<number> {
+  async #allocateHostPort(skippedPorts: ReadonlySet<number> = new Set()): Promise<number> {
     const containers = await this.#listOwnedContainers();
     const used = new Set<number>();
     for (const container of containers) {
+      const labelPort = parsePositiveInteger(container.Labels?.[`${this.#options.labelNamespace}.webrtc_host_port`]);
+      if (labelPort !== null) {
+        used.add(labelPort);
+      }
       for (const port of container.Ports ?? []) {
         if (port.PublicPort !== undefined) {
           used.add(port.PublicPort);
@@ -571,9 +590,10 @@ export class NekoSurfaceAllocatorService {
       }
     }
     for (let port = this.#options.webrtcHostPortStart; port <= this.#options.webrtcHostPortEnd; port += 1) {
-      if (!used.has(port)) {
-        return port;
+      if (used.has(port) || skippedPorts.has(port)) {
+        continue;
       }
+      return port;
     }
     throw new NekoSurfaceAllocatorServiceError(
       "port_capacity_exhausted",
@@ -974,8 +994,20 @@ function isDockerNotFoundError(value: unknown): boolean {
   );
 }
 
+function isDockerPortBindError(value: unknown): boolean {
+  return value instanceof NekoSurfaceAllocatorServiceError && DOCKER_PORT_BIND_RE.test(value.message);
+}
+
 function isInspectRunning(inspect: DockerContainerInspect): boolean {
   return inspect.State?.Running === true || inspect.State?.Status === "running";
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  if (typeof value !== "string" || value.length === 0) {
+    return null;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 /**

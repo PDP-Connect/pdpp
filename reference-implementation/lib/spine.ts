@@ -674,6 +674,7 @@ interface RunLifecycleEventRow {
 const RUN_TERMINAL_EVENT_TYPE_TO_STATUS: Record<string, RunTerminalStatus> = {
   "run.completed": "completed",
   "run.failed": "failed",
+  "run.browser_surface_failed": "failed",
   "run.cancelled": "cancelled",
   "run.abandoned": "abandoned",
 };
@@ -877,11 +878,18 @@ function pickFirstNonNull<T extends keyof SpineEventRecord>(
   return null;
 }
 // RUN_TERMINAL_EVENT_TYPES — the canonical set of terminal events for a
-// run lifecycle. `run.cancelled` and `run.abandoned` were added with
-// boot-epoch reconciliation (see docs/run-reconciliation-design-brief.md
-// §3.7). All run-status projection code must read from this set; never
-// hardcode subset checks like `["completed", "failed"]` elsewhere.
-const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled", "run.abandoned"]);
+// run lifecycle. `run.browser_surface_failed` is a terminal pre-launch
+// failure: the connector never receives a browser surface, so no later
+// `run.failed` event will arrive from connector execution. All run-status
+// projection code must read from this set; never hardcode subset checks like
+// `["completed", "failed"]` elsewhere.
+const RUN_TERMINAL_EVENT_TYPES = new Set([
+  "run.completed",
+  "run.failed",
+  "run.browser_surface_failed",
+  "run.cancelled",
+  "run.abandoned",
+]);
 
 // Walk events newest-first and pick the most recent status that satisfies
 // `accept`. Returns `null` when no event matches.

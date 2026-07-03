@@ -199,7 +199,7 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
         AND NOT EXISTS (
           SELECT 1 FROM spine_events t
           WHERE t.run_id = s.run_id
-            AND t.event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned')
+            AND t.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
         )
         AND NOT EXISTS (
           SELECT 1 FROM spine_events r
@@ -252,7 +252,7 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
       AND NOT EXISTS (
         SELECT 1 FROM spine_events t
         WHERE t.run_id = s.run_id
-          AND t.event_type IN ('run.completed', 'run.failed', 'run.cancelled', 'run.abandoned')
+          AND t.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled', 'run.abandoned')
       )
       AND NOT EXISTS (
         SELECT 1 FROM spine_events r

@@ -289,6 +289,10 @@ export function mountRefRunStatus(app: AppLike, ctx: MountRefRunStatusContext): 
       // not-yet-finalized in-memory flight state.
       const terminal = await ctx.getRunTerminalEvent(runId);
       if (terminal) {
+        const browserSurfaceStatus = buildBrowserSurfaceRunStatusBody(runId, terminal);
+        if (browserSurfaceStatus) {
+          return res.json(browserSurfaceStatus);
+        }
         const started = await ctx.getRunStartedEvent(runId);
         return res.json(buildTerminalRunStatusBody(runId, terminal, started));
       }

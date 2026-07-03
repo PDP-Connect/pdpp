@@ -226,6 +226,7 @@ function encodeSummaryCursor(summary) {
 const RUN_TERMINAL_EVENT_TYPES = new Set([
   'run.completed',
   'run.failed',
+  'run.browser_surface_failed',
   'run.cancelled',
   'run.abandoned',
 ]);

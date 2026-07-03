@@ -176,6 +176,38 @@ test('run-timeline route reports terminal_status null for an in-progress run', a
   });
 });
 
+test('run-timeline route treats browser surface failure as a failed terminal run', async () => {
+  await withSpine(async () => {
+    const runId = 'run_route_surface_failed';
+    await emitSpineEvent({
+      event_type: 'run.browser_surface_failed',
+      run_id: runId,
+      status: 'surface_failed',
+      object_type: 'run',
+      object_id: runId,
+      actor_type: 'runtime',
+      actor_id: 'amazon',
+      source_kind: 'connector',
+      source_id: 'amazon',
+      occurred_at: '2026-04-01T00:00:00Z',
+      data: {
+        source: { kind: 'connector', id: 'amazon' },
+        browser_surface: {
+          pending_run_id: runId,
+          browser_surface_status: 'surface_failed',
+          browser_surface_wait_reason: 'surface_start_failed',
+          browser_surface_lease_id: 'lease_surface_failed',
+          browser_surface_profile_key: 'amazon:cin_surface_failed',
+        },
+      },
+    });
+
+    const harness = buildHarness(makeCtx());
+    const page = await harness.invoke(runId, { limit: '10' });
+    assert.equal(page.terminal_status, 'failed');
+  });
+});
+
 test('run-timeline route maps run.abandoned to the abandoned terminal class', async () => {
   await withSpine(async () => {
     const runId = 'run_route_abandoned';
