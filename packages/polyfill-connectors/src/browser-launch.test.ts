@@ -301,11 +301,11 @@ test("fetchPageTargetWsUrl returns null on non-JSON body (does not throw)", asyn
 });
 
 test("closeRemoteCdpPageTargets replaces stale page targets before closing them", async () => {
-  const seenUrls: string[] = [];
+  const seenRequests: Array<{ method: string; url: string }> = [];
   let listCalls = 0;
-  const fetchImpl = ((input: string | URL | Request): Promise<Response> => {
+  const fetchImpl = ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = urlOf(input);
-    seenUrls.push(url);
+    seenRequests.push({ method: init?.method ?? "GET", url });
     if (url.endsWith("/json")) {
       listCalls += 1;
       const body =
@@ -338,19 +338,19 @@ test("closeRemoteCdpPageTargets replaces stale page targets before closing them"
   });
 
   assert.deepEqual(result, { closed: 1, remaining: 0, replacementCreated: true, skipped: false });
-  assert.deepEqual(seenUrls, [
-    "http://neko.example.test:9223/json",
-    "http://neko.example.test:9223/json/new?about:blank",
-    "http://neko.example.test:9223/json/close/PAGE_TARGET_ID",
-    "http://neko.example.test:9223/json",
+  assert.deepEqual(seenRequests, [
+    { method: "GET", url: "http://neko.example.test:9223/json" },
+    { method: "PUT", url: "http://neko.example.test:9223/json/new?about:blank" },
+    { method: "GET", url: "http://neko.example.test:9223/json/close/PAGE_TARGET_ID" },
+    { method: "GET", url: "http://neko.example.test:9223/json" },
   ]);
 });
 
 test("closeRemoteCdpPageTargets does not close the last page when replacement creation fails", async () => {
-  const seenUrls: string[] = [];
-  const fetchImpl = ((input: string | URL | Request): Promise<Response> => {
+  const seenRequests: Array<{ method: string; url: string }> = [];
+  const fetchImpl = ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = urlOf(input);
-    seenUrls.push(url);
+    seenRequests.push({ method: init?.method ?? "GET", url });
     if (url.endsWith("/json")) {
       return Promise.resolve(
         new Response(JSON.stringify([{ id: "ONLY_PAGE_TARGET_ID", type: "page", url: "https://www.amazon.com" }]), {
@@ -372,9 +372,9 @@ test("closeRemoteCdpPageTargets does not close the last page when replacement cr
   });
 
   assert.deepEqual(result, { closed: 0, remaining: 1, replacementCreated: false, skipped: true });
-  assert.deepEqual(seenUrls, [
-    "http://neko.example.test:9223/json",
-    "http://neko.example.test:9223/json/new?about:blank",
+  assert.deepEqual(seenRequests, [
+    { method: "GET", url: "http://neko.example.test:9223/json" },
+    { method: "PUT", url: "http://neko.example.test:9223/json/new?about:blank" },
   ]);
 });
 

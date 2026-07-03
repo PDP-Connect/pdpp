@@ -1051,7 +1051,9 @@ async function createRemoteDevToolsPageTarget({
   deadline: number;
   fetchImpl: typeof fetch;
 }): Promise<DevToolsTarget | null> {
-  const response = await fetchWithDeadline(new URL("/json/new?about:blank", baseUrl).toString(), deadline, fetchImpl);
+  const response = await fetchWithDeadline(new URL("/json/new?about:blank", baseUrl).toString(), deadline, fetchImpl, {
+    method: "PUT",
+  });
   if (!response?.ok) {
     return null;
   }
@@ -1064,7 +1066,12 @@ async function createRemoteDevToolsPageTarget({
   return typeof body === "object" && body !== null ? (body as DevToolsTarget) : null;
 }
 
-async function fetchWithDeadline(url: string, deadline: number, fetchImpl: typeof fetch): Promise<Response | null> {
+async function fetchWithDeadline(
+  url: string,
+  deadline: number,
+  fetchImpl: typeof fetch,
+  init: RequestInit = {}
+): Promise<Response | null> {
   const remainingMs = Math.max(1, deadline - Date.now());
   const controller = new AbortController();
   let timeout: NodeJS.Timeout | null = null;
@@ -1075,7 +1082,7 @@ async function fetchWithDeadline(url: string, deadline: number, fetchImpl: typeo
         resolve(null);
       }, remainingMs);
     });
-    return await Promise.race([fetchImpl(url, { signal: controller.signal }), timeoutPromise]);
+    return await Promise.race([fetchImpl(url, { ...init, signal: controller.signal }), timeoutPromise]);
   } catch {
     return null;
   } finally {
