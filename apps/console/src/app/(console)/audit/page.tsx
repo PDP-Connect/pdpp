@@ -46,6 +46,7 @@ import {
   type TimelineEnvelope,
   type TraceSummary,
 } from "../lib/ref-client.ts";
+import { traceEndorseStatus } from "./trace-endorse-status.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -66,22 +67,6 @@ function listHref(params: Params, overrides: Record<string, string | undefined> 
     )
     .join("&");
   return qs ? `/audit?${qs}` : "/audit";
-}
-
-/** Map trace status to the Endorse variant vocabulary. */
-function traceEndorseStatus(status: string): "active" | "continuous" | "expiring" | "revoked" | "denied" {
-  switch (status) {
-    case "succeeded":
-      return "active";
-    case "started":
-    case "in_progress":
-      return "continuous";
-    case "failed":
-    case "rejected":
-      return "denied";
-    default:
-      return "revoked"; // unknown / terminal-muted
-  }
 }
 
 function traceListFilters(params: Params) {

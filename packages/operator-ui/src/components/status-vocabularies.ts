@@ -60,6 +60,10 @@ export const GRANT_LIFECYCLE_VOCABULARY: StatusVocabulary = {
   cancelled: { label: "cancelled", tone: "danger" },
   pending: { label: "pending", tone: "warning" },
   staged: { label: "pending", tone: "warning" },
+  // An indeterminate grant state reads neutral, never the `active`/success
+  // tone. Pinned explicitly so unknown can never be folded into a definite
+  // live state (PDPP honesty: unknown reads unknown).
+  unknown: { label: "unknown", tone: "neutral" },
 };
 
 // Schedule state: the durable refresh-cadence row's posture.

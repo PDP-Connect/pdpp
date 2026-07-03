@@ -11,6 +11,9 @@
  *   expiring    — amber (--warning): expiring soon, owner attention
  *   revoked     — muted outline: struck, not erased
  *   denied      — red (--destructive): access denied
+ *   unknown     — neutral, no color spent: state is genuinely
+ *                 indeterminate. Never paint uncertainty as a definite
+ *                 active/revoked/denied — unknown reads unknown.
  *
  * The badge background and border are derived from currentColor
  * via color-mix so the variant modifier drives the entire badge.
@@ -18,7 +21,7 @@
 import { cva } from "class-variance-authority";
 import "./components.css";
 
-export type EndorseStatus = "active" | "continuous" | "expiring" | "revoked" | "denied";
+export type EndorseStatus = "active" | "continuous" | "expiring" | "revoked" | "denied" | "unknown";
 
 const endorse = cva("pdpp-endorse", {
   variants: {
@@ -28,6 +31,7 @@ const endorse = cva("pdpp-endorse", {
       expiring: "pdpp-endorse--expiring",
       revoked: "pdpp-endorse--revoked",
       denied: "pdpp-endorse--denied",
+      unknown: "pdpp-endorse--unknown",
     },
   },
   defaultVariants: {
@@ -42,6 +46,7 @@ const LABEL: Record<EndorseStatus, string> = {
   expiring: "expiring",
   revoked: "revoked",
   denied: "denied",
+  unknown: "unknown",
 };
 
 interface EndorseProps {

@@ -231,6 +231,11 @@
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 .pdpp-endorse--denied    { color: var(--destructive); }
+/* unknown — neutral, no state color spent: indeterminate reads
+   indeterminate. Distinct from revoked (which is a definite struck
+   state) by keeping the default color-mix fill rather than the
+   transparent outline. */
+.pdpp-endorse--unknown   { color: var(--muted-foreground); }
 
 /* ─── Tag — taxonomy label, neutral, no color spent ─────────────── */
 .pdpp-tag {
@@ -1135,6 +1140,45 @@
   font-variant-numeric: tabular-nums;
 }
 .rr-sync-row.is-failed .rr-sync-row__next { color: var(--warning); }
+
+/* ── Sync table mobile card reflow (≤640px) ──────────────────────────
+   The Syncs list is composed over the kit Table (5-column pdpp-table
+   grid: stream / cadence / rhythm / delta / next). At phone widths the
+   five fr-columns crush each cell, so we reflow each row into a card:
+   stream on top, then cadence · rhythm · delta · next wrap as one meta
+   line. Mirrors the traces card reflow (P0-2). No horizontal scroll.
+   Scoped to .rr-sync so other pdpp-tables are untouched. */
+@media (max-width: 640px) {
+  /* Column labels are implicit in card order — hide the header row. */
+  .rr-sync .pdpp-table__hrow {
+    display: none;
+  }
+  .rr-sync .rr-sync-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 12px;
+    padding: 12px 0;
+  }
+  /* All cells drop their grid sizing in card mode. */
+  .rr-sync .rr-sync-row > * {
+    width: auto;
+    text-align: left;
+    justify-self: auto;
+  }
+  /* Stream leads on its own full-width line. */
+  .rr-sync .rr-sync-row__stream {
+    flex: 1 0 100%;
+    font-size: 0.875rem;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  /* Next refresh aligns to the trailing edge of the meta line. */
+  .rr-sync .rr-sync-row__next {
+    margin-left: auto;
+    text-align: right;
+  }
+}
 
 /* Expanded detail under a sync row. */
 .rr-sync-detail {
