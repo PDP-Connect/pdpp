@@ -8,6 +8,15 @@ Source: untracked agent night reports from `docs/research/night-reports-2026-07-
 
 - `harden-runtime-tool-detection`: live security finding. The scheduler readiness path executed connector-manifest `detect.command` through `spawn(..., { shell: true })`. Promoted to OpenSpec change `openspec/changes/harden-runtime-tool-detection/` and implemented in the current worktree.
 
+## Security findings still to triage
+
+- Client event-subscription `callback_url` accepts outbound destinations without destination-IP checks. Triage as an SSRF hardening item before deleting the raw security audit.
+- CIMD metadata fetch validates a URL before fetch but does not pin the resolved IP across request time. Triage DNS-rebinding exposure before deleting the raw security audit.
+- Web-push subscription endpoints are accepted without URL, scheme, or private-IP validation. Triage as self-SSRF or bounded endpoint-validation work.
+- The owner control plane default posture warns on some all-interface bind configurations instead of refusing unsafe exposure. Triage whether the default should fail closed.
+- `/introspect` is unauthenticated. Triage against the intended reference OAuth posture and token-entropy mitigation.
+- Unexpected 500 responses can reflect raw error messages. Triage whether these paths need generic client errors plus detailed server logs.
+
 ## Open PR gates
 
 - PR #11, OSS connector adapter kit: review found it merge-quality after owner review and test execution. Keep as an owner-gated PR decision; not a lost code fix.
