@@ -3316,7 +3316,7 @@ test('scheduler default readiness checker skips missing manifest-declared extern
           license: 'test-only',
           purpose: 'Prove scheduler readiness gating',
           install_hint: 'install definitely-missing-tool',
-          detect: { command: 'definitely-missing-tool-pdpp-test --help', exit_code: 0 },
+          detect: { executable: 'definitely-missing-tool-pdpp-test', args: ['--help'], exit_code: 0 },
         },
       ],
     },
@@ -3370,7 +3370,7 @@ test('scheduler default readiness checker skips missing manifest-declared extern
   }
 });
 
-test('scheduler default readiness checker probes SLACKDUMP_BIN with version despite stale manifest command', async () => {
+test('scheduler default readiness checker probes SLACKDUMP_BIN with version when set', async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
@@ -3384,7 +3384,7 @@ test('scheduler default readiness checker probes SLACKDUMP_BIN with version desp
           license: 'AGPL-3.0',
           purpose: 'Session-token Slack archive export',
           install_hint: 'mount slackdump and set SLACKDUMP_BIN',
-          detect: { command: 'slackdump stale-detect-command', exit_code: 0 },
+          detect: { executable: 'unused-slackdump', args: ['stale-detect-args'], exit_code: 0 },
         },
       ],
     },

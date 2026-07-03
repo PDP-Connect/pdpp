@@ -2642,9 +2642,26 @@ function validateRuntimeRequirements(manifest, code) {
       if (!tool.detect || typeof tool.detect !== 'object' || Array.isArray(tool.detect)) {
         throw invalidConnectorManifest(`runtime_requirements.external_tools[${index}].detect must be an object`, code);
       }
-      if (!isNonEmptyString(tool.detect.command)) {
+      const allowedDetectKeys = new Set(['args', 'executable', 'exit_code']);
+      const unknownDetectKeys = Object.keys(tool.detect).filter((key) => !allowedDetectKeys.has(key));
+      if (unknownDetectKeys.length) {
         throw invalidConnectorManifest(
-          `runtime_requirements.external_tools[${index}].detect.command must be a non-empty string`,
+          `runtime_requirements.external_tools[${index}].detect has unsupported keys: ${unknownDetectKeys.join(', ')}`,
+          code,
+        );
+      }
+      if (!isNonEmptyString(tool.detect.executable)) {
+        throw invalidConnectorManifest(
+          `runtime_requirements.external_tools[${index}].detect.executable must be a non-empty string`,
+          code,
+        );
+      }
+      if (
+        tool.detect.args !== undefined
+        && (!Array.isArray(tool.detect.args) || tool.detect.args.some((arg) => typeof arg !== 'string'))
+      ) {
+        throw invalidConnectorManifest(
+          `runtime_requirements.external_tools[${index}].detect.args must be an array of strings`,
           code,
         );
       }

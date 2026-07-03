@@ -11,7 +11,7 @@ import type { ConnectorSchedule, SchedulerManifest, SchedulerReadinessResult } f
 interface RuntimeRequirements {
   readonly bindings?: Record<string, { readonly required?: boolean } | undefined>;
   readonly external_tools?: readonly {
-    readonly detect?: { readonly command?: string; readonly exit_code?: number };
+    readonly detect?: { readonly args?: readonly string[]; readonly executable?: string; readonly exit_code?: number };
     readonly install_hint?: string;
     readonly name?: string;
   }[];
@@ -32,24 +32,6 @@ async function canAccessPath(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function runCommand(command: string, expectedExitCode: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = spawn(command, { shell: true, stdio: "ignore" });
-    const timeout = setTimeout(() => {
-      child.kill();
-      resolve(false);
-    }, 5000);
-    child.once("error", () => {
-      clearTimeout(timeout);
-      resolve(false);
-    });
-    child.once("exit", (code) => {
-      clearTimeout(timeout);
-      resolve(code === expectedExitCode);
-    });
-  });
 }
 
 function runExecutable(file: string, args: readonly string[], expectedExitCode: number): Promise<boolean> {
@@ -77,11 +59,11 @@ function runDetectCommand(tool: NonNullable<RuntimeRequirements["external_tools"
     return runExecutable(slackdumpBin, ["version"], expectedExitCode);
   }
 
-  const command = tool.detect?.command;
-  if (!command) {
+  const executable = tool.detect?.executable;
+  if (!executable) {
     return Promise.resolve(true);
   }
-  return runCommand(command, expectedExitCode);
+  return runExecutable(executable, tool.detect?.args || [], expectedExitCode);
 }
 
 function formatMissingToolReason(tool: NonNullable<RuntimeRequirements["external_tools"]>[number]): string {

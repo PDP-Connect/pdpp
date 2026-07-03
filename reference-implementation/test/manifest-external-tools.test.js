@@ -2,8 +2,8 @@
  * Validation coverage for connector `runtime_requirements.external_tools`.
  *
  * External subprocess tools are static deployment/supply-chain metadata.
- * The registry validates the declaration shape but does not execute tool
- * detection commands in this slice.
+ * The registry validates structured detection metadata; runtime readiness
+ * executes detectors without a shell.
  */
 
 import test from 'node:test';
@@ -89,7 +89,7 @@ test('valid external tool declaration is accepted', async () => {
           license: 'AGPL-3.0',
           purpose: 'Session-token Slack archive export',
           install_hint: 'go install github.com/rusq/slackdump/v4/cmd/slackdump@latest',
-          detect: { command: 'slackdump version', exit_code: 0 },
+          detect: { executable: 'slackdump', args: ['version'], exit_code: 0 },
         },
       ]),
     );
@@ -118,7 +118,7 @@ test('external tool declarations require name license and purpose', async () => 
   });
 });
 
-test('external tool detect command must be a non-empty string', async () => {
+test('external tool detect executable must be a non-empty string', async () => {
   await withHarness(async ({ asUrl }) => {
     const { status, body } = await registerConnectorManifest(
       asUrl,
@@ -127,12 +127,50 @@ test('external tool detect command must be a non-empty string', async () => {
           name: 'slackdump',
           license: 'AGPL-3.0',
           purpose: 'Session-token Slack archive export',
-          detect: { command: '', exit_code: 0 },
+          detect: { executable: '', exit_code: 0 },
         },
       ]),
     );
     assert.equal(status, 400);
     assert.equal(body.error.code, 'invalid_request');
-    assert.match(body.error.message, /detect\.command must be a non-empty string/u);
+    assert.match(body.error.message, /detect\.executable must be a non-empty string/u);
+  });
+});
+
+test('external tool legacy detect command is rejected', async () => {
+  await withHarness(async ({ asUrl }) => {
+    const { status, body } = await registerConnectorManifest(
+      asUrl,
+      makeManifest([
+        {
+          name: 'slackdump',
+          license: 'AGPL-3.0',
+          purpose: 'Session-token Slack archive export',
+          detect: { command: 'slackdump version', exit_code: 0 },
+        },
+      ]),
+    );
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'invalid_request');
+    assert.match(body.error.message, /detect has unsupported keys: command/u);
+  });
+});
+
+test('external tool detect args must be strings', async () => {
+  await withHarness(async ({ asUrl }) => {
+    const { status, body } = await registerConnectorManifest(
+      asUrl,
+      makeManifest([
+        {
+          name: 'slackdump',
+          license: 'AGPL-3.0',
+          purpose: 'Session-token Slack archive export',
+          detect: { executable: 'slackdump', args: ['version', 1], exit_code: 0 },
+        },
+      ]),
+    );
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'invalid_request');
+    assert.match(body.error.message, /detect\.args must be an array of strings/u);
   });
 });
