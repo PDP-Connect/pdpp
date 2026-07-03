@@ -37,7 +37,7 @@ Different artifacts have different voice contracts. Mixing them is the single mo
 | `docs/**` (this folder) | **Contributor / reviewer guides**. Durable explainers, playbooks, audits, research syntheses. | Mixed. | Explain reality. Cite specs and code. Label aspiration. |
 | `README.md`, `reference-implementation/README.md`, package READMEs | **Operator-facing**. Describe what the artifact *does today*, with a quick-start that works. | Imperative for instructions, present for descriptions. | Current behavior of the code at this commit. |
 | `apps/site/` site copy (`/docs`, `/reference`, `/sandbox`, etc.) | **Public site**. Calm, technical, illustrated. | Present. | Protocol facts, clearly labeled reference behavior, clearly labeled mock specimens. |
-| `apps/console/` operator copy (`/dashboard`, `/owner/**`) | **Operator console**. UI strings for someone running their own instance. | Imperative or descriptive. | The owner's instance state. Not the protocol. |
+| `apps/console/` operator copy (clean owner routes `/`, `/sources`, `/syncs`, `/audit`, …; `/owner/**`) | **Operator console**. UI strings for someone running their own instance. | Imperative or descriptive. | The owner's instance state. Not the protocol. |
 
 A common failure: writing dashboard tooltip text in the voice of a hosted SaaS ("We'll sync your Gmail nightly"). The reference does not offer a service to "us." Use operator-voice: "This connection runs on the schedule you configured."
 
@@ -51,11 +51,11 @@ A common failure: writing dashboard tooltip text in the voice of a hosted SaaS (
 - **`/docs/**` on the site** — protocol documentation. Never shows live owner state.
 - **`/reference/**`** — public explainer of the reference implementation, including a coverage matrix. Use it to show *what the reference proves today*. It is not the protocol; it is one realization of it.
 - **`/sandbox/**`** — mock-backed pedagogical dashboard with deterministic fictional data. Always label specimens as such. Never collects real credentials.
-- **`/dashboard/**`** — live owner/operator control plane. Owner-authed. Talk to the operator, not "the user of a service."
+- **clean owner routes (`/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and clean deployment/admin nouns)** — the live owner/operator control plane. Owner-authed. Talk to the operator, not "the user of a service." Legacy `/dashboard/**` paths remain reachable only as compatibility redirects into these clean routes (see `openspec/specs/reference-surface-topology/spec.md`).
 - **`/planning/**`** — OpenSpec viewer. Project planning, not protocol authority.
 - **`/design`, `/palette`** — local contributor workbenches. Don't cite them as user-facing surfaces.
 
-When writing, never let `/sandbox` copy sound like `/dashboard` ("Your data has been collected"), and never let `/dashboard` copy sound like `/docs` ("PDPP enforces field projection").
+When writing, never let `/sandbox` copy sound like the owner control plane ("Your data has been collected"), and never let owner-console copy sound like `/docs` ("PDPP enforces field projection").
 
 ---
 
@@ -123,7 +123,7 @@ The reference implementation is **forkable**. There is no PDPP-the-company offer
 
 - The Docker images at `ghcr.io/vana-com/pdpp/*` are the reference, published for inspection and self-hosting.
 - `pdpp.dev` (and any other instance the project runs publicly) is a *public reference deployment* for inspection. It is not a product an end user signs up for, and copy should not invite that interpretation.
-- The operator console (`/dashboard`) is for someone running their own instance. Address that operator directly.
+- The operator console (the clean owner routes at `/`, `/sources`, `/syncs`, `/audit`, …) is for someone running their own instance. Address that operator directly.
 
 Phrasings that work:
 

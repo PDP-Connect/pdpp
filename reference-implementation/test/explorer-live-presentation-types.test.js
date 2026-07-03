@@ -21,7 +21,7 @@
  * browser dependency.
  *
  * The record-kind dispatch precedence (mirrored from
- * `apps/console/src/app/dashboard/lib/record-kind.ts`, kept in sync by the web
+ * `apps/console/src/app/(console)/lib/record-kind.ts`, kept in sync by the web
  * `record-kind.test.ts`): money > (person+text => message) > text(=titled) >
  * temporal(=event). This file reimplements only the tiny declared-type→kind
  * mapping so the reference test stays dependency-free; the web suite owns the

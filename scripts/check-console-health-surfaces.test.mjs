@@ -9,7 +9,7 @@ import {
   scanActiveOwnerSurface,
 } from "./check-console-health-surfaces.mjs";
 
-const ACTIVE = "apps/console/src/app/dashboard/records/sources-view-model.ts";
+const ACTIVE = "apps/console/src/app/(console)/sources/sources-view-model.ts";
 
 test("active owner-surface scan catches raw state and legacy next-action fallbacks", () => {
   const findings = scanActiveOwnerSurface(
@@ -24,7 +24,7 @@ test("active owner-surface scan catches raw state and legacy next-action fallbac
 
 test("active owner-surface scan catches mechanistic detail fields", () => {
   const findings = scanActiveOwnerSurface(
-    "apps/console/src/app/dashboard/records/sources-view.tsx",
+    "apps/console/src/app/(console)/sources/sources-view.tsx",
     `return <span>{detail_gap_backlog?.pending} {connectionHealth.collection_rate}</span>;`
   );
   assert.deepEqual(
@@ -35,7 +35,7 @@ test("active owner-surface scan catches mechanistic detail fields", () => {
 
 test("diagnostics and tests are outside the owner attention scan", () => {
   const diagnostics = scanActiveOwnerSurface(
-    "apps/console/src/app/dashboard/records/[connector]/connection-diagnostics.tsx",
+    "apps/console/src/app/(console)/sources/[connector]/connection-diagnostics.tsx",
     `const state = connectionHealth.state; const retry = connectionHealth.next_attempt_at;`
   );
   assert.deepEqual(diagnostics, []);
@@ -44,8 +44,8 @@ test("diagnostics and tests are outside the owner attention scan", () => {
 test("legacy connector row cannot be reactivated by a new owner surface import", () => {
   const findings = findLegacyConnectorRowImports(
     new Map([
-      ["apps/console/src/app/dashboard/records/connector-row.tsx", "export function ConnectorRow() {}"],
-      ["apps/console/src/app/dashboard/records/page.tsx", `import { ConnectorRow } from "./connector-row.tsx";`],
+      ["apps/console/src/app/(console)/sources/connector-row.tsx", "export function ConnectorRow() {}"],
+      ["apps/console/src/app/(console)/sources/page.tsx", `import { ConnectorRow } from "./connector-row.tsx";`],
     ])
   );
   assert.equal(findings.length, 1);

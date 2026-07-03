@@ -12,7 +12,7 @@
 // `touchstart`+`touchend` flow end-to-end to the remote, but n.eko's
 // Chromium does NOT synthesize a `click` event from a stationary touch
 // pair. The working fix — verified empirically in
-// apps/console/src/app/dashboard/runs/[runId]/stream/neko-client.ts (see
+// apps/console/src/app/(console)/syncs/[runId]/stream/neko-client.ts (see
 // `clickNekoAtPoint` at lines 1573-1610) — is to emit:
 //
 //   control.buttonDown(1, {x, y})

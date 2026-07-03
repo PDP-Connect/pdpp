@@ -20,7 +20,7 @@
  *
  * The placeholder-detection rule is the same one the operator console uses to
  * decide whether a connection still needs a label
- * (`apps/console/src/app/dashboard/lib/connector-display.ts:isFallbackConnectionLabel`).
+ * (`apps/console/src/app/(console)/lib/connector-display.ts:isFallbackConnectionLabel`).
  * It is duplicated here rather than imported because the two apps are split
  * surfaces that do not share an internal package; the parity is asserted by
  * tests on both sides. If a shared `@pdpp/*` package later hosts this rule,

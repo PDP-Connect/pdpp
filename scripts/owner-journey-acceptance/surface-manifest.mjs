@@ -36,18 +36,18 @@
  * route — including `/dashboard/connect`, where the failed walkthrough began.
  */
 export const NORMAL_OWNER_UI_FILES = [
-  "apps/console/src/app/dashboard/records/page.tsx",
-  "apps/console/src/app/dashboard/records/sources-view.tsx",
-  "apps/console/src/app/dashboard/records/add/page.tsx",
-  "apps/console/src/app/dashboard/components/source-setup-catalog.tsx",
-  "apps/console/src/app/dashboard/lib/source-setup-presentation.ts",
-  "apps/console/src/app/dashboard/connect/page.tsx",
-  "apps/console/src/app/dashboard/connect/browser-session/[connectorId]/launch/launch-panel.tsx",
-  "apps/console/src/app/dashboard/connect/manual-upload/[connectorId]/manual-upload-form.tsx",
-  "apps/console/src/app/dashboard/connect/static-secret/[connectorId]/page.tsx",
-  "apps/console/src/app/dashboard/connect/static-secret/[connectorId]/actions.ts",
-  "apps/console/src/app/dashboard/connect/static-secret/[connectorId]/status/[connectionId]/page.tsx",
-  "apps/console/src/app/dashboard/components/shell.tsx",
+  "apps/console/src/app/(console)/sources/page.tsx",
+  "apps/console/src/app/(console)/sources/sources-view.tsx",
+  "apps/console/src/app/(console)/sources/add/page.tsx",
+  "apps/console/src/app/(console)/components/source-setup-catalog.tsx",
+  "apps/console/src/app/(console)/lib/source-setup-presentation.ts",
+  "apps/console/src/app/(console)/connect/page.tsx",
+  "apps/console/src/app/(console)/connect/browser-session/[connectorId]/launch/launch-panel.tsx",
+  "apps/console/src/app/(console)/connect/manual-upload/[connectorId]/manual-upload-form.tsx",
+  "apps/console/src/app/(console)/connect/static-secret/[connectorId]/page.tsx",
+  "apps/console/src/app/(console)/connect/static-secret/[connectorId]/actions.ts",
+  "apps/console/src/app/(console)/connect/static-secret/[connectorId]/status/[connectionId]/page.tsx",
+  "apps/console/src/app/(console)/components/shell.tsx",
 ];
 
 /**
@@ -56,16 +56,16 @@ export const NORMAL_OWNER_UI_FILES = [
  * bypassing the owner-journey acceptance harness.
  */
 export const NORMAL_OWNER_ROUTE_SCAN_ROOTS = [
-  "apps/console/src/app/dashboard/connect",
-  "apps/console/src/app/dashboard/deployment",
-  "apps/console/src/app/dashboard/event-subscriptions",
-  "apps/console/src/app/dashboard/explore",
-  "apps/console/src/app/dashboard/grants",
-  "apps/console/src/app/dashboard/records",
-  "apps/console/src/app/dashboard/runs",
-  "apps/console/src/app/dashboard/schedules",
-  "apps/console/src/app/dashboard/search",
-  "apps/console/src/app/dashboard/traces",
+  "apps/console/src/app/(console)/connect",
+  "apps/console/src/app/(console)/deployment",
+  "apps/console/src/app/(console)/event-subscriptions",
+  "apps/console/src/app/(console)/explore",
+  "apps/console/src/app/(console)/grants",
+  "apps/console/src/app/(console)/sources",
+  "apps/console/src/app/(console)/syncs",
+  "apps/console/src/app/(console)/schedules",
+  "apps/console/src/app/(console)/search",
+  "apps/console/src/app/(console)/audit",
 ];
 
 /**
@@ -75,7 +75,7 @@ export const NORMAL_OWNER_ROUTE_SCAN_ROOTS = [
  * `docs/operator/...` runbook pointer behind reference-experimental framing).
  */
 export const ADVANCED_OWNER_UI_FILES = [
-  "apps/console/src/app/dashboard/device-exporters/page.tsx",
+  "apps/console/src/app/(console)/device-exporters/page.tsx",
 ];
 
 /**
@@ -91,7 +91,7 @@ export const ADVANCED_OWNER_UI_FILES = [
  */
 export const COMMAND_SOURCE_FILES = [
   "apps/console/src/lib/pdpp-cli-command.ts",
-  "apps/console/src/app/dashboard/lib/connection-catalog.ts",
+  "apps/console/src/app/(console)/lib/connection-catalog.ts",
 ];
 
 /**
@@ -102,7 +102,7 @@ export const COMMAND_SOURCE_FILES = [
  */
 export const SHARED_SHELL_FILE = "packages/pdpp-brand-react/src/shell-frame.tsx";
 
-export const DASHBOARD_ROUTE_ROOT = "apps/console/src/app/dashboard";
+export const DASHBOARD_ROUTE_ROOT = "apps/console/src/app/(console)";
 
 export const SHELL_NAV_REQUIRED_ITEMS = [
   { label: "Overview", href: "/dashboard" },
@@ -112,7 +112,7 @@ export const SHELL_NAV_REQUIRED_ITEMS = [
   { label: "Schedules", href: "/dashboard/schedules" },
   { label: "Connect AI apps", href: "/dashboard/connect" },
   { label: "Grants", href: "/dashboard/grants" },
-  { label: "Traces", href: "/dashboard/traces" },
+  { label: "Audit", href: "/dashboard/traces" },
   { label: "Deployment", href: "/dashboard/deployment" },
   { label: "Device exporters", href: "/dashboard/device-exporters" },
   { label: "Event subscriptions", href: "/dashboard/event-subscriptions" },
@@ -121,8 +121,8 @@ export const SHELL_NAV_REQUIRED_ITEMS = [
 export const FULL_SCREEN_DASHBOARD_ROUTE_EXCEPTIONS = [
   // Browser-control stream surfaces are intentionally full-screen task surfaces,
   // not dashboard reading-room pages.
-  "apps/console/src/app/dashboard/runs/[runId]/stream/page.tsx",
-  "apps/console/src/app/dashboard/stream-playground/page.tsx",
+  "apps/console/src/app/(console)/syncs/[runId]/stream/page.tsx",
+  "apps/console/src/app/(console)/stream-playground/page.tsx",
 ];
 
 /**
@@ -252,7 +252,7 @@ export const HELP_LINK_RULE = {
   class: "help-link-same-tab",
   // Files whose external help links must open in a new tab. Scoped to the
   // static-secret credential form, the surface where losing form state hurts.
-  files: ["apps/console/src/app/dashboard/connect/static-secret/[connectorId]/page.tsx"],
+  files: ["apps/console/src/app/(console)/connect/static-secret/[connectorId]/page.tsx"],
   rationale:
     "Static-secret credential help links must open in a new tab and preserve the form. A same-tab link loses the owner's in-progress credential entry.",
 };
@@ -269,7 +269,7 @@ export const HELP_LINK_RULE = {
 export const POST_SUBMIT_RULE = {
   id: "static-secret-post-submit-durable",
   class: "transient-notice-only",
-  file: "apps/console/src/app/dashboard/connect/static-secret/[connectorId]/actions.ts",
+  file: "apps/console/src/app/(console)/connect/static-secret/[connectorId]/actions.ts",
   // The post-submit surface must reference BOTH a durable connection identity
   // and a way to follow the run, so it is not a pure transient notice.
   requiredSignals: [

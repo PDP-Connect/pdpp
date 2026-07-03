@@ -11,6 +11,15 @@
 
 import { executeRefApprovalsList, type RefApproval } from "../../operations/ref-approvals-list/index.ts";
 import {
+  executeRefClientTokenRevoke,
+  type RefClientTokenRevokeResult,
+} from "../../operations/ref-client-token-revoke/index.ts";
+import {
+  executeRefClientTokensList,
+  type RefClientToken,
+  RefClientTokensListInvalidRequestError,
+} from "../../operations/ref-client-tokens-list/index.ts";
+import {
   executeRefClientsList,
   type RefClientsListClient,
   RefClientsListInvalidRequestError,
@@ -89,6 +98,10 @@ export interface MountRefAdminContext {
   // Subject resolution — mirrors `getOwnerSubjectId` closure in index.js.
   readonly getOwnerSubjectId: (req: RouteRequest) => string;
   readonly handleError: (res: unknown, err: unknown) => void;
+  readonly listActiveTokensForOwnerClient: (
+    clientId: string,
+    subjectId: string
+  ) => Promise<readonly RefClientToken[]> | readonly RefClientToken[];
   readonly listCimdDocuments: () => Promise<readonly RefCimdDocument[]>;
   readonly listOwnerIssuedClients: (subjectId: string) => Promise<readonly RefClientsListClient[]>;
   // Substrate capabilities — injected by host so the adapter never touches
@@ -100,6 +113,11 @@ export interface MountRefAdminContext {
   readonly resolveBaseUrl: (req: RouteRequest) => string;
   // Query-string helpers — mirrors `resolveSingleConnectorIdQueryValue` in index.js.
   readonly resolveSingleConnectorIdQueryValue: (raw: unknown) => string | null;
+  readonly revokeOwnerClientTokenByPublicId: (
+    clientId: string,
+    tokenIdPublic: string,
+    subjectId: string
+  ) => Promise<RefClientTokenRevokeResult> | RefClientTokenRevokeResult;
   readonly searchSpine: (query: string) => Promise<RefSpineSearchResult> | RefSpineSearchResult;
 }
 
@@ -382,6 +400,79 @@ export function mountRefClients(app: AppLike, ctx: MountRefAdminContext): void {
       ctx.handleError(res, err);
     }
   });
+}
+
+// GET /_ref/clients/:clientId/tokens
+//
+// Per-client active-token listing for the owner-console drilldown surfaced
+// when a client's `active_token_count > 1`. The canonical
+// `ref.client.tokens.list` operation owns the `?owner=true` requirement and
+// the `{object: 'list', data}` envelope; the host capability owns the
+// ownership guard and the bearer→public-id projection (no literal bearer is
+// ever returned).
+export function mountRefClientTokens(app: AppLike, ctx: MountRefAdminContext): void {
+  app.get("/_ref/clients/:clientId/tokens", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const subjectId = ctx.getOwnerSubjectId(req);
+      const clientId = decodeURIComponent(req.params.clientId ?? "");
+      const envelope = await executeRefClientTokensList(
+        { owner: req.query?.owner },
+        {
+          listActiveTokensForOwnerClient: () => ctx.listActiveTokensForOwnerClient(clientId, subjectId),
+        }
+      );
+      res.json(envelope);
+    } catch (err) {
+      if (err instanceof RefClientTokensListInvalidRequestError) {
+        ctx.pdppError(res, 400, "invalid_request", err.message);
+        return;
+      }
+      // Ownership guard raises typed `not_found` / `forbidden`.
+      const code = (err as { code?: unknown })?.code;
+      if (code === "not_found") {
+        ctx.pdppError(res, 404, "not_found", (err as Error).message);
+        return;
+      }
+      if (code === "forbidden") {
+        ctx.pdppError(res, 403, "forbidden", (err as Error).message);
+        return;
+      }
+      ctx.handleError(res, err);
+    }
+  });
+}
+
+// DELETE /_ref/clients/:clientId/tokens/:tokenIdPublic
+//
+// Per-token revoke wired to the drilldown revoke action. The canonical
+// `ref.client.token.revoke` operation owns the outcome/status mapping; the
+// host capability revokes exactly one bearer (addressed by its non-bearer
+// public id) scoped to this client, without deleting the client.
+export function mountRefClientTokenRevoke(app: AppLike, ctx: MountRefAdminContext): void {
+  app.delete(
+    "/_ref/clients/:clientId/tokens/:tokenIdPublic",
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const subjectId = ctx.getOwnerSubjectId(req);
+        const clientId = decodeURIComponent(req.params.clientId ?? "");
+        const tokenIdPublic = decodeURIComponent(req.params.tokenIdPublic ?? "");
+        const outcome = await executeRefClientTokenRevoke(
+          { clientId, tokenIdPublic, actingSubjectId: subjectId },
+          {
+            revokeOwnerClientTokenByPublicId: (cid, tid, sid) => ctx.revokeOwnerClientTokenByPublicId(cid, tid, sid),
+          }
+        );
+        if (outcome.outcome === "success") {
+          res.status(outcome.status).json(outcome.body);
+          return;
+        }
+        ctx.pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
 }
 
 // GET/POST/DELETE /_ref/cimd-client-documents

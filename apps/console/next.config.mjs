@@ -59,67 +59,79 @@ const nextConfig = {
         destination: '/brand/pdpp-favicon.svg',
         permanent: false,
       },
-      // Console root → dashboard. The standards/docs site lives in apps/site.
-      // Dashboard IA migration: connector browsing lives under /dashboard/records/
-      // and the standalone /dashboard/timeline route is now /dashboard/records/timeline.
-      // Records-explorer was promoted to the top-level `/dashboard/explore`
-      // by `promote-explore-to-top-level-ia`. Keep the redirect non-permanent
-      // until the Connections rename retires the entire `/dashboard/records`
-      // subtree, at which point a single permanent block can cover it.
+      // ── Clean owner-route topology (redesign-owner-console-product-experience
+      // §10.B) ──────────────────────────────────────────────────────────────
+      //
+      // The owner console serves clean top-level nouns off root (`/`, `/sources`,
+      // `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and
+      // the deployment/admin nouns). Every legacy `/dashboard/*` link redirects
+      // to its clean target so bookmarks and agent-generated links keep working.
+      // These targets are final, so the redirects are permanent (308).
+      //
+      // ORDER MATTERS — Next.js uses first-match. The chained legacy aliases and
+      // the three renamed sections (records→sources, runs→syncs, traces→audit)
+      // MUST precede the generic prefix-strip and bare-connector rules.
+
+      // Chained legacy aliases that historically resolved to other surfaces.
+      // Records-explorer and records-timeline were promoted/absorbed into
+      // Explore; `/dashboard/data*` was the old Records alias; `/dashboard/timeline*`
+      // was the standalone timeline before it merged into Explore.
       {
         source: '/dashboard/records/explorer',
-        destination: '/dashboard/explore',
-        permanent: false,
+        destination: '/explore',
+        permanent: true,
       },
-      // Time-range browsing was absorbed into Explore by
-      // `absorb-timeline-into-explore-ia`. Non-permanent so the redirect
-      // can be folded into a wider records-subtree retirement later.
       {
         source: '/dashboard/records/timeline',
-        destination: '/dashboard/explore',
-        permanent: false,
+        destination: '/explore',
+        permanent: true,
       },
       {
         source: '/dashboard/data',
-        destination: '/dashboard/records',
-        permanent: false,
+        destination: '/sources',
+        permanent: true,
       },
       {
         source: '/dashboard/data/:rest*',
-        destination: '/dashboard/records/:rest*',
-        permanent: false,
+        destination: '/sources/:rest*',
+        permanent: true,
       },
       {
         source: '/dashboard/timeline',
-        destination: '/dashboard/explore',
-        permanent: false,
+        destination: '/explore',
+        permanent: true,
       },
       {
         source: '/dashboard/timeline/:rest*',
-        destination: '/dashboard/explore',
-        permanent: false,
+        destination: '/explore',
+        permanent: true,
       },
-      // Top-level /explore alias for the operator Explore canvas.
-      // The console app is the Docker/reference-server surface, so this must
-      // live here as well as in apps/site.
-      {
-        source: '/explore',
-        destination: '/dashboard/explore',
-        permanent: false,
-      },
-      {
-        source: '/explore/:rest*',
-        destination: '/dashboard/explore/:rest*',
-        permanent: false,
-      },
-      // Bare connector-style paths from the pre-v1 dashboard map to Records.
-      // Excludes reserved top-level sections so they don't get caught.
+
+      // Renamed sections: records→Sources, runs→Syncs, traces→Audit.
+      { source: '/dashboard/records', destination: '/sources', permanent: true },
+      { source: '/dashboard/records/:rest*', destination: '/sources/:rest*', permanent: true },
+      { source: '/dashboard/runs', destination: '/syncs', permanent: true },
+      { source: '/dashboard/runs/:rest*', destination: '/syncs/:rest*', permanent: true },
+      { source: '/dashboard/traces', destination: '/audit', permanent: true },
+      { source: '/dashboard/traces/:rest*', destination: '/audit/:rest*', permanent: true },
+
+      // Bare connector-style paths from the pre-v1 dashboard map to Sources.
+      // Excludes reserved top-level sections so they don't get caught. This must
+      // come before the generic prefix-strip so a connector id is not mistaken
+      // for a section.
       {
         source:
           '/dashboard/:connector((?!traces|grants|runs|records|data|search|explore|timeline|schedules|connect|deployment|device-exporters|event-subscriptions|stream-playground|components|lib)[^/]+)/:rest*',
-        destination: '/dashboard/records/:connector/:rest*',
-        permanent: false,
+        destination: '/sources/:connector/:rest*',
+        permanent: true,
       },
+
+      // Same-name sections: strip the `/dashboard` prefix. Covers explore,
+      // grants, connect, schedules, deployment, device-exporters,
+      // event-subscriptions, search, stream-playground, and any remaining
+      // deep paths. The bare `/dashboard` root maps to the overview `/`.
+      { source: '/dashboard/:rest*', destination: '/:rest*', permanent: true },
+      { source: '/dashboard', destination: '/', permanent: true },
     ];
   },
   async rewrites() {

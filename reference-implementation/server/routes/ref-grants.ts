@@ -132,6 +132,8 @@ export interface GrantPackageRevokeResult {
 }
 
 export interface MountRefGrantsContext {
+  // grant-packages substrate
+  readonly countGrantPackagesForOwner: () => Promise<number> | number;
   readonly getClientEventSubscriptionStore: () => ClientEventSubscriptionStore;
   readonly getCumulativeClientAccessForPackage: (id: string) => Promise<CumulativeClientAccess | null>;
   readonly getGrantPackageForOwner: (id: string) => Promise<GrantPackageSummaryRow | null>;
@@ -143,7 +145,6 @@ export interface MountRefGrantsContext {
     subscriptionId: string,
     limit: number
   ) => Promise<readonly SubscriptionAttemptRow[]>;
-  // grant-packages substrate
   readonly listGrantPackagesForOwner: (query: {
     limit: number;
     cursor: string | null;
@@ -208,6 +209,22 @@ export function mountRefGrantPackagesList(app: AppLike, ctx: MountRefGrantsConte
         next_cursor: page.next_cursor,
         limit: page.limit,
       });
+    } catch (err) {
+      ctx.handleError(res, err);
+    }
+  });
+}
+
+// GET /_ref/grant-packages/count
+//
+// Cheap total count so the owner-console overview can show grant-package
+// presence/count without paging the full list. Registered before the
+// `/:id` route so "count" is never captured as a package id.
+export function mountRefGrantPackagesCount(app: AppLike, ctx: MountRefGrantsContext): void {
+  app.get("/_ref/grant-packages/count", ctx.requireOwnerSession, async (_req: RouteRequest, res: RouteResponse) => {
+    try {
+      const count = await ctx.countGrantPackagesForOwner();
+      res.json({ object: "grant_package_count", count });
     } catch (err) {
       ctx.handleError(res, err);
     }

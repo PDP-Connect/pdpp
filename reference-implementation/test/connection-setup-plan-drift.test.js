@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const FILES = {
   cliSetup: new URL('../../packages/cli/src/owner-agent/setup.js', import.meta.url),
-  consoleCatalog: new URL('../../apps/console/src/app/dashboard/lib/connection-catalog.ts', import.meta.url),
+  consoleCatalog: new URL('../../apps/console/src/app/(console)/lib/connection-catalog.ts', import.meta.url),
   ownerIntentRoute: new URL('../server/routes/owner-connection-intent.ts', import.meta.url),
   setupPlanner: new URL('../server/connection-setup-plan.ts', import.meta.url),
 };

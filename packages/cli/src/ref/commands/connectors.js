@@ -4,7 +4,7 @@ import { fetchJson, ownerSessionHeaders, resolveReferenceUrl } from '../fetch.js
 import { resolveFormat, writeData, writeEnvelopeWarnings } from '../output.js';
 
 // Operator-facing summary projection. Mirrors the evidence the dashboard renders
-// in `apps/console/src/app/dashboard/lib/ref-client.ts` (RefConnectorSummary +
+// in `apps/console/src/app/(console)/lib/ref-client.ts` (RefConnectorSummary +
 // RefConnectionHealthSnapshot + RefRenderedVerdict). The reference server has
 // already redacted secret-bearing fields; we surface what arrives, with no
 // connector-string inference.

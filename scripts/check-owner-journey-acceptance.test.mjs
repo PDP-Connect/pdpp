@@ -239,15 +239,15 @@ test("dashboard route shell contract catches legacy or unshelled owner routes", 
   const findings = checkDashboardRouteShellContract({
     files: [
       {
-        path: "apps/console/src/app/dashboard/records/page.tsx",
+        path: "apps/console/src/app/(console)/sources/page.tsx",
         src: `import { DashboardShell } from "./components/shell"; export default function Page(){ return <DashboardShell/>; }`,
       },
       {
-        path: "apps/console/src/app/dashboard/grants/page.tsx",
+        path: "apps/console/src/app/(console)/grants/page.tsx",
         src: `export default function Page(){ return <main>raw page</main>; }`,
       },
       {
-        path: "apps/console/src/app/dashboard/records/deployment/page.tsx",
+        path: "apps/console/src/app/(console)/sources/deployment/page.tsx",
         src: `import { redirect } from "next/navigation"; export default function Page(){ redirect("/dashboard/deployment"); }`,
       },
     ],
@@ -289,38 +289,38 @@ test("owner route discovery scans browser-session, upload, and full nav owner su
   const result = await runLocalAcceptance();
   const scanned = new Set(result.scannedFiles.normal);
   assert.ok(
-    scanned.has("apps/console/src/app/dashboard/connect/browser-session/[connectorId]/page.tsx"),
+    scanned.has("apps/console/src/app/(console)/connect/browser-session/[connectorId]/page.tsx"),
     "browser-session setup page must be scanned"
   );
   assert.ok(
-    scanned.has("apps/console/src/app/dashboard/connect/browser-session/[connectorId]/launch/page.tsx"),
+    scanned.has("apps/console/src/app/(console)/connect/browser-session/[connectorId]/launch/page.tsx"),
     "browser-session launch page must be scanned"
   );
   assert.ok(
-    scanned.has("apps/console/src/app/dashboard/connect/manual-upload/[connectorId]/page.tsx"),
+    scanned.has("apps/console/src/app/(console)/connect/manual-upload/[connectorId]/page.tsx"),
     "manual upload setup page must be scanned"
   );
   assert.ok(
-    scanned.has("apps/console/src/app/dashboard/connect/manual-upload/[connectorId]/manual-upload-form.tsx"),
+    scanned.has("apps/console/src/app/(console)/connect/manual-upload/[connectorId]/manual-upload-form.tsx"),
     "manual upload client form must be scanned"
   );
   assert.ok(
-    scanned.has("apps/console/src/app/dashboard/connect/browser-session/[connectorId]/launch/launch-panel.tsx"),
+    scanned.has("apps/console/src/app/(console)/connect/browser-session/[connectorId]/launch/launch-panel.tsx"),
     "browser-session launch client panel must be scanned"
   );
   assert.ok(
-    scanned.has("apps/console/src/app/dashboard/records/[connector]/page.tsx"),
+    scanned.has("apps/console/src/app/(console)/sources/[connector]/page.tsx"),
     "source detail pages must be scanned"
   );
   for (const file of [
-    "apps/console/src/app/dashboard/deployment/page.tsx",
-    "apps/console/src/app/dashboard/event-subscriptions/page.tsx",
-    "apps/console/src/app/dashboard/explore/page.tsx",
-    "apps/console/src/app/dashboard/grants/page.tsx",
-    "apps/console/src/app/dashboard/runs/page.tsx",
-    "apps/console/src/app/dashboard/schedules/page.tsx",
-    "apps/console/src/app/dashboard/search/page.tsx",
-    "apps/console/src/app/dashboard/traces/page.tsx",
+    "apps/console/src/app/(console)/deployment/page.tsx",
+    "apps/console/src/app/(console)/event-subscriptions/page.tsx",
+    "apps/console/src/app/(console)/explore/page.tsx",
+    "apps/console/src/app/(console)/grants/page.tsx",
+    "apps/console/src/app/(console)/syncs/page.tsx",
+    "apps/console/src/app/(console)/schedules/page.tsx",
+    "apps/console/src/app/(console)/search/page.tsx",
+    "apps/console/src/app/(console)/audit/page.tsx",
   ]) {
     assert.ok(scanned.has(file), `${file} must be scanned as a normal owner nav surface`);
   }

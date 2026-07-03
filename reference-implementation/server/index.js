@@ -46,12 +46,13 @@ import {
   configureNativeManifest,
   createHostedMcpGrantPackage, getGrantPackageAccess, getGrantPackageForOwner,
   getCumulativeClientAccessForPackage,
-  listGrantPackagesForOwner, getGrantPackageIdForGrant,
+  listGrantPackagesForOwner, countGrantPackagesForOwner, getGrantPackageIdForGrant,
   createCimdDocument, deleteCimdDocument, deleteRegisteredClient, exchangeGrantScopedDeviceCode, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
   getCimdDocument,
   issueOAuthAuthorizationCodeForDeviceCode, issueOAuthAuthorizationCodeForPackageDeviceCode,
+  listActiveTokensForOwnerClient, revokeOwnerClientTokenByPublicId,
   listCimdDocuments, listOwnerIssuedClients, listRegisteredConnectorIds,
-  registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, resolveOAuthClient,
+  registerDynamicClient, updateRegisteredClientName, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, resolveOAuthClient,
   seedPreRegisteredClients,
   buildPendingConsentRequestUri,
   stageOAuthAuthorizationCodeRequest,
@@ -364,6 +365,8 @@ import {
   mountRefApprovals,
   mountRefCimdClientDocuments,
   mountRefClients,
+  mountRefClientTokens,
+  mountRefClientTokenRevoke,
   mountRefDeployment,
   mountRefExploreRecordBuckets,
   mountRefExploreRecords,
@@ -375,6 +378,7 @@ import {
   mountRefEventSubscriptionsDisable,
   mountRefEventSubscriptionsGet,
   mountRefEventSubscriptionsList,
+  mountRefGrantPackagesCount,
   mountRefGrantPackagesCumulative,
   mountRefGrantPackagesGet,
   mountRefGrantPackagesList,
@@ -2935,6 +2939,7 @@ function buildAsApp(opts = {}) {
     oauthError,
     pdppError,
     registerDynamicClient,
+    updateRegisteredClientName,
     deleteRegisteredClient,
   });
 
@@ -3138,6 +3143,7 @@ function buildAsApp(opts = {}) {
     pdppError,
     requireOwnerSession: ownerAuth.requireOwnerSession,
     listGrantPackagesForOwner,
+    countGrantPackagesForOwner,
     getGrantPackageForOwner,
     getCumulativeClientAccessForPackage,
     revokeGrantPackage,
@@ -3148,6 +3154,7 @@ function buildAsApp(opts = {}) {
     nowIso: () => new Date().toISOString(),
   };
   mountRefGrantPackagesList(app, refGrantsContext);
+  mountRefGrantPackagesCount(app, refGrantsContext);
   mountRefGrantPackagesGet(app, refGrantsContext);
   mountRefGrantPackagesCumulative(app, refGrantsContext);
   mountRefGrantPackagesRevoke(app, refGrantsContext);
@@ -3260,6 +3267,9 @@ function buildAsApp(opts = {}) {
     getCimdDocument: (documentId) => getCimdDocument(documentId),
     listCimdDocuments: () => listCimdDocuments(),
     listOwnerIssuedClients: (subjectId) => listOwnerIssuedClients(subjectId),
+    listActiveTokensForOwnerClient: (clientId, subjectId) => listActiveTokensForOwnerClient(clientId, subjectId),
+    revokeOwnerClientTokenByPublicId: (clientId, tokenIdPublic, subjectId) =>
+      revokeOwnerClientTokenByPublicId(clientId, tokenIdPublic, subjectId),
     resolveBaseUrl: (req) => resolvePublicUrl(req, explicitAsBaseUrl),
     searchSpine: (query) => searchSpine(query),
     getOwnerSubjectId,
@@ -3801,6 +3811,8 @@ function buildAsApp(opts = {}) {
   mountRefDeviceExporterLocalCollectorGapsRecovered(app, refDeviceExportersContext);
 
   mountRefClients(app, refAdminContext);
+  mountRefClientTokens(app, refAdminContext);
+  mountRefClientTokenRevoke(app, refAdminContext);
 
   mountRefConnectorRun(app, refConnectorsContext);
   mountRefConnectionRun(app, refConnectorsContext);

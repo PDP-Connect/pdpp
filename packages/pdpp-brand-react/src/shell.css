@@ -35,26 +35,28 @@
   padding: 2px 18px 16px;
   border-bottom: 1px solid var(--border);
 }
-/* the mark is the doctrine: a sheet casting its carbon */
+/* the mark is the PDPP split-P: warm human/holder half + cool protocol/issuer
+   half, seamed on the optical vertical. Hues track the active surface via the
+   --pdpp-mark-* tokens below (matching operator-ui's PdppLogo). */
 .rr-side__mark {
   width: 18px;
   height: 18px;
-  position: relative;
   flex-shrink: 0;
+  display: block;
 }
-.rr-side__mark::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  transform: translate(4px, 4px);
-  background: var(--carbon-fill);
-  border: 1px solid var(--carbon-outline);
+/* Light surface — standard hues. */
+.rr-app {
+  --pdpp-mark-warm: oklch(0.52 0.11 45);
+  --pdpp-mark-cool: oklch(0.58 0.18 253);
+  --pdpp-mark-counter: oklch(0.985 0.005 85);
 }
-.rr-side__mark::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: var(--foreground);
+/* Dark surface — the elevated "night" pair. Follows the same theme predicate
+   the shell toggle sets on <html> (data-theme="dark" or the .dark class). */
+[data-theme="dark"] .rr-app,
+.dark .rr-app {
+  --pdpp-mark-warm: oklch(0.72 0.12 45);
+  --pdpp-mark-cool: oklch(0.74 0.16 253);
+  --pdpp-mark-counter: oklch(0.16 0.01 60);
 }
 .rr-side__name {
   font-size: 15px;
@@ -172,18 +174,14 @@
   letter-spacing: -0.01em;
   white-space: nowrap;
 }
-.rr-head__crumb {
-  font-family: var(--font-sans);
-  font-size: 10.5px;
-  color: var(--muted-foreground);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-right: auto;
-}
+/* The `{host} · {build}` crumb no longer renders in the header (it lives once in
+   the sidebar/drawer footer). `.rr-head__actions` keeps a `margin-left: auto` so
+   the header actions stay right-aligned whether or not the mobile-only brand
+   shows on the left. */
 .rr-head__actions {
   display: flex;
   align-items: center;
+  margin-left: auto;
   gap: 8px;
   flex-shrink: 0;
 }
@@ -332,9 +330,6 @@
   }
   .rr-head {
     padding: 10px 16px;
-  }
-  .rr-head__crumb {
-    display: none;
   }
   .rr-head__brand {
     display: flex;

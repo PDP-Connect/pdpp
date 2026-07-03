@@ -2,7 +2,7 @@
  * Public types for the sandbox demo dataset and response builders.
  *
  * Shapes are inspired by the live reference server (see
- * `apps/console/src/app/dashboard/lib/ref-client.ts`) but are deliberately
+ * `apps/console/src/app/(console)/lib/ref-client.ts`) but are deliberately
  * simplified for a deterministic, fictional, public demo. They are not the
  * normative protocol contract — that lives in `openspec/specs/**` and
  * `spec-*.md`.

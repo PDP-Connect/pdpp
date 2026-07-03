@@ -4,7 +4,29 @@ const PDPP_KNOWN_PUSH_TYPES = new Set([
   "pdpp.pending_interaction",
   "pdpp.test_notification",
 ]);
-const PDPP_TEST_NOTIFICATION_URL = "/dashboard";
+// Clean owner-route topology (redesign-owner-console-product-experience §10.B):
+// the console owner control plane serves clean top-level nouns off root. The
+// test notification lands on the overview; run notifications land on Syncs.
+const PDPP_TEST_NOTIFICATION_URL = "/";
+const PDPP_RUNS_URL = "/syncs";
+// Clean owner-route prefixes the SW will click through to. Legacy `/dashboard`
+// paths stay allow-listed so a push payload queued before the route move still
+// opens (the app redirects it to the clean route).
+const PDPP_ALLOWED_URL_PREFIXES = [
+  "/sources",
+  "/syncs",
+  "/audit",
+  "/explore",
+  "/grants",
+  "/connect",
+  "/schedules",
+  "/deployment",
+  "/device-exporters",
+  "/event-subscriptions",
+  "/search",
+  "/stream-playground",
+  "/dashboard",
+];
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -15,7 +37,7 @@ self.addEventListener("activate", (event) => {
 });
 
 function pdppDefaultFallbackUrl(type) {
-  return type === "pdpp.test_notification" ? PDPP_TEST_NOTIFICATION_URL : "/dashboard/runs";
+  return type === "pdpp.test_notification" ? PDPP_TEST_NOTIFICATION_URL : PDPP_RUNS_URL;
 }
 
 function pdppDefaultTag(payload) {
@@ -48,7 +70,9 @@ function pdppDefaultBody(type) {
 }
 
 function pdppIsAllowedDashboardUrl(url) {
-  return url === "/dashboard" || url.startsWith("/dashboard/");
+  // The overview root and any clean owner section (or a legacy /dashboard path).
+  if (url === "/") return true;
+  return PDPP_ALLOWED_URL_PREFIXES.some((prefix) => url === prefix || url.startsWith(prefix + "/"));
 }
 
 self.addEventListener("push", (event) => {
@@ -83,8 +107,8 @@ self.addEventListener("notificationclick", (event) => {
     (async () => {
       const rawUrl = event.notification.data && typeof event.notification.data.url === "string"
         ? event.notification.data.url
-        : "/dashboard/runs";
-      const targetUrl = pdppIsAllowedDashboardUrl(rawUrl) ? rawUrl : "/dashboard/runs";
+        : PDPP_RUNS_URL;
+      const targetUrl = pdppIsAllowedDashboardUrl(rawUrl) ? rawUrl : PDPP_RUNS_URL;
       const url = new URL(targetUrl, self.location.origin).href;
       const clientList = await clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const client of clientList) {

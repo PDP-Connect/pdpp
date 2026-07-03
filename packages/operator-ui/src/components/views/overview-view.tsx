@@ -1,5 +1,5 @@
 /**
- * Shared dashboard overview view. Used by /dashboard and /sandbox.
+ * Shared dashboard overview view. Used by the owner console and /sandbox.
  *
  * The page calls its data source for the summary, failed traces/runs,
  * grant decisions, and recent runs, then passes them in. The view
@@ -83,14 +83,14 @@ export function AttentionOverviewPlaceholder() {
       <div className="pdpp-caption mb-8 flex items-center gap-2">
         <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
         <span className="font-medium text-foreground">Checking failures…</span>
-        <span className="text-muted-foreground">Failed traces and runs are loading independently.</span>
+        <span className="text-muted-foreground">Failed audit events and syncs are loading independently.</span>
       </div>
       <div className="grid gap-8 lg:grid-cols-2">
-        <Section description="Recent protocol interactions that did not complete." title="Failed traces">
-          <EmptyState hint="Checking the recent failure window." title="Loading failed traces" />
+        <Section description="Recent protocol interactions that did not complete." title="Failed audit events">
+          <EmptyState hint="Checking the recent failure window." title="Loading failed audit events" />
         </Section>
-        <Section description="Connector runs that errored or were cancelled." title="Failed runs">
-          <EmptyState hint="Checking the recent failure window." title="Loading failed runs" />
+        <Section description="Connector syncs that errored or were cancelled." title="Failed syncs">
+          <EmptyState hint="Checking the recent failure window." title="Loading failed syncs" />
         </Section>
       </div>
     </>
@@ -106,11 +106,11 @@ export function AttentionOverviewError() {
         <span className="text-muted-foreground">Refresh the dashboard to retry.</span>
       </div>
       <div className="grid gap-8 lg:grid-cols-2">
-        <Section description="Recent protocol interactions that did not complete." title="Failed traces">
-          <EmptyState hint="Refresh the dashboard to retry." title="Could not load failed traces" />
+        <Section description="Recent protocol interactions that did not complete." title="Failed audit events">
+          <EmptyState hint="Refresh the dashboard to retry." title="Could not load failed audit events" />
         </Section>
-        <Section description="Connector runs that errored or were cancelled." title="Failed runs">
-          <EmptyState hint="Refresh the dashboard to retry." title="Could not load failed runs" />
+        <Section description="Connector syncs that errored or were cancelled." title="Failed syncs">
+          <EmptyState hint="Refresh the dashboard to retry." title="Could not load failed syncs" />
         </Section>
       </div>
     </>
@@ -138,10 +138,10 @@ function FailedOverviewLists({
           </Link>
         }
         description="Recent protocol interactions that did not complete."
-        title="Failed traces"
+        title="Failed audit events"
       >
         {failedTraces.length === 0 ? (
-          <EmptyState hint="Nothing has failed in the recent window." title="No failed traces" />
+          <EmptyState hint="Nothing has failed in the recent window." title="No failed audit events" />
         ) : (
           <DataList>
             {failedTraces.map((t) => (
@@ -185,11 +185,11 @@ function FailedOverviewLists({
             view all →
           </Link>
         }
-        description="Connector runs that errored or were cancelled."
-        title="Failed runs"
+        description="Connector syncs that errored or were cancelled."
+        title="Failed syncs"
       >
         {failedRuns.length === 0 ? (
-          <EmptyState hint="Nothing has failed in the recent window." title="No failed runs" />
+          <EmptyState hint="Nothing has failed in the recent window." title="No failed syncs" />
         ) : (
           <DataList>
             {failedRuns.map((r) => (
@@ -266,11 +266,11 @@ export function RecentActivityOverview({ data, routes }: { data: RecentActivityO
             view all →
           </Link>
         }
-        description="Connector runs started in the last window."
-        title="Recent runs"
+        description="Connector syncs started in the last window."
+        title="Recent syncs"
       >
         {data.recentRuns.length === 0 ? (
-          <EmptyState title="No recent runs" />
+          <EmptyState title="No recent syncs" />
         ) : (
           <DataList>
             {data.recentRuns.map((r) => (
@@ -291,8 +291,8 @@ export function RecentActivityPlaceholder() {
       <Section description="Issued, revoked, or denied in the last window." title="Recent grant decisions">
         <EmptyState title="Loading recent grant decisions" />
       </Section>
-      <Section description="Connector runs started in the last window." title="Recent runs">
-        <EmptyState title="Loading recent runs" />
+      <Section description="Connector syncs started in the last window." title="Recent syncs">
+        <EmptyState title="Loading recent syncs" />
       </Section>
     </>
   );
@@ -304,8 +304,8 @@ export function RecentActivityError() {
       <Section description="Issued, revoked, or denied in the last window." title="Recent grant decisions">
         <EmptyState hint="Refresh the dashboard to retry." title="Could not load recent grant decisions" />
       </Section>
-      <Section description="Connector runs started in the last window." title="Recent runs">
-        <EmptyState hint="Refresh the dashboard to retry." title="Could not load recent runs" />
+      <Section description="Connector syncs started in the last window." title="Recent syncs">
+        <EmptyState hint="Refresh the dashboard to retry." title="Could not load recent syncs" />
       </Section>
     </>
   );
@@ -325,7 +325,7 @@ function StatusStrip({
       <div className="pdpp-caption mb-8 flex items-center gap-2">
         <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: "var(--success)" }} />
         <span className="font-medium text-foreground">All clear.</span>
-        <span className="text-muted-foreground">No failed traces or runs in the recent window.</span>
+        <span className="text-muted-foreground">No failed audit events or syncs in the recent window.</span>
       </div>
     );
   }
@@ -337,10 +337,10 @@ function StatusStrip({
       <span className="text-muted-foreground">needs attention</span>
       <div className="ml-auto flex flex-wrap items-center gap-3">
         <Link className="underline-offset-2 hover:underline" href={`${routes.section.traces}?status=failed`}>
-          review traces →
+          review audit →
         </Link>
         <Link className="underline-offset-2 hover:underline" href={`${routes.section.runs}?status=failed`}>
-          review runs →
+          review syncs →
         </Link>
       </div>
     </div>

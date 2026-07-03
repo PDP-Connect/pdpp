@@ -35,6 +35,9 @@ Research and prior art:
 
 Worker reports:
 
+- `tmp/workstreams/ui-url-brand-0703-report.md`
+- `tmp/workstreams/ui-jump-0703-report.md`
+- `tmp/workstreams/ui-owner-access-0703-report.md`
 - `tmp/workstreams/feedback-taxonomy-20260618.md`
 - `tmp/workstreams/feedback-ia-model-20260618.md`
 - `tmp/workstreams/feedback-prior-art-20260618.md`
@@ -379,6 +382,81 @@ This closes the screenshot/browser-evidence atlas gap. It does not close the
 owner-return gate, data-truth probes, or the owner-reviewed route-merge
 decisions.
 
+### Iteration 17: 2026-07-03 Owner URL, Brand, Jump, And Owner-Access Decisions
+
+The 2026-07-03 owner review plus three read-only audits
+(`tmp/workstreams/ui-url-brand-0703-report.md`, `ui-jump-0703-report.md`,
+`ui-owner-access-0703-report.md`) resolve decisions the earlier iterations parked
+and add one durable-contract topology change. These are RI-owner decisions, not
+worker inferences.
+
+Accepted decisions:
+
+- Canonical clean owner routes replace the `/dashboard` prefix as the
+  owner-visible topology. Root console is `/`; sections are clean top-level
+  nouns: `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`,
+  `/schedules`, with deployment/admin surfaces under clean top-level nouns.
+  `/dashboard/records` becomes `/sources`. This reverses the Iteration 13 "keep
+  `/dashboard` for now" leaning and the owner-docket `future-roadmap` parking of
+  `/dashboard/records/*` route retirement.
+- Legacy `/dashboard/*` routes SHALL be preserved as redirects. Bookmarks,
+  owner-agent/CLI links, and external references must not break. The records
+  subtree redirects (currently non-permanent pending "the Connections rename")
+  become permanent as part of this move.
+- The owner-noun rename completes: Runs → Syncs, Traces → Audit, and the
+  already-shipped Records → Sources label is matched by the `/sources` route.
+  All four label surfaces (live shell `NAV_GROUPS`, command palette, legacy
+  shell, per-page breadcrumbs/headings) must agree; the audit found them
+  drifting today (Runs/Syncs split, "Traces" still live).
+- Default brand is PDPP with the PDPP logo/mark. The owner-visible wordmark
+  SHALL be `PDPP`, not `Recordroom`. `Recordroom` survives only as internal
+  component/CSS identifiers (`RecordroomShell`, `rr-*`), which are not
+  owner-visible and are optional cleanup. The `{host} · {build}` crumb SHALL
+  render in one owner-facing location, not duplicated top and bottom.
+- One command palette, one opener. Exactly one Ctrl/Cmd+K listener owns the
+  palette; the duplicate listener in `RecordroomShell` and the duplicate
+  operator-ui palette component are removed. The palette autofocuses on open,
+  closes on the first outside click, filters commands live with
+  type-ahead/autocomplete, and offers Explore/search as an explicit selectable
+  fallback row rather than the default Enter action that silently leaves the
+  palette. This is the same "one source of truth" principle applied to a
+  control that currently double-fires and computes its open state in two places.
+- Owner-access overview scaling. The Standing overview and its deep pages must
+  scale past a handful of bearers/grants: bearer preview + "+N more" + full
+  list; per-client token drilldown/details when `active_token_count > 1`;
+  consistent `IcTimestamp` semantics for the same field across surfaces;
+  collapsed zero-pending-approvals on the Grants page; discoverable grant
+  packages from the overview; and a read/audit ladder whose labels match what
+  each click actually shows (grouped preview → grouped list → per-event log).
+
+Label-only vs contract-changing split (governs sequencing, see §11 waves):
+
+- Label/presentation only (no contract, land first): wordmark → PDPP, crumb
+  de-duplication, Traces → Audit and Runs → Syncs label completion, palette
+  unification and behavior, bearer preview/collapse, timestamp consistency,
+  zero-pending collapse, read-ladder relabel, grant-package overview link.
+- Route/topology contract (durable, needs the redirect + spec/voice
+  reconciliation): `/dashboard` prefix removal and `/dashboard/records` →
+  `/sources`, plus the sibling section moves. This modifies
+  `reference-surface-topology` requirements that pin `/dashboard/**` and the
+  Explore/Jump route literals.
+- Reference-implementation API contract (durable, additive, smallest viable):
+  RFC 7592 client-name update (`PATCH /oauth/register/:clientId`,
+  owner-gated, `client_name` only) for editable credential labels; a per-client
+  token listing endpoint returning a non-bearer public token id plus a
+  per-token revoke for the `active_token_count > 1` drilldown; and an optional
+  grant-package count so the overview badge need not page the full list. The
+  contract work is gated behind the label/presentation tranche and behind its
+  own journey/data-truth evidence.
+
+Jump vs Explore interaction with the topology change: the base spec's
+"separate record-content search from spine artifact lookup" requirement pins
+`/dashboard/explore` and `/dashboard/search`. Under the clean topology those
+become `/explore` and the Jump surface's clean equivalent; the redirect
+requirement keeps the legacy paths working, and the unified palette's Enter
+behavior must not resurrect the "Enter silently redirects to Explore" defect the
+Jump audit found.
+
 ## 8. Essential Surface Model
 
 ### Sources
@@ -400,6 +478,8 @@ Sources own:
 - next owner action
 
 The owner-facing noun is `Source`. The UI may internally use `connection_id`, but normal owner-facing navigation, headings, and CTAs SHALL use `Source`. `Connection` remains acceptable in API docs, protocol/debug views, logs, and advanced copy where the technical identifier matters.
+
+The Sources section's canonical owner route is `/sources` (Iteration 17). `/dashboard/records` and `/dashboard/records/*` are legacy compatibility paths that SHALL redirect to the `/sources` topology.
 
 ### Streams
 
@@ -646,6 +726,76 @@ Work:
 Gate:
 
 - pixel review passes for the canonical atlas and no P0/P1 product defects are open
+
+### Wave 9: 2026-07-03 URL/Brand/Palette/Owner-Access Convergence
+
+Goal: land the 2026-07-03 owner decisions with label-only polish separated from
+route/API contract changes, so no tranche punts the target by stopping at the
+easy half.
+
+This wave has three ordered tranches. A later tranche SHALL NOT be used to
+avoid completing an earlier one.
+
+Tranche 9a — label/brand/palette (presentation only, no durable contract):
+
+- Owner-visible wordmark renders `PDPP` with the PDPP logo/mark; `Recordroom`
+  no longer appears as owner copy. Component/CSS identifiers may keep the name.
+- The `{host} · {build}` crumb renders in exactly one owner-facing location.
+- Runs → Syncs and Traces → Audit label completion across the live shell nav,
+  command palette, legacy shell, and per-page breadcrumbs/headings; no surface
+  still says "Runs" or "Traces" as an owner label.
+- One command palette, one Ctrl/Cmd+K listener: remove the duplicate listener
+  and the duplicate palette component; autofocus on open; first outside click
+  closes; live type-ahead/autocomplete filtering over commands; Explore/search
+  is an explicit selectable fallback row, not the default Enter action.
+- Owner-access presentation: bearer preview + "+N more" + full-list link;
+  consistent `IcTimestamp` for the same field across the overview and tokens
+  page, with "issued" copy that degrades honestly when a client has more than
+  one token; collapse the zero-pending-approvals section on the Grants page;
+  relabel the read/audit ladder so each CTA matches what the click shows;
+  surface a grant-package link/badge from the overview.
+
+Gate: no owner-visible surface shows `Recordroom`, `Runs`, or `Traces` as a
+label; ⌘K and the Jump button open the same single palette, it is focused, it
+filters, and the first outside click closes it; the overview scales past a
+handful of bearers/grants without a wall or a dead-weight empty section.
+
+Tranche 9b — clean owner-route topology (durable route contract):
+
+- Introduce canonical routes: `/` (root console), `/sources`, `/syncs`,
+  `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and clean
+  top-level nouns for deployment/admin surfaces.
+- `/dashboard/records` → `/sources`; retire `/dashboard` as an owner-visible
+  prefix.
+- Preserve every legacy `/dashboard/*` route as a redirect (permanent for the
+  now-final targets), including the records subtree, chained legacy aliases,
+  and the Explore/Jump paths. Bookmarks and owner-agent/CLI links keep working.
+- Keep the shared `routes.ts` `basePath` factory correct: the console basePath
+  moves without changing the `/sandbox` mirror; the sandbox-route-parity test is
+  reworked, not broken.
+- Reconcile `docs/voice-and-framing.md` §2–§3 and the base
+  `reference-surface-topology` spec references to `/dashboard/**` with the new
+  topology.
+
+Gate: the owner reaches every section at its clean route; every legacy
+`/dashboard/*` link redirects to the correct clean target; `/sandbox` is
+unchanged; voice guide and topology spec no longer contradict the shipped
+routes.
+
+Tranche 9c — owner-access reference contracts (durable, additive, smallest viable):
+
+- RFC 7592 client-name update (`PATCH /oauth/register/:clientId`, owner-gated,
+  `client_name` only) so an owner can edit a credential/client label in place.
+- Per-client token drilldown: a listing endpoint returning a non-bearer public
+  token id plus issued/expires per token, and a per-token revoke, exposed when
+  `active_token_count > 1`. The public token id MUST NOT leak the bearer.
+- Optional grant-package count so the overview badge does not page the full
+  list.
+
+Gate: owner can rename a credential and see it reflected everywhere in one
+render cycle; a client with multiple active tokens drills into individual
+tokens with per-token revoke; no owner-visible token id is a usable bearer;
+data-truth evidence backs the count/label claims.
 
 ## 12. Delegation Plan
 

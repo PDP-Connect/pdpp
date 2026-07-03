@@ -10,7 +10,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "types:check": "next typegen && tsc --noEmit",
-    "test:view-models": "node --test --import tsx src/app/dashboard/components/views/standing-view-model.test.ts src/app/dashboard/runs/syncs-model.test.ts src/app/dashboard/records/sources-view-model.test.ts",
+    "test:view-models": "node --test --import tsx src/app/(console)/components/views/standing-view-model.test.ts src/app/(console)/syncs/syncs-model.test.ts src/app/(console)/sources/sources-view-model.test.ts",
     "check": "ultracite check",
     "fix": "ultracite fix",
     "verify": "pnpm types:check && pnpm check && pnpm build"

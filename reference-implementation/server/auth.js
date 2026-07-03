@@ -2075,6 +2075,126 @@ export async function listOwnerIssuedClients(subjectId) {
   return projected.filter(Boolean);
 }
 
+/**
+ * Derive a stable, NON-REVERSIBLE public token id from the literal bearer.
+ * `tokens.token_id` stores the raw bearer (see `redactSpineEventForPublic`),
+ * so it must never leave the AS. This digest is a one-way SHA-256 of the
+ * bearer, prefixed `tok_`, safe to render and to use as a per-token revoke
+ * handle: knowing the public id does not recover the bearer.
+ */
+function deriveOwnerTokenPublicId(tokenId) {
+  return `tok_${base64UrlSha256(tokenId)}`;
+}
+
+/**
+ * Project one active-token row for owner-console display. Drops the literal
+ * bearer (`token_id`) entirely and replaces it with the non-reversible public
+ * id. This is the single choke point that guarantees no bearer leaks through
+ * the per-client token listing.
+ */
+function projectOwnerClientTokenRow(row) {
+  return {
+    object: 'owner_client_token',
+    token_id_public: deriveOwnerTokenPublicId(row.token_id),
+    token_kind: row.token_kind,
+    created_at: row.created_at,
+    expires_at: row.expires_at ?? null,
+  };
+}
+
+/**
+ * Assert the acting owner-session subject registered `clientId` (dynamic
+ * client whose `metadata.issuer_subject_id` matches). Mirrors the guard in
+ * `deleteRegisteredClient`/`updateRegisteredClientName` so the per-client
+ * token surfaces cannot be used to read or revoke another operator's tokens.
+ * Throws `not_found` (unknown/pre-registered) or `forbidden` (wrong owner).
+ */
+async function requireOwnerClient(clientId, actingSubjectId) {
+  const client = await getRegisteredClient(clientId);
+  if (!client || client.registration_mode !== 'dynamic') {
+    const err = new Error(`Unknown client_id: ${clientId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  const ownerSubject = client.metadata.issuer_subject_id || null;
+  if (!ownerSubject || ownerSubject !== actingSubjectId) {
+    const err = new Error('Caller is not the operator who registered this client');
+    err.code = 'forbidden';
+    throw err;
+  }
+  return client;
+}
+
+/**
+ * Owner-scoped listing of a client's active bearer tokens. Backs
+ * `GET /_ref/clients/:clientId/tokens?owner=true` and the per-client
+ * drilldown surfaced when `active_token_count > 1`.
+ *
+ * Returns `[{ object, token_id_public, token_kind, created_at, expires_at }]`
+ * — the literal bearer is never included. Throws `not_found`/`forbidden` when
+ * the acting subject does not own the client.
+ */
+export async function listActiveTokensForOwnerClient(clientId, actingSubjectId) {
+  if (!clientId) return [];
+  await requireOwnerClient(clientId, actingSubjectId);
+  const rows = await getTokenStore().listActiveByClientId(clientId);
+  return rows.map((row) => projectOwnerClientTokenRow(row));
+}
+
+/**
+ * Owner-scoped per-token revoke. Revokes exactly one of a client's bearers,
+ * addressed by its non-bearer public id, without deleting the client or
+ * touching its other tokens. The public id is matched against the digest of
+ * each live bearer server-side (the bearer never leaves the AS), and the
+ * revoke is additionally scoped to `client_id` so a public id minted for one
+ * client cannot revoke another client's token.
+ *
+ * Returns `{ revoked: boolean, token_id_public }`. `revoked` is false when no
+ * active token matches the public id (idempotent / already-revoked). Throws
+ * `not_found`/`forbidden` when the acting subject does not own the client.
+ */
+export async function revokeOwnerClientTokenByPublicId(clientId, tokenIdPublic, actingSubjectId) {
+  if (!clientId) {
+    const err = new Error('client_id is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+  if (!isNonEmptyString(tokenIdPublic)) {
+    const err = new Error('token_id_public is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+  await requireOwnerClient(clientId, actingSubjectId);
+  const store = getTokenStore();
+  const rows = await store.listActiveByClientId(clientId);
+  const match = rows.find((row) => deriveOwnerTokenPublicId(row.token_id) === tokenIdPublic);
+  if (!match) {
+    return { revoked: false, token_id_public: tokenIdPublic };
+  }
+  const result = await store.revokeByTokenId(match.token_id, clientId);
+  const changes = result?.changes ?? result?.rowCount ?? 0;
+  const revoked = Number(changes) > 0;
+  if (revoked) {
+    await emitSpineEvent({
+      event_type: 'token.revoked',
+      actor_type: 'subject',
+      actor_id: actingSubjectId,
+      subject_type: 'subject',
+      subject_id: actingSubjectId,
+      object_type: 'token',
+      object_id: '<redacted-token-id>',
+      status: 'succeeded',
+      client_id: clientId,
+      data: {
+        revocation_path: 'owner_console_per_token',
+        token_id_public: tokenIdPublic,
+        token_kind: match.token_kind,
+      },
+    });
+  }
+  return { revoked, token_id_public: tokenIdPublic };
+}
+
 async function revokeClientAccessArtifacts(
   clientId,
   { requestId, traceId, subscriptionDisableReason = 'client_deleted' } = {},
@@ -2227,6 +2347,90 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
   });
 
   return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount, disabledSubscriptionCount };
+}
+
+// Owner-facing client labels are short display strings, not credential
+// material. Cap the update path defensively (RFC 7591 registration itself
+// applies no length ceiling, but the owner-console rename affordance is a
+// good place to keep a single-line label single-line without touching the
+// register path's behaviour).
+const MAX_CLIENT_NAME_LENGTH = 256;
+
+/**
+ * RFC 7592 client-metadata update, owner-session-gated by the route. The
+ * reference supports editing exactly one field: the owner-facing
+ * `client_name` label. Everything else about the client (scope, bearer
+ * material, registration mode) is immutable here — an owner renames the
+ * credential's label, they do not re-scope it.
+ *
+ * Guards mirror `deleteRegisteredClient`:
+ * - Refuses non-dynamic clients (protects pre-registered seeds).
+ * - Refuses if the acting subject is not the registering operator
+ *   (`metadata.issuer_subject_id`), stopping cross-operator edits.
+ *
+ * On success the client's `metadata.client_name` is replaced and
+ * `oauth_clients.updated_at` is bumped (via `upsertRegisteredClient`), so
+ * the next `GET /_ref/clients?owner=true` read reflects the rename in one
+ * render cycle. Returns the re-read projection
+ * `{ client_id, client_name, created_at, updated_at }`.
+ *
+ * Throws an error with a `code` of `not_found` | `forbidden` |
+ * `invalid_client_metadata` otherwise.
+ */
+export async function updateRegisteredClientName(clientId, { clientName, actingSubjectId } = {}) {
+  if (!clientId) {
+    const err = new Error('client_id is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+  if (typeof clientName !== 'string' || !clientName.trim()) {
+    const err = new Error('client_name must be a non-empty string');
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+  const trimmedName = clientName.trim();
+  if (trimmedName.length > MAX_CLIENT_NAME_LENGTH) {
+    const err = new Error(`client_name must be at most ${MAX_CLIENT_NAME_LENGTH} characters`);
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+
+  const client = await getRegisteredClient(clientId);
+  if (!client) {
+    const err = new Error(`Unknown client_id: ${clientId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  if (client.registration_mode !== 'dynamic') {
+    const err = new Error('Pre-registered clients cannot be updated via the registration management API');
+    err.code = 'forbidden';
+    throw err;
+  }
+  const ownerSubject = client.metadata.issuer_subject_id || null;
+  if (!ownerSubject || ownerSubject !== actingSubjectId) {
+    const err = new Error('Caller is not the operator who registered this client');
+    err.code = 'forbidden';
+    throw err;
+  }
+
+  // Preserve every other metadata field (including the reference-only
+  // `issuer_subject_id` stamp); overwrite only the label. `mapped.metadata`
+  // is already a normalized round-trip, so re-normalization in
+  // `upsertRegisteredClient` is lossless. The upsert bumps `updated_at`.
+  await upsertRegisteredClient({
+    clientId,
+    registrationMode: client.registration_mode,
+    metadata: { ...client.metadata, client_name: trimmedName },
+    clientSecret: client.client_secret || null,
+  });
+
+  const updated = await getRegisteredClient(clientId);
+  return {
+    client_id: clientId,
+    client_name: updated?.metadata.client_name || null,
+    created_at: updated?.created_at || client.created_at,
+    updated_at: updated?.updated_at || null,
+  };
 }
 
 async function disableClientEventSubscriptionsForDeletedClient(clientId, disabledReason = 'client_deleted') {
@@ -4666,6 +4870,21 @@ const postgresTokenStore = {
     ),
   revokeByClientId: (clientId) =>
     pgExec("UPDATE tokens SET revoked = TRUE WHERE client_id = $1 AND revoked = FALSE", [clientId]),
+  // REVIEWED-BOUNDED: live bearers per operator client are operator-scale
+  // (small). The mirrored SQLite query's @max_rows=256 caps pathological growth.
+  listActiveByClientId: async (clientId) =>
+    (await postgresQuery(
+      `SELECT token_id, token_kind, created_at, expires_at
+       FROM tokens
+       WHERE client_id = $1 AND revoked = FALSE
+       ORDER BY created_at DESC`,
+      [clientId],
+    )).rows,
+  revokeByTokenId: (tokenId, clientId) =>
+    pgExec(
+      "UPDATE tokens SET revoked = TRUE WHERE token_id = $1 AND client_id = $2 AND revoked = FALSE",
+      [tokenId, clientId],
+    ),
 };
 
 const sqliteTokenStore = {
@@ -4675,6 +4894,10 @@ const sqliteTokenStore = {
     getOne(referenceQueries.authTokensGetIntrospection, [token]),
   revokeByClientId: (clientId) =>
     exec(referenceQueries.authTokensRevokeByClientId, [clientId]),
+  listActiveByClientId: (clientId) =>
+    allowUnboundedReadAcknowledged(referenceQueries.authTokensListActiveByClientId, [clientId]),
+  revokeByTokenId: (tokenId, clientId) =>
+    exec(referenceQueries.authTokensRevokeByTokenId, [tokenId, clientId]),
 };
 
 function getTokenStore() {
@@ -5216,6 +5439,23 @@ export async function listGrantPackagesForOwner(opts = {}) {
     next_cursor: tail ? encodeGrantPackageCursor(tail) : null,
     limit,
   };
+}
+
+/**
+ * Cheap total grant-package count for the owner-console overview badge. Lets
+ * the overview surface package presence/count without paging the full
+ * `/_ref/grant-packages` list. Owner-session-gated by the route. Returns a
+ * non-negative integer.
+ */
+export async function countGrantPackagesForOwner() {
+  if (isPostgresStorageBackend()) {
+    const row = await pgOne('SELECT COUNT(*)::int AS package_count FROM grant_packages');
+    const count = row ? Number(row.package_count) : 0;
+    return Number.isFinite(count) ? count : 0;
+  }
+  const row = getOne(referenceQueries.authGrantPackagesCount, []);
+  const count = row ? Number(row.package_count) : 0;
+  return Number.isFinite(count) ? count : 0;
 }
 
 /**

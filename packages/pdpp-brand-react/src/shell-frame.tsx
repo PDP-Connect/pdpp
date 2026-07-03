@@ -1,10 +1,15 @@
 /**
  * RecordroomShell — the Ink Carbon owner-console frame.
  *
+ * (Component/CSS identifiers keep the internal `Recordroom`/`rr-*` names; the
+ * owner-visible wordmark is `PDPP` with the PDPP split-P mark.)
+ *
  * The dependency root of the redesigned console: a left sidebar (brand mark +
  * grouped nav + footer host block) and a main column with a sticky header
- * (crumb, ⌘K jump affordance, theme toggle, mobile menu) wrapping `{children}`.
- * On narrow screens the sidebar folds into a drawer overlay.
+ * (⌘K jump affordance, theme toggle, mobile menu) wrapping `{children}`. The
+ * `{host} · {build}` crumb lives in the sidebar/drawer footer only — not the
+ * header — so it renders exactly once. On narrow screens the sidebar folds into
+ * a drawer overlay.
  *
  * Ported from `rr-app.jsx` (the design SHELL) and rebound to the REAL app:
  *
@@ -15,7 +20,7 @@
  *     - "Overview" -> where the instance stands and what needs attention.
  *     - "Explore" -> the reader for records already in this instance.
  *     - "Sources" -> configured data sources and their streams.
- *     - "Syncs" -> the real Runs route `/dashboard/runs`, using the warmer
+ *     - "Syncs" -> the clean Syncs route `/syncs`, using the warmer
  *       owner-facing label from the page title. See SYNCS_NOTE below.
  *     - "Schedules" -> the real schedule management route.
  *     - "Connect AI apps" -> reader/client access, grouped with sharing, not
@@ -54,39 +59,41 @@ export interface NavGroup {
 }
 
 /**
- * The grouped nav. Routes are the REAL dashboard routes; labels follow the
- * design vocabulary. Edit this array to change nav — components derive from it.
+ * The grouped nav. Routes are the REAL clean console routes (top-level nouns
+ * off root, per `redesign-owner-console-product-experience` §10.B); labels
+ * follow the design vocabulary. Edit this array to change nav — components
+ * derive from it.
  */
 export const NAV_GROUPS: NavGroup[] = [
   {
     heading: null,
     items: [
-      { label: "Overview", href: "/dashboard" },
-      { label: "Explore", href: "/dashboard/explore" },
+      { label: "Overview", href: "/" },
+      { label: "Explore", href: "/explore" },
     ],
   },
   {
     heading: "Collection",
     items: [
-      { label: "Sources", href: "/dashboard/records" },
-      { label: "Syncs", href: "/dashboard/runs" },
-      { label: "Schedules", href: "/dashboard/schedules" },
+      { label: "Sources", href: "/sources" },
+      { label: "Syncs", href: "/syncs" },
+      { label: "Schedules", href: "/schedules" },
     ],
   },
   {
     heading: "Sharing",
     items: [
-      { label: "Connect AI apps", href: "/dashboard/connect" },
-      { label: "Grants", href: "/dashboard/grants" },
-      { label: "Traces", href: "/dashboard/traces" },
+      { label: "Connect AI apps", href: "/connect" },
+      { label: "Grants", href: "/grants" },
+      { label: "Audit", href: "/audit" },
     ],
   },
   {
     heading: "Server",
     items: [
-      { label: "Deployment", href: "/dashboard/deployment" },
-      { label: "Device exporters", href: "/dashboard/device-exporters" },
-      { label: "Event subscriptions", href: "/dashboard/event-subscriptions" },
+      { label: "Deployment", href: "/deployment" },
+      { label: "Device exporters", href: "/device-exporters" },
+      { label: "Event subscriptions", href: "/event-subscriptions" },
     ],
   },
 ];
@@ -96,20 +103,46 @@ export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
 // ─── Active-route matching ────────────────────────────────────────
 //
-// `/dashboard` (Overview) must match ONLY itself — every other route also
-// starts with `/dashboard`, so an exact match is required for the root and a
-// prefix match (segment-boundary aware) for the rest.
+// `/` (Overview) must match ONLY itself — every other route is a top-level
+// noun off root, so an exact match is required for the root and a prefix match
+// (segment-boundary aware) for the rest.
 export function isNavItemActive(href: string, pathname: string): boolean {
-  if (href === "/dashboard") {
-    return pathname === "/dashboard";
+  if (href === "/") {
+    return pathname === "/";
   }
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-// ─── Brand mark — a sheet casting its carbon ──────────────────────
-
+// ─── Brand mark — the PDPP split-P ────────────────────────────────
+//
+// The owner-visible mark is the actual PDPP logo (the split-P): a warm
+// human/holder left half and a cool protocol/issuer right half, seamed on the
+// optical vertical with a counter in the upper bowl. The geometry is the
+// canonical mark from the identity handoff (identity/logo_study.html), the same
+// construction operator-ui's `PdppLogo` renders.
+//
+// It is inlined here rather than imported so `@pdpp/brand-react` stays a leaf
+// brand package with no dependency on `@pdpp/operator-ui` (the console → shared
+// dependency direction is one-way). This keeps the package-boundary contract
+// intact while still shipping the real logo, not a placeholder shape. The hues
+// are CSS custom properties so the mark tracks the active Ink Carbon surface.
 function BrandMark() {
-  return <span aria-hidden="true" className="rr-side__mark" />;
+  return (
+    <svg aria-hidden="true" className="rr-side__mark" height="18" role="presentation" viewBox="0 0 200 200" width="18">
+      {/* Left half — warm (human/holder) */}
+      <path
+        d="M 40 30 L 40 170 L 60 170 L 60 116 L 100 116 Q 105 116 105 110 L 105 30 Z"
+        fill="var(--pdpp-mark-warm)"
+      />
+      {/* Right half — cool (protocol/issuer) */}
+      <path
+        d="M 105 30 L 105 110 Q 105 116 100 116 L 60 116 L 60 170 L 80 170 L 80 136 L 125 136 Q 155 136 155 103 Q 155 30 105 30 Z"
+        fill="var(--pdpp-mark-cool)"
+      />
+      {/* Counter — optically centered in the upper bowl */}
+      <circle cx="105" cy="73" fill="var(--pdpp-mark-counter)" r="18" />
+    </svg>
+  );
 }
 
 // ─── Nav list (shared by sidebar + drawer) ────────────────────────
@@ -223,25 +256,27 @@ export function RecordroomShell({
   build = "pdpp 0.1.0",
   onJump,
 }: RecordroomShellProps) {
-  const pathname = usePathname() ?? "/dashboard";
+  const pathname = usePathname() ?? "/";
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
-  // ⌘K / Ctrl+K → jump; Escape closes the drawer.
+  // Escape closes the mobile drawer. The ⌘K / Ctrl+K palette shortcut is owned
+  // by EXACTLY ONE listener — the command-palette provider that wraps the
+  // dashboard — so this shell no longer registers its own ⌘K keydown. When both
+  // this shell and the provider listened, a single ⌘K flipped the palette state
+  // twice (net no-op: the palette appeared not to open and never took focus).
+  // The header Jump button still calls `onJump` directly; keyboard toggling is
+  // the provider's job.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        onJump?.();
-      }
       if (e.key === "Escape") {
         setDrawerOpen(false);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onJump]);
+  }, []);
 
   return (
     <div className="rr-app">
@@ -249,7 +284,7 @@ export function RecordroomShell({
       <aside className="rr-side">
         <div className="rr-side__brand">
           <BrandMark />
-          <span className="rr-side__name">Recordroom</span>
+          <span className="rr-side__name">PDPP</span>
         </div>
         <nav aria-label="Primary" className="rr-side__nav">
           <NavList pathname={pathname} />
@@ -263,15 +298,17 @@ export function RecordroomShell({
         <header className="rr-head">
           <span className="rr-head__brand">
             <BrandMark />
-            <span>Recordroom</span>
+            <span>PDPP</span>
           </span>
-          <span className="rr-head__crumb">
-            {host} · {build}
-          </span>
+          {/* The `{host} · {build}` crumb renders in exactly ONE owner-facing
+              place: the sidebar/drawer FootBlock. It used to also render here in
+              the header, so the owner saw it twice (top and bottom). Keeping it
+              only in the nav footer removes the duplication. */}
           <div className="rr-head__actions">
             {/* Jump (⌘K) renders ONLY when a caller wires onJump — no dead
-                affordance. The ⌘K keydown below is likewise a no-op without
-                a handler. Pages that mount a command palette pass onJump. */}
+                affordance. The ⌘K shortcut itself is owned by the palette
+                provider, not this shell. Pages that mount a command palette
+                pass onJump so the button and the shortcut open the same one. */}
             {onJump ? (
               <button className="rr-chrome-btn" onClick={() => onJump()} type="button">
                 Jump <span className="rr-kbd">⌘K</span>
@@ -299,7 +336,7 @@ export function RecordroomShell({
           <nav aria-label="Primary" className="rr-drawer">
             <div className="rr-side__brand">
               <BrandMark />
-              <span className="rr-side__name">Recordroom</span>
+              <span className="rr-side__name">PDPP</span>
             </div>
             <div className="rr-drawer__nav">
               <NavList onNavigate={closeDrawer} pathname={pathname} />

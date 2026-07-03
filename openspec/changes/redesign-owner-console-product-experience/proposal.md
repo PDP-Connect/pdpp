@@ -18,6 +18,18 @@ This change treats `docs/inbox/the owner-feedback-6-18-26.md` as discovery evide
 - Define implementation waves that reduce incidental complexity before adding polish.
 - Establish worker/delegation rules for high-velocity low-burn execution without letting narrow lanes decide product direction.
 
+### 2026-07-03 owner request and audit findings
+
+The 2026-07-03 owner review and three read-only audits (`tmp/workstreams/ui-url-brand-0703-report.md`, `ui-jump-0703-report.md`, `ui-owner-access-0703-report.md`) settle several decisions the earlier iterations had explicitly parked, and add a durable-contract change the change did not previously cover:
+
+- Adopt a canonical clean owner-route topology and retire `/dashboard` as an owner-visible prefix. Root console is `/`, and sections are clean top-level nouns: `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, with deployment/admin surfaces under clean top-level nouns as well. `/dashboard/records` becomes `/sources`. Legacy `/dashboard/*` routes SHALL redirect and remain back-compatible so existing bookmarks and agent-generated links do not break.
+- Finish the owner-noun rename in every surface: Runs becomes Syncs, Traces becomes Audit, and the already-shipped Records→Sources label rename is completed to a matching route.
+- Make the default brand PDPP, using the PDPP logo/mark. `Recordroom` is not the owner-visible default wordmark; it remains only as internal component/CSS identifiers.
+- Unify the command palette to one component behind one Ctrl/Cmd+K listener, with autofocus on open, first-outside-click dismissal, live type-ahead/autocomplete/filtering over commands, and an explicit (not default) Explore/search fallback row.
+- Make the owner-access overview scale: token/client label edit where the contract supports it, consistent timestamp semantics, a per-client token drilldown/details when `active_token_count > 1`, a preview+full-list pattern for bearers, collapsed zero-pending-approvals, discoverable grant packages, and an accurately labeled read/audit ladder.
+
+These decisions supersede the earlier "keep `/dashboard`" and "defer route retirement" leanings recorded in the iteration log and the owner docket parking row; the design and spec deltas record the change.
+
 ## Capabilities
 
 Modified:
@@ -30,3 +42,5 @@ Modified:
 - Future owner-console changes that affect navigation, source setup, source state, record inspection, recovery, grant/read presentation, or evidence surfaces must map to the journey ledger and acceptance gates in this change.
 - Existing console UI work may need to be reverted, replaced, or re-sequenced if it improves local copy while preserving the wrong product model.
 - Some current routes may remain as compatibility redirects, but owner-facing copy, navigation, and CTA destinations must converge on the new surface model.
+- The `/dashboard` prefix removal changes the owner-visible route topology named normatively in `reference-surface-topology`; the spec delta modifies the affected requirements so they express owner-control-plane intent without pinning the `/dashboard` literal, and requires legacy redirects. `docs/voice-and-framing.md` §2–§3 (which cite `/dashboard/**`) must be reconciled to the new topology when the route work lands.
+- Owner-access label edit and per-token drilldown require small additive reference-implementation contracts (RFC 7592 client-name update, a per-client token listing/revoke, and an optional grant-package count). Label-only polish (timestamp consistency, bearer preview/collapse, read-ladder relabel, package discovery link) needs no contract change and can land first.

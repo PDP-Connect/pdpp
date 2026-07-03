@@ -1,3 +1,119 @@
+## MODIFIED Requirements
+
+### Requirement: Live dashboard surfaces SHALL be stateful owner/operator surfaces
+
+The owner control-plane route family SHALL be treated as stateful live-instance operation. It SHALL be owner-authenticated when owner authentication is configured, SHALL avoid static caching of live state, SHALL avoid search-engine indexing, SHALL be safe to disable on hosted public documentation deployments, and SHALL be owned by the operator-console deployable rather than the public-site deployable. The canonical owner routes are clean top-level nouns (`/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and clean deployment/admin nouns); legacy `/dashboard/*` routes remain reachable only as compatibility redirects into that family.
+
+#### Scenario: Owner auth is configured
+
+- **WHEN** owner authentication is configured for the reference instance
+- **THEN** the owner control-plane routes SHALL require owner access before exposing live records, grants, traces, runs, deployment diagnostics, or interactions
+- **AND** this SHALL hold for both the canonical clean routes and any legacy `/dashboard/*` route that redirects into them
+
+#### Scenario: Public hosted documentation is deployed
+
+- **WHEN** the public-site deployable is deployed without an intended live reference instance
+- **THEN** the owner control-plane routes SHALL NOT be reachable from the public-site origin
+- **AND** the public-site deployable SHALL build and serve without including operator-console code or a BFF to an AS/RS
+
+#### Scenario: Operator deployment runs the console
+
+- **WHEN** an operator runs the operator-console deployable alongside the reference-implementation AS/RS service
+- **THEN** the owner control-plane routes and the BFF/proxy routes (`/_ref/**`, `/v1/**`, `/oauth/**`, `/.well-known/**`, `/consent`, `/device`, `/owner/**`, `/__pdpp/**`, `/connectors/**`, `/neko/**`, `/agent-connect`) SHALL be owned by the operator-console deployable
+- **AND** the BFF/proxy SHALL terminate at the co-deployed AS/RS over the internal operator network rather than over the public internet
+
+### Requirement: The operator dashboard SHALL separate record-content search from spine artifact lookup
+
+The operator console SHALL provide two distinct search surfaces:
+
+1. **Explore** (canonical `/explore`) — record-content search, time-range browsing, and the recency feed across visible connections. This surface is the sole owner-token record-content search surface.
+2. **Jump** — spine artifact lookup by id at its canonical owner route. Accepts trace, grant, and run ids and deep-links to the matching artifact page on exact match.
+
+Legacy `/dashboard/explore` and `/dashboard/search` SHALL remain reachable as redirects to the canonical routes. The Jump surface SHALL NOT call record-content search endpoints (`searchRecordsLexical`, `searchRecordsHybrid`, or equivalents). Free-text queries submitted to the Jump surface SHALL redirect to Explore.
+
+#### Scenario: An operator submits a free-text query on Jump
+
+- **WHEN** an operator submits a free-text query on the Jump surface that does not match an exact spine artifact id
+- **THEN** the surface SHALL redirect to Explore with the query pre-filled (canonically `/explore?q=<query>`)
+- **AND** the Jump surface SHALL NOT render record-content search results
+
+#### Scenario: An operator submits an exact id on Jump
+
+- **WHEN** an operator submits a query that exactly matches a known trace id, grant id, or run id
+- **THEN** the surface SHALL redirect directly to the matching artifact detail page
+- **AND** the `jump=0` query parameter SHALL opt out of the redirect and render the matching spine artifact buckets inline
+
+#### Scenario: The operator console nav labels the two surfaces distinctly
+
+- **WHEN** a user views the operator console navigation
+- **THEN** the nav item for record-content search and time-range browsing SHALL be labeled "Explore"
+- **AND** the nav item for spine artifact id lookup SHALL be labeled "Jump"
+- **AND** no other nav item SHALL present itself as a record-content search surface
+
+### Requirement: Add data SHALL be a compact decision surface
+
+The reference owner console Add data surface SHALL present available source setup choices as a compact decision surface by default. Each available source row SHALL carry one source identity, one concise method or material line, one current support fact, and at most one real primary next action. Detailed setup rationale, acquisition instructions, existing-source reuse controls, and external source instructions SHALL NOT be expanded inline for every default row. The Add data surface SHALL live under the Sources information architecture at its canonical clean route (`/sources/add`); the legacy `/dashboard/records/add` route SHALL redirect to it.
+
+#### Scenario: The owner scans add-now choices
+
+- **WHEN** the owner opens the Add data surface (canonically `/sources/add`) with no search query
+- **THEN** the primary available-source group SHALL render comparable source choices
+- **AND** it SHALL NOT repeat generic rationale disclosure copy for every row
+- **AND** artifact-import sources SHALL NOT expand their acquisition instructions or existing-source management controls inline before the owner chooses that source
+
+#### Scenario: A source requires server setup
+
+- **WHEN** a source requires server or operator configuration before owner account setup can begin
+- **THEN** the Add data surface SHALL summarize that prerequisite outside the primary add-now group
+- **AND** it SHALL NOT render the source as another default add-now card
+
+#### Scenario: A source cannot be added from this page
+
+- **WHEN** a source has no shipped owner-usable add path in the current reference deployment
+- **THEN** the Add data surface SHALL keep it hidden from the default add-now list or behind a collapsed/search-specific unavailable section
+- **AND** it SHALL NOT render a primary setup action for that source
+
+### Requirement: The add-connection surface SHALL present the full connector catalog with honest binding-derived routing
+
+The console add-connection surface SHALL present every connector manifest the
+reference ships as a catalog entry, grouped by the connector's binding-derived
+modality, rather than a hardcoded subset. Each catalog entry SHALL route to the
+honest next step the reference can complete today for that modality, and SHALL
+NOT present an "Add connection" affordance the reference cannot complete.
+
+The modality SHALL be derived from the manifest `runtime_requirements.bindings`
+using the same `filesystem > browser > network` precedence the owner-agent intent
+route uses, so the console and the trusted-agent surface classify a connector the
+same way. The surface SHALL read the shipped manifests directly (it is a
+server-rendered operator surface) and SHALL NOT call the owner-bearer
+`/v1/owner/connector-templates` or `/v1/owner/connections/intents` routes from a
+cookie session.
+
+#### Scenario: The add-connection surface lists every shipped connector
+
+- **WHEN** an operator opens the add-connection surface at its canonical Sources add route (`/sources/add`, with the legacy `/dashboard/records` add path redirecting to it)
+- **THEN** the surface SHALL list every connector whose shipped manifest declares
+  a `connector_id`, grouped by its binding-derived modality
+- **AND** the surface SHALL NOT silently omit connectors that are not creatable
+  from the console today
+
+#### Scenario: A filesystem connector is offered as a one-click enrollment
+
+- **WHEN** the surface lists a connector whose bindings include `filesystem` and
+  whose key is in the proven local-collector set
+- **THEN** the entry SHALL deep-link into the device-exporter enrollment form
+  pre-selected for that connector
+- **AND** the entry SHALL NOT require an owner bearer or call an owner-agent route
+
+#### Scenario: A gated connector is visible but not falsely creatable
+
+- **WHEN** the surface lists a connector whose bindings are `browser` or
+  `network` and the reference has no committed console creation path for it
+- **THEN** the entry SHALL be shown with the named missing primitive or, for a
+  browser-bound connector, the owner-run runbook path
+- **AND** the entry SHALL NOT render an enrollment deep-link or an "Add
+  connection" button that would create a phantom zero-record connection
+
 ## ADDED Requirements
 
 ### Requirement: Owner console SHALL be governed by core owner journeys
@@ -314,3 +430,107 @@ Hard owner-console surfaces SHALL NOT be broadly implemented from raw defect lis
 - **WHEN** a change affects owner-facing source, recovery, grant, setup, or diagnostic language
 - **THEN** the change SHALL verify the owner/operator/protocol vocabulary boundary
 - **AND** the verification SHALL NOT rely only on a denylist of previously leaked strings
+
+### Requirement: Owner console SHALL use canonical clean top-level routes with legacy compatibility redirects
+
+The owner control plane SHALL present canonical owner-facing routes as clean top-level nouns rather than under a `/dashboard` prefix. The root console SHALL be `/`, and owner sections SHALL use clean top-level routes: `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, and `/schedules`. Deployment and administration surfaces SHALL likewise use clean top-level nouns. Legacy `/dashboard/*` routes SHALL remain reachable as redirects so existing bookmarks, owner-agent/CLI links, and external references do not break.
+
+#### Scenario: An owner opens a section at its canonical route
+
+- **WHEN** an owner navigates to a primary console section
+- **THEN** the owner-facing route SHALL be the clean top-level noun for that section (for example `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`)
+- **AND** the owner-facing route SHALL NOT require a `/dashboard` prefix
+
+#### Scenario: A legacy dashboard route is requested
+
+- **WHEN** a request arrives for a legacy `/dashboard/*` route, including `/dashboard/records` and its subtree
+- **THEN** the console SHALL redirect to the corresponding clean top-level route (for example `/dashboard/records` → `/sources`)
+- **AND** the redirect SHALL preserve the deep path and subject so a bookmarked or agent-generated link lands on the equivalent clean surface
+- **AND** the redirect for a now-final target SHALL be permanent
+
+#### Scenario: The sandbox mirror is unaffected by the console route move
+
+- **WHEN** the console owner routes move off the `/dashboard` prefix
+- **THEN** the shared route helper SHALL keep the `/sandbox` mirror's base path unchanged
+- **AND** shared view components SHALL NOT emit `/dashboard` or console-only routes into `/sandbox` surfaces
+
+### Requirement: Owner console SHALL default to PDPP brand identity
+
+The owner console SHALL present PDPP as the default brand, using the PDPP logo/mark and the `PDPP` wordmark in owner-visible chrome. A non-default brand name such as `Recordroom` SHALL NOT be the owner-visible default wordmark; it MAY remain only as internal component, CSS, or code identifiers that the owner does not see. Build/host provenance chrome SHALL render in one owner-facing location rather than being duplicated.
+
+#### Scenario: An owner views the console chrome
+
+- **WHEN** an owner loads any primary console surface
+- **THEN** the owner-visible wordmark SHALL be `PDPP` with the PDPP logo/mark
+- **AND** no owner-visible chrome SHALL present `Recordroom` as the brand name
+
+#### Scenario: Host and build provenance is shown
+
+- **WHEN** the console renders host/build provenance such as `{host} · {build}`
+- **THEN** that provenance SHALL render in exactly one owner-facing location
+- **AND** it SHALL NOT be duplicated across the header and footer of the same view
+
+### Requirement: Owner console SHALL provide one unified command palette behind a single opener
+
+The owner console SHALL expose a single command palette with a single Ctrl/Cmd+K opener. Exactly one keydown listener SHALL own the palette toggle, and the palette button and keyboard shortcut SHALL open the same palette instance. The palette SHALL autofocus its input on open, close on the first outside click, and filter its commands with live type-ahead. A record/search fallback SHALL be an explicit selectable entry, not the default action that silently leaves the palette.
+
+#### Scenario: The owner opens the palette by button or shortcut
+
+- **WHEN** the owner activates the palette button or presses Ctrl/Cmd+K
+- **THEN** the same single palette instance SHALL open
+- **AND** exactly one keydown listener SHALL handle the shortcut so a single keypress does not double-toggle the palette
+- **AND** the palette input SHALL receive focus on open
+
+#### Scenario: The owner clicks outside the open palette
+
+- **WHEN** the palette is open and the owner clicks outside it
+- **THEN** the palette SHALL close on the first outside click
+
+#### Scenario: The owner types in the palette
+
+- **WHEN** the owner types into the palette input
+- **THEN** the command list SHALL filter live by type-ahead over command titles, descriptions, and keywords
+- **AND** an Explore/record-search fallback SHALL appear as an explicit selectable row rather than being triggered silently when the owner presses Enter
+
+### Requirement: Owner-access overview SHALL scale beyond a handful of clients, tokens, grants, and reads
+
+The owner-access overview and its deep pages SHALL scale as the number of bearer credentials, tokens, grants, grant packages, and reads grows. Bearer and grant lists SHALL use a preview-plus-full-list pattern rather than an uncapped flat list. Timestamp semantics for the same field SHALL be consistent across the overview and its deep pages. A client with more than one active token SHALL expose per-token details. Zero-state approval sections SHALL collapse. Grant packages SHALL be discoverable from the overview. The read/audit ladder SHALL be labeled to match what each level actually shows. Editable labels SHALL be editable only where the reference contract supports the edit.
+
+#### Scenario: Many bearer credentials exist
+
+- **WHEN** the owner-access overview lists bearer credentials that can act as the owner
+- **THEN** the overview SHALL show a bounded preview with a count summary and a link to the full managed list
+- **AND** it SHALL NOT render every bearer as an uncapped flat list
+
+#### Scenario: A client has more than one active token
+
+- **WHEN** a client's `active_token_count` is greater than one
+- **THEN** the owner SHALL be able to drill into that client's individual active tokens with their issued and expiry facts
+- **AND** any owner-visible token identifier SHALL NOT be a usable bearer secret
+
+#### Scenario: The same timestamp field is shown on two surfaces
+
+- **WHEN** the overview and a deep page both render the same credential timestamp field
+- **THEN** they SHALL use the same timestamp rendering and relative/absolute semantics
+- **AND** a label such as "issued" SHALL be accurate for the field it names, degrading to "first issued" or a per-token timestamp when a client has more than one token
+
+#### Scenario: There are zero pending approvals
+
+- **WHEN** a grants or approvals surface has zero pending approvals
+- **THEN** the surface SHALL collapse or omit the pending-approvals section rather than rendering a persistent empty block
+
+#### Scenario: Grant packages exist
+
+- **WHEN** the owner has one or more grant packages
+- **THEN** the overview SHALL make grant packages discoverable with a count or link rather than surfacing them only incidentally on package-bound grant rows
+
+#### Scenario: The read/audit ladder is labeled
+
+- **WHEN** the overview links from a read preview toward the full read history
+- **THEN** each level's label SHALL match what that level shows, so a grouped preview, a grouped list, and the per-event log are not all described as "every read"
+
+#### Scenario: A credential or client label is editable
+
+- **WHEN** the reference contract supports editing a client or credential label
+- **THEN** the owner SHALL be able to edit that label in place and see it reflected across the overview and deep pages in one render cycle
+- **AND** a label SHALL be presented as editable only when the contract can persist the edit; scope and bearer material SHALL NOT be presented as editable

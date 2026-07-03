@@ -6,7 +6,7 @@
 // plan dated 2026-05-12.
 //
 // We deliberately do NOT import directly from
-// apps/console/src/app/dashboard/runs/[runId]/stream/neko-client.ts. That module
+// apps/console/src/app/(console)/syncs/[runId]/stream/neko-client.ts. That module
 // is not exposed via a workspace package and several of its
 // adapter-relevant helpers (startNeko, focusNekoKeyboard, paste-to-text
 // path) are file-private. To avoid mutating neko-client.ts during the

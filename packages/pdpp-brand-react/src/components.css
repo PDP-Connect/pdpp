@@ -1336,6 +1336,14 @@
   line-height: 1.55;
   color: var(--muted-foreground);
 }
+/* "+N more owner credentials →" — the overview previews the most-recent few
+   bearers and links to the tokens page to manage the rest. */
+.rr-bearer__more {
+  display: block;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  white-space: normal;
+}
 
 /* ─── Two-question grid ─── */
 .rr-stand-grid {
@@ -1362,6 +1370,16 @@
   font-weight: 700;
   letter-spacing: -0.01em;
   margin: 0;
+}
+/* Header links wrapper — lets a block head carry more than one link (e.g. the
+   grant-package discovery link beside "all grants →") without breaking the
+   space-between layout. */
+.rr-stand-block__links {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 /* Who can read you — relationships, not scope IDs */

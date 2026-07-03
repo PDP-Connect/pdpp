@@ -145,6 +145,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authGrantPackageMembersListAllByPackage: SmallEnumerationQuery;
   readonly authGrantPackageMembersMarkRevokedByGrant: MutationQuery;
   // Auth — grant_packages (operator-visible read surface)
+  readonly authGrantPackagesCount: ReadOneQuery;
   readonly authGrantPackagesListAll: SmallEnumerationQuery;
   readonly authGrantsGetForIssuance: ReadOneQuery;
   readonly authGrantsGetForRevocation: ReadOneQuery;
@@ -190,8 +191,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authTokensGetIntrospection: ReadOneQuery;
   readonly authTokensInsertClient: MutationQuery;
   readonly authTokensInsertOwner: MutationQuery;
+  readonly authTokensListActiveByClientId: SmallEnumerationQuery;
   readonly authTokensRevokeByClientId: MutationQuery;
   readonly authTokensRevokeByGrant: MutationQuery;
+  readonly authTokensRevokeByTokenId: MutationQuery;
   readonly blobsGetRowById: ReadOneQuery;
   readonly blobsGetStoredById: ReadOneQuery;
   readonly blobsInsertBinding: MutationQuery;

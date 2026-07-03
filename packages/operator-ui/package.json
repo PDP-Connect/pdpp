@@ -23,6 +23,7 @@
     "./components/connect-agent-card": "./src/components/connect-agent-card.tsx",
     "./components/mobile-drawer": "./src/components/mobile-drawer.tsx",
     "./components/command-palette": "./src/components/command-palette.tsx",
+    "./components/command-registry": "./src/components/command-registry.ts",
     "./components/peek": "./src/components/peek.tsx",
     "./components/timeline-view": "./src/components/timeline-view.tsx",
     "./components/overview-hero": "./src/components/overview-hero.tsx",

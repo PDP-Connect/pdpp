@@ -3,6 +3,7 @@ import {
   CommandPaletteProvider,
   CommandPaletteTrigger,
 } from "@pdpp/operator-ui/components/command-palette";
+import { LEGACY_SEGMENTS } from "@pdpp/operator-ui/components/command-registry";
 import { MobileDrawer, MobileDrawerProvider, MobileDrawerTrigger } from "@pdpp/operator-ui/components/mobile-drawer";
 import { type Routes, sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
@@ -49,9 +50,9 @@ function buildNav(routes: Routes): NavItem[] {
       label: "Explore",
       match: (a) => a === "explore" || a === "search" || a === "records",
     },
-    { href: routes.section.traces, label: "Traces", match: (a) => a === "traces" },
+    { href: routes.section.traces, label: "Audit", match: (a) => a === "traces" },
     { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
-    { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },
+    { href: routes.section.runs, label: "Syncs", match: (a) => a === "runs" },
     { href: routes.section.schedules, label: "Schedules", match: (a) => a === "schedules" },
     { href: routes.section.deployment, label: "Deployment", match: (a) => a === "deployment" },
   ];
@@ -86,7 +87,10 @@ export function DashboardShell({
             <SidebarContent active={active} routes={routes} />
           </MobileDrawer>
         </MobileDrawerProvider>
-        <CommandPalette basePath={routes.basePath} overviewHref={routes.section.overview} />
+        {/* Sandbox keeps its legacy `records`/`runs`/`traces` folder segments;
+            pass them explicitly so the shared registry does not default to the
+            clean console segments. */}
+        <CommandPalette basePath={routes.basePath} mode="mock-owner" segments={LEGACY_SEGMENTS} />
       </CommandPaletteProvider>
     </div>
   );

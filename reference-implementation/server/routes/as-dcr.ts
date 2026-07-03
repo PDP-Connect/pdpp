@@ -5,12 +5,15 @@
 //
 // Covers:
 //   POST   /oauth/register           — RFC 7591 dynamic client registration
+//   PATCH  /oauth/register/:clientId — RFC 7592 client management / update
 //   DELETE /oauth/register/:clientId — RFC 7592 client management / deletion
 //
 // Auth posture:
 //   POST   — public (no auth required), or Bearer initial-access-token, or
 //            owner session cookie. Public registrations go through an IP-keyed
 //            rate limiter before reaching the operation.
+//   PATCH  — owner session required (enforced by injected `requireOwnerSession`
+//            middleware). Edits the owner-facing `client_name` label only.
 //   DELETE — owner session required (enforced by injected `requireOwnerSession`
 //            middleware). Deliberate design choice: RFC 7592 registration-access-
 //            token gating is NOT used; see
@@ -19,10 +22,12 @@
 // Canonical operations:
 //   operations/as-dcr-register/index.ts → input sanitisation, IAT validation,
 //     registration mode detection, typed outcome
+//   operations/as-dcr-update/index.ts   → client_name-only update, typed error → status
 //   operations/as-dcr-delete/index.ts   → cascade-delete, typed error → status
 
 import { executeAsDcrDelete } from "../../operations/as-dcr-delete/index.ts";
 import { executeAsDcrRegister, summarizeDcrRegisterRequest } from "../../operations/as-dcr-register/index.ts";
+import { executeAsDcrUpdate } from "../../operations/as-dcr-update/index.ts";
 import type { PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // ─── Minimal structural types ────────────────────────────────────────────────
@@ -50,6 +55,7 @@ type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
 
 interface AppLike {
   delete(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
+  patch(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
   post(path: string, ...args: RouteArg<RouteHandler | MiddlewareFn>[]): AppLike;
 }
 
@@ -87,6 +93,8 @@ export interface MountAsDcrContext {
   resolveInitialAccessTokensForRequest(req: RouteRequest): readonly string[];
   /** Attaches a trace-id header to the response. */
   setReferenceTraceId(res: unknown, traceId: string): void;
+  /** Auth-layer capability: update a registered client's owner-facing label. */
+  updateRegisteredClientName: Parameters<typeof executeAsDcrUpdate>[1]["updateRegisteredClientName"];
 }
 
 // ─── Route mount ─────────────────────────────────────────────────────────────
@@ -180,6 +188,33 @@ export function mountAsDcr(app: AppLike, ctx: MountAsDcrContext): void {
     ctx.oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   };
 
+  // PATCH /oauth/register/:clientId ─ RFC 7592 client management (update)
+  //
+  // Owner-session-gated. Edits the owner-facing `client_name` label only;
+  // scope and bearer material are not editable. Drives
+  // `oauth_clients.updated_at` so the rename reflects on the next owner read.
+  const updateHandler: RouteHandler = async (req, res): Promise<void> => {
+    const traceContext = ctx.createTraceContext();
+    res.setHeader("Request-Id", traceContext.request_id);
+    ctx.setReferenceTraceId(res, traceContext.trace_id);
+
+    const actingSubjectId: string = req.ownerSession?.sub ?? ctx.ownerSubjectId;
+    const outcome = await executeAsDcrUpdate(
+      {
+        clientId: decodeURIComponent(req.params.clientId as string),
+        body: req.body,
+        actingSubjectId,
+      },
+      { updateRegisteredClientName: ctx.updateRegisteredClientName }
+    );
+
+    if (outcome.outcome === "success") {
+      res.status(outcome.status).json(outcome.client);
+      return;
+    }
+    ctx.pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+  };
+
   // DELETE /oauth/register/:clientId ─ RFC 7592 client management
   //
   // Owner-session-gated. Cascades to revoke all active grants for the client.
@@ -211,6 +246,12 @@ export function mountAsDcr(app: AppLike, ctx: MountAsDcrContext): void {
     "/oauth/register",
     { contract: "registerDynamicClient" } as RouteArg<RouteHandler | MiddlewareFn>,
     registerHandler
+  );
+
+  app.patch(
+    "/oauth/register/:clientId",
+    ctx.requireOwnerSession as RouteArg<RouteHandler | MiddlewareFn>,
+    updateHandler
   );
 
   app.delete(

@@ -131,7 +131,7 @@ test('owner-session package export is available via the workspace package name',
 // import surface (the AS, reference-implementation/server/owner-auth.ts, which
 // imports the controller from '../server/owner-session.ts') and independently
 // *validated* on another (the Next.js console,
-// apps/console/src/app/dashboard/lib/owner-token.ts, which imports the same
+// apps/console/src/app/(console)/lib/owner-token.ts, which imports the same
 // controller through the package-export specifier
 // 'pdpp-reference-implementation/owner-session').
 //

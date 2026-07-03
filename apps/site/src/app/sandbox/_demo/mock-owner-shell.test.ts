@@ -34,8 +34,14 @@ const SANDBOX_MODE_BANNER_COMPONENT_RE = /function SandboxModeBanner/;
 // banner is unconditional — no mode guard required. Accept either form.
 const SANDBOX_MODE_BANNER_RENDER_RE = /<SandboxModeBanner\s*\/>/;
 const SANDBOX_OVERVIEW_ROUTE_RE = /export const sandboxRoutes: Routes = makeRoutes\(["']\/sandbox["']\);/;
-const COMMAND_PALETTE_OVERVIEW_RE =
-  /<CommandPalette\s+basePath=\{routes\.basePath\}\s+overviewHref=\{routes\.section\.overview\}\s*\/>/;
+// The unified palette derives every command href (including Overview) from
+// `basePath`, scoped by `mode`. In the sandbox that is `basePath=/sandbox` +
+// `mode="mock-owner"`, which keeps the palette inside the sandbox.
+// Sandbox mounts the unified palette scoped to /sandbox (routes.basePath) with
+// the legacy folder segments (records/runs/traces) passed explicitly, so the
+// shared registry does not default to the clean console segments (§10.B).
+const COMMAND_PALETTE_MODE_RE =
+  /<CommandPalette\s+basePath=\{routes\.basePath\}\s+mode=["']mock-owner["']\s+segments=\{LEGACY_SEGMENTS\}\s*\/>/;
 const SITE_HEADER_RE = /SiteHeader|currentLabel=["']Sandbox["']/;
 const FORCE_DYNAMIC_RE = /export\s+const\s+dynamic\s*=\s*["']force-dynamic["']/;
 const REDIRECT_IMPORT_RE = /import\s+\{\s*redirect\s*\}\s+from\s+["']next\/navigation["']/;
@@ -115,6 +121,20 @@ const DASHBOARD_ROUTES_IMPORT_RE = /\bdashboardRoutes\b/;
 // prose like "the live /dashboard operator". A leading quote/backtick is
 // required so the next character is the URL's first segment.
 const DASHBOARD_URL_LITERAL_RE = /["'`]\/dashboard(?:\/|\b)/;
+const SHARED_ROUTES_FILE = join(
+  SANDBOX_DIR,
+  "..",
+  "..",
+  "..",
+  "..",
+  "..",
+  "packages",
+  "operator-ui",
+  "src",
+  "components",
+  "views",
+  "routes.ts"
+);
 
 test("primary /sandbox dashboard pages render DashboardShell in mock-owner mode", async () => {
   const offenders: string[] = [];
@@ -228,7 +248,7 @@ test("DashboardShell renders the sandbox footer with no live AS/RS probe", async
 });
 
 test("sandboxRoutes overview is `/sandbox`", async () => {
-  const src = await readFile(join(SANDBOX_DIR, "..", "dashboard", "components", "views", "routes.ts"), "utf8");
+  const src = await readFile(SHARED_ROUTES_FILE, "utf8");
   assert.match(src, SANDBOX_OVERVIEW_ROUTE_RE);
 });
 
@@ -261,9 +281,9 @@ test("/sandbox keeps the core dashboard-shaped routes", async () => {
   );
 });
 
-test("DashboardShell passes the mode-specific overview route to CommandPalette", async () => {
+test("DashboardShell mounts the unified CommandPalette in mock-owner mode with the sandbox basePath", async () => {
   const src = await readFile(join(SANDBOX_DIR, "..", "dashboard", "components", "shell.tsx"), "utf8");
-  assert.match(src, COMMAND_PALETTE_OVERVIEW_RE, "command palette Overview must point to /sandbox in mock-owner mode");
+  assert.match(src, COMMAND_PALETTE_MODE_RE, "command palette must be scoped to /sandbox in mock-owner mode");
 });
 
 test("sandbox pages do not import dashboardRoutes (would link out of the sandbox)", async () => {

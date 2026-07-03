@@ -13,13 +13,13 @@ import { fileURLToPath } from "node:url";
 export const REPO_ROOT = path.join(fileURLToPath(new URL(".", import.meta.url)), "..");
 
 const ACTIVE_OWNER_SURFACE_PATHS = new Set([
-  "apps/console/src/app/dashboard/records/page.tsx",
-  "apps/console/src/app/dashboard/records/sources-view.tsx",
-  "apps/console/src/app/dashboard/records/sources-view-model.ts",
-  "apps/console/src/app/dashboard/records/[connector]/page.tsx",
+  "apps/console/src/app/(console)/sources/page.tsx",
+  "apps/console/src/app/(console)/sources/sources-view.tsx",
+  "apps/console/src/app/(console)/sources/sources-view-model.ts",
+  "apps/console/src/app/(console)/sources/[connector]/page.tsx",
 ]);
 
-const LEGACY_RAW_HEALTH_PATHS = new Set(["apps/console/src/app/dashboard/records/connector-row.tsx"]);
+const LEGACY_RAW_HEALTH_PATHS = new Set(["apps/console/src/app/(console)/sources/connector-row.tsx"]);
 
 const RULES = [
   {
