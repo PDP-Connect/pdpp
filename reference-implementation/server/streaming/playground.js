@@ -7,8 +7,8 @@
  * standard streaming-mint route accepts the playground runId as if a real
  * connector were awaiting a manual_action.
  *
- * The point: a developer can open `/dashboard/stream-playground` in the web
- * app, see the real <StreamSurface> backed by CDP or n.eko, and exercise
+ * The point: a developer can open `/stream-playground` in the web app, see the
+ * real <StreamSurface> backed by CDP or n.eko, and exercise
  * browser interaction without wiring up a connector run.
  *
  * NOT for production: the helper bypasses the connector lifecycle, mints

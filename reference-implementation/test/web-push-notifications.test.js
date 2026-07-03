@@ -195,7 +195,7 @@ test('pending interaction Web Push payload omits sensitive connector and interac
   ]) {
     assert.equal(serialized.includes(forbidden), false, `payload leaked ${forbidden}`);
   }
-  assert.equal(payload.url, '/dashboard/runs/run_secret');
+  assert.equal(payload.url, '/syncs/run_secret');
   assert.equal(payload.interaction_id, 'int_secret');
 });
 
@@ -211,7 +211,7 @@ test('scheduled interaction Web Push payload can route to durable run context in
     },
   });
 
-  assert.equal(payload.url, '/dashboard/runs/run_scheduled');
+  assert.equal(payload.url, '/syncs/run_scheduled');
   assert.equal(payload.interaction_id, 'int_scheduled');
 });
 
@@ -225,7 +225,7 @@ test('manual run Web Push payload still routes manual_action interactions to the
     },
   });
 
-  assert.equal(payload.url, '/dashboard/runs/run_manual/stream?interaction_id=int_manual');
+  assert.equal(payload.url, '/syncs/run_manual/stream?interaction_id=int_manual');
 });
 
 test('web push send failures mark subscriptions without blocking successful fallback work', async () => {
@@ -474,7 +474,7 @@ test('assistance Web Push payload routes to the run page and omits raw assistanc
   });
 
   assert.equal(payload.type, 'pdpp.assistance_requested');
-  assert.equal(payload.url, '/dashboard/runs/run_assist');
+  assert.equal(payload.url, '/syncs/run_assist');
   assert.equal(payload.assistance_request_id, 'asst_secret_42');
   assert.equal(payload.owner_action, 'act_elsewhere');
   assert.equal(payload.notification_tier, 'action_required');
@@ -623,10 +623,10 @@ test('reference scheduler Web Push fanout uses the server subscription store and
   assert.match(src, /routeTo: 'run'/);
 });
 
-test('test notification Web Push payload carries no secrets and routes to /dashboard', () => {
+test('test notification Web Push payload carries no secrets and routes to the overview', () => {
   const payload = buildTestPushPayload();
   assert.equal(payload.type, 'pdpp.test_notification');
-  assert.equal(payload.url, '/dashboard');
+  assert.equal(payload.url, '/');
   assert.equal(typeof payload.title, 'string');
   assert.equal(typeof payload.body, 'string');
   const serialized = JSON.stringify(payload);
@@ -963,7 +963,7 @@ test('fanoutEscalationWebPush: rendered attention verdict sends to owner subscri
     connectorDisplayName: 'Gmail',
     ownerSubjectId: 'owner_local',
     reason: 'needs_attention',
-    connectionUrl: '/dashboard/records/cin_gmail',
+    connectionUrl: '/sources/cin_gmail',
     renderedVerdict: {
       channel: 'attention',
       required_actions: [
@@ -983,7 +983,7 @@ test('fanoutEscalationWebPush: rendered attention verdict sends to owner subscri
   assert.equal(result.sent, 1);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].payload.type, 'pdpp.escalation');
-  assert.equal(sent[0].payload.url, '/dashboard/records/cin_gmail');
+  assert.equal(sent[0].payload.url, '/sources/cin_gmail');
 });
 
 // ─── classifyPushFanoutOutcome ────────────────────────────────────────────

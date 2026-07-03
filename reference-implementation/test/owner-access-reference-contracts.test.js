@@ -94,7 +94,7 @@ async function login(asUrl) {
     },
     body: new URLSearchParams({
       password: TEST_PASSWORD,
-      return_to: '/dashboard/deployment/tokens',
+      return_to: '/deployment/tokens',
       _csrf: csrf.csrfField,
     }).toString(),
     redirect: 'manual',

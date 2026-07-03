@@ -29,12 +29,9 @@ const CONNECTION_DISPLAY_HELPER_RE = /function connectorSummaryDisplayName\(summ
 const ASSEMBLER_IMPORT_RE = /from\s+["'][^"']*explore-data-assembler(?:\.ts)?["']/;
 const INLINE_FEED_LOADER_RE =
   /\bfunction\s+loadEmptyQueryFeed\b|\bfunction\s+loadTimeRangeFeed\b|\bfunction\s+loadSearchFeed\b/;
-// Clean topology (redesign-owner-console-product-experience §10.B): `/explore`
-// is now the canonical console route served directly, and legacy
-// `/dashboard/*` links (including `/dashboard/explore`) redirect to the clean
-// route via the generic prefix-strip rule.
-const LEGACY_DASHBOARD_PREFIX_STRIP_RE =
-  /source:\s*['"]\/dashboard\/:rest\*['"][\s\S]*?destination:\s*['"]\/:rest\*['"]/;
+// Clean topology: `/explore` is the canonical console route served directly.
+// The removed `/dashboard/*` prefix must not be preserved by redirect rules.
+const LEGACY_DASHBOARD_REDIRECT_RE = /source:\s*['"]\/dashboard(?:\/|['"])/;
 const OWNER_FACING_DEMO_COPY_RE =
   /jump to an id|same call any client makes|window capped|names overlap across connections/i;
 const ACTIVE_RANGE_HELPER_RE = /activeRangeKey\(\{\s*since:\s*data\.since,\s*until:\s*data\.until\s*\}\)/;
@@ -296,12 +293,12 @@ test("live explore page delegates to the shared assembler", async () => {
   assert.doesNotMatch(src, INLINE_FEED_LOADER_RE, "live page must not define inline feed loader functions");
 });
 
-test("next.config.mjs strips the legacy /dashboard prefix (so /dashboard/explore → /explore)", async () => {
+test("next.config.mjs does not preserve the removed /dashboard prefix", async () => {
   const src = await readFile(NEXT_CONFIG_FILE, "utf8");
-  assert.match(
+  assert.doesNotMatch(
     src,
-    LEGACY_DASHBOARD_PREFIX_STRIP_RE,
-    "must strip the legacy /dashboard prefix so /dashboard/explore lands on the clean /explore route"
+    LEGACY_DASHBOARD_REDIRECT_RE,
+    "must not preserve /dashboard routes as redirects; use clean owner routes directly"
   );
 });
 

@@ -9,7 +9,7 @@
  *
  * The live, owner-token-authenticated implementation
  * (`liveDashboardDataSource`) lives with the operator console (`apps/console`)
- * along with the `/dashboard/**` route tree and the AS/RS clients it wraps.
+ * along with the clean owner-route tree and the AS/RS clients it wraps.
  * It is intentionally absent here so the public bundle carries no owner-token
  * value-import and no live reference-server code path. This module therefore
  * contributes only the `DashboardDataSource` type to `apps/site`.

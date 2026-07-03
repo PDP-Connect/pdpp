@@ -128,16 +128,16 @@ export async function introspectOwnerTokenFlowAction(formData: FormData) {
  * new label on the next render. Scope and bearer material are untouched.
  */
 export async function renameOwnerTokenAction(formData: FormData) {
-  await requireDashboardAccess("/dashboard/deployment/tokens");
+  await requireDashboardAccess("/deployment/tokens");
   const clientId = asString(formData.get("client_id"));
   const clientName = asString(formData.get("client_name"));
   if (!clientId) {
-    redirect("/dashboard/deployment/tokens?error=client_id+required");
+    redirect("/deployment/tokens?error=client_id+required");
   }
   if (!clientName) {
     redirect(errorHref("A credential name is required"));
   }
-  let target = "/dashboard/deployment/tokens?notice=renamed";
+  let target = "/deployment/tokens?notice=renamed";
   try {
     await updateOwnerClientName(clientId, clientName);
   } catch (err) {
@@ -152,13 +152,13 @@ export async function renameOwnerTokenAction(formData: FormData) {
  * by the per-client token drilldown when `active_token_count > 1`.
  */
 export async function revokeOwnerClientTokenAction(formData: FormData) {
-  await requireDashboardAccess("/dashboard/deployment/tokens");
+  await requireDashboardAccess("/deployment/tokens");
   const clientId = asString(formData.get("client_id"));
   const tokenIdPublic = asString(formData.get("token_id_public"));
   if (!(clientId && tokenIdPublic)) {
-    redirect("/dashboard/deployment/tokens?error=token+revoke+requires+client+and+token");
+    redirect("/deployment/tokens?error=token+revoke+requires+client+and+token");
   }
-  let target = "/dashboard/deployment/tokens?notice=token_revoked";
+  let target = "/deployment/tokens?notice=token_revoked";
   try {
     await revokeOwnerClientToken(clientId, tokenIdPublic);
   } catch (err) {

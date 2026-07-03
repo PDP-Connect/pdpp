@@ -2,13 +2,13 @@
 
 ### Requirement: Live dashboard surfaces SHALL be stateful owner/operator surfaces
 
-The owner control-plane route family SHALL be treated as stateful live-instance operation. It SHALL be owner-authenticated when owner authentication is configured, SHALL avoid static caching of live state, SHALL avoid search-engine indexing, SHALL be safe to disable on hosted public documentation deployments, and SHALL be owned by the operator-console deployable rather than the public-site deployable. The canonical owner routes are clean top-level nouns (`/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and clean deployment/admin nouns); legacy `/dashboard/*` routes remain reachable only as compatibility redirects into that family.
+The owner control-plane route family SHALL be treated as stateful live-instance operation. It SHALL be owner-authenticated when owner authentication is configured, SHALL avoid static caching of live state, SHALL avoid search-engine indexing, SHALL be safe to disable on hosted public documentation deployments, and SHALL be owned by the operator-console deployable rather than the public-site deployable. The canonical owner routes are clean top-level nouns (`/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and clean deployment/admin nouns); `/dashboard/*` SHALL NOT be preserved as an owner-route compatibility layer.
 
 #### Scenario: Owner auth is configured
 
 - **WHEN** owner authentication is configured for the reference instance
 - **THEN** the owner control-plane routes SHALL require owner access before exposing live records, grants, traces, runs, deployment diagnostics, or interactions
-- **AND** this SHALL hold for both the canonical clean routes and any legacy `/dashboard/*` route that redirects into them
+- **AND** this SHALL hold for canonical clean owner routes
 
 #### Scenario: Public hosted documentation is deployed
 
@@ -29,7 +29,7 @@ The operator console SHALL provide two distinct search surfaces:
 1. **Explore** (canonical `/explore`) — record-content search, time-range browsing, and the recency feed across visible connections. This surface is the sole owner-token record-content search surface.
 2. **Jump** — spine artifact lookup by id at its canonical owner route. Accepts trace, grant, and run ids and deep-links to the matching artifact page on exact match.
 
-Legacy `/dashboard/explore` and `/dashboard/search` SHALL remain reachable as redirects to the canonical routes. The Jump surface SHALL NOT call record-content search endpoints (`searchRecordsLexical`, `searchRecordsHybrid`, or equivalents). Free-text queries submitted to the Jump surface SHALL redirect to Explore.
+The Jump surface SHALL NOT call record-content search endpoints (`searchRecordsLexical`, `searchRecordsHybrid`, or equivalents). Free-text queries submitted to the Jump surface SHALL redirect to Explore.
 
 #### Scenario: An operator submits a free-text query on Jump
 
@@ -52,7 +52,7 @@ Legacy `/dashboard/explore` and `/dashboard/search` SHALL remain reachable as re
 
 ### Requirement: Add data SHALL be a compact decision surface
 
-The reference owner console Add data surface SHALL present available source setup choices as a compact decision surface by default. Each available source row SHALL carry one source identity, one concise method or material line, one current support fact, and at most one real primary next action. Detailed setup rationale, acquisition instructions, existing-source reuse controls, and external source instructions SHALL NOT be expanded inline for every default row. The Add data surface SHALL live under the Sources information architecture at its canonical clean route (`/sources/add`); the legacy `/dashboard/records/add` route SHALL redirect to it.
+The reference owner console Add data surface SHALL present available source setup choices as a compact decision surface by default. Each available source row SHALL carry one source identity, one concise method or material line, one current support fact, and at most one real primary next action. Detailed setup rationale, acquisition instructions, existing-source reuse controls, and external source instructions SHALL NOT be expanded inline for every default row. The Add data surface SHALL live under the Sources information architecture at its canonical clean route (`/sources/add`).
 
 #### Scenario: The owner scans add-now choices
 
@@ -91,7 +91,7 @@ cookie session.
 
 #### Scenario: The add-connection surface lists every shipped connector
 
-- **WHEN** an operator opens the add-connection surface at its canonical Sources add route (`/sources/add`, with the legacy `/dashboard/records` add path redirecting to it)
+- **WHEN** an operator opens the add-connection surface at its canonical Sources add route (`/sources/add`)
 - **THEN** the surface SHALL list every connector whose shipped manifest declares
   a `connector_id`, grouped by its binding-derived modality
 - **AND** the surface SHALL NOT silently omit connectors that are not creatable
@@ -431,9 +431,9 @@ Hard owner-console surfaces SHALL NOT be broadly implemented from raw defect lis
 - **THEN** the change SHALL verify the owner/operator/protocol vocabulary boundary
 - **AND** the verification SHALL NOT rely only on a denylist of previously leaked strings
 
-### Requirement: Owner console SHALL use canonical clean top-level routes with legacy compatibility redirects
+### Requirement: Owner console SHALL use canonical clean top-level routes
 
-The owner control plane SHALL present canonical owner-facing routes as clean top-level nouns rather than under a `/dashboard` prefix. The root console SHALL be `/`, and owner sections SHALL use clean top-level routes: `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, and `/schedules`. Deployment and administration surfaces SHALL likewise use clean top-level nouns. Legacy `/dashboard/*` routes SHALL remain reachable as redirects so existing bookmarks, owner-agent/CLI links, and external references do not break.
+The owner control plane SHALL present canonical owner-facing routes as clean top-level nouns rather than under a `/dashboard` prefix. The root console SHALL be `/`, and owner sections SHALL use clean top-level routes: `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, and `/schedules`. Deployment and administration surfaces SHALL likewise use clean top-level nouns. The removed `/dashboard/*` prefix SHALL NOT be preserved as redirect compatibility, accepted as a return target, or emitted by generated owner-action links.
 
 #### Scenario: An owner opens a section at its canonical route
 
@@ -441,12 +441,12 @@ The owner control plane SHALL present canonical owner-facing routes as clean top
 - **THEN** the owner-facing route SHALL be the clean top-level noun for that section (for example `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`)
 - **AND** the owner-facing route SHALL NOT require a `/dashboard` prefix
 
-#### Scenario: A legacy dashboard route is requested
+#### Scenario: A removed dashboard route is requested
 
-- **WHEN** a request arrives for a legacy `/dashboard/*` route, including `/dashboard/records` and its subtree
-- **THEN** the console SHALL redirect to the corresponding clean top-level route (for example `/dashboard/records` → `/sources`)
-- **AND** the redirect SHALL preserve the deep path and subject so a bookmarked or agent-generated link lands on the equivalent clean surface
-- **AND** the redirect for a now-final target SHALL be permanent
+- **WHEN** a request arrives for a removed `/dashboard/*` route, including `/dashboard/records` and its subtree
+- **THEN** the console SHALL NOT redirect it to a replacement owner route
+- **AND** owner-auth return-target sanitization SHALL reject `/dashboard/*` rather than preserving it
+- **AND** service-worker click-through validation and generated notification links SHALL use only clean owner routes
 
 #### Scenario: The sandbox mirror is unaffected by the console route move
 

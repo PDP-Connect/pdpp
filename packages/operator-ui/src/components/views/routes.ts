@@ -10,12 +10,12 @@
  * URL-baked-in prefix strings.
  *
  * Clean owner-route topology (`redesign-owner-console-product-experience`
- * §10.B): the live console serves owner sections as clean top-level nouns —
+ * §10.B): the live console serves owner sections as clean top-level nouns:
  * root `/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`,
- * `/connect`, `/schedules`, and clean deployment/admin nouns. Legacy
- * `/dashboard/*` links keep working via redirects in
- * `apps/console/next.config.mjs`. The `/sandbox` mirror is deliberately
- * unchanged: it keeps its `/sandbox` base and its legacy
+ * `/connect`, `/schedules`, and clean deployment/admin nouns. The removed
+ * legacy console prefix is intentionally not preserved as redirects. The
+ * `/sandbox` mirror is deliberately unchanged: it keeps its `/sandbox` base and
+ * its legacy
  * `records`/`runs`/`traces` folder segments, so `makeRoutes` takes an optional
  * segment override that defaults to the legacy names.
  */
@@ -33,9 +33,8 @@ export interface Routes {
     overview: string;
     /**
      * Top-level Explore canvas. Promoted out of the Records subtree by
-     * `promote-explore-to-top-level-ia`. The legacy `/dashboard/records/explorer`
-     * URL redirects here and the Sources subnav points its `Explorer`
-     * entry at this same destination.
+     * `promote-explore-to-top-level-ia`; the Sources subnav points its
+     * `Explorer` entry at this same destination.
      */
     explore: string;
     addSource: string;

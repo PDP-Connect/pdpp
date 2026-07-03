@@ -336,7 +336,7 @@ test('owner-agent initiating Amazon gets browser runtime class plus static-secre
     assert.match(body.runbook_path, /static-secret-connection-runbook\.md$/);
     assert.equal(body.connection_active, false);
     assert.equal(body.next_step.kind, 'capture_static_secret');
-    assert.equal(body.next_step.capture_endpoint, '/dashboard/connect/static-secret/amazon');
+    assert.equal(body.next_step.capture_endpoint, '/connect/static-secret/amazon');
     assert.match(body.next_step.runbook_path, /static-secret-connection-runbook\.md$/);
     assert.match(body.next_step.reason, /static provider secret|static-secret/i);
     // The route must NOT mint browser enrollment material. Amazon's current
@@ -421,7 +421,7 @@ test('a trusted owner agent initiates an Amazon SECOND account up to the owner-m
     assert.equal(body.proof_gate, 'static_secret_live_proof_missing');
     assert.equal(body.connection_active, false);
     assert.equal(body.next_step.kind, 'capture_static_secret');
-    assert.equal(body.next_step.capture_endpoint, '/dashboard/connect/static-secret/amazon');
+    assert.equal(body.next_step.capture_endpoint, '/connect/static-secret/amazon');
     assert.match(body.next_step.runbook_path, /static-secret-connection-runbook\.md$/);
     assert.match(body.next_step.reason, /static provider secret|static-secret/i);
     // It must NOT claim the agent can complete login/2FA by bearer authority.
@@ -494,7 +494,7 @@ test('owner-agent initiating a static-secret API connector gets a non-secret cap
     // projection advertises synchronous validation — without exposing a secret.
     assert.equal(body.validation, 'synchronous');
     assert.equal(body.next_step.kind, 'capture_static_secret');
-    assert.equal(body.next_step.capture_endpoint, '/dashboard/connect/static-secret/gmail');
+    assert.equal(body.next_step.capture_endpoint, '/connect/static-secret/gmail');
     assert.equal(body.next_step.runbook_path, undefined);
     assert.match(body.next_step.reason, /static-secret credential capture/i);
     // Honesty: static-secret connectors authenticate with a connector-declared
@@ -529,7 +529,7 @@ test('owner-agent initiating a manual/upload connector gets a non-secret upload 
     assert.equal(body.support_state, 'supported');
     assert.equal(body.proof_gate, null);
     assert.equal(body.next_step.kind, 'provide_import_file');
-    assert.equal(body.next_step.upload_endpoint, '/dashboard/connect/manual-upload/google-maps');
+    assert.equal(body.next_step.upload_endpoint, '/connect/manual-upload/google-maps');
     assert.equal(body.next_step.enrollment_code, undefined);
     assert.equal(body.next_step.capture_endpoint, undefined);
     assert.doesNotMatch(JSON.stringify(body), /GOOGLE_MAPS_TIMELINE_DIR|import_dir|pdpp_owner_session/i);

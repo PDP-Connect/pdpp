@@ -1,24 +1,25 @@
-// Pins the proxy-layer dashboard auth gate added to apps/console/src/proxy.ts.
+// Pins the proxy-layer owner-console auth gate in apps/console/src/proxy.ts.
 //
-// Before this gate existed, hitting `/dashboard` without an owner session
-// could surface a raw 401 from the dashboard data layer (the layout/page
+// Before this gate existed, hitting the owner console without an owner session
+// could surface a raw 401 from the data layer (the layout/page
 // render race documented in the proxy file's header comment). The proxy
 // now performs an optimistic cookie-presence check and 307-redirects
 // unauthenticated browsers to `/owner/login?return_to=...` before any
 // server component renders.
 //
 // What this test pins for the production standalone server:
-//   1. GET /dashboard          (no cookie) -> 307 to /owner/login?return_to=%2Fdashboard
-//   2. GET /dashboard/records/spotify (no cookie) -> 307 to ...?return_to=%2Fdashboard%2Frecords%2Fspotify
-//   3. The redirect carries X-Robots-Tag: noindex, nofollow
+//   1. GET /                  (no cookie) -> 307 to /owner/login?return_to=%2F
+//   2. GET /sources/spotify   (no cookie) -> 307 to ...?return_to=%2Fsources%2Fspotify
+//   3. GET /dashboard         is not preserved as a routed owner surface
+//   4. The redirect carries X-Robots-Tag: noindex, nofollow
 // The production standalone server defaults the operator console to redirecting
-// unauthenticated dashboard navigations even when the password is only held
+// unauthenticated owner-console navigations even when the password is only held
 // by the AS. Local-dev opt-out policy is covered by apps/console's pure proxy
 // policy tests; this integration test pins the production BFF behavior.
 //
 // The test uses the same composed-origin spawn pattern as
 // `composed-origin.test.js` because the proxy is owned by the operator-console
-// process while the authoritative dashboard DAL gate is owned by the AS.
+// process while the authoritative owner-console DAL gate is owned by the AS.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -269,7 +270,7 @@ async function stopChildProcess(child) {
   });
 }
 
-test('proxy redirects unauthenticated /dashboard hits to /owner/login when owner-auth is enabled', async (t) => {
+test('proxy redirects unauthenticated clean owner-console hits to /owner/login when owner-auth is enabled', async (t) => {
   await ensureConsoleBuild();
   const webPort = await allocatePort();
   const webOrigin = `http://127.0.0.1:${webPort}`;
@@ -293,26 +294,25 @@ test('proxy redirects unauthenticated /dashboard hits to /owner/login when owner
   });
 
   try {
-    await t.test('GET /dashboard with no cookie -> 307 to /owner/login?return_to=%2Fdashboard', async () => {
-      const resp = await fetch(`${webOrigin}/dashboard`, { redirect: 'manual' });
+    await t.test('GET / with no cookie -> 307 to /owner/login?return_to=%2F', async () => {
+      const resp = await fetch(`${webOrigin}/`, { redirect: 'manual' });
       assert.equal(resp.status, 307, 'expected proxy-issued 307 redirect, not a 200/401/500');
-      assert.equal(
-        resp.headers.get('location'),
-        '/owner/login?return_to=%2Fdashboard',
-      );
+      assert.equal(resp.headers.get('location'), '/owner/login?return_to=%2F');
     });
 
-    await t.test('GET /dashboard/records/spotify with no cookie -> 307 with deep return_to', async () => {
-      const resp = await fetch(`${webOrigin}/dashboard/records/spotify`, { redirect: 'manual' });
+    await t.test('GET /sources/spotify with no cookie -> 307 with deep return_to', async () => {
+      const resp = await fetch(`${webOrigin}/sources/spotify`, { redirect: 'manual' });
       assert.equal(resp.status, 307);
-      assert.equal(
-        resp.headers.get('location'),
-        '/owner/login?return_to=%2Fdashboard%2Frecords%2Fspotify',
-      );
+      assert.equal(resp.headers.get('location'), '/owner/login?return_to=%2Fsources%2Fspotify');
+    });
+
+    await t.test('GET /dashboard is not preserved as an owner-console route', async () => {
+      const resp = await fetch(`${webOrigin}/dashboard`, { redirect: 'manual' });
+      assert.equal(resp.status, 404);
     });
 
     await t.test('redirect carries X-Robots-Tag: noindex, nofollow', async () => {
-      const resp = await fetch(`${webOrigin}/dashboard`, { redirect: 'manual' });
+      const resp = await fetch(`${webOrigin}/`, { redirect: 'manual' });
       assert.equal(resp.status, 307);
       assert.equal(resp.headers.get('x-robots-tag'), 'noindex, nofollow');
     });

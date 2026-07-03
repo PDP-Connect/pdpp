@@ -20,12 +20,9 @@ const AS_PROXY_TARGET = referenceTopology.asInternalUrl;
 const OWNER_AUTH_PROBABLY_ENABLED =
   typeof process.env.PDPP_OWNER_PASSWORD === "string" && process.env.PDPP_OWNER_PASSWORD.length > 0;
 
-// Clean owner-console route prefixes (redesign-owner-console-product-experience
-// §10.B). The console owner control plane now lives at clean top-level nouns
-// off root rather than under a `/dashboard` prefix; the overview is `/`. Legacy
-// `/dashboard*` paths are still matched so the redirect layer (next.config.mjs)
-// runs behind the same noindex + optional auth gate before bouncing the owner
-// to the clean route.
+// Clean owner-console route prefixes. The console owner control plane lives at
+// top-level nouns off root; the overview is `/`. Removed legacy console-prefix
+// paths are intentionally not routed or redirected.
 const OWNER_ROUTE_PREFIXES = [
   "/sources",
   "/syncs",
@@ -39,7 +36,6 @@ const OWNER_ROUTE_PREFIXES = [
   "/event-subscriptions",
   "/search",
   "/stream-playground",
-  "/dashboard",
 ] as const;
 
 // Is this an owner control-plane page request (as opposed to an AS-proxied
@@ -162,10 +158,6 @@ export const config = {
     "/search/:path*",
     "/stream-playground",
     "/stream-playground/:path*",
-    // Legacy dashboard prefix — still matched so redirects run behind the same
-    // noindex + optional auth gate before bouncing to the clean route.
-    "/dashboard",
-    "/dashboard/:path*",
     // Protocol / AS-proxy paths.
     "/.well-known/:path*",
     "/oauth/:path*",

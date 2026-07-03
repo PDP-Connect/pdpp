@@ -111,7 +111,7 @@ async function login(asUrl, password) {
       Accept: 'text/html',
       Cookie: csrfCookie || '',
     },
-    body: new URLSearchParams({ password, return_to: '/dashboard', _csrf: csrfField || '' }).toString(),
+    body: new URLSearchParams({ password, return_to: '/', _csrf: csrfField || '' }).toString(),
     redirect: 'manual',
   });
   return findPair(getSetCookies(postResp), 'pdpp_owner_session');

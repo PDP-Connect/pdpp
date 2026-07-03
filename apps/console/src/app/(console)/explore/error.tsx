@@ -52,7 +52,7 @@ export default function ExploreError({ error, reset }: { error: Error & { digest
           Reload
         </button>
         <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/">
-          Back to dashboard
+          Back to PDPP
         </a>
       </div>
     </main>

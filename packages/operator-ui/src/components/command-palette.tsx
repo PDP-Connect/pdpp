@@ -119,8 +119,7 @@ function buildRows(query: string, commands: DashboardCommand[]): PaletteRow[] {
 
 export function CommandPalette({
   // Clean owner-console default: root base path, live mode. Sandbox callers
-  // pass `basePath="/sandbox"` + `segments` explicitly. No owner-facing default
-  // emits the legacy `/dashboard` prefix.
+  // pass `basePath="/sandbox"` + `segments` explicitly.
   basePath = "",
   mode = "live",
   segments,

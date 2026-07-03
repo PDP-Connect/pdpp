@@ -19,17 +19,17 @@ export default function DashboardError({ error, reset }: { error: Error & { dige
 
   return (
     <main className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-start justify-center gap-3 px-6 py-16">
-      <p className="pdpp-eyebrow text-muted-foreground/60 uppercase tracking-widest">Dashboard</p>
+      <p className="pdpp-eyebrow text-muted-foreground/60 uppercase tracking-widest">PDPP</p>
       <h1 className="pdpp-heading text-foreground">Something went wrong</h1>
       <p className="pdpp-body max-w-prose text-muted-foreground">
-        The dashboard ran into an unexpected error. Your data is safe — this is a display failure, not a change. Try
-        again or sign back in if the problem persists.
+        PDPP ran into an unexpected error. Your data is safe — this is a display failure, not a change. Try again or
+        sign back in if the problem persists.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
           Try again
         </button>
-        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/owner/login?return_to=%2Fdashboard">
+        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/owner/login?return_to=%2F">
           Sign in again
         </a>
       </div>

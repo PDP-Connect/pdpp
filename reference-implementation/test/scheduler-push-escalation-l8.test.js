@@ -326,19 +326,19 @@ test('§10-F fanoutEscalationWebPush: builds correct payload shape for blocked a
   const blockedPayload = buildEscalationPushPayload({
     connectorDisplayName: 'My Bank',
     reason: 'blocked',
-    connectionUrl: '/dashboard/connections/conn_123',
+    connectionUrl: '/sources/conn_123',
   });
 
   assert.equal(blockedPayload.type, 'pdpp.escalation', 'type must be pdpp.escalation');
   assert.ok(blockedPayload.title.includes('My Bank'), 'title must include connector name');
   assert.equal(blockedPayload.escalation_reason, 'blocked', 'must carry escalation_reason');
-  assert.equal(blockedPayload.url, '/dashboard/connections/conn_123', 'must carry connection URL');
+  assert.equal(blockedPayload.url, '/sources/conn_123', 'must carry connection URL');
   assert.ok(typeof blockedPayload.timestamp === 'string', 'must carry timestamp');
 
   const attentionPayload = buildEscalationPushPayload({
     connectorDisplayName: 'ChatGPT',
     reason: 'needs_attention',
-    connectionUrl: '/dashboard/connections/conn_456',
+    connectionUrl: '/sources/conn_456',
   });
 
   assert.equal(attentionPayload.type, 'pdpp.escalation');

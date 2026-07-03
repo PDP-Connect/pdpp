@@ -12,9 +12,8 @@ const SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN = /pdpp\.pending_interaction/;
 const SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN = /pdpp\.test_notification/;
 const SERVICE_WORKER_SKIP_WAITING_PATTERN = /self\.skipWaiting\(\)/;
 const SERVICE_WORKER_CLIENTS_CLAIM_PATTERN = /self\.clients\.claim\(\)/;
-// Clean owner-route topology (§10.B): the SW allows the overview root plus the
-// clean owner-section prefixes (Sources/Syncs/Audit/... and legacy /dashboard),
-// each matched at a segment boundary so `/dashboardevil` is rejected.
+// The SW allows the overview root plus clean owner-section prefixes at segment
+// boundaries. The removed `/dashboard` prefix must not be allow-listed.
 const SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN =
   /url === "\/"[\s\S]*PDPP_ALLOWED_URL_PREFIXES\.some\(\(prefix\) => url === prefix \|\| url\.startsWith\(prefix \+ "\/"\)\)/;
 const SERVICE_WORKER_ALLOWLIST_HAS_SOURCES = /"\/sources"/;
@@ -99,7 +98,7 @@ test("WebPushSettings renders unsupported, denied-permission, insecure-context, 
   }
 });
 
-test("dashboard service worker fails closed and click-through targets dashboard-relative URLs", async () => {
+test("dashboard service worker fails closed and click-through targets clean owner URLs", async () => {
   const src = await readFile(join(APP_ROOT, "public", "pdpp-dashboard-sw.js"), "utf8");
   assert.match(src, SERVICE_WORKER_KNOWN_TYPES_PATTERN);
   assert.match(src, SERVICE_WORKER_ASSISTANCE_TYPE_ALLOWED_PATTERN);
@@ -111,11 +110,11 @@ test("dashboard service worker fails closed and click-through targets dashboard-
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN);
   assert.match(src, SERVICE_WORKER_ALLOWLIST_HAS_SOURCES);
   assert.match(src, SERVICE_WORKER_ALLOWLIST_HAS_SYNCS);
-  assert.match(src, SERVICE_WORKER_ALLOWLIST_HAS_LEGACY_DASHBOARD);
+  assert.doesNotMatch(src, SERVICE_WORKER_ALLOWLIST_HAS_LEGACY_DASHBOARD);
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN);
   assert.match(src, SERVICE_WORKER_UNIQUE_TEST_TAG_PATTERN);
   assert.match(src, SERVICE_WORKER_TEST_RENOTIFY_PATTERN);
-  // Reject the looser prefix check that would also accept e.g. "/dashboardevil".
+  // Reject the looser prefix check that would accept arbitrary rooted paths.
   assert.doesNotMatch(src, SERVICE_WORKER_DASHBOARD_PREFIX_TRAVERSAL_PATTERN);
   assert.match(src, SERVICE_WORKER_MATCH_CLIENTS_PATTERN);
   assert.match(src, SERVICE_WORKER_OPEN_WINDOW_PATTERN);

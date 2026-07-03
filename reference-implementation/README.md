@@ -212,7 +212,7 @@ Operators can switch profiles without changing the public API:
 Changing the profile/model/dtype/dimensions/metric invalidates existing
 semantic vectors. The reference reports `index_state: "stale"` or `"building"`
 and rebuilds from stored records; it does not require connector re-ingest.
-Use `/dashboard/deployment` or `GET /_ref/deployment` to inspect backend
+Use `/deployment` or `GET /_ref/deployment` to inspect backend
 availability, cache state, active language bias, participating semantic fields,
 and warnings such as zero participation or a rebuilding index.
 
@@ -281,7 +281,7 @@ Routes gated by the placeholder (when enabled):
 
 - `GET /consent`, `POST /consent/approve`, `POST /consent/deny`
 - `GET /device`, `POST /device/approve`, `POST /device/deny`
-- `/dashboard`, `/dashboard/*` (via the composed console origin)
+- clean owner-console routes (via the composed console origin)
 - every reference-only `_ref` read (`GET /_ref/*`) and mutation (`POST/PUT /_ref/*`). When `PDPP_OWNER_PASSWORD` is unset, `_ref` routes preserve the open local-dev behavior. When set, callers must present an owner session — the dashboard already forwards the `pdpp_owner_session` cookie, and CLI callers can pass the same value via `PDPP_OWNER_SESSION_COOKIE`.
 
 Stable owner-entry routes:
@@ -345,7 +345,7 @@ In that mode:
   - `/device`
   - `/consent`
   - `/__pdpp/hosted-ui.css`
-- when `PDPP_OWNER_PASSWORD` is set, `/owner/*` and `/dashboard/*` share the
+- when `PDPP_OWNER_PASSWORD` is set, `/owner/*` and the clean owner-console routes share the
   same `pdpp_owner_session` cookie on the browser-facing origin
 
 If you only need the backing AS/RS side of that composed setup while the web
@@ -582,7 +582,7 @@ pnpm docker:smoke
 
 The smoke check builds the stack, verifies AS/RS metadata through the composed
 browser origin, checks that public metadata does not leak Docker service names,
-and confirms `/dashboard` redirects to `/owner/login` when owner auth is
+and confirms `/` redirects to `/owner/login` when owner auth is
 configured.
 
 Scheduler startup uses the same `reference-implementation/server/index.js`

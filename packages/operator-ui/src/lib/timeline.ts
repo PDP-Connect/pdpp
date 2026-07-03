@@ -13,7 +13,7 @@
  * record fetches.
  *
  * The loader takes a `DashboardDataSource` so the same view runs against
- * the live owner-authenticated AS/RS in `/dashboard/**` and against the
+ * the live owner-authenticated AS/RS in the clean console route tree and against the
  * deterministic mock dataset in `/sandbox/**` without forking either
  * page. Callers always pass an explicit source: this module is
  * type-only with respect to the seam so it stays loadable from

@@ -444,7 +444,7 @@ test('composed controller runs ingest against the internal RS, not the public br
   }
 });
 
-test('composed browser origin carries metadata, owner session, dashboard, device flow, and consent end to end', async () => {
+test('composed browser origin carries metadata, owner session, console, device flow, and consent end to end', async () => {
   await ensureConsoleBuild();
   const webPort = await allocatePort();
   const webOrigin = `http://127.0.0.1:${webPort}`;
@@ -472,14 +472,14 @@ test('composed browser origin carries metadata, owner session, dashboard, device
     assert.equal(metadata.body.device_authorization_endpoint, `${webOrigin}/oauth/device_authorization`);
     assert.equal(metadata.body.pushed_authorization_request_endpoint, `${webOrigin}/oauth/par`);
 
-    const dashboardGate = await fetch(`${webOrigin}/dashboard`, { redirect: 'manual' });
-    assert.equal(dashboardGate.status, 307);
-    assert.equal(
-      dashboardGate.headers.get('location'),
-      '/owner/login?return_to=%2Fdashboard',
-    );
+    const removedDashboard = await fetch(`${webOrigin}/dashboard`, { redirect: 'manual' });
+    assert.equal(removedDashboard.status, 404);
 
-    const loginPage = await fetch(`${webOrigin}/owner/login?return_to=%2Fdashboard`, {
+    const consoleGate = await fetch(`${webOrigin}/`, { redirect: 'manual' });
+    assert.equal(consoleGate.status, 307);
+    assert.equal(consoleGate.headers.get('location'), '/owner/login?return_to=%2F');
+
+    const loginPage = await fetch(`${webOrigin}/owner/login?return_to=%2F`, {
       headers: { Accept: 'text/html' },
       redirect: 'manual',
     });
@@ -498,7 +498,7 @@ test('composed browser origin carries metadata, owner session, dashboard, device
       },
       body: new URLSearchParams({
         password: OWNER_PASSWORD,
-        return_to: '/dashboard',
+        return_to: '/',
         _csrf: csrfField,
       }).toString(),
     });
@@ -506,20 +506,19 @@ test('composed browser origin carries metadata, owner session, dashboard, device
       loginResp.status === 302 || loginResp.status === 303,
       `expected redirect after owner login, got ${loginResp.status}`,
     );
-    assert.equal(loginResp.headers.get('location'), '/dashboard');
+    assert.equal(loginResp.headers.get('location'), '/');
     const ownerCookie = extractCookie(loginResp);
     assert.ok(ownerCookie?.startsWith('pdpp_owner_session='), 'owner login should issue a session cookie');
 
-    const dashboardResp = await fetch(`${webOrigin}/dashboard`, {
+    const consoleResp = await fetch(`${webOrigin}/`, {
       headers: {
         Cookie: ownerCookie,
       },
     });
-    assert.equal(dashboardResp.status, 200);
-    const dashboardHtml = await dashboardResp.text();
-    assert.match(dashboardHtml, /dashboard/i);
-    assert.ok(!dashboardHtml.includes(asUrl), 'dashboard should not leak the internal AS origin');
-    assert.ok(!dashboardHtml.includes(rsUrl), 'dashboard should not leak the internal RS origin');
+    assert.equal(consoleResp.status, 200);
+    const consoleHtml = await consoleResp.text();
+    assert.ok(!consoleHtml.includes(asUrl), 'console should not leak the internal AS origin');
+    assert.ok(!consoleHtml.includes(rsUrl), 'console should not leak the internal RS origin');
 
     const registerConnector = await fetch(`${webOrigin}/connectors`, {
       method: 'POST',

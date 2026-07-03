@@ -77,7 +77,7 @@ function renderRootLanding({
       },
       {
         key: 'Operator console',
-        value: `<code><a href="${consoleOrigin}/dashboard">${consoleOrigin}/dashboard</a></code>`,
+        value: `<code><a href="${consoleOrigin}/">${consoleOrigin}/</a></code>`,
       },
     ]),
   });

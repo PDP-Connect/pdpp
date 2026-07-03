@@ -10,11 +10,10 @@
  * routes (`redesign-owner-console-product-experience` §10.B): the live console
  * serves Sources/Syncs/Audit at `/sources`, `/syncs`, `/audit`, while the
  * `/sandbox` mirror keeps its legacy `records`/`runs`/`traces` folders. The
- * DEFAULT is the clean owner console (empty `basePath` → `/` overview, clean
- * `CONSOLE_SEGMENTS`), so no owner-facing default ever emits `/dashboard`.
- * Sandbox callers must pass `basePath: "/sandbox"` AND `segments:
- * LEGACY_SEGMENTS` explicitly to keep their historical `/sandbox/records…`
- * hrefs.
+ * DEFAULT is the clean owner console (empty `basePath` -> `/` overview, clean
+ * `CONSOLE_SEGMENTS`). Sandbox callers must pass `basePath: "/sandbox"` AND
+ * `segments: LEGACY_SEGMENTS` explicitly to keep their historical
+ * `/sandbox/records...` hrefs.
  *
  * The console re-exports these symbols from
  * `apps/console/src/app/(console)/lib/actions.ts` so existing import paths keep
@@ -49,7 +48,7 @@ const CONSOLE_SEGMENTS: DashboardSegments = { records: "sources", runs: "syncs",
 /**
  * Resolve the overview href. An empty `basePath` (the clean console root) maps
  * to `/`, since an empty href is not a usable link; a non-empty base is its own
- * overview (`/sandbox`, or the legacy `/dashboard`).
+ * overview.
  */
 function overviewHref(basePath: string): string {
   return basePath === "" ? "/" : basePath;
@@ -259,8 +258,7 @@ function searchableText(command: DashboardCommand): string {
 export function listDashboardCommands({
   // Default to the clean owner console: root base path (overview resolves to
   // `/`) with Sources/Syncs/Audit segments. Callers that render the sandbox
-  // mirror pass `basePath: "/sandbox"` + the legacy segments explicitly. No
-  // owner-facing default emits the legacy `/dashboard` prefix.
+  // mirror pass `basePath: "/sandbox"` + the legacy segments explicitly.
   basePath = "",
   mode = "live",
   segments = CONSOLE_SEGMENTS,

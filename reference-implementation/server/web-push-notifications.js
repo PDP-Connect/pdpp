@@ -401,7 +401,7 @@ export function buildTestPushPayload({ now = nowIso() } = {}) {
     title: 'PDPP test notification',
     body: 'Your dashboard browser can receive Web Push alerts.',
     timestamp: now,
-    url: '/dashboard',
+    url: '/',
   };
 }
 
@@ -448,8 +448,8 @@ export function buildPendingInteractionPushPayload({ interaction, connectorDispl
   const encodedInteractionId = encodeURIComponent(interactionId);
   const url =
     routeTo === 'interaction' && kind === 'manual_action'
-      ? `/dashboard/runs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`
-      : `/dashboard/runs/${encodedRunId}`;
+      ? `/syncs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`
+      : `/syncs/${encodedRunId}`;
   const sensitivity = classifyInteractionSensitivity(kind);
   // Freeze the payload shape so a future contributor cannot accidentally
   // attach connector-supplied free text (`interaction.message`, `.schema`,
@@ -499,7 +499,7 @@ export function buildAssistancePushPayload({ assistance, connectorDisplayName, r
     notification_tier: NOTIFICATION_TIERS.ACTION_REQUIRED,
     response_contract: 'none',
     timestamp: nowIso(),
-    url: `/dashboard/runs/${encodeURIComponent(runId)}`,
+    url: `/syncs/${encodeURIComponent(runId)}`,
   });
 }
 
@@ -804,7 +804,7 @@ export function buildEscalationPushPayload({ connectorDisplayName, reason, conne
     connector_display_name: connectorDisplayName,
     escalation_reason: reason,
     timestamp: nowIso(),
-    url: connectionUrl || '/dashboard',
+    url: connectionUrl || '/',
   });
 }
 
@@ -832,7 +832,7 @@ export async function fanoutEscalationWebPush({
   connectorDisplayName,
   ownerSubjectId,
   reason,
-  connectionUrl = '/dashboard',
+  connectionUrl = '/',
   renderedVerdict,
   log = console,
 }) {

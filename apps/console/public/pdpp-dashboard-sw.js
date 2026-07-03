@@ -9,9 +9,7 @@ const PDPP_KNOWN_PUSH_TYPES = new Set([
 // test notification lands on the overview; run notifications land on Syncs.
 const PDPP_TEST_NOTIFICATION_URL = "/";
 const PDPP_RUNS_URL = "/syncs";
-// Clean owner-route prefixes the SW will click through to. Legacy `/dashboard`
-// paths stay allow-listed so a push payload queued before the route move still
-// opens (the app redirects it to the clean route).
+// Clean owner-route prefixes the SW will click through to.
 const PDPP_ALLOWED_URL_PREFIXES = [
   "/sources",
   "/syncs",
@@ -25,7 +23,6 @@ const PDPP_ALLOWED_URL_PREFIXES = [
   "/event-subscriptions",
   "/search",
   "/stream-playground",
-  "/dashboard",
 ];
 
 self.addEventListener("install", () => {
@@ -70,7 +67,7 @@ function pdppDefaultBody(type) {
 }
 
 function pdppIsAllowedDashboardUrl(url) {
-  // The overview root and any clean owner section (or a legacy /dashboard path).
+  // The overview root and any clean owner section.
   if (url === "/") return true;
   return PDPP_ALLOWED_URL_PREFIXES.some((prefix) => url === prefix || url.startsWith(prefix + "/"));
 }

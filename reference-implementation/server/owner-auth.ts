@@ -294,7 +294,7 @@ function renderSignedInOwnerPage({ providerName, subjectId, csrfToken, themeChoi
       ].join("\n"),
     }),
     renderActionRow([
-      { href: "/dashboard", label: "Open dashboard", variant: "primary" },
+      { href: "/", label: "Open PDPP", variant: "primary" },
       { href: "/device", label: "Open device approval UI" },
       {
         action: "/owner/logout",

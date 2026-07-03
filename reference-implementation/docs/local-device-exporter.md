@@ -8,7 +8,7 @@ For the end-to-end operator path against the Docker reference deployment (Claude
 
 ## Run
 
-1. Open `/dashboard/device-exporters`.
+1. Open `/device-exporters`.
 2. Create an enrollment code for a connector id and local binding name. The dashboard then renders matching `npx -y @pdpp/local-collector enroll` and `npx -y @pdpp/local-collector run` commands pre-filled with the public reference base URL and the freshly minted code.
 3. On the device that has the local data, run the canonical collector flow (preferred &mdash; this is the only path that exercises STATE load/replay/persist through the device-scoped state route):
 

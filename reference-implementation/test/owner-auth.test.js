@@ -369,7 +369,7 @@ test('owner-auth placeholder: authenticated GET /owner/login becomes a signed-in
     assert.equal(resp.status, 200);
     const text = await resp.text();
     assert.ok(text.includes('Signed in'), 'shows signed-in state');
-    assert.ok(text.includes('/dashboard'), 'offers a path back to the dashboard');
+    assert.ok(text.includes('href="/"'), 'offers a path back to the owner console');
     assert.ok(text.includes('/device'), 'offers a stable device approval entry point');
     assert.ok(text.includes('owner_local'), 'shows the current owner subject');
   });

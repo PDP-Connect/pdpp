@@ -1388,8 +1388,8 @@ async function fireNtfy(args: {
     const encodedInteractionId = encodeURIComponent(interaction.request_id || "");
     const clickUrl =
       interaction.kind === "manual_action"
-        ? `${webBaseUrl}/dashboard/runs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`
-        : `${webBaseUrl}/dashboard/runs/${encodedRunId}`;
+        ? `${webBaseUrl}/syncs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`
+        : `${webBaseUrl}/syncs/${encodedRunId}`;
     const tags = interaction.kind === "credentials" || interaction.kind === "otp" ? ["key"] : ["construction"];
     await notify({
       title: `PDPP ${connectorDisplayName}: ${interaction.kind} needed`,
