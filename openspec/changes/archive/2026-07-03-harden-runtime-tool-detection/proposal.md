@@ -18,7 +18,7 @@ Connector manifests can currently declare `runtime_requirements.external_tools[]
 
 ### Modified Capabilities
 
-- `polyfill-runtime`: external tool detection becomes structured and non-shell-executed.
+- `reference-implementation-architecture`: external tool detection becomes structured and non-shell-executed.
 
 ## Impact
 

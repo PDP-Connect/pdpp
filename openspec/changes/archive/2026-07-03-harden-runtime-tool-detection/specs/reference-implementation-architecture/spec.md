@@ -10,6 +10,13 @@ The reference implementation SHALL support static manifest metadata for external
 - **THEN** its manifest SHALL declare the dependency under `runtime_requirements.external_tools`
 - **AND** each declaration SHALL include `name`, `license`, and `purpose`.
 
+#### Scenario: Slack connector manifest is inspected
+
+- **WHEN** the Slack connector manifest is inspected
+- **THEN** it SHALL declare `slackdump` as an external tool
+- **AND** the declaration SHALL include its license and an owner-usable install hint
+- **AND** the declaration MAY include structured detection metadata.
+
 #### Scenario: Connector manifest declares structured detection metadata
 
 - **WHEN** a connector manifest declares `runtime_requirements.external_tools[].detect`
