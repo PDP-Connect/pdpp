@@ -12,7 +12,7 @@
  * Clean owner-route topology (`redesign-owner-console-product-experience`
  * §10.B): the live console serves owner sections as clean top-level nouns:
  * root `/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`,
- * `/connect`, `/schedules`, and clean deployment/admin nouns. The removed
+ * `/connect`, `/notifications`, `/schedules`, and clean deployment/admin nouns. The removed
  * legacy console prefix is intentionally not preserved as redirects. The
  * `/sandbox` mirror is deliberately unchanged: it keeps its `/sandbox` base and
  * its legacy
@@ -49,6 +49,7 @@ export interface Routes {
     deploymentTokens: string;
     deviceExporters: string;
     eventSubscriptions: string;
+    notifications: string;
   };
   stream(connectorId: string, stream: string): string;
   streamHealth(connectorId: string, stream: string): string;
@@ -97,6 +98,7 @@ function makeRoutes(basePath: string, opts: { overview?: string; segments?: Rout
       deploymentTokens: `${basePath}/deployment/tokens`,
       deviceExporters: `${basePath}/device-exporters`,
       eventSubscriptions: `${basePath}/event-subscriptions`,
+      notifications: `${basePath}/notifications`,
     },
     grant: (id) => `${basePath}/grants/${enc(id)}`,
     run: (id) => `${basePath}/${seg.runs}/${enc(id)}`,

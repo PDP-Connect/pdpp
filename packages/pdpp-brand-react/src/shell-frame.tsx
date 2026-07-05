@@ -23,6 +23,7 @@
  *     - "Syncs" -> the clean Syncs route `/syncs`, using the warmer
  *       owner-facing label from the page title. See SYNCS_NOTE below.
  *     - "Schedules" -> the real schedule management route.
+ *     - "Notifications" -> device-level owner-action alert setup.
  *     - "Connect AI apps" -> reader/client access, grouped with sharing, not
  *       source collection.
  *   `NAV_GROUPS` is a typed array so leaf views / future edits are trivial.
@@ -91,6 +92,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     heading: "Server",
     items: [
+      { label: "Notifications", href: "/notifications" },
       { label: "Deployment", href: "/deployment" },
       { label: "Device exporters", href: "/device-exporters" },
       { label: "Event subscriptions", href: "/event-subscriptions" },

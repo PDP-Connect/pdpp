@@ -52,6 +52,7 @@ const HREFS: StandingHrefs = {
   traces: dashboardRoutes.section.traces,
   deployment: dashboardRoutes.section.deployment,
   deploymentTokens: dashboardRoutes.section.deploymentTokens,
+  notifications: dashboardRoutes.section.notifications,
   connection: (connectorKey) => dashboardRoutes.connector(connectorKey),
   grant: (id) => dashboardRoutes.grant(id),
   run: (id) => dashboardRoutes.run(id),
@@ -166,6 +167,7 @@ export default async function DashboardPage({
         data={data}
         grantsHref={HREFS.grants}
         notice={notice}
+        notificationsHref={HREFS.notifications}
         tokensHref={HREFS.deploymentTokens}
         tracesHref={HREFS.traces}
       />

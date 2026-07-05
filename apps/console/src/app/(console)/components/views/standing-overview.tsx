@@ -238,16 +238,41 @@ function AttentionBlock({ sections }: { sections: StandingData["sourceWorkSectio
   );
 }
 
+function NotificationsBlock({ href }: { href: string }) {
+  return (
+    <section className="rr-stand-block">
+      <div className="rr-stand-block__head">
+        <h2 className="rr-stand-block__title">Notifications</h2>
+        <a className="rr-link" href={href}>
+          setup →
+        </a>
+      </div>
+      <p className="rr-stand-empty">
+        Enable browser or installed-app alerts for source reconnects, syncs waiting on you, and other owner-action
+        events.
+      </p>
+    </section>
+  );
+}
+
 export interface StandingOverviewProps {
   data: StandingData;
   grantsHref: string;
   /** Optional banner above the view (e.g. seeded-demo notice). */
   notice?: string;
+  notificationsHref: string;
   tokensHref: string;
   tracesHref: string;
 }
 
-export function StandingOverview({ data, grantsHref, tokensHref, tracesHref, notice }: StandingOverviewProps) {
+export function StandingOverview({
+  data,
+  grantsHref,
+  notificationsHref,
+  tokensHref,
+  tracesHref,
+  notice,
+}: StandingOverviewProps) {
   return (
     <div className="rr-stand">
       {notice ? (
@@ -266,6 +291,7 @@ export function StandingOverview({ data, grantsHref, tokensHref, tracesHref, not
         <LatelyBlock lately={data.lately} tracesHref={tracesHref} />
       </div>
       <AttentionBlock sections={data.sourceWorkSections} />
+      <NotificationsBlock href={notificationsHref} />
     </div>
   );
 }

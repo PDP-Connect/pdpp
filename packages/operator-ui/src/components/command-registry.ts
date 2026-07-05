@@ -153,6 +153,15 @@ function buildNavigationCommands(basePath: string, segments: DashboardSegments):
 function buildLiveOnlyNavigationCommands(basePath: string): DashboardCommand[] {
   return [
     {
+      id: "nav-notifications",
+      title: "Notifications",
+      description: "Enable this browser or installed app for owner-action alerts.",
+      href: `${basePath}/notifications`,
+      keywords: ["notification", "notifications", "push", "pwa", "browser", "device", "alerts"],
+      kind: "jump",
+      section: "Navigate",
+    },
+    {
       id: "nav-connect",
       title: "Connect AI apps",
       description:

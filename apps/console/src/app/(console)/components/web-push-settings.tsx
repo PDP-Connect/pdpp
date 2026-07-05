@@ -207,7 +207,7 @@ function vapidRow(config: WebPushConfig): DiagnosticRow {
 function swRow(swState: "registered" | "absent" | "unknown" | "unsupported"): DiagnosticRow {
   const label = "Service worker registered";
   if (swState === "registered") {
-    return { label, state: "ok", detail: "/pdpp-dashboard-sw.js controls /" };
+    return { label, state: "ok", detail: "The PDPP service worker controls /." };
   }
   if (swState === "absent") {
     return { label, state: "warn", detail: "Not registered yet - use Enable this device." };
@@ -291,7 +291,7 @@ function deviceStatus({
 }): DeviceStatus {
   if (unavailable) {
     return {
-      title: "This browser cannot receive dashboard notifications.",
+      title: "This browser cannot receive PDPP notifications.",
       detail: unavailable,
     };
   }
@@ -654,7 +654,7 @@ export function WebPushSettings({
         body: JSON.stringify({
           subscription: subscription.toJSON(),
           platform: navigator.platform || null,
-          device_label: "Dashboard browser",
+          device_label: "PDPP browser",
         }),
       });
       if (!response.ok) {
@@ -738,7 +738,7 @@ export function WebPushSettings({
   // pushManager.subscribe() — installing the PWA does not create a push
   // subscription on its own.
   const caveat =
-    "Mobile browsers may require opening the installed dashboard app before notifications can arrive. Each phone, tablet, and browser profile must be enabled separately.";
+    "Mobile browsers may require opening the installed PDPP app before notifications can arrive. Each phone, tablet, and browser profile must be enabled separately.";
 
   const lastSubscription = subscriptions[0];
   const matchesThisBrowser = endpoint ? subscriptions.some((s) => s.endpoint === endpoint && !s.revoked_at) : false;

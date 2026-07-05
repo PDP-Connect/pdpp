@@ -32,6 +32,7 @@ import {
 const HREFS: StandingHrefs = {
   grants: "/grants",
   grantPackages: "/grants/packages",
+  notifications: "/notifications",
   runs: "/syncs",
   sources: "/sources",
   traces: "/audit",

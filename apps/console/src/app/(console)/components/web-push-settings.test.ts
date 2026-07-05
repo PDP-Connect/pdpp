@@ -18,6 +18,7 @@ const SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN =
   /url === "\/"[\s\S]*PDPP_ALLOWED_URL_PREFIXES\.some\(\(prefix\) => url === prefix \|\| url\.startsWith\(prefix \+ "\/"\)\)/;
 const SERVICE_WORKER_ALLOWLIST_HAS_SOURCES = /"\/sources"/;
 const SERVICE_WORKER_ALLOWLIST_HAS_SYNCS = /"\/syncs"/;
+const SERVICE_WORKER_ALLOWLIST_HAS_NOTIFICATIONS = /"\/notifications"/;
 const SERVICE_WORKER_ALLOWLIST_HAS_LEGACY_DASHBOARD = /"\/dashboard"/;
 const SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN = /pdppIsAllowedDashboardUrl\(rawUrl\)/;
 const SERVICE_WORKER_DASHBOARD_PREFIX_TRAVERSAL_PATTERN = /rawUrl\.startsWith\("\/"\)/;
@@ -91,7 +92,7 @@ test("WebPushSettings renders unsupported, denied-permission, insecure-context, 
     "Notification",
     'Notification.permission === "denied"',
     "Server VAPID keys are not configured",
-    "Mobile browsers may require opening the installed dashboard app before notifications can arrive",
+    "Mobile browsers may require opening the installed PDPP app before notifications can arrive",
     "Installing the PWA only adds the app icon",
   ]) {
     assert.match(src, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -110,6 +111,7 @@ test("dashboard service worker fails closed and click-through targets clean owne
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN);
   assert.match(src, SERVICE_WORKER_ALLOWLIST_HAS_SOURCES);
   assert.match(src, SERVICE_WORKER_ALLOWLIST_HAS_SYNCS);
+  assert.match(src, SERVICE_WORKER_ALLOWLIST_HAS_NOTIFICATIONS);
   assert.doesNotMatch(src, SERVICE_WORKER_ALLOWLIST_HAS_LEGACY_DASHBOARD);
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN);
   assert.match(src, SERVICE_WORKER_UNIQUE_TEST_TAG_PATTERN);

@@ -294,6 +294,8 @@ export interface StandingHrefs {
   /** The grant-packages management surface — discovery target from the overview. */
   grantPackages: string;
   grants: string;
+  /** Device-level browser/PWA notification setup surface. */
+  notifications: string;
   run: (id: string) => string;
   /** The syncs/runs list — the triage destination when several connections need the owner. */
   runs: string;

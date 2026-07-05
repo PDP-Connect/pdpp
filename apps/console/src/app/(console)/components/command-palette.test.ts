@@ -200,7 +200,7 @@ test("live Recordroom shell navigation uses the owner nouns (Sources, Syncs, Aud
   assert.match(src, NAV_ITEM_RE("Explore", "/explore"));
   assert.match(src, NAV_GROUP_RE("Collection", ["Sources", "Syncs", "Schedules"]));
   assert.match(src, NAV_GROUP_RE("Sharing", ["Connect AI apps", "Grants", "Audit"]));
-  assert.match(src, NAV_GROUP_RE("Server", ["Deployment", "Device exporters", "Event subscriptions"]));
+  assert.match(src, NAV_GROUP_RE("Server", ["Notifications", "Deployment", "Device exporters", "Event subscriptions"]));
   assert.doesNotMatch(src, NAV_LABEL_STANDING_RE, "Standing must not ship as owner-facing nav");
   assert.doesNotMatch(src, NAV_LABEL_JUMP_RE, "Jump is command-palette chrome, not primary nav");
   assert.doesNotMatch(src, NAV_LABEL_RUNS_RE, "Runs must be renamed to Syncs in the live nav");
@@ -217,6 +217,7 @@ test("live command hrefs are clean top-level routes and never contain /dashboard
   assert.equal(live.find((c) => c.id === "nav-records")?.href, "/sources");
   assert.equal(live.find((c) => c.id === "nav-runs")?.href, "/syncs");
   assert.equal(live.find((c) => c.id === "nav-traces")?.href, "/audit");
+  assert.equal(live.find((c) => c.id === "nav-notifications")?.href, "/notifications");
   // Overview is the clean root.
   assert.equal(live.find((c) => c.id === "nav-overview")?.href, "/");
 });
@@ -334,6 +335,13 @@ test("Deployment nav command is present in live mode", () => {
   assert.equal(deployment.href, "/deployment");
 });
 
+test("Notifications nav command is present in live mode", () => {
+  const all = listDashboardCommands({ basePath: "", mode: "live", segments: CONSOLE_SEGMENTS });
+  const notifications = all.find((c) => c.id === "nav-notifications");
+  assert.ok(notifications, "nav-notifications must exist in live mode");
+  assert.equal(notifications.href, "/notifications");
+});
+
 test("Connect nav command is present in live mode", () => {
   const all = listDashboardCommands({ basePath: "", mode: "live", segments: CONSOLE_SEGMENTS });
   const connect = all.find((c) => c.id === "nav-connect");
@@ -391,6 +399,12 @@ test("Event subscriptions is absent in mock-owner mode", () => {
   const all = listDashboardCommands(SANDBOX_OPTS);
   const eventSubs = all.find((c) => c.id === "nav-event-subscriptions");
   assert.equal(eventSubs, undefined, "nav-event-subscriptions must not appear in mock-owner mode");
+});
+
+test("Notifications is absent in mock-owner mode", () => {
+  const all = listDashboardCommands(SANDBOX_OPTS);
+  const notifications = all.find((c) => c.id === "nav-notifications");
+  assert.equal(notifications, undefined, "nav-notifications must not appear without a sandbox route");
 });
 
 test("Connect setup is absent in mock-owner mode", () => {

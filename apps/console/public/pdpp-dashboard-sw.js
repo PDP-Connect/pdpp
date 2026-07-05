@@ -17,6 +17,7 @@ const PDPP_ALLOWED_URL_PREFIXES = [
   "/explore",
   "/grants",
   "/connect",
+  "/notifications",
   "/schedules",
   "/deployment",
   "/device-exporters",
@@ -62,7 +63,7 @@ function pdppDefaultTitle(type) {
 
 function pdppDefaultBody(type) {
   return type === "pdpp.test_notification"
-    ? "Your dashboard browser can receive Web Push alerts."
+    ? "This PDPP browser can receive Web Push alerts."
     : "A connector run needs owner attention.";
 }
 

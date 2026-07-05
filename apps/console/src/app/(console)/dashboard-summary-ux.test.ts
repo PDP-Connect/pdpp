@@ -17,6 +17,9 @@ const SHARED_SOURCE_WORK_HERO_PRECEDENCE =
   /const sourceWork = activeSourceWork\(input\)[\s\S]*sourceAttentionHeadline\(sourceWork\)\.needsYou > 0[\s\S]*buildFailureHero[\s\S]*projectionState === "stale" \|\| projectionState === "failed"[\s\S]*sourceWork\.review\.length > 0[\s\S]*buildAdvisoryHero/;
 const SOURCE_WORK_SECTIONS_RENDERED =
   /data-row-count=\{rowCount\}[\s\S]*sections\.map\(\(section\)[\s\S]*section\.rows\.map\(\(a\)/;
+const NOTIFICATIONS_BLOCK_RENDERED =
+  /function NotificationsBlock\([\s\S]*<h2 className="rr-stand-block__title">Notifications<\/h2>[\s\S]*href=\{href\}/;
+const OVERVIEW_PASSES_NOTIFICATIONS_HREF = /notificationsHref=\{HREFS\.notifications\}/;
 const PROJECTION_COPY_TESTS = /hero uses owner-safe copy for failed projection details/;
 const FORBIDDEN_COPY_INVARIANTS = /projection\|rebuild\|bulk write\|unknown connection\|SQL/i;
 // The "What's been read" block is a GROUPED preview linking to the grouped
@@ -45,6 +48,14 @@ test("Standing Overview renders sectioned shared source-work rows", async () => 
   const src = await readFile(OVERVIEW_FILE, "utf8");
 
   assert.match(src, SOURCE_WORK_SECTIONS_RENDERED);
+});
+
+test("Standing Overview links to notification setup as a first-class utility", async () => {
+  const page = await readFile(PAGE_FILE, "utf8");
+  const overview = await readFile(OVERVIEW_FILE, "utf8");
+
+  assert.match(page, OVERVIEW_PASSES_NOTIFICATIONS_HREF);
+  assert.match(overview, NOTIFICATIONS_BLOCK_RENDERED);
 });
 
 test("Standing Overview tests pin owner-safe projection copy invariants", async () => {
