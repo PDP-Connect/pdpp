@@ -257,3 +257,76 @@ test("panel: a terminal backlog is never folded into caught-up", () => {
   );
   assert.ok(model.evidence.some((line) => line.includes("4 no longer retrievable at the source")));
 });
+
+// ─── Stall watchdog + one-sentence contract (source detail, tasks 4.5/4.6) ────
+
+const STALLED_SENTENCE_RE = /stopped making progress|needs a look/i;
+const RETRY_CTA_RE = /retry now|refresh now/i;
+const RAW_INTERNAL_LABEL_RE = /pending_is_floor|detail_gap|reason_code|upstream_pressure/;
+
+test("panel: eligible work with no attempt beyond the cadence window renders as a system condition, not passive progress", () => {
+  const model = buildRecoveryPanelViewModel(
+    verdict(),
+    health({ detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T10:00:00Z" }) }),
+    { now: "2026-07-06T18:00:00Z", cadenceWindowMs: 6 * 60 * 60 * 1000 }
+  );
+  // A stale attempt floor beyond the cadence window is a stall — a system
+  // condition surfaced with evidence, never an owner retry prompt.
+  assert.equal(model.step, "stalled");
+  assert.match(model.primarySentence, STALLED_SENTENCE_RE);
+  assert.doesNotMatch(model.primarySentence, CHECKING_RE);
+  assert.ok(model.blocker);
+  // No retry/refresh CTA field exists on the panel view-model — the surface
+  // renders a blocker/evidence line, not a bypass button.
+  assert.equal(Object.hasOwn(model, "primaryAction"), false);
+});
+
+test("panel: a fresh attempt floor within the cadence window stays queued/cooling, never stalled", () => {
+  const model = buildRecoveryPanelViewModel(
+    verdict(),
+    health({
+      state: "cooling_off",
+      detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T17:30:00Z" }),
+    }),
+    { now: "2026-07-06T18:00:00Z", cadenceWindowMs: 6 * 60 * 60 * 1000 }
+  );
+  assert.notEqual(model.step, "stalled");
+});
+
+test("panel: every recovery step exposes exactly one primary sentence, evidence separate, and no bypass action (task 4.6 contract)", () => {
+  const cases = [
+    // active
+    buildRecoveryPanelViewModel(
+      verdict(),
+      health({ badges: { stale: false, syncing: true }, detail_gap_backlog: backlog({ pending: 2093 }) })
+    ),
+    // queued
+    buildRecoveryPanelViewModel(verdict(), health({ detail_gap_backlog: backlog({ pending: 2093 }) })),
+    // cooling
+    buildRecoveryPanelViewModel(
+      verdict(),
+      health({
+        state: "cooling_off",
+        detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T20:00:00Z" }),
+      })
+    ),
+    // stalled
+    buildRecoveryPanelViewModel(
+      verdict(),
+      health({ detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T10:00:00Z" }) }),
+      { now: "2026-07-06T18:00:00Z", cadenceWindowMs: 6 * 60 * 60 * 1000 }
+    ),
+  ];
+  for (const model of cases) {
+    // Exactly one primary sentence, non-empty, never a raw internal label.
+    assert.equal(typeof model.primarySentence, "string");
+    assert.ok(model.primarySentence.length > 0);
+    assert.doesNotMatch(model.primarySentence, RAW_INTERNAL_LABEL_RE);
+    // Evidence is separate from the sentence, never smuggled into it.
+    assert.ok(!model.evidence.includes(model.primarySentence));
+    // No bypass CTA field — the panel offers a sentence + evidence + blocker,
+    // never a retry/refresh button that would skip the governor.
+    assert.equal(Object.hasOwn(model, "primaryAction"), false);
+    assert.doesNotMatch(model.primarySentence, RETRY_CTA_RE);
+  }
+});

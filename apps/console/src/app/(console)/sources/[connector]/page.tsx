@@ -306,7 +306,11 @@ export default async function ConnectorPage({
     }
   }
 
-  return <ConnectorPageView dangerError={sp.error} dangerMessage={sp.message} model={model} />;
+  // Capture the server render instant so the diagnostics recovery panel can arm
+  // its stall watchdog against real time. This page is `force-dynamic`, so the
+  // instant is fresh on every request.
+  const now = new Date().toISOString();
+  return <ConnectorPageView dangerError={sp.error} dangerMessage={sp.message} model={model} now={now} />;
 }
 
 function buildRecoveryDemoModel(): ConnectorPageModel {
@@ -696,10 +700,13 @@ function ConnectorPageView({
   model,
   dangerMessage,
   dangerError,
+  now,
 }: {
   model: ConnectorPageModel;
   dangerMessage?: string;
   dangerError?: string;
+  /** Server render instant (ISO-8601) for the diagnostics recovery stall watchdog. */
+  now: string;
 }) {
   const {
     collectionFactsByStream,
@@ -810,6 +817,7 @@ function ConnectorPageView({
         connectionId={connectorInstanceId ?? connectionId}
         connectorId={connectorId}
         localDeviceProgress={overview.localDeviceProgress ?? null}
+        now={now}
         providerOrigin={providerOrigin}
         renderedVerdict={connectionRenderedVerdict}
         schedule={schedule}

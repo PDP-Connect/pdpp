@@ -76,7 +76,16 @@ export const OWNER_REQUIRED_REASONS: ReadonlySet<string> = new Set(["auth_failur
  * forbidden). These route to `connector_defect` (system/connector issue), never
  * an owner retry.
  */
-export const CONNECTOR_DEFECT_REASONS: ReadonlySet<string> = new Set(["gone", "not_found", "permanent_forbidden"]);
+export const CONNECTOR_DEFECT_REASONS: ReadonlySet<string> = new Set([
+  "gone",
+  "not_found",
+  "permanent_forbidden",
+  // A per-item poison item quarantined by the runtime (design.md D10;
+  // `runtime/recovery-quarantine.ts`). It has crossed its per-item no-progress
+  // budget and must never be presented as owner-drainable retry — it is a
+  // connector/system issue with captured evidence.
+  "quarantined",
+]);
 
 /**
  * Informational (non-recoverable, non-defect) reasons. Mirrors
@@ -125,6 +134,13 @@ export interface RecoveryGapRow {
   readonly reason?: string | null;
   readonly status?: string | null;
   readonly stream?: string | null;
+  /**
+   * When this row was last written (`updated_at`). Used only as the freshness
+   * fallback when `last_attempt_at` is absent — the same anchor precedence the
+   * cooldown governor's `PendingPressureGap.lastPressureAt` uses
+   * (`last_attempt_at` then `updated_at`).
+   */
+  readonly updated_at?: string | null;
 }
 
 // ─── Provider work domain (design.md D2) ─────────────────────────────────────
@@ -264,6 +280,7 @@ function connectorRecoveryClass(connectorClass: string | null, reasonClass: Reco
       return "owner_required";
     case "provider_pressure":
       return "provider_pressure";
+    case "quarantined":
     case "connector_defect":
       return "connector_defect";
     case "transient_no_progress":
@@ -281,11 +298,18 @@ function connectorRecoveryClass(connectorClass: string | null, reasonClass: Reco
  * known, the next eligible time — so owner-only diagnostics can answer "why
  * didn't it run" (task 2.6 shape).
  */
+/**
+ * Machine-readable class carried on a recovery-admission denial. Shared with the
+ * controller's manual retry/refresh gate so an owner-started denial classifies
+ * with the same vocabulary as an automatic one (tasks 2.3/2.6).
+ */
+export type RecoveryAdmissionDenialReason = "cooldown" | "budget" | "owner_required" | "system_issue";
+
 export type RecoveryAdmission =
   | { readonly ok: true; readonly mode: "recover"; readonly workDomain: ProviderWorkDomain }
   | {
       readonly ok: false;
-      readonly reason: "cooldown" | "budget" | "owner_required" | "system_issue";
+      readonly reason: RecoveryAdmissionDenialReason;
       readonly nextEligibleAt?: string;
     };
 
@@ -431,6 +455,104 @@ export function hasEligibleNonPressureRecovery(backlog: WorkDomainBacklog | unde
     const floorMs = parseIso(c.nextEligibleAt);
     return floorMs === null || floorMs <= now;
   });
+}
+
+// ─── Fresh-pressure re-arm guard (task 1.5 / design.md D4) ───────────────────
+//
+// The cooldown governor (`scheduler-source-pressure-cooldown.ts`) arms whenever
+// ANY pending pressure gap exists, regardless of WHEN that pressure was
+// observed. That is the second half of the live 51-holds-942 ChatGPT residue:
+// 51 stale `upstream_pressure` rows — pressure observed weeks ago, never fresh
+// since — kept re-arming the domain cooldown on every scheduler tick, holding
+// 942 non-pressure recoverable gaps hostage indefinitely (design.md D4).
+//
+// The classifier half of the invariant already holds: `isSourcePressure` is
+// true ONLY for the two canonical pressure reasons, so a non-pressure row can
+// never re-arm via a wrong class. The MISSING half is temporal: a pressure row
+// whose last observation is older than the cooldown's evidence window is stale
+// evidence about the provider *then*, not a live signal, and must not re-arm on
+// its own. This pure guard partitions pressure gaps into fresh vs stale against
+// a `now` + evidence window so the arming seam can consult "is there any FRESH
+// pressure evidence?" instead of "does any pressure row exist?".
+
+/**
+ * Default freshness window for pressure evidence. Pressure last observed longer
+ * ago than this is treated as stale and cannot, on its own, re-arm the domain
+ * cooldown. Set to the cooldown's own absolute ceiling
+ * (`DEFAULT_MAX_COOLDOWN_MS`, 6h): once the maximum cooldown a single pressure
+ * observation could ever justify has fully elapsed with no new pressure, the
+ * old rows are no longer live evidence. Callers MAY override with a
+ * provider-specific window.
+ */
+export const DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The last-observed-pressure timestamp for a gap row, ISO. Prefers
+ * `last_attempt_at` (when a recovery attempt actually touched the provider),
+ * falling back to `updated_at` (when the connector deferred before a retry
+ * lease existed). Mirrors the cooldown governor's `lastPressureAt` precedence
+ * so the two agree on what "when was this pressure observed" means.
+ */
+export function lastPressureAtForGap(row: RecoveryGapRow): string | null {
+  return nonEmpty(row?.last_attempt_at) ?? nonEmpty(row?.updated_at);
+}
+
+/** One pressure gap split by whether its last observation is fresh vs stale. */
+export interface PressureEvidencePartition {
+  /** Pressure rows whose last observation is within the evidence window. */
+  readonly fresh: RecoveryGapClassification[];
+  /** Pressure rows whose last observation is older than the window (or unknown). */
+  readonly stale: RecoveryGapClassification[];
+}
+
+/**
+ * Partition a domain's pending pressure gaps into fresh vs stale evidence
+ * relative to `now`. A row is FRESH iff its last-observed-pressure timestamp is
+ * within `evidenceWindowMs` of `now`. A row with no usable timestamp is treated
+ * as STALE — absent evidence is not fresh evidence, so a row that cannot prove
+ * recent pressure never re-arms the cooldown by itself.
+ *
+ * Only source-pressure-classified rows are considered; non-pressure rows are
+ * ignored (they were never cooldown-arming to begin with).
+ */
+export function partitionPressureEvidence(
+  rows: readonly RecoveryGapRow[],
+  nowMs: number,
+  evidenceWindowMs: number = DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS
+): PressureEvidencePartition {
+  const now = normalizeEpochMs(nowMs);
+  const windowMs = normalizeNonNegativeInteger(evidenceWindowMs, DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS);
+  const threshold = now - windowMs;
+  const fresh: RecoveryGapClassification[] = [];
+  const stale: RecoveryGapClassification[] = [];
+  for (const row of rows ?? []) {
+    const classification = classifyRecoveryGap(row);
+    if (!classification.isSourcePressure) {
+      continue;
+    }
+    const observedMs = parseIso(lastPressureAtForGap(row));
+    if (observedMs !== null && observedMs >= threshold) {
+      fresh.push(classification);
+    } else {
+      stale.push(classification);
+    }
+  }
+  return { fresh, stale };
+}
+
+/**
+ * True iff a domain has at least one FRESH pressure observation. This is the
+ * predicate the cooldown-arming seam must consult: a domain re-arms only from
+ * fresh pressure evidence (spec "Stale pressure classifications do not re-arm
+ * cooldown"). When this is false but stale pressure rows remain, the domain
+ * SHALL NOT stay in cooldown on those residual rows alone.
+ */
+export function hasFreshPressureEvidence(
+  rows: readonly RecoveryGapRow[],
+  nowMs: number,
+  evidenceWindowMs: number = DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS
+): boolean {
+  return partitionPressureEvidence(rows, nowMs, evidenceWindowMs).fresh.length > 0;
 }
 
 // ─── Local helpers (pure) ────────────────────────────────────────────────────

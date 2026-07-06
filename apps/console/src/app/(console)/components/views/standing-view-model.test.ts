@@ -677,6 +677,182 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(data.sourceWorkSections[3]?.rows[0]?.what, "GitHub - Personal: Coverage has not been measured yet.");
 });
 
+// ─── Cross-surface acceptance (recovery governor UI tranche, tasks 4.4/4.6) ───
+//
+// The dashboard is one of the four owner surfaces the recovery-state spec binds:
+// group counts SHALL equal rendered rows, and an inactive queued recovery row
+// SHALL NOT read as "Checking". These assertions pin BOTH invariants on the real
+// rendered `sourceWorkSections`, not just the upstream `SourceWorkGroups`.
+
+const DASHBOARD_CHECKING_RE = /checking/i;
+const DASHBOARD_PASSIVE_RECOVERY_RE = /catching up|syncing details|safe to retry/i;
+
+/** A calm/deferred verdict whose only action is a self-handled `wait`. */
+function deferredRecoveryVerdict(): RefConnectorSummary["rendered_verdict"] {
+  return verdict({
+    channel: "calm",
+    pill: { label: "Degraded", tone: "amber" },
+    forward_statement: "The next run is expected to fill the remaining data.",
+    required_actions: [
+      {
+        affects: [],
+        audience: "none",
+        cta: "Collecting — no action needed",
+        kind: "wait",
+        satisfied_when: { kind: "none" },
+        terminal: false,
+        urgency: "verifying",
+      },
+    ],
+  });
+}
+
+/** Health carrying a durable, inactive (not syncing) recovery backlog. */
+function inactiveRecoveryHealth(): RefConnectorSummary["connection_health"] {
+  return {
+    ...legacyHealth("degraded"),
+    axes: { attention: "none", coverage: "deferred", freshness: "fresh", outbox: "idle" },
+    badges: { stale: false, syncing: false },
+    detail_gap_backlog: {
+      max_attempt_count: 3,
+      next_attempt_at: null,
+      pending: 2093,
+      pending_is_floor: true,
+      pending_other: 0,
+      pending_other_is_floor: false,
+      recovered: 396,
+      terminal: null,
+    },
+  };
+}
+
+test("dashboard cross-surface: every source-work section count equals its rendered row count", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "chatgpt",
+      connection_id: "cin_chatgpt",
+      display_name: "ChatGPT - personal",
+      rendered_verdict: verdict({
+        channel: "attention",
+        pill: { label: "Can't collect", tone: "red" },
+        forward_statement: "Reconnect this account and collection resumes.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Reconnect this account",
+            kind: "reauth",
+            satisfied_when: { kind: "credential_present_and_unrejected" },
+            terminal: false,
+            urgency: "now",
+          },
+        ],
+      }),
+    }),
+    connector({
+      connector_id: "amazon",
+      connection_id: "cin_amazon",
+      display_name: "Amazon - Personal",
+      // Durable, inactive recovery backlog → passive progress ("PDPP is working").
+      connection_health: inactiveRecoveryHealth(),
+      rendered_verdict: deferredRecoveryVerdict(),
+    }),
+    connector({
+      connector_id: "reddit",
+      connection_id: "cin_reddit",
+      display_name: "Reddit - Personal",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Degraded", tone: "amber" },
+        forward_statement: "Run a refresh to bring this up to date.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "owner",
+            cta: "Refresh now",
+            kind: "refresh_now",
+            satisfied_when: { kind: "confirming_run_succeeded" },
+            terminal: false,
+            urgency: "soon",
+          },
+        ],
+      }),
+    }),
+    connector({
+      connector_id: "chase",
+      connection_id: "cin_chase",
+      display_name: "Chase - Personal",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Can't collect", tone: "red" },
+        forward_statement: "Connector code needs a fix before this can collect again.",
+        required_actions: [
+          {
+            affects: [],
+            audience: "maintainer",
+            cta: "Connector code needs a fix",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+            urgency: "soon",
+          },
+        ],
+      }),
+    }),
+  ];
+
+  const sourceWork = sourceWorkFromConnectors(connectors);
+  const data = buildStandingData(baseInputs({ sourceWork }));
+
+  // The invariant the spec binds: on the rendered surface, every group's
+  // countLabel equals the number of rows it actually renders.
+  for (const section of data.sourceWorkSections) {
+    assert.equal(
+      section.countLabel,
+      section.rows.length === 1 ? "1 source" : `${section.rows.length} sources`,
+      `section ${section.id} count must equal rendered rows`
+    );
+  }
+
+  // The recovery backlog lands in "PDPP is working" as passive progress, and its
+  // rendered rows never say "Checking".
+  const working = data.sourceWorkSections.find((section) => section.id === "working");
+  assert.ok(working, "expected a PDPP-is-working section for the inactive recovery backlog");
+  assert.equal(working.rows.length, 1);
+  for (const row of working.rows) {
+    assert.doesNotMatch(row.what, DASHBOARD_CHECKING_RE);
+    assert.doesNotMatch(row.why ?? "", DASHBOARD_CHECKING_RE);
+  }
+});
+
+test("dashboard cross-surface: an inactive queued recovery row is passive progress, never a Checking or degraded row", () => {
+  const connectors: RefConnectorSummary[] = [
+    connector({
+      connector_id: "amazon",
+      connection_id: "cin_amazon",
+      display_name: "Amazon - Personal",
+      connection_health: inactiveRecoveryHealth(),
+      rendered_verdict: deferredRecoveryVerdict(),
+    }),
+  ];
+
+  const sourceWork = sourceWorkFromConnectors(connectors);
+  const data = buildStandingData(baseInputs({ sourceWork }));
+
+  // Exactly one working row; no needs-you, no system issue, no not-measured.
+  assert.equal(sourceWork.working.length, 1);
+  assert.equal(sourceWork.systemIssues.length, 0);
+  assert.equal(sourceWork.needsOwner.length, 0);
+  assert.equal(sourceWork.notMeasured.length, 0);
+
+  const allRows = data.sourceWorkSections.flatMap((section) => section.rows);
+  assert.equal(allRows.length, 1);
+  const row = allRows[0];
+  assert.ok(row);
+  assert.doesNotMatch(row.what, DASHBOARD_CHECKING_RE);
+  assert.match(`${row.what} ${row.why ?? ""}`, DASHBOARD_PASSIVE_RECOVERY_RE);
+});
+
 test("reviewable degraded source appears once rather than as review plus source issue", () => {
   const connectors: RefConnectorSummary[] = [
     connector({

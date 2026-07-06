@@ -342,10 +342,16 @@ export function createSqliteConnectorDetailGapStore() {
       const now = options.now || nowIso();
       const attemptDelta = status === 'in_progress' ? 1 : 0;
       const recoveredRunId = status === 'recovered' ? nonEmptyString(options.runId) : null;
+      // `reason` is COALESCE-updated: only overwritten when the caller supplies
+      // one (e.g. the quarantine path stamps `reason = 'quarantined'` so the
+      // durable class the recovery-decision classifier reads matches the
+      // terminal transition). Absent → the existing reason is preserved.
+      const reason = nonEmptyString(options.reason);
       // REVIEWED-DYNAMIC: status mutation for the store-owned detail-gap table.
       execDynamicSqlAcknowledged(`
         UPDATE connector_detail_gaps
         SET status = ?,
+            reason = COALESCE(?, reason),
             attempt_count = attempt_count + ?,
             last_attempt_at = CASE WHEN ? = 1 THEN ? ELSE last_attempt_at END,
             next_attempt_after = ?,
@@ -356,6 +362,7 @@ export function createSqliteConnectorDetailGapStore() {
         WHERE gap_id = ?
       `, [
         status,
+        reason,
         attemptDelta,
         attemptDelta,
         now,
@@ -521,9 +528,14 @@ export function createPostgresConnectorDetailGapStore() {
       const now = options.now || nowIso();
       const attemptDelta = status === 'in_progress' ? 1 : 0;
       const recoveredRunId = status === 'recovered' ? nonEmptyString(options.runId) : null;
+      // `reason` is COALESCE-updated (see the SQLite path): only overwritten
+      // when supplied, so the quarantine transition can stamp the durable
+      // `quarantined` class while ordinary status mutations preserve it.
+      const reason = nonEmptyString(options.reason);
       const result = await postgresQuery(`
         UPDATE connector_detail_gaps
         SET status = $1,
+            reason = COALESCE($9, reason),
             attempt_count = attempt_count + $2,
             last_attempt_at = CASE WHEN $2 = 1 THEN $3 ELSE last_attempt_at END,
             next_attempt_after = $4,
@@ -542,6 +554,7 @@ export function createPostgresConnectorDetailGapStore() {
         nonEmptyString(options.runId),
         recoveredRunId,
         gapId,
+        reason,
       ]);
       return rowToGap(result.rows[0]);
     },

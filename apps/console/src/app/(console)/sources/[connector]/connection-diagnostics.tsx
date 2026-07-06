@@ -36,6 +36,7 @@ import {
 import {
   buildRecoveryPanelViewModel,
   hasRecoverableWork,
+  RECOVERY_STALL_CADENCE_MS,
   type RecoveryPanelViewModel,
 } from "../../lib/source-recovery-state.ts";
 
@@ -64,6 +65,14 @@ export interface ConnectionDiagnosticsProps {
    * stalled-outbox remediation. `null` for scheduler-managed connections.
    */
   localDeviceProgress: RefLocalDeviceProgress | null;
+  /**
+   * The server-side observation instant (ISO-8601), captured when the page was
+   * rendered. It arms the recovery stall watchdog: eligible/queued work with no
+   * attempt beyond {@link RECOVERY_STALL_CADENCE_MS} reads as a system condition
+   * rather than indefinite "catching up". `null` disables the watchdog (the
+   * panel then renders the time-free recovery step).
+   */
+  now: string | null;
   /** Public reference origin, used to resolve `<provider-url>` in the
    *  remediation command template. `null` when unavailable → the command fails
    *  closed to a non-copyable "unavailable" state rather than a broken command. */
@@ -84,6 +93,7 @@ export function ConnectionDiagnostics({
   connectionId,
   connectorId,
   localDeviceProgress,
+  now,
   providerOrigin,
   renderedVerdict,
   schedule,
@@ -101,9 +111,18 @@ export function ConnectionDiagnostics({
   // work exists, show the typed recovery step, progress floor counts, next
   // eligible attempt, and the blocker behind the source row (design D11). Pure
   // view-model; no credentials, payloads, provider URLs, or selectors.
+  //
+  // The server-supplied `now` arms the stall watchdog (design D8): eligible
+  // recovery work whose latest attempt floor is older than the cadence window,
+  // with no active run, reads as a system condition instead of endless "catching
+  // up". A future floor is a live cooldown, never a stall, so a healthy queue is
+  // unaffected.
   const recoveryPanel =
     connectionHealth && hasRecoverableWork(connectionHealth.detail_gap_backlog)
-      ? buildRecoveryPanelViewModel(renderedVerdict, connectionHealth)
+      ? buildRecoveryPanelViewModel(renderedVerdict, connectionHealth, {
+          cadenceWindowMs: RECOVERY_STALL_CADENCE_MS,
+          now,
+        })
       : null;
   return (
     <Section

@@ -854,6 +854,61 @@ test('runtime drains more than 100 pending detail gaps in one run through paged 
   assert.ok(pageResponses.some((page) => page.count === 0), 'runtime eventually returns an empty page');
 }));
 
+test('DETAIL_GAPS_PAGE_RESPONSE carries connector-neutral recovery admission evidence without gating the served set', withTempDb(async (dir) => {
+  // Tasks 2.1/2.6: the page response now carries recovery admission evidence
+  // (admitted/deferred counts + deferral reason classes) so owner-only
+  // diagnostics can answer "why did (or didn't) recovery proceed" — recorded,
+  // NOT enforced: every seeded non-pressure gap is still drained.
+  const store = createSqliteConnectorDetailGapStore();
+  await seedPendingDetailGaps(store, 40); // reason: retry_exhausted → non-pressure, all admitted
+  const pageStatsPath = join(dir, 'admission-evidence.json');
+  const connector = createPagedRecoveryConnector(pageStatsPath);
+  const pageResponses = [];
+  const startAdmissions = [];
+
+  try {
+    const result = await runConnector({
+      connectorPath: connector.connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: (msg) => {
+        if (msg?.type === 'DETAIL_GAPS_PAGE_RESPONSE') pageResponses.push(msg);
+        if (msg?.type === 'DETAIL_GAPS_START_ADMISSION') startAdmissions.push(msg);
+      },
+    });
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.detail_gaps.filter((gap) => gap.status === 'recovered').length, 40);
+  } finally {
+    connector.cleanup();
+  }
+
+  // The START-time page emits its own admission evidence line.
+  assert.equal(startAdmissions.length, 1, 'START recovery page emits one admission-evidence event');
+  assert.ok(startAdmissions[0].admission, 'START admission evidence is present');
+  assert.equal(startAdmissions[0].reference_only, true);
+
+  // Every page response carries an admission summary.
+  assert.ok(pageResponses.length > 0);
+  for (const page of pageResponses) {
+    assert.ok(page.admission, 'each page response carries admission evidence');
+    assert.equal(page.admission.candidates, page.count, 'candidate count matches the served page size');
+    // All seeded gaps are non-pressure (retry_exhausted): every candidate is
+    // admitted, none deferred — the recorded evidence agrees with the drained set.
+    assert.equal(page.admission.admitted, page.count);
+    assert.equal(page.admission.deferred, 0);
+    assert.equal(page.admission.deferred_by_reason, undefined, 'no deferral reasons when everything is admitted');
+  }
+
+  // The full backlog drained: admission recorded evidence, it never gated the page.
+  const allAdmitted = [startAdmissions[0].admission, ...pageResponses.map((p) => p.admission)]
+    .reduce((sum, a) => sum + a.admitted, 0);
+  assert.equal(allAdmitted, 40, 'all 40 non-pressure gaps were admitted across START + paged requests');
+}));
+
 test('runtime pages large detail-gap payloads by byte budget while still draining semantics', withTempDb(async (dir) => {
   const store = createSqliteConnectorDetailGapStore();
   await seedPendingDetailGaps(store, 12, { payloadFields: 20 });

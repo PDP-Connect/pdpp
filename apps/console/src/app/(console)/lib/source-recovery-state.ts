@@ -72,6 +72,19 @@ export type RecoveryStep =
   | "system_issue";
 
 /**
+ * The default cadence window an owner surface uses to arm the stall watchdog:
+ * eligible/queued recovery work whose latest attempt floor is older than this,
+ * with no active run and no live cooldown, is a detectable stall (design D8).
+ *
+ * Six hours is deliberately generous relative to normal recovery cadence — it
+ * exists to catch silent queue rot (the live "51 stale pressure rows hold 942
+ * gaps" class), not to flag a queue that is simply pacing itself. A surface that
+ * has stronger cadence evidence MAY pass its own `cadenceWindowMs`; this is the
+ * conservative default so the watchdog never cries wolf on a healthy queue.
+ */
+export const RECOVERY_STALL_CADENCE_MS = 6 * 60 * 60 * 1000;
+
+/**
  * A concrete, bounded progress count for the recovery panel. `isFloor` carries
  * the backlog's floor semantics so a surface renders "at least N", never a
  * bounded read as exact.

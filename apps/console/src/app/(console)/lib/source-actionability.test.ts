@@ -408,6 +408,7 @@ test("source actionability headline counts only needs-owner work and exposes sta
 
 const RECOVERY_CHECKING_RE = /checking/i;
 const RECOVERY_SYNCING_RE = /syncing details/i;
+const RECOVERY_CATCHING_UP_RE = /catching up/i;
 
 function recoveryBacklog(overrides: Partial<RefDetailGapBacklog> = {}): RefDetailGapBacklog {
   return {
@@ -547,4 +548,33 @@ test("recovery grouping: a connector-defect verdict with recoverable gaps stays 
 
   assert.equal(groups.systemIssues.length, 1);
   assert.equal(groups.working.length, 0);
+});
+
+test("recovery grouping: an inactive backlog routes to NAMED recovery before the Checking fallthrough (task 4.2)", () => {
+  // Defense-in-depth for the "no indefinite Checking" contract: even if the
+  // server-owned verdict pill were literally "Checking", an INACTIVE durable
+  // backlog is passive recovery progress, so the shared projection routes it to
+  // named recovery ("catching up") and never lets the generic pill-label
+  // "Checking" branch claim it as an active bounded check.
+  const summary = connector({
+    connection_health: health({
+      axes: { attention: "none", coverage: "deferred", freshness: "fresh", outbox: "idle" },
+      badges: { stale: false, syncing: false },
+      detail_gap_backlog: recoveryBacklog(),
+      state: "degraded",
+    }),
+    rendered_verdict: deferredRecoveryVerdict({
+      // An adversarial "Checking" pill on an inactive backlog must NOT win.
+      pill: { label: "Checking", tone: "grey" },
+    }),
+  });
+  const groups = sourceWorkFromConnectors([summary]);
+
+  assert.equal(groups.working.length, 1);
+  const row = groups.working[0];
+  assert.ok(row);
+  // Named recovery copy ("is catching up" / "Catching up …"), never "Checking".
+  assert.doesNotMatch(row.statusLabel, RECOVERY_CHECKING_RE);
+  assert.doesNotMatch(row.what, RECOVERY_CHECKING_RE);
+  assert.match(`${row.statusLabel} ${row.what}`, RECOVERY_CATCHING_UP_RE);
 });

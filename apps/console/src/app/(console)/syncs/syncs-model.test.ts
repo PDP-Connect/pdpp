@@ -963,6 +963,127 @@ test("syncs overview shows ALL review cards (no cap) and the band counts the ful
   assert.equal(model.band.allClear, false);
 });
 
+// ─── Cross-surface acceptance (recovery governor UI tranche, tasks 4.4/4.6) ───
+//
+// Syncs is one of the four owner surfaces the recovery-state spec binds. The
+// rendered `band.needsReview` count SHALL equal the failure cards actually
+// rendered, and an inactive queued recovery card SHALL read as passive progress
+// ("PDPP is working"), never "Checking" and never a needs-you card.
+
+const SYNCS_CHECKING_RE = /checking/i;
+
+test("syncs cross-surface: rendered review-card count equals the failure cards below the band", () => {
+  const attentionVerdict = renderedVerdict({
+    channel: "attention",
+    forward_statement: "Reconnect this account and collection resumes.",
+    pill: { label: "Can't collect", tone: "red" },
+    required_actions: [
+      action({
+        cta: "Reconnect this account",
+        kind: "reauth",
+        satisfied_when: { kind: "credential_present_and_unrejected" },
+        urgency: "now",
+      }),
+    ],
+  });
+  const advisoryVerdict = renderedVerdict({
+    channel: "advisory",
+    forward_statement: "Run a refresh to bring this up to date.",
+    pill: { label: "Degraded", tone: "amber" },
+    required_actions: [action({ cta: "Refresh now", kind: "retry_gap" })],
+  });
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_needs",
+        connector_id: "chatgpt",
+        display_name: "ChatGPT",
+        rendered_verdict: attentionVerdict,
+        streams: ["messages"],
+      }),
+      connector({
+        connection_id: "cin_review",
+        connector_id: "reddit",
+        display_name: "Reddit",
+        rendered_verdict: advisoryVerdict,
+        streams: ["posts"],
+      }),
+    ],
+    runs: [],
+  });
+
+  // Every rendered failure card is counted; the band never overstates rows.
+  assert.equal(model.band.needsReview, model.failureCards.length);
+  for (const card of model.failureCards) {
+    assert.doesNotMatch(card.summary.prose, SYNCS_CHECKING_RE);
+    assert.doesNotMatch(card.summary.triggerLabel, SYNCS_CHECKING_RE);
+  }
+});
+
+test("syncs cross-surface: an inactive queued recovery card is passive progress, never a needs-you or Checking card", () => {
+  const deferredRecoveryVerdict = renderedVerdict({
+    channel: "calm",
+    forward_statement: "The next run is expected to fill the remaining data.",
+    pill: { label: "Degraded", tone: "amber" },
+    progress: {
+      gaps_drained_last_run: null,
+      headline: "Collecting in the background.",
+      last_refreshed_at: null,
+      mode: "deferred",
+      records_committed_last_run: null,
+      retained_records: 100,
+    },
+    required_actions: [
+      action({
+        audience: "none",
+        cta: "Collecting — no action needed",
+        kind: "wait",
+        satisfied_when: { kind: "none" },
+        urgency: "verifying",
+      }),
+    ],
+  });
+  const model = buildSyncsViewModel({
+    connectors: [
+      connector({
+        connection_id: "cin_amazon",
+        connector_id: "amazon",
+        display_name: "Amazon",
+        connection_health: health({
+          axes: { attention: "none", coverage: "deferred", freshness: "fresh", outbox: "idle" },
+          badges: { stale: false, syncing: false },
+          detail_gap_backlog: {
+            max_attempt_count: 3,
+            next_attempt_at: null,
+            pending: 2093,
+            pending_is_floor: true,
+            pending_other: 0,
+            pending_other_is_floor: false,
+            recovered: 396,
+            terminal: null,
+          },
+          state: "degraded",
+        }),
+        rendered_verdict: deferredRecoveryVerdict,
+        streams: ["orders"],
+      }),
+    ],
+    runs: [],
+  });
+
+  // The inactive backlog is passive progress: it does not raise the "needs you"
+  // headline, and any rendered card routes to the working group, not needs-you.
+  assert.equal(model.band.needYourHand, 0);
+  for (const card of model.failureCards) {
+    assert.notEqual(card.work?.group, "needsOwner");
+    assert.doesNotMatch(card.summary.prose, SYNCS_CHECKING_RE);
+    if (card.work) {
+      assert.doesNotMatch(card.work.statusLabel, SYNCS_CHECKING_RE);
+      assert.doesNotMatch(card.work.what, SYNCS_CHECKING_RE);
+    }
+  }
+});
+
 // ─── Fix A: no-truncation correctness ────────────────────────────────────────
 
 test("all streams in a group are present with no truncation", () => {

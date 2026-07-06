@@ -11,9 +11,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS,
   classifyRecoveryGap,
   classifyRecoveryReason,
   hasEligibleNonPressureRecovery,
+  hasFreshPressureEvidence,
+  lastPressureAtForGap,
+  partitionPressureEvidence,
   partitionRecoveryBacklog,
   providerWorkDomainForGap,
   providerWorkDomainKey,
@@ -282,4 +286,87 @@ test('1.5 hasEligibleNonPressureRecovery respects per-item next-attempt floors',
     gapRow({ reason: 'retry_exhausted', next_attempt_after: PAST, record_key: 'other' }),
   ]).get(providerWorkDomainKey({ connectorId: 'amazon', connectorInstanceId: 'amazon:default' }));
   assert.equal(hasEligibleNonPressureRecovery(mixed, NOW_MS), true);
+});
+
+// ── Task 1.5: fresh-pressure re-arm guard ─────────────────────────────────────
+// The temporal half of "stale pressure classifications do not re-arm cooldown":
+// a pressure row whose last observation predates the evidence window is stale
+// evidence, and stale rows on their own must not keep a domain in cooldown.
+
+test('1.5 lastPressureAtForGap prefers last_attempt_at then falls back to updated_at', () => {
+  assert.equal(
+    lastPressureAtForGap(gapRow({ last_attempt_at: '2026-07-05T00:00:00.000Z', updated_at: '2020-01-01T00:00:00.000Z' })),
+    '2026-07-05T00:00:00.000Z'
+  );
+  assert.equal(
+    lastPressureAtForGap(gapRow({ last_attempt_at: null, updated_at: '2026-07-05T00:00:00.000Z' })),
+    '2026-07-05T00:00:00.000Z'
+  );
+  assert.equal(lastPressureAtForGap(gapRow({ last_attempt_at: null, updated_at: null })), null);
+});
+
+test('1.5 recent pressure is fresh evidence and re-arms; window-old pressure is stale', () => {
+  // One pressure row observed 1 minute ago (fresh) and one observed 7 hours ago
+  // (older than the 6h default window → stale).
+  const freshAt = new Date(NOW_MS - 60_000).toISOString();
+  const staleAt = new Date(NOW_MS - 7 * 60 * 60 * 1000).toISOString();
+  const rows = [
+    gapRow({ reason: 'upstream_pressure', last_attempt_at: freshAt }),
+    gapRow({ reason: 'rate_limited', last_attempt_at: staleAt, record_key: 'k2' }),
+  ];
+  const partition = partitionPressureEvidence(rows, NOW_MS);
+  assert.equal(partition.fresh.length, 1);
+  assert.equal(partition.stale.length, 1);
+  assert.equal(hasFreshPressureEvidence(rows, NOW_MS), true);
+});
+
+test('1.5 the 51-stale-pressure residue reports NO fresh evidence (must not re-arm alone)', () => {
+  // The live shape: 51 pressure rows all last observed well before the window,
+  // plus 942 non-pressure rows. There is zero FRESH pressure evidence, so the
+  // domain must not stay in cooldown on those residual rows — the arming seam
+  // asks `hasFreshPressureEvidence`, which is false here.
+  const staleAt = new Date(NOW_MS - 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days ago
+  const rows = [];
+  for (let i = 0; i < 51; i++) {
+    rows.push(gapRow({ reason: 'upstream_pressure', last_attempt_at: staleAt, attempt_count: 9, record_key: `p${i}` }));
+  }
+  for (let i = 0; i < 942; i++) {
+    rows.push(gapRow({ reason: 'retry_exhausted', record_key: `n${i}` }));
+  }
+  const partition = partitionPressureEvidence(rows, NOW_MS);
+  assert.equal(partition.fresh.length, 0);
+  assert.equal(partition.stale.length, 51);
+  assert.equal(hasFreshPressureEvidence(rows, NOW_MS), false);
+});
+
+test('1.5 a pressure row with no observation timestamp is treated as stale, not fresh', () => {
+  // Absent evidence is not fresh evidence: a pressure row that cannot prove a
+  // recent observation must never re-arm the cooldown on its own.
+  const rows = [gapRow({ reason: 'upstream_pressure', last_attempt_at: null, updated_at: null })];
+  const partition = partitionPressureEvidence(rows, NOW_MS);
+  assert.equal(partition.fresh.length, 0);
+  assert.equal(partition.stale.length, 1);
+  assert.equal(hasFreshPressureEvidence(rows, NOW_MS), false);
+});
+
+test('1.5 non-pressure rows are ignored by the pressure-evidence partition', () => {
+  const freshAt = new Date(NOW_MS - 60_000).toISOString();
+  const rows = [
+    gapRow({ reason: 'retry_exhausted', last_attempt_at: freshAt }),
+    gapRow({ reason: 'run_cap_deferred', last_attempt_at: freshAt, record_key: 'k2' }),
+  ];
+  const partition = partitionPressureEvidence(rows, NOW_MS);
+  assert.equal(partition.fresh.length, 0);
+  assert.equal(partition.stale.length, 0);
+  assert.equal(hasFreshPressureEvidence(rows, NOW_MS), false);
+});
+
+test('1.5 the evidence window is configurable and defaults to the cooldown ceiling', () => {
+  const observedAt = new Date(NOW_MS - 2 * 60 * 60 * 1000).toISOString(); // 2h ago
+  const rows = [gapRow({ reason: 'upstream_pressure', last_attempt_at: observedAt })];
+  // Under the default 6h window, 2h-old pressure is still fresh…
+  assert.equal(DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS, 6 * 60 * 60 * 1000);
+  assert.equal(hasFreshPressureEvidence(rows, NOW_MS), true);
+  // …but under a tight 1h window it is stale.
+  assert.equal(hasFreshPressureEvidence(rows, NOW_MS, 60 * 60 * 1000), false);
 });

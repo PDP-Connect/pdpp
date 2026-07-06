@@ -137,6 +137,9 @@ test('ordinary manual run during provider-pressure cooldown is blocked with prov
       assert.ok(typeof err.nextEligibleAt === 'string', 'error must carry nextEligibleAt ISO timestamp');
       assert.ok(typeof err.pendingPressureGapCount === 'number', 'error must carry pendingPressureGapCount');
       assert.ok(err.pendingPressureGapCount > 0, 'pendingPressureGapCount must be > 0');
+      // Task 2.3: the manual denial carries the connector-neutral admission
+      // reason class, matching an automatic recovery-admission `cooldown` denial.
+      assert.equal(err.recoveryAdmissionReason, 'cooldown', 'manual denial must carry the neutral admission reason class');
     },
     {
       schedule: { interval_seconds: 60 },

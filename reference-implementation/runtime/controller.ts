@@ -45,8 +45,9 @@ import {
   type SchedulerRunHistoryRecord,
   type SchedulerStore,
 } from "../server/stores/scheduler-store.ts";
-import { createBrowserSurfaceManager, type BrowserSurfaceReadinessProbe } from "./browser-surface/index.ts";
+import { type BrowserSurfaceReadinessProbe, createBrowserSurfaceManager } from "./browser-surface/index.ts";
 import { runConnector } from "./index.js";
+import type { RecoveryAdmissionDenialReason } from "./recovery-decision.ts";
 import type { RequiredAction } from "./rendered-verdict.ts";
 import {
   automaticIneligibilityReason,
@@ -633,6 +634,17 @@ export class ControllerError extends Error {
    * Set alongside `nextEligibleAt` on `provider_pressure_cooldown` errors.
    */
   readonly pendingPressureGapCount: number | undefined;
+  /**
+   * Connector-neutral recovery-admission denial class (OpenSpec
+   * `add-connector-neutral-recovery-governor`, tasks 2.3/2.6). When an
+   * owner-started retry/refresh is declined by the recovery-admission gate, this
+   * records the same neutral reason vocabulary a `RecoveryAdmission` denial
+   * carries (`"cooldown" | "budget" | "owner_required" | "system_issue"`), so
+   * owner-only diagnostics classify a manual denial with the same taxonomy as an
+   * automatic one. The connector-specific `code` (`provider_pressure_cooldown`)
+   * and its HTTP status are unchanged; this is additive evidence.
+   */
+  readonly recoveryAdmissionReason: RecoveryAdmissionDenialReason | undefined;
   readonly runId: string | undefined;
 
   constructor(
@@ -642,6 +654,7 @@ export class ControllerError extends Error {
       details?: readonly { param: string; message: string }[];
       nextEligibleAt?: string;
       pendingPressureGapCount?: number;
+      recoveryAdmissionReason?: RecoveryAdmissionDenialReason;
       runId?: string;
     } = {}
   ) {
@@ -650,6 +663,7 @@ export class ControllerError extends Error {
     this.details = extra.details;
     this.nextEligibleAt = extra.nextEligibleAt;
     this.pendingPressureGapCount = extra.pendingPressureGapCount;
+    this.recoveryAdmissionReason = extra.recoveryAdmissionReason;
     this.runId = extra.runId;
     this.name = "ControllerError";
   }
@@ -1174,6 +1188,16 @@ function collectConnectorIds(
   return connectorIds;
 }
 
+function pressureGapLastObservedAt(gap: Pick<PendingDetailGapRow, "last_attempt_at" | "updated_at">): string | null {
+  if (typeof gap.last_attempt_at === "string") {
+    return gap.last_attempt_at;
+  }
+  if (typeof gap.updated_at === "string") {
+    return gap.updated_at;
+  }
+  return null;
+}
+
 // Bucket pending source-pressure detail-gap rows onto their connection's facts.
 // Keeps only the source-pressure reasons and maps each row to the lane-agnostic
 // `PendingPressureGap` shape the cooldown consumes.
@@ -1191,12 +1215,7 @@ function bucketPressureGapsByInstance(
       reason: gap.reason,
       attemptCount: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
       nextAttemptAfter: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
-      lastPressureAt:
-        typeof gap.last_attempt_at === "string"
-          ? gap.last_attempt_at
-          : typeof gap.updated_at === "string"
-            ? gap.updated_at
-            : null,
+      lastPressureAt: pressureGapLastObservedAt(gap),
     });
   }
 }
@@ -2116,7 +2135,6 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return approved.access_token;
   }
 
-
   const browserSurface = createBrowserSurfaceManager({
     activeRunInteractions,
     browserSurfaceAllocator: browserSurfaceAllocator ?? null,
@@ -2129,13 +2147,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     log,
     pendingBrowserSurfaceLaunches,
     scheduleRun(connectorId, options, onFailure) {
-      detachControllerTask(
-        runNow(connectorId, options).catch(onFailure)
-      );
+      detachControllerTask(runNow(connectorId, options).catch(onFailure));
     },
     startupControllerRunReconciliation,
   });
-
 
   async function getConnectorRefreshPolicy(connectorId: string): Promise<RefreshPolicy | null> {
     try {
@@ -2191,7 +2206,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   function parseEpochMs(value: unknown): number {
-    const numeric = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+    let numeric = Number.NaN;
+    if (typeof value === "number") {
+      numeric = value;
+    } else if (typeof value === "string") {
+      numeric = Number(value);
+    }
     return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
   }
 
@@ -2580,12 +2600,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     });
     clearStreamingNonceForRun(input.runId);
     if (input.browserSurfaceLease) {
-      await browserSurface.releaseLease(
-        input.browserSurfaceLease,
-        input.connectorId,
-        input.runId,
-        input.traceContext
-      );
+      await browserSurface.releaseLease(input.browserSurfaceLease, input.connectorId, input.runId, input.traceContext);
     }
     resolveCancelledInteraction(input.runId);
   }
@@ -2649,12 +2664,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           reason: row.reason as string,
           attemptCount: typeof row.attempt_count === "number" ? row.attempt_count : null,
           nextAttemptAfter: typeof row.next_attempt_after === "string" ? row.next_attempt_after : null,
-          lastPressureAt:
-            typeof row.last_attempt_at === "string"
-              ? row.last_attempt_at
-              : typeof row.updated_at === "string"
-                ? row.updated_at
-                : null,
+          lastPressureAt: pressureGapLastObservedAt(row),
         }));
 
       if (pendingPressureGaps.length > 0) {
@@ -2684,6 +2694,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
             {
               nextEligibleAt: cooldown.nextRunAt,
               pendingPressureGapCount: cooldown.pendingPressureGapCount,
+              // Connector-neutral admission denial class (task 2.3): an
+              // owner-started retry declined by provider pressure maps to the
+              // same `RecoveryAdmission` reason an automatic recovery denial
+              // carries. The `code`/HTTP status stay provider-pressure-specific.
+              recoveryAdmissionReason: "cooldown",
             }
           );
         }
@@ -2832,7 +2847,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           runId,
           traceContext,
         })
-      : ({ kind: "ready" as const, lease: null, env: null });
+      : { kind: "ready" as const, lease: null, env: null };
     if (acquireResult.kind === "early_return") {
       return acquireResult.result;
     }

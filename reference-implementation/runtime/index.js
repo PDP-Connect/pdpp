@@ -14,7 +14,9 @@ import { deriveTerminalReason } from './terminal-reason.js';
 import { createStderrTailBuffer } from './stderr-tail.js';
 import { redactStderrTail } from './stderr-redact.js';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
-import { classifyRecoveryError, maybeTerminateGap, resolveTerminalGapPolicy } from '../server/stores/terminal-gap-classifier.js';
+import { classifyRecoveryError, maybeQuarantineGap, maybeTerminateGap, resolveTerminalGapPolicy } from '../server/stores/terminal-gap-classifier.js';
+import { DEFAULT_QUARANTINE_POLICY } from './recovery-quarantine.ts';
+import { classifyRecoveryReason, resolveRecoveryAdmission } from './recovery-decision.ts';
 import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.js';
 import { createAttentionWriter } from './attention-writer.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
@@ -189,6 +191,56 @@ function validateDetailGapsPageRequest(msg, scopeByStream) {
   };
 }
 
+/**
+ * Summarize the connector-neutral recovery admission decisions for the gap rows
+ * the store returned for one page, WITHOUT changing which rows are served.
+ *
+ * This is the observability half of the recovery governor (OpenSpec
+ * `add-connector-neutral-recovery-governor`, tasks 2.1/2.6): the store already
+ * gates the served set (`status = 'pending' AND next_attempt_after <= now`), so
+ * these rows are exactly what the connector will attempt. We ask the pure
+ * `resolveRecoveryAdmission` decision for each so the page-response event
+ * carries machine-readable evidence — how many rows the governor would admit vs
+ * defer, and the reason classes behind any deferral — so owner-only diagnostics
+ * can answer "why did (or didn't) this recovery proceed" without re-deriving the
+ * classification at another seam.
+ *
+ * The domain cooldown state is deliberately NOT threaded here: the page reader
+ * runs inside an already-admitted run, and gating the served set on a domain
+ * cooldown would drop pressure rows the store legitimately returned (and would
+ * starve their terminalization budget). Admission is recorded as evidence, not
+ * enforced as a second gate — the enforcement seams are the scheduler/manual
+ * admission paths.
+ */
+function summarizeDetailGapAdmission(rows) {
+  let admitted = 0;
+  const deferredByReason = Object.create(null);
+  let nextEligibleAt = null;
+  for (const row of rows) {
+    const admission = resolveRecoveryAdmission(row);
+    if (admission.ok) {
+      admitted += 1;
+      continue;
+    }
+    deferredByReason[admission.reason] = (deferredByReason[admission.reason] ?? 0) + 1;
+    // Surface the earliest next-eligible time across deferred rows so a denial
+    // can answer "when could this run next".
+    if (typeof admission.nextEligibleAt === 'string' && admission.nextEligibleAt) {
+      if (nextEligibleAt === null || admission.nextEligibleAt < nextEligibleAt) {
+        nextEligibleAt = admission.nextEligibleAt;
+      }
+    }
+  }
+  const deferred = rows.length - admitted;
+  return {
+    candidates: rows.length,
+    admitted,
+    deferred,
+    ...(deferred > 0 ? { deferred_by_reason: deferredByReason } : {}),
+    ...(nextEligibleAt ? { next_eligible_at: nextEligibleAt } : {}),
+  };
+}
+
 function createDetailGapPageReader({
   connectorId,
   connectorInstanceId,
@@ -215,6 +267,10 @@ function createDetailGapPageReader({
       streams,
       limit: candidateLimit,
     })) ?? [];
+    // Connector-neutral admission evidence over the candidate rows (recorded,
+    // not enforced — see `summarizeDetailGapAdmission`). Computed on the store's
+    // candidate set so it reflects the same rows the connector will attempt.
+    const admission = summarizeDetailGapAdmission(pendingGaps);
     const detailGaps = [];
     const servedGapIds = [];
     let serializedBytes = 2; // JSON array brackets; exact enough for page sizing.
@@ -258,6 +314,7 @@ function createDetailGapPageReader({
       servedGapIds,
       maxBytes: byteBudget,
       serializedBytes,
+      admission,
     };
   };
 }
@@ -2174,6 +2231,7 @@ export async function runConnector(opts) {
   });
 
   let startDetailGaps = [];
+  let startDetailGapAdmission = null;
   try {
     // Reclaim in_progress gaps left by prior crashed/killed runs before loading
     // new pending gaps. Uses last_run_id != currentRunId so only prior-run
@@ -2190,6 +2248,7 @@ export async function runConnector(opts) {
       streams: startScope.streams.map((stream) => stream.name),
     });
     startDetailGaps = page.detailGaps;
+    startDetailGapAdmission = page.admission;
   } catch (err) {
     // Pre-START failure (before the run promise / cleanupChildHandles exists):
     // reap the just-spawned connector group rather than leaking it, and drop
@@ -2219,6 +2278,18 @@ export async function runConnector(opts) {
       type: 'connector_stdin_closed',
       phase: 'start',
       reason: childStdinClosedReason,
+    });
+  }
+
+  // Recovery admission evidence for the START-time detail-gap page (task 2.6).
+  // The START message itself is unchanged; this is an additive observability
+  // event so diagnostics can answer why the run's first recovery page did (or
+  // did not) proceed. Emitted only when a recovery page was actually read.
+  if (startDetailGapAdmission) {
+    onProgress({
+      type: 'DETAIL_GAPS_START_ADMISSION',
+      reference_only: true,
+      admission: startDetailGapAdmission,
     });
   }
 
@@ -3375,6 +3446,11 @@ export async function runConnector(opts) {
             serialized_bytes: page.serializedBytes,
             candidate_limit: page.candidateLimit,
             accepted,
+            // Connector-neutral recovery admission evidence for this page (task
+            // 2.6): admitted/deferred counts, deferral reason classes, and the
+            // earliest next-eligible time so diagnostics can answer why work did
+            // (or did not) proceed.
+            admission: page.admission,
           });
           break;
         }
@@ -3456,6 +3532,82 @@ export async function runConnector(opts) {
                   stream: outcome.gap.stream,
                   reason: outcome.gap.reason,
                   terminal_reason: errorInfo ? classifyRecoveryError(errorInfo).reason : null,
+                },
+              });
+              break;
+            }
+          }
+
+          // D9/D10: a poison item that keeps failing deterministically (or via
+          // repeated interruption) with a TRANSIENT-looking signal never trips
+          // the non-transient terminal check above, so it would retry forever
+          // and consume the backlog's recovery budget. Quarantine it once its
+          // per-item no-progress budget is exhausted: a durable `terminal` +
+          // `quarantined` transition, counted and surfaced (never silently
+          // dropped), so siblings keep draining. `maybeQuarantineGap` is
+          // read-then-decide and only writes when the budget is crossed, so a
+          // slow-but-progressing item is never quarantined prematurely.
+          //
+          // Class gate: only genuinely no-progress classes count toward the
+          // poison budget. A planned `run_cap_deferred` (blast-radius stop) and
+          // `provider_pressure` (rate/upstream, gated by the cooldown, not the
+          // item) are NOT the item's fault — a legitimately-capped or
+          // pressure-deferred item that re-defers many times across runs must
+          // never be mistaken for poison. Those escalate through their own
+          // paths (run-cap resumption; source-pressure cooldown), not quarantine.
+          {
+            const redeferClass = classifyRecoveryReason(msg.reason || null);
+            const quarantineEligibleClass =
+              redeferClass !== 'run_cap_deferred'
+              && redeferClass !== 'provider_pressure'
+              && redeferClass !== 'owner_required'
+              && redeferClass !== 'informational';
+            const quarantineOutcome = quarantineEligibleClass
+              ? await maybeQuarantineGap(
+                  detailGapStore,
+                  storedGap.gap_id,
+                  {
+                    stream: msg.stream,
+                    reason: msg.reason || null,
+                    ...(msg.last_error && typeof msg.last_error === 'object' && msg.last_error.class
+                      ? { failure_class: String(msg.last_error.class) }
+                      : {}),
+                  },
+                  DEFAULT_QUARANTINE_POLICY,
+                )
+              : { quarantined: false, gap: null };
+            if (quarantineOutcome.quarantined && quarantineOutcome.gap) {
+              durableDetailGaps.push(quarantineOutcome.gap);
+              appendKnownGap(buildKnownGap({
+                kind: 'detail_gap',
+                stream: msg.stream,
+                reason: 'quarantined',
+                message: 'Repeated no-progress on this item; quarantined for connector diagnosis (siblings keep recovering).',
+                recoveryHint: 'not_retriable',
+                scope: {
+                  parent_stream: msg.parent_stream || null,
+                  record_key: msg.record_key == null ? null : String(msg.record_key),
+                },
+              }));
+              await emitSpineEventTracked({
+                event_type: 'run.detail_gap_terminal',
+                trace_id: traceContext.trace_id,
+                scenario_id: traceContext.scenario_id,
+                actor_type: 'runtime',
+                actor_id: connectorId,
+                object_type: 'run',
+                object_id: runId,
+                status: 'succeeded',
+                run_id: runId,
+                stream_id: msg.stream,
+                data: {
+                  source: runSource,
+                  grant_id: grantId,
+                  gap_id: quarantineOutcome.gap.gap_id,
+                  stream: quarantineOutcome.gap.stream,
+                  reason: quarantineOutcome.gap.reason,
+                  terminal_reason: 'quarantined',
+                  attempt_count: quarantineOutcome.gap.attempt_count,
                 },
               });
               break;

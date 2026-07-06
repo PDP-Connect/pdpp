@@ -539,3 +539,33 @@ test("diagnostics renders a Collection rate block that degrades to an explicit u
   assert.match(src, COLLECTION_RATE_UNKNOWN_TESTID);
   assert.match(src, COLLECTION_RATE_UNAVAILABLE_COPY);
 });
+
+// ─── Recovery panel + stall watchdog wiring (recovery governor UI, task 4.5) ──
+
+const RECOVERY_PANEL_GATED_ON_BACKLOG =
+  /hasRecoverableWork\(connectionHealth\.detail_gap_backlog\)[\s\S]{0,120}buildRecoveryPanelViewModel\(/;
+const RECOVERY_PANEL_ARMS_STALL_WATCHDOG =
+  /buildRecoveryPanelViewModel\(renderedVerdict, connectionHealth, \{[\s\S]{0,120}cadenceWindowMs: RECOVERY_STALL_CADENCE_MS,[\s\S]{0,40}now,/;
+const RECOVERY_PANEL_SYSTEM_CONDITION_STYLING = /model\.step === "stalled" \|\| model\.step === "system_issue"/;
+const PAGE_CAPTURES_RENDER_INSTANT = /const now = new Date\(\)\.toISOString\(\)/;
+const PAGE_PASSES_NOW_TO_DIAGNOSTICS = /<ConnectionDiagnostics[\s\S]{0,400}\bnow=\{now\}/;
+
+test("recovery panel is gated on a durable backlog and arms the stall watchdog with real now/cadence", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  // The panel only renders when there is durable recoverable work, and it feeds
+  // the stall watchdog the server render instant and the cadence window so
+  // eligible work with no attempt beyond the window reads as a system condition
+  // rather than indefinite "catching up" (design D8).
+  assert.match(src, RECOVERY_PANEL_GATED_ON_BACKLOG);
+  assert.match(src, RECOVERY_PANEL_ARMS_STALL_WATCHDOG);
+  // A stalled/system-issue step renders as a system condition, never a retry prompt.
+  assert.match(src, RECOVERY_PANEL_SYSTEM_CONDITION_STYLING);
+});
+
+test("source detail page captures a fresh render instant and threads it into diagnostics", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  // `force-dynamic` page → the instant is fresh per request and threaded into
+  // the diagnostics recovery panel so the watchdog measures against real time.
+  assert.match(src, PAGE_CAPTURES_RENDER_INSTANT);
+  assert.match(src, PAGE_PASSES_NOW_TO_DIAGNOSTICS);
+});

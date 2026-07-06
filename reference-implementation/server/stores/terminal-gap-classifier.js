@@ -234,3 +234,76 @@ export async function maybeTerminateGap(store, gapId, errorInfo, providerProfile
   const terminated = await store.markGapStatus(gapId, 'terminal', { lastError: errorInfo });
   return { terminated: Boolean(terminated), gap: terminated ?? null };
 }
+
+// ─── maybeQuarantineGap ────────────────────────────────────────────────────
+
+/**
+ * Per-item poison-item quarantine (design.md D9/D10; OpenSpec
+ * `add-connector-neutral-recovery-governor` tasks 1.6 / 2.5 / runtime-3.4).
+ *
+ * This is the transient-looking sibling of `maybeTerminateGap`. Where
+ * `maybeTerminateGap` terminalizes a gap that keeps failing against a
+ * NON-transient HTTP error (a provably-gone resource), `maybeQuarantineGap`
+ * terminalizes an item that keeps failing **deterministically or via repeated
+ * interruption** with a transient-*looking* signal — the poison item that would
+ * otherwise retry forever and consume the backlog's recovery budget.
+ *
+ * The escalation signal is purely the item's own `attempt_count`. Every served
+ * attempt increments it (via `markGapStatus('in_progress')`) BEFORE the
+ * connector acts, and the crash-reclaim path resets `in_progress` → `pending`
+ * WITHOUT decrementing, so repeated interruption climbs `attempt_count` exactly
+ * like a repeated deterministic failure (design.md D9). Once the item crosses
+ * its per-item no-progress budget it is quarantined into `terminal` with a
+ * distinct `quarantined` class and captured evidence — visible in accounting,
+ * routed to a connector/system issue by the recovery-decision classifier, and
+ * never silently dropped (design.md D10).
+ *
+ * Read-then-decide, one write, no rollback — mirrors `maybeTerminateGap` so a
+ * crash mid-call can never strand a still-fillable sibling as quarantined.
+ *
+ * @param {object} store        — detail gap store (needs getGapById, markGapStatus)
+ * @param {string} gapId        — gap identifier
+ * @param {object|null} evidence — non-secret failure evidence (class/message/attempt); the store sanitizes it
+ * @param {{ maxNoProgressAttempts: number }} policy
+ * @returns {Promise<{ quarantined: boolean, gap: object|null }>}
+ */
+export async function maybeQuarantineGap(store, gapId, evidence, policy) {
+  if (!policy || typeof policy.maxNoProgressAttempts !== 'number' || policy.maxNoProgressAttempts <= 0) {
+    throw new Error(
+      'maybeQuarantineGap requires policy.maxNoProgressAttempts as a positive integer; ' +
+      'a poison item must always have a finite no-progress budget (design.md D10)',
+    );
+  }
+
+  const current = typeof store.getGapById === 'function' ? await store.getGapById(gapId) : null;
+  if (!current) {
+    // Gap not found (already recovered/terminal, or never existed) — nothing to do.
+    return { quarantined: false, gap: null };
+  }
+  if (current.status === 'terminal' || current.status === 'recovered') {
+    // Recovery already concluded; terminal (incl. a prior quarantine) is sticky.
+    return { quarantined: false, gap: null };
+  }
+
+  const attemptCount = typeof current.attempt_count === 'number' ? current.attempt_count : 0;
+  if (attemptCount < policy.maxNoProgressAttempts) {
+    // Budget not yet exhausted — leave the item queued for another attempt so a
+    // slow-but-progressing sibling is never quarantined prematurely.
+    return { quarantined: false, gap: null };
+  }
+
+  // Budget exhausted with no recovery: quarantine in one write. The `reason`
+  // carries the `quarantined` class the recovery-decision classifier routes to
+  // `connector_defect`; the `last_error` carries the (sanitized) evidence trail.
+  const quarantineError = {
+    class: 'quarantined',
+    ...(evidence && typeof evidence === 'object' ? evidence : {}),
+    attempt_count: attemptCount,
+    threshold: policy.maxNoProgressAttempts,
+  };
+  const quarantined = await store.markGapStatus(gapId, 'terminal', {
+    reason: 'quarantined',
+    lastError: quarantineError,
+  });
+  return { quarantined: Boolean(quarantined), gap: quarantined ?? null };
+}
