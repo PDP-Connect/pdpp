@@ -26,7 +26,7 @@ const REVIEW_LABEL_RE = /reviewLabel = "need review"/;
 const REVIEW_CARDS_COPY_RE = /Review the cards below\./;
 const OLD_ALL_CLEAR_COPY_RE = /band\.allClear \? `Nothing needs you right now\. \$\{RESET_NOTE\}` : RESET_NOTE/;
 const FAILURE_SECTION_ORDER_RE =
-  /const FAILURE_SECTION_ORDER = \["needsOwner", "review", "systemIssue", "checking", "other"\]/;
+  /const FAILURE_SECTION_ORDER = \["needsOwner", "review", "systemIssue", "working", "notMeasured", "other"\]/;
 const FAILURE_CARD_SECTION_RE = /function FailureCardSection\(/;
 const FAILURE_CARD_SECTIONS_CALL_RE = /failureCardSections\(model\.failureCards\)/;
 const FAILURE_CARD_SOURCE_WORK_RE = /data-source-work=\{card\.work\?\.group \?\? "other"\}/;

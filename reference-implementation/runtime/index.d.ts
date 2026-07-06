@@ -77,6 +77,11 @@ export interface RuntimeRunConnectorOptions {
   ownerToken: string;
   persistState?: boolean;
   /**
+   * Recovery-only run mode: the connector drains already-durable recoverable
+   * detail gaps and returns before ordinary forward/list collection.
+   */
+  recoveryOnly?: boolean;
+  /**
    * Mode-A streaming-target registration: AS base URL the spawned
    * connector child should POST to. Forwarded as
    * `PDPP_REFERENCE_BASE_URL`. Both `referenceBaseUrl` and

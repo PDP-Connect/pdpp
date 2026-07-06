@@ -5501,6 +5501,7 @@ function createReferenceSchedulerManager({
               connectorInstanceId: opts.connectorInstanceId,
               ownerToken: opts.ownerToken,
               priorityClass: opts.priorityClass,
+              recoveryOnly: opts.recoveryOnly === true,
               triggerKind: opts.triggerKind,
               rsUrl: opts.rsUrl,
               referenceBaseUrl: opts.referenceBaseUrl,

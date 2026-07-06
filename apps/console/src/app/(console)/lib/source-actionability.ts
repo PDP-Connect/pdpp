@@ -8,7 +8,7 @@ import type {
   RefVerdictTone,
 } from "./ref-client.ts";
 
-export type SourceWorkGroupId = "checking" | "needsOwner" | "review" | "systemIssue";
+export type SourceWorkGroupId = "needsOwner" | "notMeasured" | "review" | "systemIssue" | "working";
 
 export type SourceStatusKind = "blocked" | "degraded" | "healthy" | "revoked" | "unknown";
 
@@ -51,10 +51,11 @@ export interface SourceWorkItem {
 }
 
 export interface SourceWorkGroups {
-  checking: SourceWorkItem[];
   needsOwner: SourceWorkItem[];
+  notMeasured: SourceWorkItem[];
   review: SourceWorkItem[];
   systemIssues: SourceWorkItem[];
+  working: SourceWorkItem[];
 }
 
 export interface SourceActionabilityProjection {
@@ -72,10 +73,11 @@ export interface SourceActionabilityProjection {
 }
 
 export const EMPTY_SOURCE_WORK_GROUPS: SourceWorkGroups = {
-  checking: [],
   needsOwner: [],
+  notMeasured: [],
   review: [],
   systemIssues: [],
+  working: [],
 };
 
 /**
@@ -100,9 +102,13 @@ export const SOURCE_WORK_GROUP_COPY: Record<SourceWorkGroupId, { label: string; 
     label: "System or connector issue",
     note: "PDPP needs to fix or retry this; no account action is needed from you.",
   },
-  checking: {
-    label: "Checking",
-    note: "PDPP is checking this source before asking you to do anything.",
+  working: {
+    label: "PDPP is working",
+    note: "Collection, recovery, or a bounded check is active.",
+  },
+  notMeasured: {
+    label: "Not measured",
+    note: "Evidence is missing and no active check is running.",
   },
 };
 
@@ -287,8 +293,12 @@ function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_ve
   return null;
 }
 
-function isChecking(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): boolean {
-  return verdict.pill.tone === "grey" || verdict.pill.label === "Checking";
+function isWorking(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): boolean {
+  return verdict.pill.label === "Checking";
+}
+
+function isNotMeasured(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): boolean {
+  return verdict.pill.tone === "grey" || verdict.pill.label === "Not measured";
 }
 
 function itemFromConnector(
@@ -369,9 +379,16 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
     });
   }
 
-  if (isChecking(verdict)) {
-    return itemFromConnector(connector, "checking", {
-      statusLabel: "is checking",
+  if (isWorking(verdict)) {
+    return itemFromConnector(connector, "working", {
+      statusLabel: "is working",
+      what: verdict.forward_statement,
+    });
+  }
+
+  if (isNotMeasured(verdict)) {
+    return itemFromConnector(connector, "notMeasured", {
+      statusLabel: "is not measured",
       what: verdict.forward_statement,
     });
   }
@@ -402,10 +419,11 @@ export function projectSourceActionability(connector: RefConnectorSummary): Sour
 
 export function sourceWorkFromConnectors(connectors: readonly RefConnectorSummary[]): SourceWorkGroups {
   const groups: SourceWorkGroups = {
-    checking: [],
     needsOwner: [],
+    notMeasured: [],
     review: [],
     systemIssues: [],
+    working: [],
   };
   const seen = new Set<string>();
 
@@ -425,8 +443,11 @@ export function sourceWorkFromConnectors(connectors: readonly RefConnectorSummar
       case "systemIssue":
         groups.systemIssues.push(item);
         break;
-      case "checking":
-        groups.checking.push(item);
+      case "working":
+        groups.working.push(item);
+        break;
+      case "notMeasured":
+        groups.notMeasured.push(item);
         break;
       default: {
         const _exhaustive: never = item.group;

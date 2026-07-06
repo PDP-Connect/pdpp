@@ -86,6 +86,30 @@ async function waitFor(condition, timeoutMs = 5000) {
   throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
+function anchorStore(connectorId, lastRunTimeMs) {
+  return {
+    listRunHistory: () => [],
+    listLastRunTimes: () => [{
+      connector_id: connectorId,
+      connector_instance_id: connectorId,
+      last_run_time_ms: lastRunTimeMs,
+    }],
+    appendRunHistory: () => {},
+    upsertLastRunTime: () => {},
+    upsertActiveRun: () => {},
+    deleteActiveRun: () => {},
+  };
+}
+
+function pressureGap({ attemptCount = 6 } = {}) {
+  return {
+    attemptCount,
+    lastPressureAt: null,
+    nextAttemptAfter: null,
+    reason: 'upstream_pressure',
+  };
+}
+
 // ── T1 + T2: managed connector acquires surface via callback ────────────────
 
 test('T1+T2: scheduled managed-connector run calls runManagedConnectorViaController with scheduled_refresh priority', async () => {
@@ -129,12 +153,59 @@ test('T1+T2: scheduled managed-connector run calls runManagedConnectorViaControl
       assert.equal(call.id, connectorId, 'connectorId forwarded correctly');
       assert.equal(call.opts.priorityClass, 'scheduled_refresh', 'priorityClass must be scheduled_refresh');
       assert.equal(call.opts.triggerKind, 'scheduled', 'triggerKind must be scheduled');
+      assert.equal(call.opts.recoveryOnly, false, 'normal scheduled managed run must not become recovery-only');
       assert.equal(call.opts.connectorInstanceId, connectorId, 'connectorInstanceId defaults to connectorId');
       assert.equal(call.opts.ownerToken, 'owner-token', 'ownerToken forwarded');
 
       const [record] = completedRuns;
       assert.equal(record.status, 'succeeded', 'RunRecord status must be succeeded after managed dispatch');
       assert.equal(record.runId, runId, 'runId from controller forwarded to RunRecord');
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('T2b: scheduled managed-connector recovery dispatch preserves recoveryOnly', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-'));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const connectorId = 'chatgpt';
+    const calls = [];
+    const completedRuns = [];
+
+    const scheduler = createScheduler({
+      connectors: [{
+        connectorId,
+        connectorPath,
+        manifest: BACKGROUND_SAFE_MANIFEST,
+        intervalMs: 25,
+        maxRetries: 0,
+        ownerToken: 'owner-token',
+      }],
+      getSourcePressureGaps: () => [pressureGap()],
+      getNonPressureRecoverableCount: async () => 1,
+      isManagedConnector: (id) => id === connectorId,
+      onInteraction: async () => ({ accepted: true, status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      rsUrl: 'http://localhost.invalid',
+      schedulerStore: anchorStore(connectorId, Date.now() - 200),
+      runManagedConnectorViaController: async (id, opts) => {
+        calls.push({ id, opts });
+        return { run_id: `run_${Date.now()}`, status: 'succeeded', trace_id: 'trace-recovery-only' };
+      },
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      scheduler.stop();
+
+      assert.equal(calls.length >= 1, true, 'runManagedConnectorViaController must be called');
+      assert.equal(calls[0].id, connectorId, 'connectorId forwarded correctly');
+      assert.equal(calls[0].opts.recoveryOnly, true, 'recovery-only dispatch intent must reach controller route');
     } finally {
       scheduler.stop();
     }

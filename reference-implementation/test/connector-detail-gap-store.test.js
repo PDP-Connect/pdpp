@@ -348,6 +348,52 @@ test('connector detail gap store upserts pending gaps, updates status, and redac
   assert.equal(recovered.recovered_run_id, 'run_b');
 }));
 
+test('listPendingGaps returns only retry-eligible pending gaps', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const now = '2026-07-06T12:00:00.000Z';
+  const due = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'conversations',
+    recordKey: 'due',
+    detailLocator: { conversation_id: 'due' },
+    nextAttemptAfter: '2026-07-06T11:59:00.000Z',
+  });
+  const noFloor = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'conversations',
+    recordKey: 'no-floor',
+    detailLocator: { conversation_id: 'no-floor' },
+  });
+  const future = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    stream: 'conversations',
+    recordKey: 'future',
+    detailLocator: { conversation_id: 'future' },
+    nextAttemptAfter: '2026-07-06T12:30:00.000Z',
+  });
+
+  const eligible = await store.listPendingGaps({
+    connectorId: 'chatgpt',
+    grantId: 'grant_1',
+    streams: ['conversations'],
+    now,
+  });
+  assert.deepEqual(
+    eligible.map((gap) => gap.gap_id).sort(),
+    [due.gap_id, noFloor.gap_id].sort(),
+    'runtime recovery serving must not retry gaps before next_attempt_after',
+  );
+
+  const diagnostics = await store.listPendingGapsForConnector('chatgpt', { limit: 100 });
+  assert.ok(
+    diagnostics.some((gap) => gap.gap_id === future.gap_id),
+    'diagnostic pending-gap listing still includes future-scheduled gaps',
+  );
+}));
+
 test('connector detail gaps are isolated by connector instance', withTempDb(async () => {
   const store = createSqliteConnectorDetailGapStore();
   const first = await store.upsertPendingGap({

@@ -921,7 +921,8 @@ function sourceWorkHasRows(groups: SourceWorkGroups): boolean {
     groups.needsOwner.length > 0 ||
     groups.review.length > 0 ||
     groups.systemIssues.length > 0 ||
-    groups.checking.length > 0
+    groups.working.length > 0 ||
+    groups.notMeasured.length > 0
   );
 }
 
@@ -930,10 +931,11 @@ function activeSourceWork(input: StandingInputs): SourceWorkGroups {
     return input.sourceWork;
   }
   return {
-    checking: [],
     needsOwner: input.attentionConnections.map(workItemFromAttention),
+    notMeasured: [],
     review: input.advisoryOwnerActions.map(workItemFromReview),
     systemIssues: input.sourceIssues.map(workItemFromSourceIssue),
+    working: [],
   };
 }
 
@@ -947,13 +949,15 @@ function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRow
     what = `${item.label}: ${item.actionLabel}`;
   } else if (item.group === "review") {
     what = `${item.label}: action available`;
+  } else if (item.group === "working" || item.group === "notMeasured") {
+    what = `${item.label}: ${item.what}`;
   } else {
     what = `${item.label} ${item.statusLabel}`;
   }
   return {
     id: item.id,
     what,
-    why: item.what,
+    why: item.group === "working" || item.group === "notMeasured" ? item.statusLabel : item.what,
     href: hrefs.connection(item.routeId),
   };
 }
@@ -998,14 +1002,24 @@ function toSourceWorkSections(
       rows: [...groups.systemIssues.map((item) => sourceWorkRow(item, hrefs)), ...overviewIssues],
     });
   }
-  if (groups.checking.length > 0) {
+  if (groups.working.length > 0) {
     sections.push({
-      id: "checking",
-      title: SOURCE_WORK_GROUP_COPY.checking.label,
-      note: SOURCE_WORK_GROUP_COPY.checking.note,
-      countLabel: pluralSource(groups.checking.length),
+      id: "working",
+      title: SOURCE_WORK_GROUP_COPY.working.label,
+      note: SOURCE_WORK_GROUP_COPY.working.note,
+      countLabel: pluralSource(groups.working.length),
       tone: "muted",
-      rows: groups.checking.map((item) => sourceWorkRow(item, hrefs)),
+      rows: groups.working.map((item) => sourceWorkRow(item, hrefs)),
+    });
+  }
+  if (groups.notMeasured.length > 0) {
+    sections.push({
+      id: "notMeasured",
+      title: SOURCE_WORK_GROUP_COPY.notMeasured.label,
+      note: SOURCE_WORK_GROUP_COPY.notMeasured.note,
+      countLabel: pluralSource(groups.notMeasured.length),
+      tone: "muted",
+      rows: groups.notMeasured.map((item) => sourceWorkRow(item, hrefs)),
     });
   }
   return sections;

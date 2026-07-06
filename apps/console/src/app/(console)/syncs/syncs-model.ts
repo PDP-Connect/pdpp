@@ -518,7 +518,9 @@ function groupPriority(projection: SyncProjection): number {
       return 1;
     case "systemIssue":
       return 2;
-    case "checking":
+    case "working":
+      return 3;
+    case "notMeasured":
       return 4;
     case undefined:
       break;

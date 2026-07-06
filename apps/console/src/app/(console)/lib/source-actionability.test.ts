@@ -352,12 +352,22 @@ test("source actionability headline counts only needs-owner work and exposes sta
       }),
     }),
     connector({
-      connection_id: "cin_checking",
-      display_name: "Checking source",
+      connection_id: "cin_not_measured",
+      display_name: "Not measured source",
+      rendered_verdict: verdict({
+        channel: "calm",
+        pill: { label: "Not measured", tone: "grey" },
+        forward_statement: "Freshness has not been measured yet.",
+        required_actions: [],
+      }),
+    }),
+    connector({
+      connection_id: "cin_working",
+      display_name: "Working source",
       rendered_verdict: verdict({
         channel: "calm",
         pill: { label: "Checking", tone: "grey" },
-        forward_statement: "Checking freshness before calling this current.",
+        forward_statement: "Measuring coverage now.",
         required_actions: [],
       }),
     }),
@@ -366,7 +376,8 @@ test("source actionability headline counts only needs-owner work and exposes sta
   assert.equal(groups.needsOwner.length, 2);
   assert.equal(groups.review.length, 1);
   assert.equal(groups.systemIssues.length, 1);
-  assert.equal(groups.checking.length, 1);
+  assert.equal(groups.notMeasured.length, 1);
+  assert.equal(groups.working.length, 1);
   assert.equal(sourceAttentionHeadline(groups).needsYou, 2);
   assert.deepEqual(SOURCE_WORK_GROUP_COPY, {
     needsOwner: {
@@ -381,9 +392,13 @@ test("source actionability headline counts only needs-owner work and exposes sta
       label: "System or connector issue",
       note: "PDPP needs to fix or retry this; no account action is needed from you.",
     },
-    checking: {
-      label: "Checking",
-      note: "PDPP is checking this source before asking you to do anything.",
+    working: {
+      label: "PDPP is working",
+      note: "Collection, recovery, or a bounded check is active.",
+    },
+    notMeasured: {
+      label: "Not measured",
+      note: "Evidence is missing and no active check is running.",
     },
   });
 });

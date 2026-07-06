@@ -304,6 +304,7 @@ export type RunManagedConnectorViaController = (
     connectorInstanceId: string;
     ownerToken: string;
     priorityClass: "scheduled_refresh";
+    recoveryOnly?: boolean;
     triggerKind: "scheduled";
     runId?: string;
     traceContext?: unknown;

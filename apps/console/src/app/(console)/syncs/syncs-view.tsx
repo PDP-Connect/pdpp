@@ -39,7 +39,7 @@ const SYNC_COLS = "minmax(0,1.4fr) minmax(0,0.9fr) minmax(0,1.2fr) minmax(0,0.9f
 
 const RESET_NOTE = "Nothing already saved is ever lost — a held connection only pauses new arrivals.";
 
-const FAILURE_SECTION_ORDER = ["needsOwner", "review", "systemIssue", "checking", "other"] as const;
+const FAILURE_SECTION_ORDER = ["needsOwner", "review", "systemIssue", "working", "notMeasured", "other"] as const;
 
 type FailureSection = (typeof FAILURE_SECTION_ORDER)[number];
 
@@ -50,7 +50,8 @@ const FAILURE_SECTION_COPY: Record<FailureSection, { label: string; note: string
   needsOwner: SOURCE_WORK_GROUP_COPY.needsOwner,
   review: SOURCE_WORK_GROUP_COPY.review,
   systemIssue: SOURCE_WORK_GROUP_COPY.systemIssue,
-  checking: SOURCE_WORK_GROUP_COPY.checking,
+  working: SOURCE_WORK_GROUP_COPY.working,
+  notMeasured: SOURCE_WORK_GROUP_COPY.notMeasured,
   other: {
     label: "Other source work",
     note: "Worth a look when you have a moment.",

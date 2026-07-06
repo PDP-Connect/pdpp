@@ -280,8 +280,9 @@ export function createSqliteConnectorDetailGapStore() {
       ]));
     },
 
-    async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100 } = {}) {
+    async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100, now = nowIso() } = {}) {
       const connectorInstanceId = nonEmptyString(arguments[0]?.connectorInstanceId) || defaultConnectorInstanceId(connectorId);
+      const eligibleAt = nonEmptyString(now) || nowIso();
       const streamList = Array.isArray(streams) ? streams.filter((stream) => typeof stream === 'string' && stream) : null;
       const streamPlaceholders = streamList?.length ? streamList.map(() => '?').join(', ') : null;
       // REVIEWED-DYNAMIC: bounded pending-gap recovery selection over the store-owned table.
@@ -291,10 +292,11 @@ export function createSqliteConnectorDetailGapStore() {
           AND connector_id = ?
           AND (? IS NULL OR grant_id = ?)
           AND status = 'pending'
+          AND (next_attempt_after IS NULL OR next_attempt_after <= ?)
           ${streamPlaceholders ? `AND stream IN (${streamPlaceholders})` : ''}
         ORDER BY created_at
         LIMIT ?
-      `, [connectorInstanceId, connectorId, grantId, grantId, ...(streamList ?? []), Math.max(1, Math.min(limit, 500))])];
+      `, [connectorInstanceId, connectorId, grantId, grantId, eligibleAt, ...(streamList ?? []), Math.max(1, Math.min(limit, 500))])];
       return rows.map(rowToGap);
     },
 
@@ -463,18 +465,27 @@ export function createPostgresConnectorDetailGapStore() {
       return rowToGap(result.rows[0]);
     },
 
-    async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100 } = {}) {
+    async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100, now = nowIso() } = {}) {
       const connectorInstanceId = nonEmptyString(arguments[0]?.connectorInstanceId) || defaultConnectorInstanceId(connectorId);
+      const eligibleAt = nonEmptyString(now) || nowIso();
       const result = await postgresQuery(`
         SELECT * FROM connector_detail_gaps
         WHERE connector_instance_id = $1
           AND connector_id = $2
           AND ($3::text IS NULL OR grant_id = $3)
           AND status = 'pending'
-          AND ($4::text[] IS NULL OR stream = ANY($4::text[]))
+          AND (next_attempt_after IS NULL OR next_attempt_after <= $4)
+          AND ($5::text[] IS NULL OR stream = ANY($5::text[]))
         ORDER BY created_at
-        LIMIT $5
-      `, [connectorInstanceId, connectorId, grantId, Array.isArray(streams) && streams.length ? streams : null, Math.max(1, Math.min(limit, 500))]);
+        LIMIT $6
+      `, [
+        connectorInstanceId,
+        connectorId,
+        grantId,
+        eligibleAt,
+        Array.isArray(streams) && streams.length ? streams : null,
+        Math.max(1, Math.min(limit, 500)),
+      ]);
       return result.rows.map(rowToGap);
     },
 

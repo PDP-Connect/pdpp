@@ -168,6 +168,7 @@ test('recovery fires even when a stale failure-backoff interval has NOT elapsed 
   const failedHistory = Array.from({ length: 6 }, (_, i) => ({
     connector_id: connectorId,
     connector_instance_id: connectorId,
+    source: { kind: 'connector', id: connectorId },
     status: 'failed',
     error: 'simulated upstream failure',
     started_at: new Date(now - (i + 1) * 60_000).toISOString(),

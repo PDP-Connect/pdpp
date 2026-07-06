@@ -135,6 +135,10 @@ export function reasonForDetailFailure(kind: DetailFailureKind): AmazonDetailGap
   }
 }
 
+function classForDetailFailure(kind: DetailFailureKind): string {
+  return kind === "deferred_budget" ? "run_cap_deferred" : kind;
+}
+
 export async function readPageContentWithin(
   page: Pick<Page, "content">,
   timeoutMs = PAGE_CONTENT_TIMEOUT_MS
@@ -442,8 +446,8 @@ export function buildOrderDetailGap(
     },
     ...(failureKind
       ? {
-          detail: { class: failureKind },
-          last_error: { class: failureKind },
+          detail: { class: classForDetailFailure(failureKind) },
+          last_error: { class: classForDetailFailure(failureKind) },
         }
       : {}),
   };

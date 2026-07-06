@@ -855,7 +855,8 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     via: RunManagedConnectorViaController,
     connectorId: string,
     connectorInstanceId: string,
-    ownerToken: string
+    ownerToken: string,
+    options: { recoveryOnly?: boolean } = {}
   ): Promise<RunRecord | null> {
     const startedAt = nowIso();
     let runNowResult: Awaited<ReturnType<RunManagedConnectorViaController>>;
@@ -864,6 +865,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         connectorInstanceId,
         ownerToken,
         priorityClass: "scheduled_refresh",
+        recoveryOnly: options.recoveryOnly === true,
         triggerKind: "scheduled",
         referenceBaseUrl,
         rsUrl,
@@ -1044,7 +1046,8 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         runManagedConnectorViaController,
         connectorId,
         connectorInstanceId,
-        ownerToken
+        ownerToken,
+        { recoveryOnly }
       );
       if (managed !== null) {
         return managed;

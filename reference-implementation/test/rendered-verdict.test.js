@@ -150,7 +150,7 @@ const ASSISTED_REFRESH = { backgroundSafe: true, interactionPosture: 'manual_act
 // gate fired; this re-checks the externally-observable invariants on the result.
 
 const TONE_RANK = { green: 0, grey: 1, amber: 2, red: 3 };
-const TONE_TO_LABEL = { green: 'Healthy', grey: 'Checking', amber: 'Degraded', red: "Can't collect" };
+const TONE_TO_LABEL = { green: 'Healthy', grey: 'Not measured', amber: 'Degraded', red: "Can't collect" };
 const CALM_ADVISORY_KINDS = new Set(['freshness', 'schedule', 'activity']);
 const BASE_STATE_TONE = {
   healthy: 'green',
@@ -195,8 +195,10 @@ function assertAllInvariants(verdict, snap, runtimeOk) {
     TONE_RANK[verdict.pill.tone] >= TONE_RANK[BASE_STATE_TONE[snap.state]],
     'inv5: tone >= base state tone (worst-wins)'
   );
-  // (6) label ↔ tone bijection
-  assert.equal(verdict.pill.label, TONE_TO_LABEL[verdict.pill.tone], 'inv6: label bijection');
+  // (6) label follows tone plus active-work evidence. Grey is only "Checking"
+  // when current activity evidence proves the system is actively checking.
+  const expectedLabel = verdict.pill.tone === 'grey' && snap.badges.syncing ? 'Checking' : TONE_TO_LABEL[verdict.pill.tone];
+  assert.equal(verdict.pill.label, expectedLabel, 'inv6: label matches tone plus active-work evidence');
   // (7) no contradictory chip pair
   for (const row of verdict.streams) {
     if (row.disposition === 'terminal') {
@@ -350,7 +352,7 @@ test('freshness annotation does not claim schedule refresh when the schedule is 
   assert.doesNotMatch(freshness, /schedule/i);
 });
 
-test('tone: unknown freshness renders Checking rather than Healthy or Degraded', () => {
+test('tone: unknown freshness renders Not measured rather than Healthy, Degraded, or Checking', () => {
   const snap = snapshot({
     state: 'healthy',
     axes: { freshness: 'unknown' },
@@ -358,14 +360,14 @@ test('tone: unknown freshness renders Checking rather than Healthy or Degraded',
   });
   const v = synthesizeRenderedVerdict(snap, [stream()], null, true);
   assert.equal(v.pill.tone, 'grey');
-  assert.equal(v.pill.label, 'Checking');
+  assert.equal(v.pill.label, 'Not measured');
   assert.equal(v.channel, 'calm');
   assert.ok(v.annotations.some((a) => a.kind === 'freshness' && /unknown/i.test(a.text)));
-  assert.equal(v.forward_statement, 'Checking freshness before calling this current.');
+  assert.equal(v.forward_statement, 'Freshness has not been measured yet.');
   assert.notEqual(v.forward_statement, 'Current and collecting normally.');
 });
 
-test('tone: unknown coverage renders Checking and no retry action', () => {
+test('tone: unknown coverage renders Not measured and no retry action', () => {
   const snap = snapshot({
     state: 'idle',
     axes: { coverage: 'unknown', freshness: 'fresh' },
@@ -373,13 +375,26 @@ test('tone: unknown coverage renders Checking and no retry action', () => {
   });
   const v = synthesizeRenderedVerdict(snap, [stream({ coverage: 'unknown' })], null, true);
   assert.equal(v.pill.tone, 'grey');
-  assert.equal(v.pill.label, 'Checking');
+  assert.equal(v.pill.label, 'Not measured');
   assert.equal(v.channel, 'calm');
-  assert.equal(v.forward_statement, 'Checking coverage before deciding what the next run should do.');
+  assert.equal(v.forward_statement, 'Coverage has not been measured yet.');
   assert.deepEqual(v.required_actions, []);
   assert.equal(v.streams[0]?.disposition, 'checking');
-  assert.equal(v.streams[0]?.statement, 'Checking coverage.');
+  assert.equal(v.streams[0]?.statement, 'Coverage has not been measured yet.');
   assert.notEqual(v.forward_statement, 'The next run is expected to fill the remaining data.');
+});
+
+test('tone: active unknown coverage renders Checking because work is active', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { coverage: 'unknown', freshness: 'fresh' },
+    badges: { stale: false, syncing: true },
+    forward_disposition: 'checking',
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream({ coverage: 'unknown' })], null, true);
+  assert.equal(v.pill.tone, 'grey');
+  assert.equal(v.pill.label, 'Checking');
+  assert.equal(v.forward_statement, 'Coverage has not been measured yet.');
 });
 
 test('tone: worst axis (degrading coverage) wins over a healthy state', () => {
@@ -880,8 +895,10 @@ test('property: tone is worst-wins (never below base state) and (tone,channel) o
               TONE_RANK[v.pill.tone] >= TONE_RANK[BASE_STATE_TONE[state]],
               `tone>=base for ${state}/${freshness}/${coverage}`
             );
-            // tone never read straight from label-of-state: label always matches tone bijection
-            assert.equal(v.pill.label, TONE_TO_LABEL[v.pill.tone]);
+            // tone never read straight from label-of-state: label follows tone
+            // plus current activity evidence.
+            const expectedLabel = v.pill.tone === 'grey' && snap.badges.syncing ? 'Checking' : TONE_TO_LABEL[v.pill.tone];
+            assert.equal(v.pill.label, expectedLabel);
             const set = channelByTone.get(v.pill.tone) ?? new Set();
             set.add(v.channel);
             channelByTone.set(v.pill.tone, set);

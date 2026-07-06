@@ -51,11 +51,13 @@ import {
 export type VerdictTone = "amber" | "green" | "grey" | "red";
 
 /**
- * Fixed health-label bijection. Action-demand language ("Needs you") is reserved
- * for `channel === "attention"` and owner-satisfiable required actions, not for
- * stale freshness or other advisory states.
+ * Fixed health-label set. Action-demand language ("Needs you") is reserved for
+ * `channel === "attention"` and owner-satisfiable required actions, not for
+ * stale freshness or other advisory states. Grey labels are evidence-dependent:
+ * "Checking" requires active work; otherwise missing evidence reads "Not
+ * measured".
  */
-export type VerdictLabel = "Can't collect" | "Checking" | "Degraded" | "Healthy";
+export type VerdictLabel = "Can't collect" | "Checking" | "Degraded" | "Healthy" | "Not measured";
 
 export interface VerdictPill {
   readonly label: VerdictLabel;
@@ -327,10 +329,17 @@ const TONE_RANK: Record<VerdictTone, number> = { green: 0, grey: 1, amber: 2, re
 
 const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
   green: "Healthy",
-  grey: "Checking",
+  grey: "Not measured",
   amber: "Degraded",
   red: "Can't collect",
 };
+
+function labelForPill(tone: VerdictTone, snapshot: ConnectionHealthSnapshot): VerdictLabel {
+  if (tone === "grey" && snapshot.badges.syncing) {
+    return "Checking";
+  }
+  return TONE_TO_LABEL[tone];
+}
 
 function worse(a: VerdictTone, b: VerdictTone): VerdictTone {
   return TONE_RANK[a] >= TONE_RANK[b] ? a : b;
@@ -1131,7 +1140,7 @@ function buildForwardStatement(
 
   switch (disposition) {
     case "checking":
-      return "Checking coverage before deciding what the next run should do.";
+      return "Coverage has not been measured yet.";
     case "resumable":
       return "The next run is expected to fill the remaining data.";
     case "owner_refresh_due":
@@ -1140,7 +1149,7 @@ function buildForwardStatement(
       return "Waiting on you before the next run can make progress.";
     default:
       if (snapshot.axes.freshness === "unknown") {
-        return "Checking freshness before calling this current.";
+        return "Freshness has not been measured yet.";
       }
       return "Current and collecting normally.";
   }
@@ -1286,7 +1295,7 @@ function streamStatement(disposition: ForwardDisposition): string {
     case "complete":
       return "Complete.";
     case "checking":
-      return "Checking coverage.";
+      return "Coverage has not been measured yet.";
     case "resumable":
       return "The next run is expected to fill the rest.";
     case "owner_refresh_due":
@@ -1439,9 +1448,10 @@ function honestyViolations(verdict: RenderedVerdict, snapshot: ConnectionHealthS
     violations.push("pill.tone is below the base state tone — not worst-wins (inv 5)");
   }
 
-  // (6) label ↔ tone bijection.
-  if (verdict.pill.label !== TONE_TO_LABEL[verdict.pill.tone]) {
-    violations.push("pill.label does not match the fixed tone bijection (inv 6)");
+  // (6) label follows tone plus active-work evidence. Grey is "Not measured"
+  // unless current activity evidence proves the system is actually checking.
+  if (verdict.pill.label !== labelForPill(verdict.pill.tone, snapshot)) {
+    violations.push("pill.label does not match tone plus active-work evidence (inv 6)");
   }
 
   // (7) no contradictory chip pair: a terminal stream row must not carry a resume statement.
@@ -1516,10 +1526,10 @@ function assertInvariants(verdict: RenderedVerdict, snapshot: ConnectionHealthSn
 /** A minimal, honest grey verdict used as the prod fallback on an invariant failure. */
 function safeGreyVerdict(snapshot: ConnectionHealthSnapshot): RenderedVerdict {
   return {
-    pill: { tone: "grey", label: "Checking" },
+    pill: { tone: "grey", label: "Not measured" },
     channel: "calm",
     annotations: [],
-    forward_statement: "Checking this connection.",
+    forward_statement: "Status could not be classified.",
     required_actions: [],
     streams: [],
     progress: buildProgress(null, "checking", []),
@@ -1569,7 +1579,7 @@ export function synthesizeRenderedVerdict(
     { axis: "outbox", tone: outboxTone(snapshot) },
   ];
   const tone = toneInputs.reduce<VerdictTone>((acc, input) => worse(acc, input.tone), "green");
-  const pill: VerdictPill = { tone, label: TONE_TO_LABEL[tone] };
+  const pill: VerdictPill = { tone, label: labelForPill(tone, snapshot) };
 
   // ── required actions (terminality derived from the sole oracle) ──
   const actions = buildRequiredActions(snapshot, streams, refresh, disposition);

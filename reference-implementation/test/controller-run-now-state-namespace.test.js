@@ -207,3 +207,21 @@ test("runNow forwards stream resources as runtime scope", async (t) => {
     streams: [{ name: "messages", resources: ["C07JYF0U8BY"] }],
   });
 });
+
+test("runNow forwards recoveryOnly to the runtime", async (t) => {
+  freshDb(t);
+
+  const calls = [];
+  const controller = makeController(calls);
+  await controller.runNow(AMAZON, {
+    connectorInstanceId: "cin_recovery",
+    manifest: AMAZON_MANIFEST,
+    ownerToken: "owner-token",
+    recoveryOnly: true,
+    runId: "run_recovery_only",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].recoveryOnly, true);
+});

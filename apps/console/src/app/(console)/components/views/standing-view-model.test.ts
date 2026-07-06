@@ -650,8 +650,8 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
       display_name: "GitHub - Personal",
       rendered_verdict: verdict({
         channel: "calm",
-        pill: { label: "Checking", tone: "grey" },
-        forward_statement: "Checking coverage before deciding what the next run should do.",
+        pill: { label: "Not measured", tone: "grey" },
+        forward_statement: "Coverage has not been measured yet.",
         required_actions: [],
       }),
     }),
@@ -663,7 +663,7 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(sourceWork.needsOwner.length, 3);
   assert.equal(sourceWork.review.length, 1);
   assert.equal(sourceWork.systemIssues.length, 1);
-  assert.equal(sourceWork.checking.length, 1);
+  assert.equal(sourceWork.notMeasured.length, 1);
   assert.equal(sourceAttentionHeadline(sourceWork).needsYou, sourceWork.needsOwner.length);
   assert.equal(data.hero.tone, "alarm");
   assert.equal(data.hero.kicker, "3 things need you");
@@ -673,7 +673,8 @@ test("source actionability groups live-shaped rows with scoped counts", () => {
   assert.equal(data.sourceWorkSections[1]?.title, "Available actions");
   assert.equal(data.sourceWorkSections[1]?.countLabel, "1 source");
   assert.equal(data.sourceWorkSections[2]?.title, "System or connector issue");
-  assert.equal(data.sourceWorkSections[3]?.title, "Checking");
+  assert.equal(data.sourceWorkSections[3]?.title, "Not measured");
+  assert.equal(data.sourceWorkSections[3]?.rows[0]?.what, "GitHub - Personal: Coverage has not been measured yet.");
 });
 
 test("reviewable degraded source appears once rather than as review plus source issue", () => {

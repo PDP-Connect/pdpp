@@ -216,6 +216,7 @@ export interface RunNowOptions {
   manifest?: ConnectorManifest;
   ownerToken?: string;
   priorityClass?: "owner_interactive" | "scheduled_refresh";
+  recoveryOnly?: boolean;
   resources?: Readonly<Record<string, readonly string[]>>;
   rsUrl?: string;
   runId?: string;
@@ -2938,6 +2939,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           traceContext,
           triggerKind,
           automationMode: automationMetadata.automation_mode ?? null,
+          recoveryOnly: options.recoveryOnly === true,
           onInteraction: interactionHandler,
           onProgress: handleAssistanceProgress,
           // Mode-A streaming registration env. Both fields must be present

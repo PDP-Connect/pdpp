@@ -631,7 +631,7 @@ export type RefVerdictTone = "amber" | "green" | "grey" | "red";
 export type RefRenderedChannel = "advisory" | "attention" | "calm";
 
 export interface RefVerdictPill {
-  label: "Can't collect" | "Checking" | "Degraded" | "Healthy";
+  label: "Can't collect" | "Checking" | "Degraded" | "Healthy" | "Not measured";
   tone: RefVerdictTone;
 }
 

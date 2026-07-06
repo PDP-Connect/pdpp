@@ -837,7 +837,7 @@ test("processListOrder: repeated retry-exhausted detail failures defer later det
     [["ord-deferred-4", "retry_exhausted"]],
     "connector-local detail budget defers the next detail without arming source-pressure cooldown"
   );
-  assert.equal(gaps[0]?.last_error?.class, "deferred_budget");
+  assert.equal(gaps[0]?.last_error?.class, "run_cap_deferred");
   assert.equal(flags.temporaryDetailFailures, 3, "deferred gaps do not keep ratcheting the temporary failure count");
 });
 
@@ -852,7 +852,7 @@ test("processListOrder: total detail-attempt budget defers later details without
   const gaps = findDetailGaps(protocolMessages);
   assert.deepEqual(
     gaps.map((gap) => [gap.record_key, gap.reason, gap.last_error?.class]),
-    [["ord-attempt-budget", "retry_exhausted", "deferred_budget"]],
+    [["ord-attempt-budget", "retry_exhausted", "run_cap_deferred"]],
     "total detail budget uses a non-source-pressure retryable gap"
   );
   assert.equal(flags.detailAttempts, 999, "budget-deferred gaps do not touch the browser or increment attempts");
