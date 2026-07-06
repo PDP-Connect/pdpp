@@ -1,1 +1,22 @@
-{}
+{
+  "server/connector-manifest-validation.ts": {
+    "allowed_mass": 124,
+    "reason": "Port of main's external-tool detection hardening (security fix e6e96933b) + owner-cancel/recovery surfaces from #199/#190 reconciliation; behavior required by main's test contract. Queued for decomposition in the Phase-1 drain.",
+    "date": "2026-07-06"
+  },
+  "server/index.js": {
+    "allowed_mass": 584,
+    "reason": "Port of main's external-tool detection hardening (security fix e6e96933b) + owner-cancel/recovery surfaces from #199/#190 reconciliation; behavior required by main's test contract. Queued for decomposition in the Phase-1 drain.",
+    "date": "2026-07-06"
+  },
+  "server/ref-control.ts": {
+    "allowed_mass": 138,
+    "reason": "Port of main's external-tool detection hardening (security fix e6e96933b) + owner-cancel/recovery surfaces from #199/#190 reconciliation; behavior required by main's test contract. Queued for decomposition in the Phase-1 drain.",
+    "date": "2026-07-06"
+  },
+  "server/stores/connector-detail-gap-store.js": {
+    "allowed_mass": 33,
+    "reason": "Port of main's external-tool detection hardening (security fix e6e96933b) + owner-cancel/recovery surfaces from #199/#190 reconciliation; behavior required by main's test contract. Queued for decomposition in the Phase-1 drain.",
+    "date": "2026-07-06"
+  }
+}

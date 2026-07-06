@@ -317,6 +317,19 @@ export function createSqliteConnectorDetailGapStore() {
       return rows.map(rowToGap);
     },
 
+    async listPendingGapsForConnectorInstance(connectorId, connectorInstanceId, { limit = 100 } = {}) {
+      // REVIEWED-DYNAMIC: bounded diagnostics scan of pending gaps for one connection.
+      const rows = [...iterateDynamicSqlAcknowledged(`
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = ?
+          AND connector_instance_id = ?
+          AND status = 'pending'
+        ORDER BY created_at
+        LIMIT ?
+      `, [connectorId, connectorInstanceId, Math.max(1, Math.min(limit, 500))])];
+      return rows.map(rowToGap);
+    },
+
     // Exact reason-scoped count-by-status across every connector instance for a
     // connector type. The operator-console source-pressure backlog rollup uses
     // this for its optional `recovered` count: a single bounded aggregate that
@@ -505,6 +518,18 @@ export function createPostgresConnectorDetailGapStore() {
         ORDER BY created_at
         LIMIT $2
       `, [connectorId, Math.max(1, Math.min(limit, 500))]);
+      return result.rows.map(rowToGap);
+    },
+
+    async listPendingGapsForConnectorInstance(connectorId, connectorInstanceId, { limit = 100 } = {}) {
+      const result = await postgresQuery(`
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = $1
+          AND connector_instance_id = $2
+          AND status = 'pending'
+        ORDER BY created_at
+        LIMIT $3
+      `, [connectorId, connectorInstanceId, Math.max(1, Math.min(limit, 500))]);
       return result.rows.map(rowToGap);
     },
 

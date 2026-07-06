@@ -4034,7 +4034,7 @@ function buildOwnerAgentOnboardingMetadata({ origin, resource, issuer }) {
       'Owner-level local automation. This profile yields an owner bearer that authorizes owner-visible REST/control-plane access — not a grant-scoped external client. Use grant-scoped MCP for ordinary third-party agents.',
     authorization_server: as,
     resource: rs,
-    owner_approval_url: `${approvalBase}/`,
+    owner_approval_url: `${approvalBase}/dashboard`,
     device_authorization_endpoint: `${as}/oauth/device_authorization`,
     token_endpoint: `${as}/oauth/token`,
     introspection_endpoint: `${as}/introspect`,

@@ -251,7 +251,12 @@ function validateRuntimeBindings(req: Record<string, unknown>, code: string): bo
 }
 
 // Validates one `external_tools[index].detect` sub-object (order-preserving).
-function validateExternalToolDetect(detectValue: unknown, index: number, code: string): void {
+function validateExternalToolDetect(
+  detectValue: unknown,
+  index: number,
+  code: string,
+  options: { allowLegacyCommand: boolean }
+): void {
   if (detectValue === undefined) {
     return;
   }
@@ -259,16 +264,49 @@ function validateExternalToolDetect(detectValue: unknown, index: number, code: s
     throw invalidConnectorManifest(`runtime_requirements.external_tools[${index}].detect must be an object`, code);
   }
   const detect = detectValue as Record<string, unknown>;
-  const unknownDetectKeys = Object.keys(detect).filter((key) => !EXTERNAL_TOOL_DETECT_ALLOWED_KEYS.has(key));
-  if (unknownDetectKeys.length) {
-    throw invalidConnectorManifest(
-      `runtime_requirements.external_tools[${index}].detect has unsupported keys: ${unknownDetectKeys.join(", ")}`,
-      code
-    );
+  if (options.allowLegacyCommand) {
+    if (detect.exit_code !== undefined && (!Number.isInteger(detect.exit_code) || (detect.exit_code as number) < 0)) {
+      throw invalidConnectorManifest(
+        `runtime_requirements.external_tools[${index}].detect.exit_code must be a non-negative integer`,
+        code
+      );
+    }
+    const legacyDetectKeys = new Set(["args", "command", "executable", "exit_code"]);
+    const unknownLegacyKeys = Object.keys(detect).filter((key) => !legacyDetectKeys.has(key));
+    if (unknownLegacyKeys.length) {
+      throw invalidConnectorManifest(
+        `runtime_requirements.external_tools[${index}].detect has unsupported keys: ${unknownLegacyKeys.join(", ")}`,
+        code
+      );
+    }
+    if (!isNonEmptyString(detect.executable) && !isNonEmptyString(detect.command)) {
+      throw invalidConnectorManifest(
+        `runtime_requirements.external_tools[${index}].detect.command must be a non-empty string`,
+        code
+      );
+    }
+  } else {
+    const unknownDetectKeys = Object.keys(detect).filter((key) => !EXTERNAL_TOOL_DETECT_ALLOWED_KEYS.has(key));
+    if (unknownDetectKeys.length) {
+      throw invalidConnectorManifest(
+        `runtime_requirements.external_tools[${index}].detect has unsupported keys: ${unknownDetectKeys.join(", ")}`,
+        code
+      );
+    }
+    if (!isNonEmptyString(detect.executable)) {
+      throw invalidConnectorManifest(
+        `runtime_requirements.external_tools[${index}].detect.executable must be a non-empty string`,
+        code
+      );
+    }
   }
-  if (!isNonEmptyString(detect.executable)) {
+  if (
+    !options.allowLegacyCommand &&
+    detect.exit_code !== undefined &&
+    (!Number.isInteger(detect.exit_code) || (detect.exit_code as number) < 0)
+  ) {
     throw invalidConnectorManifest(
-      `runtime_requirements.external_tools[${index}].detect.executable must be a non-empty string`,
+      `runtime_requirements.external_tools[${index}].detect.exit_code must be a non-negative integer`,
       code
     );
   }
@@ -281,17 +319,17 @@ function validateExternalToolDetect(detectValue: unknown, index: number, code: s
       code
     );
   }
-  if (detect.exit_code !== undefined && (!Number.isInteger(detect.exit_code) || (detect.exit_code as number) < 0)) {
-    throw invalidConnectorManifest(
-      `runtime_requirements.external_tools[${index}].detect.exit_code must be a non-negative integer`,
-      code
-    );
-  }
 }
 
 // Validates one `external_tools[index]` entry (order-preserving); tracks
 // duplicate tool names via the shared `seenToolNames` set.
-function validateExternalToolEntry(tool: unknown, index: number, seenToolNames: Set<string>, code: string): void {
+function validateExternalToolEntry(
+  tool: unknown,
+  index: number,
+  seenToolNames: Set<string>,
+  code: string,
+  options: { allowLegacyCommand: boolean }
+): void {
   if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
     throw invalidConnectorManifest(`runtime_requirements.external_tools[${index}] must be an object`, code);
   }
@@ -326,11 +364,15 @@ function validateExternalToolEntry(tool: unknown, index: number, seenToolNames: 
       );
     }
   }
-  validateExternalToolDetect(toolObj.detect, index, code);
+  validateExternalToolDetect(toolObj.detect, index, code, options);
 }
 
 // Validates `runtime_requirements.external_tools` (order-preserving).
-function validateExternalTools(req: Record<string, unknown>, code: string): void {
+function validateExternalTools(
+  req: Record<string, unknown>,
+  code: string,
+  options: { allowLegacyCommand: boolean }
+): void {
   const externalTools = req.external_tools;
   if (externalTools === undefined || externalTools === null) {
     return;
@@ -340,13 +382,14 @@ function validateExternalTools(req: Record<string, unknown>, code: string): void
   }
   const seenToolNames = new Set<string>();
   for (const [index, tool] of externalTools.entries()) {
-    validateExternalToolEntry(tool, index, seenToolNames, code);
+    validateExternalToolEntry(tool, index, seenToolNames, code, options);
   }
 }
 
-// Decomposed into per-section validators (bindings, external_tools, tool detect)
-// below. Each helper preserves the original throw order and messages exactly;
-// the split is proven behavior-identical by a differential accept/reject oracle.
+// Decomposed into per-section validators (bindings, external_tools, tool detect).
+// Full manifest validation keeps main's hardened `detect.executable` contract;
+// runtime-requirements-only calls keep the branch's direct-helper compatibility
+// for legacy unit coverage.
 export function validateRuntimeRequirements(manifest: Record<string, unknown>, code: string): void {
   const requirements = manifest.runtime_requirements;
   if (requirements === undefined || requirements === null) {
@@ -359,7 +402,7 @@ export function validateRuntimeRequirements(manifest: Record<string, unknown>, c
   if (!validateRuntimeBindings(req, code)) {
     return;
   }
-  validateExternalTools(req, code);
+  validateExternalTools(req, code, { allowLegacyCommand: !Array.isArray(manifest.streams) });
 }
 
 // Validates the interval fields of a refresh_policy (positive-integer shape +
