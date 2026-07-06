@@ -84,7 +84,7 @@ function pressureGap(overrides = {}) {
   return {
     reason: 'upstream_pressure',
     attempt_count: 2,
-    last_attempt_at: null,
+    last_attempt_at: new Date().toISOString(),
     next_attempt_after: null,
     connector_instance_id: null,
     stream: null,
@@ -148,6 +148,37 @@ test('ordinary manual run during provider-pressure cooldown is blocked with prov
         connector_instance_id: TEST_CONNECTOR_ID,
         last_run_time_ms: lastRun,
         updated_at: new Date(lastRun).toISOString(),
+      }],
+    },
+  );
+});
+
+test('stale provider-pressure rows do not re-arm the manual cooldown gate', async () => {
+  const stalePressureAt = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+  await withPreGateController(
+    () => fakeDetailGapStore([pressureGap({ attempt_count: 8, last_attempt_at: stalePressureAt })]),
+    async (controller) => {
+      let err;
+      try {
+        await controller.runNow(TEST_CONNECTOR_ID, { manifest: buildManifest() });
+      } catch (e) {
+        err = e;
+      }
+      if (err) {
+        assert.notEqual(
+          err.code,
+          'provider_pressure_cooldown',
+          `stale pressure evidence must not block manual run; got ${err.code}: ${err.message}`,
+        );
+      }
+    },
+    {
+      schedule: { interval_seconds: 60 },
+      lastRunTimes: [{
+        connector_id: TEST_CONNECTOR_ID,
+        connector_instance_id: TEST_CONNECTOR_ID,
+        last_run_time_ms: Date.now(),
+        updated_at: new Date().toISOString(),
       }],
     },
   );
@@ -281,6 +312,7 @@ test('manual cooldown gate does not let recent skip history slide an elapsed pre
         pressureGap({
           connector_instance_id: 'cin_target',
           attempt_count: 0,
+          last_attempt_at: null,
           updated_at: new Date(pressureObserved).toISOString(),
         }),
       ]),
@@ -331,7 +363,7 @@ test('manual cooldown gate does not let recent skip history slide an elapsed pre
 test('ordinary manual run is allowed after provider-pressure cooldown has elapsed', async () => {
   const lastRun = Date.now() - 10 * 60 * 1000;
   await withPreGateController(
-    () => fakeDetailGapStore([pressureGap({ attempt_count: 1 })]),
+    () => fakeDetailGapStore([pressureGap({ attempt_count: 1, last_attempt_at: new Date(lastRun).toISOString() })]),
     async (controller) => {
       let err;
       try {

@@ -15,13 +15,7 @@
  * (scheduler/pre-run-gate.ts), timer ownership (startScheduledLoops in shell).
  */
 
-import { type BackoffDecision, computeNextRunWithBackoff } from "../scheduler-backoff.ts";
-import {
-  computeConnectionSourcePressureCooldown,
-  isSourcePressureCooldownDeferring,
-  type PendingPressureGap,
-  type SourcePressureCooldownDecision,
-} from "../scheduler-source-pressure-cooldown.ts";
+import { filterFreshPressureRows } from "../recovery-decision.ts";
 import type {
   ConnectorSchedule,
   GetLastSuccessfulRunAtHandler,
@@ -31,6 +25,13 @@ import type {
   RunRecord,
   RunSource,
 } from "../scheduler.ts";
+import { type BackoffDecision, computeNextRunWithBackoff } from "../scheduler-backoff.ts";
+import {
+  computeConnectionSourcePressureCooldown,
+  isSourcePressureCooldownDeferring,
+  type PendingPressureGap,
+  type SourcePressureCooldownDecision,
+} from "../scheduler-source-pressure-cooldown.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
 
@@ -267,14 +268,31 @@ function maxPressureGapAttemptCount(gaps: readonly PendingPressureGap[]): number
   return max;
 }
 
+function filterFreshPendingPressureGaps(gaps: readonly PendingPressureGap[], now: number): PendingPressureGap[] {
+  return (gaps ?? []).filter(
+    (gap) =>
+      filterFreshPressureRows(
+        [
+          {
+            attempt_count: gap.attemptCount ?? null,
+            last_attempt_at: gap.lastPressureAt ?? null,
+            next_attempt_after: gap.nextAttemptAfter ?? null,
+            reason: gap.reason,
+          },
+        ],
+        now
+      ).length > 0
+  );
+}
+
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface EvaluateBackoffDispatchResult {
   decision: BackoffDecision;
   eligible: boolean;
+  eventsToEmit: RunRecord[];
   /** True when the run may only drain non-source-pressure recovery gaps (SLVP-ideal §4.3). */
   recoveryOnly: boolean;
-  eventsToEmit: RunRecord[];
   skipToEmit: RunRecord | null;
 }
 
@@ -384,108 +402,17 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     return buildSourcePressureCooldownSkip(schedule.connectorId, cooldown, schedule.connectorInstanceId);
   }
 
-  // Pure dispatch-gate: given the current history + lastRun for a
-  // connector, decide whether the next automatic tick should run, skip
-  // silently (already announced), or emit a back-off skip record. Pulled
-  // out so the interval body stays short and so tests can drive it
-  // directly without touching real timers.
-  //
-  // In addition to the always-firing back-off skip record (one per
-  // streak), this gate may emit two transition spine-event markers:
-  //   - `schedule.back_off.started` — once when a fresh streak engages.
-  //   - `schedule.gave_up`          — once when the streak crosses the
-  //                                   `BLOCKED_PROMOTION_THRESHOLD` and
-  //                                   the scheduler stops auto-dispatching.
-  // The auto-dispatch suppression on `blocked` is the one behavioural
-  // change relative to Worker C: manual `runNow` still works (the brief
-  // is explicit about this), but the interval loop will not call
-  // `executeRun` for a connector whose `recommendedHealthState` is
-  // `"blocked"`.
-  async function evaluateBackoffDispatch(
+  function applyBackoffAnnouncements(
     schedule: ConnectorSchedule,
-    now: number
-  ): Promise<EvaluateBackoffDispatchResult> {
+    key: string,
+    history: readonly RunRecord[],
+    decision: BackoffDecision,
+    eligible: boolean,
+    recoveryOnly: boolean
+  ): { eligible: boolean; eventsToEmit: RunRecord[]; recoveryOnly: boolean; skipToEmit: RunRecord | null } {
     const connectorId = schedule.connectorId;
-    const key = runtimeKey(schedule);
-    const history = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
-    // `scheduler_last_run_times` and `scheduler_run_history` are persisted
-    // through separate writes. If a process is killed between them — or if
-    // an older runtime never wrote `last_run_time` at all — we hydrate
-    // history with failed records but no last-run timestamp. Computing
-    // `nextRunAt = 0 + effectiveIntervalMs` then surfaces a 1970 date in
-    // the audit log. Fall back to the newest history record's
-    // `completedAt` so the next-attempt math has a real anchor.
-    const lastRun = resolveLastRunEpochMs(runtime.lastRunTime.get(key), history);
-    const scheduleIntervalMs = normalizeScheduleIntervalMs(schedule.intervalMs);
-    // Durable cross-path success: a manual/owner `controller.runNow` success is
-    // invisible to `history` (only the scheduler's own dispatches land there).
-    // Threading it into the back-off math lets a genuine recent success clear an
-    // otherwise-immortal failure streak so automation resumes — the live wedge.
-    const lastSuccessAtMs = await probeLastSuccessfulRunAt(connectorId, key);
-    const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun, { lastSuccessAtMs });
-
-    // Cross-run source-pressure cooldown. Independent of failure back-off: a
-    // connection that *succeeded* but deferred work under upstream pressure
-    // has no failure streak, so back-off alone would fire on the normal
-    // interval and re-hit the still-hot bucket. The cooldown reads the durable
-    // pending pressure gaps and defers the next automatic dispatch on its own
-    // capped curve. We take whichever governor defers the run further.
-    const pendingPressureGaps = await probeSourcePressureGaps(connectorId, key);
-    // §10-B no-progress escalation is now WIRED (was dead before): resolve the
-    // connector's cooldown profile (never null) and feed the consecutive
-    // no-progress cycle count. A pending pressure gap's recovery attempt_count IS
-    // the per-cycle counter — it increments once per cooldown cycle that fails to
-    // recover the gap, and resets when the gap recovers (the pressure set empties
-    // and the cooldown relaxes), so it equals "consecutive cycles with zero gap
-    // recovery". This threads ADDITIVELY: it only sharpens the health-state
-    // recommendation, never the dispatch/drain decision below.
-    const consecutiveCooldownCycles = maxPressureGapAttemptCount(pendingPressureGaps);
-    const cooldown = computeConnectionSourcePressureCooldown(
-      connectorId,
-      pendingPressureGaps,
-      scheduleIntervalMs,
-      lastRun,
-      { consecutiveCooldownCycles }
-    );
-    const cooldownDefers = isSourcePressureCooldownDeferring(cooldown, now);
-
-    const elapsed = now - lastRun;
-    const intervalElapsed = elapsed >= decision.effectiveIntervalMs;
-    // Forward-walk eligibility: gated by BOTH the failure-backoff interval AND
-    // the source-pressure cooldown. New source-touching work (the forward walk
-    // and its list-phase fetches) must respect both governors.
-    let eligible = intervalElapsed && !cooldownDefers;
-
-    // ─── Recovery-only eligibility (SLVP-ideal §4.3) ────────────────────────
-    // Recovery of NON-source-pressure pending gaps (`run_cap_deferred` /
-    // `retry_exhausted`) is a separate, work-conserving sub-flow. NEITHER
-    // governor has a claim over it:
-    //   - the source-pressure cooldown is reason-discriminated (reads only
-    //     `upstream_pressure`/`rate_limited`), so it must not block non-pressure
-    //     recovery (the live 942-gap head-of-line-blocking stall);
-    //   - the failure-backoff `effectiveIntervalMs` is ALSO not a valid gate
-    //     here. On this live connection a stale failure streak (months-old
-    //     `failed` runs, never cleared because every tick since only `skipped`)
-    //     inflated `effectiveIntervalMs` to 16h, deadlocking the connection:
-    //     the backoff blocks the run, so no successful run ever clears the
-    //     streak. Draining already-deferred non-pressure gaps cannot worsen a
-    //     failure streak or re-pressure a hot bucket, so it must proceed on a
-    //     minimal RECOVERY CADENCE (one base schedule interval), independent of
-    //     both governors. The connector drains recovery-before-forward-walk and
-    //     returns BEFORE the forward walk (riding the same pacer/circuit, so it
-    //     still backs off on 429 and re-defers — not a raw-fetch bypass).
-    // A genuinely `blocked` connection is still excluded below (nothing safe to
-    // recover until the owner re-auths).
-    const recoveryCadenceElapsed = elapsed >= scheduleIntervalMs;
-    let recoveryOnly = false;
-    if (!eligible && recoveryCadenceElapsed) {
-      const nonPressureRecoverable = await probeNonPressureRecoverableCount(connectorId, key);
-      if (nonPressureRecoverable > 0) {
-        eligible = true;
-        recoveryOnly = true;
-      }
-    }
-
+    let nextEligible = eligible;
+    let nextRecoveryOnly = recoveryOnly;
     let skipToEmit: RunRecord | null = null;
     const eventsToEmit: RunRecord[] = [];
 
@@ -543,14 +470,126 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
         // blocked connection is NOT launched even for recovery-only drain
         // (SLVP-ideal §10-C: a credential/terminal block is not a hot bucket;
         // there is nothing safe to recover until the owner re-auths).
-        eligible = false;
-        recoveryOnly = false;
+        nextEligible = false;
+        nextRecoveryOnly = false;
       }
     } else if (!decision.backoffApplied) {
       // Streak broken (success or different class): clear the announcement
       // so the next time back-off engages we emit a fresh skip record.
       runtime.announcedBackoffClass.delete(key);
     }
+
+    return { eligible: nextEligible, eventsToEmit, recoveryOnly: nextRecoveryOnly, skipToEmit };
+  }
+
+  // Pure dispatch-gate: given the current history + lastRun for a
+  // connector, decide whether the next automatic tick should run, skip
+  // silently (already announced), or emit a back-off skip record. Pulled
+  // out so the interval body stays short and so tests can drive it
+  // directly without touching real timers.
+  //
+  // In addition to the always-firing back-off skip record (one per
+  // streak), this gate may emit two transition spine-event markers:
+  //   - `schedule.back_off.started` — once when a fresh streak engages.
+  //   - `schedule.gave_up`          — once when the streak crosses the
+  //                                   `BLOCKED_PROMOTION_THRESHOLD` and
+  //                                   the scheduler stops auto-dispatching.
+  // The auto-dispatch suppression on `blocked` is the one behavioural
+  // change relative to Worker C: manual `runNow` still works (the brief
+  // is explicit about this), but the interval loop will not call
+  // `executeRun` for a connector whose `recommendedHealthState` is
+  // `"blocked"`.
+  async function evaluateBackoffDispatch(
+    schedule: ConnectorSchedule,
+    now: number
+  ): Promise<EvaluateBackoffDispatchResult> {
+    const connectorId = schedule.connectorId;
+    const key = runtimeKey(schedule);
+    const history = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
+    // `scheduler_last_run_times` and `scheduler_run_history` are persisted
+    // through separate writes. If a process is killed between them — or if
+    // an older runtime never wrote `last_run_time` at all — we hydrate
+    // history with failed records but no last-run timestamp. Computing
+    // `nextRunAt = 0 + effectiveIntervalMs` then surfaces a 1970 date in
+    // the audit log. Fall back to the newest history record's
+    // `completedAt` so the next-attempt math has a real anchor.
+    const lastRun = resolveLastRunEpochMs(runtime.lastRunTime.get(key), history);
+    const scheduleIntervalMs = normalizeScheduleIntervalMs(schedule.intervalMs);
+    // Durable cross-path success: a manual/owner `controller.runNow` success is
+    // invisible to `history` (only the scheduler's own dispatches land there).
+    // Threading it into the back-off math lets a genuine recent success clear an
+    // otherwise-immortal failure streak so automation resumes — the live wedge.
+    const lastSuccessAtMs = await probeLastSuccessfulRunAt(connectorId, key);
+    const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun, { lastSuccessAtMs });
+
+    // Cross-run source-pressure cooldown. Independent of failure back-off: a
+    // connection that *succeeded* but deferred work under upstream pressure
+    // has no failure streak, so back-off alone would fire on the normal
+    // interval and re-hit the still-hot bucket. The cooldown reads the durable
+    // pending pressure gaps and defers the next automatic dispatch on its own
+    // capped curve. We take whichever governor defers the run further.
+    const pendingPressureGaps = await probeSourcePressureGaps(connectorId, key);
+    const freshPressureGaps = filterFreshPendingPressureGaps(pendingPressureGaps, now);
+    // §10-B no-progress escalation is now WIRED (was dead before): resolve the
+    // connector's cooldown profile (never null) and feed the consecutive
+    // no-progress cycle count. A pending pressure gap's recovery attempt_count IS
+    // the per-cycle counter — it increments once per cooldown cycle that fails to
+    // recover the gap, and resets when the gap recovers (the pressure set empties
+    // and the cooldown relaxes), so it equals "consecutive cycles with zero gap
+    // recovery". This threads ADDITIVELY: it only sharpens the health-state
+    // recommendation, never the dispatch/drain decision below.
+    const consecutiveCooldownCycles = maxPressureGapAttemptCount(freshPressureGaps);
+    const cooldown = computeConnectionSourcePressureCooldown(
+      connectorId,
+      freshPressureGaps,
+      scheduleIntervalMs,
+      lastRun,
+      { consecutiveCooldownCycles }
+    );
+    const cooldownDefers = isSourcePressureCooldownDeferring(cooldown, now);
+
+    const elapsed = now - lastRun;
+    const intervalElapsed = elapsed >= decision.effectiveIntervalMs;
+    // Forward-walk eligibility: gated by BOTH the failure-backoff interval AND
+    // the source-pressure cooldown. New source-touching work (the forward walk
+    // and its list-phase fetches) must respect both governors.
+    let eligible = intervalElapsed && !cooldownDefers;
+
+    // ─── Recovery-only eligibility (SLVP-ideal §4.3) ────────────────────────
+    // Recovery of NON-source-pressure pending gaps (`run_cap_deferred` /
+    // `retry_exhausted`) is a separate, work-conserving sub-flow. NEITHER
+    // governor has a claim over it:
+    //   - the source-pressure cooldown is reason-discriminated (reads only
+    //     `upstream_pressure`/`rate_limited`), so it must not block non-pressure
+    //     recovery (the live 942-gap head-of-line-blocking stall);
+    //   - the failure-backoff `effectiveIntervalMs` is ALSO not a valid gate
+    //     here. On this live connection a stale failure streak (months-old
+    //     `failed` runs, never cleared because every tick since only `skipped`)
+    //     inflated `effectiveIntervalMs` to 16h, deadlocking the connection:
+    //     the backoff blocks the run, so no successful run ever clears the
+    //     streak. Draining already-deferred non-pressure gaps cannot worsen a
+    //     failure streak or re-pressure a hot bucket, so it must proceed on a
+    //     minimal RECOVERY CADENCE (one base schedule interval), independent of
+    //     both governors. The connector drains recovery-before-forward-walk and
+    //     returns BEFORE the forward walk (riding the same pacer/circuit, so it
+    //     still backs off on 429 and re-defers — not a raw-fetch bypass).
+    // A genuinely `blocked` connection is still excluded below (nothing safe to
+    // recover until the owner re-auths).
+    const recoveryCadenceElapsed = elapsed >= scheduleIntervalMs;
+    let recoveryOnly = false;
+    if (!eligible && recoveryCadenceElapsed) {
+      const nonPressureRecoverable = await probeNonPressureRecoverableCount(connectorId, key);
+      if (nonPressureRecoverable > 0) {
+        eligible = true;
+        recoveryOnly = true;
+      }
+    }
+
+    const backoffAnnouncements = applyBackoffAnnouncements(schedule, key, history, decision, eligible, recoveryOnly);
+    eligible = backoffAnnouncements.eligible;
+    recoveryOnly = backoffAnnouncements.recoveryOnly;
+    let skipToEmit = backoffAnnouncements.skipToEmit;
+    const { eventsToEmit } = backoffAnnouncements;
 
     // Source-pressure cooldown is layered on top of failure back-off. Pending
     // pressure gaps alone do not defer forever; only a future `nextRunAt` does.

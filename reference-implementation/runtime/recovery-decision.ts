@@ -541,6 +541,28 @@ export function partitionPressureEvidence(
 }
 
 /**
+ * Return the original pressure rows that still carry fresh evidence. Callers
+ * use this before invoking the cooldown math so stale rows cannot affect
+ * pending counts, attempt persistence, identity, or next-run timestamps.
+ */
+export function filterFreshPressureRows<T extends RecoveryGapRow>(
+  rows: readonly T[],
+  nowMs: number,
+  evidenceWindowMs: number = DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS
+): T[] {
+  const now = normalizeEpochMs(nowMs);
+  const windowMs = normalizeNonNegativeInteger(evidenceWindowMs, DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS);
+  const threshold = now - windowMs;
+  return (rows ?? []).filter((row) => {
+    if (!classifyRecoveryGap(row).isSourcePressure) {
+      return false;
+    }
+    const observedMs = parseIso(lastPressureAtForGap(row));
+    return observedMs !== null && observedMs >= threshold;
+  });
+}
+
+/**
  * True iff a domain has at least one FRESH pressure observation. This is the
  * predicate the cooldown-arming seam must consult: a domain re-arms only from
  * fresh pressure evidence (spec "Stale pressure classifications do not re-arm
@@ -552,7 +574,7 @@ export function hasFreshPressureEvidence(
   nowMs: number,
   evidenceWindowMs: number = DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS
 ): boolean {
-  return partitionPressureEvidence(rows, nowMs, evidenceWindowMs).fresh.length > 0;
+  return filterFreshPressureRows(rows, nowMs, evidenceWindowMs).length > 0;
 }
 
 // ─── Local helpers (pure) ────────────────────────────────────────────────────

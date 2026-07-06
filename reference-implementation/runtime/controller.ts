@@ -47,7 +47,7 @@ import {
 } from "../server/stores/scheduler-store.ts";
 import { type BrowserSurfaceReadinessProbe, createBrowserSurfaceManager } from "./browser-surface/index.ts";
 import { runConnector } from "./index.js";
-import type { RecoveryAdmissionDenialReason } from "./recovery-decision.ts";
+import { filterFreshPressureRows, type RecoveryAdmissionDenialReason } from "./recovery-decision.ts";
 import type { RequiredAction } from "./rendered-verdict.ts";
 import {
   automaticIneligibilityReason,
@@ -2657,15 +2657,16 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const pendingGapRows = await Promise.resolve(
         detailGapStore.listPendingGapsForConnector(connectorId, { limit: 200 })
       );
-      const pendingPressureGaps: PendingPressureGap[] = pendingGapRows
+      const pendingPressureRows = pendingGapRows
         .filter((row) => (row.connector_instance_id || connectorId) === connectorInstanceId)
-        .filter((row) => typeof row.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(row.reason))
-        .map((row) => ({
-          reason: row.reason as string,
-          attemptCount: typeof row.attempt_count === "number" ? row.attempt_count : null,
-          nextAttemptAfter: typeof row.next_attempt_after === "string" ? row.next_attempt_after : null,
-          lastPressureAt: pressureGapLastObservedAt(row),
-        }));
+        .filter((row) => typeof row.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(row.reason));
+      const freshPressureRows = filterFreshPressureRows(pendingPressureRows, Date.now());
+      const pendingPressureGaps: PendingPressureGap[] = freshPressureRows.map((row) => ({
+        reason: row.reason as string,
+        attemptCount: typeof row.attempt_count === "number" ? row.attempt_count : null,
+        nextAttemptAfter: typeof row.next_attempt_after === "string" ? row.next_attempt_after : null,
+        lastPressureAt: pressureGapLastObservedAt(row),
+      }));
 
       if (pendingPressureGaps.length > 0) {
         // Use base interval 0 when no schedule is known — the cooldown still

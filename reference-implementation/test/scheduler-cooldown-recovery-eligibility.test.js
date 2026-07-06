@@ -63,7 +63,12 @@ function anchorStore(anchors) {
 }
 
 function pressureGap(overrides = {}) {
-  const { reason = 'upstream_pressure', attemptCount = 0, nextAttemptAfter = null, lastPressureAt = null } = overrides;
+  const {
+    reason = 'upstream_pressure',
+    attemptCount = 0,
+    nextAttemptAfter = null,
+    lastPressureAt = new Date().toISOString(),
+  } = overrides;
   return { reason, attemptCount, nextAttemptAfter, lastPressureAt };
 }
 
@@ -259,6 +264,44 @@ test('a source-pressure cooldown still suppresses the dispatch when there is NO 
     );
     assert.equal(policySkips(completedRuns).length, 0, 'no recovery launch, so no policy skip');
     assert.equal(readAttempts(attemptsPath).length, 0, 'connector never spawned while cooling off');
+  } finally {
+    scheduler.stop();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('stale source-pressure rows do not re-arm the scheduler cooldown', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-cooldown-stale-pressure-'));
+  const { attemptsPath, connectorPath } = writeUnusedConnector(tmpDir, 'stale-pressure.mjs');
+  const completedRuns = [];
+  const connectorId = 'chatgpt-stale-pressure-connector';
+  const stalePressureAt = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+
+  const scheduler = createScheduler({
+    connectors: [{
+      connectorId,
+      connectorPath,
+      manifest: POLICY_BLOCKED_MANIFEST,
+      intervalMs: 50,
+      maxRetries: 0,
+      ownerToken: 'owner-token',
+    }],
+    rsUrl: 'http://localhost.invalid',
+    schedulerStore: anchorStore([{ connectorId, lastRunTimeMs: Date.now() - 200 }]),
+    onInteraction: cancelledInteractionResponse,
+    onRunComplete: (record) => completedRuns.push(record),
+    getSourcePressureGaps: () => [pressureGap({ attemptCount: 8, lastPressureAt: stalePressureAt })],
+    getNonPressureRecoverableCount: () => 0,
+  });
+
+  try {
+    scheduler.start();
+    await waitFor(() => policySkips(completedRuns).length >= 1, 5000);
+    scheduler.stop();
+
+    assert.equal(cooldownSkips(completedRuns).length, 0, 'stale pressure must not emit a cooldown skip');
+    assert.ok(policySkips(completedRuns).length >= 1, 'stale pressure lets ordinary eligibility reach the policy gate');
+    assert.equal(readAttempts(attemptsPath).length, 0, 'policy-blocked manifest never spawns');
   } finally {
     scheduler.stop();
     rmSync(tmpDir, { recursive: true, force: true });
