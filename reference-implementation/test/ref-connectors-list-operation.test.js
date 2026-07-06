@@ -528,6 +528,50 @@ test('connector summary connection health ignores informational and recoverable 
   assert.equal(snapshot.axes.coverage, 'complete');
 });
 
+test('connector summary connection health treats owner-cancelled runs as neutral', () => {
+  const successfulRun = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T11:55:00.000Z',
+    first_at: '2026-05-19T11:54:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T11:55:00.000Z',
+    run_id: 'run_success_before_cancel',
+    started_at: '2026-05-19T11:54:00.000Z',
+    status: 'succeeded',
+  };
+  const cancelledRun = {
+    event_count: 4,
+    failure_reason: 'owner_cancel_forced',
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [
+      {
+        kind: 'checkpoint_commit',
+        reason: 'not_committed',
+        recovery_hint: { action: 'retry_by_runtime', retryable: true },
+        severity: 'actionable',
+      },
+    ],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_owner_cancelled',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'cancelled',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T11:55:00.000Z' },
+    lastRun: cancelledRun,
+    lastSuccessfulRun: successfulRun,
+    schedule: null,
+  });
+  const collection = snapshot.conditions.find((condition) => condition.type === 'CollectionSucceeded');
+
+  assert.equal(collection?.status, 'unknown');
+  assert.equal(snapshot.axes.coverage, 'unknown');
+  assert.notEqual(snapshot.forward_disposition, 'terminal');
+  assert.equal(snapshot.reason_code, null);
+});
+
 test('connector summary connection health degrades successful runs with pending durable detail gaps', () => {
   const run = {
     event_count: 3,

@@ -1795,6 +1795,16 @@ function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): string |
   return null;
 }
 
+const OWNER_CANCEL_TERMINAL_REASONS: ReadonlySet<string> = new Set(["owner_cancel_forced", "owner_cancelled"]);
+
+function isOwnerCancelledRun(run: ConnectorRunSummary | null): boolean {
+  return run?.status === "cancelled" && OWNER_CANCEL_TERMINAL_REASONS.has(run.failure_reason ?? "");
+}
+
+function healthClassifyingRun(run: ConnectorRunSummary | null): ConnectorRunSummary | null {
+  return isOwnerCancelledRun(run) ? null : run;
+}
+
 // Generic terminal reasons that carry NO specific cause — a connector that
 // flattens any terminal failure into one of these hides the real signal. When
 // the run reason is one of these, a credential-bearing known-gap should win
@@ -3468,6 +3478,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   const schedule = asScheduleRecord(input.schedule);
   const scheduleEvidence = projectConnectionHealthScheduleEvidence(schedule, input.lastRun);
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
+  const latestRunForHealth = healthClassifyingRun(input.lastRun);
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
@@ -3476,7 +3487,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     nowIso,
   });
   const coverage = buildCoverageEvidence(
-    input.lastRun,
+    latestRunForHealth,
     pendingDetailGaps,
     input.manifestStreams ?? [],
     input.localCoverage ?? null
@@ -3529,9 +3540,9 @@ export function projectConnectorSummaryConnectionHealth(input: {
     refresh: buildRefreshEvidence(input.refreshPolicy),
     remoteSurface: input.remoteSurface ?? null,
     run: {
-      hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(input.lastRun),
+      hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(latestRunForHealth),
       lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleEvidence.lastSuccessfulAt,
-      latestStatus: mapRunStatus(input.lastRun?.status) ?? scheduleEvidence.backoffEvidence.schedulerFailureStatus,
+      latestStatus: mapRunStatus(latestRunForHealth?.status) ?? scheduleEvidence.backoffEvidence.schedulerFailureStatus,
       reasonCode:
         // §10-C: a credential/auth signal buried in a known-gap takes priority
         // over a GENERIC top-level `failure_reason` (e.g. ChatGPT's terminal 401
@@ -3539,9 +3550,9 @@ export function projectConnectorSummaryConnectionHealth(input: {
         // produces a silent failure with no reconnect prompt). A SPECIFIC
         // failure_reason still wins — this only fires when the run reason is the
         // generic `connector_reported_failed` placeholder.
-        credentialReasonFromGenericFailure(input.lastRun) ??
-        input.lastRun?.failure_reason ??
-        firstDegradingKnownGapReason(input.lastRun) ??
+        credentialReasonFromGenericFailure(latestRunForHealth) ??
+        latestRunForHealth?.failure_reason ??
+        firstDegradingKnownGapReason(latestRunForHealth) ??
         firstPendingDetailGapReason(pendingDetailGaps) ??
         scheduleEvidence.lastErrorCode,
     },
