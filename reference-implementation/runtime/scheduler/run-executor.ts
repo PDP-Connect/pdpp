@@ -35,6 +35,7 @@ import type {
   InteractionHandler,
   IsManagedConnectorHandler,
   NeedsHumanHandler,
+  RegisterRunCancellationHandler,
   ResolveStaticSecretRunEnv,
   RunCompleteHandler,
   RunConnectorResult,
@@ -72,6 +73,7 @@ export interface RunExecutorDeps {
   persistLastRunTime: (connectorId: string, connectorInstanceId: string, lastRunTimeMs: number) => void;
   recordAndNotify: (record: RunRecord) => RunRecord;
   referenceBaseUrl: string | null;
+  registerRunCancellation: RegisterRunCancellationHandler | null | undefined;
   resolveStaticSecretRunEnv: ResolveStaticSecretRunEnv | null;
   rsUrl: string;
   runManagedConnectorViaController: RunManagedConnectorViaController | null;
@@ -123,6 +125,13 @@ function describeFailedRunResult(result: RunConnectorResult): RunConnectorError 
     connector_error: result.connector_error || null,
     known_gaps: result.known_gaps || null,
   };
+}
+
+function schedulerStatusFromRuntimeResult(status: string | null | undefined): "cancelled" | "failed" | "succeeded" {
+  if (status === "succeeded" || status === "cancelled") {
+    return status;
+  }
+  return "failed";
 }
 
 function backoffDelayMs(attempt: number): number {
@@ -264,6 +273,7 @@ async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorR
 }
 
 interface AttemptWatchdog {
+  cancel(): void;
   clear(): void;
   markProgress(): void;
   readonly signal: AbortSignal;
@@ -304,6 +314,11 @@ function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
   }
 
   return {
+    cancel() {
+      if (!cancellation.signal.aborted) {
+        cancellation.abort("owner_cancelled");
+      }
+    },
     clear() {
       if (timer) {
         clearTimeout(timer);
@@ -336,17 +351,22 @@ function createActiveRunLease(input: {
   readonly attempt: number;
   readonly connectorId: string;
   readonly connectorInstanceId: string;
+  readonly registerRunCancellation: RegisterRunCancellationHandler | null | undefined;
   readonly startedAt: string;
   readonly store: ActiveRunStore | null;
+  readonly cancelRun: () => void;
 }): {
   clear(): Promise<void>;
   register(run: Parameters<NonNullable<RunConnectorCall["onStarted"]>>[0]): void;
 } {
   let activeRunId: string | null = null;
   let activeRunRegistration: Promise<void> | null = null;
+  let unregisterCancellation: (() => void) | null = null;
 
   return {
     async clear() {
+      unregisterCancellation?.();
+      unregisterCancellation = null;
       if (!(activeRunId && input.store)) {
         return;
       }
@@ -367,6 +387,13 @@ function createActiveRunLease(input: {
         return;
       }
       activeRunId = startedRun.runId;
+      unregisterCancellation =
+        input.registerRunCancellation?.({
+          cancel: input.cancelRun,
+          connectorId: input.connectorId,
+          connectorInstanceId: input.connectorInstanceId,
+          runId: startedRun.runId,
+        }) ?? null;
       activeRunRegistration = Promise.resolve(
         input.store.upsertActiveRun({
           connector_instance_id: input.connectorInstanceId,
@@ -404,7 +431,7 @@ function buildSuccessOrFailureRecord({
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
-    status: result.status === "succeeded" ? "succeeded" : "failed",
+    status: schedulerStatusFromRuntimeResult(result.status),
     recordsEmitted: result.records_emitted || 0,
     reportedRecordsEmitted: result.reported_records_emitted ?? null,
     checkpointSummary: result.checkpoint_summary || null,
@@ -634,6 +661,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     persistLastRunTime,
     recordAndNotify,
     referenceBaseUrl,
+    registerRunCancellation,
     resolveStaticSecretRunEnv,
     rsUrl,
     runtime,
@@ -720,14 +748,16 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     const { connectorId, connectorInstanceId = connectorId, maxRetries = 2 } = schedule;
     const startedAt = nowIso();
     const originalOnStarted = call.onStarted;
+    const watchdog = createAttemptWatchdog(maxRunWallClockMs);
     const activeRunLease = createActiveRunLease({
       attempt,
+      cancelRun: () => watchdog.cancel(),
       connectorId,
       connectorInstanceId,
+      registerRunCancellation,
       startedAt,
       store: activeRunStoreFrom(schedulerStore),
     });
-    const watchdog = createAttemptWatchdog(maxRunWallClockMs);
 
     const callWithActiveLease: RunConnectorCall = {
       ...call,
@@ -939,7 +969,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     startedAt: string,
     attempt: number
   ): RunRecord {
-    const status: "succeeded" | "failed" = result.status === "succeeded" ? "succeeded" : "failed";
+    const status = schedulerStatusFromRuntimeResult(result.status);
     return {
       connectorId,
       connectorInstanceId: connectorInstanceId ?? null,

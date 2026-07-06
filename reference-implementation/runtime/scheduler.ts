@@ -39,7 +39,7 @@ import type { PendingPressureGap } from "./scheduler-source-pressure-cooldown.ts
  */
 export type TerminalGrantFailureReason = "grant_consumed" | "grant_expired" | "grant_invalid" | "grant_revoked";
 
-export type RunStatus = "failed" | "skipped" | "succeeded";
+export type RunStatus = "cancelled" | "failed" | "skipped" | "succeeded";
 
 export type GrantAccessMode = "continuous" | "single_use";
 
@@ -135,6 +135,15 @@ export type GetStateHandler = (connectorId: string, connectorInstanceId?: string
 export type SetStateHandler = (connectorId: string, state: unknown, connectorInstanceId?: string) => Promise<void>;
 export type NeedsHumanHandler = (connectorId: string, connectorInstanceId?: string) => void;
 export type IsNeedsHumanHandler = (connectorId: string, connectorInstanceId?: string) => boolean;
+
+export interface RunCancellationRegistration {
+  readonly cancel: () => void;
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly runId: string;
+}
+
+export type RegisterRunCancellationHandler = (registration: RunCancellationRegistration) => (() => void) | undefined;
 
 /**
  * Probe for durable unresolved owner/operator attention keyed to a
@@ -358,6 +367,7 @@ export interface SchedulerOptions {
   onRunComplete?: RunCompleteHandler;
   readinessChecker?: SchedulerReadinessChecker;
   referenceBaseUrl?: string | null;
+  registerRunCancellation?: RegisterRunCancellationHandler;
   resolveStaticSecretRunEnv?: ResolveStaticSecretRunEnv | null;
   rsUrl?: string;
   /**
@@ -621,6 +631,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     getLastSuccessfulRunAt = async () => null,
     isManagedConnector = () => false,
     maxRunWallClockMs,
+    registerRunCancellation,
     resolveStaticSecretRunEnv = null,
     runManagedConnectorViaController = null,
   } = opts;
@@ -698,6 +709,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     markNeedsHuman,
     maxRunWallClockMs: schedulerMaxRunWallClockMs,
     onInteraction,
+    registerRunCancellation,
     onRunComplete,
     persistLastRunTime,
     recordAndNotify,

@@ -77,7 +77,7 @@ export interface SchedulerRunHistoryRecord {
   readonly runId?: string | null;
   readonly source: Record<string, unknown>;
   readonly startedAt: string;
-  readonly status: "failed" | "skipped" | "succeeded";
+  readonly status: "cancelled" | "failed" | "skipped" | "succeeded";
   readonly terminalReason?: string | null;
   readonly traceId?: string | null;
 }

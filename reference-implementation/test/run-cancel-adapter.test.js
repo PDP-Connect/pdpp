@@ -14,6 +14,8 @@
  *     before the handler);
  *   - no controller → 404 not_found;
  *   - controller cancelRun → cancel_requested → 202 run_cancel_ack;
+ *   - optional route-level cancelRun fallback can convert controller
+ *     no_active_run into cancel_requested;
  *   - controller cancelRun → no_active_run → 404 no_active_run;
  *   - controller cancelRun → already_terminal → 409 run_already_terminal;
  *   - URL-encoded runId is decoded before forwarding to the controller;
@@ -151,6 +153,27 @@ test('run-cancel adapter: no_active_run → 404 no_active_run', async () => {
   assert.equal(res._status, 404);
   assert.equal(res._body.error.code, 'no_active_run');
   assert.equal(res._body.error.param, 'run_id');
+});
+
+test('run-cancel adapter: route-level fallback can cancel a scheduler-owned run', async () => {
+  const calls = [];
+  const app = makeApp();
+  mountRefRunCancel(
+    app,
+    makeCtx({
+      cancelRun: async (runId) => {
+        calls.push(runId);
+        return { status: 'cancel_requested', run_id: runId };
+      },
+      controller: { cancelRun: async (runId) => ({ status: 'no_active_run', run_id: runId }) },
+    }),
+  );
+  const res = makeRes();
+  await app.routes[ROUTE]({ params: { runId: 'run_scheduler_direct' } }, res);
+  assert.equal(res._status, 202);
+  assert.equal(res._body.object, 'run_cancel_ack');
+  assert.equal(res._body.run_id, 'run_scheduler_direct');
+  assert.deepEqual(calls, ['run_scheduler_direct']);
 });
 
 test('run-cancel adapter: already_terminal → 409 run_already_terminal', async () => {

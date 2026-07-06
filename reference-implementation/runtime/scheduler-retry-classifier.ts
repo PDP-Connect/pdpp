@@ -6,6 +6,8 @@ type TerminalNonGrantReason =
   | "authentication_error"
   | "connector_protocol_violation"
   | "connector_reported_cancelled"
+  | "owner_cancel_forced"
+  | "owner_cancelled"
   | "run_timed_out"
   | "permission_error";
 
@@ -76,6 +78,8 @@ const NON_RETRYABLE_TERMINAL_REASONS: ReadonlySet<TerminalReason> = new Set<Term
   "grant_expired",
   "grant_invalid",
   "grant_revoked",
+  "owner_cancel_forced",
+  "owner_cancelled",
   "permission_error",
 ]);
 

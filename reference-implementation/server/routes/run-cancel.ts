@@ -42,6 +42,7 @@ export interface RunCancelController {
 }
 
 export interface MountRefRunCancelContext {
+  cancelRun?(runId: string): Promise<RunCancelResult> | RunCancelResult;
   readonly controller: RunCancelController | null | undefined;
   handleError(res: unknown, err: unknown): void;
   pdppError: PdppErrorFn;
@@ -55,7 +56,7 @@ export function mountRefRunCancel(app: AppLike, ctx: MountRefRunCancelContext): 
         return ctx.pdppError(res, 404, "not_found", "Controller is not configured on this server");
       }
       const runId = decodeURIComponent(req.params.runId as string);
-      const result = await ctx.controller.cancelRun(runId);
+      const result = await (ctx.cancelRun ? ctx.cancelRun(runId) : ctx.controller.cancelRun(runId));
       if (result.status === "no_active_run") {
         return ctx.pdppError(res, 404, "no_active_run", `No active run with id: ${runId}`, "run_id");
       }

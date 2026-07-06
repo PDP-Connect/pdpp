@@ -1099,9 +1099,9 @@ interface ScheduleHistoryFacts {
   /** Error/skip code for the most recent terminal row, when that row was not successful. */
   readonly latestErrorCode: string | null;
   readonly latestFinishedAt: string | null;
-  /** Most recent run that actually started (status in {succeeded, failed}). */
+  /** Most recent run that actually started (status in {succeeded, failed, cancelled}). */
   readonly latestStartedAt: string | null;
-  readonly latestStatus: "failed" | "skipped" | "succeeded" | null;
+  readonly latestStatus: "cancelled" | "failed" | "skipped" | "succeeded" | null;
   /** Most recent `succeeded` record's `completedAt`. */
   readonly latestSuccessfulAt: string | null;
   /**
@@ -1122,7 +1122,7 @@ interface MutableScheduleHistoryFacts {
   latestErrorCode: string | null;
   latestFinishedAt: string | null;
   latestStartedAt: string | null;
-  latestStatus: "failed" | "skipped" | "succeeded" | null;
+  latestStatus: "cancelled" | "failed" | "skipped" | "succeeded" | null;
   latestSuccessfulAt: string | null;
   pendingPressureGaps: PendingPressureGap[];
   recentRuns: SchedulerRunHistoryRecord[];
@@ -1295,15 +1295,15 @@ function applyHistoryRowToScheduleFacts(entry: MutableScheduleHistoryFacts, row:
   if (!entry.latestFinishedAt || row.completedAt > entry.latestFinishedAt) {
     entry.latestFinishedAt = row.completedAt;
   }
-  // Only `succeeded`/`failed` records correspond to a run that actually
-  // started. `skipped` records carry a `startedAt` for bookkeeping but the
+  // Only `succeeded`/`failed`/`cancelled` records correspond to a run that
+  // actually started. `skipped` records carry a `startedAt` for bookkeeping but the
   // connector child never spawned, so we hold `last_started_at` back. This
   // is what lets the dashboard and the doctor probe distinguish "ran but is
   // currently idle" from "currently being skipped (not_ready / needs_human /
   // disabled grant)".
   if (
     entry.latestStartedAt === null &&
-    (row.status === "succeeded" || row.status === "failed") &&
+    (row.status === "succeeded" || row.status === "failed" || row.status === "cancelled") &&
     typeof row.startedAt === "string"
   ) {
     entry.latestStartedAt = row.startedAt;

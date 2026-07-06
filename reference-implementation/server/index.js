@@ -3484,6 +3484,13 @@ function buildAsApp(opts = {}) {
   // grants, or connections. Mutation-only; not a public PDPP API.
   // See openspec/changes/add-owner-run-cancellation-control.
   mountRefRunCancel(app, {
+    cancelRun: async (runId) => {
+      const controllerResult = await controller.cancelRun(runId);
+      if (controllerResult.status !== 'no_active_run') {
+        return controllerResult;
+      }
+      return (await opts.cancelScheduledRun?.(runId)) ?? controllerResult;
+    },
     controller,
     handleError,
     pdppError,
@@ -5125,6 +5132,7 @@ export async function startServer(opts = {}) {
     isNekoProxyTargetApproved: opts.isNekoProxyTargetApproved,
     browserSurfaceLeaseManager: browserSurfaceControllerOptions.browserSurfaceLeaseManager,
     runTargetRegistry,
+    cancelScheduledRun: (runId) => schedulerManager?.cancelRun?.(runId) ?? null,
     onScheduleMutation: () => schedulerManager?.refresh(),
     logger,
     providerAuthExchanger: opts.providerAuthExchanger ?? null,
@@ -5397,9 +5405,28 @@ function createReferenceSchedulerManager({
   webPushConfig = resolveWebPushConfig(),
   webPushSubscriptionStore = createWebPushSubscriptionStore(),
 } = {}) {
+  const directRunCancellations = new Map();
   let scheduler = null;
   let stopped = false;
   let refreshChain = Promise.resolve();
+
+  function registerRunCancellation(registration) {
+    directRunCancellations.set(registration.runId, registration);
+    return () => {
+      if (directRunCancellations.get(registration.runId) === registration) {
+        directRunCancellations.delete(registration.runId);
+      }
+    };
+  }
+
+  function cancelRun(runId) {
+    const registration = directRunCancellations.get(runId);
+    if (!registration) {
+      return { status: 'no_active_run', run_id: runId };
+    }
+    registration.cancel();
+    return { status: 'cancel_requested', run_id: runId };
+  }
 
   // The SAME connection-scoped setup-material resolver the controller uses for
   // manual runs, bound to the scheduler's owner subject. Scheduled and manual
@@ -5483,6 +5510,7 @@ function createReferenceSchedulerManager({
       rsUrl: runtimeContext.rsUrl,
       referenceBaseUrl: runtimeContext.referenceBaseUrl,
       schedulerStore,
+      registerRunCancellation,
       resolveStaticSecretRunEnv: resolveScheduledConnectionScopedRunEnv,
       // Route managed-connector scheduled runs through controller.runNow so
       // they acquire the neko browser-surface lease (warm persistent profile,
@@ -5816,7 +5844,7 @@ function createReferenceSchedulerManager({
     scheduler = null;
   }
 
-  return { refresh, start: refresh, stop };
+  return { cancelRun, refresh, start: refresh, stop };
 }
 
 // ─── CLI entrypoint ──────────────────────────────────────────────────────────

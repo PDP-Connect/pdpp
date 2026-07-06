@@ -1583,7 +1583,7 @@ rl.on('line', (line) => {
     scheduler.stop();
 
     const [record] = completedRuns;
-    assert.equal(record.status, 'failed');
+    assert.equal(record.status, 'cancelled');
     assert.equal(record.failureReason, null);
     assert.equal(record.terminalReason, 'connector_reported_cancelled');
     assert.deepEqual(record.connectorError, {

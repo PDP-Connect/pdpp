@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
-import { listSpineCorrelations } from "../lib/spine.ts";
+import { listSpineCorrelations, listSpineEventsPage } from "../lib/spine.ts";
 import { closeDb, initDb } from "../server/db.js";
 import { createSqliteSchedulerStore } from "../server/stores/scheduler-store.ts";
 import { createScheduler } from "../runtime/scheduler.ts";
@@ -147,4 +147,96 @@ test("direct scheduled run persists active liveness until terminal", async (t) =
     const record = history.find((candidate) => candidate.runId === active.run_id);
     assert.equal(record?.status, "succeeded");
   }, "active-run row was not cleared");
+});
+
+test("direct scheduled run cancellation registers by run id and terminals as cancelled", async (t) => {
+  const dbPath = join(mkdtempSync(join(tmpdir(), "pdpp-scheduler-cancel-db-")), "pdpp.sqlite");
+  const connector = writePausedConnector();
+  initDb(dbPath);
+  const schedulerStore = createSqliteSchedulerStore();
+  const completedRuns = [];
+  const unregistered = [];
+  let scheduler = null;
+  let resolveRegistration;
+  const registrationReady = new Promise((resolve) => {
+    resolveRegistration = resolve;
+  });
+
+  t.after(() => {
+    scheduler?.stop();
+    closeDb();
+    rmSync(connector.dir, { recursive: true, force: true });
+  });
+
+  scheduler = createScheduler({
+    connectors: [
+      {
+        connectorId: CONNECTOR_ID,
+        connectorInstanceId: CONNECTOR_INSTANCE_ID,
+        connectorPath: connector.connectorPath,
+        intervalMs: 60_000,
+        manifest: MANIFEST,
+        ownerToken: "owner-token",
+      },
+    ],
+    getState: async () => null,
+    onInteraction: () => ({ type: "INTERACTION_RESPONSE", status: "cancelled" }),
+    onRunComplete: (record) => completedRuns.push(record),
+    registerRunCancellation: (registration) => {
+      resolveRegistration(registration);
+      return () => {
+        unregistered.push(registration.runId);
+      };
+    },
+    schedulerStore,
+    setState: async () => {},
+  });
+
+  scheduler.start();
+
+  await eventually(() => {
+    assert.equal(existsSync(connector.readyPath), true, "connector reached START and paused");
+  }, "connector did not start");
+
+  const registration = await eventually(async () => {
+    const value = await Promise.race([
+      registrationReady,
+      delay(25).then(() => null),
+    ]);
+    assert.ok(value, "cancellation registration should exist");
+    return value;
+  }, "cancellation registration was not created");
+
+  assert.equal(registration.connectorId, CONNECTOR_ID);
+  assert.equal(registration.connectorInstanceId, CONNECTOR_INSTANCE_ID);
+  assert.match(registration.runId, /^run_/);
+
+  registration.cancel();
+
+  await eventually(async () => {
+    assert.equal(completedRuns.length, 1, "cancelled run should complete once");
+    const [record] = completedRuns;
+    assert.equal(record.runId, registration.runId);
+    assert.equal(record.status, "cancelled");
+    assert.equal(record.terminalReason, "owner_cancelled");
+
+    const rows = await schedulerStore.listActiveRuns();
+    assert.equal(
+      rows.some((candidate) => candidate.run_id === registration.runId),
+      false,
+      "active-run row should be cleared after cancellation"
+    );
+    const history = await schedulerStore.listRunHistory(10);
+    const stored = history.find((candidate) => candidate.runId === registration.runId);
+    assert.equal(stored?.status, "cancelled");
+    assert.equal(stored?.terminalReason, "owner_cancelled");
+  }, "direct scheduled run did not cancel cleanly");
+
+  assert.deepEqual(unregistered, [registration.runId]);
+
+  const page = listSpineEventsPage("run", registration.runId, { limit: 50 });
+  const types = page.events.map((event) => event.event_type);
+  assert.ok(types.includes("run.cancel_requested"));
+  assert.ok(types.includes("run.cancelled"));
+  assert.ok(!types.includes("run.failed"));
 });
