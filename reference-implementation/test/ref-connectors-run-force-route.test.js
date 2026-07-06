@@ -6,10 +6,17 @@ import { mountRefConnectionRun, mountRefConnectorRun } from '../server/routes/re
 
 function buildHarness(mount) {
   const calls = {
+    emitSpineEvent: [],
     runNow: [],
     resolveOwnerConnectorNamespace: [],
   };
   const ctx = {
+    canonicalConnectorKey: (value) => value,
+    createTraceContext: () => ({ request_id: 'req_test', scenario_id: 'scn_test', trace_id: 'trc_test' }),
+    emitSpineEvent(event) {
+      calls.emitSpineEvent.push(event);
+    },
+    ensureRequestId: () => 'req_test',
     requireOwnerSession: (_req, _res, next) => (typeof next === 'function' ? next() : undefined),
     getOwnerSubjectId: () => 'owner_local',
     resolveOwnerConnectorNamespace(_req, connectorId, options = {}) {
@@ -23,6 +30,7 @@ function buildHarness(mount) {
       calls.runNow.push({ connectorId, options });
       return { run_id: 'run_force_test' };
     },
+    setReferenceTraceId: () => {},
     handleError(_res, err) {
       throw err;
     },
@@ -42,10 +50,17 @@ function buildHarness(mount) {
     async invoke({ body = null, params = {} } = {}) {
       const res = {
         body: null,
+        headers: new Map(),
         statusCode: null,
+        getHeader(name) {
+          return this.headers.get(name);
+        },
         json(value) {
           this.body = value;
           return value;
+        },
+        setHeader(name, value) {
+          this.headers.set(name, value);
         },
         status(code) {
           this.statusCode = code;
@@ -153,6 +168,9 @@ test('POST /_ref/connections/:id/run forwards explicit force override to the con
       options: { connectorInstanceId: 'cin_chatgpt', force: true },
     },
   ]);
+  assert.equal(harness.calls.emitSpineEvent[0]?.event_type, 'owner_agent.connection.run');
+  assert.equal(harness.calls.emitSpineEvent[0]?.data?.forced, true);
+  assert.equal(harness.calls.emitSpineEvent[0]?.data?.run_id, 'run_force_test');
 });
 
 test('POST /_ref/connectors/:id/run forwards explicit force override to the controller', async () => {
@@ -170,6 +188,9 @@ test('POST /_ref/connectors/:id/run forwards explicit force override to the cont
       options: { connectorInstanceId: 'cin_chatgpt', force: true },
     },
   ]);
+  assert.equal(harness.calls.emitSpineEvent[0]?.event_type, 'owner_agent.connection.run');
+  assert.equal(harness.calls.emitSpineEvent[0]?.data?.forced, true);
+  assert.equal(harness.calls.emitSpineEvent[0]?.data?.connection_id, 'cin_chatgpt');
 });
 
 test('POST /_ref/connections/:id/run does not force unless the body value is exactly true', async () => {
@@ -181,6 +202,7 @@ test('POST /_ref/connections/:id/run does not force unless the body value is exa
   });
 
   assert.equal(harness.calls.runNow[0]?.options.force, false);
+  assert.equal(harness.calls.emitSpineEvent[0]?.data?.forced, false);
 });
 
 test('POST /_ref/connections/:id/run forwards scoped stream resources', async () => {

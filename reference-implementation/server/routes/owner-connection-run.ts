@@ -167,6 +167,7 @@ async function emitRunAudit(
     connectionId?: string | null;
     connectorKey?: string | null;
     error?: unknown;
+    force?: boolean;
     outcome: "succeeded" | "failed";
     ownerSubjectId?: string | null;
     runId?: string | null;
@@ -203,6 +204,7 @@ async function emitRunAudit(
       selector: args.selector,
       operation: "run_now",
       outcome: args.outcome,
+      forced: args.force === true,
       run_id: args.runId ?? null,
       target_resource: "connection_run",
       ...(args.error
@@ -310,6 +312,9 @@ function buildRunHandler(
 ): RouteHandler {
   return async (req: RouteRequest, res: RouteResponse) => {
     const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
+    // `force` must be explicitly `true` in the request body; any other value
+    // (absent, null, false, non-boolean) is treated as an ordinary safe run.
+    const force = (req.body as Record<string, unknown> | null | undefined)?.force === true;
     let connectionId: string | null = null;
     let connectorKey: string | null = null;
     try {
@@ -344,9 +349,6 @@ function buildRunHandler(
       connectionId = namespace.connectorInstanceId;
       connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
 
-      // `force` must be explicitly `true` in the request body; any other value
-      // (absent, null, false, non-boolean) is treated as an ordinary safe run.
-      const force = (req.body as Record<string, unknown> | null | undefined)?.force === true;
       const resources = readRunResources(req);
       const started = await ctx.runNow(namespace.connectorId, {
         connectorInstanceId: namespace.connectorInstanceId,
@@ -365,6 +367,7 @@ function buildRunHandler(
       await emitRunAudit(ctx, req, res, {
         connectionId,
         connectorKey,
+        force,
         outcome: "succeeded",
         ownerSubjectId,
         runId: readRunId(started),
@@ -376,6 +379,7 @@ function buildRunHandler(
         connectionId,
         connectorKey,
         error: err,
+        force,
         outcome: "failed",
         ownerSubjectId,
         selector,

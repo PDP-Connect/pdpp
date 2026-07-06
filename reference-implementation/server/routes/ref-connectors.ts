@@ -602,6 +602,14 @@ function readExplicitRunForce(req: RouteRequest): boolean {
   );
 }
 
+function readRunId(started: unknown): string | null {
+  if (!started || typeof started !== "object") {
+    return null;
+  }
+  const runId = (started as { run_id?: unknown }).run_id;
+  return typeof runId === "string" ? runId : null;
+}
+
 function isSafeResourceStreamName(stream: string): boolean {
   return stream.length > 0 && stream !== "__proto__" && stream !== "constructor" && stream !== "prototype";
 }
@@ -655,12 +663,18 @@ async function executeRunNow(
   ctx: MountRefConnectorsContext,
   req: RouteRequest,
   res: RouteResponse,
-  namespace: ConnectorNamespace
+  namespace: ConnectorNamespace,
+  audit: {
+    connectorKey: string | null;
+    connectionId: string | null;
+    force: boolean;
+    ownerSubjectId: string | null;
+  }
 ): Promise<void> {
   const resources = readRunResources(req);
   const started = await ctx.runNow(namespace.connectorId, {
     connectorInstanceId: namespace.connectorInstanceId,
-    force: readExplicitRunForce(req),
+    force: audit.force,
     ...(resources ? { resources } : {}),
   });
   ctx.invalidateConnectorSummariesCache?.();
@@ -669,6 +683,16 @@ async function executeRunNow(
   await ctx.markConnectorSummaryEvidenceDirty?.({
     connectorInstanceId: namespace.connectorInstanceId,
     reason: "ref run-now started a run for this connection",
+  });
+  await emitConnectionControlAudit(ctx, res, {
+    connectionId: audit.connectionId,
+    connectorKey: audit.connectorKey,
+    eventType: "owner_agent.connection.run",
+    force: audit.force,
+    operation: "run_now",
+    outcome: "succeeded",
+    ownerSubjectId: audit.ownerSubjectId,
+    runId: readRunId(started),
   });
   res.status(202).json(started);
 }
@@ -679,11 +703,32 @@ export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContex
     { contract: "refRunConnector" },
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
+      const ownerSubjectId = ctx.getOwnerSubjectId(req);
+      const force = readExplicitRunForce(req);
+      let connectionId: string | null = null;
+      let connectorKey: string | null = null;
       try {
         const connectorId = decodeURIComponent(req.params.connectorId as string);
         const namespace = await resolveRefConnectorNamespace(ctx, req, connectorId);
-        await executeRunNow(ctx, req, res, namespace);
+        connectionId = namespace.connectorInstanceId;
+        connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
+        await executeRunNow(ctx, req, res, namespace, {
+          connectionId,
+          connectorKey,
+          force,
+          ownerSubjectId,
+        });
       } catch (err) {
+        await emitConnectionControlAudit(ctx, res, {
+          connectionId,
+          connectorKey,
+          error: err,
+          eventType: "owner_agent.connection.run",
+          force,
+          operation: "run_now",
+          outcome: "failed",
+          ownerSubjectId,
+        });
         ctx.handleError(res, err);
       }
     }
@@ -696,13 +741,35 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
     { contract: "refRunConnection" },
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
+      const ownerSubjectId = ctx.getOwnerSubjectId(req);
+      const force = readExplicitRunForce(req);
+      let connectionId: string | null = null;
+      let connectorKey: string | null = null;
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
+        connectionId = connectorInstanceId;
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId, {
           allowStatuses: ["active", "draft"],
         });
-        await executeRunNow(ctx, req, res, namespace);
+        connectionId = namespace.connectorInstanceId;
+        connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
+        await executeRunNow(ctx, req, res, namespace, {
+          connectionId,
+          connectorKey,
+          force,
+          ownerSubjectId,
+        });
       } catch (err) {
+        await emitConnectionControlAudit(ctx, res, {
+          connectionId,
+          connectorKey,
+          error: err,
+          eventType: "owner_agent.connection.run",
+          force,
+          operation: "run_now",
+          outcome: "failed",
+          ownerSubjectId,
+        });
         ctx.handleError(res, err);
       }
     }
@@ -987,10 +1054,16 @@ async function emitConnectionControlAudit(
     connectorKey?: string | null;
     deletionSummary?: ConnectionDeleteSummary | null;
     error?: unknown;
-    eventType: "owner_agent.connection.revoke" | "owner_agent.connection.delete" | "owner_agent.connection.reactivate";
-    operation: "revoke" | "delete" | "reactivate";
+    eventType:
+      | "owner_agent.connection.run"
+      | "owner_agent.connection.revoke"
+      | "owner_agent.connection.delete"
+      | "owner_agent.connection.reactivate";
+    force?: boolean;
+    operation: "run_now" | "revoke" | "delete" | "reactivate";
     outcome: "succeeded" | "failed";
     ownerSubjectId?: string | null;
+    runId?: string | null;
   }
 ): Promise<void> {
   const trace = buildConnectionControlAuditTrace(ctx, res);
@@ -1014,7 +1087,13 @@ async function emitConnectionControlAudit(
       selector: "connection_id",
       operation: args.operation,
       outcome: args.outcome,
-      target_resource: "connection",
+      ...(args.operation === "run_now"
+        ? {
+            forced: args.force === true,
+            run_id: args.runId ?? null,
+          }
+        : {}),
+      target_resource: args.operation === "run_now" ? "connection_run" : "connection",
       ...(args.deletionSummary
         ? {
             deletion_summary: {

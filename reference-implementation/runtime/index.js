@@ -16,7 +16,7 @@ import { redactStderrTail } from './stderr-redact.ts';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
 import { classifyRecoveryError, maybeQuarantineGap, maybeTerminateGap, resolveTerminalGapPolicy } from '../server/stores/terminal-gap-classifier.js';
 import { DEFAULT_QUARANTINE_POLICY } from './recovery-quarantine.ts';
-import { classifyRecoveryReason } from './recovery-decision.ts';
+import { classifyRecoveryGap } from './recovery-decision.ts';
 import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.ts';
 import { createAttentionWriter } from './attention-writer.ts';
 import { canonicalConnectorKey } from '../server/connector-key.js';
@@ -3071,7 +3071,13 @@ export async function runConnector(opts) {
           }
 
           {
-            const redeferClass = classifyRecoveryReason(msg.reason || null);
+            const redeferClass = classifyRecoveryGap({
+              connector_id: connectorId,
+              connector_instance_id: normalizedConnectorInstanceId,
+              stream: msg.stream || null,
+              reason: msg.reason || null,
+              last_error: msg.last_error ?? storedGap.last_error ?? null,
+            }).recoveryClass;
             const quarantineEligibleClass =
               redeferClass !== 'run_cap_deferred'
               && redeferClass !== 'provider_pressure'

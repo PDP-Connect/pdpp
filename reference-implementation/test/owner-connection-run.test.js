@@ -266,7 +266,32 @@ test('owner-agent bearer starts an instance-scoped connection run (202) and audi
     assert.equal(audit.data?.selector, 'connection_id');
     assert.equal(audit.data?.connection_id, 'cin_spotify_personal');
     assert.equal(audit.data?.connector_key, connectorKey);
+    assert.equal(audit.data?.forced, false);
     assert.equal(audit.data?.run_id, run.body.run_id, 'audit records the run handle id');
+  });
+});
+
+test('owner-agent connection force run audits the forced admission path', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_force',
+      connectorId: connectorKey,
+      displayName: 'Spotify force path',
+      sourceBindingKey: 'spotify-force',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const run = await postRun(rsUrl, ownerToken, '/v1/owner/connections/cin_spotify_force/run', { force: true });
+    assert.equal(run.status, 202);
+
+    const audit = findRunAuditEvent(run.resp);
+    assert.equal(audit.status, 'succeeded');
+    assert.equal(audit.data?.connection_id, 'cin_spotify_force');
+    assert.equal(audit.data?.operation, 'run_now');
+    assert.equal(audit.data?.forced, true);
+    assert.equal(audit.data?.run_id, run.body.run_id);
   });
 });
 

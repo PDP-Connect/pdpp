@@ -1053,6 +1053,128 @@ test('re-deferred pressure gap remains pending with attempt_count > 0 after runt
   assert.equal(reDeferred.gap_id, seeded.gap_id, 'same gap identity persists across re-deferral');
 }));
 
+test('runtime does not quarantine Amazon planned run-cap re-deferrals carried as retry_exhausted + run_cap_deferred class', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const orderId = '111-2222222-3333333';
+  const detailLocator = { kind: 'amazon.order_detail', order_id: orderId, order_date: '2026-01-05' };
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'amazon',
+    grantId: 'grant_1',
+    stream: 'order_items',
+    parentStream: 'orders',
+    recordKey: orderId,
+    detailLocator,
+    reason: 'retry_exhausted',
+    lastError: { class: 'run_cap_deferred' },
+  });
+
+  for (let i = 0; i < 7; i++) {
+    await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: `prior_run_${i}` });
+    await store.resetServedInProgressGaps([seeded.gap_id]);
+  }
+
+  const { connectorPath, cleanup } = createConnector([
+    {
+      type: 'DETAIL_GAP',
+      stream: 'order_items',
+      parent_stream: 'orders',
+      record_key: orderId,
+      detail_locator: detailLocator,
+      reason: 'retry_exhausted',
+      retryable: true,
+      reference_only: true,
+      last_error: { class: 'run_cap_deferred' },
+    },
+    { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+  ]);
+
+  try {
+    const result = await runConnector({
+      connectorPath,
+      connectorId: 'amazon',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'order_items' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+    assert.equal(result.status, 'succeeded');
+  } finally {
+    cleanup();
+  }
+
+  const pending = await store.listPendingGaps({ connectorId: 'amazon', grantId: 'grant_1', streams: ['order_items'] });
+  assert.equal(await store.countGapsByStatusForConnector('amazon', { status: 'terminal' }), 0);
+  assert.equal(pending.length, 1, 'planned cap remains queued for the next eligible recovery envelope');
+  assert.equal(pending[0].gap_id, seeded.gap_id);
+  assert.equal(pending[0].attempt_count, 8, 'the served attempt is counted without turning planned cap into poison');
+  assert.equal(pending[0].reason, 'retry_exhausted');
+  assert.equal(pending[0].last_error.class, 'run_cap_deferred');
+}));
+
+test('runtime quarantines Amazon-shaped repeated no-progress re-deferrals at the per-item threshold', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const orderId = '111-2222222-3333334';
+  const detailLocator = { kind: 'amazon.order_detail', order_id: orderId, order_date: '2026-01-05' };
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'amazon',
+    grantId: 'grant_1',
+    stream: 'order_items',
+    parentStream: 'orders',
+    recordKey: orderId,
+    detailLocator,
+    reason: 'temporary_unavailable',
+    lastError: { class: 'transient_no_progress' },
+  });
+
+  for (let i = 0; i < 7; i++) {
+    await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: `prior_run_${i}` });
+    await store.resetServedInProgressGaps([seeded.gap_id]);
+  }
+
+  const { connectorPath, cleanup } = createConnector([
+    {
+      type: 'DETAIL_GAP',
+      stream: 'order_items',
+      parent_stream: 'orders',
+      record_key: orderId,
+      detail_locator: detailLocator,
+      reason: 'temporary_unavailable',
+      retryable: true,
+      reference_only: true,
+      last_error: { class: 'transient_no_progress' },
+    },
+    { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+  ]);
+
+  try {
+    const result = await runConnector({
+      connectorPath,
+      connectorId: 'amazon',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'order_items' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+    assert.equal(result.status, 'succeeded');
+  } finally {
+    cleanup();
+  }
+
+  const pending = await store.listPendingGaps({ connectorId: 'amazon', grantId: 'grant_1', streams: ['order_items'] });
+  const terminal = await store.getGapById(seeded.gap_id);
+  assert.equal(pending.length, 0, 'poison item no longer consumes the fillable-pending recovery budget');
+  assert.equal(await store.countGapsByStatusForConnector('amazon', { status: 'terminal' }), 1);
+  assert.equal(terminal.status, 'terminal');
+  assert.equal(terminal.reason, 'quarantined');
+  assert.equal(terminal.last_error.class, 'quarantined');
+  assert.equal(terminal.last_error.failure_class, 'transient_no_progress');
+  assert.equal(terminal.last_error.attempt_count, 8);
+}));
+
 // ─── Durable lease acceptance tests ──────────────────────────────────────────
 //
 // These tests prove the lease fix: gaps marked in_progress when served are

@@ -39,6 +39,14 @@ import {
   synthesizeConnectorVerdict,
   type ManifestStreamLike as VerdictManifestStreamLike,
 } from "../runtime/connector-verdict-input.ts";
+import {
+  deriveRecoveryStall,
+  RECOVERY_STALL_CADENCE_MS,
+  type RecoveryAdmissionDiagnostics,
+  type RecoveryGapRow,
+  type RecoveryStallObservation,
+  summarizeRecoveryAdmissionDiagnostics,
+} from "../runtime/recovery-decision.ts";
 import type { RenderedVerdict } from "../runtime/rendered-verdict.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import { pickMostUrgentAttention } from "./attention-urgency.ts";
@@ -410,6 +418,7 @@ interface ConnectorDetailGapStoreLike {
     connectorId: string;
     connectorInstanceId?: string;
     limit?: number;
+    now?: string;
   }): Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
   listPendingGapsForConnector?: (
     connectorId: string,
@@ -3759,6 +3768,18 @@ export interface OwnerConnectionDiagnosticsHealth {
   readonly state: ConnectionHealthSnapshot["state"];
 }
 
+// Owner-only recovery diagnostics derived from durable detail-gap rows. This is
+// a bounded diagnostic summary, not record data: locators, payloads, URLs, and
+// credentials never leave the gap store. `read_limit` is surfaced so counts from
+// a bounded read are not presented as exact when the read hits the cap;
+// `unreadable` distinguishes "could not read the gap store" from "no backlog".
+export interface OwnerConnectionDiagnosticsRecovery {
+  readonly admission: RecoveryAdmissionDiagnostics;
+  readonly read_limit: number | null;
+  readonly stall: RecoveryStallObservation;
+  readonly unreadable: boolean;
+}
+
 export interface OwnerConnectionDiagnostics {
   readonly connection_id: string;
   readonly connector_id: string;
@@ -3770,8 +3791,74 @@ export interface OwnerConnectionDiagnostics {
   readonly last_run: OwnerConnectionDiagnosticsRun | null;
   readonly last_successful_run: OwnerConnectionDiagnosticsRun | null;
   readonly object: "owner_connection_diagnostics";
+  readonly recovery: OwnerConnectionDiagnosticsRecovery;
   readonly rendered_verdict: RenderedVerdict;
   readonly schedule: { readonly enabled: boolean; readonly interval_seconds: number | null } | null;
+}
+
+// Map a bounded pending-gap summary onto the pure `RecoveryGapRow` the
+// recovery-decision helpers read. The connector id is injected from the read
+// scope (the summary projection omits it) so `resolveRecoveryAdmission` can
+// always derive a work domain; every other field is durable non-secret
+// class/timing/attempt metadata.
+function pendingGapToRecoveryRow(gap: PendingDetailGapSummary, connectorId: string): RecoveryGapRow {
+  return {
+    connector_id: connectorId,
+    connector_instance_id: typeof gap.connector_instance_id === "string" ? gap.connector_instance_id : null,
+    reason: typeof gap.reason === "string" ? gap.reason : null,
+    status: typeof gap.status === "string" ? gap.status : null,
+    attempt_count: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
+    last_attempt_at: typeof gap.last_attempt_at === "string" ? gap.last_attempt_at : null,
+    next_attempt_after: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
+    updated_at: typeof gap.updated_at === "string" ? gap.updated_at : null,
+    stream: typeof gap.stream === "string" ? gap.stream : null,
+  };
+}
+
+// Bound applied to the cooldown-inclusive pending read below. A hit on this
+// bound marks the read as a floor, consistent with the other bounded gap reads.
+const RECOVERY_DIAGNOSTICS_READ_LIMIT = 100;
+
+// Build the owner-only recovery-admission diagnostics for one connection.
+//
+// This reads pending gaps regardless of their `next_attempt_after` eligibility
+// floor. An ordinary "eligible now" read would hide a whole backlog that is
+// cooling down, so diagnostics could not answer "waiting until <time>".
+// Observe-only: it computes evidence and never admits work or mutates a row.
+async function buildOwnerConnectionDiagnosticsRecovery(
+  connectorId: string,
+  connectorInstanceId: string,
+  nowMs: number
+): Promise<OwnerConnectionDiagnosticsRecovery> {
+  try {
+    const store = getDefaultConnectorDetailGapStore() as ConnectorDetailGapStoreLike;
+    const pending = await Promise.resolve(
+      store.listPendingGaps({
+        connectorId,
+        connectorInstanceId,
+        limit: RECOVERY_DIAGNOSTICS_READ_LIMIT,
+        now: "9999-12-31T23:59:59.999Z",
+      })
+    );
+    const rows: RecoveryGapRow[] = pending.map((gap) => pendingGapToRecoveryRow(gap, connectorId));
+    return {
+      admission: summarizeRecoveryAdmissionDiagnostics(rows, { nowMs }),
+      stall: deriveRecoveryStall(rows, { nowMs, cadenceWindowMs: RECOVERY_STALL_CADENCE_MS }),
+      read_limit: RECOVERY_DIAGNOSTICS_READ_LIMIT,
+      unreadable: false,
+    };
+  } catch {
+    return emptyRecoveryDiagnostics(true);
+  }
+}
+
+function emptyRecoveryDiagnostics(unreadable: boolean): OwnerConnectionDiagnosticsRecovery {
+  return {
+    admission: { candidates: 0, admitted: 0, deferred: 0 },
+    stall: { eligibleCandidates: 0, lastAttemptAt: null, stalled: false },
+    read_limit: RECOVERY_DIAGNOSTICS_READ_LIMIT,
+    unreadable,
+  };
 }
 
 // Projects a `ConnectorRunSummary` to the diagnostics-facing run shape. Only the
@@ -3817,6 +3904,14 @@ export async function getOwnerConnectionDiagnostics(
     return null;
   }
   const health = summary.connection_health;
+  // Recovery-admission diagnostics for exactly this connection. Scoped to
+  // `summary.connection_id` (the resolved connector_instance_id) so "why did
+  // recovery not run" is answered for this binding, never a sibling backlog.
+  const recovery = await buildOwnerConnectionDiagnosticsRecovery(
+    summary.connector_id,
+    summary.connection_id,
+    Date.now()
+  );
   return {
     object: "owner_connection_diagnostics",
     connection_id: summary.connection_id,
@@ -3833,6 +3928,7 @@ export async function getOwnerConnectionDiagnostics(
     },
     last_run: projectDiagnosticsRun(summary.last_run),
     last_successful_run: projectDiagnosticsRun(summary.last_successful_run),
+    recovery,
     rendered_verdict: summary.rendered_verdict,
     // Last successful ingest time for push-mode (local-device) connections.
     // `null` for scheduler-managed connections with no device heartbeat, which

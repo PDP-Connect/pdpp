@@ -986,6 +986,40 @@ test("recoverPendingOrderItemDetailGaps: a sign-in redirect during recovery stop
   );
 });
 
+test("recoverPendingOrderItemDetailGaps: parse-missing recovery re-defers as transient no-progress", async () => {
+  const { deps, emitted, protocolMessages } = makeRecordingDeps();
+  const flags = makeRunFlags();
+  const orderId = "111-1234567-8901299";
+  const result = await recoverPendingOrderItemDetailGaps(
+    makeDetailPageStub(NO_DETAIL_HTML),
+    {
+      capture: null,
+      detailGaps: [
+        {
+          detail_locator: { kind: "amazon.order_detail", order_date: "2026-01-05", order_id: orderId },
+          gap_id: "gap_parse_missing_1",
+          record_key: orderId,
+          reference_only: true,
+          status: "pending",
+          stream: "order_items",
+        },
+      ],
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+    },
+    flags
+  );
+
+  assert.deepEqual(result, { recovered: 0, stoppedWithPending: true });
+  assert.equal(emitted.length, 0, "no order_items are emitted from a failed detail fixture");
+  const gaps = findDetailGaps(protocolMessages);
+  assert.deepEqual(
+    gaps.map((gap) => [gap.record_key, gap.reason, gap.last_error?.class]),
+    [[orderId, "temporary_unavailable", "transient_no_progress"]],
+    "Amazon fixture no-progress stays connector-neutral so the runtime can escalate repeated failure"
+  );
+});
+
 test("recoverPendingOrderItemDetailGaps: hydrates future Amazon order-item gaps and marks recovered", async () => {
   const { deps, emitted, protocolMessages } = makeRecordingDeps();
   const flags = makeRunFlags();
