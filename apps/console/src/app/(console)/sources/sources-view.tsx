@@ -859,9 +859,7 @@ function StreamManifestRow({ stream }: { stream: SourceInstanceView["streams"][n
           </span>
         ) : null}
         {collection && collection.pendingDetailGaps > 0 ? (
-          <span className="rr-s-stream-subfact is-warning">
-            {collection.pendingDetailGaps.toLocaleString()} pending gap{collection.pendingDetailGaps === 1 ? "" : "s"}
-          </span>
+          <span className="rr-s-stream-subfact is-warning">{collection.pendingDetailGapsLabel ?? "pending gaps"}</span>
         ) : null}
         {collection?.skipLabel ? <span className="rr-s-stream-subfact">{collection.skipLabel}</span> : null}
       </TableCell>

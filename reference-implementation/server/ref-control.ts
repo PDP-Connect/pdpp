@@ -2084,6 +2084,11 @@ export interface CollectionReportEntry {
   readonly forward_disposition: ForwardDisposition;
   /** Count of pending recoverable detail gaps for this stream (locators stay in the detail-gap backlog). */
   readonly pending_detail_gaps: number;
+  /**
+   * True when `pending_detail_gaps` was derived from a bounded durable read that
+   * hit its limit. In that case the count is a floor, not an exact total.
+   */
+  readonly pending_detail_gaps_is_floor: boolean;
   /** The `SKIP_RESULT` fact for this stream, or `null`. */
   readonly skipped: RuntimeCollectionFactSkip | null;
   readonly stream: string;
@@ -2221,6 +2226,7 @@ export function buildCollectionReport(input: {
    * rollup when a pending gap exists but no terminal run fact block is available.
    */
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
+  readonly pendingDetailGapsReadLimit?: number | null;
   readonly freshness: FreshnessAxis;
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
@@ -2231,7 +2237,15 @@ export function buildCollectionReport(input: {
       factByStream.set(fact.stream, fact);
     }
   }
-  const pendingGapCountByStream = pendingDetailGapCountsByStream(input.pendingDetailGaps ?? []);
+  const pendingDetailGaps = input.pendingDetailGaps ?? [];
+  const pendingGapCountByStream = pendingDetailGapCountsByStream(pendingDetailGaps);
+  const pendingReadLimit =
+    typeof input.pendingDetailGapsReadLimit === "number" &&
+    Number.isFinite(input.pendingDetailGapsReadLimit) &&
+    input.pendingDetailGapsReadLimit > 0
+      ? Math.floor(input.pendingDetailGapsReadLimit)
+      : null;
+  const pendingGapReadHitLimit = pendingReadLimit !== null && pendingDetailGaps.length >= pendingReadLimit;
   const manifestByStream = new Map<string, ManifestStream>();
   for (const stream of input.manifestStreams) {
     if (stream && typeof stream.name === "string" && stream.name && !manifestByStream.has(stream.name)) {
@@ -2261,6 +2275,7 @@ export function buildCollectionReport(input: {
       ...baseFact,
       pending_detail_gaps: Math.max(baseFact.pending_detail_gaps, pendingGapCountByStream.get(stream) ?? 0),
     };
+    const pendingDetailGapsIsFloor = fact.pending_detail_gaps > 0 && pendingGapReadHitLimit;
     const manifestStream = manifestByStream.get(stream);
     const coverageCondition = deriveStreamCoverageCondition(fact, manifestStream);
     const forwardDisposition = deriveForwardDisposition({
@@ -2277,6 +2292,7 @@ export function buildCollectionReport(input: {
       covered: fact.covered === null ? "unknown" : fact.covered,
       checkpoint: fact.checkpoint ?? "unknown",
       pending_detail_gaps: fact.pending_detail_gaps,
+      pending_detail_gaps_is_floor: pendingDetailGapsIsFloor,
       skipped: fact.skipped,
       coverage_condition: coverageCondition,
       forward_disposition: forwardDisposition,
@@ -2300,12 +2316,14 @@ function projectCollectionReport(input: {
   readonly connectionHealth: ConnectionHealthSnapshot;
   readonly manifestStreams: readonly ManifestStream[];
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
+  readonly pendingDetailGapsReadLimit?: number | null;
   readonly refreshPolicy: unknown;
 }): CollectionReportEntry[] {
   return buildCollectionReport({
     collectionFacts: input.lastRun?.collection_facts ?? null,
     manifestStreams: input.manifestStreams,
     pendingDetailGaps: input.pendingDetailGaps ?? [],
+    pendingDetailGapsReadLimit: input.pendingDetailGapsReadLimit ?? null,
     freshness: input.connectionHealth.axes.freshness,
     attentionOpen: input.connectionHealth.axes.attention !== "none",
     refresh: buildRefreshEvidence(input.refreshPolicy),
@@ -4022,6 +4040,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     connectionHealth,
     manifestStreams: manifest.streams ?? [],
     pendingDetailGaps: detailGaps.gaps,
+    pendingDetailGapsReadLimit: detailGaps.readLimit,
     refreshPolicy,
   });
   const recoveredCount = detailGaps.recovered;
@@ -4495,6 +4514,7 @@ export async function getConnectorDetail(
     connectionHealth,
     manifestStreams: manifest.streams ?? [],
     pendingDetailGaps: detailGaps.gaps,
+    pendingDetailGapsReadLimit: detailGaps.readLimit,
     refreshPolicy,
   });
   const detailRecoveredCount = detailGaps.recovered;

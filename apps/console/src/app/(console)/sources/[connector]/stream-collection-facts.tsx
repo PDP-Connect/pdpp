@@ -28,7 +28,8 @@ export function StreamCollectionFactsLine({
   if (!facts) {
     return null;
   }
-  const { coverage, disposition, countsLabel, countsTitle, pendingDetailGaps, skipLabel } = facts;
+  const { coverage, disposition, countsLabel, countsTitle, pendingDetailGaps, pendingDetailGapsLabel, skipLabel } =
+    facts;
   return (
     <div
       className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1"
@@ -81,9 +82,13 @@ export function StreamCollectionFactsLine({
         <span
           className="pdpp-caption text-[color:var(--warning)] tabular-nums"
           data-testid="stream-pending-gaps"
-          title="Recoverable detail gaps the next ordinary run is expected to fill. Records already collected stay valid."
+          title={
+            facts.pendingDetailGapsIsFloor
+              ? "Recoverable detail gaps from a bounded read; there may be more beyond this count. Records already collected stay valid."
+              : "Recoverable detail gaps the next ordinary run is expected to fill. Records already collected stay valid."
+          }
         >
-          {pendingDetailGaps.toLocaleString()} pending gap{pendingDetailGaps === 1 ? "" : "s"}
+          {pendingDetailGapsLabel ?? "pending gaps"}
         </span>
       ) : null}
 

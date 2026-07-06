@@ -48,6 +48,10 @@ export interface StreamCollectionFacts {
   disposition: ForwardDispositionSummary | null;
   /** Count of pending recoverable detail gaps; `0` renders nothing. */
   pendingDetailGaps: number;
+  /** True when the pending-gap count is a bounded-read floor, not an exact total. */
+  pendingDetailGapsIsFloor: boolean;
+  /** Owner-facing pending-gap label, or `null` when there are no pending gaps. */
+  pendingDetailGapsLabel: string | null;
   /**
    * One-line skip note when the runtime reported a `SKIP_RESULT` for this
    * stream, e.g. "skipped · rate_limited". `null` when the stream was not
@@ -62,6 +66,15 @@ export interface StreamCollectionFacts {
    * beats warning (resuming / gaps) beats success (complete) beats neutral.
    */
   tone: EvidenceTone;
+}
+
+export function formatPendingDetailGapsLabel(count: number, isFloor = false): string | null {
+  if (!Number.isFinite(count) || count <= 0) {
+    return null;
+  }
+  const safeCount = Math.floor(count);
+  const noun = safeCount === 1 ? "pending gap" : "pending gaps";
+  return `${isFloor ? "at least " : ""}${safeCount.toLocaleString()} ${noun}`;
 }
 
 /**
@@ -215,6 +228,7 @@ export function formatStreamCollectionFacts(entry: RefCollectionReportEntry): St
     entry.pending_detail_gaps > 0
       ? entry.pending_detail_gaps
       : 0;
+  const pendingDetailGapsIsFloor = pendingDetailGaps > 0 && entry.pending_detail_gaps_is_floor === true;
 
   // The strongest tone across the signals that carry one. The coverage chip is
   // the primary verdict; a pending detail gap or a skip can only raise concern,
@@ -237,6 +251,8 @@ export function formatStreamCollectionFacts(entry: RefCollectionReportEntry): St
     countsLabel: counts.label,
     countsTitle: counts.title,
     pendingDetailGaps,
+    pendingDetailGapsIsFloor,
+    pendingDetailGapsLabel: formatPendingDetailGapsLabel(pendingDetailGaps, pendingDetailGapsIsFloor),
     skipLabel,
     tone,
   };

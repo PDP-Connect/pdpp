@@ -248,16 +248,34 @@ test("pending detail gaps ride through and raise the row tone to at least warnin
     entry({ coverage_condition: "complete", forward_disposition: "complete", pending_detail_gaps: 3 })
   );
   assert.equal(facts.pendingDetailGaps, 3);
+  assert.equal(facts.pendingDetailGapsIsFloor, false);
+  assert.equal(facts.pendingDetailGapsLabel, "3 pending gaps");
   // A pending gap can only raise concern: a complete coverage chip plus a
   // pending gap is at least warning, never plain success.
   assert.equal(facts.tone, "warning");
 });
 
+test("bounded pending detail-gap counts render as floors", () => {
+  const facts = formatStreamCollectionFacts(
+    entry({
+      coverage_condition: "retryable_gap",
+      forward_disposition: "resumable",
+      pending_detail_gaps: 100,
+      pending_detail_gaps_is_floor: true,
+    })
+  );
+  assert.equal(facts.pendingDetailGaps, 100);
+  assert.equal(facts.pendingDetailGapsIsFloor, true);
+  assert.equal(facts.pendingDetailGapsLabel, "at least 100 pending gaps");
+});
+
 test("a negative / non-finite pending gap count is clamped to zero (never a negative cue)", () => {
   const negative = formatStreamCollectionFacts(entry({ pending_detail_gaps: -1 }));
   assert.equal(negative.pendingDetailGaps, 0);
+  assert.equal(negative.pendingDetailGapsLabel, null);
   const nan = formatStreamCollectionFacts(entry({ pending_detail_gaps: Number.NaN }));
   assert.equal(nan.pendingDetailGaps, 0);
+  assert.equal(nan.pendingDetailGapsLabel, null);
 });
 
 test("a skip surfaces a humanized one-line note and never lowers the tone below warning", () => {

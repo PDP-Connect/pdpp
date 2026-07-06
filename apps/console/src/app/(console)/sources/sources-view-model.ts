@@ -94,6 +94,8 @@ export interface SourceStreamCollectionFacts {
   dispositionLabel: string | null;
   dispositionTitle: string | null;
   pendingDetailGaps: number;
+  pendingDetailGapsIsFloor: boolean;
+  pendingDetailGapsLabel: string | null;
   skipLabel: string | null;
   tone: "danger" | "neutral" | "success" | "warning";
 }
@@ -514,6 +516,8 @@ export function toSourceInstanceView(
             dispositionLabel: facts.disposition ? `Next run: ${facts.disposition.label}` : null,
             dispositionTitle: facts.disposition?.title ?? null,
             pendingDetailGaps: facts.pendingDetailGaps,
+            pendingDetailGapsIsFloor: facts.pendingDetailGapsIsFloor,
+            pendingDetailGapsLabel: facts.pendingDetailGapsLabel,
             skipLabel: facts.skipLabel,
             tone: facts.tone,
           }

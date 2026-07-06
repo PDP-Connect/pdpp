@@ -519,6 +519,8 @@ export interface RefCollectionReportEntry {
   forward_disposition: RefForwardDisposition;
   /** Count of pending recoverable detail gaps for this stream. */
   pending_detail_gaps: number;
+  /** True when the pending-gap count is a floor from a bounded read. */
+  pending_detail_gaps_is_floor?: boolean;
   /** The runtime `SKIP_RESULT` fact for this stream, or `null`. */
   skipped: { reason: string; recovery_action?: string } | null;
   stream: string;

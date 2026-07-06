@@ -245,6 +245,24 @@ test('current pending detail gap raises an old zero-gap fact', () => {
 
   assert.equal(entry.coverage_condition, 'retryable_gap');
   assert.equal(entry.pending_detail_gaps, 1);
+  assert.equal(entry.pending_detail_gaps_is_floor, false);
+});
+
+test('bounded pending detail-gap reads mark stream counts as floors when the limit is hit', () => {
+  const entries = report(null, {
+    manifestStreams: [{ name: 'transactions' }],
+    pendingDetailGaps: [
+      { reason: 'temporary_unavailable', status: 'pending', stream: 'transactions' },
+      { reason: 'temporary_unavailable', status: 'pending', stream: 'transactions' },
+    ],
+    pendingDetailGapsReadLimit: 2,
+    freshness: 'unknown',
+  });
+  const entry = entryFor(entries, 'transactions');
+
+  assert.equal(entry.coverage_condition, 'retryable_gap');
+  assert.equal(entry.pending_detail_gaps, 2);
+  assert.equal(entry.pending_detail_gaps_is_floor, true);
 });
 
 test('detail gap takes precedence over a satisfied considered denominator', () => {

@@ -667,9 +667,7 @@ function latestStreamRunEvidence(
     latestRun ? `run ${latestRun.run_id}` : null,
     `coverage ${facts.coverage.value}`,
     facts.disposition ? `next run: ${facts.disposition.label}` : null,
-    facts.pendingDetailGaps > 0
-      ? `${facts.pendingDetailGaps.toLocaleString()} pending gap${facts.pendingDetailGaps === 1 ? "" : "s"}`
-      : null,
+    facts.pendingDetailGapsLabel,
     facts.skipLabel,
   ].filter((part): part is string => part !== null);
   return {

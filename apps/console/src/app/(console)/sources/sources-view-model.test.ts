@@ -606,6 +606,7 @@ test("toSourceInstanceView surfaces server-owned collection report facts per str
           coverage_condition: "partial",
           forward_disposition: "resumable",
           pending_detail_gaps: 2,
+          pending_detail_gaps_is_floor: true,
           skipped: null,
           stream: "messages",
         },
@@ -620,6 +621,8 @@ test("toSourceInstanceView surfaces server-owned collection report facts per str
   assert.equal(messages.collection.coverageLabel, "Coverage · partial");
   assert.equal(messages.collection.dispositionLabel, "Next run: resumes collection");
   assert.equal(messages.collection.pendingDetailGaps, 2);
+  assert.equal(messages.collection.pendingDetailGapsIsFloor, true);
+  assert.equal(messages.collection.pendingDetailGapsLabel, "at least 2 pending gaps");
   assert.equal(messages.collection.tone, "warning");
   assert.equal(threads?.collection, null, "streams without collection report facts stay explicitly unavailable");
 });
