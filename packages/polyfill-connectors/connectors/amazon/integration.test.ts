@@ -49,6 +49,7 @@ import {
   reasonForDetailFailure,
   recordDetailOutcome,
   recoverPendingOrderItemDetailGaps,
+  recoverPendingOrderItemDetailGapsBeforeForwardRun,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageDiagnostics, ListPageOrder, OrderDetail } from "./types.ts";
@@ -988,6 +989,129 @@ test("recoverPendingOrderItemDetailGaps: under-specified legacy gaps are left pe
   assert.deepEqual(result, { recovered: 0, stoppedWithPending: true });
   assert.equal(emitted.length, 0, "missing order_date cannot emit valid order_items");
   assert.equal(protocolMessages.length, 0, "legacy gap remains durable instead of being falsely recovered");
+});
+
+test("recoverPendingOrderItemDetailGapsBeforeForwardRun: no order_items scope skips recovery and permits forward walk", async () => {
+  const { deps } = makeRecordingDeps();
+  const result = await recoverPendingOrderItemDetailGapsBeforeForwardRun(
+    NEVER_CALLED_PAGE,
+    {
+      capture: null,
+      detailGaps: [
+        {
+          detail_locator: {
+            kind: "amazon.order_detail",
+            order_date: "2026-01-05",
+            order_id: "111-1234567-8901234",
+          },
+          gap_id: "gap_recover_1",
+          record_key: "111-1234567-8901234",
+          reference_only: true,
+          status: "pending",
+          stream: "order_items",
+        },
+      ],
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+    },
+    makeRunFlags(),
+    { wantsItems: false }
+  );
+
+  assert.deepEqual(result, { recovered: 0, stoppedWithPending: false, suppressForward: false });
+});
+
+test("recoverPendingOrderItemDetailGapsBeforeForwardRun: zero-budget legacy stop still permits forward walk", async () => {
+  const { deps } = makeRecordingDeps();
+  const result = await recoverPendingOrderItemDetailGapsBeforeForwardRun(
+    NEVER_CALLED_PAGE,
+    {
+      capture: null,
+      detailGaps: [
+        {
+          detail_locator: {
+            kind: "amazon.order_detail",
+            order_id: "legacy-gap-no-date",
+          },
+          gap_id: "gap_legacy",
+          record_key: "legacy-gap-no-date",
+          reference_only: true,
+          status: "pending",
+          stream: "order_items",
+        },
+      ],
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+    },
+    makeRunFlags(),
+    { wantsItems: true }
+  );
+
+  assert.deepEqual(result, { recovered: 0, stoppedWithPending: true, suppressForward: false });
+});
+
+test("recoverPendingOrderItemDetailGapsBeforeForwardRun: detail-budget exhaustion suppresses forward walk", async () => {
+  const { deps } = makeRecordingDeps();
+  const orderId = "111-1234567-8901234";
+  const result = await recoverPendingOrderItemDetailGapsBeforeForwardRun(
+    NEVER_CALLED_PAGE,
+    {
+      capture: null,
+      detailGaps: [
+        {
+          detail_locator: {
+            kind: "amazon.order_detail",
+            order_date: "2026-01-05",
+            order_id: orderId,
+          },
+          gap_id: "gap_deferred",
+          record_key: orderId,
+          reference_only: true,
+          status: "pending",
+          stream: "order_items",
+        },
+      ],
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+    },
+    { ...makeRunFlags(), detailAttempts: 200 },
+    { wantsItems: true }
+  );
+
+  assert.deepEqual(result, { recovered: 0, stoppedWithPending: true, suppressForward: true });
+});
+
+test("recoverPendingOrderItemDetailGapsBeforeForwardRun: recovery-only suppresses forward walk after clean drain", async () => {
+  const { deps, emitted, protocolMessages } = makeRecordingDeps();
+  const orderId = "111-1234567-8901234";
+  const result = await recoverPendingOrderItemDetailGapsBeforeForwardRun(
+    makeDetailPageStub(makeDetailHtml()),
+    {
+      capture: null,
+      detailGaps: [
+        {
+          detail_locator: {
+            kind: "amazon.order_detail",
+            order_date: "2026-01-05",
+            order_id: orderId,
+          },
+          gap_id: "gap_recover_1",
+          record_key: orderId,
+          reference_only: true,
+          status: "pending",
+          stream: "order_items",
+        },
+      ],
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+    },
+    makeRunFlags(),
+    { recoveryOnly: true, wantsItems: true }
+  );
+
+  assert.deepEqual(result, { recovered: 1, stoppedWithPending: false, suppressForward: true });
+  assert.ok(emitted.some((record) => record.stream === "order_items" && record.data.order_id === orderId));
+  assert.ok(protocolMessages.some((message) => message.type === "DETAIL_GAP_RECOVERED"));
 });
 
 test("processListOrder: skipDetail records an optional_skip, never touching the page", async () => {

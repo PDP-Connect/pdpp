@@ -572,6 +572,25 @@ export async function recoverPendingOrderItemDetailGaps(
   return { recovered, stoppedWithPending: false };
 }
 
+export async function recoverPendingOrderItemDetailGapsBeforeForwardRun(
+  page: Page,
+  deps: AmazonDetailRecoveryDeps,
+  flags: RunFlags,
+  options: { recoveryOnly?: boolean; wantsItems: boolean }
+): Promise<{ recovered: number; stoppedWithPending: boolean; suppressForward: boolean }> {
+  if (!options.wantsItems) {
+    return { recovered: 0, stoppedWithPending: false, suppressForward: options.recoveryOnly === true };
+  }
+  const recovery = await recoverPendingOrderItemDetailGaps(page, deps, flags);
+  const detailBudgetExhausted =
+    flags.detailAttempts >= MAX_DETAIL_ATTEMPTS_PER_RUN ||
+    flags.temporaryDetailFailures >= MAX_TEMPORARY_DETAIL_FAILURES_PER_RUN;
+  return {
+    ...recovery,
+    suppressForward: options.recoveryOnly === true || detailBudgetExhausted,
+  };
+}
+
 /**
  * Emit the run-level `order_items` DETAIL_COVERAGE once after the year loop,
  * using the shared `emitDetailCoverage` helper. The detail stream described is
@@ -1069,20 +1088,24 @@ if (isMainModule(import.meta.url)) {
         temporaryDetailFailures: 0,
       };
 
-      if (ctx.recoveryOnly) {
-        if (wantsItems) {
-          await recoverPendingOrderItemDetailGaps(
-            page,
-            {
-              capture,
-              detailGaps: ctx.detailGaps,
-              emit,
-              emitRecord,
-              requestDetailGapPage: ctx.requestDetailGapPage,
-            },
-            flags
-          );
-        }
+      const gapRecovery = await recoverPendingOrderItemDetailGapsBeforeForwardRun(
+        page,
+        {
+          capture,
+          detailGaps: ctx.detailGaps,
+          emit,
+          emitRecord,
+          requestDetailGapPage: ctx.requestDetailGapPage,
+        },
+        flags,
+        { recoveryOnly: ctx.recoveryOnly === true, wantsItems }
+      );
+      if (gapRecovery.stoppedWithPending) {
+        await progress(
+          "Amazon order-item gap recovery stopped with pending gaps still queued; the next run will continue recovery"
+        );
+      }
+      if (gapRecovery.suppressForward) {
         return;
       }
 
