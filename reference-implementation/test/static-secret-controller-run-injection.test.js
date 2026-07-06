@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { makeTemporaryDbPath } from "./helpers/temp-dir.js";
 import test from "node:test";
 
 import { closeDb, getDb, initDb } from "../server/db.js";
@@ -123,7 +121,7 @@ function captureStore() {
 
 function freshDb(t) {
   closeDb();
-  initDb(join(mkdtempSync(join(tmpdir(), "pdpp-static-secret-run-")), "pdpp.sqlite"));
+  initDb(makeTemporaryDbPath("pdpp-static-secret-run-"));
   __resetControllerInteractionStateForTests();
   t.after(() => {
     __resetControllerInteractionStateForTests();

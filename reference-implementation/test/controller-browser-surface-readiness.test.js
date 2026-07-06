@@ -23,12 +23,10 @@
  * directly so no real DevTools server is involved.
  */
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 
 import { closeDb, getDb, initDb } from "../server/db.js";
+import { makeTemporaryDbPath } from "./helpers/temp-dir.js";
 import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from "@opendatalabs/remote-surface/leases";
 import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
 
@@ -45,8 +43,7 @@ const MANIFEST = {
 };
 
 function tempDbPath() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdpp-controller-rdy-"));
-  return path.join(dir, "pdpp.sqlite");
+  return makeTemporaryDbPath("pdpp-controller-rdy-");
 }
 
 function createSchedulerStore() {

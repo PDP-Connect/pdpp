@@ -12,11 +12,11 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { startServer } from '../server/index.js';
+import { makeTemporaryDir } from './helpers/temp-dir.js';
 import { registerClient, buildParRequest, stageParRequest, approveInline } from '../examples/third-party-app/lib/flow.js';
 import { DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN } from '../server/reference-local-defaults.ts';
 import {
@@ -32,7 +32,7 @@ import {
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 function makeTmpCache() {
-  return mkdtempSync(join(tmpdir(), 'pdpp-agent-test-'));
+  return makeTemporaryDir('pdpp-agent-test-');
 }
 
 async function closeServer(server) {

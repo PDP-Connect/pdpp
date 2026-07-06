@@ -21,9 +21,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { makeTemporaryDbPath } from "./helpers/temp-dir.js";
 import test from "node:test";
 
 import { getRunTerminalEvent, listSpineEventsPage } from "../lib/spine.ts";
@@ -83,7 +81,7 @@ function makeHangingImpl() {
 
 function freshDb(t) {
   closeDb();
-  initDb(join(mkdtempSync(join(tmpdir(), "pdpp-gen-fence-")), "pdpp.sqlite"));
+  initDb(makeTemporaryDbPath("pdpp-gen-fence-"));
   __resetControllerInteractionStateForTests();
   t.after(() => {
     __resetControllerInteractionStateForTests();

@@ -22,9 +22,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { makeTemporaryDbPath } from "./helpers/temp-dir.js";
 import test from "node:test";
 
 import { emitSpineEvent, getRunStartedEvent, getRunTerminalEvent, listSpineEventsPage } from "../lib/spine.ts";
@@ -97,7 +95,7 @@ function makeSpineCtx(overrides = {}) {
 
 function freshDb(t) {
   closeDb();
-  initDb(join(mkdtempSync(join(tmpdir(), "pdpp-run-status-")), "pdpp.sqlite"));
+  initDb(makeTemporaryDbPath("pdpp-run-status-"));
   t.after(() => {
     closeDb();
   });

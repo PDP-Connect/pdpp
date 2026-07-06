@@ -10,12 +10,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import Database from 'better-sqlite3';
 
 import { initDb, closeDb } from '../server/db.js';
+import { makeTemporaryDbPath } from './helpers/temp-dir.js';
 import {
   emitControllerBootedAndStashEpoch,
   reconcileOrphanedRunsAtBoot,
@@ -23,8 +21,7 @@ import {
 import { clearCurrentBootEpoch } from '../lib/spine.ts';
 
 function tempDbPath() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-boot-recon-'));
-  return path.join(dir, 'pdpp.sqlite');
+  return makeTemporaryDbPath('pdpp-boot-recon-');
 }
 
 /**

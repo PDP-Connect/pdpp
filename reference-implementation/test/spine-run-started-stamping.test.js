@@ -17,17 +17,14 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import Database from 'better-sqlite3';
 
 import { initDb, closeDb, getDb } from '../server/db.js';
+import { makeTemporaryDbPath } from './helpers/temp-dir.js';
 import { emitSpineEvent } from '../lib/spine.ts';
 
 function tempDbPath() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-stamping-'));
-  return path.join(dir, 'pdpp.sqlite');
+  return makeTemporaryDbPath('pdpp-stamping-');
 }
 
 test('emitSpineEvent rejects run.started without boot_epoch', async () => {

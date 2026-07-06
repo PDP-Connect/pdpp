@@ -36,9 +36,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { makeTemporaryDbPath } from "./helpers/temp-dir.js";
 import test from "node:test";
 
 import { getRunTerminalEvent, listSpineEventsPage } from "../lib/spine.ts";
@@ -79,7 +77,7 @@ function createSchedulerStore() {
 
 function freshDb(t) {
   closeDb();
-  initDb(join(mkdtempSync(join(tmpdir(), "pdpp-phantom-run-")), "pdpp.sqlite"));
+  initDb(makeTemporaryDbPath("pdpp-phantom-run-"));
   __resetControllerInteractionStateForTests();
   t.after(() => {
     __resetControllerInteractionStateForTests();

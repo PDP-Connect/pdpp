@@ -9,9 +9,7 @@
 // RS/db/connector spawn is involved.
 
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { makeTemporaryDbPath } from "./helpers/temp-dir.js";
 import test from "node:test";
 
 import { closeDb, getDb, initDb } from "../server/db.js";
@@ -89,7 +87,7 @@ function pressureGapRow(overrides = {}) {
 
 async function buildScheduledController(t, { gaps = [], lastRunOffsetMs = 0 } = {}) {
   closeDb();
-  initDb(join(mkdtempSync(join(tmpdir(), "pdpp-cooldown-proj-")), "pdpp.sqlite"));
+  initDb(makeTemporaryDbPath("pdpp-cooldown-proj-"));
   __resetControllerInteractionStateForTests();
   t.after(() => {
     __resetControllerInteractionStateForTests();
@@ -238,7 +236,7 @@ const MANUAL_CONNECTOR_MANIFEST = {
 
 test("a manual / background-unsafe connector cannot enable an automatic schedule (creation-time gate)", async (t) => {
   closeDb();
-  initDb(join(mkdtempSync(join(tmpdir(), "pdpp-cooldown-proj-manual-")), "pdpp.sqlite"));
+  initDb(makeTemporaryDbPath("pdpp-cooldown-proj-manual-"));
   __resetControllerInteractionStateForTests();
   t.after(() => {
     __resetControllerInteractionStateForTests();
