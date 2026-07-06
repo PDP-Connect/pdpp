@@ -1,0 +1,19 @@
+# hone work df-surface-sendtestevent-202-body-0002 — baseline rung 'red-then-green'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --quiet -- server/routes/rs-mutation.ts && sed -i 's/json({ event_id:/json({ event_id_broken:/' server/routes/rs-mutation.ts && PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp node --test test/client-event-subscriptions-e2e.test.js; git checkout -- server/routes/rs-mutation.ts
+# expect: the seeded run FAILS on the new 202-body assertion (event_id missing); the guard git diff --quiet must have confirmed rs-mutation.ts was clean BEFORE seeding, and the trailing checkout restores it — paste the failing assertion output
+# exit: 0  duration: 2s  verdict: PASS
+
+✔ client event subscriptions deliver signed hints end-to-end (242.581798ms)
+✔ grant revoke disables subscription and notifies client (161.182068ms)
+✔ trusted owner-agent event subscriptions deliver signed hints and are revoked with the registered client (167.285932ms)
+✔ discovery: RS protected-resource metadata advertises client_event_subscriptions (85.74166ms)
+✔ registered owner bearer cannot see client-grant subscriptions (118.08524ms)
+✔ unregistered owner bearer cannot use event-subscription endpoints (89.827795ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1718.074637

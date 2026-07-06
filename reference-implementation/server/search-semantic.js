@@ -47,7 +47,7 @@ import {
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
-import { sqliteCountIndexableTextValues } from './search-index-counts.js';
+import { sqliteCountIndexableTextValues } from './search-index-counts.ts';
 import {
   compileRequestFilters,
   passesGrantRecordConstraints,
@@ -82,7 +82,7 @@ import {
   resolveDisplayNamesForBindings,
   resolveFanInBindings,
 } from './connection-identity.js';
-import { mapSearchFanout } from './search-fanout.js';
+import { mapSearchFanout } from './search-fanout.ts';
 
 // ─── scope_key encoding ────────────────────────────────────────────────────
 

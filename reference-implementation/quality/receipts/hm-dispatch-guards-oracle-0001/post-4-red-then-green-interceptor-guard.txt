@@ -1,0 +1,41 @@
+# hone work hm-dispatch-guards-oracle-0001 — post rung 'red-then-green-interceptor-guard'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-dispatch.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/emitted ${msg.type} while waiting for INTERACTION_RESPONSE/emitted ${msg.type} while awaiting INTERACTION_RESPONSE/' runtime/index.js && node --test test/runtime-handle-msg-dispatch.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming the second-INTERACTION interceptor test — the mutation rewrites the rl-interceptor guard string at runtime/index.js:3579 (sed target verified unique 2026-07-02: grep -cF 'emitted ${msg.type} while waiting for INTERACTION_RESPONSE' runtime/index.js == 1; the invalid-JSONL interceptor line at :3583 does not match), proving the oracle pins the wire-REACHABLE concurrency guard; checkout restores it
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ handleMsg dispatch: unrecognized msg.type fails the run naming the unknown type (71.506797ms)
+✔ handleMsg dispatch: a RECORD after DONE fails naming the after-DONE guard (82.306645ms)
+✔ handleMsg dispatch: malformed JSONL after DONE fails naming the invalid-JSONL-after-DONE guard (78.644309ms)
+✖ handleMsg dispatch: a second INTERACTION while one is unresolved is intercepted and terminates the child (581.69412ms)
+✔ handleMsg dispatch: duplicate ASSISTANCE.assistance_request_id fails naming the duplicate id (81.934719ms)
+✔ handleMsg dispatch: ASSISTANCE_STATUS for an unknown assistance_request_id fails naming the id (57.162442ms)
+✔ handleMsg dispatch: a DETAIL_GAP that exhausts its recovery budget on a non-transient error emits run.detail_gap_terminal (81.959329ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 6
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1191.774662
+
+✖ failing tests:
+
+test at test/runtime-handle-msg-dispatch.test.js:263:1
+✖ handleMsg dispatch: a second INTERACTION while one is unresolved is intercepted and terminates the child (581.69412ms)
+  AssertionError [ERR_ASSERTION]: the rl-interceptor guard names the wire-reachable concurrency violation
+  + actual - expected
+  
+  + 'Connector emitted INTERACTION while awaiting INTERACTION_RESPONSE'
+  - 'Connector emitted INTERACTION while waiting for INTERACTION_RESPONSE'
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/runtime-handle-msg-dispatch.test.js:284:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'Connector emitted INTERACTION while awaiting INTERACTION_RESPONSE',
+    expected: 'Connector emitted INTERACTION while waiting for INTERACTION_RESPONSE',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

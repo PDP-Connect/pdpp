@@ -1,0 +1,100 @@
+# hone work t1b-contract-validation-error-type-0014 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/route-contract-validation.test.js test/fastify-transport.test.js
+# expect: all pass with unchanged counts, before AND after the edit
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ createApp() is native Fastify — no express middleware stack (17.337316ms)
+✔ routes declared with { contract } carry the contract-package schema directly on the Fastify route (7.571514ms)
+✔ unknown contract operation ids fail fast at registration time (1.519426ms)
+✔ every @pdpp/reference-contract manifest matches a live Fastify route on the reference server (134.417398ms)
+✔ every @pdpp/reference-contract manifest is declared via { contract: "opId" } at registration time (98.750079ms)
+✔ the request-validation allowlist is empty by default to preserve handler-owned diagnostics (0.59236ms)
+✔ the response canary names stable discovery operations (0.152933ms)
+✔ applyRequestValidation produces an OAuth-shaped envelope for OAuth manifests (0.650222ms)
+✔ applyRequestValidation produces a PDPP-shaped envelope for PDPP manifests (0.971497ms)
+✔ route registration throws when {contract} names an unknown reference-contract operation id (14.385743ms)
+✔ allowlisted contract route rejects a malformed PATCH body before the handler mutates state with a PDPP-shaped envelope (14.243711ms)
+✔ allowlisted OAuth-manifest route rejects a malformed body with an OAuth-shaped envelope (3.911999ms)
+✔ allowlisted route runs route-level auth middleware BEFORE request validation (2.826039ms)
+✔ allowlisted route accepts a well-formed body and reaches the handler (3.95772ms)
+✔ the test-only allowlist injection does not leak across createApp instances (4.266755ms)
+[20:09:15.414] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "PATCH"
+    [35murl[39m: "/canary-set-display-name/conn_test_1"
+    [35mstatusCode[39m: 400
+    [35mresponseTime[39m: 4
+✔ canary route fails closed when its response payload violates the contract (12.697184ms)
+✔ canary route sends the original payload byte-for-byte when validation passes (2.940322ms)
+✔ non-canary JSON response is not transformed even when it would violate the manifest (2.913761ms)
+[20:09:15.419] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "POST"
+    [35murl[39m: "/canary-register-dynamic-client"
+    [35mstatusCode[39m: 400
+    [35mresponseTime[39m: 1
+[20:09:15.421] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "PATCH"
+    [35murl[39m: "/canary-auth-ordering/conn_test_2"
+    [35mstatusCode[39m: 401
+    [35mresponseTime[39m: 0
+[20:09:15.425] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "PATCH"
+    [35murl[39m: "/canary-accepts-valid/conn_test_3"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 1
+✔ redirects, 204 responses, and string payloads are not run through canary validation (3.794227ms)
+✔ operation modules do not import the reference-contract runtime (19.175178ms)
+[20:09:15.430] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "PATCH"
+    [35murl[39m: "/canary-not-enrolled/conn_test_4"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 2
+[20:09:15.442] [31mERROR[39m (3334979): [36mresponse payload violated declared route contract[39m
+    [35moperation_id[39m: "getRsDiscoveryIndex"
+    [35mstatus[39m: 200
+    [35mvalidator_errors[39m: [
+      {
+        "instancePath": "",
+        "message": "must have required property 'links'",
+        "params": {
+          "missingProperty": "links"
+        }
+      }
+    ]
+[20:09:15.442] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/canary-bad-rs-discovery"
+    [35mstatusCode[39m: 500
+    [35mresponseTime[39m: 10
+[20:09:15.445] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/canary-good-rs-discovery"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[20:09:15.448] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/non-canary-listconnectors"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[20:09:15.452] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/canary-redirect"
+    [35mstatusCode[39m: 302
+    [35mresponseTime[39m: 0
+[20:09:15.452] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/canary-empty"
+    [35mstatusCode[39m: 204
+    [35mresponseTime[39m: 0
+[20:09:15.452] [32mINFO[39m (3334979): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/canary-text"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+ℹ tests 20
+ℹ suites 0
+ℹ pass 20
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1230.898978

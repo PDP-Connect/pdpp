@@ -1,0 +1,17 @@
+# hone work pl1-outbox-diagnostics-split-0007 — baseline rung 'complexity-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --target 'server/stores/device-exporter-store.js::normalizeOutboxDiagnostics'
+# expect: found=true; cognitive_before strictly below baseline 10 and below floor 6 (both validation concerns extracted)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "server/stores/device-exporter-store.js::normalizeOutboxDiagnostics",
+  "file": "server/stores/device-exporter-store.js",
+  "function": "normalizeOutboxDiagnostics",
+  "found": true,
+  "cognitive_before": 10,
+  "line": 161,
+  "caller_count": 1,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

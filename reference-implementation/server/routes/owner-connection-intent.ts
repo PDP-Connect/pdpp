@@ -26,7 +26,8 @@
 //         owner-mediated intents")
 
 import { buildConnectionSetupPlan, type ConnectorIntentModality } from "../connection-setup-plan.ts";
-import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
+import { auditActorKind, buildAuditTrace } from "./_owner-connection-helpers.ts";
+import type { MiddlewareHandler, PdppErrorFn, RouteArg, TraceContext } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -66,12 +67,6 @@ interface ConnectorManifestLike {
   readonly runtime_requirements?: {
     readonly bindings?: Readonly<Record<string, unknown>> | null;
   } | null;
-}
-
-interface TraceContext {
-  readonly request_id: string;
-  readonly scenario_id: string;
-  readonly trace_id: string;
 }
 
 interface DeviceExporterEnrollmentStore {
@@ -119,29 +114,6 @@ export interface MountOwnerConnectionIntentContext {
 
 function stripTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
-}
-
-function buildAuditTrace(ctx: MountOwnerConnectionIntentContext, req: RouteRequest, res: RouteResponse): TraceContext {
-  const scenarioId = typeof req.tokenInfo?.scenario_id === "string" ? req.tokenInfo.scenario_id : undefined;
-  const trace = scenarioId ? ctx.createTraceContext({ scenarioId }) : ctx.createTraceContext();
-  const requestId = ctx.ensureRequestId(res);
-  ctx.setReferenceTraceId(res, trace.trace_id);
-  return {
-    request_id: requestId,
-    scenario_id: trace.scenario_id,
-    trace_id: trace.trace_id,
-  };
-}
-
-function auditActorKind(req: RouteRequest): "owner_agent" | "client" | "mcp_package" | "unknown" {
-  const kind = req.tokenInfo?.pdpp_token_kind;
-  if (kind === "owner") {
-    return "owner_agent";
-  }
-  if (kind === "client" || kind === "mcp_package") {
-    return kind;
-  }
-  return "unknown";
 }
 
 // Emits non-secret audit evidence for an owner-agent connection-initiation
@@ -230,12 +202,19 @@ function buildConnectionIntentRequireOwner(ctx: MountOwnerConnectionIntentContex
 // Validates connector_id and display_name from a raw request body. Returns a
 // parsed result on success, or a descriptor of the validation failure so the
 // caller can emit the audit event and respond consistently without nesting.
-function parseConnectionIntentBody(body: Record<string, unknown>):
+function parseConnectionIntentBody(
+  body: Record<string, unknown>
+):
   | { ok: true; connectorId: string; displayName: string | null; displayNameSupplied: boolean }
   | { ok: false; field: "connector_id" | "display_name"; message: string; displayNameSupplied: boolean } {
   const rawConnectorId = body.connector_id;
   if (typeof rawConnectorId !== "string" || !rawConnectorId.trim()) {
-    return { ok: false, field: "connector_id", message: "connector_id must be a non-empty string", displayNameSupplied: false };
+    return {
+      ok: false,
+      field: "connector_id",
+      message: "connector_id must be a non-empty string",
+      displayNameSupplied: false,
+    };
   }
   const displayNameSupplied = Object.hasOwn(body, "display_name");
   const displayNameRaw = body.display_name;
@@ -337,11 +316,11 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
           // local collector exchanges this code to materialize the connection and
           // performs any provider/browser step locally. No connection row is
           // written here; the instance materializes on enroll + ingest.
-          const { enrollmentCode, enrollEndpoint, localBindingId, expiresAt } = await mintEnrollmentNextStep(
-            ctx,
-            req,
-            { connectorKey, displayName, ownerSubjectId }
-          );
+          const { enrollmentCode, enrollEndpoint, localBindingId, expiresAt } = await mintEnrollmentNextStep(ctx, req, {
+            connectorKey,
+            displayName,
+            ownerSubjectId,
+          });
           await emitConnectionIntentAudit(ctx, req, res, {
             connectorKey,
             connectorModality: modality,

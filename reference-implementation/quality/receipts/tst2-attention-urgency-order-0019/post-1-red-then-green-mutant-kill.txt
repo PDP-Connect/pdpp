@@ -1,0 +1,71 @@
+# hone work tst2-attention-urgency-order-0019 — post rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/attention-urgency-oracle.test.js ]; then src=server/attention-urgency.ts; bak=/tmp/tst2_attention_urgency_order_0019.bak; cp "$src" "$bak"; perl -0pi -e "s/return bResp - aResp;/return aResp - bResp;/" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0019; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/attention-urgency-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: mutation oracle not yet created"; exit 0; fi'
+# expect: BASELINE prints BASELINE and exits 0 while the oracle file is absent. POST applies the seeded one-line mutant, runs the new test with an isolated Postgres DB, restores the source with cmp verification, and prints MUTANT KILLED only when the new oracle fails against the mutant.
+# exit: 0  duration: 0s  verdict: FAIL (output does not contain 'BASELINE')
+
+✖ compareAttentionUrgency orders response-required records before optional records (0.788443ms)
+✔ compareAttentionUrgency orders blocked posture before progressing when response contract ties (0.113612ms)
+✔ compareAttentionUrgency orders earlier expiry before later or absent expiry (0.083521ms)
+✔ compareAttentionUrgency uses earlier creation as the final tie-break (0.071741ms)
+✖ pickMostUrgentAttention returns the comparator winner from an unsorted tuple (0.453928ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 3
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 57.362454
+
+✖ failing tests:
+
+test at test/attention-urgency-oracle.test.js:19:1
+✖ compareAttentionUrgency orders response-required records before optional records (0.788443ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/reference-implementation/test/attention-urgency-oracle.test.js:23:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/attention-urgency-oracle.test.js:60:1
+✖ pickMostUrgentAttention returns the comparator winner from an unsorted tuple (0.453928ms)
+  AssertionError [ERR_ASSERTION]: Expected "actual" to be reference-equal to "expected":
+  + actual - expected
+  
+    {
+  +   created_at: '2026-07-06T11:58:00.000Z',
+  +   expires_at: '2026-07-06T12:01:00.000Z',
+  +   progress_posture: 'running',
+  +   response_contract: 'none'
+  -   created_at: '2026-07-06T12:02:00.000Z',
+  -   expires_at: '2026-07-06T12:30:00.000Z',
+  -   progress_posture: 'blocked',
+  -   response_contract: 'response_required'
+    }
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/reference-implementation/test/attention-urgency-oracle.test.js:78:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { response_contract: 'none', progress_posture: 'running', expires_at: '2026-07-06T12:01:00.000Z', created_at: '2026-07-06T11:58:00.000Z' },
+    expected: { response_contract: 'response_required', progress_posture: 'blocked', expires_at: '2026-07-06T12:30:00.000Z', created_at: '2026-07-06T12:02:00.000Z' },
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+MUTANT KILLED

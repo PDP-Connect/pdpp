@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createStreamingSessionStore } from '../server/streaming/sessions.js';
+import { createStreamingSessionStore } from '../server/streaming/sessions.ts';
 
 function freshClock() {
   let t = 1_000_000_000;

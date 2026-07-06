@@ -1,0 +1,74 @@
+# hone work server-search-t1a-dfd1491e — maker brief digest (attempt 1)
+# sha256(full brief)=d2bb4cc3fc3c801e4cc6c749e4764a73e5048fe2bb964afbb3bbc352a1ff9410 bytes=4730
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/search.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, new-dependency, relocation-without-decomplecting.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: server-search-t1a-dfd1491e
+created: "2026-07-02T00:50:25.322Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server
+files: [server/search.js]
+symbols:
+  - file: server/search.js
+    parent_fn: lexicalIndexBackfillForManifest
+    anchor: "<anon>"
+    line: 519
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: exact_move
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] callback captures NOTHING (AST free-vars=∅) → hoist to a named pure top-level fn Top fn '<anon>' cc=45. File attention: churn 40 × excess-cc mass 40 = 1600; 1 flagged fn(s) in this tier."
+plan:
+  transform_class: hoist-to-named-module-fn
+  instruction: "Hoist the anonymous callback(s) <anon>@L519(in lexicalIndexBackfillForManifest) in server/search.js to named top-level functions (zero function-scope captures — exact move). Name each for the concept it implements; body must be identical under whitespace normalization; call sites reference the new names."
+expected_quality_gain: high
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 22.963
+  computed: "2026-07-02T00:50:25.322Z"
+  inputs:
+    mass: 40
+    churn: 40
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: low
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/search.js, tier T1-extractable-callback (repo_sha 6e8d8559c36b94d41bc4c42a9a31342e60b3b334)"
+    result: "1 flagged fn(s), Σ excess-cc 40, max cc 45, router v1 tier T1-extractable-callback"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/search.js"
+    result: "40 commits in window; coupling(fan-in proxy)=103"
+  - kind: ast-scope
+    detail: "true free-variable analysis (TS compiler API; function-scope captures only, v1.1 module-scope fix)"
+    result: "captures=[] mutable=[] module_refs=[]"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test"
+    expect: all tests pass; 0 fail; no new skips (skip counts compared baseline vs post)
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: whitespace-normalized-body-move
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation &

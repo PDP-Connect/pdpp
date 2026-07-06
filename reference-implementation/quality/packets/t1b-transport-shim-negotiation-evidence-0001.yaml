@@ -1,0 +1,98 @@
+candidate_id: t1b-transport-shim-negotiation-evidence-0001
+created: "2026-07-02T02:10:00.000Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server/transport
+files: [server/transport.js, test/fastify-transport.test.js]
+symbols:
+  - expressShim
+  - file: server/transport.js
+    parent_fn: expressShim
+    anchor: "req.is = (types) => negotiation shim"
+    line: 323
+  - file: server/transport.js
+    parent_fn: expressShim
+    anchor: "req.accepts = (types) => negotiation shim"
+    line: 337
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: generate_evidence
+proof_class: judgment_first
+execution_gate: autonomous
+why_this_matters: "callback-smells inventory (snapshot 6e8d8559) flags the two express-compat content-negotiation shims inside expressShim (server/transport.js) as the #4 and #12 T1b entries by cc: req.accepts at :337 (cc 21) and req.is at :323 (cc 14), both capturing req from the enclosing shim. VERIFIED 2026-07-01 (HEAD 20969a3c6): test/fastify-transport.test.js (5 tests) contains ZERO coverage of req.is / req.accepts / content-type / accept-header matching — the negotiation policy (parameter-stripping on content-type, Array-vs-single types, the application/<short> long-form expansion in accepts, the '*/*'-returns-first-candidate rule) is pinned nowhere. Handlers rely on it (PDPP handlers only call req.accepts(['html','json']) per the comment at :334), so a silent regression flips HTML/JSON responses with no failing test. The T1b extraction of these shims cannot honestly claim preservation until this oracle exists."
+plan:
+  transform_class: direct-unit-oracle-generation
+  instruction: "Add direct tests to test/fastify-transport.test.js (same file — it already builds the shim's app via createApp/transport helpers) pinning the CURRENT negotiation behavior through routes that echo the shim results. Cover, by name: (1) req.is: content-type parameter stripping ('application/json; charset=utf-8' matches 'application/json'), array-of-types returns the FIRST matching candidate string (not true), no content-type header returns false; (2) req.accepts: exact short-form match ('html'), long-form expansion (accept 'application/json' matches candidate 'json'), '*/*' (and empty accept header) returns the first candidate, no match returns false, array order decides which candidate wins; (3) req.get case-insensitivity ('X-Request-Id' finds 'x-request-id') as a cheap sibling pin. Assert returned VALUES (the matched candidate string vs false), not just truthiness. Test through route handlers registered on the real transport (no export changes to server/transport.js). Then run one seeded-regression check: temporarily break the long-form expansion (`application/${short}` -> `application/x-${short}`) — at least one new test must FAIL; restore."
+expected_quality_gain: medium
+owner_attention_reduction: low
+product_impact: low
+priority:
+  score: 150
+  computed: "2026-07-02T02:10:00.000Z"
+  inputs:
+    mass: 25
+    churn: 6
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "a test that pins implementation trivia instead of the negotiation contract (matched-candidate-string return, parameter stripping, long-form expansion, */* first-candidate rule) would freeze accidental behavior and still not protect the follow-up extraction"
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/callback-smells.json entries server/transport.js:337 (cc 21, captures [req]) and :323 (cc 14, captures [req], module_refs [matchesMediaType])"
+    result: "both classed T1b (immutable captures, no security/async/txn keywords)"
+  - kind: coverage-sweep
+    detail: "grep -n 'req.is\\|accepts\\|content-type' test/fastify-transport.test.js"
+    result: "zero matches — the negotiation shims have no direct test; expressShim is module-private (not exported), so route-level pinning is the only non-invasive oracle shape"
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js"
+    expect: all tests pass including the new req.is/req.accepts/req.get pins; count strictly greater than the pre-packet 5
+  - rung: red-green-seeded-regression
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js"
+    expect: "with the transient seeded break of the accepts long-form expansion applied: at least one new test FAILS (paste output); after restore: all green and git diff -- server/transport.js is empty"
+  - rung: byte-identity
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/server/transport.js"
+    expect: empty — this packet changes tests only
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+not_allowed:
+  - behavior-change
+  - implementation-change
+  - relocation-without-decomplecting
+  - new-dependency
+  - exporting-expressShim-or-its-internals
+  - snapshot-testing-whole-responses
+maker_tier: standard
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: generate_evidence×judgment_first×server/transport
+touchset: [test/fastify-transport.test.js]
+estimates:
+  tokens: 45000
+  evidence_cost: low
+depends_on: []
+unlocks: [t1b-transport-shim-negotiation-0002]
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex REVISE (confidence 0.97): The diff itself stays within the test-only scope and largely adds the requested req.is, req.accepts, and req.get value assertions. However, the packet explicitly requires a red-green seeded-regression check showing that a transient long-form expansion break causes at least one new test to fail. The supplied red-green receipt is only another all-green run and contains no pasted failing output under the seeded break, so the evidence is insufficient to certify the oracle. || after revision: codex REVISE (confidence 0.95): The packet required seeded-regression evidence showing at least one new test fails when the long-form accepts expansion is temporarily broken, but the supplied seeded-regression receipts are all green with 15 passing tests and no failure output. That means the oracle has not been proven sensitive to the risk it was created to cover. The diff also does not fully pin req.is array first-match semantics because only one array candidate can match the provided content type."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=f862ad02 bytes=591 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/baseline-1-direct-test.txt"
+    - "[baseline] red-green-seeded-regression: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=494dce23 bytes=590 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/baseline-2-red-green-seeded-regression.txt"
+    - "[baseline] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/server/transport.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/baseline-3-byte-identity.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/baseline-4-typecheck.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=85213db7 bytes=3662 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/post-1-direct-test.txt"
+    - "[post] red-green-seeded-regression: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=f49bd2d3 bytes=3663 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/post-2-red-green-seeded-regression.txt"
+    - "[post] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/server/transport.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/post-3-byte-identity.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/post-4-typecheck.txt"
+    - "[post-r2] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=90fd9022 bytes=3661 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/post-r2-1-direct-test.txt"
+    - "[post-r2] red-green-seeded-regression: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=b1e9caf8 bytes=3663 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/post-r2-2-red-green-seeded-regression.txt"
+    - "[post-r2] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/server/transport.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/post-r2-3-byte-identity.txt"
+    - "[post-r2] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-transport-shim-negotiation-evidence-0001/post-r2-4-typecheck.txt"
+  tokens_actual: 105018
+  lesson: judge refused twice (REVISE→REVISE); packet bar not reachable by this maker

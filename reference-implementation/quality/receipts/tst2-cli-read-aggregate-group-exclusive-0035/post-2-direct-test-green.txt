@@ -1,0 +1,15 @@
+# hone work tst2-cli-read-aggregate-group-exclusive-0035 — post rung 'direct-test-green'
+# command: cd "$REPO_ROOT/../packages/cli" && if [ -f test/read-aggregate-group-exclusive-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/read-aggregate-group-exclusive-oracle.test.js 2>&1 || rc=1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi
+# expect: POST: the aggregate grouping oracle passes. BASELINE: guarded green while absent.
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ read aggregate rejects group-by and group-by-time together (1.236322ms)
+✔ read aggregate builds group-by-time query shape (0.280045ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 37.476194

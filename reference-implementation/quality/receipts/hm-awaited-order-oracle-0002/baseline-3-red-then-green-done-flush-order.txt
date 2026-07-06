@@ -1,0 +1,6 @@
+# hone work hm-awaited-order-oracle-0002 — baseline rung 'red-then-green-done-flush-order'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-order.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/^            await flushAll();$/            flushAll();/' runtime/index.js && node --test test/runtime-handle-msg-order.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2): seeded run FAILS naming the DONE(succeeded) flush-before-EOF ordering test — the mutation drops the await on flushAll() in the DONE arm (runtime/index.js:3553; the 12-space indent anchor distinguishes it from the DETAIL_GAP_RECOVERED call at :3480 — grep -c '^            await flushAll();$' runtime/index.js == 1), so with the ingest response delayed, the connector observes stdin EOF before every ingest POST completes; an ORDER assertion goes red where an existence assertion stays green (run-2's refusal class); checkout restores it
+# exit: 0  duration: 0s  verdict: PASS
+
+oracle-not-yet-authored

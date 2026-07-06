@@ -1,0 +1,5 @@
+# hone work t1b-spine-correlations-annotators-0003 — baseline rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/lib/postgres-spine.js
+# expect: the two callback bodies byte-identical modulo indentation and the explicit index params; only wrapping + naming changed
+# exit: 0  duration: 0s  verdict: PASS
+

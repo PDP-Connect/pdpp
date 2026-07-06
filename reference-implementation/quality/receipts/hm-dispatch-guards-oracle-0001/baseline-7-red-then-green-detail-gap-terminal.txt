@@ -1,0 +1,6 @@
+# hone work hm-dispatch-guards-oracle-0001 — baseline rung 'red-then-green-detail-gap-terminal'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-dispatch.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/run.detail_gap_terminal/run.detail_gap_terminal_mutated/' runtime/index.js && node --test test/runtime-handle-msg-dispatch.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming the run.detail_gap_terminal spine test — the mutation rewrites the event_type at its single emit site runtime/index.js:3347 (sed target verified unique 2026-07-02: grep -c 'run.detail_gap_terminal' runtime/index.js == 1); checkout restores it
+# exit: 0  duration: 0s  verdict: PASS
+
+oracle-not-yet-authored

@@ -126,25 +126,44 @@ export function makeConnectorInstanceSourceBindingKey(sourceBinding) {
   return hashKey(stableJson(sourceBinding ?? {}));
 }
 
+function makeConnectorInstanceId({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) {
+  return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${sourceBindingKey}`).slice(0, 24)}`;
+}
+
 export function makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) {
-  return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\naccount\n${DEFAULT_ACCOUNT_SOURCE_BINDING_KEY}`).slice(0, 24)}`;
+  return makeConnectorInstanceId({
+    ownerSubjectId,
+    connectorId,
+    sourceKind: 'account',
+    sourceBindingKey: DEFAULT_ACCOUNT_SOURCE_BINDING_KEY,
+  });
+}
+
+// Throws when `value` is not one of `validSet`, using the exact
+// `Invalid connector instance ${label} '${value}'.` message both callers
+// (sourceKind/status) already relied on.
+function assertOneOf(validSet, value, label) {
+  if (!validSet.has(value)) {
+    throw new Error(`Invalid connector instance ${label} '${value}'.`);
+  }
 }
 
 function normalizeRecord(record) {
   if (!record.ownerSubjectId) throw new Error('ownerSubjectId is required.');
   if (!record.connectorId) throw new Error('connectorId is required.');
   const sourceKind = record.sourceKind ?? 'manual';
-  if (!VALID_SOURCE_KINDS.has(sourceKind)) {
-    throw new Error(`Invalid connector instance sourceKind '${sourceKind}'.`);
-  }
+  assertOneOf(VALID_SOURCE_KINDS, sourceKind, 'sourceKind');
   const status = record.status ?? 'active';
-  if (!VALID_STATUSES.has(status)) {
-    throw new Error(`Invalid connector instance status '${status}'.`);
-  }
+  assertOneOf(VALID_STATUSES, status, 'status');
   const sourceBindingJson = stableJson(record.sourceBinding ?? {});
   const sourceBindingKey = record.sourceBindingKey ?? makeConnectorInstanceSourceBindingKey(record.sourceBinding ?? {});
   return {
-    connectorInstanceId: record.connectorInstanceId ?? `cin_${hashKey(`${record.ownerSubjectId}\n${record.connectorId}\n${sourceKind}\n${sourceBindingKey}`).slice(0, 24)}`,
+    connectorInstanceId: record.connectorInstanceId ?? makeConnectorInstanceId({
+      ownerSubjectId: record.ownerSubjectId,
+      connectorId: record.connectorId,
+      sourceKind,
+      sourceBindingKey,
+    }),
     ownerSubjectId: record.ownerSubjectId,
     connectorId: record.connectorId,
     displayName: record.displayName ?? record.connectorId,
@@ -210,102 +229,77 @@ function namespaceFromInstance(instance, { selector, createdDefaultAccount = fal
   };
 }
 
-export async function resolveOwnerConnectorInstanceNamespace({
-  ownerSubjectId,
-  connectorId = null,
-  connectorInstanceId = null,
-  connectorInstanceStore,
-  allowDefaultAccount = false,
-  // Statuses admissible when an instance is addressed explicitly by
-  // connector_instance_id. Defaults to active-only. ONLY the owner-session
-  // capture path and the owner-authenticated first-ingest path pass
-  // `['active', 'draft']` to reach a static-secret draft. No grant-scoped,
-  // client, MCP, or owner-agent READ path passes a non-default value, so a
-  // draft is never resolvable as a read target. See
-  // add-static-secret-owner-session-connect-path design Decision 3.
-  allowStatuses = ['active'],
-  displayName = null,
-  now = new Date().toISOString(),
-}) {
-  if (!ownerSubjectId) {
-    throw new ConnectorInstanceResolutionError(
-      'owner_subject_required',
-      'ownerSubjectId is required to resolve a connector instance namespace.',
-    );
+// Sentinel returned by `resolveByExplicitInstanceId` to mean "no explicit-id
+// namespace was resolved; fall through to the connector_id resolution path" —
+// the previously-implicit fall-through (a missing instance whose id doubles as
+// a default-account connector_id hint) made explicit as a named return value
+// instead of a trailing comment.
+const FALL_THROUGH_TO_CONNECTOR_ID = Symbol('fall-through-to-connector-id');
+
+// Resolves the explicit `connector_instance_id` selector: fetches the row and
+// runs its full validation chain (owner-mismatch, connector-mismatch,
+// status-inactive) UNCHANGED. Returns a namespace on a valid hit, or
+// `FALL_THROUGH_TO_CONNECTOR_ID` when the instance is missing but doubles as
+// a legacy default-account connector_id hint (see Decision 3 note at the
+// caller). Throws connector_instance_not_found otherwise.
+function resolveByExplicitInstanceId(instance, { ownerSubjectId, connectorId, connectorInstanceId, allowStatuses, allowDefaultAccount }) {
+  if (instance) {
+    if (instance.ownerSubjectId !== ownerSubjectId) {
+      throw new ConnectorInstanceResolutionError(
+        'connector_instance_owner_mismatch',
+        `Connector instance '${connectorInstanceId}' does not belong to owner '${ownerSubjectId}'.`,
+        { ownerSubjectId, actualOwnerSubjectId: instance.ownerSubjectId, connectorId, connectorInstanceId },
+      );
+    }
+    if (connectorId && instance.connectorId !== connectorId) {
+      throw new ConnectorInstanceResolutionError(
+        'connector_instance_connector_mismatch',
+        `Connector instance '${connectorInstanceId}' belongs to connector '${instance.connectorId}', not '${connectorId}'.`,
+        { ownerSubjectId, connectorId, actualConnectorId: instance.connectorId, connectorInstanceId },
+      );
+    }
+    if (!allowStatuses.includes(instance.status)) {
+      throw new ConnectorInstanceResolutionError(
+        'connector_instance_inactive',
+        `Connector instance '${connectorInstanceId}' is '${instance.status}', not active.`,
+        { ownerSubjectId, connectorId: instance.connectorId, connectorInstanceId, status: instance.status },
+      );
+    }
+    return namespaceFromInstance(instance, { selector: 'connector_instance_id' });
   }
-  if (!connectorInstanceStore) {
+  // Older grant/storage bindings can use connector_id as a default account
+  // instance hint. When the instance is missing but this hint applies, we
+  // fall through past this whole block to the connector_id resolution path
+  // below instead of treating the missing id as a hard not-found.
+  const isDefaultAccountHint = allowDefaultAccount && connectorId && connectorInstanceId === connectorId;
+  if (!isDefaultAccountHint) {
     throw new ConnectorInstanceResolutionError(
-      'connector_instance_store_required',
-      'connectorInstanceStore is required to resolve a connector instance namespace.',
+      'connector_instance_not_found',
+      `Connector instance '${connectorInstanceId}' does not exist.`,
       { ownerSubjectId, connectorId, connectorInstanceId },
     );
   }
+  return FALL_THROUGH_TO_CONNECTOR_ID;
+}
 
-  if (connectorInstanceId) {
-    const instance = await connectorInstanceStore.get(connectorInstanceId);
-    if (!instance) {
-      // Older grant/storage bindings can use connector_id as a default
-      // account instance hint. Resolve that through the same default-account
-      // path instead of treating the connector id as a literal instance id.
-      if (allowDefaultAccount && connectorId && connectorInstanceId === connectorId) {
-        // intentional fall-through to the connector_id resolution path
-      } else {
-        throw new ConnectorInstanceResolutionError(
-          'connector_instance_not_found',
-          `Connector instance '${connectorInstanceId}' does not exist.`,
-          { ownerSubjectId, connectorId, connectorInstanceId },
-        );
-      }
-    } else {
-      if (instance.ownerSubjectId !== ownerSubjectId) {
-        throw new ConnectorInstanceResolutionError(
-          'connector_instance_owner_mismatch',
-          `Connector instance '${connectorInstanceId}' does not belong to owner '${ownerSubjectId}'.`,
-          { ownerSubjectId, actualOwnerSubjectId: instance.ownerSubjectId, connectorId, connectorInstanceId },
-        );
-      }
-      if (connectorId && instance.connectorId !== connectorId) {
-        throw new ConnectorInstanceResolutionError(
-          'connector_instance_connector_mismatch',
-          `Connector instance '${connectorInstanceId}' belongs to connector '${instance.connectorId}', not '${connectorId}'.`,
-          { ownerSubjectId, connectorId, actualConnectorId: instance.connectorId, connectorInstanceId },
-        );
-      }
-      if (!allowStatuses.includes(instance.status)) {
-        throw new ConnectorInstanceResolutionError(
-          'connector_instance_inactive',
-          `Connector instance '${connectorInstanceId}' is '${instance.status}', not active.`,
-          { ownerSubjectId, connectorId: instance.connectorId, connectorInstanceId, status: instance.status },
-        );
-      }
-      return namespaceFromInstance(instance, { selector: 'connector_instance_id' });
-    }
-  }
+// Resolves the `connector_id` selector against the store's single-active
+// lookup and maps the hit to a namespace. Lets `connector_instance_not_found`
+// (and any other store error) propagate to the caller unchanged.
+async function resolveByConnectorId(store, ownerSubjectId, connectorId) {
+  const instance = await store.resolveActiveByConnector(ownerSubjectId, connectorId);
+  return namespaceFromInstance(instance, { selector: 'connector_id' });
+}
 
-  if (!connectorId) {
-    throw new ConnectorInstanceResolutionError(
-      'connector_instance_selector_required',
-      'Provide connector_instance_id or connector_id to resolve a connector instance namespace.',
-      { ownerSubjectId },
-    );
-  }
-
+// Materializes (or reads) the deterministic default-account connection for
+// `connectorId`, enforcing the two UNCHANGED guards around it: a non-active
+// row is refused as not-found (revoke-durability — the store returns a
+// revoked row unchanged rather than resurrecting it, so this is the
+// load-bearing half of the guard, see "Deferred: connection-revoke
+// durability" → Unit 1), and an unregistered connector's FK failure is
+// remapped to a clean not-found instead of bubbling the raw driver error.
+async function materializeDefaultAccount(store, { ownerSubjectId, connectorId, displayName, now }) {
   try {
-    const instance = await connectorInstanceStore.resolveActiveByConnector(ownerSubjectId, connectorId);
-    return namespaceFromInstance(instance, { selector: 'connector_id' });
-  } catch (err) {
-    if (!allowDefaultAccount || !(err instanceof ConnectorInstanceResolutionError) || err.code !== 'connector_instance_not_found') {
-      throw err;
-    }
-  }
-
-  try {
-    const instance = await connectorInstanceStore.ensureDefaultAccountConnection({
-      ownerSubjectId,
-      connectorId,
-      displayName: displayName ?? connectorId,
-      now,
-    });
+    const instance = await store.ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now });
     // The default-account materialization respects a deliberate revoke (it
     // returns the revoked row unchanged rather than resurrecting it). A
     // non-active row is therefore NOT a usable namespace: surface it as
@@ -341,6 +335,66 @@ export async function resolveOwnerConnectorInstanceNamespace({
     }
     throw err;
   }
+}
+
+export async function resolveOwnerConnectorInstanceNamespace({
+  ownerSubjectId,
+  connectorId = null,
+  connectorInstanceId = null,
+  connectorInstanceStore,
+  allowDefaultAccount = false,
+  // Statuses admissible when an instance is addressed explicitly by
+  // connector_instance_id. Defaults to active-only. ONLY the owner-session
+  // capture path and the owner-authenticated first-ingest path pass
+  // `['active', 'draft']` to reach a static-secret draft. No grant-scoped,
+  // client, MCP, or owner-agent READ path passes a non-default value, so a
+  // draft is never resolvable as a read target. See
+  // add-static-secret-owner-session-connect-path design Decision 3.
+  allowStatuses = ['active'],
+  displayName = null,
+  now = new Date().toISOString(),
+}) {
+  if (!ownerSubjectId) {
+    throw new ConnectorInstanceResolutionError(
+      'owner_subject_required',
+      'ownerSubjectId is required to resolve a connector instance namespace.',
+    );
+  }
+  if (!connectorInstanceStore) {
+    throw new ConnectorInstanceResolutionError(
+      'connector_instance_store_required',
+      'connectorInstanceStore is required to resolve a connector instance namespace.',
+      { ownerSubjectId, connectorId, connectorInstanceId },
+    );
+  }
+
+  if (connectorInstanceId) {
+    const instance = await connectorInstanceStore.get(connectorInstanceId);
+    const explicitResult = resolveByExplicitInstanceId(instance, { ownerSubjectId, connectorId, connectorInstanceId, allowStatuses, allowDefaultAccount });
+    if (explicitResult !== FALL_THROUGH_TO_CONNECTOR_ID) {
+      return explicitResult;
+    }
+    // intentional fall-through to the connector_id resolution path
+  }
+
+  if (!connectorId) {
+    throw new ConnectorInstanceResolutionError(
+      'connector_instance_selector_required',
+      'Provide connector_instance_id or connector_id to resolve a connector instance namespace.',
+      { ownerSubjectId },
+    );
+  }
+
+  try {
+    return await resolveByConnectorId(connectorInstanceStore, ownerSubjectId, connectorId);
+  } catch (err) {
+    const shouldTryDefaultAccount = allowDefaultAccount && err instanceof ConnectorInstanceResolutionError && err.code === 'connector_instance_not_found';
+    if (!shouldTryDefaultAccount) {
+      throw err;
+    }
+  }
+
+  return materializeDefaultAccount(connectorInstanceStore, { ownerSubjectId, connectorId, displayName: displayName ?? connectorId, now });
 }
 
 export function createSqliteConnectorInstanceStore() {

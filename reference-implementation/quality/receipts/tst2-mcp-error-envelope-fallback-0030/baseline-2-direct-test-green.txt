@@ -1,0 +1,6 @@
+# hone work tst2-mcp-error-envelope-fallback-0030 — baseline rung 'direct-test-green'
+# command: cd "$REPO_ROOT/../packages/mcp-server" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi
+# expect: POST: the new pure oracle passes under node --test --test-force-exit. BASELINE: guarded green while absent.
+# exit: 0  duration: 0s  verdict: PASS
+
+BASELINE: test not yet created

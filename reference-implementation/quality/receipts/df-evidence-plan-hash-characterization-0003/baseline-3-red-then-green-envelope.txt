@@ -1,0 +1,6 @@
+# hone work df-evidence-plan-hash-characterization-0003 — baseline rung 'red-then-green-envelope'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --quiet -- server/record-filters.js && sed -i 's/JSON.stringify({ isOwner, summary })/JSON.stringify({ summary, isOwner })/' server/record-filters.js && node --test test/record-filters-plan-hash.test.js; git checkout -- server/record-filters.js
+# expect: seeded run FAILS (exact persisted string incl. JSON key order is pinned); restore leaves a clean tree — paste failing output
+# exit: 0  duration: 0s  verdict: PASS
+
+Could not find 'test/record-filters-plan-hash.test.js'

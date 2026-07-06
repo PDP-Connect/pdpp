@@ -18,7 +18,7 @@ import {
   isRequestValidationEnforced,
   listResponseCanaryOperations,
   listRequestValidationAllowlist,
-} from '../server/contract-validation.js';
+} from '../server/contract-validation.ts';
 import { publicManifests } from '@pdpp/reference-contract';
 
 // ─── Adapter unit checks ────────────────────────────────────────────────

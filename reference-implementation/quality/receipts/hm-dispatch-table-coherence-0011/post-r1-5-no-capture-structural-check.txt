@@ -1,0 +1,6 @@
+# hone work hm-dispatch-table-coherence-0011 — post-r1 rung 'no-capture-structural-check'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -cE '^(async )?function handle[A-Z][A-Za-z]*Msg\(' runtime/index.js
+# expect: 9 or more — every family handler is a column-0 module-level declaration (structurally incapable of capturing runConnector-scoped mutable cells); combined with tsc + the green suites this is the deterministic half of the 'no captured-mutable shared cells' criterion; the judge reads the final handleMsg + handler signatures for the judgment half
+# exit: 0  duration: 0s  verdict: PASS
+
+12

@@ -1,0 +1,8 @@
+# hone work pl1-instance-record-enum-validate-0012 — baseline rung 'seam-and-gate-untouched-pin'
+# command: cd "$REPO_ROOT" && node -e 'const fs=require("fs");const s=fs.readFileSync("server/stores/connector-instance-store.js","utf8");const w=s.replace(/\s+/g," ");let rc=0;const gateIntact=/allowStatuses = \[.active.\]/.test(w)&&s.includes("resolveByExplicitInstanceId");console.log((gateIntact?"PASS ":"FAIL ")+"admission gate untouched (allowStatuses active default + resolveByExplicitInstanceId present)");if(!gateIntact)rc=1;const asserts=(s.match(/assertOneOf\(/g)||[]).length;console.log((asserts>=2?"PASS ":"FAIL ")+"assertOneOf enum checks preserved (>=2)");if(asserts<2)rc=1;if(!s.includes("function resolveInstanceRecordEnums")){console.log("baseline: helper not extracted; vacuous PASS for seam");process.exit(rc);}const seam=[["resolveInstanceRecordEnums(record) declared",/function resolveInstanceRecordEnums\( ?record,? ?\)/],["delegated + destructured with bare identifier",/const \{ ?sourceKind, ?status ?\} = resolveInstanceRecordEnums\( ?record ?\)/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?"PASS ":"FAIL ")+c[0]);if(!ok)rc=1;}process.exit(rc);'
+# expect: exit 0, every line PASS. Enforces the admission gate stays untouched (allowStatuses ['active'] default + resolveByExplicitInstanceId present) AND both assertOneOf checks survive, at baseline+post. Post: resolveInstanceRecordEnums declared with the single named param `record` and delegated+destructured with a bare identifier.
+# exit: 0  duration: 0s  verdict: PASS
+
+PASS admission gate untouched (allowStatuses active default + resolveByExplicitInstanceId present)
+PASS assertOneOf enum checks preserved (>=2)
+baseline: helper not extracted; vacuous PASS for seam

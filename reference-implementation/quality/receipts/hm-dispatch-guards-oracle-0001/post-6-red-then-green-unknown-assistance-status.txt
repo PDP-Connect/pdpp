@@ -1,0 +1,42 @@
+# hone work hm-dispatch-guards-oracle-0001 — post rung 'red-then-green-unknown-assistance-status'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-dispatch.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/ASSISTANCE_STATUS for unknown assistance_request_id/ASSISTANCE_STATUS for unmatched assistance_request_id/' runtime/index.js && node --test test/runtime-handle-msg-dispatch.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming the unknown-ASSISTANCE_STATUS test — the mutation rewrites the throw at runtime/index.js:3215 (sed target verified unique 2026-07-02: grep -cF 'ASSISTANCE_STATUS for unknown assistance_request_id' runtime/index.js == 1); checkout restores it
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ handleMsg dispatch: unrecognized msg.type fails the run naming the unknown type (73.631435ms)
+✔ handleMsg dispatch: a RECORD after DONE fails naming the after-DONE guard (82.482679ms)
+✔ handleMsg dispatch: malformed JSONL after DONE fails naming the invalid-JSONL-after-DONE guard (77.470996ms)
+✔ handleMsg dispatch: a second INTERACTION while one is unresolved is intercepted and terminates the child (587.918522ms)
+✔ handleMsg dispatch: duplicate ASSISTANCE.assistance_request_id fails naming the duplicate id (74.633854ms)
+✖ handleMsg dispatch: ASSISTANCE_STATUS for an unknown assistance_request_id fails naming the id (56.728214ms)
+✔ handleMsg dispatch: a DETAIL_GAP that exhausts its recovery budget on a non-transient error emits run.detail_gap_terminal (79.395772ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 6
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1184.436134
+
+✖ failing tests:
+
+test at test/runtime-handle-msg-dispatch.test.js:324:1
+✖ handleMsg dispatch: ASSISTANCE_STATUS for an unknown assistance_request_id fails naming the id (56.728214ms)
+  AssertionError [ERR_ASSERTION]: the unknown-ASSISTANCE_STATUS guard names the exact request id
+  + actual - expected
+  
+  + 'Connector emitted ASSISTANCE_STATUS for unmatched assistance_request_id: asst_never_opened'
+  - 'Connector emitted ASSISTANCE_STATUS for unknown assistance_request_id: asst_never_opened'
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/runtime-handle-msg-dispatch.test.js:332:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'Connector emitted ASSISTANCE_STATUS for unmatched assistance_request_id: asst_never_opened',
+    expected: 'Connector emitted ASSISTANCE_STATUS for unknown assistance_request_id: asst_never_opened',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

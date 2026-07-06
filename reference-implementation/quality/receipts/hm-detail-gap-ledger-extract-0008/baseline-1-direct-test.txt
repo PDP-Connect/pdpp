@@ -1,0 +1,207 @@
+# hone work hm-detail-gap-ledger-extract-0008 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch connector-detail-gap-store detail-coverage-recovered-gap-regression event-spine; do db=pdpp_hone_hm_dgle8_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'
+# expect: all green with unchanged counts (baselines 2026-07-02: 26/26, 2/2, 46/46 + the 0001 run.detail_gap_terminal oracle); repaired 2026-07-02 per iteration-4 shared-DB lint: per-file ephemeral DBs + --test-force-exit replicate the scripts/run-tests.js isolation contract
+# exit: 0  duration: 16s  verdict: PASS
+
+✔ handleMsg dispatch: unrecognized msg.type fails the run naming the unknown type (67.700062ms)
+✔ handleMsg dispatch: a RECORD after DONE fails naming the after-DONE guard (76.579848ms)
+✔ handleMsg dispatch: malformed JSONL after DONE fails naming the invalid-JSONL-after-DONE guard (78.435423ms)
+✔ handleMsg dispatch: a second INTERACTION while one is unresolved is intercepted and terminates the child (575.377686ms)
+✔ handleMsg dispatch: duplicate ASSISTANCE.assistance_request_id fails naming the duplicate id (74.828185ms)
+✔ handleMsg dispatch: ASSISTANCE_STATUS for an unknown assistance_request_id fails naming the id (56.423042ms)
+✔ handleMsg dispatch: a DETAIL_GAP that exhausts its recovery budget on a non-transient error emits run.detail_gap_terminal (77.033946ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1137.839801
+✔ connector detail gap store upserts pending gaps, updates status, and redacts unsafe metadata (16.471227ms)
+✔ connector detail gaps are isolated by connector instance (12.189898ms)
+✔ connector detail gap store is idempotent by gap identity when connector-supplied gap ids change (11.978053ms)
+✔ listPendingGapsForConnector returns gaps across every connector instance for diagnostics (11.571215ms)
+✔ countGapsByStatusForConnector returns an exact reason-scoped recovered count across instances (10.342983ms)
+✔ sanitizeDetailGapMetadata does not preserve full URLs or secret-bearing fields (0.395457ms)
+✔ runtime records DETAIL_GAP before successful terminal handling (49.080915ms)
+✔ runtime includes pending detail gaps in START as reference-only safe rows (54.657539ms)
+✔ runtime loads pending detail gaps only for the requested connector instance (45.144452ms)
+✔ connector-emitted DETAIL_GAP survives real-store persistence and reappears in the next run START.detail_gaps (62.977534ms)
+✔ runtime drains more than 100 pending detail gaps in one run through paged recovery requests (63.696957ms)
+✔ runtime pages large detail-gap payloads by byte budget while still draining semantics (41.416952ms)
+✔ serving a pending gap in START increments attempt_count to 1 via in_progress mark (32.72451ms)
+✔ recovered gap preserves incremented attempt_count after DETAIL_GAP_RECOVERED (8.505959ms)
+✔ re-deferred pressure gap remains pending with attempt_count > 0 after runtime re-defers it (7.975778ms)
+✔ gap served but not recovered is reset to pending after connector exits without recovery (33.779709ms)
+✔ recovered gap is not reset to pending by run cleanup (35.90258ms)
+✔ prior-run in_progress gap is reclaimed to pending before a new run serves gaps (33.348902ms)
+✔ countGapsByStatusForConnector returns an exact reason-scoped recovered count (Postgres) (3254.074558ms)
+✔ connector-emitted DETAIL_GAP survives Postgres persistence and reappears in START.detail_gaps (277.835077ms)
+✔ runtime fails closed when pending detail gap loading fails before START (19.414962ms)
+✔ runtime marks DETAIL_GAP_RECOVERED only after prior records flush successfully (88.599671ms)
+✔ runtime fails closed when DETAIL_GAP persistence fails (39.845943ms)
+✔ runtime rejects state commit when required DETAIL_COVERAGE has no hydrated detail or durable gap (34.593174ms)
+✔ runtime commits state when required DETAIL_COVERAGE is backed by matching pending DETAIL_GAP (41.745258ms)
+✔ runtime preserves no-commit behavior for failed, cancelled, and protocol-violating runs (104.506988ms)
+ℹ tests 26
+ℹ suites 0
+ℹ pass 26
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4538.408174
+[runtime] {"type":"DETAIL_GAP","stream":"messages","record_key":"X","reason":"retry_exhausted","retryable":true,"detail_locator":{"kind":"chatgpt.conversation","conversation_id":"X"},"gap_id":"gap_f183fb827591c287ac6cf64fa8ed27dd"}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"conversations","stream":"messages"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+✔ a recovered detail gap re-deferred with the same identity must not fail the commit gate (374.956386ms)
+[runtime] {"type":"DETAIL_GAP","stream":"messages","record_key":"OLD","reason":"retry_exhausted","retryable":true,"detail_locator":{"kind":"chatgpt.conversation","conversation_id":"OLD"},"gap_id":"gap_ba387f513936afafef21afd4d456383b"}
+[runtime] {"type":"DETAIL_GAP","stream":"messages","record_key":"NEW","reason":"retry_exhausted","retryable":true,"detail_locator":{"kind":"chatgpt.conversation","conversation_id":"NEW"},"gap_id":"gap_f4cf1dc955197c0ab2ddf3152da3d7af"}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"conversations","stream":"messages"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+✔ run.detail_gap_recorded fires once at first sighting, NOT on a prior-run re-defer (190.55023ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1636.891659
+▶ event spine
+  ✔ migrates pre-source-column spine rows without losing row counts (17.504666ms)
+  ✔ migrates pre-event-seq spine rows before creating event_seq indexes (9.741912ms)
+  ✔ captures dynamic client registration success and rejection as trace artifacts (210.684195ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures a grant trace through disclosure and revocation (226.983918ms)
+  ✔ captures consent denial on the original staged provider-connect trace (113.192039ms)
+  ✔ captures owner device start, polling, approval, and owner-token issuance on one trace (103.134591ms)
+  ✔ captures owner device denial on one trace (104.022608ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures rejected connector grant reads on the grant trace and timeline (169.666ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures unknown-field connector grant reads on the grant trace and timeline (173.41615ms)
+  ✔ captures rejected native reads on grant timelines and owner traces (143.262618ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ stores connector and native source identities in queryable spine columns (153.570901ms)
+  ✔ captures auth-gate client read failures on grant traces with auth-gate query.received artifacts (106.379301ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures successful owner ingest and delete artifacts on owner traces (174.525731ms)
+  ✔ captures rejected owner mutation artifacts on owner traces (101.708234ms)
+  ✔ captures owner state artifacts on owner traces (115.501201ms)
+  ✔ captures grant-scoped state artifacts on grant timelines (116.339297ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures run lifecycle events for a seeded connector run (193.724968ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":2}
+  ✔ captures per-stream checkpoint commit counts for multi-stream successful runs (139.760032ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":2,"exit_code":0,"reason":"runtime_error"}
+  ✔ captures partial checkpoint commit failures after DONE(succeeded) (140.302804ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"authentication_error"}
+  ✔ captures runtime authentication failures from ingest (124.749444ms)
+[runtime] {"type":"ingest","stream":"top_artists","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"exit_code":0,"reason":"permission_error"}
+  ✔ captures runtime permission failures from state persistence (137.209886ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"connector_invalid"}
+  ✔ captures deterministic runtime connector_invalid failures from ingest (129.061174ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"rate_limit_error"}
+  ✔ captures retryable runtime rate_limit_error failures from ingest (122.910069ms)
+[runtime] {"type":"ingest","stream":"top_artists","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reported_records_emitted":2,"exit_code":0,"reason":"connector_protocol_violation"}
+  ✔ captures terminal counter mismatch failures after DONE(succeeded) (144.274637ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1}
+  ✔ captures connector-declared terminal error details on failed runs (155.617448ms)
+[runtime] {"type":"done","status":"cancelled","records_emitted":1}
+  ✔ captures connector-declared terminal error details on cancelled runs (148.086268ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures contradictory DONE(succeeded)+error protocol violations without recording success artifacts (122.37116ms)
+[runtime] {"type":"ingest","stream":"top_artists","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE protocol violations as failed run timelines without completed artifacts (135.747418ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE progress protocol violations without recording progress artifacts (125.420126ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures undeclared-stream progress protocol violations without recording progress artifacts (142.446792ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE interaction protocol violations without recording interaction artifacts (137.810717ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE skip-result protocol violations without recording skip artifacts (158.41209ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures undeclared-stream skip-result protocol violations without recording skip artifacts (128.924611ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE state protocol violations without recording checkpoint artifacts (131.233094ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE invalid JSONL protocol violations without recording completion artifacts (151.509552ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures undeclared-stream interaction protocol violations without recording interaction artifacts (124.58054ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ captures interaction lifecycle events with source descriptors (135.712357ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ captures interaction timeout lifecycle events (188.381828ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ captures interaction cancelled lifecycle events (196.151903ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction protocol violations without recording completion (142.779678ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction state violations without recording checkpoint artifacts (152.971399ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction progress violations without recording progress artifacts (149.878241ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction skip-result violations without recording skip artifacts (148.161499ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction terminal violations without recording completion or terminal success artifacts (152.456289ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction invalid JSONL violations without recording completion artifacts (165.181695ms)
+✔ event spine (6272.130966ms)
+ℹ tests 46
+ℹ suites 0
+ℹ pass 46
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7364.572538
+NOTICE:  database "pdpp_hone_hm_dgle8_runtime_handle_msg_dispatch" does not exist, skipping
+NOTICE:  database "pdpp_hone_hm_dgle8_connector_detail_gap_store" does not exist, skipping
+NOTICE:  database "pdpp_hone_hm_dgle8_detail_coverage_recovered_gap_regression" does not exist, skipping
+NOTICE:  database "pdpp_hone_hm_dgle8_event_spine" does not exist, skipping

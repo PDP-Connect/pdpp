@@ -1,0 +1,91 @@
+candidate_id: tst-mcp-parse-result-id-0010
+created: "2026-07-02T10:45:00.000Z"
+subsystem: mcp-server/id-grammar
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+files:
+  - "../packages/mcp-server/test/parse-record-result-id-oracle.test.js"
+  - "../packages/mcp-server/src/tools.js"
+symbols: [parseRecordResultId, parseStreamRecordId]
+public_surface:
+  - "MCP fetch / read_record_field id grammar: self-contained `connection_id/stream:record_id` (connectionId populated); legacy `stream:record_id` (connectionId null); `pdpp://record/{base64url-JSON}` canonical URI (decoded to connection/stream/record); malformed ids rejected"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "parseRecordResultId (packages/mcp-server/src/tools.js:2662, exported via __internal) is the id-grammar heart shared by fetch AND read_record_field: it parses the three public id forms that the content ladder promises are interchangeable self-contained handles — self-contained `connection_id/stream:record_id`, legacy `stream:record_id`, and the canonical `pdpp://record/{base64url-JSON}` URI the model sees in ladders/resource templates (the comment states 'a visible handle is never a dead fetch/read_record_field id'). self-contained-result-id.test.js exercises the grammar only through the end-to-end journey; the grammar itself is not unit-pinned by name. A mutation to the connection separator handling, the pdpp:// prefix branch, or the stream:record split would break a whole class of visible handles into dead ids with no failing unit test. This packet pins the grammar directly via __internal.parseRecordResultId — pure, no DB."
+plan:
+  transform_class: add-id-grammar-oracle
+  instruction: "Create packages/mcp-server/test/parse-record-result-id-oracle.test.js (NEW file; touch no source). Import { __internal } from '../src/tools.js' and destructure parseRecordResultId. Pin the grammar: (1) 'conn_a/orders:o1' -> { connectionId:'conn_a', stream:'orders', recordId:'o1' }; (2) 'orders:o1' -> { connectionId:null, stream:'orders', recordId:'o1' }; (3) canonical URI: build id = 'pdpp://record/' + Buffer.from(JSON.stringify({ v:1, kind:'record', connection_id:'conn_a', stream:'orders', record_id:'o1' })).toString('base64url') -> parses to { connectionId:'conn_a', stream:'orders', recordId:'o1' } (the visible-handle-never-dead contract; this envelope matches decodeResourceHandle/encodeResourceUri); (4) a pdpp://record/ URI whose base64url payload is NOT valid resource JSON but IS a legacy self-contained grammar (e.g. 'pdpp://record/' + encodeURIComponent('conn_a/orders:o1')) falls back to parsing the embedded grammar -> connectionId 'conn_a'; (5) rejections via assert.throws: '' (empty), 123 (non-string), 'noseparator' (no ':'), 'orders:' (empty record_id), ':o1' (empty stream). node:assert/strict. Assert deepEqual on the full parsed object so field renames are caught."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: high
+priority:
+  score: 8.5
+  computed: "2026-07-02T10:45:00.000Z"
+  inputs:
+    mass: 0
+    churn: 0
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: high
+  property_at_risk: the self-contained id grammar is the interchangeable-handle contract of the content ladder; a broken parse turns visible ladder handles into dead fetch/read ids
+authoring_evidence:
+  - kind: code-read
+    detail: "packages/mcp-server/src/tools.js:2662 parseRecordResultId (pdpp:// branch, connection separator at indexOf('/'), fallback to parseStreamRecordId); :2698 parseStreamRecordId (':' split with empty-guard) [line re-verified 2026-07-05; tools.js is a published .js package, NOT migrated to .ts]"
+    result: "three id forms + malformed rejection, all pure; exported via __internal (:3011) so directly unit-testable"
+  - kind: coverage-sweep
+    detail: grep -rln for a DIRECT __internal.parseRecordResultId import across packages/mcp-server/test/
+    result: "none — self-contained-result-id.test.js drives the grammar only through the in-memory journey; the pdpp:// canonical-URI branch and the malformed-id rejections are unpinned by name"
+  - kind: probe-run
+    detail: content-ladder-contract.test.js (imports __internal) runs no-DB in ~55ms
+    result: __internal is importable and the tools module loads without Postgres — pure oracle confirmed
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT/../packages/mcp-server\" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then src=src/tools.js; bak=$REPO_ROOT/.pdpp_hone_tst0010_tools.bak; cp \"$src\" \"$bak\"; sed -i \"s/if (connectionSeparator === -1) {/if (connectionSeparator >= -1) {/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (separator branch forced always-taken -> self-contained id loses connectionId -> oracle red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: id-grammar oracle not yet created\"; exit 0; fi'"
+    expect: "POST: prints 'MUTANT KILLED' — forcing the no-separator branch always-taken (connectionSeparator >= -1) makes 'conn_a/orders:o1' parse as legacy with connectionId null (stream:record split fails or mis-splits), which the deepEqual assertion catches; rc captured, source restored byte-clean. BASELINE: prints 'BASELINE:' exit 0."
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT/../packages/mcp-server\" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi'"
+    expect: "POST: the id-grammar oracle passes fully, no skips. BASELINE: prints 'BASELINE:' exit 0."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed: [non-test-source-change, behavior-change, new-dependency, git-command]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: generate_evidence×pure_logic×mcp-server/id-grammar
+touchset: ["../packages/mcp-server/test/parse-record-result-id-oracle.test.js"]
+estimates:
+  tokens: 35000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "6050a054f0c83c133e574677cbaaf7d50790c584"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.88): The diff adds exactly one new test file, touches no source, and covers all five plan cases (self-contained id, legacy id, canonical pdpp:// URI with the repaired v:1/kind:'record' envelope, non-JSON URI fallback to legacy grammar, and five malformed-input rejections) matching the packet's instruction verbatim. The mutant-kill receipt shows a real red run (two tests failing with actual thrown stack traces under the separator mutation) followed by a real green run after restoration, proving the new test is bound to actual parseRecordResultId/parseStreamRecordId behavior rather than being vacuous. No not_allowed violations (no source change, no new dependency, no git command) and no behavior change since this is a pure test addition."
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/mcp-server\" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then src=src/tools.js; bak=$REPO_ROOT/.pdpp_hone_tst0010_tools.bak; cp \"$src\" \"$bak\"; sed -i \"s/if (connectionSeparator === -1) {/if (connectionSeparator >= -1) {/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (separator branch forced always-taken -> self-contained id loses connectionId -> oracle red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: id-grammar oracle not yet created\"; exit 0; fi' -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=1207dabe bytes=44 receipt=quality/receipts/tst-mcp-parse-result-id-0010/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT/../packages/mcp-server\" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=caf12c67 bytes=31 receipt=quality/receipts/tst-mcp-parse-result-id-0010/baseline-2-direct-test-green.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/mcp-server\" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then src=src/tools.js; bak=$REPO_ROOT/.pdpp_hone_tst0010_tools.bak; cp \"$src\" \"$bak\"; sed -i \"s/if (connectionSeparator === -1) {/if (connectionSeparator >= -1) {/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (separator branch forced always-taken -> self-contained id loses connectionId -> oracle red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: id-grammar oracle not yet created\"; exit 0; fi' -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=6afb97b0 bytes=2538 receipt=quality/receipts/tst-mcp-parse-result-id-0010/post-1-red-then-green-mutant-kill.txt"
+    - "[post] direct-test-green: cd \"$REPO_ROOT/../packages/mcp-server\" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=388c82ca bytes=451 receipt=quality/receipts/tst-mcp-parse-result-id-0010/post-2-direct-test-green.txt"
+  tokens_actual: 38454
+  lesson: null
+resets:
+  - at: "2026-07-02T22:16:11.831Z"
+    from_status: blocked
+    reason: fix mutant-kill baseline expect_check (blocked → executable)
+  - at: "2026-07-06T04:37:19.768Z"
+    from_status: skipped
+    reason: "round-3 retry: codex sandbox cannot write cross-package touchsets (workspace-write root = reference-implementation); switching to claude maker / codex judge"
+  - at: "2026-07-06T23:45:00.000Z"
+    from_status: skipped
+    reason: repair plan.instruction canonical URI envelope and reopen packet

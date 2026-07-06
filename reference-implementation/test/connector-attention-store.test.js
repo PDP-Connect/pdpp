@@ -29,7 +29,7 @@ import {
   createSqliteConnectorAttentionStore,
   getDefaultConnectorAttentionStore,
   resetDefaultConnectorAttentionStoreCache,
-} from '../server/stores/connector-attention-store.js';
+} from '../server/stores/connector-attention-store.ts';
 
 function withTempDb(fn) {
   return async () => {

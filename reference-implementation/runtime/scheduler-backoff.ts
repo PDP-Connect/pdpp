@@ -26,7 +26,7 @@
  */
 
 import { BLOCKED_PROMOTION_THRESHOLD } from "./connection-health-policy.ts";
-import type { RunRecord, RunStatus } from "./scheduler.ts";
+import type { RunRecord, RunStatus } from "./scheduler-domain-types.ts";
 
 // ─── Tunables ──────────────────────────────────────────────────────────────
 

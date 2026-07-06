@@ -1,0 +1,86 @@
+candidate_id: pl2-run-target-descriptor-normalize-extract-0006
+created: "2026-07-06T18:36:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: server/streaming/run-target-registry
+files: [server/streaming/run-target-registry.js]
+symbols: [normalizeTargetDescriptor]
+public_surface:
+  - "internal behavior-preserving extraction target server/streaming/run-target-registry.js::normalizeTargetDescriptor"
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "Fresh Biome sweep command (npx biome lint with noExcessiveCognitiveComplexity, --max-diagnostics=300, output captured with 2>&1) measured server/streaming/run-target-registry.js::normalizeTargetDescriptor at cognitive complexity 48. The surrounding 200-line hard-skip screen found no grant.streams, streamGrant.fields, field_not_granted, access_mode, redirect_uri, forbidden-ip, token/consent/bearer/scope-enforcement, startServer/boot, queryRecords, normalizeAggregateRequest, fetchCimdDocument, validateCanonicalSort, rebuildSemanticIndexForStream, or normalizeInsert hit for this target."
+plan:
+  transform_class: safe-pool-explicit-seam-extraction
+  instruction: "In server/streaming/run-target-registry.js only, split normalizeTargetDescriptor into helpers for source selection, backend/mode normalization, Neko approval validation, and URL/profile field normalization. Keep thrown error messages and returned descriptor keys exactly stable; do not alter registry storage or route handlers. Extraction mandate: create a real seam with explicit parameters, no new module unless the helper interface is deeper than the moved block, no public contract change, no unrelated formatting churn, and no relocation-only helper bag."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: none
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: "behavior of server/streaming/run-target-registry.js::normalizeTargetDescriptor and its existing callers must be preserved while lowering local cognitive load"
+authoring_evidence:
+  - kind: complexity-sweep
+    detail: "REPO_ROOT=$PWD npx biome lint --config-path=/tmp/pdpp-biome-complexity.jsonc --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server lib runtime 2>&1"
+    result: "measured server/streaming/run-target-registry.js::normalizeTargetDescriptor cognitive complexity 48"
+  - kind: hard-skip-screen
+    detail: "~200 lines around server/streaming/run-target-registry.js::normalizeTargetDescriptor grepped for the prompt no-go strings"
+    result: no hard-skip string matched for this selected target
+evidence_required:
+  - rung: direct-tests
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in server/streaming/run-target-registry.test.js test/remote-telemetry-registry.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0006_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit \"$f\" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc'"
+    expect: "All listed tests pass with one ephemeral Postgres database per test file, timeout 600, and --test-force-exit."
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck"
+    expect: TypeScript project typechecks with zero errors.
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "cd \"$REPO_ROOT\" && sh -c 'cfg=/tmp/pdpp_normalizeTargetDescriptor_6_biome.jsonc; printf %s \"{\\\"root\\\":false,\\\"files\\\":{\\\"ignoreUnknown\\\":true,\\\"includes\\\":[\\\"server/**/*.js\\\",\\\"server/**/*.ts\\\",\\\"lib/**/*.js\\\",\\\"lib/**/*.ts\\\",\\\"runtime/**/*.js\\\",\\\"runtime/**/*.ts\\\"]},\\\"linter\\\":{\\\"enabled\\\":true,\\\"rules\\\":{\\\"complexity\\\":{\\\"noExcessiveCognitiveComplexity\\\":{\\\"level\\\":\\\"error\\\",\\\"options\\\":{\\\"maxAllowedComplexity\\\":5}}}}}}\" > \"$cfg\"; npx biome lint --config-path=\"$cfg\" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/streaming/run-target-registry.js 2>&1'"
+    expect: "Prints Biome cognitive-complexity diagnostics for server/streaming/run-target-registry.js; post-refactor normalizeTargetDescriptor should be below its measured baseline 48 and the rung must keep maxAllowedComplexity 5 plus --max-diagnostics=300 with stderr captured by 2>&1."
+    expect_check:
+      type: stdout_regex
+      value: "normalizeTargetDescriptor|Checked"
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - new-dependency
+  - shared-db-usage
+  - git-command
+  - relocation-without-decomplecting
+  - hard-skip-surface-touch
+maker_tier: standard
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: preserve_refactor×effectful×server/streaming/run-target-registry
+touchset: [server/streaming/run-target-registry.js]
+estimates:
+  tokens: 50000
+  evidence_cost: medium
+depends_on: []
+unlocks: []
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude REJECT (confidence 0.55): The refactor changes observable behavior: `validateNekoDescriptorApproval` calls `isNekoDescriptorApproved` unconditionally whenever `isPrivateNekoTargetHost` is false, whereas the original only called it when the typeof-function check passed (throwing immediately otherwise, without ever invoking the callback). More critically, in the original, `isNekoDescriptorApproved` is invoked lazily only if the short-circuited boolean condition requires it; in the extracted version, `rejectUnapprovedNekoDescriptor()` is called for the not-a-function case, but if it IS a function, the callback is now always invoked with the same args, which appears preserved on close reading — however the bigger issue is that `applyOptionalDescriptorString` for `interaction_id` changes emptystring/falsy handling implicitly by centralizing `optionalString`, and no test in the receipts specifically exercises the neko-approval-callback or non-loopback rejection path to confirm parity (the packet's own evidence_required only reruns the same pre-existing test files, which per the hard-skip screen don't include neko/access_mode/consent-specific coverage). Given proof_class effectful and behavior preservation is a hard gate, the diff's control-flow restructuring around `isNekoDescriptorApproved` (from a single short-circuited boolean expression to nested function calls with an early return) is a meaningful enough rewrite of the conditional logic that it cannot be certified as behavior-preserving from evidence alone; the existing test suite passing is not sufficient evidence since the hard-skip screen confirms no test targets this exact branch."
+  evidence_receipts:
+    - "[baseline] direct-tests: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in server/streaming/run-target-registry.test.js test/remote-telemetry-registry.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0006_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit \"$f\" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc' -> exit 0 (1s) PASS; exit=0 djb2=2addc6d3 bytes=5471 receipt=quality/receipts/pl2-run-target-descriptor-normalize-extract-0006/baseline-1-direct-tests.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-run-target-descriptor-normalize-extract-0006/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: cd \"$REPO_ROOT\" && sh -c 'cfg=/tmp/pdpp_normalizeTargetDescriptor_6_biome.jsonc; printf %s \"{\\\"root\\\":false,\\\"files\\\":{\\\"ignoreUnknown\\\":true,\\\"includes\\\":[\\\"server/**/*.js\\\",\\\"server/**/*.ts\\\",\\\"lib/**/*.js\\\",\\\"lib/**/*.ts\\\",\\\"runtime/**/*.js\\\",\\\"runtime/**/*.ts\\\"]},\\\"linter\\\":{\\\"enabled\\\":true,\\\"rules\\\":{\\\"complexity\\\":{\\\"noExcessiveCognitiveComplexity\\\":{\\\"level\\\":\\\"error\\\",\\\"options\\\":{\\\"maxAllowedComplexity\\\":5}}}}}}\" > \"$cfg\"; npx biome lint --config-path=\"$cfg\" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/streaming/run-target-registry.js 2>&1' -> exit 0 (0s) PASS; exit=0 djb2=f5392ed3 bytes=1629 receipt=quality/receipts/pl2-run-target-descriptor-normalize-extract-0006/baseline-3-complexity-remeasure.txt"
+    - "[post] direct-tests: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in server/streaming/run-target-registry.test.js test/remote-telemetry-registry.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0006_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit \"$f\" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc' -> exit 0 (1s) PASS; exit=0 djb2=c778f50e bytes=5471 receipt=quality/receipts/pl2-run-target-descriptor-normalize-extract-0006/post-1-direct-tests.txt"
+    - "[post] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-run-target-descriptor-normalize-extract-0006/post-2-typecheck.txt"
+    - "[post] complexity-remeasure: cd \"$REPO_ROOT\" && sh -c 'cfg=/tmp/pdpp_normalizeTargetDescriptor_6_biome.jsonc; printf %s \"{\\\"root\\\":false,\\\"files\\\":{\\\"ignoreUnknown\\\":true,\\\"includes\\\":[\\\"server/**/*.js\\\",\\\"server/**/*.ts\\\",\\\"lib/**/*.js\\\",\\\"lib/**/*.ts\\\",\\\"runtime/**/*.js\\\",\\\"runtime/**/*.ts\\\"]},\\\"linter\\\":{\\\"enabled\\\":true,\\\"rules\\\":{\\\"complexity\\\":{\\\"noExcessiveCognitiveComplexity\\\":{\\\"level\\\":\\\"error\\\",\\\"options\\\":{\\\"maxAllowedComplexity\\\":5}}}}}}\" > \"$cfg\"; npx biome lint --config-path=\"$cfg\" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/streaming/run-target-registry.js 2>&1' -> exit 0 (0s) PASS; exit=0 djb2=5cbc9ea7 bytes=1015 receipt=quality/receipts/pl2-run-target-descriptor-normalize-extract-0006/post-3-complexity-remeasure.txt"
+  tokens_actual: 140190
+  lesson: "judge rejected: The refactor changes observable behavior: `validateNekoDescriptorApproval` calls `isNekoDescriptorApproved` unconditionally whenever `isPrivateNekoTargetHost` is false, whereas the original only called it when the typeof-function check pass…"
+routing_class: extraction

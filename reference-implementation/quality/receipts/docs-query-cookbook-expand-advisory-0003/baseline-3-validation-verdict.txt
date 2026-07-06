@@ -1,0 +1,5 @@
+# hone work docs-query-cookbook-expand-advisory-0003 — baseline rung 'validation-verdict'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/docs/generated/query-cookbook.md
+# expect: independent judge (different provider than maker) reads this doc diff against server/schema-capabilities.js and confirms the documented semantics match the code exactly (no invented behavior, no forward-looking promises)
+# exit: 0  duration: 0s  verdict: PASS
+

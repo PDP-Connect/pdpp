@@ -1,0 +1,107 @@
+created: "2026-07-02T09:53:40.301Z"
+repo_sha: a86ed53d654801067446ce2db1315e8115c60420
+subsystem: runtime
+behavior_status: likely_intended
+ownership: OWN
+action: generate_evidence
+proof_class: judgment_first
+execution_gate: autonomous
+expected_quality_gain: high
+owner_attention_reduction: low
+product_impact: low
+priority:
+  score: 94
+  computed: "2026-07-02T09:53:40.301Z"
+  inputs:
+    mass: 189
+    churn: 63
+not_allowed:
+  - behavior-change
+  - implementation-change
+  - new-dependency
+  - wall-clock-sleep-as-sync-primitive
+  - pinning-cross-stream-global-order
+  - new-helper-files-outside-touchset
+  - existence-assertions-where-order-is-the-contract
+maker_tier: standard
+judge_tier: strong
+maker_provider: claude
+judge_provider: codex
+batch_key: generate_evidence×judgment_first×runtime
+estimates:
+  tokens: 40000
+  evidence_cost: medium
+depends_on: []
+status: landed
+outcome:
+  commit: "98a943f356444d77dc9db0db3de4142017099194"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.9): The maker added only the allowed oracle file and supplied the required evidence: the new test passes on the unmodified runtime, the seeded dropped-await mutation fails on the named order assertion, runtime/index.js is restored byte-clean, and typecheck passes. The assertions are order-based rather than mere existence checks, and the hold is used for mutant detection as the packet explicitly allowed. I see no behavior or implementation change outside the test-only evidence generation scope."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-done-flush.test.js ]; then node --test test/runtime-msg-order-done-flush.test.js test/runtime-pipe-resilience.test.js; else node --test test/runtime-pipe-resilience.test.js; fi -> exit 0 (0s) PASS; exit=0 djb2=86ad4c6b bytes=1702 receipt=quality/receipts/hm-await-order-done-flush-0002b/baseline-1-direct-test.txt"
+    - "[baseline] red-then-green-done-flush-order: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-done-flush.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/^            await flushAll();$/            flushAll();/' runtime/index.js || exit 1; rc=0; node --test test/runtime-msg-order-done-flush.test.js || rc=1; git checkout -- runtime/index.js; [ \"$rc\" -eq 1 ]; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/hm-await-order-done-flush-0002b/baseline-2-red-then-green-done-flush-order.txt"
+    - "[baseline] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-await-order-done-flush-0002b/baseline-3-byte-identity.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-await-order-done-flush-0002b/baseline-4-typecheck.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-done-flush.test.js ]; then node --test test/runtime-msg-order-done-flush.test.js test/runtime-pipe-resilience.test.js; else node --test test/runtime-pipe-resilience.test.js; fi -> exit 0 (0s) PASS; exit=0 djb2=c3aa6161 bytes=1807 receipt=quality/receipts/hm-await-order-done-flush-0002b/post-1-direct-test.txt"
+    - "[post] red-then-green-done-flush-order: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-done-flush.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/^            await flushAll();$/            flushAll();/' runtime/index.js || exit 1; rc=0; node --test test/runtime-msg-order-done-flush.test.js || rc=1; git checkout -- runtime/index.js; [ \"$rc\" -eq 1 ]; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=207337a0 bytes=991 receipt=quality/receipts/hm-await-order-done-flush-0002b/post-2-red-then-green-done-flush-order.txt"
+    - "[post] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-await-order-done-flush-0002b/post-3-byte-identity.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-await-order-done-flush-0002b/post-4-typecheck.txt"
+  tokens_actual: 102207
+  lesson: null
+candidate_id: hm-await-order-done-flush-0002b
+files: [runtime/index.js, test/runtime-pipe-resilience.test.js, test/runtime-msg-order-done-flush.test.js]
+symbols:
+  - runConnector
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'DONE' — await flushAll() at :3553 for succeeded runs BEFORE proc.stdin.end() at :3560 (the EOF handshake closing the buffered-stdout race)"
+    line: 3539
+public_surface:
+  - "connector stdin EOF handshake: for DONE(succeeded), every buffered record is ingested (flushAll awaited) before the runtime signals EOF"
+why_this_matters: "ONE contract, decomposed out of hm-awaited-order-oracle-0002 (4 failed attempts; superseded): the DONE arm awaits flushAll() (:3553) BEFORE proc.stdin.end() (:3560) for succeeded runs. test/runtime-pipe-resilience.test.js pins that the EOF handshake EXISTS, not that flush precedes it — dropping the await lets the connector exit while ingest POSTs are still in flight, silently losing tail records. The flushAll-await contract is also what hm-detail-gap-ledger-extract-0008 relies on (DETAIL_GAP_RECOVERED awaits flushAll() before markGapStatus 'recovered'), and hm-done-terminal-extract-0010 cites this ordering as its oracle. Run-5 proved this specific kill is reachable: the seeded dropped-await run FAILED in both post-r1 and post-r2 (receipts post-r1-3/post-r2-3-red-then-green-done-flush-order.txt)."
+plan:
+  transform_class: direct-unit-oracle-generation
+  instruction: "Add test/runtime-msg-order-done-flush.test.js pinning EXACTLY ONE contract: for DONE(succeeded), every ingest POST completes before the connector observes stdin EOF. Copy the landed hm-0001 harness (test/runtime-handle-msg-dispatch.test.js, status landed, all pins green): inline writeStub for the temp-file fake connector (:103-140), readline flowing-mode stdin via createInterface({ input: process.stdin, crlfDelay: Infinity }) (:125), idle setInterval keep-alive tail (:116), injectable onInteraction passed to runConnector (:189). SELF-CONTAINED SINGLE FILE: ALL harness code (stub writer, RS stub with the shared sequence log, sentinel plumbing) lives INSIDE the one touchset test file — creating ANY other file is a touchset violation and the engine reverts ALL work fail-closed (run-3 lesson). SHARED MONOTONIC SEQUENCE LOG doctrine (the run-5 judge's core demand): one plain array; EVERY mark is appended SYNCHRONOUSLY at the moment of observation (the spine sink pushes at emit-invocation, the RS stub pushes 'request' at receipt and 'completed' when the response is released and fully written, connector-side observations are written synchronously with writeFileSync and folded into the log) — async marks weaken the log and were REVISEd in run-5. Assertions compare LOG INDEX ORDER, never existence (run-2/run-5 refusal class: the run-5 STATE mutant SURVIVED an existence-shaped oracle) and never wall-clock margins. HOLD-the-boundary: the RS stub HOLDS a response until the test releases it through an explicit barrier promise — a hold is not a sleep; green-path ordering is enforced by the runtime's await, never by hold length. Scenario: connector stub emits 2 RECORDs for stream A (below the default batch threshold) then DONE{status:'succeeded'}; CONNECTOR-SIDE (the run-1 lesson, twice red): a Node child only receives stdin 'end' once stdin is CONSUMED — put process.stdin into flowing mode (attach a 'data' listener or process.stdin.resume()) BEFORE the runtime closes it, keep the event loop alive until 'end' fires, and write the EOF sentinel SYNCHRONOUSLY (fs.writeFileSync) inside the 'end' handler before exiting 0 — reuse the working connector-side pattern from test/runtime-pipe-resilience.test.js. The RS stub HOLDS the DONE-flush ingest response; the test releases it only after observing 'ingest:request' plus a hold window generous enough for pipe-EOF delivery (~200ms) — the hold is MUTANT-DETECTION only, never green-path synchronization: on unmutated code the ordering is enforced by the await itself and is hold-length-independent (this is why the wall-clock ban does not apply to the hold). The test folds 'eof:observed' into the shared log when the sentinel appears. MANDATORY named test (exactly): 'DONE(succeeded) arm: every ingest POST completes before the connector observes stdin EOF' asserting index(ingest:completed) < index(eof:observed), and additionally that the runConnector outcome does not settle before 'ingest:completed' is logged. Kill mechanics: under the seeded mutation (await dropped from flushAll() at :3553) proc.stdin.end() fires in the same tick as the un-awaited flushAll call, the child observes EOF during the hold, and 'eof:observed' logs before 'ingest:completed' — proven red twice in run-5. PROCESS REQUIREMENT: iterate node --test on your file DURING authoring and only conclude when it is green against UNMUTATED code (this oracle CHARACTERIZES current behavior); then verify the kill yourself: seed the packet's sed mutation locally, confirm your named test (and ONLY an order assertion) goes red, restore runtime/index.js to byte-identity before handing back (the byte-identity rung enforces it). Never hand back a red file, and never hand back a file whose named test survives the seeded mutant — the red-then-green rung exits nonzero and the packet fails. Do NOT leave runtime/index.js modified; the engine's rung seeds and restores it itself."
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "the connector-side EOF plumbing is the twice-failed part (run-1: sentinel never appeared because stdin was never consumed); a test that waits on wall-clock instead of the sentinel + held-response barrier would be flaky and get deleted"
+authoring_evidence:
+  - kind: code-read
+    detail: "runtime/index.js case 'DONE' re-read 2026-07-02 at a86ed53d6: :3539 case, :3551 if succeeded, :3553 await flushAll(), :3555-3559 EOF-handshake comment, :3560 proc.stdin.end()"
+    result: "contract confirmed at current line numbers; the 12-space indent distinguishes :3553 from the DETAIL_GAP_RECOVERED flushAll"
+  - kind: grep-unique
+    detail: "grep -c '^            await flushAll();$' runtime/index.js (2026-07-02, a86ed53d6)"
+    result: "1 — the 12-space-indent sed target is verified unique (plain flushAll() occurs twice; the anchored form once)"
+  - kind: baseline-run
+    detail: "node --test test/runtime-handle-msg-dispatch.test.js test/runtime-pipe-resilience.test.js test/event-spine.test.js (2026-07-02, repo_sha a86ed53d6)"
+    result: "71/71 pass, 0 fail, 0 skipped — harness-pattern suites verified green on the current tree"
+  - kind: fold-back
+    detail: "hm-awaited-order-oracle-0002 judge history distilled 2026-07-02 (4 attempts, ~$22, lesson \"packet bar not reachable by this maker\"): run-2 judge refused existence-shaped assertions for DONE flush-before-EOF and INTERACTION attention/stdin ordering and refused the MISSING RECORD batch-boundary contract; run-3 ended skipped(touchset-violation: probe-driver.mjs/probe-stdin.mjs outside touchset); run-5 codex REVISE 0.98 then 0.88: (i) the seeded STATE flush-order mutant SURVIVED the oracle (receipt post-r1-2-red-then-green-state-flush-order.txt: exit 0, all tests green under the dropped-await mutation — the oracle asserted existence, not order), (ii) the rung exit code was not probative because the trailing git checkout masked node --test failures, (iii) the timeout INTERACTION ordering omitted the assistance-resolution/known-gap order before the stdin write, (iv) an async stdin mark weakened the shared monotonic log"
+    result: "this decomposition pins ONE contract per packet; every red-then-green rung captures rc BEFORE restore and exits 0 ONLY when the seeded run failed, with the named failure enforced deterministically via expect_check failing_test_named; all order assertions read ONE shared monotonic sequence log with SYNCHRONOUS marks"
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-done-flush.test.js ]; then node --test test/runtime-msg-order-done-flush.test.js test/runtime-pipe-resilience.test.js; else node --test test/runtime-pipe-resilience.test.js; fi"
+    expect: "baseline (new file absent): runtime-pipe-resilience suite (18 tests) green; post: the new single-contract oracle green alongside it, 0 fail, no new skips"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: red-then-green-done-flush-order
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-done-flush.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/^            await flushAll();$/            flushAll();/' runtime/index.js || exit 1; rc=0; node --test test/runtime-msg-order-done-flush.test.js || rc=1; git checkout -- runtime/index.js; [ \"$rc\" -eq 1 ]; else echo oracle-not-yet-authored; fi"
+    expect: "baseline: oracle-not-yet-authored (file absent, exit 0). Post: the rung seeds the dropped-await mutation (runtime/index.js:3553; 12-space-indent sed target verified unique 2026-07-02), runs the oracle capturing rc BEFORE restoring the file, restores, and exits 0 ONLY IF the seeded run FAILED — failing output visible in the receipt (run-5 masking class closed), and the engine requires the failure line to name 'DONE(succeeded) arm: every ingest POST completes before the connector observes stdin EOF'"
+    expect_check:
+      type: failing_test_named
+      value: before the connector observes stdin EOF
+  - rung: byte-identity
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/index.js"
+    expect: empty — this packet changes tests only (runtime/index.js is not in the touchset); also proves the red-then-green rung restored its seed
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+touchset: [test/runtime-msg-order-done-flush.test.js]
+unlocks: [hm-detail-gap-ledger-extract-0008, hm-done-terminal-extract-0010, hm-dispatch-table-coherence-0011]

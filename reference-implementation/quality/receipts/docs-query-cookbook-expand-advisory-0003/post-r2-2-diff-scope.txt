@@ -1,0 +1,31 @@
+# hone work docs-query-cookbook-expand-advisory-0003 — post-r2 rung 'diff-scope'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff --stat
+# expect: ONLY reference-implementation/docs/generated/query-cookbook.md changed
+# exit: 0  duration: 0s  verdict: PASS
+
+ .../docs/generated/query-cookbook.md               |   2 +
+ reference-implementation/quality/AGENDA.json       | 622 +++++++++++----------
+ reference-implementation/quality/AGENDA.md         | 355 ++++++------
+ .../quality/agendas/not-chosen.json                |  70 +--
+ reference-implementation/quality/claims.jsonl      |   6 +
+ reference-implementation/quality/cost.jsonl        |   3 +
+ .../quality/packets/auth-mutation-tests-0001.yaml  |  35 +-
+ .../docs-query-cookbook-expand-advisory-0003.yaml  |  17 +-
+ .../packets/hm-awaited-order-oracle-0002.yaml      |  30 +-
+ .../packets/hm-reporting-family-extract-0003.yaml  |  32 +-
+ .../baseline-1-direct-test.txt                     | 132 ++---
+ .../post-1-direct-test.txt                         | 162 +++---
+ .../post-r1-1-direct-test.txt                      | 145 ++---
+ .../post-r2-1-direct-test.txt                      | 166 +++---
+ .../baseline-1-direct-test.txt                     | 368 ++++++------
+ .../baseline-5-no-new-anon-callbacks.txt           |   2 +-
+ .../post-1-direct-test.txt                         | 368 ++++++------
+ .../post-3-complexity-remeasure.txt                |   4 +-
+ .../post-4-file-excess-remeasure.txt               |  64 +--
+ .../post-5-no-new-anon-callbacks.txt               |   2 +-
+ .../post-r2-1-direct-test.txt                      | 366 ++++++------
+ .../post-r2-3-complexity-remeasure.txt             |   4 +-
+ .../post-r2-4-file-excess-remeasure.txt            |  64 +--
+ .../post-r2-5-no-new-anon-callbacks.txt            |   2 +-
+ .../quality/selection-ledger.jsonl                 |  12 +
+ 25 files changed, 1547 insertions(+), 1486 deletions(-)

@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 
-import { isClosedPipeWriteError } from '../runtime/pipe-errors.js';
-import { deriveTerminalReason } from '../runtime/terminal-reason.js';
+import { isClosedPipeWriteError } from '../runtime/pipe-errors.ts';
+import { deriveTerminalReason } from '../runtime/terminal-reason.ts';
 import { runConnector } from '../runtime/index.js';
 
 // Regression coverage for

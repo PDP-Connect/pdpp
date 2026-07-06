@@ -1,0 +1,71 @@
+candidate_id: runtime-scheduler-t0-5ee375f5
+created: "2026-07-01T23:20:16.123Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: runtime
+files: [runtime/scheduler.ts]
+symbols: [fromStoredRunRecord, toStoredRunRecord, hydratePersistence, getManifestRefreshPolicy]
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 9, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn 'fromStoredRunRecord' cc=9. File attention: churn 42 × excess-cc mass 11 = 462; 4 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to fromStoredRunRecord, toStoredRunRecord, hydratePersistence, getManifestRefreshPolicy in runtime/scheduler.ts (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: medium
+owner_attention_reduction: high
+product_impact: none
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: low
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for runtime/scheduler.ts, tier T0 (repo_sha 6e8d8559c36b94d41bc4c42a9a31342e60b3b334)"
+    result: "4 flagged fn(s), Σ excess-cc 11, max cc 9, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- runtime/scheduler.ts"
+    result: "42 commits in window; coupling(fan-in proxy)=35"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck"
+    expect: exit 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test"
+    expect: all tests pass; 0 fail; no new skips
+  - rung: complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/scheduler.ts::fromStoredRunRecord'"
+    expect: found=true and cognitive_before < 9 (packet baseline); red_scan unchanged
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: preserve_refactor×certified_transform×runtime
+touchset: [runtime/scheduler.ts]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex REJECT (confidence 0.94): The diff relocates the existing source-id selection logic into a new helper instead of performing the allowed local tidy transforms. This is a shallow extraction with no demonstrated decomplecting, directly violating the not_allowed relocation-without-decomplecting constraint. The complexity evidence only targets fromStoredRunRecord, so it does not certify that real complexity was reduced rather than moved."
+  evidence_receipts:
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=40c8e323 bytes=124 receipt=quality/receipts/runtime-scheduler-t0-5ee375f5/baseline-1-typecheck.txt"
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test -> exit 0 (483s) PASS; exit=0 djb2=93c6b41c bytes=508770 receipt=quality/receipts/runtime-scheduler-t0-5ee375f5/baseline-2-direct-test.txt"
+    - "[baseline] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/scheduler.ts::fromStoredRunRecord' -> exit 0 (0s) PASS; exit=0 djb2=c40a524d bytes=305 receipt=quality/receipts/runtime-scheduler-t0-5ee375f5/baseline-3-complexity-remeasure.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=40c8e323 bytes=124 receipt=quality/receipts/runtime-scheduler-t0-5ee375f5/post-1-typecheck.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test -> exit 0 (465s) PASS; exit=0 djb2=013c7fb3 bytes=509618 receipt=quality/receipts/runtime-scheduler-t0-5ee375f5/post-2-direct-test.txt"
+    - "[post] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/scheduler.ts::fromStoredRunRecord' -> exit 0 (0s) FAIL: cognitive_before=9, expected < 9 — no measured complexity reduction; exit=0 djb2=c40a524d bytes=305 receipt=quality/receipts/runtime-scheduler-t0-5ee375f5/post-3-complexity-remeasure.txt"
+    - "[post-r1] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=40c8e323 bytes=124 receipt=quality/receipts/runtime-scheduler-t0-5ee375f5/post-r1-1-typecheck.txt"
+    - "[post-r1] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test -> exit 0 (442s) PASS; exit=0 djb2=4e056e5d bytes=510384 receipt=quality/receipts/runtime-scheduler-t0-5ee375f5/post-r1-2-direct-test.txt"
+    - "[post-r1] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/scheduler.ts::fromStoredRunRecord' -> exit 0 (0s) PASS; exit=0 djb2=3c69e970 bytes=305 receipt=quality/receipts/runtime-scheduler-t0-5ee375f5/post-r1-3-complexity-remeasure.txt"
+  tokens_actual: 105094
+  lesson: "judge rejected: …[210 bytes clipped]…\nlating the not_allowed relocation-without-decomplecting constraint. The complexity evidence only targets fromStoredRunRecord, so it does not certify that real complexity was reduced rather than moved."

@@ -1,0 +1,85 @@
+# hone work pl1-records-aggregate-bindings-merge-0001 — post rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in storage-fan-in-read-contract rs-streams-aggregate-boundary aggregate-time-buckets; do db=pdpp_hone_pl1recagg_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; echo "== $f =="; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; echo "rc=$rc"; exit $rc'
+# expect: all three suites green with unchanged pass counts; per-file ephemeral DB isolates shared-state races (matches scripts/run-tests.js isolation contract)
+# exit: 0  duration: 3s  verdict: PASS
+
+== storage-fan-in-read-contract ==
+✔ resolveFanInBindings returns both active bindings when no narrowing is requested (12.115175ms)
+✔ resolveFanInBindings narrows to a single binding when request supplies connection_id (5.336514ms)
+✔ resolveFanInBindings rejects connection_id outside the grant with connection_not_found (5.113591ms)
+✔ resolveFanInBindings honors grant-scope connection_id constraint (4.923897ms)
+✔ resolveReadRequestBindings forwards deprecated_alias_used warning when alias is sent (5.509838ms)
+✔ resolveReadRequestBindings canonicalizes a URL-shaped storage binding to the active canonical instance (4.51992ms)
+✔ resolveReadRequestBindings resolves identically for the URL alias and the bare canonical key (4.46055ms)
+✔ queryRecordsAcrossBindings fans in records across two granted connections (6.278752ms)
+✔ queryRecordsAcrossBindings preserves fan-in order and cursor collapse under bounded concurrency (5.644411ms)
+✔ queryRecordsAcrossBindings narrows to one binding when bindings list is filtered (5.184092ms)
+✔ queryRecordsAcrossBindings auto-selects exactly-one binding without raising (4.715554ms)
+✔ getRecordAcrossBindings emits ambiguous_connection when identifier resolves to multiple bindings (5.272554ms)
+✔ getRecordAcrossBindings auto-selects the only binding holding a unique identifier (4.702153ms)
+✔ getRecordAcrossBindings narrows successfully with explicit connection_id on ambiguous identifier (4.683633ms)
+✔ getRecordAcrossBindings returns not_found when identifier is absent from every binding (4.779695ms)
+✔ aggregateRecordsAcrossBindings sums counts across granted connections (5.181201ms)
+✔ aggregateRecordsAcrossBindings merges scalar group_by buckets across granted connections (4.951528ms)
+✔ aggregateRecordsAcrossBindings merges group_by_time buckets across granted connections (9.832174ms)
+✔ aggregateRecordsAcrossBindings rejects exact count_distinct across multiple connections (4.556931ms)
+✔ listStreamsAcrossBindings emits one summary per (stream, connection_id) (4.736544ms)
+✔ store.setDisplayName updates the display_name and rejects empty / non-owner / missing (4.457009ms)
+✔ renamed display_name surfaces on the next records-list fan-in response (4.735654ms)
+✔ validateConnectionAlias accepts canonical, accepts alias, rejects conflicts (0.138793ms)
+✔ queryRecordsAcrossBindings rejects changes_since under multi-binding fan-in with retry guidance (4.441389ms)
+✔ queryRecordsAcrossBindings honors changes_since on the single-binding fast path (4.724864ms)
+✔ queryRecordsAcrossBindings emits partial_results warning when fan-in collapses pagination (4.916708ms)
+✔ queryRecordsAcrossBindings sums exact counts honestly across bindings (5.883824ms)
+✔ queryRecordsAcrossBindings threads resolver warnings (deprecated alias) into multi-binding meta.warnings (4.822865ms)
+✔ aggregateRecordsAcrossBindings threads resolver warnings into multi-binding meta.warnings (4.434389ms)
+✔ listStreamsAcrossBindings honors per-stream grant connection_id when resolver is supplied (4.916608ms)
+ℹ tests 30
+ℹ suites 0
+ℹ pass 30
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 618.419615
+== rs-streams-aggregate-boundary ==
+✔ rs.streams.aggregate operation has no host or storage concretes (0.960648ms)
+✔ rs.streams.aggregate operation does not import server/index.js (0.142512ms)
+✔ rs.streams.aggregate operation does not import server/records.js (0.57654ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 38.745268
+== aggregate-time-buckets ==
+✔ scalar group_by is unchanged (count-desc, key-asc) and carries null additive fields (15.012087ms)
+✔ group_by_time buckets by UTC day by default, echoes UTC, and orders ascending (9.890955ms)
+✔ group_by_time honors an explicit IANA time_zone for bucket boundaries (7.362251ms)
+✔ group_by_time month/week/year buckets are calendar-correct (5.722112ms)
+✔ group_by_time rejects missing, forbidden, and invalid granularity (5.315615ms)
+✔ group_by and group_by_time together are rejected (single dimension) (5.700892ms)
+✔ group_by_time rejects an unknown time zone (5.406726ms)
+✔ count_distinct counts distinct non-null values exactly with approximate=false (4.775254ms)
+✔ count_distinct rejects grouping and undeclared/ungranted fields (5.044819ms)
+✔ group_by_time requires a declared time-bucketable field (4.805845ms)
+✔ manifest validation accepts valid group_by_time / count_distinct declarations (3.580463ms)
+✔ manifest validation rejects a non-date group_by_time field (3.38491ms)
+✔ manifest validation rejects an unknown count_distinct field (3.530983ms)
+✔ group_by other_count is the sum of counts for groups beyond limit (4.680783ms)
+✔ group_by other_count is 0 when all groups fit within limit (4.55262ms)
+✔ group_by_time other_count covers buckets truncated by limit (4.873976ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 16
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 529.069638
+rc=0
+NOTICE:  database "pdpp_hone_pl1recagg_storage_fan_in_read_contract" does not exist, skipping
+NOTICE:  database "pdpp_hone_pl1recagg_rs_streams_aggregate_boundary" does not exist, skipping
+NOTICE:  database "pdpp_hone_pl1recagg_aggregate_time_buckets" does not exist, skipping

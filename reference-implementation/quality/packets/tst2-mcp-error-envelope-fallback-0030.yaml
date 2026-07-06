@@ -1,0 +1,75 @@
+candidate_id: tst2-mcp-error-envelope-fallback-0030
+created: "2026-07-06T23:50:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: packages/mcp-server/error-envelope
+files:
+  - "../packages/mcp-server/test/error-envelope-fallback-oracle.test.js"
+  - "../packages/mcp-server/src/tools.js"
+symbols: [toToolResult, errorToolResult]
+public_surface:
+  - "MCP tool errors expose a typed structuredContent.error envelope with provider_url, http_status, request_id, and http_N fallback code"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "The published MCP package is consumed by agents that branch on structuredContent.error. Existing integration tests cover selected RS errors, but there is no by-name pure oracle for the fallback envelope created when the RS response lacks an error body."
+plan:
+  transform_class: add-seeded-mutation-oracle
+  instruction: "Create packages/mcp-server/test/error-envelope-fallback-oracle.test.js. Import { __internal } from '../src/tools.js' and call toToolResult with { ok:false, status:502, requestId:'req_502' } and providerUrl 'https://provider.test'. Assert isError true, content[0].text parses as { type:'rs_error', code:'http_502', message includes HTTP 502 }, and structuredContent includes the same error plus provider_url, http_status:502, request_id:'req_502'. Touch no source."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: high
+  property_at_risk: MCP clients must receive machine-readable HTTP error envelopes even when the resource server omits a typed error body
+authoring_evidence:
+  - kind: coverage-sweep
+    detail: "rg -n 'http_502|error-envelope-fallback|toToolResult\\(\\{ ok:false|Resource server returned HTTP' packages/mcp-server/test"
+    result: no focused pure fallback-envelope oracle found
+  - kind: code-read
+    detail: "packages/mcp-server/src/tools.js errorToolResult fallback builds type rs_error, code http_${status}, provider_url, http_status, request_id"
+    result: "pure __internal.toToolResult path, no DB or MCP transport required"
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT/../packages/mcp-server\" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then src=src/tools.js; bak=/tmp/tst2_0030_mcp_tools.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/http_status: response\\\\.status/http_status: 200/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: error envelope oracle not yet created\"; exit 0; fi"
+    expect: "BASELINE guarded green while absent. POST forcing http_status to 200 must make the new fallback-envelope oracle fail, then restore tools.js byte-clean and print MUTANT KILLED."
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT/../packages/mcp-server\" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi"
+    expect: "POST: the new pure oracle passes under node --test --test-force-exit. BASELINE: guarded green while absent."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed: [non-test-source-change, production-source-change, behavior-change, new-dependency, git-command]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: generate_evidence×pure_logic×packages/mcp-server/error-envelope
+touchset: ["../packages/mcp-server/test/error-envelope-fallback-oracle.test.js"]
+estimates:
+  tokens: 30000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude REVISE (confidence 0.72): The packet specified a pure oracle for toToolResult/errorToolResult only, but the mutant-kill evidence shows the toToolResult test (test 1) is insensitive to the applied mutation and passes identically pre- and post-mutation; all mutation-detection comes from an added second test that exercises buildStreamResourceTemplate, a symbol never named in the packet's symbols/plan/public_surface. This is scope creep past the instruction and means the actually-required oracle (toToolResult's fallback envelope) is not proven by mutation as the packet demanded."
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/mcp-server\" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then src=src/tools.js; bak=/tmp/tst2_0030_mcp_tools.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/http_status: response\\\\.status/http_status: 200/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: error envelope oracle not yet created\"; exit 0; fi -> exit 0 (0s) PASS; exit=0 djb2=c040e805 bytes=48 receipt=quality/receipts/tst2-mcp-error-envelope-fallback-0030/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT/../packages/mcp-server\" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi -> exit 0 (0s) PASS; exit=0 djb2=caf12c67 bytes=31 receipt=quality/receipts/tst2-mcp-error-envelope-fallback-0030/baseline-2-direct-test-green.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/mcp-server\" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then src=src/tools.js; bak=/tmp/tst2_0030_mcp_tools.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/http_status: response\\\\.status/http_status: 200/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: error envelope oracle not yet created\"; exit 0; fi -> exit 1 (0s) FAIL: exit 1 (expected 0); exit=1 djb2=fc236688 bytes=204 receipt=quality/receipts/tst2-mcp-error-envelope-fallback-0030/post-1-red-then-green-mutant-kill.txt"
+    - "[post-r1] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/mcp-server\" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then src=src/tools.js; bak=/tmp/tst2_0030_mcp_tools.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/http_status: response\\\\.status/http_status: 200/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: error envelope oracle not yet created\"; exit 0; fi -> exit 0 (0s) PASS; exit=0 djb2=bb2a07be bytes=962 receipt=quality/receipts/tst2-mcp-error-envelope-fallback-0030/post-r1-1-red-then-green-mutant-kill.txt"
+    - "[post-r1] direct-test-green: cd \"$REPO_ROOT/../packages/mcp-server\" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi -> exit 0 (0s) PASS; exit=0 djb2=de23ffeb bytes=269 receipt=quality/receipts/tst2-mcp-error-envelope-fallback-0030/post-r1-2-direct-test-green.txt"
+    - "[post-r2] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/mcp-server\" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then src=src/tools.js; bak=/tmp/tst2_0030_mcp_tools.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/http_status: response\\\\.status/http_status: 200/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: error envelope oracle not yet created\"; exit 0; fi -> exit 1 (0s) FAIL: exit 1 (expected 0); exit=1 djb2=89a71dc7 bytes=206 receipt=quality/receipts/tst2-mcp-error-envelope-fallback-0030/post-r2-1-red-then-green-mutant-kill.txt"
+  tokens_actual: 117542
+  lesson: judge-driven revision regressed the oracle; REVISE cycles need the oracle re-gate (it held)
+routing_class: certified-mechanical

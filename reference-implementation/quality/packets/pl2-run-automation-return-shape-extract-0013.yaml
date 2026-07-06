@@ -1,0 +1,85 @@
+candidate_id: pl2-run-automation-return-shape-extract-0013
+created: "2026-07-06T23:18:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: runtime/run-automation-policy
+files: [runtime/run-automation-policy.ts]
+symbols: [projectRunAutomationPolicy]
+public_surface: [run automation policy projection for scheduled/manual triggers]
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "Fresh scope-fn measured runtime/run-automation-policy.ts file_excess=9, all from projectRunAutomationPolicy cc14. The function repeats the same projection object shape across four branches. A small local result builder can make the branch policy explicit while reducing target complexity; helper should remain below cog 5."
+plan:
+  transform_class: extract-projection-result-builder
+  instruction: "In runtime/run-automation-policy.ts only, introduce a small helper for constructing RunAutomationPolicyProjection from the repeated fields (trigger_kind, deployment_readiness, allowed_to_start, automation_mode, notification_posture, reason, requires_owner_approval). Replace the branch return object literals with calls that preserve every field value exactly. Do not change policyBlocksAutomatic, canNotifyDuringRun, automationModeCopy, or automaticIneligibilityReason semantics."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: none
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: manual and scheduled automation policy branches must preserve allowed_to_start and owner-approval decisions
+authoring_evidence:
+  - kind: complexity-sweep
+    detail: "REPO_ROOT=$PWD npx biome lint --config-path=/tmp/pdpp-biome-complexity.jsonc --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/stores server/streaming lib runtime 2>&1"
+    result: runtime/run-automation-policy.ts not above Biome 15 but scope-fn --cog 5 flags projectRunAutomationPolicy cc14/excess9; hard-skip scan clean
+  - kind: scope-fn
+    detail: scope-fn file runtime/run-automation-policy.ts --cog 5
+    result: file_excess=9; single flagged function projectRunAutomationPolicy
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0013; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/run-automation-policy.test.js test/run-automation-policy-branches.test.js test/run-automation-policy-precedence.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo \"rc=$rc\"; exit $rc'"
+    expect: Run automation policy tests remain green.
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck"
+    expect: TypeScript project typechecks with zero errors.
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'runtime/run-automation-policy.ts' --cog 5"
+    expect: file_excess drops below 9 and no new helper is flagged.
+    expect_check:
+      type: file_excess_lt
+      value: 9
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - new-dependency
+  - shared-db-usage
+  - git-command
+  - hard-skip-surface-touch
+  - relocation-without-decomplecting
+maker_tier: standard
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: preserve_refactor×pure_logic×runtime/run-automation-policy
+touchset: [runtime/run-automation-policy.ts]
+estimates:
+  tokens: 35000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "6c8b3597920af2e9ec565687db024c29d762dbf5"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.93): Line-by-line comparison confirms every branch preserves its exact original field values; the two hoisted locals (manualAwareNotificationPosture, requiresOwnerApproval) replace literally-identical duplicated expressions, not different logic. The helper genuinely decomplects (named fields replace 4x repeated 7-field literals) rather than merely relocating a blob, satisfying the anti-relocation bar. All required evidence (26/26 tests pass pre/post, typecheck clean, file_excess 9→6 satisfying the <9 gate) is present and matches the pure_logic preserve_refactor risk profile, and no not_allowed items are touched."
+  evidence_receipts:
+    - "[baseline] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0013; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/run-automation-policy.test.js test/run-automation-policy-branches.test.js test/run-automation-policy-precedence.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo \"rc=$rc\"; exit $rc' -> exit 0 (0s) PASS; exit=0 djb2=ed64857c bytes=2680 receipt=quality/receipts/pl2-run-automation-return-shape-extract-0013/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-run-automation-return-shape-extract-0013/baseline-2-typecheck.txt"
+    - "[baseline] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'runtime/run-automation-policy.ts' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=934ff822 bytes=291 receipt=quality/receipts/pl2-run-automation-return-shape-extract-0013/baseline-3-file-excess-remeasure.txt"
+    - "[post] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0013; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/run-automation-policy.test.js test/run-automation-policy-branches.test.js test/run-automation-policy-precedence.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo \"rc=$rc\"; exit $rc' -> exit 0 (1s) PASS; exit=0 djb2=1ac20b4a bytes=2682 receipt=quality/receipts/pl2-run-automation-return-shape-extract-0013/post-1-direct-test.txt"
+    - "[post] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (6s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-run-automation-return-shape-extract-0013/post-2-typecheck.txt"
+    - "[post] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'runtime/run-automation-policy.ts' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=9e8ff163 bytes=291 receipt=quality/receipts/pl2-run-automation-return-shape-extract-0013/post-3-file-excess-remeasure.txt"
+  tokens_actual: 53777
+  lesson: null
+routing_class: extraction

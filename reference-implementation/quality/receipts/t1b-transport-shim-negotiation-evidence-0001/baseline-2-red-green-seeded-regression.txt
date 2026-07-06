@@ -1,0 +1,18 @@
+# hone work t1b-transport-shim-negotiation-evidence-0001 — baseline rung 'red-green-seeded-regression'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js
+# expect: with the transient seeded break of the accepts long-form expansion applied: at least one new test FAILS (paste output); after restore: all green and git diff -- server/transport.js is empty
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ createApp() is native Fastify — no express middleware stack (17.259218ms)
+✔ routes declared with { contract } carry the contract-package schema directly on the Fastify route (7.139282ms)
+✔ unknown contract operation ids fail fast at registration time (1.579449ms)
+✔ every @pdpp/reference-contract manifest matches a live Fastify route on the reference server (140.115742ms)
+✔ every @pdpp/reference-contract manifest is declared via { contract: "opId" } at registration time (104.20234ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1257.428292

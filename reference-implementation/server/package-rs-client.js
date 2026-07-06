@@ -668,6 +668,22 @@ function mergeListEnvelopes(children, results, _path) {
   return { ...ok, body: baseBody };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: packet requires this verbatim five-way envelope writer.
+function placeSearchHitsInEnvelope(baseBody, limitedHits, totalScanned) {
+  if (Array.isArray(baseBody.data)) {
+    baseBody.data = limitedHits;
+  } else if (baseBody.data && typeof baseBody.data === 'object' && Array.isArray(baseBody.data.data)) {
+    baseBody.data = { ...baseBody.data, data: limitedHits };
+  } else if (baseBody.data && typeof baseBody.data === 'object' && Array.isArray(baseBody.data.results)) {
+    baseBody.data = { ...baseBody.data, results: limitedHits };
+    if (totalScanned > 0) baseBody.data.scanned = totalScanned;
+  } else if (Array.isArray(baseBody.results)) {
+    baseBody.results = limitedHits;
+  } else {
+    baseBody.data = { results: limitedHits };
+  }
+}
+
 function mergeSearchEnvelopes(children, results, _path, query = {}) {
   const ok = results.find((r) => r.ok);
   if (!ok) return results[0];
@@ -701,18 +717,7 @@ function mergeSearchEnvelopes(children, results, _path, query = {}) {
   const truncated = dedupedHits.length > limitedHits.length;
   const sourceMix = sourceMixForHits(limitedHits);
   const baseBody = ok.body && typeof ok.body === 'object' ? { ...ok.body } : {};
-  if (Array.isArray(baseBody.data)) {
-    baseBody.data = limitedHits;
-  } else if (baseBody.data && typeof baseBody.data === 'object' && Array.isArray(baseBody.data.data)) {
-    baseBody.data = { ...baseBody.data, data: limitedHits };
-  } else if (baseBody.data && typeof baseBody.data === 'object' && Array.isArray(baseBody.data.results)) {
-    baseBody.data = { ...baseBody.data, results: limitedHits };
-    if (totalScanned > 0) baseBody.data.scanned = totalScanned;
-  } else if (Array.isArray(baseBody.results)) {
-    baseBody.results = limitedHits;
-  } else {
-    baseBody.data = { results: limitedHits };
-  }
+  placeSearchHitsInEnvelope(baseBody, limitedHits, totalScanned);
   baseBody.has_more = truncated || childHasMore || baseBody.has_more === true;
   baseBody.meta = {
     ...(baseBody.meta || {}),

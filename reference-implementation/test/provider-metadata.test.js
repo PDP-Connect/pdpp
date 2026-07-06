@@ -6,7 +6,7 @@ import { request as httpRequest } from 'node:http';
 import { startServer } from '../server/index.js';
 import { createCimdDocument } from '../server/auth.js';
 import { resolvePublicUrl, resolveSiblingPublicUrl } from '../server/metadata.ts';
-import { PDPP_REFERENCE_REVISION_HEADER } from '../server/reference-revision.js';
+import { PDPP_REFERENCE_REVISION_HEADER } from '../server/reference-revision.ts';
 import { createPdppCliCommand, getPdppCliPackageInfo } from '../../packages/cli/src/package-info.js';
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
@@ -1340,7 +1340,7 @@ test('explicit PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0 env still disables regi
   // Simulate: operator sets the off switch and no explicit opts override it.
   const previous = process.env.PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION;
   process.env.PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION = '0';
-  // The server/index.js module reads the env once at import time, so we can't
+  // The server/index.ts module reads the env once at import time, so we can't
   // retroactively flip the module constant. Instead we pass the explicit opts
   // equivalent that `PDPP_ENABLE_DYNAMIC_CLIENT_REGISTRATION=0` would have set
   // on a fresh process. This matches how the reference docs describe the env.

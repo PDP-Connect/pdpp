@@ -1,0 +1,20 @@
+# hone work pl1-instance-record-enum-validate-0012 — baseline rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1instrec; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/connector-instance-store.test.js || rc=1; dropdb --if-exists $db; echo "rc=$rc"; exit $rc'
+# expect: connector-instance-store suite green with unchanged pass count; ephemeral DB isolates state
+# exit: 0  duration: 4s  verdict: PASS
+
+✔ SQLite ConnectorInstanceStore supports default account connections and ambiguous connector-only resolution (17.496592ms)
+✔ SQLite deleteConnection erases schedule + row + device back-ref and refuses run-active / default-account (5.118357ms)
+✔ SQLite deleteConnection is all-or-nothing: a record-purge failure rolls back the WHOLE cascade — row, schedule, device, and source data intact (I8) (4.178889ms)
+✔ SQLite deleteConnection is all-or-nothing: a schedule/device/row failure AFTER the record purge ran rolls the purge back too — source data intact (I8 regression) (4.014637ms)
+✔ Postgres ConnectorInstanceStore conforms when PDPP_TEST_POSTGRES_URL is set (2545.075943ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3017.537529
+rc=0
+NOTICE:  database "pdpp_hone_pl1instrec" does not exist, skipping

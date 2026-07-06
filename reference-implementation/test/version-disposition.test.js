@@ -37,7 +37,7 @@ import {
   REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT,
   VERSION_DISPOSITIONS,
   VERSION_REMEDIATIONS,
-} from '../server/version-disposition.js';
+} from '../server/version-disposition.ts';
 
 function oneMillisecondAfter(iso) {
   return new Date(new Date(iso).getTime() + 1).toISOString();

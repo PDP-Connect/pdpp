@@ -7,8 +7,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mapInputEventToCdp, buildScreencastParams, createMockCompanion } from '../server/streaming/cdp-companion.js';
-import { createDefaultStreamingCompanionFactory } from '../server/streaming/companion-factory.js';
+import { mapInputEventToCdp, buildScreencastParams, createMockCompanion } from '../server/streaming/cdp-companion.ts';
+import { createDefaultStreamingCompanionFactory } from '../server/streaming/companion-factory.ts';
 
 test('mouse mousemove → Input.dispatchMouseEvent (mouseMoved)', () => {
   const cmds = mapInputEventToCdp({ type: 'mouse', action: 'mousemove', x: 100, y: 200 });

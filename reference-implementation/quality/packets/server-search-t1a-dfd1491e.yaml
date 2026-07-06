@@ -1,0 +1,87 @@
+candidate_id: server-search-t1a-dfd1491e
+created: "2026-07-02T00:50:25.322Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server
+files: [server/search.js]
+symbols:
+  - file: server/search.js
+    parent_fn: lexicalIndexBackfillForManifest
+    anchor: "<anon>"
+    line: 519
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: exact_move
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] callback captures NOTHING (AST free-vars=∅) → hoist to a named pure top-level fn Top fn '<anon>' cc=45. File attention: churn 40 × excess-cc mass 40 = 1600; 1 flagged fn(s) in this tier."
+plan:
+  transform_class: hoist-to-named-module-fn
+  instruction: "Hoist the anonymous callback(s) <anon>@L519(in lexicalIndexBackfillForManifest) in server/search.js to named top-level functions (zero function-scope captures — exact move). Name each for the concept it implements; body must be identical under whitespace normalization; call sites reference the new names."
+expected_quality_gain: high
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 22.963
+  computed: "2026-07-02T00:50:25.322Z"
+  inputs:
+    mass: 40
+    churn: 40
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: low
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/search.js, tier T1-extractable-callback (repo_sha 6e8d8559c36b94d41bc4c42a9a31342e60b3b334)"
+    result: "1 flagged fn(s), Σ excess-cc 40, max cc 45, router v1 tier T1-extractable-callback"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/search.js"
+    result: "40 commits in window; coupling(fan-in proxy)=103"
+  - kind: ast-scope
+    detail: "true free-variable analysis (TS compiler API; function-scope captures only, v1.1 module-scope fix)"
+    result: "captures=[] mutable=[] module_refs=[]"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test"
+    expect: all tests pass; 0 fail; no new skips (skip counts compared baseline vs post)
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: whitespace-normalized-body-move
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff -w -- server/search.js"
+    expect: hoisted bodies appear verbatim under -w (indent-only change at the move site); no logic edits
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: preserve_refactor×exact_move×server
+touchset: [server/search.js]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: e34e7d79215741aa8bab10a34fbcc16b2308220d
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.94): The diff is an exact hoist of the anonymous filter predicate into a named top-level function with no captured state and no logic edits. The callback-to-function replacement preserves behavior because the predicate ignores filter's extra arguments and does not use this. Required evidence is present and sufficient: typecheck passed, tests passed with unchanged skip count, and the whitespace-normalized diff shows only the intended move."
+  evidence_receipts:
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck -> exit 0 (5s) PASS; exit=0 djb2=40c8e323 bytes=124 receipt=quality/receipts/server-search-t1a-dfd1491e/baseline-1-typecheck.txt"
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test -> exit 0 (208s) PASS; exit=0 djb2=b97325ce bytes=501501 receipt=quality/receipts/server-search-t1a-dfd1491e/baseline-2-direct-test.txt"
+    - "[baseline] whitespace-normalized-body-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff -w -- server/search.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/server-search-t1a-dfd1491e/baseline-3-whitespace-normalized-body-move.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck -> exit 0 (5s) PASS; exit=0 djb2=40c8e323 bytes=124 receipt=quality/receipts/server-search-t1a-dfd1491e/post-1-typecheck.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test -> exit 0 (220s) PASS; exit=0 djb2=55aa9266 bytes=501588 receipt=quality/receipts/server-search-t1a-dfd1491e/post-2-direct-test.txt"
+    - "[post] whitespace-normalized-body-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff -w -- server/search.js -> exit 0 (0s) PASS; exit=0 djb2=ac681b9f bytes=1401 receipt=quality/receipts/server-search-t1a-dfd1491e/post-3-whitespace-normalized-body-move.txt"
+  tokens_actual: 20223
+  lesson: null

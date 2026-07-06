@@ -1,0 +1,38 @@
+# hone work t1b-spine-correlations-annotators-0003 — post rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/lib/postgres-spine.js
+# expect: the two callback bodies byte-identical modulo indentation and the explicit index params; only wrapping + naming changed
+# exit: 0  duration: 0s  verdict: PASS
+
+diff --git a/reference-implementation/lib/postgres-spine.js b/reference-implementation/lib/postgres-spine.js
+index d38831d91..fb7427cc1 100644
+--- a/reference-implementation/lib/postgres-spine.js
++++ b/reference-implementation/lib/postgres-spine.js
+@@ -645,0 +646,13 @@ export async function postgresClientMetadataForClients(clientIds) {
++function annotateGrantPackageId(summary, packageByGrant) {
++  if (!summary) return summary;
++  const gid = summary.grant_id || summary.id;
++  const packageId = gid ? packageByGrant.get(gid) : null;
++  return packageId ? { ...summary, grant_package_id: packageId } : summary;
++}
++
++function annotateClientMetadata(summary, clientById) {
++  if (!summary?.client_id) return summary;
++  const client = clientById.get(summary.client_id);
++  return client ? { ...summary, client } : summary;
++}
++
+@@ -739,6 +752 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
+-      summaries = summaries.map((s) => {
+-        if (!s) return s;
+-        const gid = s.grant_id || s.id;
+-        const packageId = gid ? packageByGrant.get(gid) : null;
+-        return packageId ? { ...s, grant_package_id: packageId } : s;
+-      });
++      summaries = summaries.map((s) => annotateGrantPackageId(s, packageByGrant));
+@@ -754,5 +762 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
+-      summaries = summaries.map((s) => {
+-        if (!s?.client_id) return s;
+-        const client = clientById.get(s.client_id);
+-        return client ? { ...s, client } : s;
+-      });
++      summaries = summaries.map((s) => annotateClientMetadata(s, clientById));

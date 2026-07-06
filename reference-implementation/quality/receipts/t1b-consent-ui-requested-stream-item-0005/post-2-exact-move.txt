@@ -1,0 +1,39 @@
+# hone work t1b-consent-ui-requested-stream-item-0005 — post rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/routes/as-consent-ui-helpers.ts
+# expect: callback body byte-identical modulo indentation + the explicit ui param; markup strings unchanged byte-for-byte
+# exit: 0  duration: 0s  verdict: PASS
+
+diff --git a/reference-implementation/server/routes/as-consent-ui-helpers.ts b/reference-implementation/server/routes/as-consent-ui-helpers.ts
+index e7389212f..335fea33b 100644
+--- a/reference-implementation/server/routes/as-consent-ui-helpers.ts
++++ b/reference-implementation/server/routes/as-consent-ui-helpers.ts
+@@ -765,0 +766,13 @@ function buildClientClaimsBlock(streams: StreamItem[], ui: ConsentUiRenderer): s
++function renderRequestedStreamItem(stream: StreamItem, ui: ConsentUiRenderer): string {
++  const fragments = [
++    stream.time_range ? `since ${stream.time_range.since || "any"}` : null,
++    stream.fields ? `fields: ${stream.fields.join(", ")}` : null,
++    stream.view ? `view: ${stream.view}` : null,
++    stream.necessity === "optional" ? "optional" : null,
++  ].filter(Boolean);
++  const meta = fragments.length
++    ? ` <span class="hosted-ui-stream-meta">${ui.escapeHtml(fragments.join(" · "))}</span>`
++    : "";
++  return `<li><span class="hosted-ui-stream-name">${ui.escapeHtml(stream.name)}</span>${meta}</li>`;
++}
++
+@@ -793,14 +806 @@ function buildStreamsBlock(
+-  const streamItems = requestedStreams
+-    .map((s) => {
+-      const fragments = [
+-        s.time_range ? `since ${s.time_range.since || "any"}` : null,
+-        s.fields ? `fields: ${s.fields.join(", ")}` : null,
+-        s.view ? `view: ${s.view}` : null,
+-        s.necessity === "optional" ? "optional" : null,
+-      ].filter(Boolean);
+-      const meta = fragments.length
+-        ? ` <span class="hosted-ui-stream-meta">${ui.escapeHtml(fragments.join(" · "))}</span>`
+-        : "";
+-      return `<li><span class="hosted-ui-stream-name">${ui.escapeHtml(s.name)}</span>${meta}</li>`;
+-    })
+-    .join("");
++  const streamItems = requestedStreams.map((s) => renderRequestedStreamItem(s, ui)).join("");

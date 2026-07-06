@@ -19,7 +19,7 @@ import {
   resolveConsoleOriginForLanding,
   servedRootLandingIfBrowser,
   __testOnly,
-} from '../server/reference-root-landing.js';
+} from '../server/reference-root-landing.ts';
 
 const CONSOLE_ORIGIN = 'http://console.test.local:9999';
 

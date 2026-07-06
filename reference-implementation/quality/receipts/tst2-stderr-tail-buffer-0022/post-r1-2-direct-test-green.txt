@@ -1,0 +1,18 @@
+# hone work tst2-stderr-tail-buffer-0022 — post-r1 rung 'direct-test-green'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/stderr-tail-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0022_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/stderr-tail-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi'
+# expect: POST: the new oracle passes under node --test --test-force-exit using its own ephemeral Postgres database. BASELINE: guarded green while the file is absent.
+# exit: 0  duration: 0s  verdict: PASS
+
+BASELINE: stderr tail oracle present
+✔ createStderrTailBuffer: strings and Buffers track observed bytes and keep only the byte-capped tail (0.827974ms)
+✔ createStderrTailBuffer: ignored chunks do not affect counts or truncation (0.101862ms)
+✔ createStderrTailBuffer: bytes_captured is the kept byte length without truncation (0.090932ms)
+✔ createStderrTailBuffer: leading sliced UTF-8 is repaired without throwing (0.244585ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 60.074605

@@ -1,0 +1,28 @@
+# hone work pl2-scheduler-readiness-local-source-extract-0012 — post-r1 rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'runtime/scheduler-readiness.ts' --cog 5
+# expect: file_excess drops below the fresh baseline 15 without adding a new flagged helper.
+# exit: 0  duration: 1s  verdict: PASS
+
+{
+  "file": "runtime/scheduler-readiness.ts",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 8,
+  "flagged_count": 2,
+  "file_excess": 5,
+  "flagged": [
+    {
+      "fn": "checkFirstPartyLocalSourceReadiness",
+      "line": 144,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "defaultReadinessChecker",
+      "line": 165,
+      "cc": 7,
+      "excess": 2
+    }
+  ],
+  "red_scan": []
+}

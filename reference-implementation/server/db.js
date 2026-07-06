@@ -109,12 +109,40 @@ export function isTransientSqliteLockError(err) {
  * 1.5s each) and only fires on a transient lock, so the worst case is
  * ~5s of boot delay before we surface the original error.
  */
-export function runWithSqliteBusyRetrySync(fn, opts = {}) {
+// Normalize the shared retry knobs for the busy-retry helpers. Defaults: 5
+// attempts, 100ms initial backoff doubling to a 1.5s ceiling. Clamps keep the
+// invariants the loop relies on (attempts >= 1, delays non-negative, ceiling
+// never below the floor).
+function normalizeBusyRetryOptions(opts) {
   const maxAttempts = Number.isFinite(opts.maxAttempts) ? Math.max(1, opts.maxAttempts) : 5;
   const initialDelayMs = Number.isFinite(opts.initialDelayMs) ? Math.max(0, opts.initialDelayMs) : 100;
   const maxDelayMs = Number.isFinite(opts.maxDelayMs) ? Math.max(initialDelayMs, opts.maxDelayMs) : 1500;
   const onRetry = typeof opts.onRetry === 'function' ? opts.onRetry : null;
+  return { maxAttempts, initialDelayMs, maxDelayMs, onRetry };
+}
 
+// Exponential backoff for retry `attempt` (1-based), capped at `maxDelayMs`.
+function computeBusyRetryDelay(attempt, initialDelayMs, maxDelayMs) {
+  return Math.min(maxDelayMs, initialDelayMs * 2 ** (attempt - 1));
+}
+
+// Decide the next step after a caught error in a busy-retry loop. Rethrows a
+// non-transient error; returns the backoff delay to wait before the next
+// attempt (after advancing `state.attempt` and firing `onRetry`); or returns
+// null when the retry budget is exhausted so the caller breaks and surfaces the
+// original error. Shared by the sync and async runners — only their wait
+// mechanism differs.
+function nextBusyRetryDelay(err, state, cfg) {
+  if (!isTransientSqliteLockError(err)) throw err;
+  state.attempt += 1;
+  if (state.attempt >= cfg.maxAttempts) return null;
+  const delay = computeBusyRetryDelay(state.attempt, cfg.initialDelayMs, cfg.maxDelayMs);
+  if (cfg.onRetry) cfg.onRetry({ err, attempt: state.attempt, delay });
+  return delay;
+}
+
+export function runWithSqliteBusyRetrySync(fn, opts = {}) {
+  const cfg = normalizeBusyRetryOptions(opts);
   const sleepSync = typeof opts.sleepSync === 'function'
     ? opts.sleepSync
     : (ms) => {
@@ -122,18 +150,15 @@ export function runWithSqliteBusyRetrySync(fn, opts = {}) {
         while (Date.now() < deadline) { /* busy-wait */ }
       };
 
-  let attempt = 0;
+  const state = { attempt: 0 };
   let lastErr;
-  while (attempt < maxAttempts) {
+  while (state.attempt < cfg.maxAttempts) {
     try {
       return fn();
     } catch (err) {
       lastErr = err;
-      if (!isTransientSqliteLockError(err)) throw err;
-      attempt += 1;
-      if (attempt >= maxAttempts) break;
-      const delay = Math.min(maxDelayMs, initialDelayMs * 2 ** (attempt - 1));
-      if (onRetry) onRetry({ err, attempt, delay });
+      const delay = nextBusyRetryDelay(err, state, cfg);
+      if (delay === null) break;
       sleepSync(delay);
     }
   }
@@ -141,26 +166,20 @@ export function runWithSqliteBusyRetrySync(fn, opts = {}) {
 }
 
 export async function runWithSqliteBusyRetry(fn, opts = {}) {
-  const maxAttempts = Number.isFinite(opts.maxAttempts) ? Math.max(1, opts.maxAttempts) : 5;
-  const initialDelayMs = Number.isFinite(opts.initialDelayMs) ? Math.max(0, opts.initialDelayMs) : 100;
-  const maxDelayMs = Number.isFinite(opts.maxDelayMs) ? Math.max(initialDelayMs, opts.maxDelayMs) : 1500;
-  const onRetry = typeof opts.onRetry === 'function' ? opts.onRetry : null;
+  const cfg = normalizeBusyRetryOptions(opts);
   const sleep = typeof opts.sleep === 'function'
     ? opts.sleep
     : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  let attempt = 0;
+  const state = { attempt: 0 };
   let lastErr;
-  while (attempt < maxAttempts) {
+  while (state.attempt < cfg.maxAttempts) {
     try {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (!isTransientSqliteLockError(err)) throw err;
-      attempt += 1;
-      if (attempt >= maxAttempts) break;
-      const delay = Math.min(maxDelayMs, initialDelayMs * 2 ** (attempt - 1));
-      if (onRetry) onRetry({ err, attempt, delay });
+      const delay = nextBusyRetryDelay(err, state, cfg);
+      if (delay === null) break;
       await sleep(delay);
     }
   }
@@ -3054,6 +3073,33 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+// Resolve a source from a bare `connector_id`/`provider_id` pair, but only when
+// exactly one is present (an ambiguous pair yields null). Shared by the payload
+// and canonical-shape parsers.
+function resolveBareSourceIds(source) {
+  const connectorId = nonEmptyString(source.connector_id);
+  const providerId = nonEmptyString(source.provider_id);
+  if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
+  if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+  return null;
+}
+
+// Resolve a source from the legacy `binding_kind` discriminator paired with its
+// matching id column. Returns null when the discriminator is absent/unknown or
+// its id is missing.
+function resolveLegacyBindingSource(source) {
+  const legacyKind = nonEmptyString(source.binding_kind);
+  if (legacyKind === 'connector') {
+    const id = nonEmptyString(source.connector_id);
+    if (id) return { kind: 'connector', id };
+  }
+  if (legacyKind === 'provider_native') {
+    const id = nonEmptyString(source.provider_id);
+    if (id) return { kind: 'provider_native', id };
+  }
+  return null;
+}
+
 function parseSpineSourceShape(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -3066,22 +3112,7 @@ function parseSpineSourceShape(value) {
     return { kind: canonicalKind, id: canonicalId };
   }
 
-  const legacyKind = nonEmptyString(source.binding_kind);
-  if (legacyKind === 'connector') {
-    const id = nonEmptyString(source.connector_id);
-    if (id) return { kind: 'connector', id };
-  }
-  if (legacyKind === 'provider_native') {
-    const id = nonEmptyString(source.provider_id);
-    if (id) return { kind: 'provider_native', id };
-  }
-
-  const connectorId = nonEmptyString(source.connector_id);
-  const providerId = nonEmptyString(source.provider_id);
-  if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
-  if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
-
-  return null;
+  return resolveLegacyBindingSource(source) ?? resolveBareSourceIds(source);
 }
 
 function parseSpineEventData(rawJson, eventId) {
@@ -3092,22 +3123,29 @@ function parseSpineEventData(rawJson, eventId) {
   }
 }
 
-function deriveSpineSource(payload, row) {
-  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-    if (Object.prototype.hasOwnProperty.call(payload, 'source')) {
-      const source = parseSpineSourceShape(payload.source);
-      if (source) return source;
-    }
-    if (Object.prototype.hasOwnProperty.call(payload, 'source_binding')) {
-      const source = parseSpineSourceShape(payload.source_binding);
-      if (source) return source;
-    }
-    const connectorId = nonEmptyString(payload.connector_id);
-    const providerId = nonEmptyString(payload.provider_id);
-    if (connectorId && !providerId) return { kind: 'connector', id: connectorId };
-    if (providerId && !connectorId) return { kind: 'provider_native', id: providerId };
+// Derive a spine source from the canonical event payload. Prefers an explicit
+// `source`/`source_binding` shape, then the legacy bare `connector_id`/
+// `provider_id` pair (only when exactly one is present). Returns null when the
+// payload carries no derivable source so the caller falls back to the DB row.
+function deriveSpineSourceFromPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return null;
   }
+  if (Object.prototype.hasOwnProperty.call(payload, 'source')) {
+    const source = parseSpineSourceShape(payload.source);
+    if (source) return source;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'source_binding')) {
+    const source = parseSpineSourceShape(payload.source_binding);
+    if (source) return source;
+  }
+  return resolveBareSourceIds(payload);
+}
 
+// Derive a spine source from the persisted `spine_events` row columns. Prefers
+// the canonical `source_kind`/`source_id`, then the legacy `provider_id`, then
+// the runtime-actor fallback (`actor_type === 'runtime'` → connector actor_id).
+function deriveSpineSourceFromRow(row) {
   const sourceKind = nonEmptyString(row.source_kind);
   const sourceId = nonEmptyString(row.source_id);
   if (isSourceKind(sourceKind) && sourceId) {
@@ -3125,6 +3163,10 @@ function deriveSpineSource(payload, row) {
   }
 
   return null;
+}
+
+function deriveSpineSource(payload, row) {
+  return deriveSpineSourceFromPayload(payload) ?? deriveSpineSourceFromRow(row);
 }
 
 // Boot-safe spine source schema migration (SQLite). Installs the

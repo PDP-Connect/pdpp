@@ -8,8 +8,8 @@ import { runConnector } from '../runtime/index.js';
 import {
   createStderrTailBuffer,
   STDERR_TAIL_DEFAULT_CAP_BYTES,
-} from '../runtime/stderr-tail.js';
-import { redactStderrTail } from '../runtime/stderr-redact.js';
+} from '../runtime/stderr-tail.ts';
+import { redactStderrTail } from '../runtime/stderr-redact.ts';
 
 // Regression coverage for
 //   openspec/changes/persist-connector-failure-diagnostics

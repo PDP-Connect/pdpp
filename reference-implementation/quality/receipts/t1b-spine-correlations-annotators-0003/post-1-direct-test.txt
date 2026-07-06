@@ -1,0 +1,77 @@
+# hone work t1b-spine-correlations-annotators-0003 — post rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in grant-package-postgres-path ref-grant-packages postgres-runtime-storage ref-spine-correlations-list-operation; do db=pdpp_hone_t1b_sca3_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'
+# expect: all pass with unchanged counts (2+6+14+14=36 across the four files), before AND after the edit; per-file ephemeral DBs + --test-force-exit replicate the scripts/run-tests.js isolation contract
+# exit: 0  duration: 14s  verdict: PASS
+
+✔ issue -> list -> detail -> access through real auth.js postgres adapters (2668.312925ms)
+✔ revoke cascade flips package and every child to revoked through real auth.js postgres adapters (135.699308ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3960.98607
+✔ GET /_ref/grant-packages lists the package with no secret material (260.141103ms)
+✔ GET /_ref/grant-packages/:id returns the child cascade with no secret material (121.450054ms)
+✔ GET /_ref/grant-packages/:id returns typed not_found for an unknown id (112.454569ms)
+✔ POST /_ref/grant-packages/:id/revoke cascades revocation; second call returns 409 already_revoked (120.842123ms)
+✔ POST /_ref/grant-packages/:id/revoke surfaces partial child failure without reporting success (140.871847ms)
+✔ GET /_ref/grants surfaces grant_package_id on package-member child rows and omits it otherwise (143.446081ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1939.011695
+✔ Postgres runtime storage config fails fast without a database URL (0.865865ms)
+✔ Postgres runtime storage auto-selects Postgres when PDPP_DATABASE_URL is present (0.458148ms)
+✔ Postgres runtime storage accepts standard DATABASE_URL when PDPP_DATABASE_URL is absent (0.096152ms)
+✔ polyfill manifest reconciliation defaults on for Postgres deployments (0.123513ms)
+✔ postgres runtime storage initializes through startServer config (2447.729156ms)
+✔ postgres lexical search returns ranked rows through the scoped candidate window (227.224149ms)
+✔ postgres semantic startup backfill writes Postgres index without touching SQLite vector index (232.259045ms)
+✔ postgres lexical backfill rebuilds partial historical indexes (301.472662ms)
+✔ postgres public reads enforce grant visibility and aggregate over active storage (261.462336ms)
+✔ postgres run summaries include terminal events beyond the prefix sample (417.417581ms)
+✔ postgres runtime storage covers records, blobs, spine, lexical, and semantic fallback (774.826344ms)
+✔ postgres grouped indexable field counts match per-field loop semantics (223.24705ms)
+✔ postgres semantic insert-many writes and updates the same indexed rows (230.036747ms)
+✔ postgres records list honors canonical sort and graded count (295.164764ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6588.555972
+✔ ref.spine.correlations.list emits trace_summary discriminator (0.875335ms)
+✔ ref.spine.correlations.list projects optional trace client metadata without replacing client_id (0.621821ms)
+✔ ref.spine.correlations.list emits grant_summary discriminator with source fallback (0.206964ms)
+✔ ref.spine.correlations.list projects optional grant client metadata without replacing client_id (0.160233ms)
+✔ ref.spine.correlations.list omits grant client metadata when unavailable (0.171383ms)
+✔ ref.spine.correlations.list filters internal maintenance connectors when host supplies predicate (0.207834ms)
+✔ ref.spine.correlations.list does not project client metadata on run summaries (0.855854ms)
+✔ ref.spine.correlations.list emits run_summary discriminator with failure_reason and needs_input (0.132922ms)
+✔ ref.spine.correlations.list projects browser-profile connection identity and surface failure reason (0.203513ms)
+✔ ref.spine.correlations.list does not invent connection identity from non-connection browser profiles (0.215874ms)
+✔ ref.spine.correlations.list omits next_cursor when the page does not expose one (0.145973ms)
+✔ ref.spine.correlations.list emits next_cursor when the page exposes one (0.126732ms)
+✔ ref.spine.correlations.list forwards the kind and filter bag to the dependency unchanged (0.122382ms)
+✔ ref.spine.correlations.list awaits dependency promises (4.885044ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 88.405947
+NOTICE:  database "pdpp_hone_t1b_sca3_grant_package_postgres_path" does not exist, skipping
+NOTICE:  database "pdpp_hone_t1b_sca3_ref_grant_packages" does not exist, skipping
+NOTICE:  database "pdpp_hone_t1b_sca3_postgres_runtime_storage" does not exist, skipping
+NOTICE:  database "pdpp_hone_t1b_sca3_ref_spine_correlations_list_operation" does not exist, skipping

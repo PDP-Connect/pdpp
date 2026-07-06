@@ -94,7 +94,7 @@ function extractCdpMethods(src) {
 test('streaming code only sends allowlisted CDP methods', async (t) => {
   const files = [
     'cdp-adapter.js',
-    'cdp-companion.js',
+    'cdp-companion.ts',
     'run-target-registry.js',
   ];
 

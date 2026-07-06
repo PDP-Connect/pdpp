@@ -1,0 +1,5 @@
+# hone work df-evidence-plan-hash-characterization-0003 — baseline rung 'byte-identity'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/record-filters.js && git status --short test/record-filters-plan-hash.test.js
+# expect: empty diff for server/record-filters.js; the new test file is the only addition in the touchset
+# exit: 0  duration: 0s  verdict: PASS
+

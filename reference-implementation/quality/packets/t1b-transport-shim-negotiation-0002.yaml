@@ -1,0 +1,95 @@
+candidate_id: t1b-transport-shim-negotiation-0002
+created: "2026-07-02T02:10:00.000Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server/transport
+files: [server/transport.js, test/fastify-transport.test.js]
+symbols:
+  - expressShim
+  - matchesMediaType
+  - file: server/transport.js
+    parent_fn: expressShim
+    anchor: "req.is = (types) => negotiation shim"
+    line: 323
+  - file: server/transport.js
+    parent_fn: expressShim
+    anchor: "req.accepts = (types) => negotiation shim"
+    line: 337
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "The express-compat content-negotiation policy lives as two inline arrows assigned inside expressShim, each CAPTURING req from the shim's scope: req.is (:323, cc 14) decides content-type matching (parameter stripping, array-vs-single candidates, matchesMediaType delegation) and req.accepts (:337, cc 21) decides accept-header matching (short/long-form expansion, '*/*' first-candidate rule). The negotiation policy — pure string-matching over two header values — is braided with the shim-wiring concern (when to install a polyfill on req). Hidden state: both callbacks read req.headers through the capture, so the policy has no single-entry testable surface; the follow-up oracle (t1b-transport-shim-negotiation-evidence-0001) pins it only route-level. Making the header values EXPLICIT parameters of two named module functions gives the negotiation contract an addressable surface and shrinks expressShim to wiring."
+plan:
+  transform_class: explicit-context-extraction
+  instruction: "In server/transport.js hoist the two callback BODIES to named module-scope functions near matchesMediaType: (1) matchedContentType(contentTypeHeader, types) — body of the req.is arrow with `req.headers?.['content-type']` replaced by the explicit contentTypeHeader param; (2) acceptedType(acceptHeader, types) — body of the req.accepts arrow with `req.headers?.accept` replaced by the explicit acceptHeader param. Rewire inside expressShim: req.is = (types) => matchedContentType(req.headers?.['content-type'], types); req.accepts = (types) => acceptedType(req.headers?.accept, types). Branch bodies otherwise byte-identical (String() coercions, toLowerCase placement, candidate iteration order, false returns). Keep both functions module-private; move the explanatory comments above their new owners. Do not touch req.get/req.hostname or the res shim."
+expected_quality_gain: medium
+owner_attention_reduction: low
+product_impact: low
+priority:
+  score: 150
+  computed: "2026-07-02T02:10:00.000Z"
+  inputs:
+    mass: 25
+    churn: 6
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "negotiation results: req.is/req.accepts must return the SAME matched-candidate string or false for every header×candidates combination; every JSON-vs-HTML branch in PDPP handlers keys off these"
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/callback-smells.json — server/transport.js:337 cc 21 captures [req]; :323 cc 14 captures [req], module_refs [matchesMediaType]"
+    result: T1b class; captures immutable; no security/db/public keywords
+  - kind: code-read
+    detail: "server/transport.js:314-360 read at HEAD 20969a3c6"
+    result: both arrows are pure over req.headers + types; the only capture used is req.headers access — the header value can become the explicit param with zero behavior surface change
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js"
+    expect: all pass with the same counts as the post-oracle baseline (includes the req.is/req.accepts pins created by t1b-transport-shim-negotiation-evidence-0001)
+  - rung: exact-move
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/transport.js"
+    expect: "callback bodies byte-identical modulo indentation and the two header-param substitutions; no logic edits, no reordering"
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+  - rung: smell-rescan
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/smell-callbacks.mjs"
+    expect: "transport.js:323 and :337 no longer reported as capturing callbacks"
+not_allowed:
+  - behavior-change
+  - relocation-without-decomplecting
+  - new-dependency
+  - changing-matchesMediaType
+  - exporting-the-new-functions
+  - touching-req.get/req.hostname/res-shim
+maker_tier: standard
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: preserve_refactor×pure_logic×server/transport
+touchset: [server/transport.js]
+estimates:
+  tokens: 40000
+  evidence_cost: low
+depends_on: [t1b-transport-shim-negotiation-evidence-0001]
+unlocks: []
+status: landed
+outcome:
+  commit: "25200dfba4c4c93dc84819f8539f1e27d66815a0"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.88): The removed callback bodies match the added helper bodies modulo the required explicit header-parameter substitutions, preserving String coercions, candidate order, false returns, and matchesMediaType usage. The shim now passes the same header values at call time, the new helpers remain module-private, and the forbidden req.get/req.hostname/res shim and matchesMediaType areas are not changed. The supplied evidence includes passing direct tests, typecheck, exact diff evidence, and a post smell rescan, which is sufficient for this pure-logic preserve_refactor."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=1ae4ff0f bytes=591 receipt=quality/receipts/t1b-transport-shim-negotiation-0002/baseline-1-direct-test.txt"
+    - "[baseline] exact-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/transport.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-transport-shim-negotiation-0002/baseline-2-exact-move.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-transport-shim-negotiation-0002/baseline-3-typecheck.txt"
+    - "[baseline] smell-rescan: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/smell-callbacks.mjs -> exit 0 (4s) PASS; exit=0 djb2=00a6e74c bytes=143973 receipt=quality/receipts/t1b-transport-shim-negotiation-0002/baseline-4-smell-rescan.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=9ecc7461 bytes=590 receipt=quality/receipts/t1b-transport-shim-negotiation-0002/post-1-direct-test.txt"
+    - "[post] exact-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/transport.js -> exit 0 (0s) PASS; exit=0 djb2=e0e10854 bytes=2599 receipt=quality/receipts/t1b-transport-shim-negotiation-0002/post-2-exact-move.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-transport-shim-negotiation-0002/post-3-typecheck.txt"
+    - "[post] smell-rescan: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/smell-callbacks.mjs -> exit 0 (4s) PASS; exit=0 djb2=af250eef bytes=142767 receipt=quality/receipts/t1b-transport-shim-negotiation-0002/post-4-smell-rescan.txt"
+  tokens_actual: 42841
+  lesson: null

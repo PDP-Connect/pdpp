@@ -1,17 +1,11 @@
-import type { ConnectorError, TerminalGrantFailureReason } from "./scheduler.ts";
+import type { ConnectorError, TerminalGrantFailureReason, TerminalReason } from "./scheduler-domain-types.ts";
+
+export type {
+  TerminalNonGrantReason,
+  TerminalReason,
+} from "./scheduler-domain-types.ts";
 
 // ─── Retry classifier ────────────────────────────────────────────────────────
-
-type TerminalNonGrantReason =
-  | "authentication_error"
-  | "connector_protocol_violation"
-  | "connector_reported_cancelled"
-  | "owner_cancel_forced"
-  | "owner_cancelled"
-  | "run_timed_out"
-  | "permission_error";
-
-type TerminalReason = TerminalGrantFailureReason | TerminalNonGrantReason;
 
 interface RunConnectorError {
   readonly checkpoint_summary?: Record<string, unknown> | null;
@@ -116,7 +110,7 @@ function isTerminalGrantFailure(reason: string | null | undefined): reason is Te
   return reason !== null && reason !== undefined && TERMINAL_GRANT_FAILURE_REASONS.has(reason);
 }
 
-export type { RunConnectorError, TerminalNonGrantReason, TerminalReason };
+export type { RunConnectorError };
 export {
   hasRetryableRunFailureKnownGap,
   isRetryableHttpStatus,

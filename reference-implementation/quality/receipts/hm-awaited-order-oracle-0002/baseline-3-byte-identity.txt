@@ -1,0 +1,5 @@
+# hone work hm-awaited-order-oracle-0002 — baseline rung 'byte-identity'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/index.js
+# expect: empty — this packet changes tests only (runtime/index.js is not in the touchset)
+# exit: 0  duration: 0s  verdict: PASS
+

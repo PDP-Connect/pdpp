@@ -1,0 +1,50 @@
+# hone work rt-verdict-stream-rollups-oracle-0004 — post rung 'red-then-green-retryable-pending-gaps'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/connector-verdict-input.test.js ]; then git diff --quiet -- runtime/connector-verdict-input.ts && sed -i 's/ || entry.pending_detail_gaps > 0//' runtime/connector-verdict-input.ts && node --test test/connector-verdict-input.test.js; git checkout -- runtime/connector-verdict-input.ts; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2): seeded run FAILS naming the pending_detail_gaps>0-is-retryable test — the mutation drops that clause from buildStreamRollups' retryable computation (runtime/connector-verdict-input.ts:105; sed target verified unique 2026-07-02: grep -cF '|| entry.pending_detail_gaps > 0' runtime/connector-verdict-input.ts == 1); guard confirmed the file was clean before seeding; checkout restores it — this receipt IS mandated failing run (b)
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ streamPriority: required:true + accepted coverage_policy stays required (contradictory manifest) (0.70814ms)
+✔ streamPriority: undefined stream (not in manifest) defaults to required (0.103311ms)
+✔ streamPriority: non-required stream with a non-collect coverage_policy is accepted_absence (0.087521ms)
+✔ streamPriority: non-required stream with no accepted coverage_policy is optional (0.094102ms)
+✔ streamPriority: non-required stream with coverage_policy "collect" is optional (not accepted_absence) (0.067671ms)
+✔ buildStreamRollups: retryable_gap coverage is gap_retryable (0.182523ms)
+✔ buildStreamRollups: partial coverage is gap_retryable (0.102052ms)
+✔ buildStreamRollups: gaps coverage is gap_retryable (0.110962ms)
+✖ buildStreamRollups: pending_detail_gaps > 0 with complete coverage is still gap_retryable (0.572078ms)
+✔ buildStreamRollups: complete coverage with no pending gaps is not gap_retryable (0.186563ms)
+✔ buildStreamRollups: connection-level attention threads onto a non-complete stream (0.089501ms)
+✔ buildStreamRollups: connection-level attention does NOT thread onto a complete stream (0.133471ms)
+✔ buildStreamRollups: no open attention leaves every stream attention_open false (0.076331ms)
+✔ buildStreamRollups: a stream not present in the manifest defaults to required priority (0.094551ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 13
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 104.651956
+
+✖ failing tests:
+
+test at test/connector-verdict-input.test.js:101:1
+✖ buildStreamRollups: pending_detail_gaps > 0 with complete coverage is still gap_retryable (0.572078ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/connector-verdict-input.test.js:107:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

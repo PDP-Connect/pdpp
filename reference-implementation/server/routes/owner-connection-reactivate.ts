@@ -39,8 +39,22 @@
 // Spec: openspec/changes/add-mcp-cimd-client-identity/tasks.md
 //       (reactivate as clean inverse of revoke)
 
-import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
-import { codeToStatus } from "./ref-error-status.ts";
+import {
+  auditActorKind,
+  buildAuditTrace,
+  httpStatusForOperationError,
+  readConnectionTarget,
+} from "./_owner-connection-helpers.ts";
+import type {
+  ActiveBinding,
+  AmbiguousConnectionErrorLike,
+  ConnectorNamespace,
+  MiddlewareHandler,
+  PdppErrorFn,
+  RouteArg,
+  TraceContext,
+  WireConnection,
+} from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed (mirrors owner-connection-revoke.ts).
 interface RouteRequest {
@@ -70,38 +84,10 @@ interface AppLike {
   post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
-interface ConnectorNamespace {
-  readonly connectorId: string;
-  readonly connectorInstanceId: string;
-}
-
-interface ActiveBinding {
-  readonly connectorId?: string | null;
-  readonly connectorInstanceId: string;
-  readonly displayName?: string | null;
-}
-
-interface WireConnection {
-  connection_id: string;
-  display_name?: string;
-}
-
 interface ReactivatedInstance {
   readonly connectorInstanceId?: string | null;
   readonly revokedAt?: string | null;
   readonly status?: string | null;
-}
-
-interface TraceContext {
-  readonly request_id: string;
-  readonly scenario_id: string;
-  readonly trace_id: string;
-}
-
-interface AmbiguousConnectionErrorLike extends Error {
-  available_connections: WireConnection[];
-  code: string;
-  retry_with: string;
 }
 
 export interface MountOwnerConnectionReactivateContext {
@@ -161,38 +147,6 @@ export interface MountOwnerConnectionReactivateContext {
   ): Promise<ReactivatedInstance> | ReactivatedInstance;
 }
 
-function auditActorKind(req: RouteRequest): "owner_agent" | "client" | "mcp_package" | "unknown" {
-  const kind = req.tokenInfo?.pdpp_token_kind;
-  if (kind === "owner") {
-    return "owner_agent";
-  }
-  if (kind === "client" || kind === "mcp_package") {
-    return kind;
-  }
-  return "unknown";
-}
-
-function httpStatusForReactivateError(err: unknown): number {
-  const code = (err as { code?: unknown })?.code;
-  return typeof code === "string" ? (codeToStatus[code] ?? 500) : 500;
-}
-
-function buildAuditTrace(
-  ctx: MountOwnerConnectionReactivateContext,
-  req: RouteRequest,
-  res: RouteResponse
-): TraceContext {
-  const scenarioId = typeof req.tokenInfo?.scenario_id === "string" ? req.tokenInfo.scenario_id : undefined;
-  const trace = scenarioId ? ctx.createTraceContext({ scenarioId }) : ctx.createTraceContext();
-  const requestId = ctx.ensureRequestId(res);
-  ctx.setReferenceTraceId(res, trace.trace_id);
-  return {
-    request_id: requestId,
-    scenario_id: trace.scenario_id,
-    trace_id: trace.trace_id,
-  };
-}
-
 // Emits one non-secret `owner_agent.connection.reactivate` spine event.
 // The selector records whether the action was addressed by `connection_id` or
 // by `connector_id`. No bearer token or provider secret is ever logged.
@@ -244,7 +198,7 @@ async function emitReactivateAudit(
         ? {
             error: {
               code: typeof code === "string" ? code : "api_error",
-              http_status: httpStatusForReactivateError(args.error),
+              http_status: httpStatusForOperationError(args.error),
             },
           }
         : {}),
@@ -267,7 +221,7 @@ function buildReactivateRequireOwner(
     }
     const err = new Error("Owner token required") as Error & { code: string };
     err.code = "permission_error";
-    const { connectionId, connectorKey } = readReactivateTarget(ctx, req, selector);
+    const { connectionId, connectorKey } = readConnectionTarget(ctx, req, selector);
     await emitReactivateAudit(ctx, req, res, {
       connectionId,
       connectorKey,
@@ -278,20 +232,6 @@ function buildReactivateRequireOwner(
     });
     ctx.pdppError(res, 403, "permission_error", "Owner token required");
   };
-}
-
-function readReactivateTarget(
-  ctx: MountOwnerConnectionReactivateContext,
-  req: RouteRequest,
-  selector: "connection_id" | "connector_id"
-): { connectionId: string | null; connectorKey: string | null } {
-  if (selector === "connection_id") {
-    const connectionId = req.params.connectionId ? decodeURIComponent(req.params.connectionId) : null;
-    return { connectionId, connectorKey: null };
-  }
-  const raw = req.params.connectorId ? decodeURIComponent(req.params.connectorId) : null;
-  const connectorKey = raw ? (ctx.canonicalConnectorKey(raw) ?? raw) : null;
-  return { connectionId: null, connectorKey };
 }
 
 // Resolve the single REVOKED connection for a connector-keyed reactivate.

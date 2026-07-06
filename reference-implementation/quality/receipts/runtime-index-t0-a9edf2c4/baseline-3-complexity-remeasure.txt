@@ -1,0 +1,18 @@
+# hone work runtime-index-t0-a9edf2c4 — baseline rung 'complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::normalizeDetailGapPageStreams'
+# executed-command (portable-path rewrite): node /home/tnunamak/.tmp/minnows-substrate/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::normalizeDetailGapPageStreams'
+# expect: found=true and cognitive_before < 11 (packet baseline); red_scan unchanged
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "runtime/index.js::normalizeDetailGapPageStreams",
+  "file": "runtime/index.js",
+  "function": "normalizeDetailGapPageStreams",
+  "found": true,
+  "cognitive_before": 11,
+  "line": 154,
+  "caller_count": 1,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

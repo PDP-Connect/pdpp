@@ -1,0 +1,36 @@
+# hone work hm-state-checkpoint-extract-0005 — maker brief digest (attempt 1)
+# sha256(full brief)=7a17532860ef796f20c1a2c876913ba0783610b0a0cef3e8bf97372b3495e320 bytes=8998
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): runtime/index.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, await-order-change, new-dependency, new-module-file, captured-mutable-cells-in-new-handlers, method-calling-threaded-callbacks.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: hm-state-checkpoint-extract-0005
+created: "2026-07-02T03:38:00.000Z"
+repo_sha: e7ede6e50ea9b2f3d60ba908862a846c833d7a5c
+subsystem: runtime
+files: [runtime/index.js]
+symbols:
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'STATE' — await flushBatch(msg.stream); newState[msg.stream] = msg.cursor; run.state_staged emit"
+    line: 2976
+public_surface:
+  - "spine event_type run.state_staged and its data fields (cursor, checkpoint_mode, state_streams_staged, state_commit_intent)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: property_at_risk
+execution_gate: autonomous
+why_this_matters: "The STATE arm (runtime/index.js:2976) stages a stream cursor for commit-on-success. Its await order is a durability invariant: flushBatch(msg.stream) MUST complete before newState[stream] is assigned and run.state_staged is emitted — a reordering stages a cursor whose records were never ingested, which silently loses data on the next incremental resume. Braided inside the cc-194 handleMsg it is invisible; as a named handler with explicit context the invariant is one screen tall and directly testable. Extraction only; the awaited order is proven preserved by the 0002 characterization oracle."
+plan:
+  transform_class: explicit-context-extraction
+  instruction: "In runtime/index.js ONLY: create module-level (column-0) named async function handleStateMsg(msg, ctx, emitSpineEventTracked) with the 'STATE' arm body verbatim (await flushBatch(msg.stream) FIRST via the ctx-destructured local, then newState[msg.stream] = msg.cursor, then the run.state_staged emit — the emit call stays BYTE-IDENTICAL to the arm: await emitSpineEventTracked({...}) with the identical payload including state_streams_staged: countStagedStateStreams() and state_commit_intent derived from persistState). EMITTER SEAM MANDATE (added 2026-07-02 run-8 per the TWO judge REJECTs on sibling hm-detail-page-coverage-extract-0007 — run-6 codex and run-7 claude both refused routing the effectful emitSpineEventTracked closure through ctx indirection): the tracked spine emitter enters as an EXPLICIT TRAILING PARAMETER named emitSpineEventTracked and the delegation passes the bare closure identifier, so the diff proves service identity syntactically; do NOT add an emitSpineEventTracked key to msgCtx and do NOT rewrite the emit as ctx.emitSpineEvent. Extend msgCtx with { newState, countStagedStateStreams, persistState } (newState is a reference-mutable object — explicit param, not capture; flushBatch already in msgCt

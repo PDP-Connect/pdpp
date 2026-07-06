@@ -36,30 +36,45 @@ import {
   executeUpdateSubscription,
 } from "../../operations/as-client-event-subscriptions/index.ts";
 import {
+  type BlobsUploadDependencies,
+  type BlobsUploadInput,
   BlobsUploadInvalidRequestError,
   BlobsUploadStreamNotFoundError,
   executeBlobsUpload,
 } from "../../operations/rs-blobs-upload/index.ts";
 import type { SubscriptionScope, SubscriptionScopeStream } from "../../operations/rs-client-event-derive/index.ts";
-import { executeRsConnectorStateGet } from "../../operations/rs-connector-state-get/index.ts";
+import {
+  executeRsConnectorStateGet,
+  type RsConnectorStateGetDependencies,
+  type RsConnectorStateGetGrantScope,
+  type RsConnectorStateGetState,
+} from "../../operations/rs-connector-state-get/index.ts";
 import {
   executeRsConnectorStatePut,
+  type RsConnectorStatePutDependencies,
+  type RsConnectorStatePutGrantScope,
+  type RsConnectorStatePutManifest,
+  type RsConnectorStatePutState,
   RsConnectorStatePutValidationError,
 } from "../../operations/rs-connector-state-put/index.ts";
 import {
   executeRecordsDelete,
+  type RecordsDeleteDependencies,
   RecordsDeleteInvalidRequestError,
   RecordsDeleteNotFoundError,
 } from "../../operations/rs-records-delete/index.ts";
 import {
   executeRecordsDeleteStream,
+  type RecordsDeleteStreamDependencies,
   RecordsDeleteStreamInvalidRequestError,
   RecordsDeleteStreamNotFoundError,
 } from "../../operations/rs-records-delete-stream/index.ts";
 import {
   executeRecordsIngest,
+  type RecordsIngestDependencies,
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
+  type RecordsIngestOutput,
 } from "../../operations/rs-records-ingest/index.ts";
 import { canonicalConnectorKey } from "../connector-key.js";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
@@ -426,7 +441,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
           streams?: Array<{ name?: string | null }> | null;
         } | null = null;
         let storageNamespace: ConnectorNamespaceLike | null = null;
-        const dependencies = {
+        const dependencies: BlobsUploadDependencies = {
           hasManifestStream: async (connectorId: string, streamName: string) => {
             manifestCache = await ctx.resolveRegisteredConnectorManifest(connectorId);
             const visible = Boolean((manifestCache.streams || []).find((candidate) => candidate.name === streamName));
@@ -435,19 +450,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
             }
             return visible;
           },
-          persistBlob: async ({
-            connectorId,
-            stream,
-            recordKey,
-            mimeType,
-            data,
-          }: {
-            connectorId: string;
-            stream: string;
-            recordKey: string;
-            mimeType: string;
-            data: unknown;
-          }) => {
+          persistBlob: async ({ connectorId, stream, recordKey, mimeType, data }) => {
             const namespace = storageNamespace ?? (await resolveStorageNamespace(connectorId));
             return ctx.persistContentAddressedBlob({
               connectorId: namespace.connectorId,
@@ -455,11 +458,13 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
               stream,
               recordKey,
               mimeType,
-              data: Buffer.isBuffer(data) ? (data as Buffer) : Buffer.from(data as Uint8Array),
-            });
+              // ctx.persistContentAddressedBlob is untyped (.js host); Buffer extends
+              // Uint8Array so the operation's coerced Uint8Array is always passable here.
+              data: data instanceof Buffer ? data : Buffer.from(data),
+            }) as ReturnType<BlobsUploadDependencies["persistBlob"]>;
           },
         };
-        const operationInput = {
+        const operationInput: BlobsUploadInput = {
           requestParams: {
             connector_id: (req.query as Record<string, unknown>).connector_id,
             stream: (req.query as Record<string, unknown>).stream,
@@ -470,10 +475,7 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
         };
         let output: { envelope: unknown };
         try {
-          output = await executeBlobsUpload(
-            operationInput as Parameters<typeof executeBlobsUpload>[0],
-            dependencies as unknown as Parameters<typeof executeBlobsUpload>[1]
-          );
+          output = await executeBlobsUpload(operationInput, dependencies);
         } catch (opErr) {
           if (opErr instanceof BlobsUploadInvalidRequestError || opErr instanceof BlobsUploadStreamNotFoundError) {
             const mapped = new Error((opErr as Error).message) as Error & {
@@ -776,7 +778,7 @@ export function mountRsRecordsDeleteStream(app: AppLike, ctx: MountRsMutationCon
       });
       try {
         let storageNamespace: ConnectorNamespaceLike | null = null;
-        const dependencies = {
+        const dependencies: RecordsDeleteStreamDependencies = {
           hasManifestStream: async (cid: string, streamName: string) => {
             const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
             const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
@@ -793,7 +795,11 @@ export function mountRsRecordsDeleteStream(app: AppLike, ctx: MountRsMutationCon
               (await ctx.resolveOwnerConnectorNamespace(req, cid, {
                 connectorInstanceId,
               }));
-            return ctx.deleteAllRecords(ctx.storageTargetForConnectorNamespace(namespace), streamName);
+            // ctx.deleteAllRecords is untyped (.js host); it returns the deleted count.
+            return ctx.deleteAllRecords(
+              ctx.storageTargetForConnectorNamespace(namespace),
+              streamName
+            ) as Promise<number>;
           },
         };
         let output: { deletedRecordCount: number };
@@ -806,10 +812,7 @@ export function mountRsRecordsDeleteStream(app: AppLike, ctx: MountRsMutationCon
           }
           ctx.setReferenceTraceId(res, mutationContext.traceId);
           await ctx.emitMutationRequested(req, mutationContext);
-          output = (await executeRecordsDeleteStream(
-            { connectorId, streamName: req.params.stream ?? "" },
-            dependencies as unknown as Parameters<typeof executeRecordsDeleteStream>[1]
-          )) as { deletedRecordCount: number };
+          output = await executeRecordsDeleteStream({ connectorId, streamName: req.params.stream ?? "" }, dependencies);
         } catch (opErr) {
           if (
             opErr instanceof RecordsDeleteStreamInvalidRequestError ||
@@ -869,7 +872,7 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
       });
       try {
         let storageNamespace: ConnectorNamespaceLike | null = null;
-        const dependencies = {
+        const dependencies: RecordsDeleteDependencies = {
           hasManifestStream: async (cid: string, streamName: string) => {
             const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
             const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
@@ -886,7 +889,12 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
               (await ctx.resolveOwnerConnectorNamespace(req, cid, {
                 connectorInstanceId,
               }));
-            return ctx.deleteRecord(ctx.storageTargetForConnectorNamespace(namespace), streamName, recordId);
+            // ctx.deleteRecord is untyped (.js host); it returns the deleted count.
+            return ctx.deleteRecord(
+              ctx.storageTargetForConnectorNamespace(namespace),
+              streamName,
+              recordId
+            ) as Promise<number>;
           },
         };
         let output: { deletedRecordCount: number };
@@ -896,14 +904,14 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
           }
           ctx.setReferenceTraceId(res, mutationContext.traceId);
           await ctx.emitMutationRequested(req, mutationContext);
-          output = (await executeRecordsDelete(
+          output = await executeRecordsDelete(
             {
               connectorId,
               streamName: req.params.stream ?? "",
               recordId: requestedRecordId,
             },
-            dependencies as unknown as Parameters<typeof executeRecordsDelete>[1]
-          )) as { deletedRecordCount: number };
+            dependencies
+          );
         } catch (opErr) {
           if (opErr instanceof RecordsDeleteInvalidRequestError || opErr instanceof RecordsDeleteNotFoundError) {
             const mapped = new Error((opErr as Error).message) as Error & {
@@ -975,7 +983,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
       // target; the connector-only path stays active-only. `allowStatuses` is
       // omitted (not set to undefined) so it doesn't trip exactOptionalPropertyTypes.
       const draftAdmission = (cin: string | null) => (cin ? { allowStatuses: ["active", "draft"] as const } : {});
-      const dependencies = {
+      const dependencies: RecordsIngestDependencies = {
         hasManifestStream: async (cid: string, streamName: string) => {
           const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
           const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
@@ -987,7 +995,7 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           }
           return visible;
         },
-        ingestRecord: async (cid: string, cin: string | null, record: unknown) => {
+        ingestRecord: async (cid: string, cin: string | null, record: Record<string, unknown>) => {
           const namespace =
             storageNamespace ??
             (await ctx.resolveOwnerConnectorNamespace(req, cid, {
@@ -1010,28 +1018,22 @@ export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext):
           return result;
         },
       };
-      let output: {
-        envelope: {
-          records_accepted: number;
-          records_rejected: number;
-          errors: unknown[];
-        };
-      };
+      let output: RecordsIngestOutput;
       try {
         if (!connectorId) {
           throw new RecordsIngestInvalidRequestError("connector_id must be a single non-empty string");
         }
         ctx.setReferenceTraceId(res, mutationContext.traceId);
         await ctx.emitMutationRequested(req, mutationContext);
-        output = (await executeRecordsIngest(
+        output = await executeRecordsIngest(
           {
             connectorId,
             connectorInstanceId,
             streamName: req.params.stream ?? "",
             body: rawBody,
           },
-          dependencies as unknown as Parameters<typeof executeRecordsIngest>[1]
-        )) as unknown as typeof output;
+          dependencies
+        );
       } catch (opErr) {
         if (opErr instanceof RecordsIngestInvalidRequestError || opErr instanceof RecordsIngestNotFoundError) {
           const mapped = new Error((opErr as Error).message) as Error & {
@@ -1093,7 +1095,7 @@ export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationConte
       });
       try {
         let storageNamespace: ConnectorNamespaceLike | null = null;
-        const { state } = (await executeRsConnectorStateGet({ connectorId, grantId }, {
+        const stateGetDeps: RsConnectorStateGetDependencies = {
           resolveRegisteredConnectorManifest: async (id: string) => {
             const manifest = await ctx.resolveRegisteredConnectorManifest(id);
             storageNamespace = await ctx.resolveOwnerConnectorNamespace(
@@ -1103,8 +1105,11 @@ export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationConte
             );
             return manifest;
           },
-          resolveGrantScope: (id: string, gid: string) => ctx.resolveGrantScopedStateGrant(id, gid),
-          onGrantResolved: async (grantScope: { traceId?: string; scenarioId?: string } | null) => {
+          // ctx.resolveGrantScopedStateGrant is untyped (.js host); it returns
+          // the grant scope object matching RsConnectorStateGetGrantScope.
+          resolveGrantScope: (id: string, gid: string) =>
+            ctx.resolveGrantScopedStateGrant(id, gid) as Promise<RsConnectorStateGetGrantScope>,
+          onGrantResolved: async (grantScope) => {
             if (grantScope?.traceId) {
               stateContext.traceId = grantScope.traceId;
               stateContext.scenarioId = grantScope.scenarioId;
@@ -1112,18 +1117,18 @@ export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationConte
             ctx.setReferenceTraceId(res, stateContext.traceId);
             await ctx.emitStateRequested(req, stateContext);
           },
-          getSyncState: async (id: string, args: unknown) => {
+          getSyncState: async (_id: string, args) => {
             const namespace =
               storageNamespace ??
-              (await ctx.resolveOwnerConnectorNamespace(req, id, ownerStateDraftAdmission(req, grantId)));
-            return ctx.getSyncState(ctx.storageTargetForConnectorNamespace(namespace), args);
+              (await ctx.resolveOwnerConnectorNamespace(req, _id, ownerStateDraftAdmission(req, grantId)));
+            // ctx.getSyncState is untyped (.js host); args shape matches the operation's contract.
+            return ctx.getSyncState(
+              ctx.storageTargetForConnectorNamespace(namespace),
+              args
+            ) as Promise<RsConnectorStateGetState>;
           },
-        } as unknown as Parameters<typeof executeRsConnectorStateGet>[1])) as {
-          state: {
-            state?: Record<string, unknown>;
-            updated_at?: string | null;
-          } | null;
         };
+        const { state } = await executeRsConnectorStateGet({ connectorId, grantId }, stateGetDeps);
         await ctx.emitStateEvent(req, stateContext, "state.served", "succeeded", {
           visible_streams: Object.keys(state?.state || {}),
           updated_at: state?.updated_at || null,
@@ -1173,7 +1178,7 @@ export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationConte
       });
       try {
         let storageNamespace: ConnectorNamespaceLike | null = null;
-        const { state } = (await executeRsConnectorStatePut({ connectorId, grantId, stateMap }, {
+        const statePutDeps: RsConnectorStatePutDependencies = {
           resolveRegisteredConnectorManifest: async (id: string) => {
             const manifest = await ctx.resolveRegisteredConnectorManifest(id);
             storageNamespace = await ctx.resolveOwnerConnectorNamespace(
@@ -1181,10 +1186,16 @@ export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationConte
               id,
               ownerStateDraftAdmission(req, grantId)
             );
-            return manifest;
+            // ctx.resolveRegisteredConnectorManifest is untyped (.js host); streams[].name
+            // may be null/undefined at runtime but the operation's stream-membership check
+            // guards against that via a Set lookup (missing names simply won't match).
+            return manifest as RsConnectorStatePutManifest;
           },
-          resolveGrantScope: (id: string, gid: string) => ctx.resolveGrantScopedStateGrant(id, gid),
-          onGrantResolved: async (grantScope: { traceId?: string; scenarioId?: string } | null) => {
+          // ctx.resolveGrantScopedStateGrant is untyped (.js host); it returns the grant
+          // scope object matching RsConnectorStatePutGrantScope.
+          resolveGrantScope: (id: string, gid: string) =>
+            ctx.resolveGrantScopedStateGrant(id, gid) as Promise<RsConnectorStatePutGrantScope>,
+          onGrantResolved: async (grantScope) => {
             if (grantScope?.traceId) {
               stateContext.traceId = grantScope.traceId;
               stateContext.scenarioId = grantScope.scenarioId;
@@ -1192,18 +1203,19 @@ export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationConte
             ctx.setReferenceTraceId(res, stateContext.traceId);
             await ctx.emitStateRequested(req, stateContext);
           },
-          putSyncState: async (id: string, map: unknown, args: unknown) => {
+          putSyncState: async (_id: string, map, args) => {
             const namespace =
               storageNamespace ??
-              (await ctx.resolveOwnerConnectorNamespace(req, id, ownerStateDraftAdmission(req, grantId)));
-            return ctx.putSyncState(ctx.storageTargetForConnectorNamespace(namespace), map, args);
+              (await ctx.resolveOwnerConnectorNamespace(req, _id, ownerStateDraftAdmission(req, grantId)));
+            // ctx.putSyncState is untyped (.js host); map/args shapes match the operation's contract.
+            return ctx.putSyncState(
+              ctx.storageTargetForConnectorNamespace(namespace),
+              map,
+              args
+            ) as Promise<RsConnectorStatePutState>;
           },
-        } as unknown as Parameters<typeof executeRsConnectorStatePut>[1])) as {
-          state: {
-            state?: Record<string, unknown>;
-            updated_at?: string | null;
-          } | null;
         };
+        const { state } = await executeRsConnectorStatePut({ connectorId, grantId, stateMap }, statePutDeps);
         await ctx.emitStateEvent(req, stateContext, "state.updated", "succeeded", {
           persisted_streams: Object.keys(state?.state || {}),
           updated_at: state?.updated_at || null,

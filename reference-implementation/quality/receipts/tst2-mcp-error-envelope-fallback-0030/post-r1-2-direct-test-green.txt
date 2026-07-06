@@ -1,0 +1,15 @@
+# hone work tst2-mcp-error-envelope-fallback-0030 — post-r1 rung 'direct-test-green'
+# command: cd "$REPO_ROOT/../packages/mcp-server" && if [ -f test/error-envelope-fallback-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/error-envelope-fallback-oracle.test.js 2>&1 || rc=1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi
+# expect: POST: the new pure oracle passes under node --test --test-force-exit. BASELINE: guarded green while absent.
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ toToolResult: creates rs_error fallback envelope without response error body (0.770584ms)
+✔ stream resource fallback preserves HTTP status in JSON envelope (0.235274ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 42.207598

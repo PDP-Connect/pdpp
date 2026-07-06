@@ -10,7 +10,7 @@
 //   test/device-exporter-state-routes.test.js
 //   test/connector-failure-diagnostics.test.js
 
-import { redactStderrTail } from "../../runtime/stderr-redact.js";
+import { redactStderrTail } from "../../runtime/stderr-redact.ts";
 
 const SENSITIVE_DIAGNOSTIC_KEY_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b/i;
 const LOCAL_SECRET_PATH_FRAGMENT_RE =

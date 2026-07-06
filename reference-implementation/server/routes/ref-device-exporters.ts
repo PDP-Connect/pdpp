@@ -561,6 +561,29 @@ function normalizeHeartbeatSourceInstances(body: Record<string, unknown>): unkno
   return [];
 }
 
+function normalizeDeviceIngestRecord(record: unknown, index: number) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    const err = new Error(`records[${index}] must be an object`) as Error & { code: string; param: string };
+    err.code = "invalid_request";
+    err.param = "records";
+    throw err;
+  }
+  const r = record as Record<string, unknown>;
+  const key = r.record_key ?? r.key;
+  if (key == null || (typeof key !== "string" && !Array.isArray(key))) {
+    const err = new Error(`records[${index}].record_key is required`) as Error & { code: string; param: string };
+    err.code = "invalid_request";
+    err.param = "records";
+    throw err;
+  }
+  return {
+    stream: requireNonEmptyString(r.stream, `records[${index}].stream`),
+    key,
+    emitted_at: typeof r.emitted_at === "string" ? r.emitted_at : undefined,
+    data: optionalObject(r.data) || {},
+  };
+}
+
 function normalizeDeviceIngestRecords(body: Record<string, unknown>): unknown[] {
   if (!Array.isArray(body.records) || body.records.length === 0) {
     const err = new Error("records must be a non-empty array") as Error & { code: string; param: string };
@@ -568,28 +591,7 @@ function normalizeDeviceIngestRecords(body: Record<string, unknown>): unknown[] 
     err.param = "records";
     throw err;
   }
-  return (body.records as unknown[]).map((record, index) => {
-    if (!record || typeof record !== "object" || Array.isArray(record)) {
-      const err = new Error(`records[${index}] must be an object`) as Error & { code: string; param: string };
-      err.code = "invalid_request";
-      err.param = "records";
-      throw err;
-    }
-    const r = record as Record<string, unknown>;
-    const key = r.record_key ?? r.key;
-    if (key == null || (typeof key !== "string" && !Array.isArray(key))) {
-      const err = new Error(`records[${index}].record_key is required`) as Error & { code: string; param: string };
-      err.code = "invalid_request";
-      err.param = "records";
-      throw err;
-    }
-    return {
-      stream: requireNonEmptyString(r.stream, `records[${index}].stream`),
-      key,
-      emitted_at: typeof r.emitted_at === "string" ? r.emitted_at : undefined,
-      data: optionalObject(r.data) || {},
-    };
-  });
+  return (body.records as unknown[]).map(normalizeDeviceIngestRecord);
 }
 
 type GapStatMap = Map<string, { pending: number; lastUpdatedAt: string | null; reasons: Set<string> }>;

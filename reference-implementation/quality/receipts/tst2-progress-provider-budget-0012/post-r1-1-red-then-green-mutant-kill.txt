@@ -1,0 +1,40 @@
+# hone work tst2-progress-provider-budget-0012 — post-r1 rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/progress-provider-budget-oracle.test.js ]; then git diff --quiet -- runtime/progress-validators.js || { echo "DIRTY source"; exit 1; }; cp runtime/progress-validators.js /tmp/tst2_progress_provider_budget.bak; perl -0pi -e "s/retryTokensRemaining !== 'unbounded'/retryTokensRemaining !== 'never_unbounded'/" runtime/progress-validators.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_progress_provider_budget; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/progress-provider-budget-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_progress_provider_budget.bak runtime/progress-validators.js; rm -f /tmp/tst2_progress_provider_budget.bak; git diff --quiet -- runtime/progress-validators.js || { echo "RESTORE FAILED"; exit 1; }; if [ $rc -eq 1 ]; then echo "MUTANT KILLED (unbounded retry token sentinel rejected)"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: progress provider budget oracle not yet created"; exit 0; fi'
+# expect: BASELINE: prints BASELINE and exits 0. POST: rejecting the 'unbounded' sentinel makes the valid-object test fail, prints MUTANT KILLED, restores runtime/progress-validators.js.
+# exit: 0  duration: 0s  verdict: FAIL (output does not contain 'BASELINE')
+
+✖ validateProgressProviderBudget oracle sees the intended retry-token mutant (0.740652ms)
+✔ validateProgressProviderBudget accepts valid provider-budget circuit transitions (0.220454ms)
+✔ validateProgressProviderBudget rejects non-object provider_budget payloads (0.63622ms)
+✔ validateProgressProviderBudget rejects the wrong provider_budget object discriminator (0.111252ms)
+✔ validateProgressProviderBudget rejects missing or non-object circuit payloads (0.121942ms)
+✔ validateProgressProviderBudget rejects invalid circuit enum fields by name (0.134462ms)
+✔ validateProgressProviderBudget rejects negative provider-budget counters by name (0.107771ms)
+✔ validateProgressProviderBudget rejects non-finite retry_tokens_remaining by name (0.092931ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 7
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 34.764573
+
+✖ failing tests:
+
+test at test/progress-provider-budget-oracle.test.js:38:1
+✖ validateProgressProviderBudget oracle sees the intended retry-token mutant (0.740652ms)
+  AssertionError [ERR_ASSERTION]: expected red-rung source to reject the unbounded retry-token sentinel
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/reference-implementation/test/progress-provider-budget-oracle.test.js:47:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: "// PROGRESS-message sub-validators for the connector runtime.\n//\n// A PROGRESS envelope may carry an optional provider-budget circuit-transition\n// block and/or a collection-rate block. These validators enforce the shape and\n// numeric bounds of those sub-objects, throwing on the first violation.\n//\n// Extracted from runtime/index.js: pure enum/numeric shape checks with no\n// runtime state, secret handling, or grant/scope enforcement.\n\nconst PROVIDER_BUDGET_PROGRESS_OBJECTS = new Set(['provider_budget_circuit_transition']);\nconst PROVIDER_BUDGET_CIRCUIT_STATES = new Set(['closed', 'half_open', 'open']);\nconst PROVIDER_BUDGET_CIRCUIT_REASONS = new Set([\n  'provider_failure',\n  'provider_throttle',\n  'reset_timeout',\n  'success',\n]);\nconst PROVIDER_BUDGET_CIRCUIT_TRIGGERS = new Set([\n  'before_request',\n  'provider_failure',\n  'provider_throttle',\n  'success',\n]);\n\nexport function validateProgressProviderBudget(providerBudget) {\n  if (!providerBudget || typeof providerBudget !== 'object' || Array.isArray(providerBudget)) {\n    throw new Error('Connector emitted invalid PROGRESS.provider_budget: expected object');\n  }\n  if (!PROVIDER_BUDGET_PROGRESS_OBJECTS.has(providerBudget.object)) {\n    throw new Error('Connector emitted invalid PROGRESS.provider_budget.object');\n  }\n  const circuit = providerBudget.circuit;\n  if (!circuit || typeof circuit !== 'object' || Array.isArray(circuit)) {\n    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit: expected object');\n  }\n  if (!PROVIDER_BUDGET_CIRCUIT_STATES.has(circuit.previous_state)) {\n    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.previous_state');\n  }\n  if (!PROVIDER_BUDGET_CIRCUIT_STATES.has(circuit.state)) {\n    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.state');\n  }\n  if (!PROVIDER_BUDGET_CIRCUIT_REASONS.has(circuit.reason)) {\n    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.reason');\n  }\n  if (!PROVIDER_BUDGET_CIRCUIT_TRIGGERS.has(circuit.trigger)) {\n    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.trigger');\n  }\n  for (const fieldName of ['elapsed_ms', 'request_count']) {\n    const value = providerBudget[fieldName];\n    if (!Number.isFinite(value) || value < 0) {\n      throw new Error(`Connector emitted invalid PROGRESS.provider_budget.${fieldName}`);\n    }\n  }\n  const retryTokensRemaining = providerBudget.retry_tokens_remaining;\n  if (\n    retryTokensRemaining != null\n    && retryTokensRemaining !== 'unbounded'\n    && (!Number.isFinite(retryTokensRemaining) || retryTokensRemaining < 0)\n  ) {\n    throw new Error('Connector emitted invalid PROGRESS.provider_budget.retry_tokens_remaining');\n  }\n}\n\nconst COLLECTION_RATE_BACKOFF_REASONS = new Set(['retry_after', 'throttle']);\n\nexport function validateProgressCollectionRate(collectionRate) {\n  if (!collectionRate || typeof collectionRate !== 'object' || Array.isArray(collectionRate)) {\n    throw new Error('Connector emitted invalid PROGRESS.collection_rate: expected object');\n  }\n  if (collectionRate.object !== 'collection_rate') {\n    throw new Error('Connector emitted invalid PROGRESS.collection_rate.object');\n  }\n  for (const fieldName of ['ceiling_interval_ms', 'ceiling_rate_per_min', 'current_interval_ms', 'effective_rate_per_min']) {\n    const value = collectionRate[fieldName];\n    if (!Number.isFinite(value) || value < 0) {\n      throw new Error(`Connector emitted invalid PROGRESS.collection_rate.${fieldName}: expected non-negative number`);\n    }\n  }\n  const lastBackoff = collectionRate.last_backoff;\n  if (lastBackoff != null) {\n    if (!lastBackoff || typeof lastBackoff !== 'object' || Array.isArray(lastBackoff)) {\n      throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff: expected object or null');\n    }\n    if (!Number.isFinite(lastBackoff.at_interval_ms) || lastBackoff.at_interval_ms < 0) {\n      throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff.at_interval_ms');\n    }\n    if (!COLLECTION_RATE_BACKOFF_REASONS.has(lastBackoff.reason)) {\n      throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff.reason');\n    }\n  }\n}\n",
+    expected: /retryTokensRemaining !== ['"]never_unbounded['"]/,
+    operator: 'match',
+    diff: 'simple'
+  }
+MUTANT KILLED (unbounded retry token sentinel rejected)

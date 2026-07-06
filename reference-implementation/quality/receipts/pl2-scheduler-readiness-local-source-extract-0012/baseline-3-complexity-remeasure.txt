@@ -1,0 +1,21 @@
+# hone work pl2-scheduler-readiness-local-source-extract-0012 — baseline rung 'complexity-remeasure'
+# command: cd "$REPO_ROOT" && sh -c 'cfg=/tmp/pdpp_scheduler_readiness_0012_biome.jsonc; printf %s "{\"root\":false,\"files\":{\"ignoreUnknown\":true,\"includes\":[\"runtime/**/*.ts\"]},\"linter\":{\"enabled\":true,\"rules\":{\"complexity\":{\"noExcessiveCognitiveComplexity\":{\"level\":\"error\",\"options\":{\"maxAllowedComplexity\":5}}}}}}" > "$cfg"; npx biome lint --config-path="$cfg" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 runtime/scheduler-readiness.ts 2>&1'
+# expect: Prints fresh Biome diagnostics with stderr captured; target complexity is lower than baseline 18.
+# exit: 0  duration: 0s  verdict: PASS
+
+runtime/scheduler-readiness.ts:121:16 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━━━━
+
+  i Excessive complexity of 18 detected (max: 15).
+  
+    119 │ }
+    120 │ 
+  > 121 │ async function checkFirstPartyLocalSourceReadiness(
+        │                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    122 │   connectorId: string,
+    123 │   manifest: SchedulerManifest
+  
+  i Please refactor this function to reduce its complexity score from 18 to the max allowed complexity 15.
+  
+
+Checked 1 file in 1732µs. No fixes applied.
+Found 1 info.

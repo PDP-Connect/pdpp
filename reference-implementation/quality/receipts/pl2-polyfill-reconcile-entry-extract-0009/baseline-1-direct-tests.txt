@@ -1,0 +1,36 @@
+# hone work pl2-polyfill-reconcile-entry-extract-0009 — baseline rung 'direct-tests'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in test/polyfill-manifest-reconcile-invalidation.test.js test/connector-public-catalog-completeness.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0009_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit "$f" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc'
+# expect: All listed tests pass with one ephemeral Postgres database per test file, timeout 600, and --test-force-exit.
+# exit: 0  duration: 2s  verdict: PASS
+
+✔ reconciliation invalidates seed-fake records on the reference-fixture → polyfill transition (21.867496ms)
+✔ reconciliation preserves owner records when polyfill manifest evolves with new semantic_fields only (10.922938ms)
+✔ reconciliation preserves owner records when polyfill manifest evolves with display_name/description only (10.730615ms)
+✔ reconciliation preserves owner records when polyfill manifest version bumps but stream set is unchanged (9.770179ms)
+✔ reconciliation preserves owner records when no reference-fixture manifest exists for the connector_id (9.051986ms)
+✔ reconciliation does not delete records when the persisted manifest already matches the shipped manifest (9.681377ms)
+✔ reconciliation repairs an invalid persisted first-party manifest without deleting records (9.764678ms)
+✔ a direct registerConnector call with a different manifest does not delete records (8.200791ms)
+✔ reconciliation skips unlisted connectors that are not yet registered (no record invalidation, no auto-seed) (9.390271ms)
+✔ reconciliation auto-registers listed=true first-party manifests so the operator catalog can show them on a fresh DB (9.135688ms)
+✔ reconciliation does not auto-register hidden manifests even when the file is shipped (8.267872ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 559.619083
+✔ defaultPolyfillManifestsDir resolves to the shipped first-party manifests dir (0.433448ms)
+✔ every listed=true first-party manifest is catalog-visible after startup reconciliation, with no connection row (40.128221ms)
+✔ a fresh-DB catalog read projects zero connections and persists no phantom connection rows (19.73539ms)
+✔ hidden / unproven first-party manifests stay out of the public catalog (21.002112ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 563.729433

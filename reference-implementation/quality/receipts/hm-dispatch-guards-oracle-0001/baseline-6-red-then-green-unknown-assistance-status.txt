@@ -1,0 +1,6 @@
+# hone work hm-dispatch-guards-oracle-0001 — baseline rung 'red-then-green-unknown-assistance-status'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-dispatch.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/ASSISTANCE_STATUS for unknown assistance_request_id/ASSISTANCE_STATUS for unmatched assistance_request_id/' runtime/index.js && node --test test/runtime-handle-msg-dispatch.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming the unknown-ASSISTANCE_STATUS test — the mutation rewrites the throw at runtime/index.js:3215 (sed target verified unique 2026-07-02: grep -cF 'ASSISTANCE_STATUS for unknown assistance_request_id' runtime/index.js == 1); checkout restores it
+# exit: 0  duration: 0s  verdict: PASS
+
+oracle-not-yet-authored

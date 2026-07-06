@@ -1,0 +1,18 @@
+# hone work runtime-connection-health-t0-3e28c634 — baseline rung 'complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/connection-health.ts::deriveOutboxStateFromDiagnostics'
+# executed-command (portable-path rewrite): node /home/tnunamak/.tmp/minnows-substrate/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/connection-health.ts::deriveOutboxStateFromDiagnostics'
+# expect: found=true and cognitive_before < 11 (packet baseline); red_scan unchanged
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "runtime/connection-health.ts::deriveOutboxStateFromDiagnostics",
+  "file": "runtime/connection-health.ts",
+  "function": "deriveOutboxStateFromDiagnostics",
+  "found": true,
+  "cognitive_before": 11,
+  "line": 339,
+  "caller_count": 0,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

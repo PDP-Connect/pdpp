@@ -1,0 +1,6 @@
+# hone work pl1-records-aggregate-bindings-merge-0001 — baseline rung 'seam-static-pin'
+# command: cd "$REPO_ROOT" && node -e 'const fs=require("fs");const s=fs.readFileSync("server/records.js","utf8");if(!s.includes("function mergeGroupedAggregateBuckets")){console.log("baseline: helpers not extracted; vacuous PASS");process.exit(0);}const w=s.replace(/\s+/g," ");let rc=0;const checks=[["mergeGroupedAggregateBuckets declares (mergedBuckets, groups)",/function mergeGroupedAggregateBuckets\( ?mergedBuckets, ?groups,? ?\)/],["call site passes bare accumulator identifier mergedBuckets",/mergeGroupedAggregateBuckets\( ?mergedBuckets, ?result\.groups ?\)/],["selectComparableExtremum is declared",/function selectComparableExtremum\(/],["selectComparableExtremum result is destructured at call site",/selectComparableExtremum\([^)]*\)[^;]*;/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?"PASS ":"FAIL ")+c[0]);if(!ok)rc=1;}process.exit(rc);'
+# expect: exit 0, every line PASS. Baseline (helpers absent): vacuous PASS. Post: pins the explicit-parameter seam — the accumulator Map is threaded as a bare-identifier parameter (no closure capture) and the extremum helper is value-in/value-out with its return destructured.
+# exit: 0  duration: 0s  verdict: PASS
+
+baseline: helpers not extracted; vacuous PASS

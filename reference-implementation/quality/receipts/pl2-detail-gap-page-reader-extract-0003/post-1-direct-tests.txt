@@ -1,0 +1,57 @@
+# hone work pl2-detail-gap-page-reader-extract-0003 — post rung 'direct-tests'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in test/connector-detail-gap-store.test.js test/detail-coverage-recovered-gap-regression.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0003_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit "$f" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc'
+# expect: All listed tests pass with one ephemeral Postgres database per test file, timeout 600, and --test-force-exit.
+# exit: 0  duration: 5s  verdict: PASS
+
+✔ connector detail gap store upserts pending gaps, updates status, and redacts unsafe metadata (14.109773ms)
+✔ connector detail gaps are isolated by connector instance (7.978427ms)
+✔ connector detail gap store is idempotent by gap identity when connector-supplied gap ids change (7.480689ms)
+✔ listPendingGapsForConnector returns gaps across every connector instance for diagnostics (8.031198ms)
+✔ countGapsByStatusForConnector returns an exact reason-scoped recovered count across instances (9.335571ms)
+✔ sanitizeDetailGapMetadata does not preserve full URLs or secret-bearing fields (0.320555ms)
+✔ runtime records DETAIL_GAP before successful terminal handling (39.295907ms)
+✔ runtime includes pending detail gaps in START as reference-only safe rows (33.891104ms)
+✔ runtime loads pending detail gaps only for the requested connector instance (31.389721ms)
+✔ connector-emitted DETAIL_GAP survives real-store persistence and reappears in the next run START.detail_gaps (54.497039ms)
+✔ runtime drains more than 100 pending detail gaps in one run through paged recovery requests (60.647985ms)
+✔ runtime pages large detail-gap payloads by byte budget while still draining semantics (41.19779ms)
+✔ serving a pending gap in START increments attempt_count to 1 via in_progress mark (29.457648ms)
+✔ recovered gap preserves incremented attempt_count after DETAIL_GAP_RECOVERED (8.517906ms)
+✔ re-deferred pressure gap remains pending with attempt_count > 0 after runtime re-defers it (8.326573ms)
+✔ gap served but not recovered is reset to pending after connector exits without recovery (30.875492ms)
+✔ recovered gap is not reset to pending by run cleanup (32.5152ms)
+✔ prior-run in_progress gap is reclaimed to pending before a new run serves gaps (33.397935ms)
+✔ countGapsByStatusForConnector returns an exact reason-scoped recovered count (Postgres) (2167.882165ms)
+✔ connector-emitted DETAIL_GAP survives Postgres persistence and reappears in START.detail_gaps (225.647178ms)
+✔ runtime fails closed when pending detail gap loading fails before START (11.898385ms)
+✔ runtime marks DETAIL_GAP_RECOVERED only after prior records flush successfully (44.06608ms)
+✔ runtime fails closed when DETAIL_GAP persistence fails (29.127921ms)
+✔ runtime rejects state commit when required DETAIL_COVERAGE has no hydrated detail or durable gap (30.999064ms)
+✔ runtime commits state when required DETAIL_COVERAGE is backed by matching pending DETAIL_GAP (31.268469ms)
+✔ runtime preserves no-commit behavior for failed, cancelled, and protocol-violating runs (83.945166ms)
+✔ chase 0-transaction retry recovers the matching served account gap and leaves an unmatched gap pending (34.146599ms)
+ℹ tests 27
+ℹ suites 0
+ℹ pass 27
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3238.708038
+[runtime] {"type":"DETAIL_GAP","stream":"messages","record_key":"X","reason":"retry_exhausted","retryable":true,"detail_locator":{"kind":"chatgpt.conversation","conversation_id":"X"},"gap_id":"gap_f183fb827591c287ac6cf64fa8ed27dd"}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"conversations","stream":"messages"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+✔ a recovered detail gap re-deferred with the same identity must not fail the commit gate (214.116529ms)
+[runtime] {"type":"DETAIL_GAP","stream":"messages","record_key":"OLD","reason":"retry_exhausted","retryable":true,"detail_locator":{"kind":"chatgpt.conversation","conversation_id":"OLD"},"gap_id":"gap_ba387f513936afafef21afd4d456383b"}
+[runtime] {"type":"DETAIL_GAP","stream":"messages","record_key":"NEW","reason":"retry_exhausted","retryable":true,"detail_locator":{"kind":"chatgpt.conversation","conversation_id":"NEW"},"gap_id":"gap_f4cf1dc955197c0ab2ddf3152da3d7af"}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"conversations","stream":"messages"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+✔ run.detail_gap_recorded fires once at first sighting, NOT on a prior-run re-defer (120.336963ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1160.644799

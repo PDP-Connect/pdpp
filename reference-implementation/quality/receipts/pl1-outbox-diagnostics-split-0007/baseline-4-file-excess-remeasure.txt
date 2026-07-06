@@ -1,0 +1,64 @@
+# hone work pl1-outbox-diagnostics-split-0007 — baseline rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'server/stores/device-exporter-store.js' --cog 5
+# expect: file_excess strictly below the pre-edit baseline (18); NEW flagged names limited to collectDiagnosticCounts/validOldestPendingAt (each should sit at or below cc5 and not flag)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "server/stores/device-exporter-store.js",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 24,
+  "flagged_count": 8,
+  "file_excess": 18,
+  "flagged": [
+    {
+      "fn": "mapSourceInstanceHeartbeatRow",
+      "line": 108,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "normalizeOutboxDiagnostics",
+      "line": 161,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "createDevice",
+      "line": 212,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "createEnrollmentCode",
+      "line": 279,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "upsertSourceInstance",
+      "line": 310,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "createDevice",
+      "line": 405,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "createEnrollmentCode",
+      "line": 517,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "upsertSourceInstance",
+      "line": 565,
+      "cc": 6,
+      "excess": 1
+    }
+  ],
+  "red_scan": []
+}

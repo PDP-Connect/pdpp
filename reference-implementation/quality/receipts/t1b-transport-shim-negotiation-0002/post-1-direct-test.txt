@@ -1,0 +1,18 @@
+# hone work t1b-transport-shim-negotiation-0002 — post rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js
+# expect: all pass with the same counts as the post-oracle baseline (includes the req.is/req.accepts pins created by t1b-transport-shim-negotiation-evidence-0001)
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ createApp() is native Fastify — no express middleware stack (22.33303ms)
+✔ routes declared with { contract } carry the contract-package schema directly on the Fastify route (6.973655ms)
+✔ unknown contract operation ids fail fast at registration time (1.491927ms)
+✔ every @pdpp/reference-contract manifest matches a live Fastify route on the reference server (138.831746ms)
+✔ every @pdpp/reference-contract manifest is declared via { contract: "opId" } at registration time (102.503076ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1411.515338

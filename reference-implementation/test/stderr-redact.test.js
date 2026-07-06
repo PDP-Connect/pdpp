@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { redactStderrTail } from '../runtime/stderr-redact.js';
+import { redactStderrTail } from '../runtime/stderr-redact.ts';
 
 test('redactStderrTail passes through safe text unchanged', () => {
   const result = redactStderrTail('Connection refused: example.com:443');

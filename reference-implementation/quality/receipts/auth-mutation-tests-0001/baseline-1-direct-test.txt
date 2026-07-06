@@ -1,0 +1,22 @@
+# hone work auth-mutation-tests-0001 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/auth-expiry-enforcement.test.js ]; then node --test test/auth-expiry-enforcement.test.js test/owner-session.test.js; else node --test test/owner-session.test.js; fi'
+# expect: baseline (new file absent): owner-session 9/9 green; post: the new oracle green alongside it, 0 fail, no new skips, all four named contract tests present and passing
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ owner-session default lifetime balances dashboard persistence with finite expiry (0.716664ms)
+✔ owner-session primitives round-trip signed sessions through cookie headers (43.949403ms)
+✔ owner-session controller preserves the current owner-auth session semantics (39.063322ms)
+✔ deriveOwnerSessionSecret uses scrypt KDF (not fast SHA-256) (96.368756ms)
+✔ deriveOwnerSessionSecret wrong password produces different secret (sign/verify fails) (64.818805ms)
+✔ owner-session package export is available via the workspace package name (0.945948ms)
+✔ two-sided contract: AS-minted owner cookie validates through the console package-export surface (62.44382ms)
+✔ two-sided contract: derived signing key is byte-identical across the AS and console import surfaces (61.299659ms)
+✔ two-sided contract: a console controller with the wrong password rejects an AS-minted cookie (63.734295ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 533.333827

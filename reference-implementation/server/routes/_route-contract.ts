@@ -42,3 +42,36 @@ export type PdppErrorFn = (
   param?: string | null,
   extras?: Readonly<Record<string, unknown>> | null
 ) => unknown;
+
+// Capability-shaped namespace bag — the host resolver returns at least these
+// fields. Other resolver-only fields pass through opaquely.
+export interface ConnectorNamespace {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+}
+
+export interface ActiveBinding {
+  readonly connectorId?: string | null;
+  readonly connectorInstanceId: string;
+  readonly displayName?: string | null;
+}
+
+export interface WireConnection {
+  connection_id: string;
+  display_name?: string;
+}
+
+export interface TraceContext {
+  readonly request_id: string;
+  readonly scenario_id: string;
+  readonly trace_id: string;
+}
+
+// Typed ambiguity error the host's `AmbiguousConnectionError` produces. The
+// host writer (`handleError`) maps `code: "ambiguous_connection"` to HTTP 409
+// and copies `available_connections` / `retry_with` onto the envelope.
+export interface AmbiguousConnectionErrorLike extends Error {
+  available_connections: WireConnection[];
+  code: string;
+  retry_with: string;
+}

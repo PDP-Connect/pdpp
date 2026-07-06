@@ -16,6 +16,7 @@
  */
 
 import { filterFreshPressureRows } from "../recovery-decision.ts";
+import { type BackoffDecision, computeNextRunWithBackoff } from "../scheduler-backoff.ts";
 import type {
   ConnectorSchedule,
   GetLastSuccessfulRunAtHandler,
@@ -24,8 +25,7 @@ import type {
   HumanRequiredStateEscalationHandler,
   RunRecord,
   RunSource,
-} from "../scheduler.ts";
-import { type BackoffDecision, computeNextRunWithBackoff } from "../scheduler-backoff.ts";
+} from "../scheduler-domain-types.ts";
 import {
   computeConnectionSourcePressureCooldown,
   isSourcePressureCooldownDeferring,
@@ -285,6 +285,115 @@ function filterFreshPendingPressureGaps(gaps: readonly PendingPressureGap[], now
   );
 }
 
+// ─── Pure back-off decision (decide/apply separation) ─────────────────────────
+
+/**
+ * Inputs to the PURE back-off dispatch decision. Everything the decision reads
+ * is passed as a plain value — including the CURRENT one-shot dedup state
+ * (`announcedBackoff`/`announcedBlocked`) and the persisted-in-history streak
+ * markers — so the function performs no `runtime.*` reads/writes, no async, and
+ * no event emission. This lets the ORDER-DEPENDENCE flow as data (the returned
+ * `DecideBackoffDispatchValue`) rather than as mutation of shared locals.
+ */
+export interface DecideBackoffDispatchInputs {
+  /** Current `announcedBackoffClass.get(key)`. */
+  readonly announcedBackoff: string | undefined;
+  /** Current `announcedBlockedClass.get(key)`. */
+  readonly announcedBlocked: string | undefined;
+  /** `decision.backoffApplied`. */
+  readonly backoffApplied: boolean;
+  /** `decision.recommendedHealthState === "blocked"`. */
+  readonly blocked: boolean;
+  /** Pre-computed forward-walk eligibility BEFORE the blocked override. */
+  readonly eligible: boolean;
+  /** Whether the current streak already persisted a `back_off.started` marker. */
+  readonly persistedBackoffStarted: boolean;
+  /** Whether the current streak already persisted a `gave_up` marker. */
+  readonly persistedGaveUp: boolean;
+  /** `decision.reasonClass` (null/undefined when no class is attributed). */
+  readonly reasonClass: string | null | undefined;
+  /** Pre-computed recovery-only flag BEFORE the blocked override. */
+  readonly recoveryOnly: boolean;
+}
+
+/**
+ * A one-shot transition the decision says WOULD fire this tick, as data. The
+ * effectful shell turns each into the matching RunRecord(s) / callback:
+ *   - `backoff_started` → a back-off skip record + a `back_off.started` event.
+ *   - `gave_up`         → a `gave_up` event + the §10-F escalation callback
+ *                         (coupled by design: same once-per-streak window).
+ */
+export type BackoffDispatchTransition = { kind: "backoff_started" } | { kind: "gave_up" };
+
+/**
+ * Map mutation the decision prescribes for a dedup cell:
+ *   - `set`    → set the cell to `reasonClass`.
+ *   - `delete` → delete the cell (streak broken).
+ *   - `keep`   → leave the cell untouched.
+ */
+export type DedupCellMutation = "set" | "delete" | "keep";
+
+/**
+ * The PURE decision value: the post-override dispatch flags, the dedup-map
+ * mutations to apply, and the ordered one-shot transitions to fire.
+ */
+export interface DecideBackoffDispatchValue {
+  readonly announcedBackoffMutation: DedupCellMutation;
+  readonly announcedBlockedMutation: DedupCellMutation;
+  readonly eligible: boolean;
+  readonly recoveryOnly: boolean;
+  readonly transitions: readonly BackoffDispatchTransition[];
+}
+
+/**
+ * PURE dispatch-decision core. Reproduces the exact back-off/blocked branching
+ * that `evaluateBackoffDispatch` used to inline, but reads/writes nothing:
+ * dedup state comes in as inputs, dedup mutations and one-shot transitions go
+ * out as data. Total over all inputs. Oracle-testable.
+ *
+ * Branch table (must match the original inline logic byte-for-byte):
+ *   - backoffApplied && reasonClass:
+ *       announcedBackoff cell → `set` (always, both gate arms).
+ *       emit `backoff_started` iff NOT (announced === reasonClass || persistedBackoffStarted).
+ *       if blocked:
+ *         announcedBlocked cell → `set` (always, both gate arms).
+ *         emit `gave_up` (+ escalation) iff NOT (announcedBlocked === reasonClass || persistedGaveUp).
+ *         override eligible=false, recoveryOnly=false (unconditionally).
+ *   - !backoffApplied: announcedBackoff cell → `delete` (streak broken).
+ *   - backoffApplied && !reasonClass: no mutation, no transition (both cells `keep`).
+ */
+export function decideBackoffDispatch(inputs: DecideBackoffDispatchInputs): DecideBackoffDispatchValue {
+  const transitions: BackoffDispatchTransition[] = [];
+  let eligible = inputs.eligible;
+  let recoveryOnly = inputs.recoveryOnly;
+  let announcedBackoffMutation: DedupCellMutation = "keep";
+  let announcedBlockedMutation: DedupCellMutation = "keep";
+
+  if (inputs.backoffApplied && inputs.reasonClass) {
+    // Back-off skip + `back_off.started` transition marker, one per streak.
+    announcedBackoffMutation = "set";
+    if (!(inputs.announcedBackoff === inputs.reasonClass || inputs.persistedBackoffStarted)) {
+      transitions.push({ kind: "backoff_started" });
+    }
+
+    if (inputs.blocked) {
+      // One-shot `gave_up` (+ §10-F escalation) per (connector, reason_class) streak.
+      announcedBlockedMutation = "set";
+      if (!(inputs.announcedBlocked === inputs.reasonClass || inputs.persistedGaveUp)) {
+        transitions.push({ kind: "gave_up" });
+      }
+      // Auto-dispatch is suppressed for blocked connectors (even recovery-only).
+      eligible = false;
+      recoveryOnly = false;
+    }
+  } else if (!inputs.backoffApplied) {
+    // Streak broken (success or different class): clear the announcement.
+    announcedBackoffMutation = "delete";
+  }
+
+  return { eligible, recoveryOnly, announcedBackoffMutation, announcedBlockedMutation, transitions };
+}
+
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface EvaluateBackoffDispatchResult {
@@ -402,84 +511,56 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     return buildSourcePressureCooldownSkip(schedule.connectorId, cooldown, schedule.connectorInstanceId);
   }
 
-  function applyBackoffAnnouncements(
+  // Effectful shell for the back-off decision: mutate the dedup maps and turn
+  // the pure decision's `transitions` into the concrete RunRecord(s) / callback.
+  // Order-dependence flows in as DATA (the `DecideBackoffDispatchValue`); this
+  // shell only performs the prescribed effects. The §10-F escalation is coupled
+  // to the `gave_up` transition, so it still fires in the SAME once-per-streak
+  // window (with its error-swallowing intact).
+  function applyBackoffDispatchDecision(
+    value: DecideBackoffDispatchValue,
     schedule: ConnectorSchedule,
     key: string,
-    history: readonly RunRecord[],
     decision: BackoffDecision,
-    eligible: boolean,
-    recoveryOnly: boolean
-  ): { eligible: boolean; eventsToEmit: RunRecord[]; recoveryOnly: boolean; skipToEmit: RunRecord | null } {
+    history: readonly RunRecord[]
+  ): { skipToEmit: RunRecord | null; eventsToEmit: RunRecord[] } {
     const connectorId = schedule.connectorId;
-    let nextEligible = eligible;
-    let nextRecoveryOnly = recoveryOnly;
-    let skipToEmit: RunRecord | null = null;
-    const eventsToEmit: RunRecord[] = [];
-
-    if (decision.backoffApplied && decision.reasonClass) {
-      const announced = runtime.announcedBackoffClass.get(key);
-      const persistedBackoffStarted = currentStreakHasSchedulerEvent(
-        history,
-        BACKOFF_STARTED_PREFIX,
-        decision.reasonClass
-      );
-      if (announced === decision.reasonClass || persistedBackoffStarted) {
-        runtime.announcedBackoffClass.set(key, decision.reasonClass);
-      } else {
-        runtime.announcedBackoffClass.set(key, decision.reasonClass);
-        // The existing back-off skip record (audit log) plus the new
-        // one-shot `schedule.back_off.started` transition marker. Both
-        // are tied to the *first* skip of the streak; subsequent ticks
-        // are suppressed by the `announcedBackoffClass` gate above.
-        skipToEmit = buildBackoffSkip(connectorId, decision, schedule.connectorInstanceId);
-        eventsToEmit.push(buildBackoffStartedEvent(connectorId, decision, schedule.connectorInstanceId));
-      }
-
-      if (decision.recommendedHealthState === "blocked") {
-        // One-shot `schedule.gave_up` per (connector, reason_class)
-        // streak. Cleared by a successful run (see
-        // `finalizeSuccessOrFailure`) so a future degradation can
-        // re-promote and re-announce.
-        const blockedAnnounced = runtime.announcedBlockedClass.get(key);
-        const persistedGaveUp = currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass);
-        if (blockedAnnounced === decision.reasonClass || persistedGaveUp) {
-          runtime.announcedBlockedClass.set(key, decision.reasonClass);
-        } else {
-          runtime.announcedBlockedClass.set(key, decision.reasonClass);
-          eventsToEmit.push(
-            buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, key), schedule.connectorInstanceId)
-          );
-          // §10-F: first entry into blocked state — emit one push escalation.
-          // Fires in the same once-per-streak window as the gave_up event so
-          // no separate dedup state is needed. Errors are swallowed to match
-          // the scheduler's stance on observer failures (never block dispatch).
-          Promise.resolve(
-            onHumanRequiredStateEscalation({
-              connectorId,
-              connectorInstanceId: schedule.connectorInstanceId ?? connectorId,
-              reason: "blocked",
-            })
-          ).catch((err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error(`[scheduler] §10-F escalation callback failed for ${connectorId}: ${message}`);
-          });
-        }
-        // Auto-dispatch is suppressed for blocked connectors. Manual
-        // `runNow` still works (it bypasses this evaluator entirely via
-        // `controller.ts::runNow` → `executeRun(schedule, true)`). A genuinely
-        // blocked connection is NOT launched even for recovery-only drain
-        // (SLVP-ideal §10-C: a credential/terminal block is not a hot bucket;
-        // there is nothing safe to recover until the owner re-auths).
-        nextEligible = false;
-        nextRecoveryOnly = false;
-      }
-    } else if (!decision.backoffApplied) {
-      // Streak broken (success or different class): clear the announcement
-      // so the next time back-off engages we emit a fresh skip record.
+    const reasonClass = decision.reasonClass;
+    if (value.announcedBackoffMutation === "set" && reasonClass) {
+      runtime.announcedBackoffClass.set(key, reasonClass);
+    } else if (value.announcedBackoffMutation === "delete") {
       runtime.announcedBackoffClass.delete(key);
     }
+    if (value.announcedBlockedMutation === "set" && reasonClass) {
+      runtime.announcedBlockedClass.set(key, reasonClass);
+    }
 
-    return { eligible: nextEligible, eventsToEmit, recoveryOnly: nextRecoveryOnly, skipToEmit };
+    let skipToEmit: RunRecord | null = null;
+    const eventsToEmit: RunRecord[] = [];
+    for (const transition of value.transitions) {
+      if (transition.kind === "backoff_started") {
+        skipToEmit = buildBackoffSkip(connectorId, decision, schedule.connectorInstanceId);
+        eventsToEmit.push(buildBackoffStartedEvent(connectorId, decision, schedule.connectorInstanceId));
+      } else {
+        eventsToEmit.push(
+          buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, key), schedule.connectorInstanceId)
+        );
+        // §10-F: first entry into blocked state — emit one push escalation.
+        // Errors are swallowed to match the scheduler's stance on observer
+        // failures (never block dispatch).
+        Promise.resolve(
+          onHumanRequiredStateEscalation({
+            connectorId,
+            connectorInstanceId: schedule.connectorInstanceId ?? connectorId,
+            reason: "blocked",
+          })
+        ).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[scheduler] §10-F escalation callback failed for ${connectorId}: ${message}`);
+        });
+      }
+    }
+    return { skipToEmit, eventsToEmit };
   }
 
   // Pure dispatch-gate: given the current history + lastRun for a
@@ -585,11 +666,33 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       }
     }
 
-    const backoffAnnouncements = applyBackoffAnnouncements(schedule, key, history, decision, eligible, recoveryOnly);
-    eligible = backoffAnnouncements.eligible;
-    recoveryOnly = backoffAnnouncements.recoveryOnly;
-    let skipToEmit = backoffAnnouncements.skipToEmit;
-    const { eventsToEmit } = backoffAnnouncements;
+    // Decide (pure) then apply (effectful). The pure core reads the current
+    // dedup state as inputs and returns the dispatch flags, the dedup-map
+    // mutations, and the one-shot transitions to fire — all as data.
+    const backoffDecision = decideBackoffDispatch({
+      backoffApplied: decision.backoffApplied,
+      reasonClass: decision.reasonClass,
+      blocked: decision.recommendedHealthState === "blocked",
+      eligible,
+      recoveryOnly,
+      announcedBackoff: runtime.announcedBackoffClass.get(key),
+      announcedBlocked: runtime.announcedBlockedClass.get(key),
+      persistedBackoffStarted:
+        decision.reasonClass != null &&
+        currentStreakHasSchedulerEvent(history, BACKOFF_STARTED_PREFIX, decision.reasonClass),
+      persistedGaveUp:
+        decision.reasonClass != null && currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass),
+    });
+    eligible = backoffDecision.eligible;
+    recoveryOnly = backoffDecision.recoveryOnly;
+    const { skipToEmit: backoffSkip, eventsToEmit } = applyBackoffDispatchDecision(
+      backoffDecision,
+      schedule,
+      key,
+      decision,
+      history
+    );
+    let skipToEmit: RunRecord | null = backoffSkip;
 
     // Source-pressure cooldown is layered on top of failure back-off. Pending
     // pressure gaps alone do not defer forever; only a future `nextRunAt` does.

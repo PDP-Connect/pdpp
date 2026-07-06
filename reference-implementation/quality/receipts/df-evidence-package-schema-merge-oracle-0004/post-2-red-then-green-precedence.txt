@@ -1,0 +1,43 @@
+# hone work df-evidence-package-schema-merge-oracle-0004 — post rung 'red-then-green-precedence'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/{ ...sourceTag, ...item.source }/{ ...item.source, ...sourceTag }/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS (source-tag precedence is pinned); guard confirmed the file was clean before seeding; checkout restores it — paste failing output
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ canonical-shape children flatten connectors[].streams[] into data.streams tagged with each child source, preserving concatenated data.connectors + counts (2.843382ms)
+✔ a legacy flat-shape child (data.streams directly on the body) still merges alongside a canonical child (0.466878ms)
+✔ dedupe key is name::grant_id::connection_id: same stream name from two members with different grant_id survives twice, a duplicate within one member collapses (0.664082ms)
+✔ granted_connections dedupe by connection_id::grant_id (0.499779ms)
+✖ source-tag precedence: an item-level source object spreads OVER the member tag (1.280733ms)
+✔ one failed child sets meta.package.partial true while the merge continues from ok children (0.364737ms)
+✔ when ALL children fail, the first result is returned as-is (0.256455ms)
+✔ data.package = { grant_package: true, member_count, sources } is always attached (1.239422ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 7
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 140.774329
+
+✖ failing tests:
+
+test at test/package-rs-client-merge-schema.test.js:200:1
+✖ source-tag precedence: an item-level source object spreads OVER the member tag (1.280733ms)
+  AssertionError [ERR_ASSERTION]: item-level source field wins over the member-derived tag
+  + actual - expected
+  
+  + 'github'
+  - 'github-enterprise'
+           ^
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/package-rs-client-merge-schema.test.js:224:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'github',
+    expected: 'github-enterprise',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

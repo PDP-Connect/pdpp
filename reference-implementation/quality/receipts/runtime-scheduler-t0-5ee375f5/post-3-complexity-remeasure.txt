@@ -1,0 +1,17 @@
+# hone work runtime-scheduler-t0-5ee375f5 — post rung 'complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/scheduler.ts::fromStoredRunRecord'
+# expect: found=true and cognitive_before < 9 (packet baseline); red_scan unchanged
+# exit: 0  duration: 0s  verdict: FAIL (cognitive_before=9, expected < 9 — no measured complexity reduction)
+
+{
+  "target": "runtime/scheduler.ts::fromStoredRunRecord",
+  "file": "runtime/scheduler.ts",
+  "function": "fromStoredRunRecord",
+  "found": true,
+  "cognitive_before": 9,
+  "line": 213,
+  "caller_count": 1,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

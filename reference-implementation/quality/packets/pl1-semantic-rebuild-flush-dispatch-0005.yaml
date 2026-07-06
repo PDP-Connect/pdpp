@@ -1,0 +1,117 @@
+candidate_id: pl1-semantic-rebuild-flush-dispatch-0005
+created: "2026-07-02T10:04:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/search-semantic
+files: [server/search-semantic.js]
+symbols: [rebuildSemanticIndexForStream]
+public_surface: []
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "rebuildSemanticIndexForStream (cc44, scope-fn red_scan empty — 'pure decomplect target') is the paged semantic-index backfill loop. Two self-contained storage-dispatch concerns are braided into the loop body: (1) the per-page RECORD READ — a usePostgres ternary choosing postgresSemanticRecordsPage vs getMany(referenceQueries.searchSemanticRecordsPageNonDeleted) (L1206-1213); and (2) the per-page ENTRY FLUSH — a three-way branch choosing postgresSemanticIndexInsertMany, index.upsertMany, or a per-entry index.upsert fallback (L1248-1256). Both dispatch blocks depend only on their explicit inputs (usePostgres, page keys / entries) and mutate no loop-carried state (lastId, indexed, scanned stay in the loop). Extracting them into two named async helpers removes both storage-branch clusters from the hot loop, cutting ~12 cc, while the pagination state machine, the cancellation signal check, the per-row JSON-parse + declaredFields embed loop, and the progressJob update stay in place. The embed/dedupe inner loop (which carries lastId) is deliberately NOT extracted to avoid threading loop-carried mutation."
+plan:
+  transform_class: extract-storage-dispatch-helpers
+  instruction: "In server/search-semantic.js ONLY. Create TWO module-level (column-0) async named functions ABOVE rebuildSemanticIndexForStream:\n\n(A) async function readSemanticRecordsPage(usePostgres, connectorInstanceId, stream, lastId, PAGE) — contains VERBATIM the page-read ternary (L1206-1213): `return usePostgres ? await postgresSemanticRecordsPage({ connectorInstanceId, stream, lastId, limit: PAGE }) : getMany(referenceQueries.searchSemanticRecordsPageNonDeleted, [connectorInstanceId, stream, lastId], { limit: PAGE }).rows;`. postgresSemanticRecordsPage, getMany, referenceQueries are module-scope — call directly, do NOT thread.\n\n(B) async function flushSemanticIndexEntries(usePostgres, connectorId, connectorInstanceId, entries, index) — contains VERBATIM the flush branch (L1248-1256): `if (usePostgres) { await postgresSemanticIndexInsertMany({ connectorId, connectorInstanceId, entries }); } else if (entries.length > 0 && typeof index.upsertMany === 'function') { await index.upsertMany(entries); } else { for (const entry of entries) { await index.upsert(entry); } }`. Returns nothing. postgresSemanticIndexInsertMany is module-scope — call directly. `index` MUST be passed as an explicit parameter (its NAME is the caller's closure identifier `index`) because it is a runConnector/backfill-scoped local, not a module symbol.\n\nSEAM MECHANISM (explicit): every value the helpers need is passed by explicit parameter whose NAME equals the caller's local identifier — usePostgres, connectorId, connectorInstanceId, stream, lastId, PAGE, entries, index — so both call sites read with bare identifiers and no closure capture. Call sites become: `const rows = await readSemanticRecordsPage(usePostgres, connectorInstanceId, stream, lastId, PAGE);` and `await flushSemanticIndexEntries(usePostgres, connectorId, connectorInstanceId, entries, index);`.\n\nPRESERVE EXACTLY IN THE LOOP: the `if (signal?.aborted) throw ...` cancellation check and its comment, `if (rows.length === 0) break;`, the entries-building inner loop (lastId = Number(row.id); JSON.parse try/catch continue; declaredFields embed loop with normalizeSemanticEmbeddingInput / encodeScopeKey / existingKeys dedupe / backend.embedDocument / entries.push), scanned += rows.length; indexed += entries.length;, the progressJob = updateBackfillJob(...) update, await yieldImmediate();, and `if (rows.length < PAGE) break;`. The usePostgres computation and `const index = usePostgres ? null : ensureVectorIndex();` guard stay at the top. NO new module file, NO behavior change, NO change to loop-carried state ownership."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: none
+priority:
+  score: 66
+  computed: "2026-07-02T10:04:00.000Z"
+  inputs:
+    mass: 44
+    churn: 18
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: "semantic index backfill correctness — a mis-threaded page read or flush branch would silently under-index or double-index records, corrupting semantic search recall"
+authoring_evidence:
+  - kind: red-probe
+    detail: "scope-fn --target 'server/search-semantic.js::rebuildSemanticIndexForStream' → red_scan [], red_hint 'no security markers — pure decomplect target', cognitive_before 44; body grep for grant/consent/bearer/token → none"
+    result: "clean backfill loop, no security markers"
+  - kind: cell-audit
+    detail: "loop-carried mutables (lastId, indexed, scanned, progressJob) are ALL assigned in the outer loop body and stay there; the two extracted dispatch blocks read only their explicit inputs and mutate no loop var — readSemanticRecordsPage returns rows, flushSemanticIndexEntries writes via the passed index/postgres helpers"
+    result: dispatch extraction carries no loop-state; index is threaded as an explicit parameter
+  - kind: coverage-check
+    detail: "rebuildSemanticIndexForStream reached via semanticIndexBackfillForManifest, pinned by test/semantic-retrieval.test.js (backfill + query round-trip on both Postgres and in-memory paths)"
+    result: both storage dispatch branches have oracle coverage
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1semrebuild_retr; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/semantic-retrieval.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc'"
+    expect: semantic-retrieval suite green with unchanged pass count; ephemeral DB isolates the backfill state
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/search-semantic.js::rebuildSemanticIndexForStream'"
+    expect: found=true; cognitive_before strictly below baseline 44 and below floor 34 (both storage-dispatch clusters removed)
+    expect_check:
+      type: scope_fn_lt
+      value: 34
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/search-semantic.js' --cog 5"
+    expect: "file_excess strictly below the FRESH-MEASURED pre-edit baseline (395 — re-measured 2026-07-05; the prior 376 was a fantasy number the tree never had, and it sank two otherwise-clean attempts: the 2026-07-05 retry landed file_excess=385 with target cc 44->33, a real 10-point whole-file reduction, yet was reverted against the impossible <376 bar). NEW flagged names limited to readSemanticRecordsPage and flushSemanticIndexEntries (in the retry only flushSemanticIndexEntries flagged, at cc6/excess1; readSemanticRecordsPage fell below cog-5)."
+    expect_check:
+      type: file_excess_lt
+      value: 395
+  - rung: seam-static-pin
+    command: "cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/search-semantic.js\",\"utf8\");if(!s.includes(\"function flushSemanticIndexEntries\")){console.log(\"baseline: helpers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");let rc=0;const checks=[[\"readSemanticRecordsPage declares (usePostgres, connectorInstanceId, stream, lastId, PAGE)\",/function readSemanticRecordsPage\\( ?usePostgres, ?connectorInstanceId, ?stream, ?lastId, ?PAGE,? ?\\)/],[\"page-read delegated with bare identifiers\",/readSemanticRecordsPage\\( ?usePostgres, ?connectorInstanceId, ?stream, ?lastId, ?PAGE ?\\)/],[\"flushSemanticIndexEntries declares (usePostgres, connectorId, connectorInstanceId, entries, index)\",/function flushSemanticIndexEntries\\( ?usePostgres, ?connectorId, ?connectorInstanceId, ?entries, ?index,? ?\\)/],[\"flush delegated with bare identifiers incl. index seam\",/flushSemanticIndexEntries\\( ?usePostgres, ?connectorId, ?connectorInstanceId, ?entries, ?index ?\\)/],[\"embed inner loop still owns lastId (loop-carried state not extracted)\",/lastId = Number\\(row\\.id\\)/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);'"
+    expect: "exit 0, every line PASS. Baseline (helpers absent): vacuous PASS. Post: both dispatch helpers declared with explicit named params (index threaded as a named parameter, NOT captured), both delegated with bare identifiers, and lastId assignment remains in the outer loop confirming loop-carried state was not extracted."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - new-dependency
+  - new-module-file
+  - captured-mutable-cells-in-new-helpers
+  - loop-carried-state-extraction
+maker_tier: standard
+judge_tier: strong
+maker_provider: codex
+judge_provider: null
+batch_key: preserve_refactor×effectful×server/search-semantic
+touchset: [server/search-semantic.js]
+estimates:
+  tokens: 50000
+  evidence_cost: medium
+depends_on: []
+unlocks: []
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1semrebuild_retr; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/semantic-retrieval.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (6s) PASS; exit=0 djb2=9f3bc72c bytes=4303 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/search-semantic.js::rebuildSemanticIndexForStream' -> exit 0 (0s) PASS; exit=0 djb2=b5635f13 bytes=337 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/baseline-3-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/search-semantic.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=47c78bad bytes=3700 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/baseline-4-file-excess-remeasure.txt"
+    - "[baseline] seam-static-pin: cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/search-semantic.js\",\"utf8\");if(!s.includes(\"function flushSemanticIndexEntries\")){console.log(\"baseline: helpers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");let rc=0;const checks=[[\"readSemanticRecordsPage declares (usePostgres, connectorInstanceId, stream, lastId, PAGE)\",/function readSemanticRecordsPage\\( ?usePostgres, ?connectorInstanceId, ?stream, ?lastId, ?PAGE,? ?\\)/],[\"page-read delegated with bare identifiers\",/readSemanticRecordsPage\\( ?usePostgres, ?connectorInstanceId, ?stream, ?lastId, ?PAGE ?\\)/],[\"flushSemanticIndexEntries declares (usePostgres, connectorId, connectorInstanceId, entries, index)\",/function flushSemanticIndexEntries\\( ?usePostgres, ?connectorId, ?connectorInstanceId, ?entries, ?index,? ?\\)/],[\"flush delegated with bare identifiers incl. index seam\",/flushSemanticIndexEntries\\( ?usePostgres, ?connectorId, ?connectorInstanceId, ?entries, ?index ?\\)/],[\"embed inner loop still owns lastId (loop-carried state not extracted)\",/lastId = Number\\(row\\.id\\)/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);' -> exit 0 (0s) PASS; exit=0 djb2=64f5b16c bytes=46 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/baseline-5-seam-static-pin.txt"
+    - "[post] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1semrebuild_retr; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/semantic-retrieval.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (6s) PASS; exit=0 djb2=4b1b66d9 bytes=4304 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/post-1-direct-test.txt"
+    - "[post] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/post-2-typecheck.txt"
+    - "[post] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/search-semantic.js::rebuildSemanticIndexForStream' -> exit 0 (0s) FAIL: expect_check[scope_fn_lt]: cognitive_before=35, expected < 34 — no measured complexity reduction; exit=0 djb2=b8602d28 bytes=337 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/post-3-complexity-remeasure.txt"
+    - "[post-r1] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1semrebuild_retr; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/semantic-retrieval.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (6s) PASS; exit=0 djb2=a1c933c9 bytes=4305 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/post-r1-1-direct-test.txt"
+    - "[post-r1] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/post-r1-2-typecheck.txt"
+    - "[post-r1] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/search-semantic.js::rebuildSemanticIndexForStream' -> exit 0 (0s) PASS; exit=0 djb2=70c92b26 bytes=337 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/post-r1-3-complexity-remeasure.txt"
+    - "[post-r1] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/search-semantic.js' --cog 5 -> exit 0 (0s) FAIL: expect_check[file_excess_lt]: NEW function above the cog threshold post-change (baseline flagged=[hashEmbed,resolveLocalEmbeddingProfile,normalizeEmbeddingVector,distance,queryPerConnector,listExistingKeys,ensureTable,deleteRecord,deleteByConnectorStream,deleteByConnectorScope,deleteByConnector,queryPerConnector,listExistingKeys,compareHits,ensureVectorIndex,semanticIndexUpsert,rebuildSemanticIndexForStream,semanticIndexBackfillForManifest,computeIndexState,parseSemanticSearchParams,allowedCandidateRecordKeysFromRows,buildCandidateRecordKeys,buildSemanticSearchPlanForGrant,resolveSemanticRetrievalAdvertisement,runSemanticSearch,<anon>,<anon>,buildSemanticSnapshot,<anon>,hydrateSemanticSearchResult,authoredTimestampFromRecordData,<anon>,a,buildPostgresSemanticPlanRequests] post=[hashEmbed,resolveLocalEmbeddingProfile,normalizeEmbeddingVector,distance,queryPerConnector,listExistingKeys,ensureTable,deleteRecord,deleteByConnectorStream,deleteByConnectorScope,deleteByConnector,queryPerConnector,listExistingKeys,compareHits,ensureVectorIndex,semanticIndexUpsert,flushSemanticIndexEntries,rebuildSemanticIndexForStream,semanticIndexBackfillForManifest,computeIndexState,parseSemanticSearchParams,allowedCandidateRecordKeysFromRows,buildCandidateRecordKeys,buildSemanticSearchPlanForGrant,resolveSemanticRetrievalAdvertisement,runSemanticSearch,<anon>,<anon>,buildSemanticSnapshot,<anon>,hydrateSemanticSearchResult,authoredTimestampFromRecordData,<anon>,a,buildPostgresSemanticPlanRequests]) — complexity moved, not reduced; exit=0 djb2=4520212e bytes=3807 receipt=quality/receipts/pl1-semantic-rebuild-flush-dispatch-0005/post-r1-4-file-excess-remeasure.txt"
+  tokens_actual: 223431
+  lesson: "transform failed its own evidence ladder at 'file-excess-remeasure' — prior for preserve_refactor×effectful×server/search-semantic down"
+resets:
+  - at: "2026-07-02T22:07:57.547Z"
+    from_status: reverted
+    reason: "re-route: extraction class -> codex maker/claude judge (tonight forced claude-maker = wrong pairing, all reverted)"
+  - at: "2026-07-05T20:30:00.000Z"
+    from_status: reverted
+    reason: "two-strike redesign (b/adjust): fresh re-measure showed the <376 file-excess bar was a fantasy the tree never had (real baseline 395). The 2026-07-05 retry did honest work (target cc 44->33, whole-file 395->385) but was reverted against the impossible bar. Bar corrected to <395; design + seam unchanged; requeued pending."

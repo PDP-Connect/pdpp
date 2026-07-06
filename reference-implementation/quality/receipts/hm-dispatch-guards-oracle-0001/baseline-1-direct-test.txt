@@ -1,0 +1,139 @@
+# hone work hm-dispatch-guards-oracle-0001 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/runtime-handle-msg-dispatch.test.js ]; then node --test test/runtime-handle-msg-dispatch.test.js test/runtime-cancel-run.test.js test/event-spine.test.js; else node --test test/runtime-cancel-run.test.js test/event-spine.test.js; fi'
+# expect: baseline (new file absent): existing suites green (runtime-cancel-run 2/2, event-spine 46/46); post: new oracle file green alongside them with ALL SIX named pins present and passing (an empty or vacuous oracle file is an automatic REVISE — run-2's failure mode), 0 fail, no new skips
+# exit: 0  duration: 8s  verdict: PASS
+
+▶ event spine
+  ✔ migrates pre-source-column spine rows without losing row counts (20.915607ms)
+  ✔ migrates pre-event-seq spine rows before creating event_seq indexes (10.885421ms)
+  ✔ captures dynamic client registration success and rejection as trace artifacts (223.46711ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures a grant trace through disclosure and revocation (198.411893ms)
+  ✔ captures consent denial on the original staged provider-connect trace (119.339737ms)
+  ✔ captures owner device start, polling, approval, and owner-token issuance on one trace (136.135964ms)
+  ✔ captures owner device denial on one trace (116.004033ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures rejected connector grant reads on the grant trace and timeline (177.986547ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures unknown-field connector grant reads on the grant trace and timeline (167.709227ms)
+  ✔ captures rejected native reads on grant timelines and owner traces (134.153045ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ stores connector and native source identities in queryable spine columns (167.318109ms)
+  ✔ captures auth-gate client read failures on grant traces with auth-gate query.received artifacts (123.246103ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures successful owner ingest and delete artifacts on owner traces (207.896578ms)
+  ✔ captures rejected owner mutation artifacts on owner traces (120.709714ms)
+  ✔ captures owner state artifacts on owner traces (154.953328ms)
+  ✔ captures grant-scoped state artifacts on grant timelines (138.047061ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures run lifecycle events for a seeded connector run (181.76816ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":2}
+  ✔ captures per-stream checkpoint commit counts for multi-stream successful runs (164.562935ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":2,"exit_code":0,"reason":"runtime_error"}
+  ✔ captures partial checkpoint commit failures after DONE(succeeded) (156.08728ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"authentication_error"}
+  ✔ captures runtime authentication failures from ingest (144.783892ms)
+[runtime] {"type":"ingest","stream":"top_artists","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"exit_code":0,"reason":"permission_error"}
+  ✔ captures runtime permission failures from state persistence (172.737334ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"connector_invalid"}
+  ✔ captures deterministic runtime connector_invalid failures from ingest (146.394973ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"rate_limit_error"}
+  ✔ captures retryable runtime rate_limit_error failures from ingest (143.641799ms)
+[runtime] {"type":"ingest","stream":"top_artists","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reported_records_emitted":2,"exit_code":0,"reason":"connector_protocol_violation"}
+  ✔ captures terminal counter mismatch failures after DONE(succeeded) (152.178084ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1}
+  ✔ captures connector-declared terminal error details on failed runs (146.383422ms)
+[runtime] {"type":"done","status":"cancelled","records_emitted":1}
+  ✔ captures connector-declared terminal error details on cancelled runs (169.394649ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures contradictory DONE(succeeded)+error protocol violations without recording success artifacts (145.646737ms)
+[runtime] {"type":"ingest","stream":"top_artists","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE protocol violations as failed run timelines without completed artifacts (171.56471ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE progress protocol violations without recording progress artifacts (164.143786ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures undeclared-stream progress protocol violations without recording progress artifacts (157.332304ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE interaction protocol violations without recording interaction artifacts (136.096042ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE skip-result protocol violations without recording skip artifacts (143.18719ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures undeclared-stream skip-result protocol violations without recording skip artifacts (143.600587ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE state protocol violations without recording checkpoint artifacts (144.578926ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE invalid JSONL protocol violations without recording completion artifacts (163.142516ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures undeclared-stream interaction protocol violations without recording interaction artifacts (147.226368ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ captures interaction lifecycle events with source descriptors (149.982831ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ captures interaction timeout lifecycle events (189.342775ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ captures interaction cancelled lifecycle events (168.734145ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction protocol violations without recording completion (171.855435ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction state violations without recording checkpoint artifacts (172.660531ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction progress violations without recording progress artifacts (159.084717ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction skip-result violations without recording skip artifacts (162.378431ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction terminal violations without recording completion or terminal success artifacts (161.967173ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction invalid JSONL violations without recording completion artifacts (176.164769ms)
+✔ event spine (6830.969659ms)
+✔ runtime owner-cancel: connector that exits on SIGTERM terminals as owner_cancelled (73.586439ms)
+✔ runtime owner-cancel: connector that ignores SIGTERM is force-terminated → owner_cancel_forced (295.861308ms)
+ℹ tests 48
+ℹ suites 0
+ℹ pass 48
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7886.833329

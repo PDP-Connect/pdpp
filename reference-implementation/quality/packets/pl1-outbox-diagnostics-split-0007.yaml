@@ -1,0 +1,106 @@
+candidate_id: pl1-outbox-diagnostics-split-0007
+created: "2026-07-02T10:06:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/stores/device-exporter-store
+files: [server/stores/device-exporter-store.js]
+symbols: [normalizeOutboxDiagnostics]
+public_surface:
+  - "normalized device-exporter outbox diagnostics object surfaced on device/source heartbeat rows: the bounded count fields (backlog_open, dead_letter, leased, pending, retrying, stale_leases, succeeded, total) plus optional oldest_pending_at"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "normalizeOutboxDiagnostics (cc10, scope-fn red_scan empty) validates an untrusted outbox-diagnostics object into a normalized shape. It braids two independent validation concerns that share only the output accumulator: (1) the bounded non-negative-integer COUNT collection over OUTBOX_DIAGNOSTIC_COUNTS, and (2) the oldest_pending_at TIMESTAMP string validation via Date.parse. Splitting them into two named pure helpers makes each concern independently readable and testable and removes the interleaved branching from the entry function. Both helpers are pure (no I/O)."
+plan:
+  transform_class: extract-validation-concerns
+  instruction: "In server/stores/device-exporter-store.js ONLY. Create TWO module-level (column-0) pure named functions ABOVE normalizeOutboxDiagnostics (below the existing normalizeDiagnosticCount and OUTBOX_DIAGNOSTIC_COUNTS):\n\n(A) function collectDiagnosticCounts(value) — returns a plain object of the accepted counts. Contains VERBATIM the count loop (L163-169): `const normalized = {}; for (const field of OUTBOX_DIAGNOSTIC_COUNTS) { const count = normalizeDiagnosticCount(value[field]); if (count !== null) { normalized[field] = count; } } return normalized;`. OUTBOX_DIAGNOSTIC_COUNTS and normalizeDiagnosticCount are module-scope — call directly.\n\n(B) function validOldestPendingAt(value) — returns the accepted string or null. Contains VERBATIM the timestamp guard (L170-175) rewritten to return: `if (typeof value.oldest_pending_at === 'string' && value.oldest_pending_at.length > 0) { const parsed = Date.parse(value.oldest_pending_at); if (Number.isFinite(parsed)) return value.oldest_pending_at; } return null;`.\n\nSEAM MECHANISM (explicit): both helpers take a single explicit parameter named `value` (== the caller's parameter identifier), so both call sites read as bare-identifier delegations. normalizeOutboxDiagnostics becomes: `if (value == null || typeof value !== 'object' || Array.isArray(value)) return null; const normalized = collectDiagnosticCounts(value); const oldestPendingAt = validOldestPendingAt(value); if (oldestPendingAt !== null) normalized.oldest_pending_at = oldestPendingAt; return Object.keys(normalized).length > 0 ? normalized : null;`.\n\nHARD PRESERVE: the top null/object/array guard, the exact OUTBOX_DIAGNOSTIC_COUNTS iteration order and normalizeDiagnosticCount filtering (null-skip), the Date.parse + Number.isFinite acceptance of oldest_pending_at, the final `Object.keys(normalized).length > 0 ? normalized : null` return, and — critically — that oldest_pending_at is written into `normalized` AFTER the counts (so an all-empty-counts object with only a valid timestamp still returns the object, matching current behavior). NO new module file, NO behavior change."
+expected_quality_gain: low
+owner_attention_reduction: low
+product_impact: none
+priority:
+  score: 40
+  computed: "2026-07-02T10:06:00.000Z"
+  inputs:
+    mass: 5
+    churn: 7
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: low
+  property_at_risk: outbox diagnostics normalization — a changed acceptance rule would surface unbounded/negative counts or an invalid timestamp on device heartbeat rows
+authoring_evidence:
+  - kind: red-probe
+    detail: "scope-fn --target on device-exporter-store.js::normalizeOutboxDiagnostics → red_scan [], cognitive_before 10; body has no grant/consent/bearer/token markers"
+    result: pure validator
+  - kind: coverage-check
+    detail: normalizeOutboxDiagnostics + heartbeat-row diagnostics pinned by test/device-exporter-store.test.js (bounded-count filtering and oldest_pending_at acceptance/rejection cases)
+    result: by-name store oracle exists
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1outbox_store; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/device-exporter-store.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc'"
+    expect: device-exporter-store suite green with unchanged pass count; ephemeral DB isolates state
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/stores/device-exporter-store.js::normalizeOutboxDiagnostics'"
+    expect: found=true; cognitive_before strictly below baseline 10 and below floor 6 (both validation concerns extracted)
+    expect_check:
+      type: scope_fn_lt
+      value: 6
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/device-exporter-store.js' --cog 5"
+    expect: file_excess strictly below the pre-edit baseline (18); NEW flagged names limited to collectDiagnosticCounts/validOldestPendingAt (each should sit at or below cc5 and not flag)
+    expect_check:
+      type: file_excess_lt
+      value: 18
+  - rung: seam-static-pin
+    command: "cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/stores/device-exporter-store.js\",\"utf8\");if(!s.includes(\"function collectDiagnosticCounts\")){console.log(\"baseline: helpers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");let rc=0;const checks=[[\"collectDiagnosticCounts(value) declared\",/function collectDiagnosticCounts\\( ?value,? ?\\)/],[\"validOldestPendingAt(value) declared\",/function validOldestPendingAt\\( ?value,? ?\\)/],[\"counts delegated bare-identifier\",/collectDiagnosticCounts\\( ?value ?\\)/],[\"timestamp delegated bare-identifier\",/validOldestPendingAt\\( ?value ?\\)/],[\"timestamp written after counts (order preserved)\",/normalized\\.oldest_pending_at = oldestPendingAt/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);'"
+    expect: "exit 0, every line PASS. Baseline (helpers absent): vacuous PASS. Post: both helpers declared with the single named param `value`, both delegated with bare identifiers, and the timestamp is written after the counts."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - count-acceptance-change
+  - timestamp-acceptance-change
+  - new-dependency
+  - new-module-file
+maker_tier: cheap
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: preserve_refactor×pure_logic×server/stores/device-exporter-store
+touchset: [server/stores/device-exporter-store.js]
+estimates:
+  tokens: 28000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "696224c4014f209cff77a2d6e7920639503fa702"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.95): The extracted helpers are pure, module-local, take the required single value parameter, and preserve the original line-by-line normalization behavior including count order, Date.parse/Number.isFinite timestamp validation, and writing oldest_pending_at after counts. The supplied evidence covers the direct behavior oracle, typecheck, required complexity reductions, file-excess reduction, and static seam constraints. No not_allowed violation is visible in the diff."
+  evidence_receipts:
+    - "[baseline] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1outbox_store; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/device-exporter-store.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (3s) PASS; exit=0 djb2=a76a88c7 bytes=794 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/stores/device-exporter-store.js::normalizeOutboxDiagnostics' -> exit 0 (0s) PASS; exit=0 djb2=6a4b784b bytes=356 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/baseline-3-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/device-exporter-store.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=16aef4c0 bytes=1000 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/baseline-4-file-excess-remeasure.txt"
+    - "[baseline] seam-static-pin: cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/stores/device-exporter-store.js\",\"utf8\");if(!s.includes(\"function collectDiagnosticCounts\")){console.log(\"baseline: helpers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");let rc=0;const checks=[[\"collectDiagnosticCounts(value) declared\",/function collectDiagnosticCounts\\( ?value,? ?\\)/],[\"validOldestPendingAt(value) declared\",/function validOldestPendingAt\\( ?value,? ?\\)/],[\"counts delegated bare-identifier\",/collectDiagnosticCounts\\( ?value ?\\)/],[\"timestamp delegated bare-identifier\",/validOldestPendingAt\\( ?value ?\\)/],[\"timestamp written after counts (order preserved)\",/normalized\\.oldest_pending_at = oldestPendingAt/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);' -> exit 0 (0s) PASS; exit=0 djb2=64f5b16c bytes=46 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/baseline-5-seam-static-pin.txt"
+    - "[post] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1outbox_store; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/device-exporter-store.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (3s) PASS; exit=0 djb2=d8d19338 bytes=796 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/post-1-direct-test.txt"
+    - "[post] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/post-2-typecheck.txt"
+    - "[post] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/stores/device-exporter-store.js::normalizeOutboxDiagnostics' -> exit 0 (0s) PASS; exit=0 djb2=f358a3ff bytes=355 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/post-3-complexity-remeasure.txt"
+    - "[post] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/device-exporter-store.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=657beb20 bytes=892 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/post-4-file-excess-remeasure.txt"
+    - "[post] seam-static-pin: cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/stores/device-exporter-store.js\",\"utf8\");if(!s.includes(\"function collectDiagnosticCounts\")){console.log(\"baseline: helpers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");let rc=0;const checks=[[\"collectDiagnosticCounts(value) declared\",/function collectDiagnosticCounts\\( ?value,? ?\\)/],[\"validOldestPendingAt(value) declared\",/function validOldestPendingAt\\( ?value,? ?\\)/],[\"counts delegated bare-identifier\",/collectDiagnosticCounts\\( ?value ?\\)/],[\"timestamp delegated bare-identifier\",/validOldestPendingAt\\( ?value ?\\)/],[\"timestamp written after counts (order preserved)\",/normalized\\.oldest_pending_at = oldestPendingAt/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);' -> exit 0 (0s) PASS; exit=0 djb2=da1ebe98 bytes=220 receipt=quality/receipts/pl1-outbox-diagnostics-split-0007/post-5-seam-static-pin.txt"
+  tokens_actual: 41170
+  lesson: null

@@ -17,7 +17,7 @@
  * before invoking.
  */
 
-import { emitRemoteTelemetry } from './remote-telemetry-registry.js';
+import { emitRemoteTelemetry } from './remote-telemetry-registry.ts';
 
 const PROFILE_NAME = 'stream-playground';
 const DEFAULT_PLAYGROUND_BACKEND = 'cdp';

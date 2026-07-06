@@ -1,0 +1,33 @@
+# hone work pl1-version-stats-risk-reasons-0009 — maker brief digest (attempt 1)
+# sha256(full brief)=4de8640e470973db6d5552ef6c532199d187b1b73c383fce6c2ee480e189bb32 bytes=9950
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/record-version-stats.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, risk-reason-set-change, risk-reason-order-change, new-dependency, new-module-file.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: pl1-version-stats-risk-reasons-0009
+created: "2026-07-02T10:08:00.000Z"
+repo_sha: 078bd4d00e1c06243d73fa07eada24678e14624b
+subsystem: server/record-version-stats
+files: [server/record-version-stats.js]
+symbols:
+  - buildRecordVersionStatsRow
+public_surface:
+  - "record-version-stats row fields incl. risk_reasons array (base churn reasons plus 'projection_missing' and 'projection_dirty'), risk_level, version_disposition, version_remediation"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "buildRecordVersionStatsRow (cc15, scope-fn red_scan empty) assembles one record-version-stats row. It braids four concerns behind one function: source-value resolution from groundTruth/row, the churn classification call, projection-state risk-reason augmentation, and disposition/remediation labeling. The risk-reason augmentation — cloning classification.riskReasons and conditionally pushing 'projection_missing' (when projectionMissing) and 'projection_dirty' (when row.dirty) — is a self-contained pure derivation given (classification, projectionMissing, dirty). Extracting it into a named pure helper removes that conditional cluster from the assembly, cutting cc while every pushed reason, order, and the response literal stay byte-identical. The disposition/remediation labels are documented as reference-controlled (NO connector-authored value feeds them) — they are NOT grant/consent enforcement and stay in place, untouched."
+plan:
+  transform_class: extract-risk-reason-augmentation
+  instruction: "In server/record-version-stats.js ONLY. Create ONE module-level (column-0) pure named function ABOVE buildRecordVersionStatsRow:\n\nfunction augmentRiskReasons(classification, projectionMissing, dirty) — returns the final risk_reasons array. Contains VERBATIM the augmentation currently at ~L392-400: `const riskReasons = [...classification.riskReasons]; if (projectionMissing) { riskReasons.push('projection_missing'); } if (dirty) { riskReasons.push('projection_dirty'); } return riskReasons;`.\n\nSEAM MECHANISM (explicit): augmentRiskReasons takes THREE explicit parameters whose NAMES equal the caller's locals — classification, projectionMissing, dirty — so the call site delegates with bare identifiers and the helper captures nothing. Replace the inline `const riskReasons = [...classification.riskReasons]; if (projectionMissing) {...}; if (Boolean(row.dirty)) {...}` block with: `const riskReasons = augmentRiskReasons(classification, projectionMissing, Boolean(row.dirty));

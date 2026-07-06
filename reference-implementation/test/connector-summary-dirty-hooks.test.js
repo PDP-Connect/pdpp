@@ -46,7 +46,7 @@ import { deleteAllRecords, deleteRecord, ingestRecord } from '../server/records.
 import {
   getConnectorSummaryEvidence,
   rebuildConnectorSummaryEvidence,
-} from '../server/connector-summary-read-model.js';
+} from '../server/connector-summary-read-model.ts';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 

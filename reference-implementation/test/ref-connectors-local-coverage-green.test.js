@@ -9,7 +9,7 @@ import { deriveReferenceFreshness } from '../server/freshness.ts';
 import { listConnectorSummaries, projectConnectorSummaryConnectionHealth } from '../server/ref-control.ts';
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
-import { getDefaultDeviceExporterStore } from '../server/stores/device-exporter-store.js';
+import { getDefaultDeviceExporterStore } from '../server/stores/device-exporter-store.ts';
 
 // Mirrors the live 2026-06-03 evidence: a local collector source instance that
 // is healthy and fully drained (pending=0, dead_letter=0, stale_leases=0) yet

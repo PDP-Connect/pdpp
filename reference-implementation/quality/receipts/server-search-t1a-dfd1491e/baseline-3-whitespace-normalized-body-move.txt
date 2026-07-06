@@ -1,0 +1,5 @@
+# hone work server-search-t1a-dfd1491e — baseline rung 'whitespace-normalized-body-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff -w -- server/search.js
+# expect: hoisted bodies appear verbatim under -w (indent-only change at the move site); no logic edits
+# exit: 0  duration: 0s  verdict: PASS
+

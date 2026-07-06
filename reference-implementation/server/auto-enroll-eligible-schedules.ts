@@ -72,6 +72,8 @@ export interface AutoEnrollSummary {
   skipped_policy: number;
 }
 
+type AutoEnrollSummaryCounter = Exclude<keyof AutoEnrollSummary, "scanned">;
+
 const EMPTY_SUMMARY = (): AutoEnrollSummary => ({
   scanned: 0,
   enrolled: 0,
@@ -301,6 +303,93 @@ function resolveIntervalSeconds(caps: ManifestCapabilities): number {
   return DEFAULT_INTERVAL_SECONDS;
 }
 
+interface EligibleManifest {
+  readonly intervalSeconds: number;
+  readonly requirements: readonly string[];
+}
+
+function classifyManifestEligibility(manifest: unknown): EligibleManifest | null {
+  const caps = getCapabilities(manifest);
+  if (!caps) {
+    return null;
+  }
+  const policy = checkPolicyEligibility(caps);
+  if (!policy.eligible) {
+    return null;
+  }
+  const requirements = extractEnvRequirement(caps);
+  if (!requirements) {
+    // Eligibility includes "manifest declares its env requirements".
+    // A proven, automatic connector without auth.required cannot be
+    // auto-enrolled by this pass because we have nothing to gate on.
+    return null;
+  }
+  return {
+    intervalSeconds: resolveIntervalSeconds(caps),
+    requirements,
+  };
+}
+
+async function attachScheduleForEligibleConnector(args: {
+  connectorId: string;
+  controller: AutoEnrollControllerLike;
+  intervalSeconds: number;
+  log: (line: string) => void;
+}): Promise<"enrolled" | "errors" | "skipped_existing"> {
+  let existing: ScheduleApi | null;
+  try {
+    existing = await args.controller.getSchedule(args.connectorId);
+  } catch (err) {
+    args.log(`[auto-enroll] getSchedule failed for ${args.connectorId}: ${errorMessage(err)}`);
+    return "errors";
+  }
+  if (existing) {
+    return "skipped_existing";
+  }
+  try {
+    await args.controller.upsertSchedule(args.connectorId, {
+      enabled: true,
+      interval_seconds: args.intervalSeconds,
+      jitter_seconds: 0,
+    });
+    args.log(`[auto-enroll] enrolled ${args.connectorId} at ${args.intervalSeconds}s interval`);
+    return "enrolled";
+  } catch (err) {
+    args.log(`[auto-enroll] upsertSchedule failed for ${args.connectorId}: ${errorMessage(err)}`);
+    return "errors";
+  }
+}
+
+async function decideScheduleAttachmentForConnector(args: {
+  connectorId: string;
+  controller: AutoEnrollControllerLike;
+  env: Readonly<Record<string, string | undefined>>;
+  hasStoredCredential: ((connectorId: string) => Promise<boolean>) | undefined;
+  log: (line: string) => void;
+  manifest: unknown;
+}): Promise<AutoEnrollSummaryCounter> {
+  const manifestEligibility = classifyManifestEligibility(args.manifest);
+  if (!manifestEligibility) {
+    return "skipped_policy";
+  }
+  const authGateFailure = await evaluateAuthRequirementGate({
+    connectorId: args.connectorId,
+    env: args.env,
+    hasStoredCredential: args.hasStoredCredential,
+    log: args.log,
+    requirements: manifestEligibility.requirements,
+  });
+  if (authGateFailure) {
+    return authGateFailure;
+  }
+  return attachScheduleForEligibleConnector({
+    connectorId: args.connectorId,
+    controller: args.controller,
+    intervalSeconds: manifestEligibility.intervalSeconds,
+    log: args.log,
+  });
+}
+
 /**
  * Enroll every eligible-with-env registered connector that lacks a
  * persisted schedule row. Returns a summary counter that callers can log
@@ -335,60 +424,15 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
       continue;
     }
     summary.scanned += 1;
-    const caps = getCapabilities(row.manifest);
-    if (!caps) {
-      summary.skipped_policy += 1;
-      continue;
-    }
-    const policy = checkPolicyEligibility(caps);
-    if (!policy.eligible) {
-      summary.skipped_policy += 1;
-      continue;
-    }
-    const requirements = extractEnvRequirement(caps);
-    if (!requirements) {
-      // Eligibility includes "manifest declares its env requirements".
-      // A proven, automatic connector without auth.required cannot be
-      // auto-enrolled by this pass because we have nothing to gate on.
-      summary.skipped_policy += 1;
-      continue;
-    }
-    const authGateFailure = await evaluateAuthRequirementGate({
+    const counter = await decideScheduleAttachmentForConnector({
       connectorId,
+      controller,
       env,
       hasStoredCredential,
+      manifest: row.manifest,
       log,
-      requirements,
     });
-    if (authGateFailure) {
-      summary[authGateFailure] += 1;
-      continue;
-    }
-    let existing: ScheduleApi | null;
-    try {
-      existing = await controller.getSchedule(connectorId);
-    } catch (err) {
-      summary.errors += 1;
-      log(`[auto-enroll] getSchedule failed for ${connectorId}: ${errorMessage(err)}`);
-      continue;
-    }
-    if (existing) {
-      summary.skipped_existing += 1;
-      continue;
-    }
-    const intervalSeconds = resolveIntervalSeconds(caps);
-    try {
-      await controller.upsertSchedule(connectorId, {
-        enabled: true,
-        interval_seconds: intervalSeconds,
-        jitter_seconds: 0,
-      });
-      summary.enrolled += 1;
-      log(`[auto-enroll] enrolled ${connectorId} at ${intervalSeconds}s interval`);
-    } catch (err) {
-      summary.errors += 1;
-      log(`[auto-enroll] upsertSchedule failed for ${connectorId}: ${errorMessage(err)}`);
-    }
+    summary[counter] += 1;
   }
   return summary;
 }

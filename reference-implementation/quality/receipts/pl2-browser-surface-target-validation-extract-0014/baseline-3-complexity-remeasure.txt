@@ -1,0 +1,6 @@
+# hone work pl2-browser-surface-target-validation-extract-0014 — baseline rung 'complexity-remeasure'
+# command: cd "$REPO_ROOT" && sh -c 'cfg=/tmp/pdpp_browser_surface_0014_biome.jsonc; printf %s "{\"root\":false,\"files\":{\"ignoreUnknown\":true,\"includes\":[\"runtime/**/*.ts\"]},\"linter\":{\"enabled\":true,\"rules\":{\"complexity\":{\"noExcessiveCognitiveComplexity\":{\"level\":\"error\",\"options\":{\"maxAllowedComplexity\":5}}}}}}" > "$cfg"; npx biome lint --config-path="$cfg" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 runtime/browser-surface-readiness.ts 2>&1'
+# expect: Prints fresh Biome diagnostics with stderr captured; target complexity is lower than baseline 12.
+# exit: 0  duration: 0s  verdict: PASS
+
+Checked 1 file in 2ms. No fixes applied.

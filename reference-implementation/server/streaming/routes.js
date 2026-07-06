@@ -43,8 +43,8 @@ import {
   parseReferenceWireInputTelemetryCursor,
 } from '@opendatalabs/remote-surface/protocol';
 import { emitSpineEvent } from '../../lib/spine.ts';
-import { createInputTelemetry } from './input-telemetry.js';
-import { registerRemoteTelemetrySink } from './remote-telemetry-registry.js';
+import { createInputTelemetry } from './input-telemetry.ts';
+import { registerRemoteTelemetrySink } from './remote-telemetry-registry.ts';
 
 const NEKO_PROXY_COOKIE = 'pdpp_neko_stream';
 const DEFAULT_NEKO_PROXY_PATH = '/neko/';
@@ -458,34 +458,47 @@ export function registerStreamingRoutes({
     );
   }
 
-  function currentNoResponseBrowserAssistanceId(events) {
+  function isTerminalAssistanceEvent(event) {
+    return (
+      event?.event_type === 'run.assistance_cancelled' ||
+      event?.event_type === 'run.assistance_escalated' ||
+      event?.event_type === 'run.assistance_resolved' ||
+      event?.event_type === 'run.assistance_timed_out'
+    );
+  }
+
+  function isNoResponseBrowserAssistanceData(data) {
+    return (
+      data.progress_posture === 'blocked' &&
+      data.owner_action === 'operate_attachment' &&
+      data.response_contract === 'none' &&
+      hasBrowserSurfaceAttachment(data)
+    );
+  }
+
+  function collectTerminalAssistanceIds(events) {
     const terminalIds = new Set();
     for (const event of events) {
-      if (
-        event?.event_type === 'run.assistance_cancelled' ||
-        event?.event_type === 'run.assistance_escalated' ||
-        event?.event_type === 'run.assistance_resolved' ||
-        event?.event_type === 'run.assistance_timed_out'
-      ) {
+      if (isTerminalAssistanceEvent(event)) {
         const id = eventAssistanceId(event);
         if (id) terminalIds.add(id);
       }
     }
+    return terminalIds;
+  }
 
+  function noResponseBrowserAssistanceIdOf(event, terminalIds) {
+    if (!event || event.event_type !== 'run.assistance_requested') return null;
+    const id = eventAssistanceId(event);
+    if (!id || terminalIds.has(id)) return null;
+    return isNoResponseBrowserAssistanceData(eventData(event)) ? id : null;
+  }
+
+  function currentNoResponseBrowserAssistanceId(events) {
+    const terminalIds = collectTerminalAssistanceIds(events);
     for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index];
-      if (!event || event.event_type !== 'run.assistance_requested') continue;
-      const id = eventAssistanceId(event);
-      if (!id || terminalIds.has(id)) continue;
-      const data = eventData(event);
-      if (
-        data.progress_posture === 'blocked' &&
-        data.owner_action === 'operate_attachment' &&
-        data.response_contract === 'none' &&
-        hasBrowserSurfaceAttachment(data)
-      ) {
-        return id;
-      }
+      const id = noResponseBrowserAssistanceIdOf(events[index], terminalIds);
+      if (id) return id;
     }
     return null;
   }

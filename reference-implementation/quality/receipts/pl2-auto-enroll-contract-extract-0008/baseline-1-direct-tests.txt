@@ -1,0 +1,52 @@
+# hone work pl2-auto-enroll-contract-extract-0008 — baseline rung 'direct-tests'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in test/auto-enroll-eligible-schedules.test.js test/auto-enroll-eligible-schedules-integration.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0008_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit "$f" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc'
+# expect: All listed tests pass with one ephemeral Postgres database per test file, timeout 600, and --test-force-exit.
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ eligible-with-env enrolls a new schedule at the manifest-recommended interval (1.760401ms)
+✔ eligible manifest without recommended_interval_seconds falls back to 3600 (0.121032ms)
+✔ missing env keeps the connector honestly unscheduled and counts skipped_env (0.109602ms)
+✔ blank or whitespace-only env value is treated as missing (0.098612ms)
+✔ alias-array entry is satisfied when the fallback alias is set (0.185863ms)
+✔ alias-array entry is satisfied when the first-listed alias is set (0.119812ms)
+✔ alias-array entry is unsatisfied only when EVERY alias is absent or empty (0.111092ms)
+✔ mixed string + alias-array entries each apply their own rule (0.189744ms)
+✔ manual refresh policy is never auto-enrolled even when env is present (0.155793ms)
+✔ background_safe=false is never auto-enrolled even when env is present (0.162553ms)
+✔ assisted_after_owner_auth=true is never auto-enrolled even when env is present (0.093931ms)
+✔ public_listing.status != "proven" is never auto-enrolled (0.069571ms)
+✔ public_listing.listed != true is never auto-enrolled (0.094092ms)
+✔ manifest without capabilities.auth.required cannot be auto-enrolled (0.091222ms)
+✔ existing schedule row is never overwritten (idempotent re-run) (0.077181ms)
+✔ second pass after enrollment is a no-op (0.416888ms)
+✔ enabled=false short-circuits the entire pass (0.065881ms)
+✔ multiple connectors are evaluated independently in one pass (0.108802ms)
+✔ controller upsertSchedule throwing increments errors and continues (0.118842ms)
+✔ a stored credential satisfies eligibility when env vars are absent (0.102892ms)
+✔ a stored credential satisfies eligibility when env vars are empty strings (0.071151ms)
+✔ no env and no stored credential still counts skipped_env (0.062471ms)
+✔ the store probe is not consulted when env already satisfies the requirement (0.067062ms)
+✔ a throwing store probe counts as an error and does not enroll (0.084801ms)
+ℹ tests 24
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 73.733898
+✔ shipped Notion manifest declares capabilities.auth.required so enrollment can gate on it (0.913006ms)
+✔ shipped Oura manifest declares capabilities.auth.required (0.141232ms)
+✔ shipped Strava manifest declares capabilities.auth.required (0.116932ms)
+✔ enrollment against a real controller creates a single enabled row for an eligible registered manifest (15.884325ms)
+✔ enrollment leaves a connector unscheduled when its declared env is missing (9.21758ms)
+✔ enrollment never overrides an operator-paused row across boots (9.317121ms)
+✔ enrollment is a no-op for connectors whose manifest is manual or background-unsafe (9.033636ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 515.71211

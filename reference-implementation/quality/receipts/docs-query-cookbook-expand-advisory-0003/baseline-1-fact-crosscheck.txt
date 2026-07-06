@@ -1,0 +1,10 @@
+# hone work docs-query-cookbook-expand-advisory-0003 — baseline rung 'fact-crosscheck'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -n 'related_stream_not_granted\|related_stream_unknown' server/schema-capabilities.js test/query-contract.test.js docs/generated/query-cookbook.md
+# expect: code and test lines unchanged; docs/generated/query-cookbook.md now matches BOTH reason values at least once, and every claim in the added paragraph is backed by a quoted line from schema-capabilities.js (~:230) and query-contract.test.js:2504 — paste the quotes next to the doc sentences in the claim ledger
+# exit: 0  duration: 0s  verdict: PASS
+
+server/schema-capabilities.js:184:// surfaced as `related_stream_unknown` rather than silently dropped.
+server/schema-capabilities.js:230:    entry.reason = known ? 'related_stream_not_granted' : 'related_stream_unknown';
+test/query-contract.test.js:807:          reason: 'related_stream_not_granted',
+test/query-contract.test.js:812:          reason: 'related_stream_not_granted',
+test/query-contract.test.js:2504:    assert.equal(inertEntry.reason, 'related_stream_not_granted');

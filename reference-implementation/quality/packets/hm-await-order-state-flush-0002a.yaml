@@ -1,0 +1,115 @@
+created: "2026-07-02T09:53:40.301Z"
+repo_sha: a86ed53d654801067446ce2db1315e8115c60420
+subsystem: runtime
+behavior_status: likely_intended
+ownership: OWN
+action: generate_evidence
+proof_class: judgment_first
+execution_gate: autonomous
+expected_quality_gain: high
+owner_attention_reduction: low
+product_impact: low
+priority:
+  score: 94
+  computed: "2026-07-02T09:53:40.301Z"
+  inputs:
+    mass: 189
+    churn: 63
+not_allowed:
+  - behavior-change
+  - implementation-change
+  - new-dependency
+  - wall-clock-sleep-as-sync-primitive
+  - pinning-cross-stream-global-order
+  - new-helper-files-outside-touchset
+  - existence-assertions-where-order-is-the-contract
+maker_tier: standard
+judge_tier: strong
+maker_provider: codex
+judge_provider: claude
+batch_key: generate_evidence×judgment_first×runtime
+estimates:
+  tokens: 40000
+  evidence_cost: medium
+depends_on: []
+status: landed
+outcome:
+  commit: cbce27d193a528e660d66741b54dc368f866a181
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.85): The diff implements exactly the synchronous shared-log design the packet mandates: emitSpineEvent is intercepted via a real-time ESM loader hook that pushes run.state_staged into the log synchronously at the actual emit-invocation (not a post-hoc replay), and the RS stub pushes ingest:request/ingest:completed synchronously at request-receipt and response-write-callback boundaries. The assertion compares index order, not existence, the named test string matches exactly, and the red-then-green receipt shows the seeded mutant deterministically flips the correct named assertion via genuine reordering in the log. The stale judge_verdict field in the packet describes a different implementation (post-hoc event_seq reconstruction) that does not match this diff, and all not_allowed constraints (touchset, byte-identity, no sleep-as-sync) are satisfied by the evidence."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-state-flush.test.js ]; then node --test test/runtime-msg-order-state-flush.test.js test/event-spine.test.js; else node --test test/event-spine.test.js; fi -> exit 0 (8s) PASS; exit=0 djb2=99f42079 bytes=10907 receipt=quality/receipts/hm-await-order-state-flush-0002a/baseline-1-direct-test.txt"
+    - "[baseline] red-then-green-state-flush-order: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-state-flush.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/await flushBatch(msg.stream);/flushBatch(msg.stream);/' runtime/index.js || exit 1; rc=0; node --test test/runtime-msg-order-state-flush.test.js || rc=1; git checkout -- runtime/index.js; [ \"$rc\" -eq 1 ]; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/hm-await-order-state-flush-0002a/baseline-2-red-then-green-state-flush-order.txt"
+    - "[baseline] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-await-order-state-flush-0002a/baseline-3-byte-identity.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-await-order-state-flush-0002a/baseline-4-typecheck.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-state-flush.test.js ]; then node --test test/runtime-msg-order-state-flush.test.js test/event-spine.test.js; else node --test test/event-spine.test.js; fi -> exit 0 (8s) PASS; exit=0 djb2=fcb97a30 bytes=10999 receipt=quality/receipts/hm-await-order-state-flush-0002a/post-1-direct-test.txt"
+    - "[post] red-then-green-state-flush-order: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-state-flush.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/await flushBatch(msg.stream);/flushBatch(msg.stream);/' runtime/index.js || exit 1; rc=0; node --test test/runtime-msg-order-state-flush.test.js || rc=1; git checkout -- runtime/index.js; [ \"$rc\" -eq 1 ]; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=2edc7ad9 bytes=1307 receipt=quality/receipts/hm-await-order-state-flush-0002a/post-2-red-then-green-state-flush-order.txt"
+    - "[post] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-await-order-state-flush-0002a/post-3-byte-identity.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-await-order-state-flush-0002a/post-4-typecheck.txt"
+  tokens_actual: 247396
+  lesson: null
+candidate_id: hm-await-order-state-flush-0002a
+files: [runtime/index.js, test/event-spine.test.js, test/runtime-msg-order-state-flush.test.js]
+symbols:
+  - runConnector
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'STATE' — await flushBatch(msg.stream) at :2980 BEFORE newState[msg.stream] staging and the run.state_staged emit"
+    line: 2976
+public_surface:
+  - spine event_type run.state_staged (timeline projection order relative to ingest completion)
+  - "run.state_staged data fields: cursor, checkpoint_mode, state_streams_staged, state_commit_intent"
+why_this_matters: "ONE contract, decomposed out of hm-awaited-order-oracle-0002 (4 failed attempts; superseded): the STATE arm awaits flushBatch(msg.stream) BEFORE staging newState[stream] and emitting run.state_staged (runtime/index.js:2976-3003). Reordering silently breaks crash-consistency — a staged cursor whose records were never ingested is data loss on the next incremental resume. run.state_staged is pinned for EXISTENCE by collection-profile/cli/event-spine, but no test asserts flush-precedes-stage; run-5 proved the gap is real (the seeded dropped-await mutant SURVIVED an existence-shaped oracle). Extraction packet hm-state-checkpoint-extract-0005 cites this ordering as its oracle."
+plan:
+  transform_class: direct-unit-oracle-generation
+  instruction: "Add test/runtime-msg-order-state-flush.test.js pinning EXACTLY ONE contract: the stream-A ingest POST triggered by STATE's flushBatch(msg.stream) COMPLETES before run.state_staged for stream A is emitted. Copy the landed hm-0001 harness (test/runtime-handle-msg-dispatch.test.js, status landed, all pins green): inline writeStub for the temp-file fake connector (:103-140), readline flowing-mode stdin via createInterface({ input: process.stdin, crlfDelay: Infinity }) (:125), idle setInterval keep-alive tail (:116), injectable onInteraction passed to runConnector (:189). SELF-CONTAINED SINGLE FILE: ALL harness code (stub writer, RS stub with the shared sequence log, sentinel plumbing) lives INSIDE the one touchset test file — creating ANY other file is a touchset violation and the engine reverts ALL work fail-closed (run-3 lesson). SHARED MONOTONIC SEQUENCE LOG doctrine (the run-5 judge's core demand): one plain array; EVERY mark is appended SYNCHRONOUSLY at the moment of observation (the spine sink pushes at emit-invocation, the RS stub pushes 'request' at receipt and 'completed' when the response is released and fully written, connector-side observations are written synchronously with writeFileSync and folded into the log) — async marks weaken the log and were REVISEd in run-5. Assertions compare LOG INDEX ORDER, never existence (run-2/run-5 refusal class: the run-5 STATE mutant SURVIVED an existence-shaped oracle) and never wall-clock margins. HOLD-the-boundary: the RS stub HOLDS a response until the test releases it through an explicit barrier promise — a hold is not a sleep; green-path ordering is enforced by the runtime's await, never by hold length. Scenario: import { runConnector } from '../runtime/index.js'; RS stub via node:http createServer; connector stub emits 2 RECORDs for stream A then STATE{stream: A, cursor}; the RS stub HOLDS the stream-A ingest response and the test releases it only after observing the 'ingest:request' mark (one macrotask later). Inject the spine sink the way test/event-spine.test.js observes run.* events and push 'run.state_staged' into the SAME log synchronously at emit. MANDATORY named test (exactly): 'STATE arm: stream-A ingest POST completes before run.state_staged is emitted' asserting index(ingest:completed for stream A) < index(run.state_staged for stream A); also assert run.state_staged.data carries cursor, checkpoint_mode 'checkpointed_streaming', state_streams_staged and state_commit_intent (existence pins for these FIELDS are fine — the ORDER assertion is the contract). Kill mechanics you must preserve: under the seeded mutation (await dropped from flushBatch(msg.stream) at :2980) the runtime's continuation emits run.state_staged in the same tick as the un-awaited flushBatch call — strictly before the test can release the held response — so the index-order assertion goes red deterministically while any existence assertion stays green (run-5's survival class). PROCESS REQUIREMENT: iterate node --test on your file DURING authoring and only conclude when it is green against UNMUTATED code (this oracle CHARACTERIZES current behavior); then verify the kill yourself: seed the packet's sed mutation locally, confirm your named test (and ONLY an order assertion) goes red, restore runtime/index.js to byte-identity before handing back (the byte-identity rung enforces it). Never hand back a red file, and never hand back a file whose named test survives the seeded mutant — the red-then-green rung exits nonzero and the packet fails. Do NOT leave runtime/index.js modified; the engine's rung seeds and restores it itself."
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "an oracle that marks completion asynchronously or after the run finishes proves nothing (run-5: mutant survived); ordering must be read from one shared log with synchronous marks, and only per-stream/per-arm order may be pinned (cross-stream global order is unspecified)"
+authoring_evidence:
+  - kind: code-read
+    detail: "runtime/index.js case 'STATE' re-read 2026-07-02 at a86ed53d6: :2976 case, :2980 await flushBatch(msg.stream), :2981 newState staging, :2982 run.state_staged emit with data {cursor, checkpoint_mode, state_streams_staged, state_commit_intent}"
+    result: contract and observable fields confirmed at current line numbers
+  - kind: grep-unique
+    detail: "grep -cF 'await flushBatch(msg.stream);' runtime/index.js (2026-07-02, a86ed53d6)"
+    result: "1 — the red-then-green sed target is verified unique"
+  - kind: baseline-run
+    detail: "node --test test/runtime-handle-msg-dispatch.test.js test/runtime-pipe-resilience.test.js test/event-spine.test.js (2026-07-02, repo_sha a86ed53d6)"
+    result: "71/71 pass, 0 fail, 0 skipped — harness-pattern suites verified green on the current tree"
+  - kind: fold-back
+    detail: "hm-awaited-order-oracle-0002 judge history distilled 2026-07-02 (4 attempts, ~$22, lesson \"packet bar not reachable by this maker\"): run-2 judge refused existence-shaped assertions for DONE flush-before-EOF and INTERACTION attention/stdin ordering and refused the MISSING RECORD batch-boundary contract; run-3 ended skipped(touchset-violation: probe-driver.mjs/probe-stdin.mjs outside touchset); run-5 codex REVISE 0.98 then 0.88: (i) the seeded STATE flush-order mutant SURVIVED the oracle (receipt post-r1-2-red-then-green-state-flush-order.txt: exit 0, all tests green under the dropped-await mutation — the oracle asserted existence, not order), (ii) the rung exit code was not probative because the trailing git checkout masked node --test failures, (iii) the timeout INTERACTION ordering omitted the assistance-resolution/known-gap order before the stdin write, (iv) an async stdin mark weakened the shared monotonic log"
+    result: "this decomposition pins ONE contract per packet; every red-then-green rung captures rc BEFORE restore and exits 0 ONLY when the seeded run failed, with the named failure enforced deterministically via expect_check failing_test_named; all order assertions read ONE shared monotonic sequence log with SYNCHRONOUS marks"
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-state-flush.test.js ]; then node --test test/runtime-msg-order-state-flush.test.js test/event-spine.test.js; else node --test test/event-spine.test.js; fi"
+    expect: "baseline (new file absent): event-spine suite (46 tests) green; post: the new single-contract oracle green alongside it, 0 fail, no new skips"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: red-then-green-state-flush-order
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-state-flush.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/await flushBatch(msg.stream);/flushBatch(msg.stream);/' runtime/index.js || exit 1; rc=0; node --test test/runtime-msg-order-state-flush.test.js || rc=1; git checkout -- runtime/index.js; [ \"$rc\" -eq 1 ]; else echo oracle-not-yet-authored; fi"
+    expect: "baseline: oracle-not-yet-authored (file absent, exit 0). Post: the rung seeds the dropped-await mutation (runtime/index.js:2980; sed target verified unique 2026-07-02), runs the oracle capturing rc BEFORE restoring the file, restores, and exits 0 ONLY IF the seeded run FAILED — the failing node --test output is fully visible in the receipt (the run-5 masking class is closed: a trailing git checkout can no longer launder a green exit), and the engine deterministically requires the failure line to name 'STATE arm: stream-A ingest POST completes before run.state_staged is emitted' (a failure of the wrong test is not the seeded red)"
+    expect_check:
+      type: failing_test_named
+      value: ingest POST completes before run.state_staged
+  - rung: byte-identity
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/index.js"
+    expect: empty — this packet changes tests only (runtime/index.js is not in the touchset); also proves the red-then-green rung restored its seed
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+touchset: [test/runtime-msg-order-state-flush.test.js]
+unlocks: [hm-state-checkpoint-extract-0005, hm-dispatch-table-coherence-0011]
+resets:
+  - at: "2026-07-02T11:51:29.788Z"
+    from_status: blocked
+    reason: "retry: run terminated by harness-level SIGTERM during post-r1 gates (not a gate verdict); ledger remaining_work claim directs reset-to-pending"
+  - at: "2026-07-02T14:11:46.253Z"
+    from_status: reverted
+    reason: "retry cross-pair: both prior attempts were claude-maker hang-class failures (authored/revised test hung direct-test, 2700s fail-closed timeout); judge REVISE concern (synchronous run.state_staged push into shared sequence log) threads via retry-context; codex maker now 2-for-2 zero-revision lands on sibling oracles 0002c/0002d with no hangs"

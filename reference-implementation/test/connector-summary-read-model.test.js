@@ -11,7 +11,7 @@ import {
   markConnectorSummaryEvidenceDirty,
   rebuildConnectorSummaryEvidence,
   reconcileDirtyConnectorSummaryEvidence,
-} from '../server/connector-summary-read-model.js';
+} from '../server/connector-summary-read-model.ts';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import {
   closePostgresStorage,

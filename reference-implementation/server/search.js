@@ -40,14 +40,14 @@ import {
   passesGrantRecordConstraints,
   passesRequestFilters,
 } from './record-filters.js';
-import { sqliteCountIndexableTextValues } from './search-index-counts.js';
+import { sqliteCountIndexableTextValues } from './search-index-counts.ts';
 import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import {
   listActiveOwnerBindingsForConnectors,
   resolveDisplayNamesForBindings,
   resolveFanInBindings,
 } from './connection-identity.js';
-import { mapSearchFanout } from './search-fanout.js';
+import { mapSearchFanout } from './search-fanout.ts';
 import {
   postgresLexicalCountIndexableTextValues,
   postgresLexicalIndexCountByStream,
@@ -294,9 +294,10 @@ export async function lexicalIndexDeleteByConnectorStream({ connectorId, connect
  * which handles the per-stream loop, the manifest lookup of declared fields,
  * and the drift check that decides whether a rebuild is needed at all.
  */
-async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, stream, declaredFields, recordsToScan = null, progressJob = null, signal = null }) {
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
-  const usePostgres = isPostgresStorageBackend();
+// Backend-dispatch wrappers for the three storage operations a lexical rebuild
+// performs, so `rebuildLexicalIndexForStream` can express the page loop without
+// interleaving `isPostgresStorageBackend()` branches. Pure I/O mechanics.
+async function rebuildLexicalDeleteStreamIndex(usePostgres, { connectorId, resolvedConnectorInstanceId, stream }) {
   if (usePostgres) {
     await postgresLexicalIndexDeleteByConnectorStream({
       connectorId,
@@ -306,6 +307,44 @@ async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, 
   } else {
     exec(referenceQueries.searchIndexDeleteByStream, [resolvedConnectorInstanceId, stream]);
   }
+}
+
+async function rebuildLexicalFetchRecordsPage(usePostgres, { resolvedConnectorInstanceId, stream, lastId, limit }) {
+  return usePostgres
+    ? await postgresLexicalRecordsPageNonDeleted({
+      connectorInstanceId: resolvedConnectorInstanceId,
+      stream,
+      afterId: lastId,
+      limit,
+    })
+    : getMany(
+      referenceQueries.searchRecordsPageNonDeleted,
+      [resolvedConnectorInstanceId, stream, lastId],
+      { limit },
+    ).rows;
+}
+
+async function rebuildLexicalInsertEntries(usePostgres, { connectorId, resolvedConnectorInstanceId, stream, entries }) {
+  if (usePostgres) {
+    await postgresLexicalIndexInsertMany({
+      connectorId,
+      connectorInstanceId: resolvedConnectorInstanceId,
+      stream,
+      entries,
+    });
+  } else {
+    transaction(() => {
+      for (const entry of entries) {
+        exec(referenceQueries.searchIndexInsertRow, [connectorId, resolvedConnectorInstanceId, stream, entry.recordKey, entry.field, entry.text]);
+      }
+    });
+  }
+}
+
+async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, stream, declaredFields, recordsToScan = null, progressJob = null, signal = null }) {
+  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
+  const usePostgres = isPostgresStorageBackend();
+  await rebuildLexicalDeleteStreamIndex(usePostgres, { connectorId, resolvedConnectorInstanceId, stream });
 
   // Stream the records page-by-page so we don't pull the whole table into
   // memory on big stores.
@@ -323,18 +362,12 @@ async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, 
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error('lexical backfill aborted');
     }
-    const rows = usePostgres
-      ? await postgresLexicalRecordsPageNonDeleted({
-        connectorInstanceId: resolvedConnectorInstanceId,
-        stream,
-        afterId: lastId,
-        limit: PAGE,
-      })
-      : getMany(
-        referenceQueries.searchRecordsPageNonDeleted,
-        [resolvedConnectorInstanceId, stream, lastId],
-        { limit: PAGE },
-      ).rows;
+    const rows = await rebuildLexicalFetchRecordsPage(usePostgres, {
+      resolvedConnectorInstanceId,
+      stream,
+      lastId,
+      limit: PAGE,
+    });
     if (rows.length === 0) break;
     const entries = [];
     for (const row of rows) {
@@ -355,20 +388,12 @@ async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, 
       }
     }
     if (entries.length > 0) {
-      if (usePostgres) {
-        await postgresLexicalIndexInsertMany({
-          connectorId,
-          connectorInstanceId: resolvedConnectorInstanceId,
-          stream,
-          entries,
-        });
-      } else {
-        transaction(() => {
-          for (const entry of entries) {
-            exec(referenceQueries.searchIndexInsertRow, [connectorId, resolvedConnectorInstanceId, stream, entry.recordKey, entry.field, entry.text]);
-          }
-        });
-      }
+      await rebuildLexicalInsertEntries(usePostgres, {
+        connectorId,
+        resolvedConnectorInstanceId,
+        stream,
+        entries,
+      });
       indexed += entries.length;
     }
     if (progressJob) {
@@ -519,6 +544,110 @@ async function resolveLexicalBackfillConnectorInstanceIds({ connectorId, manifes
  *
  * Logging is via the optional `log` callback so tests can stay quiet.
  */
+// Process one manifest stream during a backfill pass: drop stale index/meta for
+// a stream that no longer participates, or (re)build the lexical index when its
+// declared-field fingerprint changed or the on-disk index has drifted. Pure
+// index-maintenance mechanics — no grant/auth logic. Threads the mutable
+// `progressJob` in and returns the updated job so the caller keeps accumulating
+// progress. Early-returns (the former `continue`s) simply yield the job
+// unchanged for that stream.
+async function backfillLexicalStream({ connectorId, connectorInstanceId, mStream, stream, progressJob, log, signal }) {
+  const declaredFields = mStream?.query?.search?.lexical_fields;
+  const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
+
+  if (!isParticipating) {
+    // Stream is in the manifest but does not participate. If a prior
+    // version declared lexical_fields for it, drop the stale index +
+    // meta so historical data doesn't keep matching against a field set
+    // that's no longer declared.
+    const metaExists = await lexicalMetaExists({ connectorInstanceId, stream });
+    if (metaExists) {
+      log(`[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
+          `no longer declares lexical_fields — dropping stale index + meta`);
+      await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream });
+    }
+    return progressJob;
+  }
+  progressJob = updateLexicalBackfillJob(progressJob, {
+    stream,
+    phase: 'checking',
+    manifestStreamsChecked: Math.min(
+      progressJob.manifestStreamsChecked + 1,
+      progressJob.manifestStreamsTotal,
+    ),
+    recordsScanned: 0,
+    recordsTotal: null,
+    indexedRows: 0,
+  });
+
+  const newFingerprint = fingerprintLexicalFields(declaredFields);
+
+  const fingerprintRow = await lexicalMetaGetFingerprint({ connectorInstanceId, stream });
+  const persistedFingerprint = fingerprintRow?.fields_fingerprint ?? null;
+  const fingerprintChanged = persistedFingerprint !== newFingerprint;
+
+  let needsRebuild = fingerprintChanged;
+  let recordCount = 0;
+  let indexCount = 0;
+  let expectedIndexRows = 0;
+
+  if (!needsRebuild) {
+    // Fingerprint matches — use exact non-empty text counts only to
+    // distinguish a complete index from an unbuilt or partially-built one.
+    // A loose non-zero heuristic lets historical records remain invisible
+    // after a manifest/schema change or interrupted startup backfill.
+    recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
+    indexCount = await lexicalIndexCountByStream({ connectorInstanceId, stream });
+    expectedIndexRows = await countIndexableTextValues({ connectorInstanceId, stream, declaredFields });
+
+    const maxIndexRows = recordCount * declaredFields.length;
+    const inSync = indexCount === expectedIndexRows && indexCount <= maxIndexRows;
+    needsRebuild = !inSync;
+  }
+
+  if (!needsRebuild) return progressJob;
+  if (recordCount === 0) {
+    recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
+  }
+  progressJob = updateLexicalBackfillJob(progressJob, {
+    stream,
+    phase: 'rebuilding',
+    recordsScanned: 0,
+    recordsTotal: recordCount,
+    indexedRows: 0,
+  });
+
+  if (fingerprintChanged) {
+    log(`[PDPP] Lexical index field-set change for ${connectorId} stream='${stream}' ` +
+        `(was=${persistedFingerprint ?? 'null'}, now=${newFingerprint}) — rebuilding`);
+  } else {
+    log(`[PDPP] Lexical index drift for ${connectorId} stream='${stream}' ` +
+        `(records=${recordCount}, index=${indexCount}, expected=${expectedIndexRows ?? 'not_checked'}) — rebuilding`);
+  }
+
+  const indexedRows = await rebuildLexicalIndexForStream({
+    connectorId,
+    connectorInstanceId,
+    stream,
+    declaredFields,
+    recordsToScan: recordCount,
+    progressJob,
+    signal,
+  });
+  log(`[PDPP] Lexical index rebuild completed for ${connectorId} stream='${stream}' ` +
+      `(records=${recordCount}, indexed_rows=${indexedRows})`);
+
+  // Persist the new fingerprint so subsequent backfill calls can skip.
+  await lexicalMetaUpsertFingerprint({
+    connectorId,
+    connectorInstanceId,
+    stream,
+    fieldsFingerprint: newFingerprint,
+    updatedAt: new Date().toISOString(),
+  });
+  return progressJob;
+}
+
 export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}, signal = null } = {}) {
   if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
   activeLexicalBackfillCount += 1;
@@ -561,98 +690,14 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
         if (typeof stream !== 'string' || stream.length === 0) continue;
         visitedStreams.add(stream);
 
-        const declaredFields = mStream?.query?.search?.lexical_fields;
-        const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
-
-        if (!isParticipating) {
-          // Stream is in the manifest but does not participate. If a prior
-          // version declared lexical_fields for it, drop the stale index +
-          // meta so historical data doesn't keep matching against a field set
-          // that's no longer declared.
-          const metaExists = await lexicalMetaExists({ connectorInstanceId, stream });
-          if (metaExists) {
-            log(`[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
-                `no longer declares lexical_fields — dropping stale index + meta`);
-            await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream });
-          }
-          continue;
-        }
-        progressJob = updateLexicalBackfillJob(progressJob, {
-          stream,
-          phase: 'checking',
-          manifestStreamsChecked: Math.min(
-            progressJob.manifestStreamsChecked + 1,
-            progressJob.manifestStreamsTotal,
-          ),
-          recordsScanned: 0,
-          recordsTotal: null,
-          indexedRows: 0,
-        });
-
-        const newFingerprint = fingerprintLexicalFields(declaredFields);
-
-        const fingerprintRow = await lexicalMetaGetFingerprint({ connectorInstanceId, stream });
-        const persistedFingerprint = fingerprintRow?.fields_fingerprint ?? null;
-        const fingerprintChanged = persistedFingerprint !== newFingerprint;
-
-        let needsRebuild = fingerprintChanged;
-        let recordCount = 0;
-        let indexCount = 0;
-        let expectedIndexRows = 0;
-
-        if (!needsRebuild) {
-          // Fingerprint matches — use exact non-empty text counts only to
-          // distinguish a complete index from an unbuilt or partially-built one.
-          // A loose non-zero heuristic lets historical records remain invisible
-          // after a manifest/schema change or interrupted startup backfill.
-          recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
-          indexCount = await lexicalIndexCountByStream({ connectorInstanceId, stream });
-          expectedIndexRows = await countIndexableTextValues({ connectorInstanceId, stream, declaredFields });
-
-          const maxIndexRows = recordCount * declaredFields.length;
-          const inSync = indexCount === expectedIndexRows && indexCount <= maxIndexRows;
-          needsRebuild = !inSync;
-        }
-
-        if (!needsRebuild) continue;
-        if (recordCount === 0) {
-          recordCount = await lexicalRecordsCountNonDeleted({ connectorInstanceId, stream });
-        }
-        progressJob = updateLexicalBackfillJob(progressJob, {
-          stream,
-          phase: 'rebuilding',
-          recordsScanned: 0,
-          recordsTotal: recordCount,
-          indexedRows: 0,
-        });
-
-        if (fingerprintChanged) {
-          log(`[PDPP] Lexical index field-set change for ${connectorId} stream='${stream}' ` +
-              `(was=${persistedFingerprint ?? 'null'}, now=${newFingerprint}) — rebuilding`);
-        } else {
-          log(`[PDPP] Lexical index drift for ${connectorId} stream='${stream}' ` +
-              `(records=${recordCount}, index=${indexCount}, expected=${expectedIndexRows ?? 'not_checked'}) — rebuilding`);
-        }
-
-        const indexedRows = await rebuildLexicalIndexForStream({
+        progressJob = await backfillLexicalStream({
           connectorId,
           connectorInstanceId,
+          mStream,
           stream,
-          declaredFields,
-          recordsToScan: recordCount,
           progressJob,
+          log,
           signal,
-        });
-        log(`[PDPP] Lexical index rebuild completed for ${connectorId} stream='${stream}' ` +
-            `(records=${recordCount}, indexed_rows=${indexedRows})`);
-
-        // Persist the new fingerprint so subsequent backfill calls can skip.
-        await lexicalMetaUpsertFingerprint({
-          connectorId,
-          connectorInstanceId,
-          stream,
-          fieldsFingerprint: newFingerprint,
-          updatedAt: new Date().toISOString(),
         });
       }
       progressJob = updateLexicalBackfillJob(progressJob, {
@@ -1345,8 +1390,19 @@ function computeSnapshotRecallMeta(perConnectorResults) {
  */
 async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planEntries, q, allowsSnippets }) {
   const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
+  const branchArgs = { connectorId, resolvedConnectorInstanceId, planEntries, q, allowsSnippets };
+  return isPostgresStorageBackend()
+    ? runFtsQueryForConnectorPostgres(branchArgs)
+    : runFtsQueryForConnectorSqlite(branchArgs);
+}
+
+// Postgres backend branch of `runFtsQueryForConnector`. Consumes the already
+// grant-scoped plan entries (candidate record keys / postgres candidate filter
+// are computed upstream) and returns the same
+// `{ hits, rankedCandidateCount, truncated, candidateWindowLimit }` shape.
+async function runFtsQueryForConnectorPostgres({ connectorId, resolvedConnectorInstanceId, planEntries, q, allowsSnippets }) {
   let truncated = false;
-  if (isPostgresStorageBackend()) {
+  {
     const candidateWindowLimit = postgresEffectiveCandidateWindowLimit();
     const collapsed = new Map();
     for (const entry of planEntries) {
@@ -1413,7 +1469,13 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
     const hits = Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
     return { hits, rankedCandidateCount: hits.length, truncated, candidateWindowLimit };
   }
+}
 
+// SQLite backend branch of `runFtsQueryForConnector`. Consumes the already
+// grant-scoped plan entries and returns the same
+// `{ hits, rankedCandidateCount, truncated, candidateWindowLimit }` shape.
+function runFtsQueryForConnectorSqlite({ connectorId, resolvedConnectorInstanceId, planEntries, q, allowsSnippets }) {
+  let truncated = false;
   const ftsQuery = buildFtsUserTextQuery(q);
   const candidateWindowLimit = SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT;
   // Build one query per stream-field plan entry, scoped to this connector
@@ -1566,6 +1628,20 @@ function generateSnapshotId() {
   return `snap_${randomBytes(8).toString('hex')}`;
 }
 
+// Deterministic ordering for the per-entry plan summary: by connector instance
+// id, then stream. Keeps hashPlan's binding hash stable across enumeration order.
+function comparePlanEntrySummary(a, b) {
+  const ia = a.i || '';
+  const ib = b.i || '';
+  if (ia !== ib) return ia < ib ? -1 : 1;
+  return a.s < b.s ? -1 : a.s > b.s ? 1 : 0;
+}
+
+// Deterministic ordering for the per-connector plan summary by connector id.
+function comparePlanConnectorSummary(a, b) {
+  return (a.c || '') < (b.c || '') ? -1 : (a.c || '') > (b.c || '') ? 1 : 0;
+}
+
 function hashPlan({ perConnectorPlans, isOwner }) {
   // Stable hash over the binding set so cursors only survive across requests
   // whose plan covers the same `(connector_id, connector_instance_id,
@@ -1585,13 +1661,8 @@ function hashPlan({ perConnectorPlans, isOwner }) {
         s: pe.streamName,
         f: pe.searchableFields.slice().sort(),
       }))
-      .sort((a, b) => {
-        const ia = a.i || '';
-        const ib = b.i || '';
-        if (ia !== ib) return ia < ib ? -1 : 1;
-        return a.s < b.s ? -1 : a.s > b.s ? 1 : 0;
-      }),
-  })).sort((a, b) => (a.c || '') < (b.c || '') ? -1 : (a.c || '') > (b.c || '') ? 1 : 0);
+      .sort(comparePlanEntrySummary),
+  })).sort(comparePlanConnectorSummary);
   return JSON.stringify({ isOwner, summary });
 }
 

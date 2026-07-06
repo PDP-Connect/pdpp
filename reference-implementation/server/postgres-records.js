@@ -32,7 +32,7 @@ import {
   nowIso,
   resolveStorageConnectorId,
   resolveStorageConnectorInstanceId,
-} from './storage-utils.js';
+} from './storage-utils.ts';
 import {
   compileRequestFilters,
   nonNullSchemaTypes,

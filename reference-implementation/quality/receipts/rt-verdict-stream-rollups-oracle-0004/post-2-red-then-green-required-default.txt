@@ -1,0 +1,119 @@
+# hone work rt-verdict-stream-rollups-oracle-0004 — post rung 'red-then-green-required-default'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/connector-verdict-input.test.js ]; then git diff --quiet -- runtime/connector-verdict-input.ts && sed -i 's/stream.required !== false/stream.required === false/' runtime/connector-verdict-input.ts && node --test test/connector-verdict-input.test.js; git checkout -- runtime/connector-verdict-input.ts; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2 — engine-run mutation, df-0004 pattern): seeded run FAILS naming at least one streamPriority test (required-default / contradictory-manifest pins) — the mutation flips the required default (runtime/connector-verdict-input.ts:80; sed target verified unique 2026-07-02: grep -cF 'stream.required !== false' runtime/connector-verdict-input.ts == 1); guard confirmed the file was clean before seeding; checkout restores it — this receipt IS mandated failing run (a) that both run-2 REVISE verdicts said was missing
+# exit: 0  duration: 0s  verdict: PASS
+
+✖ streamPriority: required:true + accepted coverage_policy stays required (contradictory manifest) (1.223367ms)
+✔ streamPriority: undefined stream (not in manifest) defaults to required (0.140002ms)
+✖ streamPriority: non-required stream with a non-collect coverage_policy is accepted_absence (0.142732ms)
+✖ streamPriority: non-required stream with no accepted coverage_policy is optional (0.162512ms)
+✖ streamPriority: non-required stream with coverage_policy "collect" is optional (not accepted_absence) (0.142582ms)
+✔ buildStreamRollups: retryable_gap coverage is gap_retryable (0.219213ms)
+✔ buildStreamRollups: partial coverage is gap_retryable (0.116772ms)
+✔ buildStreamRollups: gaps coverage is gap_retryable (0.078972ms)
+✔ buildStreamRollups: pending_detail_gaps > 0 with complete coverage is still gap_retryable (0.090381ms)
+✔ buildStreamRollups: complete coverage with no pending gaps is not gap_retryable (0.132842ms)
+✔ buildStreamRollups: connection-level attention threads onto a non-complete stream (0.081991ms)
+✔ buildStreamRollups: connection-level attention does NOT thread onto a complete stream (0.080022ms)
+✔ buildStreamRollups: no open attention leaves every stream attention_open false (0.206723ms)
+✔ buildStreamRollups: a stream not present in the manifest defaults to required priority (0.090201ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 10
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 106.467292
+
+✖ failing tests:
+
+test at test/connector-verdict-input.test.js:45:1
+✖ streamPriority: required:true + accepted coverage_policy stays required (contradictory manifest) (1.223367ms)
+  AssertionError [ERR_ASSERTION]: a required stream cannot annotate-away its own gap
+  + actual - expected
+  
+  + 'accepted_absence'
+  - 'required'
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/connector-verdict-input.test.js:47:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'accepted_absence',
+    expected: 'required',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/connector-verdict-input.test.js:57:1
+✖ streamPriority: non-required stream with a non-collect coverage_policy is accepted_absence (0.142732ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'required'
+  - 'accepted_absence'
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/connector-verdict-input.test.js:59:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'required',
+    expected: 'accepted_absence',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/connector-verdict-input.test.js:62:1
+✖ streamPriority: non-required stream with no accepted coverage_policy is optional (0.162512ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'required'
+  - 'optional'
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/connector-verdict-input.test.js:64:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'required',
+    expected: 'optional',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/connector-verdict-input.test.js:67:1
+✖ streamPriority: non-required stream with coverage_policy "collect" is optional (not accepted_absence) (0.142582ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'required'
+  - 'optional'
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/connector-verdict-input.test.js:69:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'required',
+    expected: 'optional',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

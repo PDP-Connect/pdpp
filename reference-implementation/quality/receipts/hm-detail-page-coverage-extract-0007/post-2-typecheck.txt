@@ -1,0 +1,5 @@
+# hone work hm-detail-page-coverage-extract-0007 — post rung 'typecheck'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit
+# expect: 0 errors
+# exit: 0  duration: 4s  verdict: PASS
+

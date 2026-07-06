@@ -1,0 +1,18 @@
+# hone work hm-awaited-order-oracle-0002 — post-r1 rung 'red-then-green-state-flush-order'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-order.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/await flushBatch(msg.stream);/flushBatch(msg.stream);/' runtime/index.js && node --test test/runtime-handle-msg-order.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2 — engine-run mutation, df-0004 pattern): seeded run FAILS naming the STATE flush-before-stage ordering test — the mutation drops the await on flushBatch(msg.stream) in the STATE arm (runtime/index.js:2986; sed target verified unique 2026-07-02: grep -cF 'await flushBatch(msg.stream);' runtime/index.js == 1), so with the ingest response delayed, run.state_staged is emitted before the stream-A ingest POST completes; guard confirmed the file was clean before seeding; checkout restores it — this receipt IS the failing seeded run the run-2 judge demanded
+# exit: 0  duration: 2s  verdict: PASS
+
+✔ handleMsg STATE arm: flushBatch(stream) ingest POST completes before run.state_staged is emitted (260.408613ms)
+✔ handleMsg INTERACTION arm: success — full ordered chain including attention store and stdin response (151.720237ms)
+✔ handleMsg INTERACTION arm: timeout — no response resolves, known-gap surfaced, order still holds (1150.412305ms)
+✔ handleMsg DONE arm: flushAll() ingest POSTs complete before the connector observes stdin EOF (260.811929ms)
+✔ handleMsg RECORD arm: batch flush fires at exactly BATCH_SIZE, first POST awaited before the second (378.888462ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2356.852452

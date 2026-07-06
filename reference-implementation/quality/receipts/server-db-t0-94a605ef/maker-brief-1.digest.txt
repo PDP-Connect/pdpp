@@ -1,0 +1,66 @@
+# hone work server-db-t0-94a605ef — maker brief digest (attempt 1)
+# sha256(full brief)=7668101336683882609c56b644a47accffeb77be71c6d9f2b616ec05478f6449 bytes=4460
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/db.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, new-dependency, relocation-without-decomplecting.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: server-db-t0-94a605ef
+created: "2026-07-02T00:15:44.731Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server
+files: [server/db.js]
+symbols: [resolveInstanceId, resolveInstanceId, resolveInstanceId, resolveInstanceId, resolveInstanceId]
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 7, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn 'resolveInstanceId' cc=7. File attention: churn 79 × excess-cc mass 10 = 790; 5 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to resolveInstanceId, resolveInstanceId, resolveInstanceId, resolveInstanceId, resolveInstanceId in server/db.js (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: medium
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 17.496
+  computed: "2026-07-02T00:15:44.731Z"
+  inputs:
+    mass: 10
+    churn: 79
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: low
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/db.js, tier T0 (repo_sha 6e8d8559c36b94d41bc4c42a9a31342e60b3b334)"
+    result: "5 flagged fn(s), Σ excess-cc 10, max cc 7, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/db.js"
+    result: "79 commits in window; coupling(fan-in proxy)=45"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck"
+    expect: exit 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test"
+    expect: all tests pass; 0 fail; no new skips
+  - rung: complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/db.js::resolveInstanceId'"
+    expect: found=true and cognitive_before < 7 (packet baseline); red_scan unchanged
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting]
+maker_tier: cheap
+judge_tier: standard
+maker_provid

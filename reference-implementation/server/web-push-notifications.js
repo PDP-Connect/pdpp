@@ -6,7 +6,7 @@ import {
   classifyAssistanceNotification,
   projectNotificationDelivery,
   shouldFanoutRenderedVerdict,
-} from './notification-policy.js';
+} from './notification-policy.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
 
 const DEFAULT_TTL_SECONDS = 10 * 60;

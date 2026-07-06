@@ -7,7 +7,7 @@ import {
   isWithinQuietWindow,
   projectNotificationDelivery,
   shouldFanoutRenderedVerdict,
-} from '../server/notification-policy.js';
+} from '../server/notification-policy.ts';
 
 test('notification policy classifies owner assistance as action-required', () => {
   assert.equal(

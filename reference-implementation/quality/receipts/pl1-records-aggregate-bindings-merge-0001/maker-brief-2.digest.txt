@@ -1,0 +1,38 @@
+# hone work pl1-records-aggregate-bindings-merge-0001 — maker brief digest (attempt 2)
+# sha256(full brief)=f01e987ccfbedcbb5d300c3ca5554f4f7830430e26075f1a32a58d6344655186 bytes=27524
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/records.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, new-dependency, new-module-file, captured-mutable-cells-in-new-helpers, grant-enforcement-change.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== PRIOR ATTEMPT — the judge's exact demands ==
+This packet was attempted before and deliberately reopened (reset #1, from reverted: re-route: extraction class -> codex maker/claude judge (tonight forced claude-maker = wrong pairing, all reverted)). The prior outcome below is the exact bar the previous attempt failed to clear — address it directly; do not repeat the failed approach.
+- judge_verdict: codex REJECT (confidence 0.86): The min/max arm is not behavior-preserving: the removed code used `result?.value`, while the new call evaluates `result.value` before calling `selectComparableExtremum`. A nullish per-binding result would previously be ignored via `comparable == null` and now throws, which is an observable boundary behavior change. The evidence does not cover this edge, and green tests cannot override a line-by-line preservation failure in a preserve_refactor packet.
+- lesson: judge rejected: The min/max arm is not behavior-preserving: the removed code used `result?.value`, while the new call evaluates `result.value` before calling `selectComparableExtremum`. A nullish per-binding result would previously be ignored via `comparab…
+== WORK PACKET (YAML) ==
+candidate_id: pl1-records-aggregate-bindings-merge-0001
+created: "2026-07-02T10:00:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/records
+files: [server/records.js]
+symbols:
+  - aggregateRecordsAcrossBindings
+  - file: server/records.js
+    parent_fn: aggregateRecordsAcrossBindings
+    anchor: "per-result accumulation for-of loop (grouped-bucket merge + sum/count + min/max reduction), currently inline ~L3585-3623"
+    line: 3585
+public_surface:
+  - "aggregation response envelope { object:'aggregation', stream, metric, field, group_by, group_by_time, granularity, time_zone, approximate, filtered_record_count, value?, groups?, limit?, meta? } returned by /v1/records/:stream/aggregate multi-binding fan-in"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "aggregateRecordsAcrossBindings (cc73, scope-fn red_scan empty — 'pure decomplect target') fans aggregateRecords across disjoint bindings and folds the per-binding results into one envelope. Its single for-of loop braids THREE separate reductions that only share the loop cursor: (1) grouped-bucket key-merge into mergedBuckets, (2) additive sum/count into value, (3) comparable min/max selection into bestComparable/value. Each already-grant-scoped per-binding result is merged by pure arithmetic here — no grant.streams / streamGrant / field enforc

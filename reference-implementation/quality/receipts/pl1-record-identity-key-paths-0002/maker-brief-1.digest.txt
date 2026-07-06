@@ -1,0 +1,35 @@
+# hone work pl1-record-identity-key-paths-0002 — maker brief digest (attempt 1)
+# sha256(full brief)=1261b0a2761337803e3f54319d42ece20b0312fd3e70a2be0ac830d99422e0a7 bytes=15541
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/record-expand-helpers.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, error-message-change, error-code-change, new-dependency, new-module-file, captured-mutable-cells-in-new-helpers.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== PRIOR ATTEMPT — the judge's exact demands ==
+This packet was attempted before and deliberately reopened (reset #1, from reverted: re-route: extraction class -> codex maker/claude judge (tonight forced claude-maker = wrong pairing, all reverted)). The prior outcome below is the exact bar the previous attempt failed to clear — address it directly; do not repeat the failed approach.
+- lesson: transform failed its own evidence ladder at 'file-excess-remeasure' — prior for preserve_refactor×pure_logic×server/record-expand-helpers down
+== WORK PACKET (YAML) ==
+candidate_id: pl1-record-identity-key-paths-0002
+created: "2026-07-02T10:01:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/record-expand-helpers
+files: [server/record-expand-helpers.js]
+symbols: [assertRecordIdentity]
+public_surface:
+  - "Error with code 'invalid_record_identity' thrown when a supplied record key disagrees with data.id (no-primary-key case) or with a declared primary-key field value (compound case)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "assertRecordIdentity (cc24, scope-fn red_scan empty) is a pure validator with two fully-disjoint branches sharing only the early null/object guard: (1) the no-declared-primary-key path (fields.length===0) that reconciles a scalar/single-element key against data.id, and (2) the declared-primary-key path that walks each primary-key field and compares String(dataValue) to the corresponding key part. The two paths never interact — the function returns early out of branch 1. Extracting each branch into a named pure helper removes the two independent comparison ladders from the entry function, cutting ~15 cc while every thrown-error message, code, and the position-skipping semantics (undefined data value or absent key part → continue) stay byte-identical. This is a pure-logic decomplect: no I/O, no grant, no consent."
+plan:
+  transform_class: extract-branch-validators
+  instruction: "In server/record-expand-helpers.js ONLY. Keep assertRecordIdentity's signature (primaryKeyFields, key, data) and its two leading guards (the `if (data == null || typeof data !== 'object') return;` and `const fields = Array.isArray(primaryKeyFields) ? primaryKeyFields : [];`) exactly. Then create TWO module-level (column-0) pure named functions:\n\n(A) function assertScalarKeyIdentity(key, data) — contains VERBATIM the fields.length===0 body (current L42-48): `const single = typeof key === 'string' ? key : Array.isArray(key) && key.len

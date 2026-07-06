@@ -1,0 +1,47 @@
+# hone work pl1-version-stats-risk-reasons-0009 — post-r1 rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1verstats; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/record-version-stats.test.js || rc=1; dropdb --if-exists $db; echo "rc=$rc"; exit $rc'
+# expect: record-version-stats suite green with unchanged pass count; ephemeral DB isolates state
+# exit: 0  duration: 6s  verdict: PASS
+
+✔ record version churn classifier uses simple watch/high thresholds (0.976828ms)
+✔ record version stats envelope returns grouped projection rows without payloads (0.599731ms)
+✔ scoped record version stats envelope surfaces ground-truth rows missing from the projection (0.264414ms)
+✔ scoped record version stats envelope keeps normal-range projection-missing rows normal (0.203283ms)
+✔ record version stats envelope keeps normal-range projection-dirty rows normal (0.172513ms)
+✔ record version stats risk filter excludes projection-only normal rows (0.160383ms)
+✔ record version stats envelope keeps high risk when projection is also dirty (0.210734ms)
+✔ record version stats envelope prefers ground-truth counts over stale projection counts (0.190404ms)
+✔ AC-1: every version-stats row carries a version_disposition enum value (0.929457ms)
+✔ AC-2: disposition does not change risk_thresholds and the meta asserts independence (0.195834ms)
+✔ AC-3: an unknown high/watch stream classifies active_defect_or_unclassified (0.157853ms)
+✔ AC-4: reviewed residue re-alarms to lossless_compaction_candidate after the review timestamp (0.472979ms)
+✔ AC-5: sessions classify recurring_point_in_time_snapshot and do not re-alarm on growth (0.130862ms)
+✔ AC-6: split residual entity streams classify point_in_time_retained_history (no compaction offered) (0.148032ms)
+✔ AC-7: a connector-authored field in the source row cannot alter version_disposition (0.081222ms)
+✔ AC-1(remediation): every version-stats row carries a version_remediation enum value (0.107222ms)
+✔ AC-2(remediation): the meta asserts remediation does not affect thresholds (0.073192ms)
+✔ AC-2(remediation): adding remediation leaves risk_level/risk_reasons/version_disposition unchanged (0.077181ms)
+✔ AC-3(remediation): chase/statements and usaa/statements are content_fingerprint_pending (0.123883ms)
+✔ AC-4(remediation): usaa/accounts is owner_migration_pending, distinct from the statement rows (0.149093ms)
+✔ AC-5(remediation): claude-code/codex sessions are owner_retention_policy (0.183133ms)
+✔ AC-6(remediation): candidate / unlisted point-in-time / defect rows are remediation none (0.173964ms)
+✔ AC-7(remediation): a connector-authored field in the source row cannot alter version_remediation (0.092481ms)
+✔ AC-8(remediation): owner_retention_policy rows always have the recurring-snapshot disposition (0.134342ms)
+✔ /_ref/records/version-stats reads projection-backed high-churn rows (228.401436ms)
+✔ projection record_history_count is exact and clean after ingest+rebuild (13.843218ms)
+✔ candidate predicate selects hot churn and rejects flat streams (0.094542ms)
+✔ bounded for-keys helper returns facts identical to the full scan (10.60237ms)
+✔ unfiltered envelope candidate path equals the full-scan envelope (10.098391ms)
+✔ a dirty projection row stays bounded and advisory on the unfiltered route (8.780958ms)
+✔ dirty global projection keeps the unfiltered request bounded (9.084563ms)
+✔ Postgres ground-truth streams + for-keys produce the same shaped facts as SQLite (3078.705041ms)
+ℹ tests 32
+ℹ suites 0
+ℹ pass 32
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4628.066877
+rc=0
+NOTICE:  database "pdpp_hone_pl1verstats" does not exist, skipping

@@ -1,0 +1,6 @@
+# hone work tst-window-envelope-math-0003 — post rung 'diff-scope'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/record-field-window-envelope-oracle.test.js ]; then git diff --stat -- server/record-field-window.js; test -z "$(git diff --name-only -- server/record-field-window.js)" && echo SRC-CLEAN || echo SRC-DIRTY; else echo "BASELINE SRC-CLEAN"; fi'
+# expect: prints SRC-CLEAN: server/record-field-window.js byte-identical; only the new test file changed
+# exit: 0  duration: 0s  verdict: PASS
+
+SRC-CLEAN

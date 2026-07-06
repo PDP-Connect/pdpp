@@ -21,13 +21,13 @@ import {
 import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../../lib/spine.ts";
 import type { BrowserSurfaceLeaseStore } from "../../server/stores/browser-surface-lease-store.ts";
 import { browserSurfaceLeaseEnv } from "../browser-surface-leases.ts";
-import { readBrowserSurfaceProfileKey } from "./profile-key.ts";
 import {
   type BrowserSurfaceReadinessProbe,
   type BrowserSurfaceReadinessProbeResult,
   createMidWaitSurfaceLossDetector,
 } from "../browser-surface-readiness.ts";
-import type { ConnectorManifest, RunNowOptions, RunNowResult } from "../controller.ts";
+import type { ConnectorManifest, RunNowOptions, RunNowResult } from "../run-contracts.ts";
+import { readBrowserSurfaceProfileKey } from "./profile-key.ts";
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 

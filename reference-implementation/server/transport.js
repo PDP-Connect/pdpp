@@ -38,7 +38,7 @@ import {
   ensureRequestId,
   isRequestValidationEnforced,
   isResponseCanary,
-} from './contract-validation.js';
+} from './contract-validation.ts';
 
 // Header name the reference sets on responses to expose the protocol trace
 // ID (handler-set via setReferenceTraceId in server/index.js).
@@ -320,31 +320,13 @@ function expressShim(request, reply) {
 
   // Express's `req.is(type)` returns the matched type string or false.
   if (typeof req.is !== 'function') {
-    req.is = (types) => {
-      const ct = String(req.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase();
-      if (!ct) return false;
-      const candidates = Array.isArray(types) ? types : [types];
-      for (const candidate of candidates) {
-        if (matchesMediaType(ct, String(candidate).toLowerCase())) return candidate;
-      }
-      return false;
-    };
+    req.is = (types) => matchedContentType(req.headers?.['content-type'], types);
   }
 
   // Minimal `req.accepts(types)` returning the best match from the Accept
   // header. Handlers in PDPP only care about `req.accepts(['html', 'json'])`.
   if (typeof req.accepts !== 'function') {
-    req.accepts = (types) => {
-      const accept = String(req.headers?.accept || '').toLowerCase();
-      const candidates = Array.isArray(types) ? types : [types];
-      if (!accept || accept === '*/*') return candidates[0] || false;
-      for (const candidate of candidates) {
-        const short = String(candidate).toLowerCase();
-        const long = short.includes('/') ? short : `application/${short}`;
-        if (accept.includes(short) || accept.includes(long)) return candidate;
-      }
-      return false;
-    };
+    req.accepts = (types) => acceptedType(req.headers?.accept, types);
   }
 
   // Express-compatible `res` that proxies onto Fastify's `reply`.
@@ -433,6 +415,31 @@ function expressShim(request, reply) {
   };
 
   return { req, res };
+}
+
+// Express's `req.is(type)` returns the matched type string or false.
+function matchedContentType(contentTypeHeader, types) {
+  const ct = String(contentTypeHeader || '').split(';')[0].trim().toLowerCase();
+  if (!ct) return false;
+  const candidates = Array.isArray(types) ? types : [types];
+  for (const candidate of candidates) {
+    if (matchesMediaType(ct, String(candidate).toLowerCase())) return candidate;
+  }
+  return false;
+}
+
+// Minimal `req.accepts(types)` returning the best match from the Accept
+// header. Handlers in PDPP only care about `req.accepts(['html', 'json'])`.
+function acceptedType(acceptHeader, types) {
+  const accept = String(acceptHeader || '').toLowerCase();
+  const candidates = Array.isArray(types) ? types : [types];
+  if (!accept || accept === '*/*') return candidates[0] || false;
+  for (const candidate of candidates) {
+    const short = String(candidate).toLowerCase();
+    const long = short.includes('/') ? short : `application/${short}`;
+    if (accept.includes(short) || accept.includes(long)) return candidate;
+  }
+  return false;
 }
 
 function matchesMediaType(ct, pattern) {
@@ -574,6 +581,118 @@ function wrapHandlerWithResponseCanary(middleware, handler, manifest) {
 }
 
 /**
+ * Split a route's variadic `args` into its handler/middleware functions and
+ * the options carried by a leading plain-object entry, e.g.
+ *   app.post('/foo', { contract: 'fooOp' }, middleware, handler)
+ *
+ * The subtle contract lives here: any non-function entry that looks like a
+ * plain options object is consumed for its `contract` / `bodyLimit` keys and
+ * everything else is interpreted as a middleware/handler function. Returns the
+ * collected functions plus the sniffed options; the empty-handler check and
+ * handler/middleware split stay at the call site.
+ */
+function parseRouteArgs(args) {
+  let bodyLimit = null;
+  let contractOpId = null;
+  const fns = [];
+  for (const entry of args) {
+    if (typeof entry === 'function') { fns.push(entry); continue; }
+    if (entry && typeof entry === 'object') {
+      if (typeof entry.contract === 'string') {
+        contractOpId = entry.contract;
+      }
+      if (Number.isInteger(entry.bodyLimit) && entry.bodyLimit > 0) {
+        bodyLimit = entry.bodyLimit;
+      }
+    }
+  }
+  return { fns, bodyLimit, contractOpId };
+}
+
+/**
+ * Resolve the contract manifest for a route's operation id, failing fast at
+ * registration time so drift between server/index.js and
+ * `@pdpp/reference-contract` is observable at startup rather than at the first
+ * request. Returns `null` when the route declared no operation id and throws
+ * on an unknown id.
+ */
+function resolveManifest(method, path, contractOpId) {
+  if (!contractOpId) return null;
+  const manifest = CONTRACT_MANIFESTS.get(contractOpId);
+  if (!manifest) {
+    throw new Error(
+      `Unknown reference-contract operation id for ${method} ${path}: ${contractOpId}`,
+    );
+  }
+  return manifest;
+}
+
+/**
+ * Assemble the full ordered middleware chain for a route:
+ *   [...globalMiddleware, ...routeMiddleware, transportValidation?]
+ *
+ * When the route's operation id is on the request-validation allowlist,
+ * transport-level validation runs AFTER user-supplied middleware (auth,
+ * owner-session, device-credential checks) and BEFORE the route handler. This
+ * preserves auth ordering: unauthenticated callers see the auth error envelope
+ * rather than a contract-shape error. Routes NOT on the allowlist see no
+ * transport-level validation, which preserves the rich handler-owned
+ * diagnostics on shape rejection.
+ */
+function buildRouteMiddleware({ globalMiddleware, middleware, manifest, enforceRequestValidation }) {
+  if (!(manifest && enforceRequestValidation(manifest.id))) {
+    return [...globalMiddleware, ...middleware];
+  }
+  const manifestRef = manifest;
+  const validate = (req, res, next) => {
+    const responded = applyRequestValidation({
+      manifest: manifestRef,
+      req,
+      res,
+    });
+    if (responded) return;
+    next();
+  };
+  return [...globalMiddleware, ...middleware, validate];
+}
+
+/**
+ * Build the Fastify route-definition object: the wrapped handler (with the
+ * response canary when the manifest opts in), the optional bodyLimit, and the
+ * contract-package JSON-Schema attachment.
+ *
+ * The schema is informative metadata for tests, OpenAPI emission, and
+ * introspection; runtime request validation happens (when enabled for this op
+ * id) in the middleware chain through `@pdpp/reference-contract`. Fastify's own
+ * validator is disabled so it cannot transform or strip payloads. Response
+ * schemas are deliberately omitted — see `buildRouteSchema`.
+ */
+function buildRouteOptions({ method, path, handler, bodyLimit, manifest, contractOpId, combinedMiddleware }) {
+  const wrappedHandler =
+    manifest && isResponseCanary(manifest.id)
+      ? wrapHandlerWithResponseCanary(combinedMiddleware, handler, manifest)
+      : wrapHandler(combinedMiddleware, handler);
+
+  const routeOptions = {
+    method,
+    url: normalizePath(path),
+    handler: wrappedHandler,
+  };
+  if (bodyLimit) {
+    routeOptions.bodyLimit = bodyLimit;
+  }
+  if (manifest) {
+    const schema = buildRouteSchema(manifest);
+    if (schema) {
+      routeOptions.schema = schema;
+      routeOptions.validatorCompiler = () => () => true;
+      routeOptions.config = { pdppContractOp: contractOpId };
+    }
+  }
+  return routeOptions;
+}
+
+/**
  * Express-shaped `app` object backed by Fastify. Not a drop-in for every
  * Express API — only what PDPP uses. See the header comment for the
  * exact surface.
@@ -586,7 +705,7 @@ function wrapHandlerWithResponseCanary(middleware, handler, manifest) {
  *     Test-only injection. When present (must be a Set or array of
  *     operation ids), this app instance treats those op ids as
  *     request-validation-enforced INSTEAD OF reading the shared
- *     `REQUEST_VALIDATION_ALLOWLIST` from `contract-validation.js`.
+ *     `REQUEST_VALIDATION_ALLOWLIST` from `contract-validation.ts`.
  *     Production callers MUST NOT pass this; the live reference server
  *     constructs createApp() without it, so the shared (currently
  *     empty) allowlist remains the single production source of truth.
@@ -603,7 +722,7 @@ export function createApp({ logger, __requestValidationAllowlistForTest } = {}) 
   let formbodyRegistered = false;
 
   // Resolve the per-app request-validation enforcement predicate. In
-  // production this is the module-level set from contract-validation.js
+  // production this is the module-level set from contract-validation.ts
   // (`isRequestValidationEnforced`). In tests, callers may inject an
   // override that turns enforcement on for a synthetic route bound to a
   // real manifest, so the transport's "request rejected before handler"
@@ -634,97 +753,27 @@ export function createApp({ logger, __requestValidationAllowlistForTest } = {}) 
   // ─── method helpers ──────────────────────────────────────────────────────
 
   function registerRoute(method, path, args) {
-    // An args list may include a leading options object carrying a contract
-    // operation id, e.g.
-    //   app.post('/foo', { contract: 'fooOp' }, middleware, handler)
-    // Any non-function entry that looks like a plain options object is
-    // consumed here; everything else is interpreted as middleware/handler.
-    let bodyLimit = null;
-    let contractOpId = null;
-    const fns = [];
-    for (const entry of args) {
-      if (typeof entry === 'function') { fns.push(entry); continue; }
-      if (entry && typeof entry === 'object') {
-        if (typeof entry.contract === 'string') {
-          contractOpId = entry.contract;
-        }
-        if (Number.isInteger(entry.bodyLimit) && entry.bodyLimit > 0) {
-          bodyLimit = entry.bodyLimit;
-        }
-        continue;
-      }
-    }
+    const { fns, bodyLimit, contractOpId } = parseRouteArgs(args);
     if (!fns.length) throw new Error(`No handler for ${method} ${path}`);
     const handler = fns[fns.length - 1];
     const middleware = fns.slice(0, -1);
 
-    // Resolve the contract manifest first so an unknown operation id
-    // fails fast at registration time (before the route is added to
-    // Fastify). This keeps drift between server/index.js and
-    // @pdpp/reference-contract observable at startup rather than at
-    // the first request to the route.
-    let manifest = null;
-    if (contractOpId) {
-      manifest = CONTRACT_MANIFESTS.get(contractOpId);
-      if (!manifest) {
-        throw new Error(
-          `Unknown reference-contract operation id for ${method} ${path}: ${contractOpId}`,
-        );
-      }
-    }
-
-    // Build the route middleware chain. When the route's operation id
-    // is on the request-validation allowlist, transport-level
-    // validation runs AFTER user-supplied middleware (auth, owner-
-    // session, device-credential checks) and BEFORE the route handler.
-    // This preserves auth ordering: unauthenticated callers see the
-    // auth error envelope rather than a contract-shape error. Routes
-    // NOT on the allowlist see no transport-level validation, which
-    // preserves the rich handler-owned diagnostics on shape rejection.
-    const routeMiddleware = [...middleware];
-    if (manifest && enforceRequestValidation(manifest.id)) {
-      const manifestRef = manifest;
-      routeMiddleware.push((req, res, next) => {
-        const responded = applyRequestValidation({
-          manifest: manifestRef,
-          req,
-          res,
-        });
-        if (responded) return;
-        next();
-      });
-    }
-    const combinedMiddleware = [...globalMiddleware, ...routeMiddleware];
-
-    const wrappedHandler =
-      manifest && isResponseCanary(manifest.id)
-        ? wrapHandlerWithResponseCanary(combinedMiddleware, handler, manifest)
-        : wrapHandler(combinedMiddleware, handler);
-
-    const routeOptions = {
+    const manifest = resolveManifest(method, path, contractOpId);
+    const combinedMiddleware = buildRouteMiddleware({
+      globalMiddleware,
+      middleware,
+      manifest,
+      enforceRequestValidation,
+    });
+    const routeOptions = buildRouteOptions({
       method,
-      url: normalizePath(path),
-      handler: wrappedHandler,
-    };
-    if (bodyLimit) {
-      routeOptions.bodyLimit = bodyLimit;
-    }
-
-    // Attach the contract-package JSON-Schema directly to the Fastify
-    // route definition. The schema is informative metadata for tests,
-    // OpenAPI emission, and introspection; runtime request validation
-    // happens (when enabled for this op id) in the middleware chain
-    // above through `@pdpp/reference-contract`. Fastify's own validator
-    // is disabled so it cannot transform or strip payloads. Response
-    // schemas are deliberately omitted — see `buildRouteSchema`.
-    if (manifest) {
-      const schema = buildRouteSchema(manifest);
-      if (schema) {
-        routeOptions.schema = schema;
-        routeOptions.validatorCompiler = () => () => true;
-        routeOptions.config = { pdppContractOp: contractOpId };
-      }
-    }
+      path,
+      handler,
+      bodyLimit,
+      manifest,
+      contractOpId,
+      combinedMiddleware,
+    });
 
     fastify.route(routeOptions);
     registeredRoutes.push({

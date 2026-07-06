@@ -1,0 +1,22 @@
+# hone work pl2-run-automation-return-shape-extract-0013 — baseline rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'runtime/run-automation-policy.ts' --cog 5
+# expect: file_excess drops below 9 and no new helper is flagged.
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "runtime/run-automation-policy.ts",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 4,
+  "flagged_count": 1,
+  "file_excess": 9,
+  "flagged": [
+    {
+      "fn": "projectRunAutomationPolicy",
+      "line": 60,
+      "cc": 14,
+      "excess": 9
+    }
+  ],
+  "red_scan": []
+}

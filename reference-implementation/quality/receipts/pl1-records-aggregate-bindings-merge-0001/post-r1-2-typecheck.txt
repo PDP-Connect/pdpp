@@ -1,0 +1,5 @@
+# hone work pl1-records-aggregate-bindings-merge-0001 — post-r1 rung 'typecheck'
+# command: cd "$REPO_ROOT" && npx tsc --noEmit
+# expect: 0 errors
+# exit: 0  duration: 4s  verdict: PASS
+

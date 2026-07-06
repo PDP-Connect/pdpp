@@ -1,0 +1,37 @@
+# hone work hm-dispatch-guards-oracle-0001 — post rung 'red-then-green-detail-gap-terminal'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-dispatch.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/run.detail_gap_terminal/run.detail_gap_terminal_mutated/' runtime/index.js && node --test test/runtime-handle-msg-dispatch.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming the run.detail_gap_terminal spine test — the mutation rewrites the event_type at its single emit site runtime/index.js:3347 (sed target verified unique 2026-07-02: grep -c 'run.detail_gap_terminal' runtime/index.js == 1); checkout restores it
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ handleMsg dispatch: unrecognized msg.type fails the run naming the unknown type (73.517913ms)
+✔ handleMsg dispatch: a RECORD after DONE fails naming the after-DONE guard (78.75259ms)
+✔ handleMsg dispatch: malformed JSONL after DONE fails naming the invalid-JSONL-after-DONE guard (79.424323ms)
+✔ handleMsg dispatch: a second INTERACTION while one is unresolved is intercepted and terminates the child (587.369272ms)
+✔ handleMsg dispatch: duplicate ASSISTANCE.assistance_request_id fails naming the duplicate id (82.58084ms)
+✔ handleMsg dispatch: ASSISTANCE_STATUS for an unknown assistance_request_id fails naming the id (57.867955ms)
+✖ handleMsg dispatch: a DETAIL_GAP that exhausts its recovery budget on a non-transient error emits run.detail_gap_terminal (82.817465ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 6
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1197.776759
+
+✖ failing tests:
+
+test at test/runtime-handle-msg-dispatch.test.js:377:1
+✖ handleMsg dispatch: a DETAIL_GAP that exhausts its recovery budget on a non-transient error emits run.detail_gap_terminal (82.817465ms)
+  AssertionError [ERR_ASSERTION]: run.detail_gap_terminal must be emitted when the recovery budget is exhausted against a non-transient error
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/runtime-handle-msg-dispatch.test.js:402:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

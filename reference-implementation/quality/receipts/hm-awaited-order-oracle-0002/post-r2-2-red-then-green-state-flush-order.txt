@@ -1,0 +1,35 @@
+# hone work hm-awaited-order-oracle-0002 — post-r2 rung 'red-then-green-state-flush-order'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-order.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/await flushBatch(msg.stream);/flushBatch(msg.stream);/' runtime/index.js && node --test test/runtime-handle-msg-order.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2 — engine-run mutation, df-0004 pattern): seeded run FAILS naming the STATE flush-before-stage ordering test — the mutation drops the await on flushBatch(msg.stream) in the STATE arm (runtime/index.js:2986; sed target verified unique 2026-07-02: grep -cF 'await flushBatch(msg.stream);' runtime/index.js == 1), so with the ingest response delayed, run.state_staged is emitted before the stream-A ingest POST completes; guard confirmed the file was clean before seeding; checkout restores it — this receipt IS the failing seeded run the run-2 judge demanded
+# exit: 0  duration: 2s  verdict: PASS
+
+✖ handleMsg STATE arm: flushBatch(stream) ingest POST completes before run.state_staged is emitted (275.645735ms)
+✔ handleMsg INTERACTION arm: success — full ordered chain including attention store and stdin response (152.894363ms)
+✔ handleMsg INTERACTION arm: timeout — no response resolves, known-gap surfaced, order still holds (1194.600908ms)
+✔ handleMsg DONE arm: flushAll() ingest POSTs complete before the connector observes stdin EOF (262.528297ms)
+✔ handleMsg RECORD arm: batch flush fires at exactly BATCH_SIZE, first POST awaited before the second (378.656589ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 4
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2451.393763
+
+✖ failing tests:
+
+test at test/runtime-handle-msg-order.test.js:285:1
+✖ handleMsg STATE arm: flushBatch(stream) ingest POST completes before run.state_staged is emitted (275.645735ms)
+  AssertionError [ERR_ASSERTION]: the stream A ingest POST must complete before run.state_staged is emitted (ordered log: [{"kind":"event","label":"spine_event:run.state_staged","status":"succeeded"},{"seq":1,"label":"ingest_post_completed","spineEventSeqAtMark":3,"stream":"items","records_accepted":1,"kind":"mark"},{"seq":2,"label":"ingest_post_completed","spineEventSeqAtMark":3,"stream":"items","records_accepted":1,"kind":"mark"}])
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/runtime-handle-msg-order.test.js:346:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

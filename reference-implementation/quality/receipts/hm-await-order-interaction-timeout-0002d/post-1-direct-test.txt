@@ -1,0 +1,22 @@
+# hone work hm-await-order-interaction-timeout-0002d — post rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-interaction-timeout.test.js ]; then node --test test/runtime-msg-order-interaction-timeout.test.js test/runtime-handle-msg-dispatch.test.js; else node --test test/runtime-handle-msg-dispatch.test.js; fi
+# expect: baseline (new file absent): landed hm-0001 dispatch-guards oracle (7 tests, incl. the INTERACTION plumbing this packet extends) green; post: the new single-contract oracle green alongside it, 0 fail, no new skips
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ handleMsg dispatch: unrecognized msg.type fails the run naming the unknown type (82.762581ms)
+✔ handleMsg dispatch: a RECORD after DONE fails naming the after-DONE guard (79.392925ms)
+✔ handleMsg dispatch: malformed JSONL after DONE fails naming the invalid-JSONL-after-DONE guard (72.658682ms)
+✔ handleMsg dispatch: a second INTERACTION while one is unresolved is intercepted and terminates the child (579.283368ms)
+✔ handleMsg dispatch: duplicate ASSISTANCE.assistance_request_id fails naming the duplicate id (78.070393ms)
+✔ handleMsg dispatch: ASSISTANCE_STATUS for an unknown assistance_request_id fails naming the id (63.588341ms)
+✔ handleMsg dispatch: a DETAIL_GAP that exhausts its recovery budget on a non-transient error emits run.detail_gap_terminal (93.202396ms)
+✔ INTERACTION arm: resolveByRequestId completes before the assistance resolution event and stdin response (57.912737ms)
+✔ INTERACTION timeout arm: assistance timeout and interaction known-gap are recorded before stdin response (1043.209751ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1271.190986

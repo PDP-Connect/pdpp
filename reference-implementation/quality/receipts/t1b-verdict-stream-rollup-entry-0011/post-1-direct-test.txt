@@ -1,0 +1,50 @@
+# hone work t1b-verdict-stream-rollup-entry-0011 — post rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/connector-verdict-input.test.js test/owner-verdict-wire.test.js test/shadow-comparison.test.js
+# expect: all pass with unchanged counts, before AND after the edit (connector-verdict-input.test.js exists — else this packet is blocked on rt-verdict-stream-rollups-oracle-0004)
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ streamPriority: required:true + accepted coverage_policy stays required (contradictory manifest) (0.716542ms)
+✔ streamPriority: undefined stream (not in manifest) defaults to required (0.094472ms)
+✔ streamPriority: non-required stream with a non-collect coverage_policy is accepted_absence (0.082852ms)
+✔ streamPriority: non-required stream with no accepted coverage_policy is optional (0.077901ms)
+✔ streamPriority: non-required stream with coverage_policy "collect" is optional (not accepted_absence) (0.079961ms)
+✔ buildStreamRollups: retryable_gap coverage is gap_retryable (0.266914ms)
+✔ buildStreamRollups: partial coverage is gap_retryable (0.093341ms)
+✔ buildStreamRollups: gaps coverage is gap_retryable (0.104082ms)
+✔ buildStreamRollups: pending_detail_gaps > 0 with complete coverage is still gap_retryable (0.113532ms)
+✔ buildStreamRollups: complete coverage with no pending gaps is not gap_retryable (0.154722ms)
+✔ buildStreamRollups: connection-level attention threads onto a non-complete stream (0.120252ms)
+✔ buildStreamRollups: connection-level attention does NOT thread onto a complete stream (0.128192ms)
+✔ buildStreamRollups: no open attention leaves every stream attention_open false (0.094731ms)
+✔ buildStreamRollups: a stream not present in the manifest defaults to required priority (0.082541ms)
+✔ owner-wire: synthesizeConnectorVerdict returns a verdict with all required top-level fields (2.189597ms)
+✔ owner-wire: fresh healthy connection → green pill + calm channel (0.241824ms)
+✔ owner-wire: outbox unknown does not downgrade an otherwise complete non-outbox connector (0.163152ms)
+✔ owner-wire: denominator-only unknown stream rows do not override connection-level complete coverage (0.159913ms)
+✔ owner-wire: latest-run partial sample rows do not override connection-level complete coverage (0.162393ms)
+✔ owner-wire: stale manual-refresh connection → Healthy pill + advisory refresh action (0.310955ms)
+✔ owner-wire: degraded retryable with resumable disposition → non-green pill + advisory Retry now (0.793234ms)
+✔ owner-wire: no terminal run but one current stream gap is coherent retryable advisory (0.250484ms)
+✔ owner-wire: toGrantScopedVerdict strips detail and trace (0.242814ms)
+✔ owner-wire: runtime_ok=false caps channel at calm regardless of snapshot state (0.429268ms)
+✔ owner-wire: per-stream rollup is present on the verdict streams array (0.179163ms)
+✔ owner-wire: synthesizer clamps collected to considered (impossible 3/2 cannot escape) (0.147643ms)
+  ✔ SILENCE [chatgpt_scheduled_fresh] Healthy→Healthy ch:calm — Silence correction: 2532 recovered gaps routed to detail only; dashboard stays calm
+  ✔ SILENCE [amazon_manual_stale] Healthy→Healthy ch:advisory — Silence correction: stale manual source stays Healthy while freshness and Refresh now move to advisory detail
+  ✔ FIXED_LIE [chase_retryable_gap] Needs you→Degraded ch:advisory — Fixed false urgency: retryable degraded gap is Degraded/advisory with Retry now, not Needs you
+  ✔ SILENCE [synthetic_terminal_code_fix] Can't collect→Can't collect ch:advisory — Silence correction: terminal gap routed as maintainer status (advisory), never owner attention button
+  ✔ SILENCE [synthetic_runtime_fault] Needs you→Degraded ch:calm — Silence correction: runtime fault caps per-connection channel at calm (S4); one global indicator instead of N alarms
+✔ shadow-comparison: no unexpected_drift across all fixtures (2.886499ms)
+✔ shadow-comparison[chatgpt_scheduled_fresh]: ChatGPT: scheduled, fresh today, 2532 recovered gaps (all drained) (0.189744ms)
+✔ shadow-comparison[amazon_manual_stale]: Amazon: manual-refresh, 31-day stale (0.234464ms)
+✔ shadow-comparison[chase_retryable_gap]: Chase: degraded, one retryable gap frozen ~2 months (0.704032ms)
+✔ shadow-comparison[synthetic_terminal_code_fix]: Synthetic: terminal gap, code_fix required (maintainer-only) (0.197163ms)
+✔ shadow-comparison[synthetic_runtime_fault]: Synthetic: runtime fault (runtime_ok=false) — channel capped at calm (0.145453ms)
+ℹ tests 32
+ℹ suites 0
+ℹ pass 32
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 137.86767

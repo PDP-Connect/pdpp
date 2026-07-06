@@ -1,0 +1,193 @@
+# hone work hm-awaited-order-oracle-0002 — post rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/runtime-handle-msg-order.test.js ]; then node --test test/runtime-handle-msg-order.test.js test/runtime-pipe-resilience.test.js test/event-spine.test.js; else node --test test/runtime-pipe-resilience.test.js test/event-spine.test.js; fi'
+# expect: baseline (new file absent): existing suites green (runtime-pipe-resilience 18/18, event-spine 46/46); post: new oracle file green alongside them, 0 fail, no new skips
+# exit: 1  duration: 8s  verdict: FAIL (exit 1 (expected 0))
+
+▶ event spine
+  ✔ migrates pre-source-column spine rows without losing row counts (16.821917ms)
+  ✔ migrates pre-event-seq spine rows before creating event_seq indexes (9.817598ms)
+  ✔ captures dynamic client registration success and rejection as trace artifacts (200.369573ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures a grant trace through disclosure and revocation (202.673832ms)
+  ✔ captures consent denial on the original staged provider-connect trace (133.340941ms)
+  ✔ captures owner device start, polling, approval, and owner-token issuance on one trace (138.348196ms)
+  ✔ captures owner device denial on one trace (138.432228ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures rejected connector grant reads on the grant trace and timeline (212.393398ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures unknown-field connector grant reads on the grant trace and timeline (201.590008ms)
+  ✔ captures rejected native reads on grant timelines and owner traces (131.886139ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ stores connector and native source identities in queryable spine columns (171.828376ms)
+  ✔ captures auth-gate client read failures on grant traces with auth-gate query.received artifacts (132.006622ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures successful owner ingest and delete artifacts on owner traces (188.222704ms)
+  ✔ captures rejected owner mutation artifacts on owner traces (119.145968ms)
+  ✔ captures owner state artifacts on owner traces (128.040277ms)
+  ✔ captures grant-scoped state artifacts on grant timelines (137.114129ms)
+[runtime] {"type":"PROGRESS","stream":"top_artists","message":"Emitting 8 artists"}
+[runtime] {"type":"ingest","stream":"top_artists","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"saved_tracks","message":"Emitting 8 tracks"}
+[runtime] {"type":"ingest","stream":"saved_tracks","accepted":8,"rejected":0}
+[runtime] {"type":"PROGRESS","stream":"recently_played","message":"Emitting 5 plays"}
+[runtime] {"type":"ingest","stream":"recently_played","accepted":5,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":21}
+  ✔ captures run lifecycle events for a seeded connector run (185.976765ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":2}
+  ✔ captures per-stream checkpoint commit counts for multi-stream successful runs (147.957899ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":2,"exit_code":0,"reason":"runtime_error"}
+  ✔ captures partial checkpoint commit failures after DONE(succeeded) (165.749237ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"authentication_error"}
+  ✔ captures runtime authentication failures from ingest (161.832434ms)
+[runtime] {"type":"ingest","stream":"top_artists","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"exit_code":0,"reason":"permission_error"}
+  ✔ captures runtime permission failures from state persistence (181.756316ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"connector_invalid"}
+  ✔ captures deterministic runtime connector_invalid failures from ingest (166.996873ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"rate_limit_error"}
+  ✔ captures retryable runtime rate_limit_error failures from ingest (179.327174ms)
+[runtime] {"type":"ingest","stream":"top_artists","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reported_records_emitted":2,"exit_code":0,"reason":"connector_protocol_violation"}
+  ✔ captures terminal counter mismatch failures after DONE(succeeded) (177.320181ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1}
+  ✔ captures connector-declared terminal error details on failed runs (147.06661ms)
+[runtime] {"type":"done","status":"cancelled","records_emitted":1}
+  ✔ captures connector-declared terminal error details on cancelled runs (166.513012ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures contradictory DONE(succeeded)+error protocol violations without recording success artifacts (155.045498ms)
+[runtime] {"type":"ingest","stream":"top_artists","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE protocol violations as failed run timelines without completed artifacts (151.202026ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE progress protocol violations without recording progress artifacts (151.155495ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures undeclared-stream progress protocol violations without recording progress artifacts (155.984717ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE interaction protocol violations without recording interaction artifacts (148.350106ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE skip-result protocol violations without recording skip artifacts (158.209185ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures undeclared-stream skip-result protocol violations without recording skip artifacts (154.21402ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE state protocol violations without recording checkpoint artifacts (157.804366ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures post-DONE invalid JSONL protocol violations without recording completion artifacts (166.899448ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures undeclared-stream interaction protocol violations without recording interaction artifacts (149.779755ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ captures interaction lifecycle events with source descriptors (161.166917ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ captures interaction timeout lifecycle events (200.204444ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ captures interaction cancelled lifecycle events (147.281182ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction protocol violations without recording completion (151.081212ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction state violations without recording checkpoint artifacts (154.149597ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction progress violations without recording progress artifacts (155.426355ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction skip-result violations without recording skip artifacts (168.024471ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction terminal violations without recording completion or terminal success artifacts (180.341532ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ captures blocked interaction invalid JSONL violations without recording completion artifacts (166.280424ms)
+✔ event spine (6982.207969ms)
+✔ handleMsg STATE arm: flushBatch(stream) ingest POST completes before run.state_staged is emitted (264.7113ms)
+✖ handleMsg INTERACTION arm: success — full ordered chain including attention store and stdin response (162.559591ms)
+✖ handleMsg INTERACTION arm: timeout — no response resolves, known-gap surfaced, order still holds (1152.795122ms)
+✔ handleMsg DONE arm: flushAll() ingest POSTs complete before the connector observes stdin EOF (275.424646ms)
+✔ handleMsg RECORD arm: batch flush fires at exactly BATCH_SIZE, first POST awaited before the second (389.268911ms)
+✔ isClosedPipeWriteError classifies EPIPE write as downgradable (0.583082ms)
+✔ isClosedPipeWriteError classifies ERR_STREAM_DESTROYED as downgradable (0.107062ms)
+✔ isClosedPipeWriteError classifies ERR_STREAM_WRITE_AFTER_END as downgradable (0.123143ms)
+✔ isClosedPipeWriteError rejects unrelated TypeError (0.074992ms)
+✔ isClosedPipeWriteError rejects EPIPE on non-write syscall (0.099232ms)
+✔ isClosedPipeWriteError rejects EPIPE-looking strings without code (0.095842ms)
+✔ isClosedPipeWriteError tolerates non-error inputs (0.116032ms)
+✔ deriveTerminalReason: DONE succeeded → null reason (0.485351ms)
+✔ deriveTerminalReason: DONE failed → connector_reported_failed (0.100763ms)
+✔ deriveTerminalReason: DONE cancelled → connector_reported_cancelled (0.132003ms)
+✔ deriveTerminalReason: failed without DONE, no stdin-close → connector_exit_without_done (0.071401ms)
+✔ deriveTerminalReason: failed without DONE + stdin closed at start → connector_stdin_closed/start (0.081301ms)
+✔ deriveTerminalReason: failed without DONE + stdin closed at interaction_response → connector_stdin_closed/interaction_response (0.058571ms)
+✔ deriveTerminalReason: stdin-closed reason WITHOUT phase still resolves, with phase=unknown (0.100822ms)
+✔ deriveTerminalReason: DONE wins over a recorded stdin-close (0.077721ms)
+✔ deriveTerminalReason: succeeded run with no DONE and no stdin-close → null (0.060361ms)
+✔ runConnector: connector that exits before reading START does not crash the host (31.477589ms)
+✔ runConnector: many large records with slow ingest do not trigger connector_protocol_violation (131.39467ms)
+ℹ tests 69
+ℹ suites 0
+ℹ pass 67
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8058.037718
+
+✖ failing tests:
+
+test at test/runtime-handle-msg-order.test.js:375:1
+✖ handleMsg INTERACTION arm: success — full ordered chain including attention store and stdin response (162.559591ms)
+  AssertionError [ERR_ASSERTION]: expected "spine_event:run.assistance_requested" before "attention_upsert" (sequence: [{"seq":1,"label":"attention_upsert","id":"att_run_order_interaction_success_int_order_1"},{"seq":2,"label":"attention_transition","attentionId":"att_run_order_interaction_success_int_order_1","to":"resolved"},{"seq":3,"label":"stdin_response_observed","type":"INTERACTION_RESPONSE","status":"success"},{"seq":4,"label":"stdin_eof_observed"},{"seq":5,"label":"spine_event:run.started","status":"started"},{"seq":6,"label":"spine_event:run.interaction_required","status":"started"},{"seq":7,"label":"spine_event:run.assistance_requested","status":"started"},{"seq":8,"label":"spine_event:run.interaction_completed","status":"success"},{"seq":9,"label":"spine_event:run.assistance_resolved","status":"success"},{"seq":10,"label":"spine_event:run.completed","status":"succeeded"}])
+      at labelsInOrder (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/runtime-handle-msg-order.test.js:368:12)
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/runtime-handle-msg-order.test.js:394:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/runtime-handle-msg-order.test.js:412:1
+✖ handleMsg INTERACTION arm: timeout — no response resolves, known-gap surfaced, order still holds (1152.795122ms)
+  AssertionError [ERR_ASSERTION]: expected "spine_event:run.assistance_requested" before "attention_upsert" (sequence: [{"seq":1,"label":"attention_upsert","id":"att_run_order_interaction_timeout_int_order_1"},{"seq":2,"label":"attention_transition","attentionId":"att_run_order_interaction_timeout_int_order_1","to":"expired"},{"seq":3,"label":"stdin_response_observed","type":"INTERACTION_RESPONSE","status":"timeout"},{"seq":4,"label":"stdin_eof_observed"},{"seq":5,"label":"spine_event:run.started","status":"started"},{"seq":6,"label":"spine_event:run.interaction_required","status":"started"},{"seq":7,"label":"spine_event:run.assistance_requested","status":"started"},{"seq":8,"label":"spine_event:run.interaction_completed","status":"timeout"},{"seq":9,"label":"spine_event:run.assistance_timed_out","status":"timeout"},{"seq":10,"label":"spine_event:run.completed","status":"succeeded"}])
+      at labelsInOrder (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/runtime-handle-msg-order.test.js:368:12)
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/runtime-handle-msg-order.test.js:429:3)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

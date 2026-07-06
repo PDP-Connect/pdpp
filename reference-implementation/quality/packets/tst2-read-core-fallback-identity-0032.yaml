@@ -1,0 +1,71 @@
+candidate_id: tst2-read-core-fallback-identity-0032
+created: "2026-07-06T23:52:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: packages/read-core/content-ladder
+files: ["../packages/read-core/test/fallback-identity-oracle.test.js", "../packages/read-core/src/index.js"]
+symbols: [buildRecordContentLadder, recordContentIdentity]
+public_surface:
+  - read-core content ladders can be built from fallback stream/record/connection identity when a record payload omits direct identifiers
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: Adapters often know stream and record identity from the enclosing route even when the record payload is projected down to fields. The read-core package must preserve callable read_record_field continuations in that shape.
+plan:
+  transform_class: add-seeded-mutation-oracle
+  instruction: "Create packages/read-core/test/fallback-identity-oracle.test.js. Import buildRecordContentLadder. Build a ladder from { data:{ body:'hello world' } } with fallback { stream:'messages', recordId:'m1', connectionId:'cin_a' }. Assert id 'cin_a/messages:m1', connection_id 'cin_a', stream 'messages', record_id 'm1', and the body field read args use that id. Touch no source."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: projected record payloads must still produce live lookup continuations
+authoring_evidence:
+  - kind: coverage-sweep
+    detail: "rg -n 'fallback identity|recordId.*connectionId|buildRecordContentLadder\\(.*fallback' packages/read-core/test"
+    result: no focused fallback-identity oracle found
+  - kind: code-read
+    detail: "packages/read-core/src/index.js recordContentIdentity reads fallback.stream, fallback.recordId/record_id, and fallback.connectionId/connection_id"
+    result: pure exported package function
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/fallback-identity-oracle.test.js ]; then src=src/index.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0032_read_core.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/fallback\\\\?\\\\.recordId,/undefined,/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/fallback-identity-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: fallback identity oracle not yet created\"; exit 0; fi"
+    expect: "BASELINE guarded green while absent. POST removing fallback.recordId must prevent ladder creation or produce the wrong id, so the new oracle kills the mutant and source is restored byte-clean."
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/fallback-identity-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/fallback-identity-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi"
+    expect: "POST: the fallback identity oracle passes. BASELINE: guarded green while absent."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed: [non-test-source-change, production-source-change, behavior-change, new-dependency, git-command]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: generate_evidence×pure_logic×packages/read-core/content-ladder
+touchset: ["../packages/read-core/test/fallback-identity-oracle.test.js"]
+estimates:
+  tokens: 26000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: eafffd514be2142398656323aee888af90ba898b
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.9): The diff adds exactly one test file as instructed, touches no source, and matches the plan's literal fixture/assertions. The red-then-green-mutant-kill evidence is genuine: baseline receipts show guarded-green-while-absent, and the post receipts show the same test failing hard (TypeError) when fallback.recordId is nulled out and passing cleanly against restored source, with a byte-clean restore confirmed. This is real proof the test exercises the fallback-identity continuation, not a tautology."
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/fallback-identity-oracle.test.js ]; then src=src/index.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0032_read_core.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/fallback\\\\?\\\\.recordId,/undefined,/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/fallback-identity-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: fallback identity oracle not yet created\"; exit 0; fi -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=48172bb7 bytes=51 receipt=quality/receipts/tst2-read-core-fallback-identity-0032/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/fallback-identity-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/fallback-identity-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=caf12c67 bytes=31 receipt=quality/receipts/tst2-read-core-fallback-identity-0032/baseline-2-direct-test-green.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/fallback-identity-oracle.test.js ]; then src=src/index.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0032_read_core.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/fallback\\\\?\\\\.recordId,/undefined,/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/fallback-identity-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: fallback identity oracle not yet created\"; exit 0; fi -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=cf8b02c8 bytes=809 receipt=quality/receipts/tst2-read-core-fallback-identity-0032/post-1-red-then-green-mutant-kill.txt"
+    - "[post] direct-test-green: cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/fallback-identity-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/fallback-identity-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=dfebdf75 bytes=188 receipt=quality/receipts/tst2-read-core-fallback-identity-0032/post-2-direct-test-green.txt"
+  tokens_actual: 66304
+  lesson: null
+routing_class: certified-mechanical

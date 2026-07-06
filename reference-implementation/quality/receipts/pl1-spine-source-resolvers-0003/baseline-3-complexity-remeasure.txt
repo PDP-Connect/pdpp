@@ -1,0 +1,17 @@
+# hone work pl1-spine-source-resolvers-0003 — baseline rung 'complexity-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --target 'server/connector-instance-utils.js::deriveSpineSource'
+# expect: found=true; cognitive_before strictly below baseline 23 and below floor 8 (deriveSpineSource reduced to a two-step priority chain)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "server/connector-instance-utils.js::deriveSpineSource",
+  "file": "server/connector-instance-utils.js",
+  "function": "deriveSpineSource",
+  "found": true,
+  "cognitive_before": 23,
+  "line": 78,
+  "caller_count": 3,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

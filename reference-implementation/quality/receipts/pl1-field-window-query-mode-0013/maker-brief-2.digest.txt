@@ -1,0 +1,33 @@
+# hone work pl1-field-window-query-mode-0013 — maker brief digest (attempt 2)
+# sha256(full brief)=5bd28c02d47137cf543131e113d7866b6c6be96339dd8769258fec21da3e071c bytes=14169
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/record-field-window.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, error-message-change, limit-clamp-change, mutual-exclusion-guard-change, new-dependency, new-module-file.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: pl1-field-window-query-mode-0013
+created: "2026-07-02T10:12:00.000Z"
+repo_sha: 078bd4d00e1c06243d73fa07eada24678e14624b
+subsystem: server/record-field-window
+files: [server/record-field-window.js]
+symbols:
+  - normalizeWindowSelector
+public_surface:
+  - "field-window selector result { mode:'offset'|'query', ... } and fieldWindowError('invalid_window', ...) messages: 'before_chars and after_chars require q', 'q is exclusive with offset_chars', 'q must be a non-empty string' (400)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "normalizeWindowSelector (cc15, scope-fn red_scan empty — the file's field_not_granted marker lives in a SIBLING grant-check, not in this body) resolves a read-record-field window request into either an offset-mode or a query-mode selector. It braids the mutual-exclusion parameter validation, the offset-mode early return, and a substantial query-mode assembly (non-empty-q guard, before/after context-char parsing, explicit-context-aware requested-limit computation, MAX clamp, and the query-mode result object). The query-mode assembly is a self-contained sub-computation given (params, boundedLimit, limitClamped). Extracting it into a named pure helper removes that branch's whole body from the entry function, cutting ~8 cc while every invalid_window error and the limit/clamp arithmetic stay byte-identical. Pure function, no grant enforcement in scope."
+plan:
+  transform_class: extract-query-mode-builder
+  instruction: "In server/record-field-window.js ONLY. Create ONE module-level (column-0) pure named function ABOVE normalizeWindowSelector:\n\nfunction buildQueryModeWindow(params, boundedLimit, limitClamped) — returns the query-mode selector object. Contains VERBATIM the query branch currently at L138-160 (everything AFTER the `if (!hasQParam) { return {...}; }` early return): the non-empty-q guard (`if (typeof params.q !== 'string' || params.q.length === 0) throw fieldWindowError('invalid_window', 'q must be a non-empty string', 400);`), the `before = assertContextChars(params.before_chars, 'before_chars')` / `after = assertContextChars(params.after_chars, 'after_chars')` lines, `explicitContext`, the `requestedLimit` ternary, `effectiveLimit = Math.min(requestedLimit, FIELD_WINDOW_MAX_LIMIT)`, and the returned `{ mode: 'query', query: params.q, before, after, offset: 0, limit: effectiveLimit, limitClamped: limitClamped || requestedLimit > FIELD_WINDOW_MAX_LIMIT }`. fieldWindowError, assertContextChars

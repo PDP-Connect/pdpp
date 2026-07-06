@@ -1,0 +1,17 @@
+# hone work tst2-source-kind-resolution-0015 — post-r1 rung 'direct-test-green'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/source-kind-resolution-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_source_kind_resolution_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/source-kind-resolution-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi'
+# expect: POST: source-kind resolver oracle passes. BASELINE: guarded green.
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ BASELINE: sourceKindFromManifestBindings derives source kind from manifest bindings (0.483789ms)
+✔ resolveEnrolledSourceKind returns the manifest-derived source kind for absent or matching requests (0.117402ms)
+✔ resolveEnrolledSourceKind rejects a requested source kind that contradicts the manifest (0.250235ms)
+✔ resolveEnrolledSourceKind rejects manifests with no resolvable source binding (0.102292ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 62.302512

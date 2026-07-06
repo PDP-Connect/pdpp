@@ -1,0 +1,18 @@
+# hone work server-search-t0-3abd61eb — post rung 'complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/search.js::upsertCollapsedHit'
+# executed-command (portable-path rewrite): node /home/tnunamak/.tmp/minnows-substrate/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/search.js::upsertCollapsedHit'
+# expect: found=true and cognitive_before < 11 (packet baseline); red_scan unchanged
+# exit: 0  duration: 0s  verdict: FAIL (cognitive_before=11, expected < 11 — no measured complexity reduction)
+
+{
+  "target": "server/search.js::upsertCollapsedHit",
+  "file": "server/search.js",
+  "function": "upsertCollapsedHit",
+  "found": true,
+  "cognitive_before": 11,
+  "line": 1278,
+  "caller_count": 2,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

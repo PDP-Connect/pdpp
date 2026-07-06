@@ -82,7 +82,12 @@ function anchorStore(anchors) {
 }
 
 function pressureGap(overrides = {}) {
-  const { reason = 'upstream_pressure', attemptCount = 0, nextAttemptAfter = null, lastPressureAt = null } = overrides;
+  const {
+    reason = 'upstream_pressure',
+    attemptCount = 0,
+    nextAttemptAfter = null,
+    lastPressureAt = new Date().toISOString(),
+  } = overrides;
   return { reason, attemptCount, nextAttemptAfter, lastPressureAt };
 }
 
@@ -185,7 +190,9 @@ test('pending pressure gaps do not defer once the computed nextRunAt has arrived
     schedulerStore: anchorStore([{ connectorId, lastRunTimeMs: Date.now() - 500 }]),
     onInteraction: cancelledInteractionResponse,
     onRunComplete: (record) => completedRuns.push(record),
-    getSourcePressureGaps: () => [pressureGap({ attemptCount: 1 })],
+    getSourcePressureGaps: () => [
+      pressureGap({ attemptCount: 1, lastPressureAt: new Date(Date.now() - 500).toISOString() }),
+    ],
   });
 
   try {

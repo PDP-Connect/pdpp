@@ -25,7 +25,8 @@
 //         instance operations")
 
 import type { OwnerAgentControlAction } from "../metadata.ts";
-import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
+import { auditActorKind, buildAuditTrace } from "./_owner-connection-helpers.ts";
+import type { MiddlewareHandler, PdppErrorFn, RouteArg, TraceContext } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -84,12 +85,6 @@ interface ConnectorInstanceStore {
     connectorInstanceId: string,
     options: { ownerSubjectId: string; displayName: string; updatedAt: string }
   ): Promise<ConnectorInstanceRow>;
-}
-
-interface TraceContext {
-  readonly request_id: string;
-  readonly scenario_id: string;
-  readonly trace_id: string;
 }
 
 export interface MountOwnerConnectionsContext {
@@ -215,29 +210,6 @@ function httpStatusForAuditError(err: unknown): number {
     return 404;
   }
   return 500;
-}
-
-function buildAuditTrace(ctx: MountOwnerConnectionsContext, req: RouteRequest, res: RouteResponse): TraceContext {
-  const scenarioId = typeof req.tokenInfo?.scenario_id === "string" ? req.tokenInfo.scenario_id : undefined;
-  const trace = scenarioId ? ctx.createTraceContext({ scenarioId }) : ctx.createTraceContext();
-  const requestId = ctx.ensureRequestId(res);
-  ctx.setReferenceTraceId(res, trace.trace_id);
-  return {
-    request_id: requestId,
-    scenario_id: trace.scenario_id,
-    trace_id: trace.trace_id,
-  };
-}
-
-function auditActorKind(req: RouteRequest): "owner_agent" | "client" | "mcp_package" | "unknown" {
-  const kind = req.tokenInfo?.pdpp_token_kind;
-  if (kind === "owner") {
-    return "owner_agent";
-  }
-  if (kind === "client" || kind === "mcp_package") {
-    return kind;
-  }
-  return "unknown";
 }
 
 async function emitOwnerConnectionRenameAudit(

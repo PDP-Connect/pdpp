@@ -1,0 +1,138 @@
+candidate_id: hm-dispatch-table-coherence-0011
+created: "2026-07-02T03:38:00.000Z"
+repo_sha: e7ede6e50ea9b2f3d60ba908862a846c833d7a5c
+subsystem: runtime
+files: [runtime/index.js]
+symbols:
+  - file: runtime/index.js
+    parent_fn: runConnector
+    anchor: async function handleMsg(msg) — residual dispatch frame after family extractions
+    line: 2928
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "Campaign closer for agenda item rt-index-handlemsg-a2-decomplect (handleMsg cc 194 → thin dispatcher). The eight family packets each extracted one message family; what remains must be verified AS A WHOLE against the agenda's acceptance criteria: (1) dispatch split into named handlers with explicit context and NO captured-mutable shared cells anywhere in the handler set; (2) ordering behavior proven preserved (the 0001/0002 characterization suites green on the final shape); (3) enclosing cc materially reduced — not relocated (whole-file excess strictly below the 713 campaign baseline with the reduction attributable to decomplection: explicit state records, un-braided families, named seams). This packet also sweeps integration residue that per-family packets could not see: duplicated msgCtx construction, leftover dead let-cells, inconsistent ctx member naming across the eight landings."
+plan:
+  transform_class: residual-dispatch-coherence
+  instruction: "In runtime/index.js ONLY: (1) Reduce handleMsg to the dispatch frame: the doneMessage guard prologue (reading runState), a per-type delegation per family handler, and the __PARSE_ERROR__/default throws — target cc(handleMsg) < 25. Keep the boring switch of one-line delegations unless a literal handler table {RECORD: handleRecordMsg, ...} is strictly simpler; do NOT change unknown-type/after-DONE/parse-error semantics or messages. (2) Coherence sweep: exactly ONE msgCtx construction and ONE runState record in runConnector; consistent ctx member names across all handlers; delete any let-cell that became dead after migration into runState/interactionGate (verify each deletion with a file-wide grep); confirm every handle*Msg family handler is a column-0 module-level declaration. (3) No new behavior, no new module file, no handler signature redesign — this is the verification-and-residue packet, not a second refactor."
+expected_quality_gain: high
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 60
+  computed: "2026-07-02T03:38:00.000Z"
+  inputs:
+    mass: 15
+    churn: 63
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: "dispatch-frame semantics (unknown type, after-DONE, parse-error) must survive the final tidy; a dropped delegation arm would silently kill a message family"
+authoring_evidence:
+  - kind: sensor
+    detail: "campaign baselines 2026-07-02 (scope-fn): cc[handleMsg]=194, file_excess[runtime/index.js]=713, red_scan=[consent]"
+    result: "closer targets: cc[handleMsg] < 25 (13 delegation arms + guard prologue), file_excess strictly < 713 and below the pre-edit measured value (ambition ≤ 650 — the switch-braiding overhead plus in-family decomplection gains)"
+  - kind: agenda
+    detail: quality/AGENDA.md item 2 acceptance criteria (rt-index-handlemsg-a2-decomplect)
+    result: "this packet is the campaign's definition-of-done check: named handlers + explicit context + no captured-mutable shared cells; ordering proven; cc materially reduced not relocated; different-model judge PASS"
+evidence_required:
+  - rung: direct-test-full-runtime
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch runtime-msg-order-state-flush runtime-msg-order-done-flush runtime-msg-order-record-batch runtime-msg-order-interaction-timeout collection-profile event-spine run-interaction-control runtime-pipe-resilience runtime-cancel-run connector-detail-gap-store detail-coverage-recovered-gap-regression connector-gap-severity attention-writer; do db=pdpp_hone_hm_dtc11_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'"
+    expect: "the full campaign oracle set green with unchanged counts (baselines 2026-07-02: dispatch 7, collection-profile 124, event-spine 46, run-interaction-control 12, pipe-resilience 18, cancel-run 2, detail-gap-store 26, detail-coverage-recovered 2, gap-severity 4, attention-writer 15, plus the four runtime-msg-order-* characterization files from landed 0002a-d — THE ordering proof); repaired 2026-07-02 run-8: (a) the authored list named runtime-handle-msg-order.test.js which never existed (stale pre-decomposition 0002 filename) — replaced with the four real runtime-msg-order-* files; (b) per-file timeout 300 added after a zero-CPU startup wedge on connector-detail-gap-store wedged the engine for 33 minutes — a re-hang now fails honestly instead of blocking the lane; per-file ephemeral DBs + --test-force-exit unchanged (iteration-4 shared-DB lint)"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg'"
+    expect: "found=true; cognitive_before < 25 — the agenda's 'thin dispatch' end state (campaign start: 194)"
+    expect_check:
+      type: scope_fn_lt
+      value: 25
+  - rung: file-excess-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5"
+    expect: "file_excess strictly below the 713 campaign baseline AND below this packet's pre-edit measured value (ambition ≤ 650); flagged set = the named family handlers, no anonymous entries among them; judge verifies the delta is decomplection (explicit state, un-braided families), not relocation"
+  - rung: no-capture-structural-check
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -cE '^(async )?function handle[A-Z][A-Za-z]*Msg\\(' runtime/index.js"
+    expect: "9 or more — every family handler is a column-0 module-level declaration (structurally incapable of capturing runConnector-scoped mutable cells); combined with tsc + the green suites this is the deterministic half of the 'no captured-mutable shared cells' criterion; the judge reads the final handleMsg + handler signatures for the judgment half"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: no-new-anon-callbacks
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs"
+    expect: "exit 0 — and if any grandfathered handleMsg-internal baseline entries vanished, note the baseline-shrink opportunity in outcome.lesson (do NOT update the baseline in this packet)"
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - dispatch-semantics-change
+  - handler-signature-redesign
+  - new-dependency
+  - new-module-file
+  - callback-ratchet-baseline-update
+maker_tier: standard
+judge_tier: strong
+maker_provider: codex
+judge_provider: claude
+batch_key: preserve_refactor×effectful×runtime
+touchset: [runtime/index.js]
+estimates:
+  tokens: 70000
+  evidence_cost: high
+depends_on:
+  - hm-await-order-state-flush-0002a
+  - hm-await-order-done-flush-0002b
+  - hm-await-order-record-batch-0002c
+  - hm-await-order-interaction-timeout-0002d
+  - hm-reporting-family-extract-0003
+  - hm-record-scope-extract-0004
+  - hm-state-checkpoint-extract-0005
+  - hm-assistance-family-extract-0006
+  - hm-detail-page-coverage-extract-0007
+  - hm-detail-gap-ledger-extract-0008
+  - hm-interaction-lifecycle-extract-0009
+  - hm-done-terminal-extract-0010
+unlocks: []
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude REVISE (confidence 0.75): The diff fails the packet's own numeric closer bar: file_excess[runtime/index.js] measured 583 both before and after (baseline-4 and post-r1-4 are identical), while the packet required it strictly below this packet's pre-edit value with an ambition of ≤650 — zero reduction was achieved despite this being framed as the campaign's definition-of-done check. The changes made (moving readDetailGapPage/writeChildStdin/trackDetailCoverage/emitSpineEvent from explicit params into ctx) are a legitimate consistency tidy but do not constitute the decomplection the packet demands, and cognitive_before for handleMsg was already 7 pre-edit (the 194 baseline is stale from before the eight prior family extractions), so this packet did no measurable complexity work. Separately, the new stdoutFinished promise/await inserted into runConnector's shutdown path is a new synchronization primitive that changes shutdown ordering behavior, which the plan explicitly disallows ('No new behavior... not a second refactor') and falls outside 'ONLY the residual dispatch frame / coherence sweep' scope. || after revision: claude REJECT (confidence 0.82): The diff changes call signatures of handleDetailGapsPageRequestMsg, handleDetailCoverageMsg, handleStateMsg, and handleInteractionMsg (moving readDetailGapPage/writeChildStdin/trackDetailCoverage/emitSpineEventTracked from positional params into ctx), which is a handler-signature-redesign explicitly listed in not_allowed and explicitly forbidden by the plan's own text ('no handler signature redesign — this is the verification-and-residue packet, not a second refactor'). Multiple call sites also silently swap emitSpineEventTracked for emitSpineEvent with no definition shown in the diff to confirm this is a pure rename rather than a behavior change, and passing tests alone don't establish semantic equivalence for that swap in an effectful subsystem. Separately, the packet's headline justification (cc 194→<25) is misleading since this packet's own baseline receipt already measures cc=7 pre-edit — the real campaign reduction happened in prior packets, and this packet's contribution to the stated closer metric is trivial (7→6, file_excess 583→582) while it exceeded its authorized scope."
+  evidence_receipts:
+    - "[baseline] direct-test-full-runtime: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch runtime-msg-order-state-flush runtime-msg-order-done-flush runtime-msg-order-record-batch runtime-msg-order-interaction-timeout collection-profile event-spine run-interaction-control runtime-pipe-resilience runtime-cancel-run connector-detail-gap-store detail-coverage-recovered-gap-regression connector-gap-severity attention-writer; do db=pdpp_hone_hm_dtc11_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (47s) PASS; exit=0 djb2=1efaf255 bytes=94275 receipt=quality/receipts/hm-dispatch-table-coherence-0011/baseline-1-direct-test-full-runtime.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-dispatch-table-coherence-0011/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=fe786bb1 bytes=278 receipt=quality/receipts/hm-dispatch-table-coherence-0011/baseline-3-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=4dcc7a75 bytes=7155 receipt=quality/receipts/hm-dispatch-table-coherence-0011/baseline-4-file-excess-remeasure.txt"
+    - "[baseline] no-capture-structural-check: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -cE '^(async )?function handle[A-Z][A-Za-z]*Msg\\(' runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=0b8789d2 bytes=3 receipt=quality/receipts/hm-dispatch-table-coherence-0011/baseline-5-no-capture-structural-check.txt"
+    - "[baseline] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (4s) PASS; exit=0 djb2=4e3e5726 bytes=182 receipt=quality/receipts/hm-dispatch-table-coherence-0011/baseline-6-no-new-anon-callbacks.txt"
+    - "[post] direct-test-full-runtime: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch runtime-msg-order-state-flush runtime-msg-order-done-flush runtime-msg-order-record-batch runtime-msg-order-interaction-timeout collection-profile event-spine run-interaction-control runtime-pipe-resilience runtime-cancel-run connector-detail-gap-store detail-coverage-recovered-gap-regression connector-gap-severity attention-writer; do db=pdpp_hone_hm_dtc11_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 1 (52s) FAIL: exit 1 (expected 0); exit=1 djb2=3db6fdcd bytes=95292 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-1-direct-test-full-runtime.txt"
+    - "[post-r1] direct-test-full-runtime: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch runtime-msg-order-state-flush runtime-msg-order-done-flush runtime-msg-order-record-batch runtime-msg-order-interaction-timeout collection-profile event-spine run-interaction-control runtime-pipe-resilience runtime-cancel-run connector-detail-gap-store detail-coverage-recovered-gap-regression connector-gap-severity attention-writer; do db=pdpp_hone_hm_dtc11_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (45s) PASS; exit=0 djb2=370a9c8c bytes=94274 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r1-1-direct-test-full-runtime.txt"
+    - "[post-r1] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r1-2-typecheck.txt"
+    - "[post-r1] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=46ce66d6 bytes=278 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r1-3-complexity-remeasure.txt"
+    - "[post-r1] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=a407d4dd bytes=7155 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r1-4-file-excess-remeasure.txt"
+    - "[post-r1] no-capture-structural-check: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -cE '^(async )?function handle[A-Z][A-Za-z]*Msg\\(' runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=0b8789d2 bytes=3 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r1-5-no-capture-structural-check.txt"
+    - "[post-r1] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (4s) PASS; exit=0 djb2=4e3e5726 bytes=182 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r1-6-no-new-anon-callbacks.txt"
+    - "[post-r2] direct-test-full-runtime: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch runtime-msg-order-state-flush runtime-msg-order-done-flush runtime-msg-order-record-batch runtime-msg-order-interaction-timeout collection-profile event-spine run-interaction-control runtime-pipe-resilience runtime-cancel-run connector-detail-gap-store detail-coverage-recovered-gap-regression connector-gap-severity attention-writer; do db=pdpp_hone_hm_dtc11_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (42s) PASS; exit=0 djb2=d2a49a04 bytes=94264 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r2-1-direct-test-full-runtime.txt"
+    - "[post-r2] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r2-2-typecheck.txt"
+    - "[post-r2] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=7c31a2f8 bytes=278 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r2-3-complexity-remeasure.txt"
+    - "[post-r2] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=226599d6 bytes=7155 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r2-4-file-excess-remeasure.txt"
+    - "[post-r2] no-capture-structural-check: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -cE '^(async )?function handle[A-Z][A-Za-z]*Msg\\(' runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=0b8789d2 bytes=3 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r2-5-no-capture-structural-check.txt"
+    - "[post-r2] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (4s) PASS; exit=0 djb2=4e3e5726 bytes=182 receipt=quality/receipts/hm-dispatch-table-coherence-0011/post-r2-6-no-new-anon-callbacks.txt"
+  tokens_actual: 538252
+  lesson: judge refused twice (REVISE→REJECT); packet bar not reachable by this maker
+resets:
+  - at: "2026-07-02T16:08:18.390Z"
+    from_status: blocked
+    reason: "run-8 rung repair: job-1 red baseline had two causes, neither code — (a) the authored file list named runtime-handle-msg-order.test.js which never existed (stale filename from the pre-decomposition 0002 design; superseded by landed 0002a-d runtime-msg-order-* files), (b) a zero-CPU startup wedge on connector-detail-gap-store held the rung 33 min until operator-killed. Repaired list uses the four real runtime-msg-order-* files + timeout 300 per file; full 14-file ladder verified green by hand (7/1/1/1/2/124/46/12/18/2/26/2/4/15) before this reset"

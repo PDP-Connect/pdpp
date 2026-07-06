@@ -1,0 +1,77 @@
+# hone work pl2-attention-writer-record-request-extract-0002 — baseline rung 'direct-tests'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in test/connector-attention-store.test.js test/attention.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0002_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit "$f" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc'
+# expect: All listed tests pass with one ephemeral Postgres database per test file, timeout 600, and --test-force-exit.
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ attention store persists open records and lists them per connector (12.07603ms)
+✔ attention store transitionAttention enforces lifecycle and hides resolved rows from open list (8.362055ms)
+✔ attention store suppresses expired open rows from the open list (7.834966ms)
+✔ attention store expires due open rows in columns and record_json (7.775635ms)
+✔ attention projection reconciles expired rows before returning open attention (7.729384ms)
+✔ attention store scopes reads by connector_instance_id (9.039867ms)
+✔ attention store recordNotificationOutcomeById updates notification_state without touching lifecycle (7.705783ms)
+✔ attention store recordNotificationOutcomeById rejects invalid outcomes (7.756975ms)
+✔ attention store recordNotificationOutcomeById returns null for unknown id (7.579882ms)
+✔ attention store upsert preserves redaction of secret-y metadata applied by runtime (7.746234ms)
+✔ connection health surfaces structured attention as needs_attention with structured CTA (1.639739ms)
+✔ structured attention beats schedule.human_attention_needed fallback (0.188363ms)
+✔ secret-sensitive structured attention suppresses action_target (0.128572ms)
+✔ resolved structured attention does not drive needs_attention (0.399847ms)
+✔ superseded structured attention does not drive needs_attention (0.137573ms)
+✔ attention-store read failure flips snapshot to unknown via attention_store unreliable source (0.133962ms)
+✔ getConnectorAttentionProjection reads durable rows for use in connector summary (8.135172ms)
+✔ expired stale manual action does not override a later successful run projection (8.335565ms)
+✔ getConnectorAttentionProjection isolates connector instances (7.773865ms)
+✔ getConnectorAttentionProjection surfaces unreliable when store throws (8.091421ms)
+ℹ tests 20
+ℹ suites 0
+ℹ pass 20
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 581.280256
+✔ createAttention validates axes — pure progress is not assistance (0.726513ms)
+✔ createAttention validates axes — response_required requires owner_action (0.088552ms)
+✔ createAttention accepts nonblocking external approval (act_elsewhere) (0.138102ms)
+✔ lifecycle transitions are validated (0.503978ms)
+✔ dedupe — suppress active duplicate when axes match (0.126732ms)
+✔ dedupe — supersede when axes shift while existing is still open (0.104431ms)
+✔ dedupe — cooldown blocks rapid re-fire after terminal close (0.097331ms)
+✔ dedupe — creates fresh once cooldown has elapsed (0.073721ms)
+✔ expiry — non-terminal record past expires_at is expired (0.109422ms)
+✔ push payload — secret records produce no payload (no leak path) (0.187073ms)
+✔ push payload — non-secret records produce safe payload, no metadata bleed (0.354966ms)
+✔ push payload — privacy mode hides connection name (0.102932ms)
+✔ push payload — terminal records never notify (0.059311ms)
+✔ health relevance — blocked + response_required is health-relevant (0.051141ms)
+✔ health relevance — running + act_elsewhere + no response is NOT health-relevant (0.075651ms)
+✔ health relevance — expired and terminal records are NOT health-relevant (0.053531ms)
+✔ auto-detect — opted-in record with proceeded evidence resolves (0.081142ms)
+✔ auto-detect — still_blocked / unknown leaves record untouched (0.084421ms)
+✔ auto-detect — opt-out record never resolves automatically (0.05235ms)
+✔ auto-detect — terminal records are not re-resolved (0.055971ms)
+✔ re-consent — non-secret blocked + provide_value emits safe push and is health-relevant (0.085231ms)
+✔ manual browser verification — operate_attachment routes by attention id, not attachment ref (0.072982ms)
+✔ missing local device — blocked device attention is push-eligible, health-relevant, and auto-detectable (0.102532ms)
+✔ cancellation — cancelled records never notify and never project to health (0.097382ms)
+✔ OTP — provider-prompt copy never reaches push, even via metadata bag (0.060451ms)
+✔ push approval — act_elsewhere is push-eligible but NOT health-relevant on its own (0.048731ms)
+✔ supersession — superseded records suppress push and stop projecting to health (0.041661ms)
+✔ push channel — failed delivery does not change AttentionRecord state (0.073441ms)
+✔ push channel — owner missing the push still sees the same attention via durable record (0.047391ms)
+✔ notification state defaults to pending on create (0.076641ms)
+✔ recordNotificationOutcome records sent without touching lifecycle (0.098371ms)
+✔ recordNotificationOutcome records failed and preserves lifecycle (no run-storm permission) (0.063771ms)
+✔ recordNotificationOutcome accepts suppressed with reason (0.043231ms)
+✔ recordNotificationOutcome rejects invalid outcomes (0.066001ms)
+✔ lifecycle transition to acknowledged promotes notification state to acknowledged (0.061721ms)
+✔ lifecycle transition to resolved does NOT touch notification state (0.053691ms)
+ℹ tests 36
+ℹ suites 0
+ℹ pass 36
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 77.820823

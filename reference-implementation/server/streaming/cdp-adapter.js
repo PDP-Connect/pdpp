@@ -33,7 +33,7 @@
  * surfaces to the viewer as an `error` SSE event) and via `dispatch()` (which
  * surfaces as a 4xx on the input POST).
  */
-import { buildScreencastParams, mapInputEventToCdp } from './cdp-companion.js';
+import { buildScreencastParams, mapInputEventToCdp } from './cdp-companion.ts';
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 const DEFAULT_OPEN_TIMEOUT_MS = 5_000;
@@ -437,6 +437,44 @@ export function createCdpCompanion({
     pending.clear();
   }
 
+  function handleCommandResponse(msg) {
+    const entry = pending.get(msg.id);
+    if (!entry) return;
+    pending.delete(msg.id);
+    clearTimeout(entry.timer);
+    if (msg.error) {
+      const e = new Error(msg.error.message || 'cdp_error');
+      e.code = 'cdp_error';
+      e.cdp = msg.error;
+      entry.reject(e);
+    } else {
+      entry.resolve(msg.result || {});
+    }
+  }
+
+  function handleCdpEvent(msg) {
+    switch (msg.method) {
+      case 'Page.screencastFrame':
+        emitFrame(msg.params || {});
+        return;
+      case 'Page.frameNavigated':
+        handlePageFrameNavigated(msg.params || {});
+        return;
+      case 'Target.targetCreated':
+        handleTargetCreated(msg.params || {});
+        return;
+      case 'Target.targetDestroyed':
+        handleTargetDestroyed(msg.params || {});
+        return;
+      case 'Target.targetInfoChanged':
+        handleTargetInfoChanged(msg.params || {});
+        return;
+      default:
+      // Unrecognized CDP event — ignore. Other domains' events arriving
+      // here would indicate a misconfiguration; we still avoid throwing.
+    }
+  }
+
   function handleMessage(raw) {
     let msg;
     try {
@@ -446,41 +484,11 @@ export function createCdpCompanion({
       return;
     }
     if (msg && typeof msg === 'object' && 'id' in msg) {
-      const entry = pending.get(msg.id);
-      if (!entry) return;
-      pending.delete(msg.id);
-      clearTimeout(entry.timer);
-      if (msg.error) {
-        const e = new Error(msg.error.message || 'cdp_error');
-        e.code = 'cdp_error';
-        e.cdp = msg.error;
-        entry.reject(e);
-      } else {
-        entry.resolve(msg.result || {});
-      }
+      handleCommandResponse(msg);
       return;
     }
     if (msg && typeof msg === 'object' && typeof msg.method === 'string') {
-      switch (msg.method) {
-        case 'Page.screencastFrame':
-          emitFrame(msg.params || {});
-          return;
-        case 'Page.frameNavigated':
-          handlePageFrameNavigated(msg.params || {});
-          return;
-        case 'Target.targetCreated':
-          handleTargetCreated(msg.params || {});
-          return;
-        case 'Target.targetDestroyed':
-          handleTargetDestroyed(msg.params || {});
-          return;
-        case 'Target.targetInfoChanged':
-          handleTargetInfoChanged(msg.params || {});
-          return;
-        default:
-        // Unrecognized CDP event — ignore. Other domains' events arriving
-        // here would indicate a misconfiguration; we still avoid throwing.
-      }
+      handleCdpEvent(msg);
     }
   }
 

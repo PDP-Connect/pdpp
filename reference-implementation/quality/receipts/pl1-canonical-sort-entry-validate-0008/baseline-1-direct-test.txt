@@ -1,0 +1,73 @@
+# hone work pl1-canonical-sort-entry-validate-0008 — baseline rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'rc=0; timeout 300 node --test --test-force-exit test/query-contract.test.js || rc=1; echo "rc=$rc"; exit $rc'
+# expect: query-contract suite green with unchanged pass count (pure-logic suite, no DB)
+# exit: 0  duration: 7s  verdict: PASS
+
+✔ connector discovery lists owner-visible polyfill connectors without connector_id (198.213214ms)
+✔ connector discovery scopes client tokens to the granted source and streams (121.316331ms)
+✔ schema discovery enumerates owner-visible polyfill connectors with full per-stream capabilities (102.693691ms)
+✔ schema discovery scopes a client token to its grant source and streams (200.469055ms)
+✔ schema discovery returns an empty connector array when no connectors are registered (209.057586ms)
+✔ stream metadata publishes normalized field capabilities for owner tokens (106.856204ms)
+✔ stream metadata advertises lexical, semantic, and expansion capabilities for owner tokens (129.628288ms)
+✔ stream metadata marks grant-limited field capabilities unusable for client tokens (102.572439ms)
+✔ stream metadata publishes query.aggregations for declared aggregate fields (110.455938ms)
+✔ stream aggregate computes count, sum, min/max, grouped counts, and declared filters (105.728415ms)
+✔ stream aggregate enforces grants and declared aggregate fields (120.506026ms)
+✔ stream aggregate honors grant resources, time ranges, and request filters together (93.302054ms)
+✔ stream metadata includes freshness when records exist (91.275598ms)
+✔ schema discovery and stream list derive current freshness from connector run history (98.495476ms)
+✔ stream metadata marks stale freshness when the latest connector attempt failed (88.618611ms)
+✔ stream list publishes freshness with unknown status when empty (101.814225ms)
+✔ range filter on declared field filters records (97.777593ms)
+✔ over-max limit clamps to 100 and surfaces a limit_clamped warning on the HTTP wire (132.210394ms)
+✔ range filter on undeclared field is rejected (104.808818ms)
+✔ filter on unknown field is rejected with 400 (96.256496ms)
+✔ fields projection on an unknown field is rejected under a full-stream grant (103.78085ms)
+✔ record-detail fields projection on an unknown field is rejected under a full-stream grant (89.645729ms)
+✔ fields projection on a manifest-unknown field is rejected under a restricted grant (102.848913ms)
+✔ query-time view applies a real projection (not a silent no-op) (106.342896ms)
+✔ query-time view and fields together are rejected as mutually exclusive (106.428346ms)
+✔ query-time view with an unknown view id is rejected (109.231167ms)
+✔ bare since query parameter is rejected loudly (112.308571ms)
+✔ changes_since=beginning starts incremental sync and returns a bookmark (135.656805ms)
+✔ changes_since=beginning paginates with next_cursor and still returns next_changes_since (96.512761ms)
+✔ raw timestamp changes_since value is rejected as an invalid cursor (93.059109ms)
+✔ unknown query parameter is rejected (not silently ignored) (95.851429ms)
+✔ noncanonical range query parameters are rejected loudly (118.863267ms)
+✔ records are sorted by (cursor_field, primary_key) and cursor tokens are logical (105.912597ms)
+✔ records list invalid_sort returns a request-error envelope (92.777915ms)
+✔ exact filter on declared scalar field works (99.25342ms)
+✔ expand hydrates declared has_many relations and respects child grant projection (107.913803ms)
+✔ single-record fetch honors declared expand and expand_limit (129.058158ms)
+✔ expand fails with insufficient_scope when the related stream is outside the grant (111.007838ms)
+✔ gmail messages expand message_bodies on list and detail reads with child projection (125.81579ms)
+✔ gmail messages expand attachment metadata with limits and missing-child parity (121.88683ms)
+✔ gmail messages expand hydrated attachments with grant-visible blob_ref fetch_url (103.336292ms)
+✔ gmail message expansion rejects missing child grant and reverse thread relation (104.688156ms)
+✔ first-party manifests declare only parent-to-child query.expand entries with FK on child (3.165876ms)
+✔ github manifest declares no relationship pointing at a commits stream (0.274795ms)
+✔ github manifest declares no reverse expansion from user_stats/issues/pull_requests (0.211303ms)
+✔ repositories → issues shape fails the first-party manifest requiredness gate (deferral pin) (0.179223ms)
+✔ github user expands user_stats filtered by user_id under a both-granted token (116.094808ms)
+✔ github user_stats expand_limit caps the child fan-out and reports has_more (100.273217ms)
+✔ github user expansion rejects requests missing the user_stats grant (113.210967ms)
+✔ github repositories → issues expansion is not declared in this change (119.499748ms)
+✔ github user stream metadata surfaces the user_stats expand capability with target naming (109.177405ms)
+✔ slack messages expand message_attachments and reactions on list and detail reads (113.456062ms)
+✔ slack messages expand_limit caps message_attachments and reactions independently (125.996374ms)
+✔ slack message expansion rejects requests missing the child grant (112.193918ms)
+✔ connector manifest validation rejects unsafe query.expand declarations (87.563292ms)
+✔ connector manifest validation accepts gmail attachment blob_ref and rejects malformed declarations (108.977762ms)
+✔ blob upload requires owner authority and validates binding inputs (104.989821ms)
+✔ blob upload is content-addressed, idempotent, and fetch-safe through visible blob_ref (116.397693ms)
+✔ blob fetch injects fetch_url and requires blob_ref visibility under the grant (120.69015ms)
+ℹ tests 59
+ℹ suites 0
+ℹ pass 59
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7200.469406
+rc=0

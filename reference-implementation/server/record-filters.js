@@ -1,3 +1,5 @@
+import { randomBytes } from 'crypto';
+
 const SUPPORTED_RANGE_OPERATORS = new Set(['gte', 'gt', 'lte', 'lt']);
 
 export function invalidQueryError(message, code = 'invalid_request') {
@@ -49,7 +51,7 @@ function parseNumberValue(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function parseDateValue(value) {
+export function parseDateValue(value) {
   if (typeof value !== 'string' || !value.trim()) return null;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -89,6 +91,39 @@ function normalizeExactFilterValue(value, field) {
   return String(value);
 }
 
+function compileRangeFilter(field, rawValue, fieldSchema, manifestStream) {
+  const operatorEntries = Object.entries(rawValue);
+  if (!operatorEntries.length) {
+    throw invalidQueryError(`Range filter on '${field}' must include at least one operator`);
+  }
+  if (!isRangeQueryableSchema(fieldSchema)) {
+    throw invalidQueryError(`Range filters are not supported on '${field}'`);
+  }
+
+  const declaredOperators = manifestStream?.query?.range_filters?.[field];
+  if (!Array.isArray(declaredOperators) || !declaredOperators.length) {
+    throw invalidQueryError(`Range filters are not declared for '${field}'`);
+  }
+  const declaredOperatorSet = new Set(declaredOperators);
+  const operators = {};
+
+  for (const [operator, operand] of operatorEntries) {
+    if (!SUPPORTED_RANGE_OPERATORS.has(operator)) {
+      throw invalidQueryError(`Unsupported range operator '${operator}' on '${field}'`);
+    }
+    if (!declaredOperatorSet.has(operator)) {
+      throw invalidQueryError(`Range operator '${operator}' is not declared for '${field}'`);
+    }
+    const comparable = coerceComparableValue(operand, fieldSchema, { strict: true });
+    if (comparable == null) {
+      throw invalidQueryError(`Invalid range value for '${field}'`);
+    }
+    operators[operator] = comparable;
+  }
+
+  return { field, kind: 'range', fieldSchema, operators };
+}
+
 export function compileRequestFilters(filter, streamGrant, manifestStream) {
   if (filter == null) return [];
   if (!filter || typeof filter !== 'object' || Array.isArray(filter)) {
@@ -111,36 +146,7 @@ export function compileRequestFilters(filter, streamGrant, manifestStream) {
     }
 
     if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
-      const operatorEntries = Object.entries(rawValue);
-      if (!operatorEntries.length) {
-        throw invalidQueryError(`Range filter on '${field}' must include at least one operator`);
-      }
-      if (!isRangeQueryableSchema(fieldSchema)) {
-        throw invalidQueryError(`Range filters are not supported on '${field}'`);
-      }
-
-      const declaredOperators = manifestStream?.query?.range_filters?.[field];
-      if (!Array.isArray(declaredOperators) || !declaredOperators.length) {
-        throw invalidQueryError(`Range filters are not declared for '${field}'`);
-      }
-      const declaredOperatorSet = new Set(declaredOperators);
-      const operators = {};
-
-      for (const [operator, operand] of operatorEntries) {
-        if (!SUPPORTED_RANGE_OPERATORS.has(operator)) {
-          throw invalidQueryError(`Unsupported range operator '${operator}' on '${field}'`);
-        }
-        if (!declaredOperatorSet.has(operator)) {
-          throw invalidQueryError(`Range operator '${operator}' is not declared for '${field}'`);
-        }
-        const comparable = coerceComparableValue(operand, fieldSchema, { strict: true });
-        if (comparable == null) {
-          throw invalidQueryError(`Invalid range value for '${field}'`);
-        }
-        operators[operator] = comparable;
-      }
-
-      compiled.push({ field, kind: 'range', fieldSchema, operators });
+      compiled.push(compileRangeFilter(field, rawValue, fieldSchema, manifestStream));
       continue;
     }
 
@@ -196,4 +202,76 @@ export function passesGrantRecordConstraints(data, recordKey, streamGrant, manif
     return false;
   }
   return passesTimeRange(data, streamGrant?.time_range, manifestStream?.consent_time_field);
+}
+
+export function compileSingleStreamSearchFilter({ manifest, grant, streamName, filter }) {
+  if (!streamName) return null;
+  const manifestStream = (manifest?.streams || []).find((s) => s.name === streamName);
+  if (!manifestStream) return null;
+  const streamGrant = (grant?.streams || []).find((s) => s.name === streamName);
+  if (!streamGrant) return null;
+  return {
+    streamName,
+    filters: compileRequestFilters(filter, streamGrant, manifestStream),
+  };
+}
+
+export function fingerprintDeclaredFields(declaredFields) {
+  const unique = Array.from(new Set(declaredFields));
+  unique.sort();
+  return JSON.stringify(unique);
+}
+
+export function jsonPathForTopLevelField(field) {
+  return `$."${String(field).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+export function generateSnapshotId() {
+  return `snap_${randomBytes(8).toString('hex')}`;
+}
+
+export function hashSearchPlanSummary({ perConnectorPlans, isOwner }) {
+  const summary = perConnectorPlans.map((p) => ({
+    c: p.connectorId,
+    e: p.planEntries
+      .map((pe) => ({
+        i: pe.connectorInstanceId || null,
+        s: pe.streamName,
+        f: pe.searchableFields.slice().sort(),
+      }))
+      .sort((a, b) => {
+        const ia = a.i || '';
+        const ib = b.i || '';
+        if (ia !== ib) return ia < ib ? -1 : 1;
+        return a.s < b.s ? -1 : a.s > b.s ? 1 : 0;
+      }),
+  })).sort((a, b) => (a.c || '') < (b.c || '') ? -1 : (a.c || '') > (b.c || '') ? 1 : 0);
+  return JSON.stringify({ isOwner, summary });
+}
+
+export function hasGrantRecordConstraints(streamGrant) {
+  return !!(
+    streamGrant?.time_range
+    || (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0)
+  );
+}
+
+export function needsCandidateRecordScan(streamGrant, compiledFilters) {
+  return !!(compiledFilters?.length || hasGrantRecordConstraints(streamGrant));
+}
+
+export function allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters }) {
+  const allowed = [];
+  for (const row of rows) {
+    let data;
+    try {
+      data = row.record_json ? JSON.parse(row.record_json) : null;
+    } catch {
+      continue;
+    }
+    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
+    if (!passesRequestFilters(data, compiledFilters)) continue;
+    allowed.push(row.record_key);
+  }
+  return allowed;
 }

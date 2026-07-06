@@ -1,0 +1,36 @@
+# hone work auth-mutation-tests-0001 — post-r1 rung 'red-then-green-introspect-expiry'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/row.expires_at && new Date(row.expires_at) < new Date()/false/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming 'expired client token: introspect returns active false with inactive_reason grant_expired' — the mutation disables the RFC 7662 expiry branch (server/auth.js:5708; grep -cF 'row.expires_at && new Date(row.expires_at) < new Date()' server/auth.js == 1) so the rewound token introspects active:true; the pre-rewind active:true half of the test stays green, isolating the branch; checkout restores it
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ fresh pending consent: lookup succeeds with a future expires_at (26.787091ms)
+✔ expired pending consent: lookup returns null and approve is refused not_found (6.810067ms)
+✔ expired device code: grant-scoped exchange fails expired_token (5.692426ms)
+✖ expired client token: introspect returns active false with inactive_reason grant_expired (8.395307ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 3
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 777.783709
+
+✖ failing tests:
+
+test at test/auth-expiry-enforcement.test.js:161:1
+✖ expired client token: introspect returns active false with inactive_reason grant_expired (8.395307ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  true !== false
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/auth-expiry-enforcement.test.js:173:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

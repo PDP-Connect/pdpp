@@ -94,6 +94,7 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   navigation_retry_exhausted: "We tried this page several times but it did not finish loading",
   redirected_non_detail: "Amazon sent us to a different page than the order detail we expected",
   parse_missing: "The order detail page loaded, but the expected details were not present",
+  session_repair_required: "Reconnect Amazon before collection can continue",
   deferred_budget: "We saved the current batch and deferred the rest to keep this run bounded",
   export_affordance_missing: "We couldn't find the export controls on this page — the site may have changed",
   export_error: "The export couldn't be downloaded",

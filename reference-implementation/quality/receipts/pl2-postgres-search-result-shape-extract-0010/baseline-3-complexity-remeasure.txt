@@ -1,0 +1,6 @@
+# hone work pl2-postgres-search-result-shape-extract-0010 — baseline rung 'complexity-remeasure'
+# command: cd "$REPO_ROOT" && sh -c 'cfg=/tmp/pdpp_postgresSemanticSearch_10_biome.jsonc; printf %s "{\"root\":false,\"files\":{\"ignoreUnknown\":true,\"includes\":[\"server/**/*.js\",\"server/**/*.ts\",\"lib/**/*.js\",\"lib/**/*.ts\",\"runtime/**/*.js\",\"runtime/**/*.ts\"]},\"linter\":{\"enabled\":true,\"rules\":{\"complexity\":{\"noExcessiveCognitiveComplexity\":{\"level\":\"error\",\"options\":{\"maxAllowedComplexity\":5}}}}}}" > "$cfg"; npx biome lint --config-path="$cfg" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/postgres-search.js 2>&1'
+# expect: Prints Biome cognitive-complexity diagnostics for server/postgres-search.js; post-refactor postgresSemanticSearch should be below its measured baseline 19 and the rung must keep maxAllowedComplexity 5 plus --max-diagnostics=300 with stderr captured by 2>&1.
+# exit: 0  duration: 0s  verdict: PASS
+
+Checked 1 file in 2ms. No fixes applied.

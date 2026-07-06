@@ -1,0 +1,12 @@
+# hone work pl1-manual-upload-insert-guards-0010 — baseline rung 'seam-and-message-pin'
+# command: cd "$REPO_ROOT" && node -e 'const fs=require("fs");const s=fs.readFileSync("server/stores/manual-upload-artifact-store.ts","utf8");const w=s.replace(/\s+/g," ");let rc=0;const msgs=["artifactId is required.","ownerSubjectId is required.","connectorId is required.","fileName is required.","stagingPath is required.","Invalid manual upload artifact status"];for(const m of msgs){const ok=s.includes(m);console.log((ok?"PASS ":"FAIL ")+"message preserved: "+m);if(!ok)rc=1;}if(!s.includes("function assertManualUploadArtifactInsert")){console.log("baseline: guard not extracted; vacuous PASS for seam");process.exit(rc);}const seam=[["assertManualUploadArtifactInsert(record) declared",/function assertManualUploadArtifactInsert\( ?record,? ?\)/],["delegated with bare identifier",/assertManualUploadArtifactInsert\( ?record ?\)/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?"PASS ":"FAIL ")+c[0]);if(!ok)rc=1;}process.exit(rc);'
+# expect: exit 0, every line PASS. All six error messages enforced at baseline+post. Post: the guard helper is declared with the single named param `record` and delegated with a bare identifier.
+# exit: 0  duration: 0s  verdict: PASS
+
+PASS message preserved: artifactId is required.
+PASS message preserved: ownerSubjectId is required.
+PASS message preserved: connectorId is required.
+PASS message preserved: fileName is required.
+PASS message preserved: stagingPath is required.
+PASS message preserved: Invalid manual upload artifact status
+baseline: guard not extracted; vacuous PASS for seam

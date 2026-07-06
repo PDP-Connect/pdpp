@@ -1,0 +1,36 @@
+# hone work tst-window-envelope-math-0003 — maker brief digest (attempt 1)
+# sha256(full brief)=805287227e6bc57d0197eb32a02e847b398b22efffe3e0450bf88298bcec3857 bytes=12167
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): test/record-field-window-envelope-oracle.test.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: non-test-source-change, behavior-change, new-dependency, shared-db-usage.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== PRIOR ATTEMPT — the judge's exact demands ==
+This packet was attempted before and deliberately reopened (reset #1, from blocked: fix mutant-kill baseline expect_check (blocked → executable)). The prior outcome below is the exact bar the previous attempt failed to clear — address it directly; do not repeat the failed approach.
+- lesson: baseline rung 'red-then-green-mutant-kill' is red at repo_sha 078bd4d00e1c; the oracle must be green before this packet is workable
+- blocked_on: red baseline: rung 'red-then-green-mutant-kill' failed BEFORE any change (expect_check[stdout_includes]: stdout does not contain 'MUTANT KILLED') — never work on a red baseline
+== WORK PACKET (YAML) ==
+candidate_id: tst-window-envelope-math-0003
+created: "2026-07-02T10:10:00.000Z"
+subsystem: server/record-field-window
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+files: [test/record-field-window-envelope-oracle.test.js, server/record-field-window.js]
+symbols: [buildWindowEnvelope]
+public_surface:
+  - "read_record_field / GET /v1/streams/{stream}/records/{record_id}/field-window window envelope fields: text, total_chars, start_chars, end_chars, limit_chars, complete, has_more, match_start_chars, match_end_chars, next_offset_chars, previous_offset_chars"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "buildWindowEnvelope (server/record-field-window.js:197) computes the paging math that every read_record_field response carries: start/end clamping to total_chars, complete/has_more, and the next/previous paging cursors. The DB-backed conformance test (test/record-field-window-substrate.test.js) exercises this only through the storage path and never asserts the pure math at its boundaries — a prior analysis found ZERO mutation-kill evidence for this module. The genuinely-unpinned boundary is previous_offset_chars mid-clamp: line 216 is `start > 0 ? Math.max(0, start - limit) : null`, so for 0 < start < limit the correct answer is 0 (clamped), NOT start - limit (negative) and NOT null. Also unpinned as pure assertions: complete requires start===0 AND end>=total (a window that starts mid-field is never complete even if it reaches the end); has_more === end < total; next_offset_chars === end when more remains else null; end clamps to total when offset+text.length overshoots; start clamps to total when offset > total. A mutation to any of these ships a wrong paging cursor with no failing test. This is a fast no-DB oracle."
+plan:
+  transform_class: add-pure-fn-envelope-oracle
+  instruction: "Create test/record-field-window-envelope-oracl

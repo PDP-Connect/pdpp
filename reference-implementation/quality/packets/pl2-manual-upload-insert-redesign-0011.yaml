@@ -1,0 +1,90 @@
+candidate_id: pl2-manual-upload-insert-redesign-0011
+created: "2026-07-06T23:10:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: server/stores/manual-upload-artifact-store
+files: [server/stores/manual-upload-artifact-store.ts]
+symbols: [normalizeInsert]
+public_surface: [manual upload artifact insert validation errors and persisted normalized row defaults]
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "Retired parent pl1-manual-upload-insert-guards-0010 failed because extracting six guards created a new flagged helper and moved complexity. Current measurement is file_excess=19 with flagged [numberOrNull cc6/excess1, normalizeInsert cc16/excess11, normalizePatch cc11/excess6, update cc6/excess1]. A genuinely different redesign uses a data table of required insert fields inside the module and a short loop in normalizeInsert; it adds no helper function, should remove normalizeInsert from the flagged set, and leaves the honest expected file_excess at 8 (1+6+1)."
+plan:
+  transform_class: table-driven-inline-validation
+  instruction: "In server/stores/manual-upload-artifact-store.ts only, replace the five required-field guard statements at the top of normalizeInsert with a module-level readonly data table of [fieldName, message] pairs and a short for-of loop that throws Error(message) for the first missing field. Keep the status VALID_STATUSES guard in normalizeInsert immediately after the required-field loop. Do not extract a helper function. Preserve guard order, all six Error messages, the record.status ?? 'uploaded' status-membership check, the now/default calculation, and the returned normalized object exactly."
+expected_quality_gain: medium
+owner_attention_reduction: low
+product_impact: none
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: low
+  property_at_risk: malformed manual-upload artifact rows must still be rejected with the same first-failing message
+authoring_evidence:
+  - kind: parent-receipts
+    detail: Read pl1-manual-upload-insert-guards-0010 outcome and receipts; both attempts failed file-excess because assertManualUploadArtifactInsert became a new flagged function.
+    result: successor avoids adding any helper function
+  - kind: fresh-measure
+    detail: node /home/tnunamak/.tmp/minnows-substrate/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-ops/reference-implementation --file server/stores/manual-upload-artifact-store.ts --cog 5
+    result: "baseline file_excess=19; removing normalizeInsert's excess 11 and adding no helper yields expected file_excess=8"
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0011_manual; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo \"rc=$rc\"; exit $rc'"
+    expect: Manual-upload route coverage remains green against an isolated Postgres database.
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck"
+    expect: TypeScript project typechecks with zero errors.
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/manual-upload-artifact-store.ts' --cog 5"
+    expect: "Whole-file excess drops from 19 to the computed target 8: normalizeInsert leaves the flagged set and no new helper is flagged."
+    expect_check:
+      type: file_excess_lt
+      value: 9
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - error-message-change
+  - status-enum-change
+  - guard-order-change
+  - new-dependency
+  - new-module-file
+  - new-helper-function
+  - git-command
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: preserve_refactor×pure_logic×server/stores/manual-upload-artifact-store
+touchset: [server/stores/manual-upload-artifact-store.ts]
+estimates:
+  tokens: 30000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "20b537f39bb0d405d708ce70e2d9c8978e70f389"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.9): The refactor replaces five sequential guard statements with a data-table-driven loop and replaces sequential const declarations with in-place ??= mutation on a shallow copy, preserving exact guard order, error messages, status check, and default computation (single now value shared by createdAt/updatedAt as before). No helper function was introduced (fn_count stayed at 7), file_excess dropped from 19 to the predicted 8 exactly as promised, and all 18 route tests plus typecheck pass both before and after with only the target file touched."
+  evidence_receipts:
+    - "[baseline] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0011_manual; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo \"rc=$rc\"; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=5eb164d6 bytes=1782 receipt=quality/receipts/pl2-manual-upload-insert-redesign-0011/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (5s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-manual-upload-insert-redesign-0011/baseline-2-typecheck.txt"
+    - "[baseline] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/manual-upload-artifact-store.ts' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=aca2f84f bytes=572 receipt=quality/receipts/pl2-manual-upload-insert-redesign-0011/baseline-3-file-excess-remeasure.txt"
+    - "[post] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0011_manual; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo \"rc=$rc\"; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=19bd3d48 bytes=1781 receipt=quality/receipts/pl2-manual-upload-insert-redesign-0011/post-1-direct-test.txt"
+    - "[post] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-manual-upload-insert-redesign-0011/post-2-typecheck.txt"
+    - "[post] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/manual-upload-artifact-store.ts' --cog 5 -> exit 0 (0s) FAIL: expect_check[file_excess_lt]: file_excess=17, expected < 9 (packet baseline) — whole-file Σ excess-cc did not decrease; exit=0 djb2=be42160a bytes=571 receipt=quality/receipts/pl2-manual-upload-insert-redesign-0011/post-3-file-excess-remeasure.txt"
+    - "[post-r1] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0011_manual; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo \"rc=$rc\"; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=833307ac bytes=1782 receipt=quality/receipts/pl2-manual-upload-insert-redesign-0011/post-r1-1-direct-test.txt"
+    - "[post-r1] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-manual-upload-insert-redesign-0011/post-r1-2-typecheck.txt"
+    - "[post-r1] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/manual-upload-artifact-store.ts' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=0f90db40 bytes=473 receipt=quality/receipts/pl2-manual-upload-insert-redesign-0011/post-r1-3-file-excess-remeasure.txt"
+  tokens_actual: 237002
+  lesson: landed after 1 revision cycle(s) — first attempt did not clear the gate
+routing_class: extraction

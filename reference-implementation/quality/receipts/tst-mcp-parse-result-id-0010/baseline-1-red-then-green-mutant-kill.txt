@@ -1,0 +1,7 @@
+# hone work tst-mcp-parse-result-id-0010 — baseline rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT/../packages/mcp-server" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then src=src/tools.js; bak=$REPO_ROOT/.pdpp_hone_tst0010_tools.bak; cp "$src" "$bak"; sed -i "s/if (connectionSeparator === -1) {/if (connectionSeparator >= -1) {/" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED (separator branch forced always-taken -> self-contained id loses connectionId -> oracle red, source restored)"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: id-grammar oracle not yet created"; exit 0; fi'
+# expect: POST: prints 'MUTANT KILLED' — forcing the no-separator branch always-taken (connectionSeparator >= -1) makes 'conn_a/orders:o1' parse as legacy with connectionId null (stream:record split fails or mis-splits), which the deepEqual assertion catches; rc captured, source restored byte-clean. BASELINE: prints 'BASELINE:' exit 0.
+# timeout: 1800s (engine-default)
+# exit: 0  duration: 0s  verdict: PASS
+
+BASELINE: id-grammar oracle not yet created

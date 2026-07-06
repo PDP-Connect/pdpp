@@ -620,8 +620,8 @@ function buildWarnings(
 function buildDiskHeadroomWarnings(input: DeploymentDiagnosticsInput): readonly DiagnosticsWarning[] {
   const out: DiagnosticsWarning[] = [];
   const largestRelation =
-    Array.isArray(input.physicalFootprint?.top_relations) && input.physicalFootprint!.top_relations!.length > 0
-      ? input.physicalFootprint!.top_relations![0]
+    Array.isArray(input.physicalFootprint?.top_relations) && input.physicalFootprint?.top_relations?.length > 0
+      ? input.physicalFootprint?.top_relations?.[0]
       : null;
 
   const diskEntries = normalizeDiskHeadroomEntries(input.diskHeadroom, input.pgDiskHeadroom);
@@ -754,24 +754,31 @@ function normalizeLexicalBackendPosture(posture: LexicalBackendPosture | null | 
 
 // ─── Top-level report builder ──────────────────────────────────────────────
 
+// Summarize one manifest entry for the deployment report: identity fields plus
+// the count of its streams that carry at least one semantic field. A pure
+// function of its single entry (no enclosing-scope capture) — extracted from the
+// inline .map below so the report builder reads as filter-then-summarize rather
+// than an inline body with its own local loop counter.
+type SummarizedManifest = DeploymentDiagnosticsReport["manifests"][number];
+
+function summarizeManifestEntry(entry: DiagnosticsManifestEntry): SummarizedManifest {
+  const streams = Array.isArray(entry.manifest.streams) ? entry.manifest.streams : [];
+  let semanticStreamCount = 0;
+  for (const stream of streams) {
+    if (collectSemanticFields(stream).length > 0) {
+      semanticStreamCount += 1;
+    }
+  }
+  return {
+    connector_id: entry.manifest.connector_id ?? "",
+    display_name: entry.manifest.display_name ?? null,
+    provenance: entry.provenance,
+    semantic_stream_count: semanticStreamCount,
+  };
+}
+
 function summarizeManifests(manifests: readonly DiagnosticsManifestEntry[]): DeploymentDiagnosticsReport["manifests"] {
-  return manifests
-    .filter((entry) => typeof entry.manifest?.connector_id === "string")
-    .map((entry) => {
-      const streams = Array.isArray(entry.manifest.streams) ? entry.manifest.streams : [];
-      let semanticStreamCount = 0;
-      for (const stream of streams) {
-        if (collectSemanticFields(stream).length > 0) {
-          semanticStreamCount += 1;
-        }
-      }
-      return {
-        connector_id: entry.manifest.connector_id ?? "",
-        display_name: entry.manifest.display_name ?? null,
-        provenance: entry.provenance,
-        semantic_stream_count: semanticStreamCount,
-      };
-    });
+  return manifests.filter((entry) => typeof entry.manifest?.connector_id === "string").map(summarizeManifestEntry);
 }
 
 // ─── Physical footprint normalization ──────────────────────────────────────
@@ -855,12 +862,10 @@ function normalizeDiskHeadroomEntries(
   const dataNorm = normalizeSingleEntry(dataDir);
 
   // Decide whether PG is a distinct filesystem.
-  const pgDistinct = pgDir != null && !sameFilesystem(dataDir, pgDir);
-
-  if (pgDistinct) {
+  if (pgDir != null && !sameFilesystem(dataDir, pgDir)) {
     // Two distinct filesystems — label both for the UI.
     entries.push({ ...dataNorm, mount_label: "data" });
-    entries.push({ ...normalizeSingleEntry(pgDir!), mount_label: "postgres" });
+    entries.push({ ...normalizeSingleEntry(pgDir), mount_label: "postgres" });
   } else {
     // Single filesystem (or no PG probe) — no label; keeps existing copy terse.
     entries.push(dataNorm);
@@ -926,7 +931,8 @@ export async function probeDiskHeadroom(dataPath: string): Promise<DiskHeadroom>
     // kicks in instead.
     const fsid: number | null =
       typeof (stats as { type?: number }).type === "number"
-        ? ((stats as { type: number }).type * 1_000_000_007 + total_bytes) >>> 0
+        ? // biome-ignore lint/suspicious/noBitwiseOperators: `>>> 0` is a deliberate unsigned-32-bit coercion that yields a stable non-negative fsid.
+          ((stats as { type: number }).type * 1_000_000_007 + total_bytes) >>> 0
         : null;
     return { path: dataPath, free_bytes, total_bytes, fsid };
   } catch {
@@ -975,10 +981,10 @@ export interface DeploymentDiagnosticsRuntimeDeps {
   readonly listRegisteredConnectorIds: () => Promise<readonly string[]>;
 }
 
-async function resolveOptionalDep<T>(
-  getter: (() => T | Promise<T> | null) | undefined
-): Promise<T | null> {
-  if (!getter) { return null; }
+async function resolveOptionalDep<T>(getter: (() => T | Promise<T> | null) | undefined): Promise<T | null> {
+  if (!getter) {
+    return null;
+  }
   try {
     return await Promise.resolve(getter());
   } catch {

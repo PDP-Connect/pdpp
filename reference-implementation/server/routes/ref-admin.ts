@@ -121,8 +121,13 @@ export interface MountRefAdminContext {
   readonly searchSpine: (query: string) => Promise<RefSpineSearchResult> | RefSpineSearchResult;
 }
 
+// Trailing slashes on a base URL, stripped before appending a path.
+const TRAILING_SLASHES_PATTERN = /\/+$/;
+// Comma separator (with optional surrounding whitespace) for a redirect_uris string.
+const REDIRECT_URI_SEPARATOR_PATTERN = /\s*,\s*/;
+
 function buildClientMetadataUrl(baseUrl: string, documentId: string): string {
-  return `${baseUrl.replace(/\/+$/, "")}/oauth/client-metadata/${encodeURIComponent(documentId)}`;
+  return `${baseUrl.replace(TRAILING_SLASHES_PATTERN, "")}/oauth/client-metadata/${encodeURIComponent(documentId)}`;
 }
 
 function asBodyObject(body: unknown): Record<string, unknown> {
@@ -147,7 +152,14 @@ function readQueryStringList(query: Readonly<Record<string, unknown>>, ...names:
   const seen = new Set<string>();
   for (const name of names) {
     const raw = query[name];
-    const values = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(",") : [];
+    let values: unknown[];
+    if (Array.isArray(raw)) {
+      values = raw;
+    } else if (typeof raw === "string") {
+      values = raw.split(",");
+    } else {
+      values = [];
+    }
     for (const value of values) {
       if (typeof value !== "string") {
         continue;
@@ -201,7 +213,14 @@ function validateRedirectUri(uri: string): string {
 
 function readRedirectUris(body: Record<string, unknown>): readonly string[] {
   const raw = body.redirect_uris ?? body.redirectUris;
-  const values = Array.isArray(raw) ? raw : typeof raw === "string" && raw.trim() ? raw.split(/\s*,\s*/) : [];
+  let values: unknown[];
+  if (Array.isArray(raw)) {
+    values = raw;
+  } else if (typeof raw === "string" && raw.trim()) {
+    values = raw.split(REDIRECT_URI_SEPARATOR_PATTERN);
+  } else {
+    values = [];
+  }
   const redirectUris = values
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .map((value) => validateRedirectUri(value.trim()));

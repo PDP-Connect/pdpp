@@ -1,0 +1,17 @@
+# hone work hm-dispatch-table-coherence-0011 — baseline rung 'complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg'
+# expect: found=true; cognitive_before < 25 — the agenda's 'thin dispatch' end state (campaign start: 194)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "runtime/index.js::handleMsg",
+  "file": "runtime/index.js",
+  "function": "handleMsg",
+  "found": true,
+  "cognitive_before": 7,
+  "line": 3700,
+  "caller_count": 1,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

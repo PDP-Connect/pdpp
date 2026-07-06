@@ -1,0 +1,22 @@
+# hone work tst-window-selector-normalize-0004 — baseline rung 'direct-test-green'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0004_selector_g; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/record-field-window-selector-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi'
+# expect: POST: the pure selector oracle passes fully, no skips. BASELINE: prints 'BASELINE:' exit 0.
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ normalizeWindowSelector rejects before_chars/after_chars without q (0.695742ms)
+✔ normalizeWindowSelector rejects q combined with offset_chars (0.094501ms)
+✔ normalizeWindowSelector rejects an empty q (0.109632ms)
+✔ normalizeWindowSelector enforces the context-chars ceiling (3.687933ms)
+✔ normalizeWindowSelector returns an offset-mode selector for a valid offset request (0.163522ms)
+✔ normalizeWindowSelector returns a query-mode selector whose limit is the explicit-context sum (0.086991ms)
+✔ assertFieldPath rejects NUL, empty, and non-string, and accepts a plain key (0.141642ms)
+✔ classifyFieldType maps engine type names to coarse classes (0.112822ms)
+✔ assertReadableStringField distinguishes absent (404), non-text (422), and readable string (ok) (0.144432ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 39.013024

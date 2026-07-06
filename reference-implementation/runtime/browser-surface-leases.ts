@@ -29,14 +29,46 @@ export interface NekoBrowserSurfaceRuntimeConfig {
   readonly leaseConfig: BrowserSurfaceLeaseConfig;
 }
 
+/** Durable cross-run profile identity, drawn from the lease. */
+export interface DurableProfileBinding {
+  readonly leaseId: string;
+  readonly profileKey: string;
+}
+
+/** Transport/page runtime coordinates, drawn from the surface. */
+export interface SurfaceTransport {
+  readonly remoteCdpUrl: string;
+  readonly surfaceId: string;
+}
+
+/** Owner viewer/stream channel, drawn from the surface. */
+export interface OwnerInteractionChannel {
+  readonly streamBaseUrl: string;
+}
+
+export function toDurableProfileBinding(lease: BrowserSurfaceLease): DurableProfileBinding {
+  return { leaseId: lease.lease_id, profileKey: lease.profile_key };
+}
+
+export function toSurfaceTransport(surface: BrowserSurface): SurfaceTransport {
+  return { surfaceId: surface.surface_id, remoteCdpUrl: surface.cdp_url };
+}
+
+export function toOwnerInteractionChannel(surface: BrowserSurface): OwnerInteractionChannel {
+  return { streamBaseUrl: surface.stream_base_url };
+}
+
 export function browserSurfaceLeaseEnv(lease: BrowserSurfaceLease, surface: BrowserSurface): Record<string, string> {
+  const profile = toDurableProfileBinding(lease);
+  const transport = toSurfaceTransport(surface);
+  const channel = toOwnerInteractionChannel(surface);
   return {
     PDPP_BROWSER_SURFACE_REQUIRED: "neko",
-    PDPP_BROWSER_SURFACE_LEASE_ID: lease.lease_id,
-    PDPP_BROWSER_SURFACE_PROFILE_KEY: lease.profile_key,
-    PDPP_BROWSER_SURFACE_ID: surface.surface_id,
-    PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: surface.cdp_url,
-    PDPP_BROWSER_SURFACE_STREAM_BASE_URL: surface.stream_base_url,
+    PDPP_BROWSER_SURFACE_LEASE_ID: profile.leaseId,
+    PDPP_BROWSER_SURFACE_PROFILE_KEY: profile.profileKey,
+    PDPP_BROWSER_SURFACE_ID: transport.surfaceId,
+    PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: transport.remoteCdpUrl,
+    PDPP_BROWSER_SURFACE_STREAM_BASE_URL: channel.streamBaseUrl,
   };
 }
 

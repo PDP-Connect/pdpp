@@ -1,0 +1,77 @@
+# hone work pl2-postgres-spine-summary-extract-0001 — baseline rung 'complexity-remeasure'
+# command: cd "$REPO_ROOT" && sh -c 'cfg=/tmp/pdpp_summarizeRows_1_biome.jsonc; printf %s "{\"root\":false,\"files\":{\"ignoreUnknown\":true,\"includes\":[\"server/**/*.js\",\"server/**/*.ts\",\"lib/**/*.js\",\"lib/**/*.ts\",\"runtime/**/*.js\",\"runtime/**/*.ts\"]},\"linter\":{\"enabled\":true,\"rules\":{\"complexity\":{\"noExcessiveCognitiveComplexity\":{\"level\":\"error\",\"options\":{\"maxAllowedComplexity\":5}}}}}}" > "$cfg"; npx biome lint --config-path="$cfg" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 lib/postgres-spine.js 2>&1'
+# expect: Prints Biome cognitive-complexity diagnostics for lib/postgres-spine.js; post-refactor summarizeRows should be below its measured baseline 47 and the rung must keep maxAllowedComplexity 5 plus --max-diagnostics=300 with stderr captured by 2>&1.
+# exit: 0  duration: 0s  verdict: PASS
+
+lib/postgres-spine.js:33:10 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i Excessive complexity of 16 detected (max: 15).
+  
+    31 │ }
+    32 │ 
+  > 33 │ function normalizeSourceObject(value) {
+       │          ^^^^^^^^^^^^^^^^^^^^^
+    34 │   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    35 │   const kind = isSourceKind(value.kind) ? value.kind : null;
+  
+  i Please refactor this function to reduce its complexity score from 16 to the max allowed complexity 15.
+  
+
+lib/postgres-spine.js:79:10 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i Excessive complexity of 22 detected (max: 15).
+  
+    77 │ }
+    78 │ 
+  > 79 │ function normalize(input = {}) {
+       │          ^^^^^^^^^
+    80 │   const at = input.occurred_at || nowIso();
+    81 │   const actorType = input.actor_type || 'system';
+  
+  i Please refactor this function to reduce its complexity score from 22 to the max allowed complexity 15.
+  
+
+lib/postgres-spine.js:279:16 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i Excessive complexity of 47 detected (max: 15).
+  
+    277 │ }
+    278 │ 
+  > 279 │ async function summarizeRows(id, rows, aggregate = {}) {
+        │                ^^^^^^^^^^^^^
+    280 │   const events = rows.map(hydrate).filter(Boolean);
+    281 │   const first = events[0] || {};
+  
+  i Please refactor this function to reduce its complexity score from 47 to the max allowed complexity 15.
+  
+
+lib/postgres-spine.js:439:16 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i Excessive complexity of 23 detected (max: 15).
+  
+    437 │ }
+    438 │ 
+  > 439 │ async function listRecentCorrelationAggregates(column, limit) {
+        │                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    440 │   const seen = new Map();
+    441 │   let beforeAt = null;
+  
+  i Please refactor this function to reduce its complexity score from 23 to the max allowed complexity 15.
+  
+
+lib/postgres-spine.js:659:23 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i Excessive complexity of 24 detected (max: 15).
+  
+    657 │ }
+    658 │ 
+  > 659 │ export async function postgresListSpineCorrelations(kind, filters = {}) {
+        │                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    660 │   const column = COLUMN_BY_KIND[kind];
+    661 │   if (!column) return { summaries: [], hasMore: false, nextCursor: null };
+  
+  i Please refactor this function to reduce its complexity score from 24 to the max allowed complexity 15.
+  
+
+Checked 1 file in 3ms. No fixes applied.
+Found 5 infos.

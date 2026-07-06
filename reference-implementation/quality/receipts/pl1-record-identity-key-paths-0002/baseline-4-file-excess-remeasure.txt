@@ -1,0 +1,44 @@
+# hone work pl1-record-identity-key-paths-0002 — baseline rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'server/record-expand-helpers.js' --cog 5
+# expect: file_excess strictly below the pre-edit baseline (65); NEW flagged names limited to the two extracted validators, each at or below cc5
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "server/record-expand-helpers.js",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 8,
+  "flagged_count": 4,
+  "file_excess": 53,
+  "flagged": [
+    {
+      "fn": "assertLegacyIdIdentity",
+      "line": 40,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "assertPrimaryKeyIdentity",
+      "line": 54,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "buildEffectiveFilter",
+      "line": 109,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "normalizeExpandRequest",
+      "line": 141,
+      "cc": 48,
+      "excess": 43
+    }
+  ],
+  "red_scan": [
+    "grant.streams",
+    "streamGrant",
+    "consent"
+  ]
+}

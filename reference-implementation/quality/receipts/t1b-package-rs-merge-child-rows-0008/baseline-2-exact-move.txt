@@ -1,0 +1,5 @@
+# hone work t1b-package-rs-merge-child-rows-0008 — baseline rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/package-rs-client.js
+# expect: warning template and rows-extraction expressions byte-identical inside the new fn; both loop rewires are accumulation-only; mergeSearchEnvelopes untouched
+# exit: 0  duration: 0s  verdict: PASS
+

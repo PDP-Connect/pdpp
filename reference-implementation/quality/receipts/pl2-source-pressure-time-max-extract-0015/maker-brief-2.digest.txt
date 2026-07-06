@@ -1,0 +1,50 @@
+# hone work pl2-source-pressure-time-max-extract-0015 — maker brief digest (attempt 2)
+# sha256(full brief)=c56fcac0b7359baf6e3208a351a3242b99da143c9d7f3616134385b8ee2b9e1b bytes=9084
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): runtime/scheduler-source-pressure-cooldown.ts. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, new-dependency, shared-db-usage, git-command, hard-skip-surface-touch, relocation-without-decomplecting.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: pl2-source-pressure-time-max-extract-0015
+created: "2026-07-06T23:20:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: runtime/scheduler-source-pressure-cooldown
+files: [runtime/scheduler-source-pressure-cooldown.ts]
+symbols: [maxNextAttemptAfterMs, maxLastPressureAtMs]
+public_surface:
+  - "source-pressure cooldown max timestamp projections"
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "Fresh scope-fn measured runtime/scheduler-source-pressure-cooldown.ts file_excess=12, including two duplicate timestamp max scanners each at cc6/excess1. The duplicated scanners change for the same reason and can share a small timestamp-field reducer, reducing whole-file excess without touching cooldown policy."
+plan:
+  transform_class: extract-timestamp-field-max
+  instruction: "In runtime/scheduler-source-pressure-cooldown.ts only, extract the common loop from maxNextAttemptAfterMs and maxLastPressureAtMs into one small helper that takes the gaps and the field name ('nextAttemptAfter' or 'lastPressureAt'), parses ISO strings, ignores non-strings and invalid dates, and returns the max epoch ms. Keep the two existing named functions as thin wrappers so callers and tests do not change."
+expected_quality_gain: medium
+owner_attention_reduction: low
+product_impact: none
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "cooldown timing must still use latest valid nextAttemptAfter and lastPressureAt values"
+authoring_evidence:
+  - kind: complexity-sweep
+    detail: "REPO_ROOT=$PWD npx biome lint --config-path=/tmp/pdpp-biome-complexity.jsonc --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/stores server/streaming lib runtime 2>&1"
+    result: "runtime/scheduler-source-pressure-cooldown.ts hard-skip scan clean"
+  - kind: scope-fn
+    detail: "scope-fn file runtime/scheduler-source-pressure-cooldown.ts --cog 5"
+    result: "file_excess=12; maxNextAttemptAfterMs and maxLastPressureAtMs each cc6/excess1"
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0015; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-sourc

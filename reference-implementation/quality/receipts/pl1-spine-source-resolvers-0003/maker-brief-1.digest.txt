@@ -1,0 +1,32 @@
+# hone work pl1-spine-source-resolvers-0003 — maker brief digest (attempt 1)
+# sha256(full brief)=cc7d0a3391efc0c23810033bec2957ec18d81794f09094dcaf816a137a8f0a40 bytes=9481
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/connector-instance-utils.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, resolution-priority-change, new-dependency, new-module-file, captured-mutable-cells-in-new-helpers.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: pl1-spine-source-resolvers-0003
+created: "2026-07-02T10:02:00.000Z"
+repo_sha: 078bd4d00e1c06243d73fa07eada24678e14624b
+subsystem: server/connector-instance-utils
+files: [server/connector-instance-utils.js]
+symbols:
+  - deriveSpineSource
+public_surface: []
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "deriveSpineSource (cc23, scope-fn red_scan empty) resolves a { kind, id } source binding from two independent inputs in priority order: first from the spine event payload (payload.source → payload.source_binding → bare connector_id/provider_id fields), then falling back to the stored row (row.source_kind/source_id → row.provider_id → runtime actor_id). The payload-resolution block and the row-fallback block share nothing but the return contract; they are braided only by sequential position. Extracting each into a named pure resolver that returns { kind, id } | null lets deriveSpineSource read as a short priority chain (`resolveSpineSourceFromPayload(payload) ?? resolveSpineSourceFromRow(row)`), removing ~14 cc of nested hasOwnProperty / nonEmptyString branching from the entry function. All functions here are already documented as pure (no I/O, only node:crypto), so this is a clean pure-logic decomplect. NOTE: the string 'boot' appears only in this module's SIBLING test name (spine-source-boot-backfill), never in deriveSpineSource's body — no boot/startServer path is touched."
+plan:
+  transform_class: extract-priority-resolvers
+  instruction: "In server/connector-instance-utils.js ONLY. Create TWO module-level (column-0) pure named functions ABOVE deriveSpineSource:\n\n(A) function resolveSpineSourceFromPayload(payload) — contains VERBATIM the payload block (current L79-92): the `if (payload && typeof payload === 'object' && !Array.isArray(payload)) { ... }` body — the two hasOwnProperty('source')/('source_binding') parseSpineSourceShape probes with their early returns, and the connectorId/providerId nonEmptyString disambiguation. If none match, return null (make the function fall off the end returning null). parseSpineSourceShape and nonEmptyString are module-scope siblings — call them directly, do NOT thread.\n\n(B) function resolveSpineSourceFromRow(row) — contains VERBATIM the row-fallback block (current L94-110): source_kind/source_id via isSourceKind, then provider_id → provider_native, then the `row.actor_type === 'runtime' && actorId` → connector case, else return null.\n\nSEAM MECHANISM (explicit): both resolvers are 

@@ -1,0 +1,10 @@
+# hone work pl1-canonical-sort-entry-validate-0008 — baseline rung 'seam-and-error-pin'
+# command: cd "$REPO_ROOT" && node -e 'const fs=require("fs");const s=fs.readFileSync("server/record-query-helpers.ts","utf8");const w=s.replace(/\s+/g," ");let rc=0;const errs=["Empty sort field","is not advertised as sortable","Conflicting sort directions for field"];for(const e of errs){const ok=s.includes(e);console.log((ok?"PASS ":"FAIL ")+"error message preserved: "+e);if(!ok)rc=1;}const invalidSortCount=s.split("invalid_sort").length-1;console.log((invalidSortCount>=3?"PASS ":"FAIL ")+"invalid_sort code appears >=3 times (was 3)");if(invalidSortCount<3)rc=1;if(!s.includes("function validateSortEntry")){console.log("baseline: helper not extracted; vacuous PASS for seam checks");process.exit(rc);}const seam=[["validateSortEntry(entry, sortableFields, resolved) declared",/function validateSortEntry\( ?entry, ?sortableFields, ?resolved,? ?\)/],["loop delegates with bare identifiers and reassigns resolved",/resolved = validateSortEntry\( ?entry, ?sortableFields, ?resolved ?\)/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?"PASS ":"FAIL ")+c[0]);if(!ok)rc=1;}process.exit(rc);'
+# expect: exit 0, every line PASS. The three error messages + the invalid_sort code (>=3 occurrences) are enforced at BOTH baseline and post. Post: validateSortEntry declared with three explicit named params and the loop reassigns resolved via a bare-identifier delegation.
+# exit: 0  duration: 0s  verdict: PASS
+
+PASS error message preserved: Empty sort field
+PASS error message preserved: is not advertised as sortable
+PASS error message preserved: Conflicting sort directions for field
+PASS invalid_sort code appears >=3 times (was 3)
+baseline: helper not extracted; vacuous PASS for seam checks

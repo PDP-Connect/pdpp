@@ -1,0 +1,188 @@
+# hone work server-index-t0-9b38c77a — baseline rung 'file-complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'server/index.js' --cog 5
+# expect: found=true and file_excess < 218 (packet baseline: whole-file Σ excess-cc) and strictly below the measured baseline; no NEW function above the cog-5 threshold vs baseline; red_scan unchanged
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "server/index.js",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 86,
+  "flagged_count": 27,
+  "file_excess": 218,
+  "flagged": [
+    {
+      "fn": "handleError",
+      "line": 587,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "cleanup",
+      "line": 617,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "rejectQuery",
+      "line": 692,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "emitStateEvent",
+      "line": 722,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "emitMutationEvent",
+      "line": 799,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "resolveOwnerConnectorNamespace",
+      "line": 850,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "resolveOwnerAuthPlaceholderConfig",
+      "line": 953,
+      "cc": 21,
+      "excess": 16
+    },
+    {
+      "fn": "resolveGrantScopedStateGrant",
+      "line": 1044,
+      "cc": 22,
+      "excess": 17
+    },
+    {
+      "fn": "decorateRecordBlobRefs",
+      "line": 1166,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "pickNextCursor",
+      "line": 1258,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "<anon>",
+      "line": 1379,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "computeCollectorPairing",
+      "line": 1428,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "buildAsApp",
+      "line": 1450,
+      "cc": 43,
+      "excess": 38
+    },
+    {
+      "fn": "requireDeviceExporterCredential",
+      "line": 1568,
+      "cc": 15,
+      "excess": 10
+    },
+    {
+      "fn": "<anon>",
+      "line": 1828,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "<anon>",
+      "line": 2026,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "buildAgentDiscoveryMetadata",
+      "line": 2728,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "buildRsApp",
+      "line": 2856,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "<anon>",
+      "line": 2872,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "<anon>",
+      "line": 3424,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "startServer",
+      "line": 3534,
+      "cc": 67,
+      "excess": 62
+    },
+    {
+      "fn": "<anon>",
+      "line": 3814,
+      "cc": 14,
+      "excess": 9
+    },
+    {
+      "fn": "<anon>",
+      "line": 4026,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "isManagedNekoSurfaceApproved",
+      "line": 4143,
+      "cc": 28,
+      "excess": 23
+    },
+    {
+      "fn": "<anon>",
+      "line": 4203,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "<anon>",
+      "line": 4218,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "<anon>",
+      "line": 4228,
+      "cc": 8,
+      "excess": 3
+    }
+  ],
+  "red_scan": [
+    "grant.streams",
+    "streamGrant",
+    "access_mode",
+    "bearer",
+    "introspect",
+    "oauth",
+    "consent",
+    "authorization_details",
+    "pkce"
+  ]
+}

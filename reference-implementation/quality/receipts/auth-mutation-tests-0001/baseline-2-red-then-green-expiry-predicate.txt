@@ -1,0 +1,6 @@
+# hone work auth-mutation-tests-0001 — baseline rung 'red-then-green-expiry-predicate'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/return new Date(row.expires_at).getTime() <= Date.now();/return false;/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming 'expired pending consent: lookup returns null and approve is refused not_found' and 'expired device code: grant-scoped exchange fails expired_token' — the mutation makes isExpired always false (server/auth.js:64-66; sed target verified unique 2026-07-02: grep -cF 'return new Date(row.expires_at).getTime() <= Date.now();' server/auth.js == 1), so rewound rows are treated as live: the expired pending consent is returned by lookup and the expired device code exchanges instead of failing expired_token; guard confirms a clean file before seeding; checkout restores it
+# exit: 0  duration: 0s  verdict: PASS
+
+oracle-not-yet-authored

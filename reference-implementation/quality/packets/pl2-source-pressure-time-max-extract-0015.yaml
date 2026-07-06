@@ -1,0 +1,86 @@
+candidate_id: pl2-source-pressure-time-max-extract-0015
+created: "2026-07-06T23:20:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: runtime/scheduler-source-pressure-cooldown
+files: [runtime/scheduler-source-pressure-cooldown.ts]
+symbols: [maxNextAttemptAfterMs, maxLastPressureAtMs]
+public_surface: [source-pressure cooldown max timestamp projections]
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "Fresh scope-fn measured runtime/scheduler-source-pressure-cooldown.ts file_excess=12, including two duplicate timestamp max scanners each at cc6/excess1. The duplicated scanners change for the same reason and can share a small timestamp-field reducer, reducing whole-file excess without touching cooldown policy."
+plan:
+  transform_class: extract-timestamp-field-max
+  instruction: "In runtime/scheduler-source-pressure-cooldown.ts only, extract the common loop from maxNextAttemptAfterMs and maxLastPressureAtMs into one small helper that takes the gaps and the field name ('nextAttemptAfter' or 'lastPressureAt'), parses ISO strings, ignores non-strings and invalid dates, and returns the max epoch ms. Keep the two existing named functions as thin wrappers so callers and tests do not change."
+expected_quality_gain: medium
+owner_attention_reduction: low
+product_impact: none
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: cooldown timing must still use latest valid nextAttemptAfter and lastPressureAt values
+authoring_evidence:
+  - kind: complexity-sweep
+    detail: "REPO_ROOT=$PWD npx biome lint --config-path=/tmp/pdpp-biome-complexity.jsonc --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/stores server/streaming lib runtime 2>&1"
+    result: runtime/scheduler-source-pressure-cooldown.ts hard-skip scan clean
+  - kind: scope-fn
+    detail: scope-fn file runtime/scheduler-source-pressure-cooldown.ts --cog 5
+    result: file_excess=12; maxNextAttemptAfterMs and maxLastPressureAtMs each cc6/excess1
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0015; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-source-pressure-cooldown.test.js test/scheduler-source-pressure-cooldown-suppression.test.js test/controller-source-pressure-cooldown-projection.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo \"rc=$rc\"; exit $rc'"
+    expect: Source-pressure cooldown tests remain green.
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck"
+    expect: TypeScript project typechecks with zero errors.
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'runtime/scheduler-source-pressure-cooldown.ts' --cog 5"
+    expect: file_excess drops below 12; the shared helper stays below the cog threshold and both wrapper functions leave the flagged set.
+    expect_check:
+      type: file_excess_lt
+      value: 12
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - new-dependency
+  - shared-db-usage
+  - git-command
+  - hard-skip-surface-touch
+  - relocation-without-decomplecting
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: null
+batch_key: preserve_refactor×pure_logic×runtime/scheduler-source-pressure-cooldown
+touchset: [runtime/scheduler-source-pressure-cooldown.ts]
+estimates:
+  tokens: 30000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: skipped
+outcome:
+  commit: null
+  skip_reason: validated-non-defect(target extraction is already present with the requested wrapper-preserving shape)
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0015; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-source-pressure-cooldown.test.js test/scheduler-source-pressure-cooldown-suppression.test.js test/controller-source-pressure-cooldown-projection.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo \"rc=$rc\"; exit $rc' -> exit 0 (2s) PASS; exit=0 djb2=7c41366e bytes=3871 receipt=quality/receipts/pl2-source-pressure-time-max-extract-0015/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (7s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-source-pressure-time-max-extract-0015/baseline-2-typecheck.txt"
+    - "[baseline] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'runtime/scheduler-source-pressure-cooldown.ts' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=b7271385 bytes=417 receipt=quality/receipts/pl2-source-pressure-time-max-extract-0015/baseline-3-file-excess-remeasure.txt"
+  tokens_actual: 46160
+  lesson: "maker (codex) validated the packet premise as a non-defect — a correct, permanent close, not a retry candidate"
+routing_class: extraction
+resets:
+  - at: "2026-07-06T16:30:10.655Z"
+    from_status: landed
+    reason: "crash #2 residue: job died at start, no live process; touchset checked for residue"

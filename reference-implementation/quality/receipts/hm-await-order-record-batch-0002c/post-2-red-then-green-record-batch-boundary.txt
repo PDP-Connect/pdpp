@@ -1,0 +1,38 @@
+# hone work hm-await-order-record-batch-0002c — post rung 'red-then-green-record-batch-boundary'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-record-batch.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/length >= BATCH_SIZE/length > BATCH_SIZE/' runtime/index.js || exit 1; rc=0; node --test test/runtime-msg-order-record-batch.test.js || rc=1; git checkout -- runtime/index.js; [ "$rc" -eq 1 ]; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent, exit 0). Post: the rung seeds the boundary-tightening mutation (runtime/index.js:2970; sed target verified unique 2026-07-02), runs the oracle capturing rc BEFORE restoring the file, restores, and exits 0 ONLY IF the seeded run FAILED — failing output visible in the receipt, and the engine requires the failure line to name 'RECORD arm: PDPP_RUNTIME_BATCH_SIZE=2 splits 3 records into exactly 2+1 ingest POSTs'
+# exit: 0  duration: 0s  verdict: PASS
+
+✖ RECORD arm: PDPP_RUNTIME_BATCH_SIZE=2 splits 3 records into exactly 2+1 ingest POSTs (63.359206ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 205.33946
+
+✖ failing tests:
+
+test at test/runtime-msg-order-record-batch.test.js:135:1
+✖ RECORD arm: PDPP_RUNTIME_BATCH_SIZE=2 splits 3 records into exactly 2+1 ingest POSTs (63.359206ms)
+  AssertionError [ERR_ASSERTION]: stream A must flush exactly two ingest POSTs split as 2 records, then 1 record
+  + actual - expected
+  
+    [
+  +   3
+  -   2,
+  -   1
+    ]
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/runtime-msg-order-record-batch.test.js:183:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [ 3 ],
+    expected: [ 2, 1 ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

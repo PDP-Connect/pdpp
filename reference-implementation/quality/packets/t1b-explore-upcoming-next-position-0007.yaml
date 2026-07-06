@@ -1,0 +1,84 @@
+candidate_id: t1b-explore-upcoming-next-position-0007
+created: "2026-07-02T02:10:00.000Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server/explore-timeline
+files: [server/explore-timeline-substrate.ts, test/rs-explore-upcoming-reachability.test.js]
+symbols:
+  - finalizeUpcoming
+  - file: server/explore-timeline-substrate.ts
+    parent_fn: finalizeUpcoming
+    anchor: input.partitions.forEach next-position callback
+    line: 537
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "finalizeUpcoming's per-partition cursor policy — the rule deciding whether a partition appears in the next-page cursor and at WHICH resume position — is an anonymous forEach callback (cc 8) CAPTURING five closure bindings: lastEmittedByPartition, partitionOverflow, cutByPartition, afterByKey, and the nextPositions accumulator. The policy has three genuinely distinct outcomes (exhausted => omitted; contributed a row => resume at its last emitted row; contributed nothing but overflowed => carry the INCOMING position unchanged so the next page re-probes) and the third one is the subtle correctness rule the reachability regression suite exists for. Hidden in a capture-heavy loop it cannot be reasoned about locally; extracted with the four read-only lookups passed explicitly and the position RETURNED (not pushed), it becomes a pure function partition -> position|null."
+plan:
+  transform_class: explicit-context-extraction
+  instruction: "In server/explore-timeline-substrate.ts hoist the forEach body to a named module fn nextUpcomingPositionForPartition(partition, partitionIndex, lookups): UpcomingPartitionPosition | null where lookups is an explicit context object { lastEmittedByPartition: Map<number, PartitionRow>, partitionOverflow: readonly boolean[], cutByPartition: ReadonlySet<number>, afterByKey: Map<string, UpcomingPartitionPosition> } (all four were closure captures). The fn RETURNS null where the callback did the exhausted early-return, and returns the position object where the callback pushed. Callsite becomes: input.partitions.forEach((partition, partitionIndex) => { const pos = nextUpcomingPositionForPartition(partition, partitionIndex, lookups); if (pos) nextPositions.push(pos); }). Branch logic byte-identical: hasMore disjunction order (partitionOverflow[partitionIndex] ?? false, then cutByPartition), lastEmitted field mapping, incoming-position fallback via upcomingPartitionKey with ?? null defaults. Keep the carry-unchanged comment with the branch it explains."
+expected_quality_gain: medium
+owner_attention_reduction: low
+product_impact: low
+priority:
+  score: 12
+  computed: "2026-07-02T02:10:00.000Z"
+  inputs:
+    mass: 3
+    churn: 4
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "pagination reachability: a partition with rows beyond the cut must never vanish from the next cursor, and a non-contributing overflowed partition must carry its INCOMING position unchanged (dropping it silently orphans rows)"
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/callback-smells.json — server/explore-timeline-substrate.ts:537 cc 8 captures [lastEmittedByPartition,partitionOverflow,cutByPartition,nextPositions,afterByKey], module_refs [upcomingPartitionKey]"
+    result: "T1b class; captures immutable except the nextPositions accumulator, which the extraction converts to a returned value"
+  - kind: coverage-sweep
+    detail: test/rs-explore-upcoming-reachability.test.js + test/rs-explore-timeline-conformance.test.js
+    result: the reachability suite pins exactly the cursor-carry semantics (every remaining row reachable across pages); conformance pins page shape
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in rs-explore-upcoming-reachability rs-explore-timeline-conformance; do db=pdpp_hone_t1b_eunp7_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'"
+    expect: "all pass with unchanged counts, before AND after the edit; repaired 2026-07-02 per iteration-4 shared-DB lint: per-file ephemeral DBs + --test-force-exit replicate the scripts/run-tests.js isolation contract"
+  - rung: exact-move
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/explore-timeline-substrate.ts"
+    expect: "branch bodies byte-identical modulo indentation, the push->return conversion, and the explicit lookups param; disjunction order unchanged"
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+not_allowed:
+  - behavior-change
+  - relocation-without-decomplecting
+  - new-dependency
+  - changing-cursor-emission-order-or-omission-rules
+  - touching-the-sort/slice-pagination-above-the-loop
+maker_tier: standard
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: preserve_refactor×pure_logic×server/explore-timeline
+touchset: [server/explore-timeline-substrate.ts]
+estimates:
+  tokens: 35000
+  evidence_cost: medium
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "4d2f00f3d68fd2abaed74c4036f6a57e56888e7b"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.94): The diff implements the packet as specified: the captured cursor-policy callback is extracted into a named function with explicit lookup context and returns null or a position instead of mutating the accumulator. The removed and added branch logic match, including hasMore disjunction order, omission behavior, emitted-row resume fields, and incoming-position carry-forward fallback. The maker supplied the required baseline and post direct tests, exact-move diff, and typecheck evidence, all passing."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in rs-explore-upcoming-reachability rs-explore-timeline-conformance; do db=pdpp_hone_t1b_eunp7_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (10s) PASS; exit=0 djb2=9414e5d6 bytes=2209 receipt=quality/receipts/t1b-explore-upcoming-next-position-0007/baseline-1-direct-test.txt"
+    - "[baseline] exact-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/explore-timeline-substrate.ts -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-explore-upcoming-next-position-0007/baseline-2-exact-move.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-explore-upcoming-next-position-0007/baseline-3-typecheck.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in rs-explore-upcoming-reachability rs-explore-timeline-conformance; do db=pdpp_hone_t1b_eunp7_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (10s) PASS; exit=0 djb2=b0000b28 bytes=2206 receipt=quality/receipts/t1b-explore-upcoming-next-position-0007/post-1-direct-test.txt"
+    - "[post] exact-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/explore-timeline-substrate.ts -> exit 0 (0s) PASS; exit=0 djb2=757e7be2 bytes=4007 receipt=quality/receipts/t1b-explore-upcoming-next-position-0007/post-2-exact-move.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-explore-upcoming-next-position-0007/post-3-typecheck.txt"
+  tokens_actual: 32252
+  lesson: null

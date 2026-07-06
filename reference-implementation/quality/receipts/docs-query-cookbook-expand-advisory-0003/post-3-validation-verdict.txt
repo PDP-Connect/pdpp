@@ -1,0 +1,18 @@
+# hone work docs-query-cookbook-expand-advisory-0003 — post rung 'validation-verdict'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/docs/generated/query-cookbook.md
+# expect: independent judge (different provider than maker) reads this doc diff against server/schema-capabilities.js and confirms the documented semantics match the code exactly (no invented behavior, no forward-looking promises)
+# exit: 0  duration: 0s  verdict: PASS
+
+diff --git a/reference-implementation/docs/generated/query-cookbook.md b/reference-implementation/docs/generated/query-cookbook.md
+index a2e7c8497..ab8234c02 100644
+--- a/reference-implementation/docs/generated/query-cookbook.md
++++ b/reference-implementation/docs/generated/query-cookbook.md
+@@ -13,6 +13,8 @@ Authorization: Bearer <owner_or_client_token>
+ 
+ Use the per-field `field_capabilities[<field>]` flags (`exact_filter`, `range_filter`, `lexical_search`, `semantic_search`, `aggregation`) to learn which filters and aggregations are valid for each field without trial-and-error 400s. Per-stream `query.range_filters` / `query.aggregations` / `query.expand` lists are still emitted for callers that prefer the manifest view.
+ 
++`expand_capabilities[]` entries carry the same pre-flight signal for relationship expansion: when a declared relation is not `usable`, `reason` names why — `related_stream_not_granted` if the related stream is known but not in the caller's grant, or `related_stream_unknown` if the related stream is not recognized at all. This `reason` is advisory only and is never thrown; it lets a caller skip an expansion that would otherwise fail rather than discover the failure via the thrown `invalid_expand` / `insufficient_scope` errors below.
++
+ For agents with limited context budget, prefer the compact schema view:
+ 
+ ```http

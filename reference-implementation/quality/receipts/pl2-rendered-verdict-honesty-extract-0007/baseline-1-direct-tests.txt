@@ -1,0 +1,84 @@
+# hone work pl2-rendered-verdict-honesty-extract-0007 — baseline rung 'direct-tests'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in test/rendered-verdict.test.js test/runtime-cascade-guard.test.js test/grant-scope-verdict.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0007_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit "$f" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc'
+# expect: All listed tests pass with one ephemeral Postgres database per test file, timeout 600, and --test-force-exit.
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ expired attention alone does not create an owner action, but unresolved credential evidence still does (1.502206ms)
+✔ pure: identical inputs produce identical verdicts (0.60321ms)
+✔ tone: healthy + fresh + complete is green/Healthy (0.138442ms)
+✔ tone: stale-but-healthy stays health-green and carries a freshness annotation (inv1) (0.346936ms)
+✔ connection-level terminal disposition is not erased by a retryable stream row (0.291235ms)
+✔ freshness annotation does not claim schedule refresh when the schedule is disabled (7.750003ms)
+✔ tone: unknown freshness renders Checking rather than Healthy or Degraded (0.189983ms)
+✔ tone: unknown coverage renders Checking and no retry action (0.177113ms)
+✔ tone: worst axis (degrading coverage) wins over a healthy state (0.177273ms)
+✔ coverage: optional stale stream annotates but does not downgrade the pill (0.143882ms)
+✔ coverage: a terminal optional stream is still red (a lost stream is lost) (0.132772ms)
+✔ streams: collected is clamped to considered — no 3/2 (inv2) (0.128873ms)
+✔ channel: same amber health tone can still carry advisory or attention by who can fix it (0.169943ms)
+✔ channel: a fresh fully self-handled connection stays calm with no owner action (0.105332ms)
+✔ channel: attention always carries an owner-satisfiable action (S1) (0.094602ms)
+✔ channel: missing credentials are owner-repairable reauth, not maintainer code_fix (0.146703ms)
+✔ channel: stalled outbox state-read block asks for re-run, not dead-letter retry (0.344616ms)
+✔ channel: dead-letter stalled outbox includes recover preview before apply (0.177473ms)
+✔ channel: transient upload failures do not ask the owner to recover local uploads (0.188053ms)
+✔ channel: stale-pending stalled outbox asks for collector re-run only (0.147513ms)
+✔ channel: unknown stalled outbox diagnostics target source-instance recovery scope (0.133822ms)
+✔ channel: degraded resumable stale coverage is advisory Retry now, not calm wait (0.092242ms)
+✔ forward_statement: terminal never claims resumed collection (inv3) (0.075652ms)
+✔ progress: deferred connector never shows a structurally-zero records_emitted (0.103732ms)
+✔ progress: scheduled privileges records committed (0.103212ms)
+✔ progress: terminal manual source never says refresh to update (0.141642ms)
+✔ composite: all eleven invariants hold across representative snapshots (0.392987ms)
+✔ property: tone is worst-wins (never below base state) and (tone,channel) orthogonal (5.948312ms)
+✔ action: terminal flag agrees with the disposition oracle (5.2) (0.118952ms)
+✔ action: a connection needing both refresh and reauth renders two ordered actions (5.5) (0.077171ms)
+✔ action: self-handled drain is a single calm wait action (5.4) (0.066981ms)
+✔ action: every satisfied_when variant is one of the unified contract kinds (5.3) (0.096262ms)
+✔ trace: explains tone cause, channel cause, suppressed evidence, and contract (0.111182ms)
+✔ golden: ChatGPT — green/calm/fresh, no 2532 on dashboard, 2532 present in detail (0.261674ms)
+✔ golden: Amazon/Reddit stale manual — health remains Healthy, advisory Refresh now (0.216013ms)
+✔ stale manual owner refresh survives optional checking streams (0.144312ms)
+✔ golden: Chase — degraded/advisory with a retryable transactions gap (0.273814ms)
+✔ golden: Amazon order_items stream name does not trip calm/advisory count invariant (0.107081ms)
+✔ golden: broken but recently successful source says last successful refresh, not Fresh yesterday (0.099871ms)
+✔ golden: stream-level terminal gap overrides healthy-state freshness copy (0.102482ms)
+✔ golden: synthetic terminal code_fix — maintainer status, no dead owner button, never attention (0.103962ms)
+✔ golden: succeeded terminal coverage reads as degraded coverage review, not total collection failure (0.091492ms)
+✔ golden: synthetic runtime fault — channel capped at calm, pill stays honest (0.067221ms)
+✔ refresh-contract: a zero-credential active account (ChatGPT-shape) is a valid green verdict (0.046791ms)
+✔ gate: throws (in dev) when a stream violates collected<=considered after a forced bad row (0.100182ms)
+✔ grant-scope: toGrantScopedVerdict strips detail and trace (0.080032ms)
+ℹ tests 46
+ℹ suites 0
+ℹ pass 46
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 111.260373
+✔ cascade: a dead runtime produces zero per-connection attention channels (no N-way cascade) (1.228682ms)
+✔ cascade: per-connection pills stay honest under a runtime fault (only routing is suppressed) (0.151692ms)
+✔ cascade: a healthy fleet under a runtime fault is unchanged (cap never lowers an already-calm channel) (0.134362ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 71.358207
+✔ grant-scope: the owner verdict carries detail + trace (owner-only diagnostics) (1.070988ms)
+✔ grant-scope: the grant-scoped projection returns NO detail and NO trace (0.126742ms)
+✔ grant-scope: no inspection-layer figure leaks through the grant-scoped projection (0.148112ms)
+✔ grant-scope: public attention-layer fields survive the projection (0.126972ms)
+✔ grant-scope: RenderedVerdict.detail is owner-only by type — GrantScopedVerdict structurally cannot carry it (0.143413ms)
+✔ grant-scope: ConnectorSummary.rendered_verdict detail must go through toGrantScopedVerdict before grant scope (0.110762ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 74.690514

@@ -1,0 +1,86 @@
+candidate_id: t1b-retained-size-top-row-values-0010
+created: "2026-07-02T02:10:00.000Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server/retained-size-read-model
+files: [server/retained-size-read-model.js, test/retained-size-read-model.test.js]
+symbols:
+  - insertTopRowsSqlite
+  - totalBytesFromMeasures
+  - file: server/retained-size-read-model.js
+    parent_fn: insertTopRowsSqlite
+    anchor: rows.forEach per-row insert callback
+    line: 1413
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "insertTopRowsSqlite writes the retained_size_top_rows read model through an anonymous forEach callback (cc 12) CAPTURING five closure bindings (insert statement, scope, measure, computedAt, metadata). The callback braids two concerns: a pure row->positional-values projection (measure coercion via Number(x||0), the total_retained_bytes fallback through totalBytesFromMeasures, rank = index + 1, null-defaults for the grain identity columns) and the insert.run effect. The projection feeds a 19-column POSITIONAL parameter list — the class of code where a silent column/value misalignment corrupts the read model without throwing. Extracting the projection as a named pure fn with the captured constants EXPLICIT gives the column contract a testable single surface and leaves the loop as pure effect dispatch."
+plan:
+  transform_class: explicit-context-extraction
+  instruction: "In server/retained-size-read-model.js hoist the value construction to a named module fn topRowInsertValues(row, rank, scope, measure, computedAt, metadata) placed next to insertTopRowsSqlite, returning the positional values ARRAY in exactly today's insert.run argument order (scope, measure, rank, row.grain_key, the five nullable identity columns, the six coerced measures, the total fallback, computedAt, metadata). The captured scope/measure/computedAt/metadata become explicit params; rank is index + 1 at the callsite. The loop becomes rows.forEach((row, index) => insert.run(...topRowInsertValues(row, index + 1, scope, measure, computedAt, metadata))). The measures intermediate object and Number(x||0) coercions move into the new fn byte-identical; the prepared statement, its SQL, and the dirty=0 literal column stay untouched."
+expected_quality_gain: medium
+owner_attention_reduction: low
+product_impact: low
+priority:
+  score: 21
+  computed: "2026-07-02T02:10:00.000Z"
+  inputs:
+    mass: 7
+    churn: 3
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: high
+  property_at_risk: positional column/value alignment of the 19-column retained_size_top_rows INSERT — a swapped pair writes plausible-but-wrong storage accounting with no runtime error
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/callback-smells.json — server/retained-size-read-model.js:1413 cc 12 captures [insert,scope,measure,computedAt,metadata], module_refs [totalBytesFromMeasures]"
+    result: "T1b class; the effect (insert.run) stays at the callsite, so the extracted seam is pure; no transaction-boundary change (statement order and count preserved 1:1)"
+  - kind: coverage-sweep
+    detail: "test/retained-size-read-model.test.js reads/writes retained_size_top_rows on both the sqlite and postgres paths (:712, :848, :884)"
+    result: direct test evidence pinning the read-model rows this projection produces
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in retained-size-read-model; do db=pdpp_hone_t1b_rstrv10_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'"
+    expect: "all pass with unchanged counts, before AND after the edit; repaired 2026-07-02 per iteration-4 shared-DB lint: per-file ephemeral DBs + --test-force-exit replicate the scripts/run-tests.js isolation contract"
+  - rung: exact-move
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/retained-size-read-model.js"
+    expect: value expressions byte-identical in the new fn and in the SAME positional order as the removed insert.run argument list; SQL string untouched
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+not_allowed:
+  - behavior-change
+  - relocation-without-decomplecting
+  - new-dependency
+  - changing-the-SQL-or-column-order
+  - changing-insert-call-count-or-order
+  - touching-the-postgres-insert-path
+maker_tier: standard
+judge_tier: strong
+maker_provider: claude
+judge_provider: codex
+batch_key: preserve_refactor×pure_logic×server/retained-size-read-model
+touchset: [server/retained-size-read-model.js]
+estimates:
+  tokens: 35000
+  evidence_cost: medium
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "3f16ea2bd6162124c0b1baacc302d84dea4225f5"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.94): The diff preserves observable behavior: each removed insert.run argument appears byte-equivalent in topRowInsertValues in the same order, with rank passed as index + 1 and the SQL unchanged. The extraction makes the captured context explicit and leaves the effect dispatch in insertTopRowsSqlite, so it satisfies the packet's decomplecting requirement. The supplied before/after direct tests and typecheck pass, and the exact-move evidence plus full diff are sufficient for this pure local refactor."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in retained-size-read-model; do db=pdpp_hone_t1b_rstrv10_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=57ae1ae1 bytes=1181 receipt=quality/receipts/t1b-retained-size-top-row-values-0010/baseline-1-direct-test.txt"
+    - "[baseline] exact-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/retained-size-read-model.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-retained-size-top-row-values-0010/baseline-2-exact-move.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-retained-size-top-row-values-0010/baseline-3-typecheck.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in retained-size-read-model; do db=pdpp_hone_t1b_rstrv10_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (3s) PASS; exit=0 djb2=70967ce9 bytes=1179 receipt=quality/receipts/t1b-retained-size-top-row-values-0010/post-1-direct-test.txt"
+    - "[post] exact-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/retained-size-read-model.js -> exit 0 (0s) PASS; exit=0 djb2=cb326e3c bytes=2535 receipt=quality/receipts/t1b-retained-size-top-row-values-0010/post-2-exact-move.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-retained-size-top-row-values-0010/post-3-typecheck.txt"
+  tokens_actual: 41176
+  lesson: null

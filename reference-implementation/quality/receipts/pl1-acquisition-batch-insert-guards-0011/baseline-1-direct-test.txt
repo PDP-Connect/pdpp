@@ -1,0 +1,21 @@
+# hone work pl1-acquisition-batch-insert-guards-0011 — baseline rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1acqbatch; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/static-secret-setup-status-route.test.js || rc=1; dropdb --if-exists $db; echo "rc=$rc"; exit $rc'
+# expect: static-secret-setup-status-route suite green with unchanged pass count; ephemeral DB isolates the batch rows
+# exit: 0  duration: 2s  verdict: PASS
+
+✔ pending static-secret setup is visible before any records are accepted (277.924374ms)
+✔ pending manual/upload setup is visible without credential semantics (136.927796ms)
+✔ a failed first sync is visible with an actionable error and no secret leak (190.545022ms)
+✔ setup status flips to active once first ingest accepts records (171.629168ms)
+✔ manual/upload setup status shows committed acquisition-batch counts after ingest (123.750154ms)
+✔ setup status requires an owner session and 404s an unknown connection (136.094572ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1968.051687
+rc=0
+NOTICE:  database "pdpp_hone_pl1acqbatch" does not exist, skipping

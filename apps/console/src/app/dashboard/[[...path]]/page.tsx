@@ -1,6 +1,8 @@
 import { buttonVariants } from "@pdpp/brand-react";
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 
 export const metadata: Metadata = {
   robots: { index: false, follow: false, nocache: true },
@@ -14,7 +16,13 @@ const REPAIR_LINKS = [
   { href: "/notifications", label: "Set up notifications" },
 ] as const;
 
-export default function StaleDashboardLaunchPage() {
+export default async function StaleDashboardLaunchPage() {
+  const requestHeaders = await headers();
+  const accept = requestHeaders.get("accept") ?? "";
+  if (!accept.includes("text/html")) {
+    notFound();
+  }
+
   return (
     <main className="mx-auto flex min-h-dvh max-w-2xl flex-col justify-center gap-5 px-6 py-16">
       <p className="pdpp-eyebrow text-muted-foreground/70 uppercase tracking-widest">PDPP</p>

@@ -1,0 +1,16 @@
+# hone work tst2-outbox-axis-read-model-0025 — post rung 'direct-test-green'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/outbox-axis-read-model-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0025_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/outbox-axis-read-model-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi'
+# expect: POST: the new oracle passes; BASELINE: guarded green while absent.
+# timeout: 1800s (engine-default)
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ revoked or inactive source rows are not outbox-axis or local-progress evidence (0.691603ms)
+✔ active trusted rows contribute while revoked or inactive rows are ignored (0.637962ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 174.996724

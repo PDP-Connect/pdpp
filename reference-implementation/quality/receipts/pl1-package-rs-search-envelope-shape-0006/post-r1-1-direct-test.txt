@@ -1,0 +1,65 @@
+# hone work pl1-package-rs-search-envelope-shape-0006 — post-r1 rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'rc=0; for f in package-rs-client search-fanout; do echo "== $f =="; timeout 300 node --test --test-force-exit test/$f.test.js || rc=1; done; echo "rc=$rc"; exit $rc'
+# expect: both package-rs suites green with unchanged pass counts (pure-logic suites, no DB)
+# exit: 0  duration: 0s  verdict: PASS
+
+== package-rs-client ==
+✔ schema fan-out merges streams per source and tags package metadata (1.454017ms)
+✔ schema fan-out understands the canonical { data: { connectors: [{ streams }] } } shape (0.223434ms)
+✔ schema scoped to connection_id calls only that child and strips the package selector (0.729193ms)
+✔ schema with unknown connection_id returns not_found without fanout (0.216604ms)
+✔ schema detail=full rejects shared stream names before package full-schema fanout (0.691313ms)
+✔ schema detail=full with a single matching package source routes to that child only (0.407847ms)
+✔ protected-resource metadata is a server-global passthrough, not a source-required read (0.270505ms)
+✔ list_streams fan-out tags rows and exposes meta.package.member_count (0.358256ms)
+✔ list_streams scoped to connection_id calls only that child (0.217004ms)
+✔ list_streams with unknown connection_id returns not_found without fanout (0.195204ms)
+✔ search fan-out merges hits across children (0.674952ms)
+✔ search fan-out applies limit globally and exposes source mix (0.307306ms)
+✔ search fan-out merges canonical list-envelope data arrays across children (0.259245ms)
+✔ search fan-out merges nested data.data envelopes across children (0.218934ms)
+✔ search fan-out intersects requested streams with each child grant (0.327846ms)
+✔ search fan-out skips children with no requested streams in their grant (0.250014ms)
+✔ search with unknown connection_id returns not_found without fanout (0.110582ms)
+✔ query_records without selector returns ambiguous_connection 409 with candidates (0.221324ms)
+✔ query_records with connection_id routes to one child only (0.213514ms)
+✔ query_records ambiguity is fast and does not probe child health (0.128652ms)
+✔ query_records with selected invalid child preserves the child grant_invalid response (0.175793ms)
+✔ query_records with unknown connection_id returns not_found (0.084571ms)
+✔ fetch_blob (getRaw) requires selector and never returns multi-source default (0.096482ms)
+✔ create_event_subscription with multi-source package requires connection_id (0.131523ms)
+✔ create_event_subscription with single-source package infers the child (0.206414ms)
+✔ create_event_subscription routes to selected child and strips connection_id from RS body (0.117222ms)
+✔ list_event_subscriptions fans out across children and merges with source tags (0.270654ms)
+✔ get_event_subscription locates owning child via per-member probe (0.209314ms)
+✔ delete_event_subscription locates owning child and forwards under that bearer (0.182433ms)
+✔ unknown event subscription returns adapter not_found without touching record/RS state (0.111292ms)
+✔ ambiguous_connection error envelope includes grant_id and connector_key (not connector_id) (0.103851ms)
+✔ ambiguous_connection caps large packages and points callers at schema for the full index (0.174713ms)
+✔ not_found error envelope includes grant_id and connector_key for event subscription create (0.494159ms)
+✔ create_event_subscription ambiguous envelope carries connector_key and grant_id (0.092332ms)
+✔ F1: package-token update routes PATCH to the internal base, not the public edge that 405s (0.210354ms)
+✔ F1 falsifiability: PATCH against the public edge yields http_405 (pre-fix behavior) (0.144203ms)
+✔ F1 fallback parity: GET/POST/DELETE still succeed through the public base (only PATCH is edge-blocked) (0.192854ms)
+ℹ tests 37
+ℹ suites 0
+ℹ pass 37
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 103.499268
+== search-fanout ==
+✔ search fanout is unbounded for non-Postgres unless configured (0.443388ms)
+✔ search fanout defaults to a bounded Postgres concurrency (0.073831ms)
+✔ search fanout honors explicit positive concurrency (0.076251ms)
+✔ search fanout preserves result order while bounding active work (17.628049ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 79.133946
+rc=0

@@ -1,0 +1,5339 @@
+# hone work t1b-records-binding-decorator-0009 — post rung 'smell-rescan'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/smell-callbacks.mjs
+# expect: records.js:3694 and :3739 no longer reported as capturing callbacks
+# exit: 0  duration: 4s  verdict: PASS
+
+{
+  "generated_from": {
+    "root": "/home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation",
+    "cog_threshold": 5,
+    "callbacks": 191,
+    "total_excess_mass": 1721,
+    "resolver": "ast-scope.mjs (TS compiler API)"
+  },
+  "by_class": {
+    "T1a": 16,
+    "T2": 104,
+    "T1b": 71
+  },
+  "mass_by_class": {
+    "T1a": 239,
+    "T2": 1121,
+    "T1b": 361
+  },
+  "by_kind": {
+    "other": 120,
+    "api": 18,
+    "iterator": 41,
+    "transaction": 12
+  },
+  "b_flagged": 2,
+  "callbacks": [
+    {
+      "file": "server/search-semantic.js",
+      "parent_fn": "semanticIndexBackfillForManifest",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 120,
+      "excess": 115,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 1309
+    },
+    {
+      "file": "runtime/index.js",
+      "parent_fn": "<anon>",
+      "callback_anchor": ".on('close')",
+      "callback_kind": "api",
+      "cc": 95,
+      "excess": 90,
+      "captured_vars": [
+        "clearTerminateTimer",
+        "stderrTail",
+        "onProgress",
+        "buildStderrTailDiagnostic",
+        "waitForQueueDrain",
+        "terminalEventRecorded",
+        "doneMessage",
+        "validateDoneExitCode",
+        "finalStatus",
+        "classifyRuntimeFailure",
+        "runId",
+        "traceContext",
+        "buildCheckpointSummary",
+        "buildKnownGapsForTerminal",
+        "closeOpenStructuredAssistance",
+        "emitSpineEvent",
+        "connectorId",
+        "buildRunTerminalData",
+        "cleanupChildHandles",
+        "reject",
+        "validateDoneRecordsEmitted",
+        "totalEmitted",
+        "persistState",
+        "assertDetailCoverageSatisfiedBeforeCommit",
+        "newState",
+        "commitState",
+        "ownerCancelRequested",
+        "ownerCancelForced",
+        "deriveTerminalReason",
+        "childStdinClosedReason",
+        "childStdinClosedAtPhase",
+        "buildConnectorExitFailureMessage",
+        "resolve",
+        "durableDetailGaps",
+        "triggerKind",
+        "automationMode"
+      ],
+      "captured_mutable_vars": [
+        "terminalEventRecorded",
+        "doneMessage",
+        "finalStatus",
+        "totalEmitted",
+        "ownerCancelRequested",
+        "ownerCancelForced",
+        "childStdinClosedReason",
+        "childStdinClosedAtPhase"
+      ],
+      "await_count": 14,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "COMMIT"
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "14 awaits + branching (awaited-order); captures MUTABLE [terminalEventRecorded,doneMessage,finalStatus,totalEmitted,ownerCancelRequested,ownerCancelForced,childStdinClosedReason,childStdinClosedAtPhase] (shared-cell hazard)",
+      "line": 3600
+    },
+    {
+      "file": "server/package-rs-client.js",
+      "parent_fn": "mergeSchemaEnvelopes",
+      "callback_anchor": ".forEach",
+      "callback_kind": "iterator",
+      "cc": 77,
+      "excess": 72,
+      "captured_vars": [
+        "children",
+        "memberSourceTag",
+        "allConnectorItems",
+        "seenStream",
+        "allStreams",
+        "seenConnection",
+        "allConnections"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "streamGrant"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: streamGrant",
+      "line": 560
+    },
+    {
+      "file": "server/db.js",
+      "parent_fn": "migrateLegacyConnectorInstancesToDefaultAccount",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 52,
+      "excess": 47,
+      "captured_vars": [
+        "raw",
+        "stableJson",
+        "legacyRows",
+        "makeDefaultAccountConnectorInstanceId",
+        "existingTables",
+        "uniqueColumnsForTable",
+        "nullSafeSqliteWhere"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "UPDATE ",
+          "DELETE FROM",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "DB transaction callback",
+      "line": 2459
+    },
+    {
+      "file": "server/search.js",
+      "parent_fn": "lexicalIndexBackfillForManifest",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 45,
+      "excess": 40,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 519
+    },
+    {
+      "file": "server/db.js",
+      "parent_fn": "migrateLocalDeviceConnectorInstances",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 39,
+      "excess": 34,
+      "captured_vars": [
+        "raw",
+        "rows",
+        "makeConnectorInstanceSourceBindingKey",
+        "canonicalConnectorKey",
+        "legacyLocalDeviceConnectorId",
+        "makeConnectorInstanceId",
+        "stableJson",
+        "tables",
+        "updateConnectorIdForInstance"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "INSERT INTO",
+          "UPDATE ",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "DB transaction callback",
+      "line": 1828
+    },
+    {
+      "file": "server/auth.js",
+      "parent_fn": "narrowResolvedSelectionForSource",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 35,
+      "excess": 30,
+      "captured_vars": [
+        "baselineByName",
+        "fieldsNarrowing",
+        "bindingError",
+        "sourceLabel",
+        "isNonEmptyString",
+        "sinceNarrowing",
+        "parseIsoInstant"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "consent"
+        ],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent",
+      "line": 2855
+    },
+    {
+      "file": "server/auth.js",
+      "parent_fn": "resolveGrantSelection",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 34,
+      "excess": 29,
+      "captured_vars": [
+        "manifest",
+        "bindingError",
+        "isNonEmptyString"
+      ],
+      "captured_mutable_vars": [
+        "manifest"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "consent"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent; captures MUTABLE [manifest] (shared-cell hazard)",
+      "line": 866
+    },
+    {
+      "file": "server/streaming/routes.js",
+      "parent_fn": "registerStreamingRoutes",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 34,
+      "excess": 29,
+      "captured_vars": [
+        "streamingSessions",
+        "pdppError",
+        "getCompanion",
+        "parseReferenceWireInputPayload",
+        "inputTelemetry"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "errorCode"
+        ]
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [streamingSessions,pdppError,getCompanion,parseReferenceWireInputPayload,inputTelemetry] → turn implicit env into an explicit context param, then name it",
+      "line": 979
+    },
+    {
+      "file": "server/streaming/routes.js",
+      "parent_fn": "registerStreamingRoutes",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 32,
+      "excess": 27,
+      "captured_vars": [
+        "controller",
+        "pdppError",
+        "safeRunId",
+        "companionFactory",
+        "pickViewport",
+        "makeBrowserSessionId",
+        "now",
+        "streamingSessions",
+        "companions",
+        "registerRemoteTelemetrySink",
+        "inputTelemetry",
+        "remoteTelemetrySinks",
+        "emit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [controller,pdppError,safeRunId,companionFactory,pickViewport] → turn implicit env into an explicit context param, then name it",
+      "line": 600
+    },
+    {
+      "file": "server/postgres-records.js",
+      "parent_fn": "postgresIngestRecord",
+      "callback_anchor": "withPostgresTransaction()",
+      "callback_kind": "api",
+      "cc": 30,
+      "excess": 25,
+      "captured_vars": [
+        "connectorInstanceId",
+        "stream",
+        "recordKey",
+        "recordJson",
+        "op",
+        "allocateNextVersion",
+        "connectorId",
+        "effectiveEmittedAt",
+        "storedCursorValue",
+        "storedPrimaryKeyText",
+        "storedSemanticTime",
+        "changeHistoryLimit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 9,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "INSERT INTO",
+          "UPDATE ",
+          "DELETE FROM",
+          "client.query",
+          "transaction("
+        ],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "9 awaits + branching (awaited-order)",
+      "line": 747
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "mountRsSchema",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 26,
+      "excess": 21,
+      "captured_vars": [
+        "ctx",
+        "readSchemaView",
+        "readSchemaDetail",
+        "readSchemaStreamScope",
+        "readSchemaConnectionScope",
+        "buildSchemaGetPlan",
+        "executeSchemaGet",
+        "buildFullDetailConstraintError",
+        "projectSchemaCompactView",
+        "projectSchemaStreamScope",
+        "deriveServedSchemaCounts",
+        "emitDisclosureServed"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 8,
+      "security_db_public_keywords": {
+        "security": [
+          "bearer"
+        ],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: bearer; 8 awaits + branching (awaited-order)",
+      "line": 984
+    },
+    {
+      "file": "server/db.js",
+      "parent_fn": "migrateRecordStorageInstanceColumns",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 24,
+      "excess": 19,
+      "captured_vars": [
+        "raw",
+        "recordsHaveInstance",
+        "changesHaveInstance",
+        "countersHaveInstance",
+        "bindingsHaveInstance",
+        "defaultConnectorInstanceIdForBackfill"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "CREATE TABLE",
+          "DROP TABLE",
+          "CREATE INDEX"
+        ],
+        "db": [
+          "INSERT INTO",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: CREATE TABLE,DROP TABLE,CREATE INDEX; DB transaction callback",
+      "line": 2026
+    },
+    {
+      "file": "server/records.js",
+      "parent_fn": "aggregateRecordsAcrossBindings",
+      "callback_anchor": ".sort",
+      "callback_kind": "iterator",
+      "cc": 24,
+      "excess": 19,
+      "captured_vars": [
+        "isScalarGroup"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [isScalarGroup] → turn implicit env into an explicit context param, then name it",
+      "line": 3631
+    },
+    {
+      "file": "server/streaming/routes.js",
+      "parent_fn": "registerStreamingRoutes",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 24,
+      "excess": 19,
+      "captured_vars": [
+        "streamingSessions",
+        "pdppError",
+        "getCompanion",
+        "buildReferenceWireAttachedPayload",
+        "buildReferenceWireFramePayload",
+        "buildReferenceWireCompanionEventPayload",
+        "emit",
+        "destroyCompanion",
+        "resolveCompanionBackend",
+        "viewportForCompanionBackend",
+        "viewportsMatch",
+        "buildReferenceWireBackendReadyPayload"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "6 awaits + branching (awaited-order)",
+      "line": 810
+    },
+    {
+      "file": "server/auth.js",
+      "parent_fn": "issueToken",
+      "callback_anchor": "withPostgresTransaction()",
+      "callback_kind": "api",
+      "cc": 22,
+      "excess": 17,
+      "captured_vars": [
+        "grantId",
+        "generateToken",
+        "subjectId",
+        "clientId",
+        "expiresAt",
+        "requirePersistedGrantState"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 3,
+      "security_db_public_keywords": {
+        "security": [
+          "access_mode"
+        ],
+        "db": [
+          "INSERT INTO",
+          "UPDATE ",
+          "client.query",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: access_mode; 3 awaits + branching (awaited-order)",
+      "line": 5493
+    },
+    {
+      "file": "server/search-semantic.js",
+      "parent_fn": "buildSemanticSnapshot",
+      "callback_anchor": "mapSearchFanout()",
+      "callback_kind": "other",
+      "cc": 22,
+      "excess": 17,
+      "captured_vars": [
+        "isPostgresStorageBackend",
+        "buildPostgresSemanticPlanRequests",
+        "buildPostgresCandidateRecordKeys",
+        "postgresSemanticSearch",
+        "queryVector",
+        "perConnectorLimit",
+        "index",
+        "compareHits"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 3,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "3 awaits + branching (awaited-order)",
+      "line": 2081
+    },
+    {
+      "file": "server/dataset-summary-read-model.js",
+      "parent_fn": "reconcileDirtyDatasetSummaryRecordTimeBounds",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 21,
+      "excess": 16,
+      "captured_vars": [
+        "getDb",
+        "repairedRows",
+        "computedAt",
+        "reconciled",
+        "deferred",
+        "getDatasetSummaryProjection",
+        "getGlobalRecordTimeBoundsFromStreams",
+        "hasDirtyRecordTimeBounds",
+        "writeDatasetSummaryProjection"
+      ],
+      "captured_mutable_vars": [
+        "reconciled",
+        "deferred"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "UPDATE ",
+          "transaction("
+        ],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "DB transaction callback; captures MUTABLE [reconciled,deferred] (shared-cell hazard)",
+      "line": 562
+    },
+    {
+      "file": "server/scheduler-manager-factory.js",
+      "parent_fn": "restart",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 21,
+      "excess": 16,
+      "captured_vars": [
+        "controller",
+        "getRunTerminalEvent"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 3,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "3 awaits + branching (awaited-order)",
+      "line": 156
+    },
+    {
+      "file": "server/transport.js",
+      "parent_fn": "expressShim",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 21,
+      "excess": 16,
+      "captured_vars": [
+        "req"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [req] → turn implicit env into an explicit context param, then name it",
+      "line": 337
+    },
+    {
+      "file": "server/routes/ref-dataset.ts",
+      "parent_fn": "mountRefDatasetSize",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 20,
+      "excess": 15,
+      "captured_vars": [
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 4,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "4 awaits + branching (awaited-order)",
+      "line": 537
+    },
+    {
+      "file": "server/auth.js",
+      "parent_fn": "issueToken",
+      "callback_anchor": "transaction()",
+      "callback_kind": "transaction",
+      "cc": 19,
+      "excess": 14,
+      "captured_vars": [
+        "getOne",
+        "referenceQueries",
+        "grantId",
+        "exec",
+        "generateToken",
+        "subjectId",
+        "clientId",
+        "expiresAt",
+        "requirePersistedGrantState",
+        "emitSpineEvent",
+        "meta",
+        "describeGrantSource"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "access_mode"
+        ],
+        "db": [
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: access_mode; DB transaction callback",
+      "line": 5571
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "mountRsRecordFieldWindow",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 19,
+      "excess": 14,
+      "captured_vars": [
+        "ctx",
+        "resolveReadScope",
+        "rejectInvalidWindowParams",
+        "emitDisclosureServed",
+        "mergeResolverWarningsIntoBody"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 10,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "10 awaits + branching (awaited-order)",
+      "line": 2010
+    },
+    {
+      "file": "server/routes/as-authorize.ts",
+      "parent_fn": "mountAsAuthorize",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "requireAuthorizeString",
+        "validateAuthorizePkce",
+        "ctx",
+        "requireRegisteredRedirectUri",
+        "parseAuthorizeAuthorizationDetails",
+        "renderHostedMcpSourceSelection",
+        "initiateGrantAndRedirect"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [
+          "oauth",
+          "redirect_uri",
+          "consent",
+          "pkce"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: oauth,redirect_uri,consent; 2 awaits + branching (awaited-order)",
+      "line": 556
+    },
+    {
+      "file": "server/routes/as-authorize.ts",
+      "parent_fn": "mountAsAuthorize",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "requireAuthorizeString",
+        "validateAuthorizePkce",
+        "ctx",
+        "requireRegisteredRedirectUri",
+        "rejectMissingHostedMcpSelection",
+        "resolvePackageAccessMode",
+        "buildSourceAccumulator",
+        "buildPackageAndRedirect"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [
+          "access_mode",
+          "oauth",
+          "redirect_uri",
+          "consent",
+          "pkce"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: access_mode,oauth,redirect_uri; 2 awaits + branching (awaited-order)",
+      "line": 638
+    },
+    {
+      "file": "server/routes/as-consent.ts",
+      "parent_fn": "mountAsConsent",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "ctx",
+        "OWNER_AUTH_DEFAULT_SUBJECT_ID",
+        "executeAsConsentDecision",
+        "parseBatchApproveSelection",
+        "buildConsentDecisionDeps",
+        "dispatchApproveResponse"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [
+          "consent",
+          "ai_training"
+        ],
+        "db": [],
+        "public": [
+          "errorCode"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent,ai_training; 2 awaits + branching (awaited-order)",
+      "line": 570
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "parent_fn": "mountRefDeviceExporterEnroll",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "ctx",
+        "requireNonEmptyString",
+        "resolveEnrollmentSourceKind",
+        "deviceExporterSourceBindingIdentity"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 11,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "11 awaits + branching (awaited-order)",
+      "line": 1120
+    },
+    {
+      "file": "server/routes/ref-static-secret-setup-status.ts",
+      "parent_fn": "mountRefStaticSecretSetupStatus",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "ctx",
+        "setupKindFromBinding",
+        "firstQueryValue",
+        "resolveRunEvidence",
+        "projectConnectionSetupStatus",
+        "setupFieldsFromBinding",
+        "importReceiptFromBatch",
+        "importReceiptFromBinding",
+        "identityFieldName",
+        "setupMaterialFromBinding"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "6 awaits + branching (awaited-order)",
+      "line": 369
+    },
+    {
+      "file": "server/routes/root-and-discovery.ts",
+      "parent_fn": "mountRsRoot",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "ctx",
+        "executeRsDiscoveryIndex"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx,executeRsDiscoveryIndex] → turn implicit env into an explicit context param, then name it",
+      "line": 194
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "mountRsRecordsIngest",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "canonicalizeConnectorId",
+        "ctx",
+        "maybeRecordAcquisitionProvenance",
+        "RecordsIngestInvalidRequestError",
+        "executeRecordsIngest",
+        "RecordsIngestNotFoundError",
+        "maybeActivateDraftAfterIngest",
+        "maybeMarkAcquisitionBatchCommitted"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 7,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "COMMIT"
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "7 awaits + branching (awaited-order)",
+      "line": 949
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "mountRsConnectorStatePut",
+      "callback_anchor": ".put",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "canonicalizeConnectorId",
+        "ctx",
+        "executeRsConnectorStatePut",
+        "ownerStateDraftAdmission",
+        "RsConnectorStatePutValidationError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 4,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "4 awaits + branching (awaited-order)",
+      "line": 1159
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "mountRsRecordsList",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "ctx",
+        "resolveReadScope",
+        "buildReadActor",
+        "buildRecordsListDeps",
+        "executeRecordsList",
+        "RecordsListVisibilityError",
+        "emitDisclosureServed"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 7,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "7 awaits + branching (awaited-order)",
+      "line": 1739
+    },
+    {
+      "file": "server/routes/run-interaction.ts",
+      "parent_fn": "mountRefRunInteraction",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 18,
+      "excess": 13,
+      "captured_vars": [
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx] → turn implicit env into an explicit context param, then name it",
+      "line": 66
+    },
+    {
+      "file": "runtime/controller.ts",
+      "parent_fn": "runNow",
+      "callback_anchor": ".catch",
+      "callback_kind": "api",
+      "cc": 17,
+      "excess": 12,
+      "captured_vars": [
+        "log",
+        "connectorId",
+        "runId",
+        "traceContext",
+        "runGenerations",
+        "key",
+        "myRunGeneration",
+        "runAlreadyTerminal",
+        "emitSpineEvent",
+        "buildRunSource",
+        "LAUNCH_FAILED_RUN_REASON",
+        "boundedLaunchFailureMessage"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 3042
+    },
+    {
+      "file": "server/records.js",
+      "parent_fn": "aggregateRecords",
+      "callback_anchor": ".sort",
+      "callback_kind": "iterator",
+      "cc": 17,
+      "excess": 12,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 2276
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "parent_fn": "mountRefDeviceExporterLocalCollectorGapsRecovered",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 17,
+      "excess": 12,
+      "captured_vars": [
+        "ctx",
+        "resolveAuthorizedDeviceSource",
+        "parseGapBodyBase",
+        "recoverLocalCollectorGap"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 1885
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "parent_fn": "mountRefDeviceExporterIngestBatches",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 17,
+      "excess": 12,
+      "captured_vars": [
+        "ctx",
+        "requireNonEmptyString",
+        "resolveAuthorizedDeviceSource",
+        "sameConnectorType",
+        "processDeviceIngestBatch",
+        "normalizeDeviceIngestRecords"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 1423
+    },
+    {
+      "file": "server/routes/ref-provider-auth.ts",
+      "parent_fn": "mountRefProviderAuthCallback",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 17,
+      "excess": 12,
+      "captured_vars": [
+        "parseCallbackQueryParams",
+        "validateCallbackStateAndCode",
+        "ctx",
+        "buildCallbackRedirectUri",
+        "exchangeCodeAndRunInventory",
+        "activateAllAccounts",
+        "emitCallbackAudit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 5,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "5 awaits + branching (awaited-order)",
+      "line": 779
+    },
+    {
+      "file": "server/routes/ref-static-secret-credentials.ts",
+      "parent_fn": "mountRefStaticSecretCredentialCapture",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 17,
+      "excess": 12,
+      "captured_vars": [
+        "ctx",
+        "parseCaptureBody",
+        "emitCaptureAudit",
+        "errWithCode",
+        "validateCredentialKind",
+        "runCredentialProbe",
+        "storeAndRespond",
+        "credentialCaptureErrorStatus"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [
+          "bearer"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: bearer; 6 awaits + branching (awaited-order)",
+      "line": 614
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "mountRsRecordsDelete",
+      "callback_anchor": ".delete",
+      "callback_kind": "other",
+      "cc": 17,
+      "excess": 12,
+      "captured_vars": [
+        "canonicalizeConnectorId",
+        "ctx",
+        "RecordsDeleteInvalidRequestError",
+        "executeRecordsDelete",
+        "RecordsDeleteNotFoundError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 5,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "5 awaits + branching (awaited-order)",
+      "line": 859
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "mountRsConnectors",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 17,
+      "excess": 12,
+      "captured_vars": [
+        "ctx",
+        "executeConnectorsList",
+        "emitDisclosureServed"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "6 awaits + branching (awaited-order)",
+      "line": 631
+    },
+    {
+      "file": "server/db.js",
+      "parent_fn": "migrateSchedulerInstanceColumns",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "raw",
+        "schedulesHaveInstance",
+        "activeRunsHaveInstance",
+        "historyHaveInstance",
+        "lastRunHaveInstance",
+        "defaultConnectorInstanceIdForBackfill"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "CREATE TABLE",
+          "DROP TABLE"
+        ],
+        "db": [
+          "INSERT INTO",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: CREATE TABLE,DROP TABLE; DB transaction callback",
+      "line": 2331
+    },
+    {
+      "file": "server/db.js",
+      "parent_fn": "migrateSemanticSearchInstanceColumns",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "raw",
+        "rowidHasInstance",
+        "blobHasInstance",
+        "metaHasInstance",
+        "progressHasInstance",
+        "defaultConnectorInstanceIdForBackfill"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "CREATE TABLE",
+          "DROP TABLE",
+          "CREATE INDEX"
+        ],
+        "db": [
+          "INSERT INTO",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: CREATE TABLE,DROP TABLE,CREATE INDEX; DB transaction callback",
+      "line": 3090
+    },
+    {
+      "file": "server/record-filters.js",
+      "parent_fn": "<anon .map>",
+      "callback_anchor": ".sort",
+      "callback_kind": "iterator",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 242
+    },
+    {
+      "file": "server/routes/owner-connection-intent.ts",
+      "parent_fn": "mountOwnerConnectionIntent",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "parseConnectionIntentBody",
+        "emitConnectionIntentAudit",
+        "ctx",
+        "buildConnectionSetupPlan",
+        "mintEnrollmentNextStep"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [
+          "bearer"
+        ],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: bearer; 6 awaits + branching (awaited-order)",
+      "line": 272
+    },
+    {
+      "file": "server/routes/ref-admin.ts",
+      "parent_fn": "mountRefExploreRecords",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "parseQueryPosInt",
+        "parseQueryCursor",
+        "readQueryStringList",
+        "buildExploreTimelineDeps",
+        "executeExploreUpcoming",
+        "executeExploreTimeline",
+        "InvalidCompositeCursorError",
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "next_cursor",
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": true,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 515
+    },
+    {
+      "file": "server/routes/ref-admin.ts",
+      "parent_fn": "mountRefRecordsTimeline",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "ctx",
+        "executeRefRecordsTimeline"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx,executeRefRecordsTimeline] → turn implicit env into an explicit context param, then name it",
+      "line": 295
+    },
+    {
+      "file": "server/routes/ref-admin.ts",
+      "parent_fn": "mountRefCimdClientDocuments",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "parseCreateCimdDocumentInput",
+        "ctx",
+        "projectCimdDocument"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [
+          "redirect_uri"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: redirect_uri; 2 awaits + branching (awaited-order)",
+      "line": 407
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "parent_fn": "mountRefDeviceExporterLocalCollectorGaps",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "ctx",
+        "resolveAuthorizedDeviceSource",
+        "parseGapBodyBase",
+        "validateGapReportFields",
+        "reportLocalCollectorGap"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 1829
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "mountRsRecordsDeleteStream",
+      "callback_anchor": ".delete",
+      "callback_kind": "other",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "canonicalizeConnectorId",
+        "ctx",
+        "RecordsDeleteStreamInvalidRequestError",
+        "executeRecordsDeleteStream",
+        "RecordsDeleteStreamNotFoundError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 5,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "5 awaits + branching (awaited-order)",
+      "line": 768
+    },
+    {
+      "file": "server/routes/run-interaction.ts",
+      "parent_fn": "mountRefDevPlaygroundSession",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx] → turn implicit env into an explicit context param, then name it",
+      "line": 128
+    },
+    {
+      "file": "server/routes/web-push.ts",
+      "parent_fn": "mountRefWebPushCreateSubscription",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 16,
+      "excess": 11,
+      "captured_vars": [
+        "ctx",
+        "bodyOf"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx,bodyOf] → turn implicit env into an explicit context param, then name it",
+      "line": 117
+    },
+    {
+      "file": "server/deployment-diagnostics.ts",
+      "parent_fn": "computeParticipation",
+      "callback_anchor": ".sort",
+      "callback_kind": "iterator",
+      "cc": 15,
+      "excess": 10,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 481
+    },
+    {
+      "file": "server/explore-timeline-substrate.ts",
+      "parent_fn": "sqliteFetchUpcoming",
+      "callback_anchor": ".forEach",
+      "callback_kind": "iterator",
+      "cc": 15,
+      "excess": 10,
+      "captured_vars": [
+        "afterByKey",
+        "upcomingPartitionKey",
+        "input",
+        "semExpr",
+        "computeTotal",
+        "iterateDynamicSqlAcknowledged",
+        "total",
+        "tagged",
+        "partitionOverflow"
+      ],
+      "captured_mutable_vars": [
+        "total"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "captures MUTABLE [total] (shared-cell hazard)",
+      "line": 397
+    },
+    {
+      "file": "server/routes/owner-connection-reactivate.ts",
+      "parent_fn": "buildReactivateHandler",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 15,
+      "excess": 10,
+      "captured_vars": [
+        "ctx",
+        "selector",
+        "resolveRevokedConnectorNamespace",
+        "emitReactivateAudit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "6 awaits + branching (awaited-order)",
+      "line": 276
+    },
+    {
+      "file": "server/routes/ref-static-secret-draft-connection.ts",
+      "parent_fn": "mountRefStaticSecretDraftConnection",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 15,
+      "excess": 10,
+      "captured_vars": [
+        "ctx",
+        "expectedStaticSecretCredentialKind",
+        "staticSecretCredentialCaptureFromManifest",
+        "emitDraftAudit",
+        "errWithCode",
+        "isCredentialEncryptionConfigured",
+        "staticSecretSetupErrorMessage",
+        "parseSetupFields",
+        "randomBytes",
+        "identityValue",
+        "displayNameForConnector"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 8,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "8 awaits + branching (awaited-order)",
+      "line": 312
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "mountRsBlobRead",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 15,
+      "excess": 10,
+      "captured_vars": [
+        "resolveBlobActorScope",
+        "ctx",
+        "blobStore",
+        "scanBlobBindingMatches",
+        "buildAmbiguousConnectionError",
+        "serveResolvedBlob"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "6 awaits + branching (awaited-order)",
+      "line": 2563
+    },
+    {
+      "file": "runtime/browser-surface/run-coordinator.ts",
+      "parent_fn": "wrapInteractionHandlerWithSurfaceLossDetection",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "handler",
+        "browserSurfaceLeaseManager",
+        "runId",
+        "createMidWaitSurfaceLossDetector",
+        "browserSurfaceReadinessProbe",
+        "browserSurfaceMidWaitPollIntervalMs",
+        "activeRunInteractions",
+        "emitBrowserSurfaceLostEvent",
+        "connectorId",
+        "traceContext"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [handler,browserSurfaceLeaseManager,runId,createMidWaitSurfaceLossDetector,browserSurfaceReadinessProbe] → turn implicit env into an explicit context param, then name it",
+      "line": 1103
+    },
+    {
+      "file": "server/explore-timeline-substrate.ts",
+      "parent_fn": "postgresFetchUpcoming",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 839
+    },
+    {
+      "file": "server/index.js",
+      "parent_fn": "startServer",
+      "callback_anchor": "setClientEventEnqueueHook()",
+      "callback_kind": "api",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "listActiveSubscriptions",
+        "getDefaultClientEventSubscriptionStore",
+        "createRequestConnectorInstanceStore",
+        "deriveClientEventsFromRecordChange",
+        "buildEventPayload",
+        "getDefaultDeliveryWorker",
+        "logger"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 3,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "3 awaits + branching (awaited-order)",
+      "line": 3814
+    },
+    {
+      "file": "server/owner-auth.ts",
+      "parent_fn": "attachRoutes",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "readReturnToFromBodyOrQuery",
+        "enabled",
+        "replyDisabledLogin",
+        "shouldRequireCsrf",
+        "csrfPairValid",
+        "ensureCsrfToken",
+        "renderLoginPage",
+        "providerName",
+        "readHostedThemeChoiceFromCookieHeader",
+        "passwordMatches",
+        "session",
+        "rotateCsrfCookie"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [readReturnToFromBodyOrQuery,enabled,replyDisabledLogin,shouldRequireCsrf,csrfPairValid] → turn implicit env into an explicit context param, then name it",
+      "line": 732
+    },
+    {
+      "file": "server/routes/as-consent.ts",
+      "parent_fn": "mountAsConsent",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "ctx",
+        "OWNER_AUTH_DEFAULT_SUBJECT_ID",
+        "executeAsConsentDecision",
+        "buildConsentDecisionDeps"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [
+          "consent"
+        ],
+        "db": [],
+        "public": [
+          "errorCode"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent",
+      "line": 624
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "parent_fn": "mountRefDeviceExporterEnrollmentCodes",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "requireNonEmptyString",
+        "ctx",
+        "resolveEnrollmentSourceKind"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 1054
+    },
+    {
+      "file": "server/routes/ref-provider-auth.ts",
+      "parent_fn": "mountRefProviderAuthInitiate",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "ctx",
+        "emitInitiateAudit",
+        "errWithCode",
+        "buildConnectionSetupPlan",
+        "PENDING_AUTH_TTL_SECONDS",
+        "buildCallbackRedirectUri"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 7,
+      "security_db_public_keywords": {
+        "security": [
+          "redirect_uri"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: redirect_uri; 7 awaits + branching (awaited-order)",
+      "line": 426
+    },
+    {
+      "file": "server/routes/ref-run-status.ts",
+      "parent_fn": "mountRefRunStatus",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "ctx",
+        "buildTerminalRunStatusBody",
+        "buildActiveRunStatusBody",
+        "buildStartedOnlyRunStatusBody",
+        "buildBrowserSurfaceRunStatusBody"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 4,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "4 awaits + branching (awaited-order)",
+      "line": 284
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "mountRsEventSubscriptions",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "buildBearerActorFromTokenInfo",
+        "rejectMissingClientGrant",
+        "ctx",
+        "executeCreateSubscription",
+        "clientEventSubsDeps",
+        "handleClientEventSubError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [
+          "bearer"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: bearer; 2 awaits + branching (awaited-order)",
+      "line": 589
+    },
+    {
+      "file": "server/streaming/routes.js",
+      "parent_fn": "registerStreamingRoutes",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "streamingSessions",
+        "pdppError",
+        "pickViewport",
+        "getCompanion",
+        "resolveCompanionBackend",
+        "viewportForCompanionBackend"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 3,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "3 awaits + branching (awaited-order)",
+      "line": 1070
+    },
+    {
+      "file": "server/transport.js",
+      "parent_fn": "expressShim",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 14,
+      "excess": 9,
+      "captured_vars": [
+        "req",
+        "matchesMediaType"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [req,matchesMediaType] → turn implicit env into an explicit context param, then name it",
+      "line": 323
+    },
+    {
+      "file": "lib/postgres-spine.js",
+      "parent_fn": "postgresListSpineCorrelations",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [
+        "packageByGrant"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [packageByGrant] → turn implicit env into an explicit context param, then name it",
+      "line": 739
+    },
+    {
+      "file": "runtime/browser-surface/run-coordinator.ts",
+      "parent_fn": "promoteBrowserSurfaceLease",
+      "callback_anchor": "scheduleRun()",
+      "callback_kind": "other",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [
+        "browserSurfaceLeaseManager",
+        "lease",
+        "emitBrowserSurfaceLeaseEvent",
+        "createTraceContext",
+        "persistBrowserSurfaceLeaseMutation",
+        "persistAndPromoteBrowserSurfaceLeases",
+        "reason",
+        "log"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 3,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "3 awaits + branching (awaited-order)",
+      "line": 565
+    },
+    {
+      "file": "server/neko-surface-allocator-server.ts",
+      "parent_fn": "<anon httpRequest()>",
+      "callback_anchor": ".on('end')",
+      "callback_kind": "api",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [
+        "chunks",
+        "okStatuses",
+        "res",
+        "reject",
+        "NekoSurfaceAllocatorServiceError",
+        "method",
+        "path",
+        "resolve"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [chunks,okStatuses,res,reject,NekoSurfaceAllocatorServiceError] → turn implicit env into an explicit context param, then name it",
+      "line": 153
+    },
+    {
+      "file": "server/postgres-storage.js",
+      "parent_fn": "migratePostgresSemanticEmbeddingToVector",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 1642
+    },
+    {
+      "file": "server/routes/ref-admin.ts",
+      "parent_fn": "mountRefExploreRecordBuckets",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [
+        "buildExploreRecordBucketsDeps",
+        "readQueryStringList",
+        "executeExploreRecordBuckets",
+        "InvalidExploreRecordBucketsRequestError",
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [buildExploreRecordBucketsDeps,readQueryStringList,executeExploreRecordBuckets,InvalidExploreRecordBucketsRequestError,ctx] → turn implicit env into an explicit context param, then name it",
+      "line": 466
+    },
+    {
+      "file": "server/routes/ref-browser-enrollment-shell.ts",
+      "parent_fn": "mountRefBrowserEnrollmentShell",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [
+        "ctx",
+        "emitShellAudit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 5,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "5 awaits + branching (awaited-order)",
+      "line": 275
+    },
+    {
+      "file": "server/routes/ref-manual-upload-draft-connection.ts",
+      "parent_fn": "mountPostValidationPreview",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [
+        "ctx",
+        "requireManualUploadSetup",
+        "resolveAcceptedUpload",
+        "optionalConnectionId",
+        "resolveManualUploadTargetConnection",
+        "sendValidationPreviewResponse",
+        "requestedOrSuggestedDisplayName",
+        "displayNameForConnector"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 5,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "5 awaits + branching (awaited-order)",
+      "line": 1084
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "mountRsRecordDetail",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [
+        "ctx",
+        "resolveReadScope",
+        "buildReadActor",
+        "executeRecordDetail",
+        "RecordDetailVisibilityError",
+        "emitDisclosureServed",
+        "withRecordSourceIdentity",
+        "resolveRequestConnectionId"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 7,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "7 awaits + branching (awaited-order)",
+      "line": 1854
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "mountRsStreamDetail",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [
+        "ctx",
+        "resolveReadScope",
+        "buildReadActor",
+        "executeStreamDetail",
+        "StreamDetailVisibilityError",
+        "emitDisclosureServed"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 7,
+      "security_db_public_keywords": {
+        "security": [
+          "grant.streams",
+          "streamGrant"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: grant.streams,streamGrant; 7 awaits + branching (awaited-order)",
+      "line": 1430
+    },
+    {
+      "file": "server/stores/client-event-subscription-store.ts",
+      "parent_fn": "listAttemptsForSubscription",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 626
+    },
+    {
+      "file": "server/stores/client-event-subscription-store.ts",
+      "parent_fn": "listAttemptsForQueue",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 656
+    },
+    {
+      "file": "server/streaming/routes.js",
+      "parent_fn": "<anon .post>",
+      "callback_anchor": "registerRemoteTelemetrySink()",
+      "callback_kind": "api",
+      "cc": 13,
+      "excess": 8,
+      "captured_vars": [
+        "inputTelemetry",
+        "effectiveBrowserSessionId"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [inputTelemetry,effectiveBrowserSessionId] → turn implicit env into an explicit context param, then name it",
+      "line": 691
+    },
+    {
+      "file": "runtime/index.js",
+      "parent_fn": "<anon>",
+      "callback_anchor": ".on('line')",
+      "callback_kind": "api",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "writeTrace",
+        "failPendingInteraction",
+        "msgQueue",
+        "processNext",
+        "reject"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [writeTrace,failPendingInteraction,msgQueue,processNext,reject] → turn implicit env into an explicit context param, then name it",
+      "line": 3572
+    },
+    {
+      "file": "server/db.js",
+      "parent_fn": "migrateConnectorSyncStateInstanceColumns",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "raw",
+        "ownerHasInstanceColumn",
+        "grantHasInstanceColumn",
+        "defaultConnectorInstanceIdForBackfill"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "CREATE TABLE",
+          "DROP TABLE"
+        ],
+        "db": [
+          "INSERT INTO",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: CREATE TABLE,DROP TABLE; DB transaction callback",
+      "line": 1672
+    },
+    {
+      "file": "server/db.js",
+      "parent_fn": "migrateBlobOriginInstanceColumn",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "rows",
+        "bindingInstance",
+        "legacyInstanceIds",
+        "defaultConnectorInstanceIdForBackfill",
+        "raw",
+        "update"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "DB transaction callback",
+      "line": 2188
+    },
+    {
+      "file": "server/db.js",
+      "parent_fn": "migrateLexicalSearchInstanceColumns",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "raw",
+        "indexHasInstance",
+        "metaHasInstance",
+        "defaultConnectorInstanceIdForBackfill"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "CREATE TABLE",
+          "DROP TABLE"
+        ],
+        "db": [
+          "INSERT INTO",
+          "UPDATE ",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: CREATE TABLE,DROP TABLE; DB transaction callback",
+      "line": 2221
+    },
+    {
+      "file": "server/retained-size-read-model.js",
+      "parent_fn": "insertTopRowsSqlite",
+      "callback_anchor": ".forEach",
+      "callback_kind": "iterator",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "insert",
+        "scope",
+        "measure",
+        "totalBytesFromMeasures",
+        "computedAt",
+        "metadata"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [insert,scope,measure,totalBytesFromMeasures,computedAt] → turn implicit env into an explicit context param, then name it",
+      "line": 1413
+    },
+    {
+      "file": "server/routes/owner-connection-revoke.ts",
+      "parent_fn": "buildRevokeHandler",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "ctx",
+        "selector",
+        "rethrowAsAmbiguousConnection",
+        "emitRevokeAudit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 7,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "7 awaits + branching (awaited-order)",
+      "line": 264
+    },
+    {
+      "file": "server/routes/owner-connection-schedule.ts",
+      "parent_fn": "buildScheduleHandler",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "ctx",
+        "selector",
+        "rethrowAsAmbiguousConnection",
+        "operation",
+        "emitScheduleAudit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 13,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "13 awaits + branching (awaited-order)",
+      "line": 258
+    },
+    {
+      "file": "server/routes/owner-connections.ts",
+      "parent_fn": "mountOwnerConnectionRename",
+      "callback_anchor": ".patch",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "emitOwnerConnectionRenameAudit",
+        "ctx",
+        "projectOwnerConnection"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "6 awaits + branching (awaited-order)",
+      "line": 367
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "parent_fn": "mountRefDeviceExporterHeartbeat",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "ctx",
+        "normalizeHeartbeatSourceInstances",
+        "markHeartbeatSourceInstance"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 1383
+    },
+    {
+      "file": "server/routes/ref-grants.ts",
+      "parent_fn": "mountRefGrantPackagesRevoke",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 3,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "3 awaits + branching (awaited-order)",
+      "line": 317
+    },
+    {
+      "file": "server/routes/ref-spine-timelines.ts",
+      "parent_fn": "mountTimeline",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "idParamKey",
+        "parseTimelinePageOptions",
+        "ctx",
+        "kind",
+        "notFoundMessage",
+        "executeRefSpineEventsPage",
+        "InvalidCursorError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 113
+    },
+    {
+      "file": "server/routes/root-and-discovery.ts",
+      "parent_fn": "mountRsProtectedResourceMetadata",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "ctx",
+        "executeRsProtectedResourceMetadata",
+        "buildMcpAuthorizationDiscovery"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [
+          "oauth"
+        ],
+        "db": [],
+        "public": [
+          "well-known"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: oauth",
+      "line": 294
+    },
+    {
+      "file": "server/routes/root-and-discovery.ts",
+      "parent_fn": "mountRsMcpProtectedResourceMetadata",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "ctx",
+        "buildMcpAuthorizationDiscovery"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "oauth"
+        ],
+        "db": [],
+        "public": [
+          "mcp_",
+          "well-known"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": true,
+      "why": "security/DDL/grant: oauth",
+      "line": 385
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "buildGrantScope",
+      "callback_anchor": ".flatMap",
+      "callback_kind": "iterator",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "grant.streams"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: grant.streams",
+      "line": 513
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "mountRsBlobsUpload",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "ctx",
+        "executeBlobsUpload",
+        "BlobsUploadInvalidRequestError",
+        "BlobsUploadStreamNotFoundError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx,executeBlobsUpload,BlobsUploadInvalidRequestError,BlobsUploadStreamNotFoundError] → turn implicit env into an explicit context param, then name it",
+      "line": 415
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "mountRsStreamAggregate",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 12,
+      "excess": 7,
+      "captured_vars": [
+        "ctx",
+        "buildAggregateQueryEventData",
+        "resolveReadScope",
+        "buildReadActor",
+        "buildStreamAggregateDeps",
+        "runWithVisibilityRejection",
+        "executeStreamsAggregate",
+        "StreamsAggregateVisibilityError",
+        "emitDisclosureServed"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [
+          "bearer"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: bearer; 6 awaits + branching (awaited-order)",
+      "line": 1595
+    },
+    {
+      "file": "runtime/controller.ts",
+      "parent_fn": "createController",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "opts"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [opts] → turn implicit env into an explicit context param, then name it",
+      "line": 2032
+    },
+    {
+      "file": "runtime/controller.ts",
+      "parent_fn": "armRunWatchdog",
+      "callback_anchor": "setTimeout()",
+      "callback_kind": "api",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "activeRunWatchdogTimers",
+        "runId",
+        "activeRuns",
+        "key",
+        "log",
+        "connectorId",
+        "maxRunWallClockMs",
+        "activeRunCancellations",
+        "runAlreadyTerminal",
+        "emitSpineEvent",
+        "traceContext",
+        "buildRunSource",
+        "finalizeRunCleanup",
+        "browserSurfaceLease",
+        "connectorInstanceId"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [activeRunWatchdogTimers,runId,activeRuns,key,log] → turn implicit env into an explicit context param, then name it",
+      "line": 2813
+    },
+    {
+      "file": "server/dcr-configuration.js",
+      "parent_fn": "publicClientMetadataForAuthorizationServer",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 116
+    },
+    {
+      "file": "server/explore-timeline-substrate.ts",
+      "parent_fn": "<anon .map>",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "r"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [r] → turn implicit env into an explicit context param, then name it",
+      "line": 738
+    },
+    {
+      "file": "server/owner-auth.ts",
+      "parent_fn": "attachRoutes",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "readReturnToFromQuery",
+        "enabled",
+        "renderOwnerAuthDisabledPage",
+        "providerName",
+        "readHostedThemeChoiceFromCookieHeader",
+        "session",
+        "ensureCsrfToken",
+        "renderSignedInOwnerPage",
+        "resolvedSubjectId",
+        "renderLoginPage"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [readReturnToFromQuery,enabled,renderOwnerAuthDisabledPage,providerName,readHostedThemeChoiceFromCookieHeader] → turn implicit env into an explicit context param, then name it",
+      "line": 687
+    },
+    {
+      "file": "server/routes/as-consent-ui-helpers.ts",
+      "parent_fn": "buildStreamsBlock",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "ui"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ui] → turn implicit env into an explicit context param, then name it",
+      "line": 794
+    },
+    {
+      "file": "server/routes/owner-connection-delete.ts",
+      "parent_fn": "buildDeleteHandler",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "ctx",
+        "selector",
+        "rethrowAsAmbiguousConnection",
+        "emitDeleteAudit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 6,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "6 awaits + branching (awaited-order)",
+      "line": 263
+    },
+    {
+      "file": "server/routes/ref-connectors.ts",
+      "parent_fn": "mountRefConnectionReactivate",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "ctx",
+        "resolveRefConnectionNamespace",
+        "emitConnectionControlAudit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 5,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "5 awaits + branching (awaited-order)",
+      "line": 1185
+    },
+    {
+      "file": "server/routes/ref-dataset.ts",
+      "parent_fn": "mountRefRecordsVersionStats",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx] → turn implicit env into an explicit context param, then name it",
+      "line": 619
+    },
+    {
+      "file": "server/routes/ref-grants.ts",
+      "parent_fn": "mountRefEventSubscriptionsDisable",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "executeRefClientEventSubscriptionsDisable",
+        "subscriptionIdFromParams",
+        "ctx",
+        "executeRefClientEventSubscriptionsGet",
+        "RefClientEventSubscriptionsDisableNotFoundError",
+        "RefClientEventSubscriptionsDisableInvalidRequestError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 414
+    },
+    {
+      "file": "server/streaming/cdp-adapter.js",
+      "parent_fn": "ensureOpen",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 11,
+      "excess": 6,
+      "captured_vars": [
+        "WebSocketCtor",
+        "wsUrl",
+        "ws",
+        "openTimeoutMs",
+        "log",
+        "rejectAllPending",
+        "openPromise",
+        "handleMessage"
+      ],
+      "captured_mutable_vars": [
+        "ws",
+        "openPromise"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "captures MUTABLE [ws,openPromise] (shared-cell hazard)",
+      "line": 496
+    },
+    {
+      "file": "server/connector-schema-builder.js",
+      "parent_fn": "buildConnectorSchemaItem",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "summaryByName",
+        "grantStreamByName",
+        "activeBindings",
+        "buildStreamMetadataEntry",
+        "grantStreams",
+        "buildConnectorAwareFreshness",
+        "freshnessEvidence",
+        "manifestStreamNames"
+      ],
+      "captured_mutable_vars": [
+        "activeBindings"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "streamGrant"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: streamGrant; captures MUTABLE [activeBindings] (shared-cell hazard)",
+      "line": 127
+    },
+    {
+      "file": "server/package-rs-client.js",
+      "parent_fn": "mergeEventSubListEnvelopes",
+      "callback_anchor": ".forEach",
+      "callback_kind": "iterator",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "children",
+        "warnings",
+        "memberSourceTag",
+        "merged"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [children,warnings,memberSourceTag,merged] → turn implicit env into an explicit context param, then name it",
+      "line": 831
+    },
+    {
+      "file": "server/package-rs-client.js",
+      "parent_fn": "mergeListEnvelopes",
+      "callback_anchor": ".forEach",
+      "callback_kind": "iterator",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "children",
+        "meta",
+        "warnings",
+        "memberSourceTag",
+        "merged"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [children,meta,warnings,memberSourceTag,merged] → turn implicit env into an explicit context param, then name it",
+      "line": 644
+    },
+    {
+      "file": "server/records.js",
+      "parent_fn": "ingestRecord",
+      "callback_anchor": "writeTransaction()",
+      "callback_kind": "other",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "getOne",
+        "referenceQueries",
+        "connectorInstanceId",
+        "stream",
+        "recordKey",
+        "op",
+        "decideIngestSelfHeal",
+        "recordJson",
+        "execReturningOne",
+        "connectorId",
+        "maybeFault",
+        "applyDeleteMutation",
+        "effectiveEmittedAt",
+        "applyUpsertMutation",
+        "semanticTime",
+        "computeIngestSizeDeltas",
+        "changeHistoryLimit",
+        "getPrunedRecordChangeJsonBytes",
+        "getPrunedRecordChangeCount",
+        "exec",
+        "applyDatasetSummaryRecordDelta",
+        "getManifestConsentTimeField",
+        "applyRetainedSizeRecordDelta"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "consent"
+        ],
+        "db": [
+          "transaction("
+        ],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent",
+      "line": 438
+    },
+    {
+      "file": "server/routes/as-consent-ui-helpers.ts",
+      "parent_fn": "renderHostedMcpSourceSelection",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "ui",
+        "buildStreamPreview",
+        "renderRowStreams"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ui,buildStreamPreview,renderRowStreams] → turn implicit env into an explicit context param, then name it",
+      "line": 1295
+    },
+    {
+      "file": "server/routes/owner-connection-diagnostics.ts",
+      "parent_fn": "buildDiagnosticsHandler",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "ctx",
+        "selector",
+        "rethrowAsAmbiguousConnection",
+        "emitDiagnosticsAudit",
+        "readHealthState"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 7,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "7 awaits + branching (awaited-order)",
+      "line": 254
+    },
+    {
+      "file": "server/routes/owner-connection-run.ts",
+      "parent_fn": "buildRunHandler",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "ctx",
+        "selector",
+        "rethrowAsAmbiguousConnection",
+        "readRunResources",
+        "emitRunAudit",
+        "readRunId"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 7,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "7 awaits + branching (awaited-order)",
+      "line": 296
+    },
+    {
+      "file": "server/routes/ref-dataset.ts",
+      "parent_fn": "mountRefDatasetTop",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 585
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "parent_fn": "mountRefDeviceExporterSourceInstanceStatePut",
+      "callback_anchor": ".put",
+      "callback_kind": "other",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "ctx",
+        "resolveAuthorizedDeviceSource",
+        "optionalObject",
+        "referenceLocalDeviceStorageTarget"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 1590
+    },
+    {
+      "file": "server/streaming/cdp-adapter.js",
+      "parent_fn": "<anon .then>",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "ws",
+        "nextId",
+        "pending",
+        "method",
+        "commandTimeoutMs",
+        "params"
+      ],
+      "captured_mutable_vars": [
+        "ws",
+        "nextId"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "captures MUTABLE [ws,nextId] (shared-cell hazard)",
+      "line": 571
+    },
+    {
+      "file": "server/streaming/routes.js",
+      "parent_fn": "registerStreamingRoutes",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "controller",
+        "pdppError",
+        "safeRunId",
+        "sanitizeStreamReachReason",
+        "sanitizeStreamReachHttpStatus",
+        "emit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [controller,pdppError,safeRunId,sanitizeStreamReachReason,sanitizeStreamReachHttpStatus] → turn implicit env into an explicit context param, then name it",
+      "line": 755
+    },
+    {
+      "file": "server/streaming/run-target-registry.js",
+      "parent_fn": "attachRoutes",
+      "callback_anchor": ".delete",
+      "callback_kind": "other",
+      "cc": 10,
+      "excess": 5,
+      "captured_vars": [
+        "sendError",
+        "unregister",
+        "log"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [sendError,unregister,log] → turn implicit env into an explicit context param, then name it",
+      "line": 806
+    },
+    {
+      "file": "runtime/browser-surface-readiness.ts",
+      "parent_fn": "<anon setTimeout()>",
+      "callback_anchor": ".then",
+      "callback_kind": "api",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "cancelled",
+        "scheduleNextPoll",
+        "resolveFailure"
+      ],
+      "captured_mutable_vars": [
+        "cancelled",
+        "resolveFailure"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "captures MUTABLE [cancelled,resolveFailure] (shared-cell hazard)",
+      "line": 157
+    },
+    {
+      "file": "runtime/index.js",
+      "parent_fn": "installConnectorChildExitSweepOnce",
+      "callback_anchor": ".on('exit')",
+      "callback_kind": "api",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "ownedConnectorChildPids"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ownedConnectorChildPids] → turn implicit env into an explicit context param, then name it",
+      "line": 55
+    },
+    {
+      "file": "runtime/index.js",
+      "parent_fn": "terminateChild",
+      "callback_anchor": "setTimeout()",
+      "callback_kind": "api",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "terminateTimer",
+        "proc",
+        "ownerCancelRequested",
+        "ownerCancelForced",
+        "terminateConnectorChildGroup"
+      ],
+      "captured_mutable_vars": [
+        "terminateTimer",
+        "ownerCancelRequested",
+        "ownerCancelForced"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "captures MUTABLE [terminateTimer,ownerCancelRequested,ownerCancelForced] (shared-cell hazard)",
+      "line": 2764
+    },
+    {
+      "file": "server/dataset-summary-read-model.js",
+      "parent_fn": "listStreamProjections",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "consent"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent",
+      "line": 156
+    },
+    {
+      "file": "server/package-rs-client.js",
+      "parent_fn": "mergeSearchEnvelopes",
+      "callback_anchor": ".forEach",
+      "callback_kind": "iterator",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "children",
+        "warnings",
+        "memberSourceTag",
+        "extractSearchHits",
+        "mergedHits",
+        "decorateSearchHitWithSource",
+        "totalScanned",
+        "searchBodyHasMore",
+        "childHasMore"
+      ],
+      "captured_mutable_vars": [
+        "totalScanned",
+        "childHasMore"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "captures MUTABLE [totalScanned,childHasMore] (shared-cell hazard)",
+      "line": 681
+    },
+    {
+      "file": "server/record-filters.js",
+      "parent_fn": "hashSearchPlanSummary",
+      "callback_anchor": ".sort",
+      "callback_kind": "iterator",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 248
+    },
+    {
+      "file": "server/routes/ref-admin.ts",
+      "parent_fn": "mountRefCimdClientDocuments",
+      "callback_anchor": ".delete",
+      "callback_kind": "other",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "buildClientMetadataUrl",
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [buildClientMetadataUrl,ctx] → turn implicit env into an explicit context param, then name it",
+      "line": 434
+    },
+    {
+      "file": "server/routes/ref-manual-upload-draft-connection.ts",
+      "parent_fn": "mountPostDraftConnection",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "ctx",
+        "requireManualUploadSetup",
+        "resolveAcceptedUpload",
+        "requestedOrSuggestedDisplayName",
+        "displayNameForConnector",
+        "maybeSendKnownArtifactResponse",
+        "createAndSendDraftResponse",
+        "optionalConnectionId"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 5,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "5 awaits + branching (awaited-order)",
+      "line": 1321
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "mountRsEventSubscriptions",
+      "callback_anchor": ".patch",
+      "callback_kind": "other",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "buildBearerActorFromTokenInfo",
+        "rejectMissingClientGrant",
+        "ctx",
+        "executeUpdateSubscription",
+        "subscriptionIdFromParams",
+        "clientEventSubsDeps",
+        "handleClientEventSubError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [
+          "bearer"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: bearer",
+      "line": 680
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "mountRsStreamsList",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "ctx",
+        "buildStreamsListOwnerPlan",
+        "buildStreamsListClientPlan",
+        "executeStreamsList",
+        "emitDisclosureServed",
+        "mergeResolverWarningsIntoBody"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 7,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "7 awaits + branching (awaited-order)",
+      "line": 1350
+    },
+    {
+      "file": "server/routes/run-cancel.ts",
+      "parent_fn": "mountRefRunCancel",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx] → turn implicit env into an explicit context param, then name it",
+      "line": 52
+    },
+    {
+      "file": "server/streaming/neko-adapter.js",
+      "parent_fn": "getBrowserClient",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 9,
+      "excess": 4,
+      "captured_vars": [
+        "browserClientOption",
+        "browserClientFactory",
+        "cdpHttpUrl",
+        "logger",
+        "createBrowserControlError",
+        "browserClient",
+        "browserClientConnected",
+        "signal"
+      ],
+      "captured_mutable_vars": [
+        "browserClient",
+        "browserClientConnected"
+      ],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order); captures MUTABLE [browserClient,browserClientConnected] (shared-cell hazard)",
+      "line": 633
+    },
+    {
+      "file": "lib/postgres-spine.js",
+      "parent_fn": "postgresListSpineCorrelations",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "clientById"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [clientById] → turn implicit env into an explicit context param, then name it",
+      "line": 754
+    },
+    {
+      "file": "runtime/browser-surface-readiness.ts",
+      "parent_fn": "<anon setTimeout()>",
+      "callback_anchor": ".catch",
+      "callback_kind": "api",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "cancelled",
+        "resolveFailure"
+      ],
+      "captured_mutable_vars": [
+        "cancelled",
+        "resolveFailure"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "captures MUTABLE [cancelled,resolveFailure] (shared-cell hazard)",
+      "line": 167
+    },
+    {
+      "file": "runtime/browser-surface/run-coordinator.ts",
+      "parent_fn": "reconcileBrowserSurfacesWithAllocatorAtBoot",
+      "callback_anchor": ".withLeaseTransaction",
+      "callback_kind": "other",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "allocatorReconcile"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 651
+    },
+    {
+      "file": "runtime/controller.ts",
+      "parent_fn": "attachPendingPressureGaps",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "detailGapStore",
+        "bucketPressureGapsByInstance",
+        "ensure"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [detailGapStore,bucketPressureGapsByInstance,ensure] → turn implicit env into an explicit context param, then name it",
+      "line": 2335
+    },
+    {
+      "file": "server/explore-timeline-substrate.ts",
+      "parent_fn": "finalizeUpcoming",
+      "callback_anchor": ".forEach",
+      "callback_kind": "iterator",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "lastEmittedByPartition",
+        "partitionOverflow",
+        "cutByPartition",
+        "nextPositions",
+        "afterByKey",
+        "upcomingPartitionKey"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [lastEmittedByPartition,partitionOverflow,cutByPartition,nextPositions,afterByKey] → turn implicit env into an explicit context param, then name it",
+      "line": 537
+    },
+    {
+      "file": "server/ref-control.ts",
+      "parent_fn": "<anon .then>",
+      "callback_anchor": ".sort",
+      "callback_kind": "iterator",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 4506
+    },
+    {
+      "file": "server/routes/as-consent.ts",
+      "parent_fn": "mountAsConsent",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "ctx",
+        "getPendingGrantFromRequestUri",
+        "resolveBaseUrlForRequest",
+        "renderPendingConsentNotFoundHtml",
+        "renderPendingGrantConsentHtml"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [
+          "consent"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent",
+      "line": 527
+    },
+    {
+      "file": "server/routes/ref-connectors.ts",
+      "parent_fn": "mountRefConnectionSetDisplayName",
+      "callback_anchor": ".patch",
+      "callback_kind": "other",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "ctx",
+        "resolveRefConnectionNamespace",
+        "projectRefConnection"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 4,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "4 awaits + branching (awaited-order)",
+      "line": 553
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "parent_fn": "mountRefDeviceExporterSourceInstances",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "buildDeviceExporterDiagnostics",
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [buildDeviceExporterDiagnostics,ctx] → turn implicit env into an explicit context param, then name it",
+      "line": 1265
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "parent_fn": "mountRefDeviceExporterSourceInstanceStateGet",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "ctx",
+        "resolveAuthorizedDeviceSource",
+        "referenceLocalDeviceStorageTarget"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order)",
+      "line": 1547
+    },
+    {
+      "file": "server/routes/ref-grants.ts",
+      "parent_fn": "mountRefEventSubscriptionsList",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "executeRefClientEventSubscriptionsList",
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [executeRefClientEventSubscriptionsList,ctx] → turn implicit env into an explicit context param, then name it",
+      "line": 363
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "mountRsConnectorStateGet",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 8,
+      "excess": 3,
+      "captured_vars": [
+        "canonicalizeConnectorId",
+        "ctx",
+        "executeRsConnectorStateGet",
+        "ownerStateDraftAdmission"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 3,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "3 awaits + branching (awaited-order)",
+      "line": 1086
+    },
+    {
+      "file": "runtime/connector-verdict-input.ts",
+      "parent_fn": "buildStreamRollups",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "streamByName",
+        "isRetryableCoverage",
+        "streamPriority",
+        "snapshot",
+        "attentionOpen"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [streamByName,isRetryableCoverage,streamPriority,snapshot,attentionOpen] → turn implicit env into an explicit context param, then name it",
+      "line": 103
+    },
+    {
+      "file": "server/auth.js",
+      "parent_fn": "listGrantPackagesForOwner",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "normalizePackageRow"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [normalizePackageRow] → turn implicit env into an explicit context param, then name it",
+      "line": 4492
+    },
+    {
+      "file": "server/connector-summary-read-model.js",
+      "parent_fn": "reconcileDirtySqlite",
+      "callback_anchor": ".transaction",
+      "callback_kind": "transaction",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "evidence",
+        "db",
+        "computedAt",
+        "reconciled",
+        "dirtyIds"
+      ],
+      "captured_mutable_vars": [
+        "reconciled"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "UPDATE ",
+          "DELETE FROM",
+          "db.prepare",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "DB transaction callback; captures MUTABLE [reconciled] (shared-cell hazard)",
+      "line": 655
+    },
+    {
+      "file": "server/connector-summary-read-model.js",
+      "parent_fn": "reconcileDirtyPostgres",
+      "callback_anchor": "withPostgresTransaction()",
+      "callback_kind": "api",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "evidence",
+        "computedAt",
+        "reconciled",
+        "dirtyIds",
+        "liveIds"
+      ],
+      "captured_mutable_vars": [
+        "reconciled"
+      ],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "UPDATE ",
+          "DELETE FROM",
+          "client.query",
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "2 awaits + branching (awaited-order); captures MUTABLE [reconciled] (shared-cell hazard)",
+      "line": 789
+    },
+    {
+      "file": "server/hosted-ui.js",
+      "parent_fn": "renderActionRow",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "escapeHtml"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [escapeHtml] → turn implicit env into an explicit context param, then name it",
+      "line": 783
+    },
+    {
+      "file": "server/index.js",
+      "parent_fn": "persistContentAddressedBlob",
+      "callback_anchor": "transaction()",
+      "callback_kind": "transaction",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "exec",
+        "referenceQueries",
+        "blobId",
+        "connectorId",
+        "connectorInstanceId",
+        "stream",
+        "recordKey",
+        "mimeType",
+        "sizeBytes",
+        "sha256",
+        "data",
+        "getOne",
+        "applyDatasetSummaryBlobDelta",
+        "applyRetainedSizeBlobDelta"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "transaction("
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "DB transaction callback",
+      "line": 1379
+    },
+    {
+      "file": "server/owner-auth.ts",
+      "parent_fn": "attachRoutes",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "enabled",
+        "shouldRequireCsrf",
+        "csrfPairValid",
+        "replyLogoutCsrfFailure",
+        "session",
+        "rotateCsrfCookie",
+        "wantsHtml"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [enabled,shouldRequireCsrf,csrfPairValid,replyLogoutCsrfFailure,session] → turn implicit env into an explicit context param, then name it",
+      "line": 787
+    },
+    {
+      "file": "server/postgres-storage.js",
+      "parent_fn": "ensureSemanticHotHnswIndexes",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 1585
+    },
+    {
+      "file": "server/routes/as-consent-ui-helpers.ts",
+      "parent_fn": "buildBatchSourceCards",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "renderAuthorshipBlock",
+        "buildStreamsBlock",
+        "ui",
+        "buildClientClaimsBlock"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "access_mode"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: access_mode",
+      "line": 834
+    },
+    {
+      "file": "server/routes/as-grant-revoke.ts",
+      "parent_fn": "buildRequireRevokeAuth",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "ctx",
+        "resolveRevokeAuthDecision"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [
+          "bearer",
+          "introspect"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: bearer,introspect",
+      "line": 108
+    },
+    {
+      "file": "server/routes/ref-browser-enrollment-shell.ts",
+      "parent_fn": "mountRefBrowserEnrollmentShell",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "ctx",
+        "isBrowserBoundConnector",
+        "emitShellAudit",
+        "BROWSER_ENROLLMENT_SHELL_TTL_MS",
+        "randomBytes",
+        "displayNameForConnector"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 5,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [
+          "BEGIN"
+        ],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "5 awaits + branching (awaited-order)",
+      "line": 184
+    },
+    {
+      "file": "server/routes/ref-connectors.ts",
+      "parent_fn": "mountRefConnectionRevoke",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "ctx",
+        "resolveRefConnectionNamespace",
+        "emitConnectionControlAudit"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 5,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "5 awaits + branching (awaited-order)",
+      "line": 1049
+    },
+    {
+      "file": "server/routes/ref-manual-upload-draft-connection.ts",
+      "parent_fn": "mountGetStagedArtifact",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "ctx",
+        "ARTIFACT_ID_RE",
+        "publicArtifact"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx,ARTIFACT_ID_RE,publicArtifact] → turn implicit env into an explicit context param, then name it",
+      "line": 1144
+    },
+    {
+      "file": "server/routes/source-webhooks.ts",
+      "parent_fn": "mountRefSourceWebhooks",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "ctx",
+        "normalizeBody",
+        "executeSourceWebhook",
+        "readHeader",
+        "executeRecordsIngest",
+        "SourceWebhookError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx,normalizeBody,executeSourceWebhook,readHeader,executeRecordsIngest] → turn implicit env into an explicit context param, then name it",
+      "line": 120
+    },
+    {
+      "file": "server/streaming/cdp-adapter.js",
+      "parent_fn": "onFrame",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "pendingHandlers",
+        "handler",
+        "record"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [pendingHandlers,handler,record] → turn implicit env into an explicit context param, then name it",
+      "line": 211
+    },
+    {
+      "file": "server/streaming/cdp-adapter.js",
+      "parent_fn": "onEvent",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "pendingEventHandlers",
+        "handler",
+        "record"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [pendingEventHandlers,handler,record] → turn implicit env into an explicit context param, then name it",
+      "line": 227
+    },
+    {
+      "file": "server/streaming/cdp-method-allowlist.test.js",
+      "parent_fn": "<module>",
+      "callback_anchor": "test()",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "join",
+        "readFileSync",
+        "stripComments",
+        "extractCdpMethods",
+        "ALLOWLIST",
+        "assert"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [join,readFileSync,stripComments,extractCdpMethods,ALLOWLIST] → turn implicit env into an explicit context param, then name it",
+      "line": 94
+    },
+    {
+      "file": "server/streaming/companion-factory.js",
+      "parent_fn": "subscribe",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 7,
+      "excess": 2,
+      "captured_vars": [
+        "pending",
+        "handler",
+        "record"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [pending,handler,record] → turn implicit env into an explicit context param, then name it",
+      "line": 102
+    },
+    {
+      "file": "runtime/controller.ts",
+      "parent_fn": "brokerInteraction",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "activeRunInteractions",
+        "runId",
+        "connectorId",
+        "interaction",
+        "notifyArgs",
+        "detachControllerTask",
+        "fireNtfy",
+        "fireWebPush"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [activeRunInteractions,runId,connectorId,interaction,notifyArgs] → turn implicit env into an explicit context param, then name it",
+      "line": 1538
+    },
+    {
+      "file": "runtime/index.js",
+      "parent_fn": "buildCollectionFacts",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "declaredConsideredForStream",
+        "declaredCoveredForStream",
+        "streamToStateStream",
+        "emittedByStream",
+        "checkpointForStateStream",
+        "pendingDetailGapsForStream",
+        "skipForStream"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [declaredConsideredForStream,declaredCoveredForStream,streamToStateStream,emittedByStream,checkpointForStateStream] → turn implicit env into an explicit context param, then name it",
+      "line": 805
+    },
+    {
+      "file": "runtime/index.js",
+      "parent_fn": "runConnector",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "proc",
+        "terminateConnectorChildGroup",
+        "ownerCancelRequested",
+        "ownerCancelForced",
+        "terminalEventRecorded",
+        "emitSpineEvent",
+        "traceContext",
+        "connectorId",
+        "runId",
+        "runSource",
+        "triggerKind",
+        "onProgress",
+        "cancelSignal",
+        "unregisterOwnedConnectorChild",
+        "rl",
+        "allServedGapIds",
+        "detailGapStore",
+        "pendingInteraction",
+        "finalStatus",
+        "classifyRuntimeFailure",
+        "buildCheckpointSummary",
+        "buildKnownGapsForTerminal",
+        "closeOpenStructuredAssistance",
+        "buildRunTerminalData",
+        "totalEmitted",
+        "ProtocolViolation",
+        "doneMessage",
+        "scopeByStream",
+        "manifestByStream",
+        "recordMatchesScopeResource",
+        "passesTimeRange",
+        "recordBatch",
+        "emittedByStream",
+        "BATCH_SIZE",
+        "flushBatch",
+        "validateStateMessage",
+        "newState",
+        "emitSpineEventTracked",
+        "grantId",
+        "countStagedStateStreams",
+        "persistState",
+        "validateInteractionMessage",
+        "onInteraction",
+        "buildAssistanceRequestedDataFromInteraction",
+        "hasBrowserSurfaceLaunchEnv",
+        "browserSurfaceLaunchEnv",
+        "attentionWriter",
+        "assistanceResolutionEventType",
+        "appendKnownGap",
+        "buildKnownGap",
+        "writeChildStdin",
+        "childStdinClosedReason",
+        "nextAssistanceRequestId",
+        "validateAssistanceMessage",
+        "openStructuredAssistance",
+        "buildAssistanceRequestedDataFromMessage",
+        "validateAssistanceStatusMessage",
+        "closeStructuredAssistance",
+        "validateSkipResultMessage",
+        "normalizeGapScope",
+        "explicitlyRequestedStreams",
+        "streamUnsupportedInDefaultScope",
+        "boundGapString",
+        "validateDetailGapsPageRequest",
+        "readDetailGapPage",
+        "startScope",
+        "validateDetailGapMessage",
+        "normalizedConnectorInstanceId",
+        "resolveTerminalGapPolicy",
+        "maybeTerminateGap",
+        "durableDetailGaps",
+        "classifyRecoveryError",
+        "detailGapRecordedThisRun",
+        "validateDetailCoverageMessage",
+        "trackDetailCoverage",
+        "boundConsideredCount",
+        "validateDetailGapRecoveredMessage",
+        "flushAll",
+        "validateProgressMessage",
+        "lastSeenCollectionRate",
+        "validateDoneStatus",
+        "validateDoneError",
+        "writeTrace",
+        "stderrTail",
+        "buildStderrTailDiagnostic",
+        "validateDoneExitCode",
+        "validateDoneRecordsEmitted",
+        "assertDetailCoverageSatisfiedBeforeCommit",
+        "commitState",
+        "deriveTerminalReason",
+        "childStdinClosedAtPhase",
+        "buildConnectorExitFailureMessage",
+        "automationMode"
+      ],
+      "captured_mutable_vars": [
+        "ownerCancelRequested",
+        "ownerCancelForced",
+        "terminalEventRecorded",
+        "pendingInteraction",
+        "finalStatus",
+        "totalEmitted",
+        "doneMessage",
+        "childStdinClosedReason",
+        "lastSeenCollectionRate",
+        "childStdinClosedAtPhase"
+      ],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [
+          "consent"
+        ],
+        "db": [
+          "COMMIT"
+        ],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent; captures MUTABLE [ownerCancelRequested,ownerCancelForced,terminalEventRecorded,pendingInteraction,finalStatus,totalEmitted,doneMessage,childStdinClosedReason,lastSeenCollectionRate,childStdinClosedAtPhase] (shared-cell hazard)",
+      "line": 2742
+    },
+    {
+      "file": "runtime/scheduler.ts",
+      "parent_fn": "start",
+      "callback_anchor": ".catch",
+      "callback_kind": "api",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "runtime",
+        "startScheduledLoops"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [runtime,startScheduledLoops] → turn implicit env into an explicit context param, then name it",
+      "line": 439
+    },
+    {
+      "file": "server/auth.js",
+      "parent_fn": "requireGrantManifestForBindings",
+      "callback_anchor": ".then",
+      "callback_kind": "api",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "sourceBinding",
+        "grantStorageConnectorId"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [sourceBinding,grantStorageConnectorId] → turn implicit env into an explicit context param, then name it",
+      "line": 839
+    },
+    {
+      "file": "server/auth.js",
+      "parent_fn": "listOwnerIssuedClients",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "mapRegisteredClientRow",
+        "store"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [mapRegisteredClientRow,store] → turn implicit env into an explicit context param, then name it",
+      "line": 1969
+    },
+    {
+      "file": "server/dataset-summary-read-model.js",
+      "parent_fn": "boundedTopConnectorCandidates",
+      "callback_anchor": ".sort",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 82
+    },
+    {
+      "file": "server/deployment-diagnostics.ts",
+      "parent_fn": "buildEnvironmentReport",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "env",
+        "SECRET_NAME_RE"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [env,SECRET_NAME_RE] → turn implicit env into an explicit context param, then name it",
+      "line": 418
+    },
+    {
+      "file": "server/hosted-ui.js",
+      "parent_fn": "renderEmptyState",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "escapeHtml"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [escapeHtml] → turn implicit env into an explicit context param, then name it",
+      "line": 823
+    },
+    {
+      "file": "server/inbox.js",
+      "parent_fn": "registerInboxRoutes",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "requireController",
+        "controller",
+        "pdppError",
+        "parseJsonObject",
+        "handleError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [requireController,controller,pdppError,parseJsonObject,handleError] → turn implicit env into an explicit context param, then name it",
+      "line": 128
+    },
+    {
+      "file": "server/inbox.js",
+      "parent_fn": "registerInboxRoutes",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "requireController",
+        "controller",
+        "pdppError",
+        "handleError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [requireController,controller,pdppError,handleError] → turn implicit env into an explicit context param, then name it",
+      "line": 154
+    },
+    {
+      "file": "server/index.js",
+      "parent_fn": "buildRsApp",
+      "callback_anchor": ".use",
+      "callback_kind": "api",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "generateSpineId",
+        "setReferenceRevisionHeader",
+        "referenceRevision",
+        "pdppError",
+        "resolveTrustedProtectedResourceMetadataUrl",
+        "explicitResource",
+        "trustedMetadataHosts",
+        "PROTECTED_RESOURCE_METADATA_URL_LOCAL"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [generateSpineId,setReferenceRevisionHeader,referenceRevision,pdppError,resolveTrustedProtectedResourceMetadataUrl] → turn implicit env into an explicit context param, then name it",
+      "line": 2872
+    },
+    {
+      "file": "server/neko-surface-allocator-server.ts",
+      "parent_fn": "<anon>",
+      "callback_anchor": ".close",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "closeResolve",
+        "closeReject"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [closeResolve,closeReject] → turn implicit env into an explicit context param, then name it",
+      "line": 783
+    },
+    {
+      "file": "server/package-rs-client.js",
+      "parent_fn": "fanoutSchema",
+      "callback_anchor": ".forEach",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "schemaSourceOptions",
+        "schemaDocument",
+        "query",
+        "matches",
+        "available"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [schemaSourceOptions,schemaDocument,query,matches,available] → turn implicit env into an explicit context param, then name it",
+      "line": 189
+    },
+    {
+      "file": "server/polyfill-manifest-reconcile.ts",
+      "parent_fn": "canonicalize",
+      "callback_anchor": ".stringify",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 93
+    },
+    {
+      "file": "server/record-version-stats.js",
+      "parent_fn": "buildRecordVersionStatsEnvelope",
+      "callback_anchor": ".sort",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "riskSortValue"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [riskSortValue] → turn implicit env into an explicit context param, then name it",
+      "line": 522
+    },
+    {
+      "file": "server/ref-control.ts",
+      "parent_fn": "mapPendingPressureGaps",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "readPendingGapLastPressureAt"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [readPendingGapLastPressureAt] → turn implicit env into an explicit context param, then name it",
+      "line": 2746
+    },
+    {
+      "file": "server/ref-control.ts",
+      "parent_fn": "refreshConnectorSummariesCache",
+      "callback_anchor": ".catch",
+      "callback_kind": "api",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "connectorSummariesCache",
+        "key",
+        "promise",
+        "generation"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [connectorSummariesCache,key,promise,generation] → turn implicit env into an explicit context param, then name it",
+      "line": 3639
+    },
+    {
+      "file": "server/ref-control.ts",
+      "parent_fn": "createConnectorRunSummariesReader",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "cache",
+        "listSpineCorrelations"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [cache,listSpineCorrelations] → turn implicit env into an explicit context param, then name it",
+      "line": 3730
+    },
+    {
+      "file": "server/routes/as-consent-ui-helpers.ts",
+      "parent_fn": "buildSourceNarrowingControls",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "encodeStreamKey",
+        "index",
+        "ui"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [encodeStreamKey,index,ui] → turn implicit env into an explicit context param, then name it",
+      "line": 898
+    },
+    {
+      "file": "server/routes/as-consent.ts",
+      "parent_fn": "mountAsConsent",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "executeAsConsentExchange",
+        "ctx"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [
+          "consent"
+        ],
+        "db": [],
+        "public": [
+          "errorCode"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent",
+      "line": 691
+    },
+    {
+      "file": "server/routes/ref-dataset.ts",
+      "parent_fn": "buildRetainedSizeProjection",
+      "callback_anchor": ".sort",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1a",
+      "flag_B": false,
+      "why": "non-capturing (free-vars=∅) → hoist to a named pure top-level fn",
+      "line": 258
+    },
+    {
+      "file": "server/routes/ref-dataset.ts",
+      "parent_fn": "mountRefDatasetSummaryReconcile",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "ctx",
+        "executeRefDatasetSummary",
+        "buildDatasetSummaryDeps",
+        "buildRetainedSizeProjection"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 4,
+      "security_db_public_keywords": {
+        "security": [
+          "consent"
+        ],
+        "db": [],
+        "public": [
+          "projection"
+        ]
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: consent; 4 awaits + branching (awaited-order)",
+      "line": 468
+    },
+    {
+      "file": "server/routes/ref-manual-upload-draft-connection.ts",
+      "parent_fn": "mountGetSetup",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "ctx",
+        "manualUploadSetupFromManifest",
+        "displayNameForConnector"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [ctx,manualUploadSetupFromManifest,displayNameForConnector] → turn implicit env into an explicit context param, then name it",
+      "line": 1036
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "parent_fn": "mountRsEventSubscriptions",
+      "callback_anchor": ".post",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "buildBearerActorFromTokenInfo",
+        "rejectMissingClientGrant",
+        "ctx",
+        "executeEnqueueTestEvent",
+        "subscriptionIdFromParams",
+        "clientEventSubsDeps",
+        "handleClientEventSubError"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 2,
+      "security_db_public_keywords": {
+        "security": [
+          "bearer"
+        ],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T2",
+      "flag_B": false,
+      "why": "security/DDL/grant: bearer; 2 awaits + branching (awaited-order)",
+      "line": 731
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "parent_fn": "listOwnerStreamsAcrossRegisteredConnectors",
+      "callback_anchor": ".map",
+      "callback_kind": "iterator",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "listOwnerStreamsForConnector",
+        "ctx",
+        "req",
+        "requestedConnectionId",
+        "skippedConnectionErrors"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 1,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [listOwnerStreamsForConnector,ctx,req,requestedConnectionId,skippedConnectionErrors] → turn implicit env into an explicit context param, then name it",
+      "line": 1198
+    },
+    {
+      "file": "server/streaming/cdp-adapter.js",
+      "parent_fn": "createDefaultStreamingCompanionFactory",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "createResolvedCompanion",
+        "resolveTargetForInteraction",
+        "WebSocketCtor",
+        "logger",
+        "commandTimeoutMs",
+        "openTimeoutMs"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [createResolvedCompanion,resolveTargetForInteraction,WebSocketCtor,logger,commandTimeoutMs] → turn implicit env into an explicit context param, then name it",
+      "line": 81
+    },
+    {
+      "file": "server/streaming/companion-factory.js",
+      "parent_fn": "createDefaultStreamingCompanionFactory",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "createResolvedCompanion",
+        "resolveTargetForInteraction",
+        "WebSocketCtor",
+        "fetchImpl",
+        "logger",
+        "commandTimeoutMs",
+        "openTimeoutMs",
+        "neko"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [createResolvedCompanion,resolveTargetForInteraction,WebSocketCtor,fetchImpl,logger] → turn implicit env into an explicit context param, then name it",
+      "line": 231
+    },
+    {
+      "file": "server/streaming/neko-adapter.js",
+      "parent_fn": "createDefaultStreamingCompanionFactory",
+      "callback_anchor": "<anon>",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "createResolvedNekoCompanion",
+        "resolveTargetForInteraction",
+        "defaults"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [createResolvedNekoCompanion,resolveTargetForInteraction,defaults] → turn implicit env into an explicit context param, then name it",
+      "line": 1188
+    },
+    {
+      "file": "server/streaming/routes.js",
+      "parent_fn": "registerStreamingRoutes",
+      "callback_anchor": ".get",
+      "callback_kind": "other",
+      "cc": 6,
+      "excess": 1,
+      "captured_vars": [
+        "streamingSessions",
+        "pdppError",
+        "parseReferenceWireInputTelemetryCursor",
+        "inputTelemetry"
+      ],
+      "captured_mutable_vars": [],
+      "await_count": 0,
+      "security_db_public_keywords": {
+        "security": [],
+        "db": [],
+        "public": []
+      },
+      "recommended_class": "T1b",
+      "flag_B": false,
+      "why": "captures (immutable) [streamingSessions,pdppError,parseReferenceWireInputTelemetryCursor,inputTelemetry] → turn implicit env into an explicit context param, then name it",
+      "line": 1052
+    }
+  ]
+}
+
+smell-callbacks.mjs — 191 high-complexity callbacks (cc>5), Σ excess-cc mass=1721
+by recommended_class (count):  {"T1a":16,"T2":104,"T1b":71}
+by recommended_class (mass):   {"T1a":239,"T2":1121,"T1b":361}
+by callback_kind:              {"other":120,"api":18,"iterator":41,"transaction":12}
+flagged for B (public-heavy):  2
+
+TOP 40 by excess-cc:
+class | cc | kind | #cap | #mut | awaits | parent_fn @ file
+----------------------------------------------------------------------------------------
+T1a   | 120 | other       |    0 |    0 |      0 | semanticIndexBackfillForManifest @ server/search-semantic.js:1309
+T2    |  95 | api         |   36 |    8 |     14 | <anon> @ runtime/index.js:3600
+T2    |  77 | iterator    |    7 |    0 |      0 | mergeSchemaEnvelopes @ server/package-rs-client.js:560
+T2    |  52 | transaction |    7 |    0 |      0 | migrateLegacyConnectorInstancesToDefaultAccount @ server/db.js:2459
+T1a   |  45 | other       |    0 |    0 |      0 | lexicalIndexBackfillForManifest @ server/search.js:519
+T2    |  39 | transaction |    9 |    0 |      0 | migrateLocalDeviceConnectorInstances @ server/db.js:1828
+T2    |  35 | iterator    |    7 |    0 |      0 | narrowResolvedSelectionForSource @ server/auth.js:2855
+T2    |  34 | iterator    |    3 |    1 |      0 | resolveGrantSelection @ server/auth.js:866
+T1b   |  34 | other       |    5 |    0 |      1 | registerStreamingRoutes @ server/streaming/routes.js:979
+T1b   |  32 | other       |   13 |    0 |      1 | registerStreamingRoutes @ server/streaming/routes.js:600
+T2    |  30 | api         |   12 |    0 |      9 | postgresIngestRecord @ server/postgres-records.js:747
+T2    |  26 | other       |   12 |    0 |      8 | mountRsSchema @ server/routes/rs-read.ts:984
+T2    |  24 | transaction |    6 |    0 |      0 | migrateRecordStorageInstanceColumns @ server/db.js:2026
+T1b   |  24 | iterator    |    1 |    0 |      0 | aggregateRecordsAcrossBindings @ server/records.js:3631
+T2    |  24 | other       |   12 |    0 |      6 | registerStreamingRoutes @ server/streaming/routes.js:810
+T2    |  22 | api         |    6 |    0 |      3 | issueToken @ server/auth.js:5493
+T2    |  22 | other       |    8 |    0 |      3 | buildSemanticSnapshot @ server/search-semantic.js:2081
+T2    |  21 | transaction |    9 |    2 |      0 | reconcileDirtyDatasetSummaryRecordTimeBounds @ server/dataset-summary-read-model.js:562
+T2    |  21 | other       |    2 |    0 |      3 | restart @ server/scheduler-manager-factory.js:156
+T1b   |  21 | other       |    1 |    0 |      0 | expressShim @ server/transport.js:337
+T2    |  20 | other       |    1 |    0 |      4 | mountRefDatasetSize @ server/routes/ref-dataset.ts:537
+T2    |  19 | transaction |   12 |    0 |      0 | issueToken @ server/auth.js:5571
+T2    |  19 | other       |    5 |    0 |     10 | mountRsRecordFieldWindow @ server/routes/rs-read.ts:2010
+T2    |  18 | other       |    7 |    0 |      2 | mountAsAuthorize @ server/routes/as-authorize.ts:556
+T2    |  18 | other       |    8 |    0 |      2 | mountAsAuthorize @ server/routes/as-authorize.ts:638
+T2    |  18 | other       |    6 |    0 |      2 | mountAsConsent @ server/routes/as-consent.ts:570
+T2    |  18 | other       |    4 |    0 |     11 | mountRefDeviceExporterEnroll @ server/routes/ref-device-exporters.ts:1120
+T2    |  18 | other       |   10 |    0 |      6 | mountRefStaticSecretSetupStatus @ server/routes/ref-static-secret-setup-status.ts:369
+T1b   |  18 | other       |    2 |    0 |      0 | mountRsRoot @ server/routes/root-and-discovery.ts:194
+T2    |  18 | other       |    8 |    0 |      7 | mountRsRecordsIngest @ server/routes/rs-mutation.ts:949
+T2    |  18 | other       |    5 |    0 |      4 | mountRsConnectorStatePut @ server/routes/rs-mutation.ts:1159
+T2    |  18 | other       |    7 |    0 |      7 | mountRsRecordsList @ server/routes/rs-read.ts:1739
+T1b   |  18 | other       |    1 |    0 |      0 | mountRefRunInteraction @ server/routes/run-interaction.ts:66
+T2    |  17 | api         |   12 |    0 |      2 | runNow @ runtime/controller.ts:3042
+T1a   |  17 | iterator    |    0 |    0 |      0 | aggregateRecords @ server/records.js:2276
+T2    |  17 | other       |    4 |    0 |      2 | mountRefDeviceExporterLocalCollectorGapsRecovered @ server/routes/ref-device-exporters.ts:1885
+T2    |  17 | other       |    6 |    0 |      2 | mountRefDeviceExporterIngestBatches @ server/routes/ref-device-exporters.ts:1423
+T2    |  17 | other       |    7 |    0 |      5 | mountRefProviderAuthCallback @ server/routes/ref-provider-auth.ts:779
+T2    |  17 | other       |    8 |    0 |      6 | mountRefStaticSecretCredentialCapture @ server/routes/ref-static-secret-credentials.ts:614
+T2    |  17 | other       |    5 |    0 |      5 | mountRsRecordsDelete @ server/routes/rs-mutation.ts:859
+

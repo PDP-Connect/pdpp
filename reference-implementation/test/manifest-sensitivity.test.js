@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer } from '../server/index.js';
-import { resolveManifestSensitivity } from '../server/auth.js';
+import { resolveManifestSensitivity } from '../server/connector-manifest-validation.ts';
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();

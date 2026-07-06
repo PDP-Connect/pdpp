@@ -1,0 +1,6 @@
+# hone work hm-detail-gap-ledger-extract-0008 — post-r1 rung 'guard-byte-identity'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -F "storedGap.discovered_run_id === runId" runtime/index.js || grep -F "discovered_run_id === ctx.runId" runtime/index.js
+# expect: the exactly-once gate condition present (verbatim modulo the explicit-context rename runId → ctx.runId, which the judge inspects in the diff); grep exits 0
+# exit: 0  duration: 0s  verdict: PASS
+
+  if (storedGap.discovered_run_id === runId && !detailGapRecordedThisRun.has(storedGap.gap_id)) {

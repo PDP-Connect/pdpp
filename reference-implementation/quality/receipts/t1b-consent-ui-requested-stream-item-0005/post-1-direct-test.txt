@@ -1,0 +1,22 @@
+# hone work t1b-consent-ui-requested-stream-item-0005 — post rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp node --test test/security-consent-authorship-classes.test.js test/security-consent-risk-disclosure.test.js
+# expect: all pass with unchanged counts, before AND after the edit
+# exit: 0  duration: 2s  verdict: PASS
+
+▶ security: hosted consent renders the three authorship classes distinctly
+  ✔ client_claims + purpose render as client-authored claims, distinct from protocol facts and manifest streams (183.504147ms)
+  ✔ a request with no client_claims still renders the three classes and omits an empty claims body (124.663362ms)
+✔ security: hosted consent renders the three authorship classes distinctly (308.846641ms)
+▶ security: consent-risk disclosure invariants
+  ✔ wildcard stream request renders an explicit "all streams" disclosure with resolved names and count (193.56385ms)
+  ✔ continuous-access request renders a distinct long-lived-access warning with no-expiry disclosure (115.88281ms)
+  ✔ ai_training request without affirmative consent fails with a typed PDPP error envelope (131.30815ms)
+✔ security: consent-risk disclosure invariants (441.515223ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1480.889574

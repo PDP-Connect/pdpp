@@ -1,0 +1,133 @@
+candidate_id: hm-detail-page-coverage-extract-0007
+created: "2026-07-02T03:38:00.000Z"
+repo_sha: e7ede6e50ea9b2f3d60ba908862a846c833d7a5c
+subsystem: runtime
+files: [runtime/index.js]
+symbols:
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'DETAIL_GAPS_PAGE_REQUEST' — readDetailGapPage + DETAIL_GAPS_PAGE_RESPONSE stdin write"
+    line: 3664
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'DETAIL_COVERAGE' — trackDetailCoverage + run.detail_coverage_declared emit"
+    line: 3695
+public_surface:
+  - "child-protocol response DETAIL_GAPS_PAGE_RESPONSE {reference_only, request_id, detail_gaps}"
+  - "spine event_type run.detail_coverage_declared and its data fields (required_keys, hydrated_keys, gap_keys, optional_skip_keys, considered, covered)"
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "These two arms are the read/declare half of the reference-only detail-gap protocol: DETAIL_GAPS_PAGE_REQUEST validates a page request, reads a bounded page (maxBytes/candidateLimit) via readDetailGapPage, answers the connector over stdin, and reports acceptance; DETAIL_COVERAGE records the coverage declaration that assertDetailCoverageSatisfiedBeforeCommit later enforces at commit time, plus the run.detail_coverage_declared audit event with omit-unless-trusted considered/covered counts. Both are self-contained request/response slices braided into the cc-194 closure. Extracting them removes ~16 cc and isolates the child-stdin response shape, while the commit-gating coverage semantics stay where they are (trackDetailCoverage and the commit assert are runConnector-scoped services, untouched)."
+plan:
+  transform_class: explicit-parameter-extraction
+  instruction: "REDESIGNED 2026-07-02 run-8 after TWO independent judge REJECTs (run-6 codex, claim clm-hm-detail-page-coverage-extract-0007-1; run-7 claude, claim clm-hm-detail-page-coverage-extract-0007-3): both judges refused routing the effectful emitSpineEventTracked closure through msgCtx indirection — an unprovable service substitution. THE SEAM IS NOW EXPLICIT NAMED PARAMETERS AND THE msgCtx LITERAL IS FROZEN. In runtime/index.js ONLY: create module-level (column-0) named async functions handleDetailGapsPageRequestMsg(msg, ctx, readDetailGapPage, writeChildStdin) and handleDetailCoverageMsg(msg, ctx, trackDetailCoverage, emitSpineEventTracked) containing the DETAIL_GAPS_PAGE_REQUEST (~line 3664) and DETAIL_COVERAGE (~line 3695) arm bodies VERBATIM. Every runConnector-closure service an arm calls (readDetailGapPage + writeChildStdin for the page-request arm; trackDetailCoverage + emitSpineEventTracked for the coverage arm) enters as an explicit trailing parameter whose NAME IS THE CLOSURE IDENTIFIER ITSELF, so every call expression in the moved bodies (including await emitSpineEventTracked({...})) stays byte-identical to the original arm and the delegation call sites prove service identity syntactically. Case arms become exactly: case 'DETAIL_GAPS_PAGE_REQUEST': await handleDetailGapsPageRequestMsg(msg, msgCtx, readDetailGapPage, writeChildStdin); break; and case 'DETAIL_COVERAGE': await handleDetailCoverageMsg(msg, msgCtx, trackDetailCoverage, emitSpineEventTracked); break; — bare closure identifiers as arguments, NEVER ctx members. msgCtx FREEZE: do NOT add, rename, or remove ANY key of the msgCtx object literal (~line 3524); in particular NO emitSpineEventTracked / readDetailGapPage / trackDetailCoverage keys may be added; the pre-existing emitSpineEvent: emitSpineEventTracked member stays untouched and is NOT used by these two handlers; writeChildStdin is ALREADY a msgCtx member (added by landed sibling hm-interaction-lifecycle-extract-0009) — leave that key exactly as is AND still pass writeChildStdin to handleDetailGapsPageRequestMsg as the explicit bare-identifier trailing parameter mandated above (the parameter, not ctx, is this packet's seam). From ctx destructure only pre-existing members: { scopeByStream, startScope, onProgress } for the page-request handler; { scopeByStream, traceContext, connectorId, runId, runSource, grantId, onProgress } for the coverage handler. Module-scope helpers (validateDetailGapsPageRequest, validateDetailCoverageMessage, boundConsideredCount) are called directly, never threaded. Preserve exactly: the request.streams ?? startScope.streams.map(...) default, the DETAIL_GAPS_PAGE_RESPONSE JSON line shape and its 'detail_gaps_page_response' stdin phase tag, the onProgress echo fields (count, max_bytes, serialized_bytes, candidate_limit, accepted), the run.detail_coverage_declared payload including the boundConsideredCount omit-unless-trusted spreads, and the reference_only markers. CALL-STYLE MANDATE — repaired 2026-07-02 per run-4: ctx fields MUST be destructured into locals before invocation (const { onProgress } = ctx; onProgress(msg)), NEVER method-called off the context object (ctx.onProgress(msg) is FORBIDDEN). WHY: in strict mode a method call rebinds this inside the callback from undefined to the context object — an observable behavior change; run-4's judge REJECTed sibling hm-reporting-family-extract-0003 (confidence 0.84) for exactly this. The explicit service parameters are already plain locals — call them directly."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: none
+priority:
+  score: 68
+  computed: "2026-07-02T03:38:00.000Z"
+  inputs:
+    mass: 16
+    churn: 63
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: coverage declarations recorded here feed the commit gate (assertDetailCoverageSatisfiedBeforeCommit) — dropping or reshaping a declaration would let an under-hydrated run commit as complete
+authoring_evidence:
+  - kind: coverage-check
+    detail: "DETAIL_GAPS_PAGE_REQUEST pinned in connector-detail-gap-store.test.js (26/26 green 2026-07-02 with PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp); DETAIL_COVERAGE + run.detail_coverage_declared pinned in collection-profile.test.js and detail-coverage-recovered-gap-regression.test.js (2/2 green)"
+    result: both arms have existing by-name oracles; dispatch-frame protected by 0001
+  - kind: cell-audit
+    detail: "arm mutables: none — readDetailGapPage/trackDetailCoverage/writeChildStdin are runConnector-scoped services; detailCoverageByStateStream is mutated inside trackDetailCoverage, not in the arm"
+    result: pure service-threading extraction; no runState extension needed
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch connector-detail-gap-store detail-coverage-recovered-gap-regression collection-profile; do db=pdpp_hone_hm_dpce7_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'"
+    expect: "all green with unchanged counts (baselines 2026-07-02: 26/26, 2/2, 124/124); repaired 2026-07-02 per iteration-4 shared-DB lint: per-file ephemeral DBs + --test-force-exit replicate the scripts/run-tests.js isolation contract"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg'"
+    expect: "found=true; cognitive_before strictly BELOW this packet's own pre-edit baseline receipt AND below the machine floor 90 (run-8 re-pin: handleMsg measured cc=98 on 2026-07-02 before the 0004/0005/0009 siblings; campaign start was 194)"
+    expect_check:
+      type: scope_fn_lt
+      value: 90
+  - rung: file-excess-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5"
+    expect: file_excess strictly below the pre-edit measured value; only NEW flagged names are the two named handlers
+  - rung: no-new-anon-callbacks
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: emitter-seam-static-pin
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"runtime/index.js\",\"utf8\");if(!s.includes(\"async function handleDetailCoverageMsg\")){console.log(\"baseline: handlers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");const checks=[[\"page-request signature declares (msg, ctx, readDetailGapPage, writeChildStdin)\",/async function handleDetailGapsPageRequestMsg\\( ?msg, ?ctx, ?readDetailGapPage, ?writeChildStdin,? ?\\)/],[\"page-request delegation passes bare closure identifiers (msg, msgCtx, readDetailGapPage, writeChildStdin)\",/await handleDetailGapsPageRequestMsg\\( ?msg, ?msgCtx, ?readDetailGapPage, ?writeChildStdin,? ?\\)/],[\"coverage signature declares (msg, ctx, trackDetailCoverage, emitSpineEventTracked)\",/async function handleDetailCoverageMsg\\( ?msg, ?ctx, ?trackDetailCoverage, ?emitSpineEventTracked,? ?\\)/],[\"coverage delegation passes bare closure identifiers (msg, msgCtx, trackDetailCoverage, emitSpineEventTracked)\",/await handleDetailCoverageMsg\\( ?msg, ?msgCtx, ?trackDetailCoverage, ?emitSpineEventTracked,? ?\\)/]];let rc=0;for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}if(/emitSpineEventTracked *:/.test(w)){console.log(\"FAIL emitSpineEventTracked must never appear as an object key\");rc=1;}else{console.log(\"PASS no emitter object key\");}const m=w.match(/const msgCtx = \\{.*?\\};/);if(!m){console.log(\"FAIL msgCtx literal not found\");rc=1;}else{const b=m[0].replace(\"emitSpineEvent: emitSpineEventTracked\",\"\");if(/readDetailGapPage|trackDetailCoverage|emitSpineEventTracked/.test(b)){console.log(\"FAIL msgCtx literal gained a key for this packet services (readDetailGapPage / trackDetailCoverage / emitSpineEventTracked are param-seam only; writeChildStdin is grandfathered from sibling 0009)\");rc=1;}else{console.log(\"PASS msgCtx literal frozen for this packet services\");}}process.exit(rc);'"
+    expect: "exit 0 and every printed line is PASS. Baseline (handlers not yet extracted): vacuous PASS via the leading guard. Post: pins the seam BOTH judges demanded — each handler declares its closure services as explicit named trailing parameters (parameter name = closure identifier), both delegation call sites pass the bare closure identifiers (emitSpineEventTracked identity is syntactic, not ctx-mediated), no emitSpineEventTracked object key exists anywhere, and the msgCtx literal gained none of the four service names. v2 2026-07-02: whitespace-tolerant (line-wrapped signatures/call sites accepted) with per-check PASS/FAIL diagnostics — the v1 silent single-line grep pin false-negatived on formatting and gave the revision cycle no signal"
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - child-protocol-response-shape-change
+  - new-dependency
+  - new-module-file
+  - captured-mutable-cells-in-new-handlers
+  - method-calling-threaded-callbacks
+  - msgctx-key-addition
+  - ctx-threaded-closure-services
+maker_tier: standard
+judge_tier: strong
+maker_provider: codex
+judge_provider: claude
+batch_key: preserve_refactor×effectful×runtime
+touchset: [runtime/index.js]
+estimates:
+  tokens: 60000
+  evidence_cost: medium
+depends_on: [hm-dispatch-guards-oracle-0001, hm-reporting-family-extract-0003]
+unlocks: [hm-dispatch-table-coherence-0011]
+status: landed
+outcome:
+  commit: "66778dc6007cea808288e1e5a18f31e321b2100b"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.85): The diff matches the redesigned plan exactly: both arm bodies are moved verbatim into module-level named functions with closure services (readDetailGapPage, writeChildStdin, trackDetailCoverage, emitSpineEventTracked) threaded as explicit bare-identifier trailing parameters rather than ctx members, satisfying both prior judges' rejections. Line-by-line body comparison shows no behavior change (identical validation calls, JSON shapes, onProgress echoes, and the omit-unless-trusted coverage/considered spreads). The emitter-seam-static-pin rung — purpose-built to catch the previously rejected ctx-threading shape — passes with all six sub-checks green, and complexity/file-excess/test/typecheck evidence all confirm improvement with no regressions."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch connector-detail-gap-store detail-coverage-recovered-gap-regression collection-profile; do db=pdpp_hone_hm_dpce7_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (26s) PASS; exit=0 djb2=706a2f7a bytes=75403 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=f7288cc4 bytes=279 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/baseline-3-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=f40441f4 bytes=7157 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/baseline-4-file-excess-remeasure.txt"
+    - "[baseline] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (4s) PASS; exit=0 djb2=4e3e5726 bytes=182 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/baseline-5-no-new-anon-callbacks.txt"
+    - "[baseline] emitter-seam-static-pin: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"runtime/index.js\",\"utf8\");if(!s.includes(\"async function handleDetailCoverageMsg\")){console.log(\"baseline: handlers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");const checks=[[\"page-request signature declares (msg, ctx, readDetailGapPage, writeChildStdin)\",/async function handleDetailGapsPageRequestMsg\\( ?msg, ?ctx, ?readDetailGapPage, ?writeChildStdin,? ?\\)/],[\"page-request delegation passes bare closure identifiers (msg, msgCtx, readDetailGapPage, writeChildStdin)\",/await handleDetailGapsPageRequestMsg\\( ?msg, ?msgCtx, ?readDetailGapPage, ?writeChildStdin,? ?\\)/],[\"coverage signature declares (msg, ctx, trackDetailCoverage, emitSpineEventTracked)\",/async function handleDetailCoverageMsg\\( ?msg, ?ctx, ?trackDetailCoverage, ?emitSpineEventTracked,? ?\\)/],[\"coverage delegation passes bare closure identifiers (msg, msgCtx, trackDetailCoverage, emitSpineEventTracked)\",/await handleDetailCoverageMsg\\( ?msg, ?msgCtx, ?trackDetailCoverage, ?emitSpineEventTracked,? ?\\)/]];let rc=0;for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}if(/emitSpineEventTracked *:/.test(w)){console.log(\"FAIL emitSpineEventTracked must never appear as an object key\");rc=1;}else{console.log(\"PASS no emitter object key\");}const m=w.match(/const msgCtx = \\{.*?\\};/);if(!m){console.log(\"FAIL msgCtx literal not found\");rc=1;}else{const b=m[0].replace(\"emitSpineEvent: emitSpineEventTracked\",\"\");if(/readDetailGapPage|trackDetailCoverage|emitSpineEventTracked/.test(b)){console.log(\"FAIL msgCtx literal gained a key for this packet services (readDetailGapPage / trackDetailCoverage / emitSpineEventTracked are param-seam only; writeChildStdin is grandfathered from sibling 0009)\");rc=1;}else{console.log(\"PASS msgCtx literal frozen for this packet services\");}}process.exit(rc);' -> exit 0 (0s) PASS; exit=0 djb2=0d8594aa bytes=47 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/baseline-6-emitter-seam-static-pin.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch connector-detail-gap-store detail-coverage-recovered-gap-regression collection-profile; do db=pdpp_hone_hm_dpce7_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (26s) PASS; exit=0 djb2=854e32a9 bytes=75405 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/post-1-direct-test.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/post-2-typecheck.txt"
+    - "[post] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=fe786bb1 bytes=278 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/post-3-complexity-remeasure.txt"
+    - "[post] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=4dcc7a75 bytes=7155 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/post-4-file-excess-remeasure.txt"
+    - "[post] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (4s) PASS; exit=0 djb2=4e3e5726 bytes=182 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/post-5-no-new-anon-callbacks.txt"
+    - "[post] emitter-seam-static-pin: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"runtime/index.js\",\"utf8\");if(!s.includes(\"async function handleDetailCoverageMsg\")){console.log(\"baseline: handlers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");const checks=[[\"page-request signature declares (msg, ctx, readDetailGapPage, writeChildStdin)\",/async function handleDetailGapsPageRequestMsg\\( ?msg, ?ctx, ?readDetailGapPage, ?writeChildStdin,? ?\\)/],[\"page-request delegation passes bare closure identifiers (msg, msgCtx, readDetailGapPage, writeChildStdin)\",/await handleDetailGapsPageRequestMsg\\( ?msg, ?msgCtx, ?readDetailGapPage, ?writeChildStdin,? ?\\)/],[\"coverage signature declares (msg, ctx, trackDetailCoverage, emitSpineEventTracked)\",/async function handleDetailCoverageMsg\\( ?msg, ?ctx, ?trackDetailCoverage, ?emitSpineEventTracked,? ?\\)/],[\"coverage delegation passes bare closure identifiers (msg, msgCtx, trackDetailCoverage, emitSpineEventTracked)\",/await handleDetailCoverageMsg\\( ?msg, ?msgCtx, ?trackDetailCoverage, ?emitSpineEventTracked,? ?\\)/]];let rc=0;for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}if(/emitSpineEventTracked *:/.test(w)){console.log(\"FAIL emitSpineEventTracked must never appear as an object key\");rc=1;}else{console.log(\"PASS no emitter object key\");}const m=w.match(/const msgCtx = \\{.*?\\};/);if(!m){console.log(\"FAIL msgCtx literal not found\");rc=1;}else{const b=m[0].replace(\"emitSpineEvent: emitSpineEventTracked\",\"\");if(/readDetailGapPage|trackDetailCoverage|emitSpineEventTracked/.test(b)){console.log(\"FAIL msgCtx literal gained a key for this packet services (readDetailGapPage / trackDetailCoverage / emitSpineEventTracked are param-seam only; writeChildStdin is grandfathered from sibling 0009)\");rc=1;}else{console.log(\"PASS msgCtx literal frozen for this packet services\");}}process.exit(rc);' -> exit 0 (0s) PASS; exit=0 djb2=51926334 bytes=477 receipt=quality/receipts/hm-detail-page-coverage-extract-0007/post-6-emitter-seam-static-pin.txt"
+  tokens_actual: 123043
+  lesson: null
+resets:
+  - at: "2026-07-02T13:11:45.510Z"
+    from_status: reverted
+    reason: "retry cross-pair: run-6 REJECT (effectful emitSpineEventTracked→ctx emitSpineEvent substitution) threads via retry-context; codex maker proven on mandate-heavy packets"
+  - at: "2026-07-02T14:44:29.353Z"
+    from_status: reverted
+    reason: "run-8 packet-redesign: honor the two independent judge REJECTs (run-6 codex clm-...-1, run-7 claude clm-...-3) — seam re-authored from msgCtx-threading to explicit named trailing parameters (parameter name = closure identifier, bare-identifier call sites, msgCtx literal frozen) + new emitter-seam-static-pin rung that fails the rejected shapes; complexity floor re-pinned 194->90"
+  - at: "2026-07-02T15:23:13.601Z"
+    from_status: reverted
+    reason: "run-8 pin-rung repair (v3): job-3 red was a packet-authoring false negative, NOT maker error — the v1 seam-pin forbade writeChildStdin in the msgCtx literal, but landed sibling 0009 had legitimately added that key hours earlier, so the pin was guaranteed RED for any diff; v1 was also silent (no per-check output) so the revision cycle had no signal, and brittle to line-wrapped signatures. v3: whitespace-tolerant node checker with per-check PASS/FAIL diagnostics, freeze list corrected to readDetailGapPage/trackDetailCoverage/emitSpineEventTracked (writeChildStdin grandfathered); verified to fail both judge-rejected shapes and pass the mandated shape wrapped or not"

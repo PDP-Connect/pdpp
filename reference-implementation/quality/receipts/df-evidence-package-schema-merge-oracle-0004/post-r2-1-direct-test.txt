@@ -1,0 +1,21 @@
+# hone work df-evidence-package-schema-merge-oracle-0004 — post-r2 rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/package-rs-client-merge-schema.test.js ]; then node --test test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi'
+# expect: baseline: oracle-not-yet-authored (file absent). Post: all pass; the test constructs clients via createPackageRsClient with an injected fake fetch and never patches module internals
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ canonical-shape children flatten connectors[].streams[] into data.streams tagged with each child source, preserving concatenated data.connectors + counts (1.780782ms)
+✔ a legacy flat-shape child (data.streams directly on the body) still merges alongside a canonical child (0.315716ms)
+✔ dedupe key is name::grant_id::connection_id: same stream name from two members with different grant_id survives twice, a duplicate within one member collapses (0.358296ms)
+✔ granted_connections dedupe by connection_id::grant_id (0.245605ms)
+✔ source-tag precedence: an item-level source object spreads OVER the member tag (0.188664ms)
+✔ one failed child sets meta.package.partial true while the merge continues from ok children (0.284895ms)
+✔ when ALL children fail, the first result is returned as-is (0.251065ms)
+✔ data.package = { grant_package: true, member_count, sources } is always attached (0.229054ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 85.514923

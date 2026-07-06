@@ -1,0 +1,120 @@
+candidate_id: pl1-manual-upload-insert-guards-0010
+created: "2026-07-02T10:09:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/stores/manual-upload-artifact-store
+files: [server/stores/manual-upload-artifact-store.ts]
+symbols: [normalizeInsert]
+public_surface:
+  - "manual upload artifact insert validation errors: 'artifactId is required.', 'ownerSubjectId is required.', 'connectorId is required.', 'fileName is required.', 'stagingPath is required.', \"Invalid manual upload artifact status '<s>'.\""
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "normalizeInsert (cc16, scope-fn red_scan empty) validates a manual-upload artifact insert then builds the persisted row. It braids two concerns: REQUIRED-FIELD + status-enum VALIDATION (five presence guards plus a VALID_STATUSES membership check, each with a distinct thrown Error) and ROW CONSTRUCTION (the defaulted object literal). Separating validation from construction is a genuine concern split: extracting the guard cluster into a named pure assert helper leaves normalizeInsert as a straight builder, cutting the branch count while every Error message and default stays byte-identical. Pure function, no I/O, no grant/consent."
+plan:
+  transform_class: extract-validation-guard
+  instruction: "In server/stores/manual-upload-artifact-store.ts ONLY. Create ONE module-level (column-0) pure named function ABOVE normalizeInsert:\n\nfunction assertManualUploadArtifactInsert(record) — throws on invalid input, returns nothing. Contains VERBATIM the six guards currently at the top of normalizeInsert (L60-67): `if (!record.artifactId) throw new Error('artifactId is required.'); if (!record.ownerSubjectId) throw new Error('ownerSubjectId is required.'); if (!record.connectorId) throw new Error('connectorId is required.'); if (!record.fileName) throw new Error('fileName is required.'); if (!record.stagingPath) throw new Error('stagingPath is required.'); if (!VALID_STATUSES.has(record.status ?? 'uploaded')) { throw new Error(\\`Invalid manual upload artifact status '${record.status}'.\\`); }`. VALID_STATUSES is module-scope — reference directly.\n\nSEAM MECHANISM (explicit): assertManualUploadArtifactInsert takes ONE explicit parameter named `record` (== the caller's parameter identifier), so normalizeInsert delegates with a bare identifier: its body becomes `assertManualUploadArtifactInsert(record); const now = record.now ?? new Date().toISOString(); return { ...the existing object literal unchanged... };`.\n\nHARD PRESERVE: the exact order of the six guards (artifactId, ownerSubjectId, connectorId, fileName, stagingPath, then status), every Error message byte-for-byte (including the status template literal with `record.status` interpolation), the `record.status ?? 'uploaded'` default in the membership check, the `const now = record.now ?? new Date().toISOString();` line staying in normalizeInsert AFTER the assert, and the ENTIRE returned object literal with its exact keys, `?? null`/`?? 0` defaults, stringifyJson(record.validation)/stringifyJson(record.error) calls, and createdAt/updatedAt = ?? now. NO new module file, NO behavior change."
+expected_quality_gain: low
+owner_attention_reduction: low
+product_impact: none
+priority:
+  score: 42
+  computed: "2026-07-02T10:09:00.000Z"
+  inputs:
+    mass: 11
+    churn: 6
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: low
+  property_at_risk: manual-upload insert validation — a dropped required-field guard or loosened status check would let a malformed artifact row persist
+authoring_evidence:
+  - kind: red-probe
+    detail: "scope-fn --target on manual-upload-artifact-store.ts::normalizeInsert → red_scan [], cognitive_before 16; body has no grant/consent/bearer/token markers"
+    result: pure validator+builder
+  - kind: coverage-check
+    detail: normalizeInsert reached through the staged-artifact insert path exercised by test/manual-upload-draft-connection-route.test.js (posts a staged artifact then reads it back; status-enum and required-field paths covered end-to-end)
+    result: indirect but end-to-end route oracle exercises the insert
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1manualupload; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc'"
+    expect: manual-upload-draft-connection-route suite green with unchanged pass count; ephemeral DB isolates the artifact rows
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/stores/manual-upload-artifact-store.ts::normalizeInsert'"
+    expect: found=true; cognitive_before strictly below baseline 16 and below floor 10 (six-guard cluster removed)
+    expect_check:
+      type: scope_fn_lt
+      value: 10
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/manual-upload-artifact-store.ts' --cog 5"
+    expect: file_excess strictly below the pre-edit baseline (19); the only NEW flagged name permitted is assertManualUploadArtifactInsert
+    expect_check:
+      type: file_excess_lt
+      value: 19
+  - rung: seam-and-message-pin
+    command: "cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/stores/manual-upload-artifact-store.ts\",\"utf8\");const w=s.replace(/\\s+/g,\" \");let rc=0;const msgs=[\"artifactId is required.\",\"ownerSubjectId is required.\",\"connectorId is required.\",\"fileName is required.\",\"stagingPath is required.\",\"Invalid manual upload artifact status\"];for(const m of msgs){const ok=s.includes(m);console.log((ok?\"PASS \":\"FAIL \")+\"message preserved: \"+m);if(!ok)rc=1;}if(!s.includes(\"function assertManualUploadArtifactInsert\")){console.log(\"baseline: guard not extracted; vacuous PASS for seam\");process.exit(rc);}const seam=[[\"assertManualUploadArtifactInsert(record) declared\",/function assertManualUploadArtifactInsert\\( ?record,? ?\\)/],[\"delegated with bare identifier\",/assertManualUploadArtifactInsert\\( ?record ?\\)/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);'"
+    expect: "exit 0, every line PASS. All six error messages enforced at baseline+post. Post: the guard helper is declared with the single named param `record` and delegated with a bare identifier."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - error-message-change
+  - status-enum-change
+  - guard-order-change
+  - new-dependency
+  - new-module-file
+maker_tier: cheap
+judge_tier: standard
+maker_provider: claude
+judge_provider: null
+batch_key: preserve_refactor×pure_logic×server/stores/manual-upload-artifact-store
+touchset: [server/stores/manual-upload-artifact-store.ts]
+estimates:
+  tokens: 28000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1manualupload; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=4e9c5209 bytes=1852 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/stores/manual-upload-artifact-store.ts::normalizeInsert' -> exit 0 (0s) PASS; exit=0 djb2=7c8eec94 bytes=348 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/baseline-3-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/manual-upload-artifact-store.ts' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=aca2f84f bytes=572 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/baseline-4-file-excess-remeasure.txt"
+    - "[baseline] seam-and-message-pin: cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/stores/manual-upload-artifact-store.ts\",\"utf8\");const w=s.replace(/\\s+/g,\" \");let rc=0;const msgs=[\"artifactId is required.\",\"ownerSubjectId is required.\",\"connectorId is required.\",\"fileName is required.\",\"stagingPath is required.\",\"Invalid manual upload artifact status\"];for(const m of msgs){const ok=s.includes(m);console.log((ok?\"PASS \":\"FAIL \")+\"message preserved: \"+m);if(!ok)rc=1;}if(!s.includes(\"function assertManualUploadArtifactInsert\")){console.log(\"baseline: guard not extracted; vacuous PASS for seam\");process.exit(rc);}const seam=[[\"assertManualUploadArtifactInsert(record) declared\",/function assertManualUploadArtifactInsert\\( ?record,? ?\\)/],[\"delegated with bare identifier\",/assertManualUploadArtifactInsert\\( ?record ?\\)/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);' -> exit 0 (0s) PASS; exit=0 djb2=f51c10c2 bytes=359 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/baseline-5-seam-and-message-pin.txt"
+    - "[post] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1manualupload; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=4cb5f13b bytes=1850 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/post-1-direct-test.txt"
+    - "[post] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/post-2-typecheck.txt"
+    - "[post] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/stores/manual-upload-artifact-store.ts::normalizeInsert' -> exit 0 (0s) PASS; exit=0 djb2=3f32eea0 bytes=347 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/post-3-complexity-remeasure.txt"
+    - "[post] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/manual-upload-artifact-store.ts' --cog 5 -> exit 0 (0s) FAIL: expect_check[file_excess_lt]: NEW function above the cog threshold post-change (baseline flagged=[numberOrNull,normalizeInsert,normalizePatch,update] post=[numberOrNull,assertManualUploadArtifactInsert,normalizeInsert,normalizePatch,update]) — complexity moved, not reduced; exit=0 djb2=f6746af8 bytes=683 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/post-4-file-excess-remeasure.txt"
+    - "[post-r1] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1manualupload; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=236d6477 bytes=1853 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/post-r1-1-direct-test.txt"
+    - "[post-r1] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/post-r1-2-typecheck.txt"
+    - "[post-r1] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/stores/manual-upload-artifact-store.ts::normalizeInsert' -> exit 0 (0s) PASS; exit=0 djb2=3f32eea0 bytes=347 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/post-r1-3-complexity-remeasure.txt"
+    - "[post-r1] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/manual-upload-artifact-store.ts' --cog 5 -> exit 0 (0s) FAIL: expect_check[file_excess_lt]: NEW function above the cog threshold post-change (baseline flagged=[numberOrNull,normalizeInsert,normalizePatch,update] post=[numberOrNull,assertManualUploadArtifactInsert,normalizeInsert,normalizePatch,update]) — complexity moved, not reduced; exit=0 djb2=f6746af8 bytes=683 receipt=quality/receipts/pl1-manual-upload-insert-guards-0010/post-r1-4-file-excess-remeasure.txt"
+  tokens_actual: 44186
+  lesson: "transform failed its own evidence ladder at 'file-excess-remeasure' — prior for preserve_refactor×pure_logic×server/stores/manual-upload-artifact-store down"
+resets:
+  - at: "2026-07-02T22:07:57.425Z"
+    from_status: reverted
+    reason: "re-route: extraction class -> codex maker/claude judge (tonight forced claude-maker = wrong pairing, all reverted)"
+  - at: "2026-07-05T00:00:00.000Z"
+    from_status: pending
+    reason: "re-anchor .js->.ts after Jul-3 unification in-place TS migration; baselines fresh-measured and unchanged (normalizeInsert cc16/file_excess19)"
+  - at: "2026-07-06T04:37:19.794Z"
+    from_status: skipped
+    reason: "round-3 retry: codex sandbox cannot write cross-package touchsets (workspace-write root = reference-implementation); switching to claude maker / codex judge"

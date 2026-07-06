@@ -1,0 +1,28 @@
+# hone work pl1-spine-source-resolvers-0003 — baseline rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'server/connector-instance-utils.js' --cog 5
+# expect: file_excess strictly below the pre-edit baseline (27); NEW flagged names limited to the two resolvers (each should sit near cc5)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "server/connector-instance-utils.js",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 4,
+  "flagged_count": 2,
+  "file_excess": 27,
+  "flagged": [
+    {
+      "fn": "parseSpineSourceShape",
+      "line": 48,
+      "cc": 14,
+      "excess": 9
+    },
+    {
+      "fn": "deriveSpineSource",
+      "line": 78,
+      "cc": 23,
+      "excess": 18
+    }
+  ],
+  "red_scan": []
+}

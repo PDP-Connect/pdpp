@@ -1,0 +1,21 @@
+# hone work hm-await-order-record-batch-0002c — post rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-record-batch.test.js ]; then node --test test/runtime-msg-order-record-batch.test.js test/runtime-handle-msg-dispatch.test.js; else node --test test/runtime-handle-msg-dispatch.test.js; fi
+# expect: baseline (new file absent): landed hm-0001 dispatch-guards oracle (7 tests) green; post: the new single-contract oracle green alongside it, 0 fail, no new skips
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ handleMsg dispatch: unrecognized msg.type fails the run naming the unknown type (70.729767ms)
+✔ handleMsg dispatch: a RECORD after DONE fails naming the after-DONE guard (77.992818ms)
+✔ handleMsg dispatch: malformed JSONL after DONE fails naming the invalid-JSONL-after-DONE guard (73.466257ms)
+✔ handleMsg dispatch: a second INTERACTION while one is unresolved is intercepted and terminates the child (576.40609ms)
+✔ handleMsg dispatch: duplicate ASSISTANCE.assistance_request_id fails naming the duplicate id (75.783998ms)
+✔ handleMsg dispatch: ASSISTANCE_STATUS for an unknown assistance_request_id fails naming the id (55.499555ms)
+✔ handleMsg dispatch: a DETAIL_GAP that exhausts its recovery budget on a non-transient error emits run.detail_gap_terminal (78.245042ms)
+✔ RECORD arm: PDPP_RUNTIME_BATCH_SIZE=2 splits 3 records into exactly 2+1 ingest POSTs (70.26463ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1147.297442

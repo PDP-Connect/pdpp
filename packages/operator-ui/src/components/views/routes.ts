@@ -12,10 +12,10 @@
  * Clean owner-route topology (`redesign-owner-console-product-experience`
  * §10.B): the live console serves owner sections as clean top-level nouns:
  * root `/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`,
- * `/connect`, `/notifications`, `/schedules`, and clean deployment/admin nouns. The removed
- * legacy console prefix is intentionally not preserved as redirects. The
- * `/sandbox` mirror is deliberately unchanged: it keeps its `/sandbox` base and
- * its legacy
+ * `/connect`, `/notifications`, `/schedules`, and clean deployment/admin nouns.
+ * The removed legacy console prefix is intentionally not preserved as
+ * redirects. The `/sandbox` mirror is deliberately unchanged: it keeps its
+ * `/sandbox` base and its legacy
  * `records`/`runs`/`traces` folder segments, so `makeRoutes` takes an optional
  * segment override that defaults to the legacy names.
  */

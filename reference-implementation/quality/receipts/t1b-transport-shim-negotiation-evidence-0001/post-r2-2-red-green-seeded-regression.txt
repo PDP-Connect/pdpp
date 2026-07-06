@@ -1,0 +1,80 @@
+# hone work t1b-transport-shim-negotiation-evidence-0001 — post-r2 rung 'red-green-seeded-regression'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js
+# expect: with the transient seeded break of the accepts long-form expansion applied: at least one new test FAILS (paste output); after restore: all green and git diff -- server/transport.js is empty
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ createApp() is native Fastify — no express middleware stack (15.360082ms)
+✔ routes declared with { contract } carry the contract-package schema directly on the Fastify route (6.950277ms)
+✔ unknown contract operation ids fail fast at registration time (1.170021ms)
+✔ every @pdpp/reference-contract manifest matches a live Fastify route on the reference server (131.963021ms)
+✔ every @pdpp/reference-contract manifest is declared via { contract: "opId" } at registration time (97.779414ms)
+✔ req.is(type) strips content-type parameters before matching (10.583274ms)
+✔ req.is(types[]) returns the first matching candidate string, not true (2.592938ms)
+✔ req.is(type) returns false when there is no content-type header (2.580027ms)
+✔ req.accepts(types) exact short-form match returns the matched candidate (2.686519ms)
+✔ req.accepts(types) expands short-form to application/<short> for long-form Accept headers (9.714559ms)
+✔ req.accepts(types) with */* Accept header returns the first candidate (2.870653ms)
+✔ req.accepts(types) with no Accept header returns the first candidate (2.530417ms)
+[21:57:44.693] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "POST"
+    [35murl[39m: "/is-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 4
+✔ req.accepts(types) returns false when nothing matches (2.910523ms)
+(node:2050054) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 exit listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ req.accepts(types) candidate order decides which candidate wins when the Accept header matches both (2.461695ms)
+✔ req.get(name) looks up headers case-insensitively (2.945455ms)
+[21:57:44.696] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "POST"
+    [35murl[39m: "/is-array-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 1
+[21:57:44.699] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/is-none-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:57:44.714] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-star-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:57:44.711] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-json-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:57:44.701] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-html-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:57:44.717] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-missing-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:57:44.720] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-none-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:57:44.722] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-order-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:57:44.725] [32mINFO[39m (2050054): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/get-header-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1250.407021

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { createNekoCompanion } from './neko-adapter.js';
-import { createNekoBrowserClient } from './neko-browser-client.js';
+import { createNekoBrowserClient } from './neko-browser-client.ts';
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {

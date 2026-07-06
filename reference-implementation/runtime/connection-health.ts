@@ -2910,10 +2910,12 @@ function isCompleteTransientDeadLetterSummary(
   );
 }
 
+const LOCAL_DEVICE_5XX_PATTERN = /local device request failed:\s*5\d\d/;
+
 function isTransientDeadLetterErrorClass(errorClass: string): boolean {
   const normalized = errorClass.toLowerCase();
   return (
-    /local device request failed:\s*5\d\d/.test(normalized) ||
+    LOCAL_DEVICE_5XX_PATTERN.test(normalized) ||
     normalized.includes("request timed out") ||
     normalized.includes("timeout") ||
     normalized.includes("fetch failed") ||

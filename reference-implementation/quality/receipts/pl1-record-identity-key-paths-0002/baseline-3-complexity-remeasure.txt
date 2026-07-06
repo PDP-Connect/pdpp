@@ -1,0 +1,17 @@
+# hone work pl1-record-identity-key-paths-0002 — baseline rung 'complexity-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --target 'server/record-expand-helpers.js::assertRecordIdentity'
+# expect: found=true; cognitive_before strictly below baseline 24 and below floor 10 (both comparison ladders removed)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "server/record-expand-helpers.js::assertRecordIdentity",
+  "file": "server/record-expand-helpers.js",
+  "function": "assertRecordIdentity",
+  "found": true,
+  "cognitive_before": 4,
+  "line": 75,
+  "caller_count": 8,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

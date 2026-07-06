@@ -1,0 +1,78 @@
+# hone repo profile — EXAMPLE: the PDPP reference-implementation.
+# This is the config that made the original PDPP code-quality instruments repo-independent:
+# every hardcoded PDPP-ism (owned dirs, grant/OAuth security markers, MCP/pagination public
+# nouns, no-go paths) became data here. Copy to <repo>/quality/hone.yaml and adjust.
+version: 1
+
+commands:
+  biome: npx biome
+  test: pnpm test
+  typecheck: pnpm typecheck
+
+analysis:
+  owned_dirs: [server, runtime, lib]
+  scan_depth: 2
+  cog_threshold: 5
+  seam_cc: 12
+  churn_window: 6 months ago
+
+markers:
+  security: ["grant.streams", grant_stream_not_allowed, streamGrant, requireGrant, field_not_granted,
+    "access_mode", bearer, introspect, oauth, "redirect_uri", forbiddenIp, isForbiddenIp, issueToken,
+    signToken, consent, "scope_enforce", "ai_training", "CREATE TABLE", "ALTER TABLE", "DROP TABLE",
+    "CREATE INDEX", "authorization_details", pkce, "code_verifier"]
+  storage: ["INSERT INTO", "UPDATE ", "DELETE FROM", "db.prepare", "db.exec", "pool.query",
+    "client.query", "transaction(", BEGIN, COMMIT, ROLLBACK, sqlite, postgres, better-sqlite3]
+  public_contract: [openapi, "mcp_", mcpTool, toolResult, structuredContent, pagination, paginate,
+    nextCursor, "next_cursor", projection, "error_code", errorCode, "problem+json", problemJson,
+    "grant_model", grantModel, "content_ladder", contentLadder, "authorization_details",
+    "resource_indicator", "scope_enforce", well-known, openid-configuration]
+  nogo_path_pattern: auth|grant|consent|token|bearer|owner-session|csrf|scoping|spine-security|manifest-resolution
+
+classification:
+  behavior_status_default: likely_intended
+  public_surface_globs: ["server/routes/**", "server/openapi*", "server/mcp*", "lib/errors*"]
+  generated_globs: []
+  freeze_globs: []
+
+policy:
+  autonomy: autonomous_branch
+
+agenda:
+  # Human-fixed doctrine (budget direction + named targets), fed verbatim to `hone agenda`.
+  doctrine_path: /home/tnunamak/code/dotfiles/ai/research/code-quality/THE-PROJECT-QUALITY-PORTFOLIO-MACHINE.md
+  # Machine-readable doctrine projection: FIRST-CLASS chooser anchors. Every target must be
+  # ranked or explicitly NOT-chosen; demoting one is an escalation (human_decisions_needed).
+  # `keywords` drive realized-spend attribution in batch records.
+  named_targets:
+    - id: storage-backend-contract-unification
+      description: "server/postgres-storage.js and the sqlite backend share ZERO exported names — two storage contracts where the doctrine requires one seam with backends behind it"
+      evidence_hint: "sensor: hotspots/test-signals on server/postgres-storage.js + storage-backend.js; b-inventory storage rows"
+      keywords: [storage, postgres-storage, sqlite, storage-backend]
+    - id: auth-substrate-policy-split
+      description: "server/auth.js (~5.9k LOC) braids commodity OAuth substrate with product policy — split substrate from policy behind a small interface (nogo-classified: B campaign, never autonomous)"
+      evidence_hint: "sensor: hotspots server/auth.js loc/cog; requires auth-mutation-killing-tests first"
+      keywords: [auth.js, oauth, substrate, auth-substrate]
+    - id: runtime-handleMsg-decomplect
+      description: "runtime/index.js handleMsg cc=194 — the highest-cc owned function; decomplect into named sub-handlers with explicit state"
+      evidence_hint: "sensor: runtime/index.js:cc[handleMsg]"
+      keywords: [handleMsg, runtime/index.js]
+    - id: anon-callback-prevention-ratchet
+      description: "lint/CI ratchet blocking new high-cc anonymous callbacks — prevention that stops the complexity distribution regenerating"
+      evidence_hint: "sensor: callback-smells by_class/b_flagged; scripts/code-quality/check-callback-ratchet.mjs"
+      keywords: [callback, ratchet, anonymous]
+    - id: skipped-test-audit
+      description: "audit every skipped test (static skip markers AND runtime-skipped subtests) — each skip gets keep-with-reason, fix, or delete"
+      evidence_hint: "sensor: test-signals skips ranking (static floor); runtime '# skipped' totals differ — audit both"
+      keywords: [skip, skipped-test]
+    - id: auth-mutation-killing-tests
+      description: "auth mutation score ~60% — cookie-security and session-expiry mutants survived; add mutant-killing tests BEFORE any auth refactor"
+      evidence_hint: "incident: prior mutation run (cookie-security/session-expiry survivors); test-signals zero_by_name on auth-adjacent files"
+      keywords: [mutation, cookie, session-expiry, auth test]
+  # Doctrine budget bands: % of realized batch spend per doctrine class (report divergence
+  # flags). T0 carries prevention (normalizeDoctrineClass folds prevention -> T0).
+  budget_bands:
+    B: [40, 50]
+    A2: [30, 40]
+    T1: [10, 15]
+    T0: [5, 10]

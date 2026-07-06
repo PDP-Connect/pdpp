@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { iterateDynamicSqlAcknowledged } from '../lib/db.ts';
 import { closeDb, getDb, initDb } from '../server/db.js';
-import { sqliteCountIndexableTextValues } from '../server/search-index-counts.js';
+import { sqliteCountIndexableTextValues } from '../server/search-index-counts.ts';
 
 afterEach(() => {
   closeDb();

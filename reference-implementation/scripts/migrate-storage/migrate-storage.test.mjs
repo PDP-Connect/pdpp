@@ -43,7 +43,7 @@ import {
   openSqliteSource,
   describeSourceColumns,
   streamRows,
-} from './sqlite-source.mjs';
+} from './sqlite-source.ts';
 import { buildRowTransformer } from './transformers.mjs';
 import { initDb, closeDb } from '../../server/db.js';
 

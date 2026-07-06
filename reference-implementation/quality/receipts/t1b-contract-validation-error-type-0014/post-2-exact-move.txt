@@ -1,0 +1,27 @@
+# hone work t1b-contract-validation-error-type-0014 — post rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/contract-validation.js
+# expect: if-cascade byte-identical inside the new named fn; pdppErrorBody body otherwise untouched
+# exit: 0  duration: 0s  verdict: PASS
+
+diff --git a/reference-implementation/server/contract-validation.js b/reference-implementation/server/contract-validation.js
+index 90a2f9fd1..becd09571 100644
+--- a/reference-implementation/server/contract-validation.js
++++ b/reference-implementation/server/contract-validation.js
+@@ -138,0 +139,8 @@ function paramHintFromFailure(failure) {
++function errorTypeForStatus(status) {
++  if (status === 400) return 'invalid_request_error';
++  if (status === 401) return 'authentication_error';
++  if (status === 403) return 'permission_error';
++  if (status === 404) return 'not_found_error';
++  return 'api_error';
++}
++
+@@ -140,7 +148 @@ function pdppErrorBody({ status, code, message, param, requestId }) {
+-  const type = (() => {
+-    if (status === 400) return 'invalid_request_error';
+-    if (status === 401) return 'authentication_error';
+-    if (status === 403) return 'permission_error';
+-    if (status === 404) return 'not_found_error';
+-    return 'api_error';
+-  })();
++  const type = errorTypeForStatus(status);

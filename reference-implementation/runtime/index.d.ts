@@ -101,9 +101,7 @@ export interface RuntimeRunConnectorOptions {
    * credential store. Carries ONLY this one connection's secret env var(s)
    * and is merged LAST over `process.env` at spawn, so a stored credential
    * overrides any process-global provider secret. Null/absent means no stored
-   * credential fragment was supplied; configured reference-server
-   * static-secret runs fail closed before spawn in that case, while standalone
-   * connector execution may still use process env.
+   * credential applies and the legacy process-env path is used.
    * See add-static-secret-owner-connect-primitive design Decision 5.
    */
   staticSecretEnv?: Record<string, string> | null;
@@ -148,7 +146,7 @@ export interface RuntimeRunConnectorResult {
   automation_mode?: RuntimeRunAutomationMode | null;
   checkpoint_summary?: Record<string, unknown> | null;
   connector_diagnostics?: ConnectorRunDiagnostics;
-  connector_error?: { code?: string | null; message?: string; retryable?: boolean | null } | null;
+  connector_error?: { message?: string; code?: string; retryable?: boolean | null } | null;
   failure_message?: string;
   failure_origin?: RuntimeFailureOrigin;
   known_gaps?: Record<string, unknown>[] | null;

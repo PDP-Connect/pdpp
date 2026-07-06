@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   mapSearchFanout,
   resolveSearchFanoutConcurrency,
-} from '../server/search-fanout.js';
+} from '../server/search-fanout.ts';
 
 test('search fanout is unbounded for non-Postgres unless configured', () => {
   assert.equal(

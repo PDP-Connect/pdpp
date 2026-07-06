@@ -1,0 +1,5 @@
+# hone work hm-done-terminal-extract-0010 — post rung 'typecheck'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit
+# expect: 0 errors — the strongest cheap detector for a missed cell-rename site
+# exit: 0  duration: 4s  verdict: PASS
+

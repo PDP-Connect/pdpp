@@ -1,0 +1,76 @@
+candidate_id: df-evidence-plan-hash-characterization-0003
+created: "2026-07-02T00:25:00.000Z"
+repo_sha: "5f513d99295d14abb092db521a89ee7c72847d33"
+subsystem: server/search
+files:
+  - server/record-filters.js
+  - test/record-filters-plan-hash.test.js
+  - server/search.js
+  - server/search-semantic.js
+symbols: [hashSearchPlanSummary]
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "hashSearchPlanSummary (server/record-filters.js:233-250) is a pure canonicalization whose output is a PERSISTED cache key: it is stored as plan_hash in lexical_search_snapshots (server/search.js:1187, INSERT at :161-175) and semantic_search_snapshots (server/search-semantic.js:2179, INSERT at :2206) on BOTH storage backends (sqlite server/db.js:1122,1218; postgres server/postgres-storage.js:1218,1243 — plan_hash TEXT NOT NULL), and stale-cursor detection compares it on resume (server/search.js:1591; server/search-semantic.js:2378-2412 wraps it in a plan/backend envelope). ZERO tests reference it (grep hashSearchPlanSummary in test/ → no matches, verified 2026-07-01). An extraction lane previously SKIPPED refactoring around this function for exactly that reason: any well-meaning cleanup — renaming the compressed keys c/e/i/s/f, tweaking a sort, reordering the JSON envelope — silently changes every stored plan_hash and invalidates all persisted search snapshots/cursors while types stay green. This packet CREATES the missing characterization oracle pinning the exact persisted strings, which protects against silent cache invalidation and unlocks the follow-up refactor of the search-plan pipeline (expected follow-up candidate: server-record-filters-plan-hash-refactor-0001). Evidence generation only — no implementation change."
+plan:
+  transform_class: characterization-test
+  instruction: "Create test/record-filters-plan-hash.test.js importing { hashSearchPlanSummary } from ../server/record-filters.js (import style precedent: test/schema-capability-truth.test.js:30). Pin the persisted contract, not trivia: (1) the EXACT full output string for one representative plan — two connectors, multiple planEntries, mixed connectorInstanceId (null and set), deliberately unsorted searchableFields — pasted verbatim as the expected value (this is the characterization: the string IS the persisted cache key); (2) input-order independence — shuffled perConnectorPlans order, shuffled planEntries order, shuffled searchableFields order all produce the identical string; (3) isOwner true vs false produce different strings; (4) a missing/undefined connectorInstanceId normalizes to i:null identically to an explicit null; (5) empty perConnectorPlans is stable and still distinguishes isOwner. server/record-filters.js must be byte-identical at commit; seeded regressions during evidence are transient and reverted."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: low
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "a characterization that pins the wrong invariant (e.g. only structural properties, not the exact persisted string) would let a silent format change through and freeze nothing; conversely pinning volatile trivia would block legitimate work — the exact-string + canonicalization pair is the contract"
+authoring_evidence:
+  - kind: coverage-sweep
+    detail: grep -rn hashSearchPlanSummary test/ (and packages test dirs)
+    result: zero matches — the function has no direct or indirect by-name test evidence
+  - kind: persistence-trace
+    detail: "grep -rn hashSearchPlanSummary|plan_hash across server/"
+    result: "producer record-filters.js:233; consumers search.js:44,161-175,1187,1591,1620 and search-semantic.js:58,2179,2206-2220,2378-2412; schema db.js:1122,1218 + postgres-storage.js:1218,1243 — the output is durable state on both backends and feeds stale-cursor detection"
+  - kind: function-read
+    detail: "server/record-filters.js:233-250 read in full"
+    result: "pure; canonicalizes via per-level sorts (searchableFields sort at :240, planEntries sort at :242-247, connector sort at :248) then JSON.stringify({ isOwner, summary }) at :249 — every one of those details is hash-visible and currently unpinned"
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/record-filters-plan-hash.test.js test/schema-capability-truth.test.js"
+    expect: new file green; schema-capability-truth pass count unchanged (shared-module import unaffected)
+  - rung: red-then-green-canonicalization
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --quiet -- server/record-filters.js && sed -i 's/searchableFields.slice().sort()/searchableFields.slice()/' server/record-filters.js && node --test test/record-filters-plan-hash.test.js; git checkout -- server/record-filters.js"
+    expect: seeded run FAILS (field-order canonicalization is pinned); guard confirmed the file was clean before seeding; checkout restores it — paste failing output
+  - rung: red-then-green-envelope
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --quiet -- server/record-filters.js && sed -i 's/JSON.stringify({ isOwner, summary })/JSON.stringify({ summary, isOwner })/' server/record-filters.js && node --test test/record-filters-plan-hash.test.js; git checkout -- server/record-filters.js"
+    expect: seeded run FAILS (exact persisted string incl. JSON key order is pinned); restore leaves a clean tree — paste failing output
+  - rung: byte-identity
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/record-filters.js && git status --short test/record-filters-plan-hash.test.js"
+    expect: empty diff for server/record-filters.js; the new test file is the only addition in the touchset
+not_allowed: [implementation-change, contract-change, snapshot-testing-unrelated-modules, new-dependency]
+maker_tier: standard
+judge_tier: standard
+maker_provider: claude
+judge_provider: null
+batch_key: generate_evidence×pure_logic×server/search
+touchset: [test/record-filters-plan-hash.test.js]
+estimates:
+  tokens: 45000
+  evidence_cost: low
+depends_on: []
+unlocks: [server-record-filters-plan-hash-refactor-0001]
+status: skipped
+outcome:
+  commit: null
+  skip_reason: "maker-no-diff: maker completed but modified nothing"
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/record-filters-plan-hash.test.js test/schema-capability-truth.test.js -> exit 0 (0s) PASS; exit=0 djb2=9ec35d95 bytes=789 receipt=quality/receipts/df-evidence-plan-hash-characterization-0003/baseline-1-direct-test.txt"
+    - "[baseline] red-then-green-canonicalization: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --quiet -- server/record-filters.js && sed -i 's/searchableFields.slice().sort()/searchableFields.slice()/' server/record-filters.js && node --test test/record-filters-plan-hash.test.js; git checkout -- server/record-filters.js -> exit 0 (0s) PASS; exit=0 djb2=3b6c6c7c bytes=55 receipt=quality/receipts/df-evidence-plan-hash-characterization-0003/baseline-2-red-then-green-canonicalization.txt"
+    - "[baseline] red-then-green-envelope: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --quiet -- server/record-filters.js && sed -i 's/JSON.stringify({ isOwner, summary })/JSON.stringify({ summary, isOwner })/' server/record-filters.js && node --test test/record-filters-plan-hash.test.js; git checkout -- server/record-filters.js -> exit 0 (0s) PASS; exit=0 djb2=3b6c6c7c bytes=55 receipt=quality/receipts/df-evidence-plan-hash-characterization-0003/baseline-3-red-then-green-envelope.txt"
+    - "[baseline] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/record-filters.js && git status --short test/record-filters-plan-hash.test.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/df-evidence-plan-hash-characterization-0003/baseline-4-byte-identity.txt"
+  tokens_actual: 25311
+  lesson: maker (claude) replied without editing; packet instruction may be unactionable as written

@@ -1,0 +1,6 @@
+# hone work pl2-scheduler-readiness-local-source-extract-0012 — post-r1 rung 'complexity-remeasure'
+# command: cd "$REPO_ROOT" && sh -c 'cfg=/tmp/pdpp_scheduler_readiness_0012_biome.jsonc; printf %s "{\"root\":false,\"files\":{\"ignoreUnknown\":true,\"includes\":[\"runtime/**/*.ts\"]},\"linter\":{\"enabled\":true,\"rules\":{\"complexity\":{\"noExcessiveCognitiveComplexity\":{\"level\":\"error\",\"options\":{\"maxAllowedComplexity\":5}}}}}}" > "$cfg"; npx biome lint --config-path="$cfg" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 runtime/scheduler-readiness.ts 2>&1'
+# expect: Prints fresh Biome diagnostics with stderr captured; target complexity is lower than baseline 18.
+# exit: 0  duration: 0s  verdict: PASS
+
+Checked 1 file in 7ms. No fixes applied.

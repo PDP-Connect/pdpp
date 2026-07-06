@@ -1,0 +1,43 @@
+# hone work tst2-postgres-record-null-cursor-0028 — post rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT" && if [ -f test/postgres-record-null-cursor-oracle.test.js ]; then src=test/helpers/postgres-record-read-driver.js; bak=/tmp/tst2_0028_record_cursor.bak; cp "$src" "$bak"; perl -0pi -e "s/OR \\(cursor_value IS NULL\\)//" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0028; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/postgres-record-null-cursor-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: mutation oracle not yet created"; exit 0; fi
+# expect: POST removes the ASC transition into the null bucket; the focused paging oracle must kill it.
+# timeout: 1800s (engine-default)
+# exit: 0  duration: 1s  verdict: PASS
+
+✖ postgres nullable record cursor pages through the null bucket in asc order (197.898624ms)
+✔ postgres nullable record cursor pages stably in desc order (148.923697ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 432.364122
+
+✖ failing tests:
+
+test at test/postgres-record-null-cursor-oracle.test.js:83:3
+✖ postgres nullable record cursor pages through the null bucket in asc order (197.898624ms)
+  AssertionError [ERR_ASSERTION]: asc pagination must visit present cursor rows first, then missing/null rows in pk order
+  + actual - expected
+  
+    [
+      'b_present_old',
+      'b_present_new',
+  -   'b_missing',
+  -   'b_null'
+    ]
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/reference-implementation/test/postgres-record-null-cursor-oracle.test.js:89:14)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [ 'b_present_old', 'b_present_new' ],
+    expected: [ 'b_present_old', 'b_present_new', 'b_missing', 'b_null' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+MUTANT KILLED

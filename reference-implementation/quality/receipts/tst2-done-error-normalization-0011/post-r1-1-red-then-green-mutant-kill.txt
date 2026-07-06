@@ -1,0 +1,23 @@
+# hone work tst2-done-error-normalization-0011 — post-r1 rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/done-error-normalization-oracle.test.js ]; then git diff --quiet -- runtime/done-validators.js || { echo "DIRTY source"; exit 1; }; cp runtime/done-validators.js /tmp/tst2_done_error_normalization.bak; perl -0pi -e "s/const DONE_ERROR_CODE_RE = \/\^\[a-z\]\[a-z0-9_\]\{0,63\}\$\//const DONE_ERROR_CODE_RE = \/^[A-Za-z][A-Za-z0-9_-]{0,127}\$\//" runtime/done-validators.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_done_error_normalization; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/done-error-normalization-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_done_error_normalization.bak runtime/done-validators.js; rm -f /tmp/tst2_done_error_normalization.bak; git diff --quiet -- runtime/done-validators.js || { echo "RESTORE FAILED"; exit 1; }; if [ $rc -eq 1 ]; then echo "MUTANT KILLED (DONE.error code regex relaxed)"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: done error normalization oracle not yet created"; exit 0; fi'
+# expect: BASELINE: prints BASELINE and exits 0. POST: the seeded relaxed code-regex mutant makes uppercase/hyphen/overlong code assertions fail, prints MUTANT KILLED, restores runtime/done-validators.js, and exits 0.
+# exit: 1  duration: 0s  verdict: FAIL (exit 1 (expected 0))
+
+✔ validateDoneError returns null for null or absent error details (0.492038ms)
+✔ validateDoneError rejects terminal error details on succeeded runs (0.152513ms)
+✔ validateDoneError rejects non-object and array error envelopes (0.502219ms)
+✔ validateDoneError rejects unsupported fields and names the field (0.117803ms)
+✔ validateDoneError accepts bounded snake_case codes and rejects unstable code forms (0.54304ms)
+✔ validateDoneError requires message to be a non-empty string after trim (0.109862ms)
+✔ validateDoneError requires retryable to be boolean when present (0.101412ms)
+✔ validateDoneError trims valid failed errors and defaults omitted retryable to null (0.072472ms)
+✔ validateDoneError preserves retryable false on valid failed errors (0.083511ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 41.428637
+MUTANT SURVIVED

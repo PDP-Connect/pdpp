@@ -77,14 +77,14 @@ import {
   postgresQueryRecords,
 } from './postgres-records.js';
 import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
-import { createStorageBackend } from './storage-backend.js';
+import { createStorageBackend } from './storage-backend.ts';
 import { canonicalConnectorKey } from './connector-key.js';
 import {
   getChangeHistoryLimit,
   nowIso,
   resolveStorageConnectorId,
   resolveStorageConnectorInstanceId,
-} from './storage-utils.js';
+} from './storage-utils.ts';
 import { getDefaultConnectorStateStore } from './stores/connector-state-store.ts';
 import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
@@ -97,7 +97,7 @@ import {
   markRetainedSizeConnectionDirty,
   markRetainedSizeStreamDirty,
 } from './retained-size-read-model.js';
-import { markConnectorSummaryEvidenceDirty } from './connector-summary-read-model.js';
+import { markConnectorSummaryEvidenceDirty } from './connector-summary-read-model.ts';
 import {
   buildLimitClampedWarning,
   CANONICAL_WARNING_CODES,
@@ -642,24 +642,26 @@ function coerceComparableValue(value, fieldSchema, { strict = false } = {}) {
   const only = types.size === 1 ? [...types][0] : null;
 
   if (only === 'integer') {
-    const parsed = parseIntegerValue(value);
-    if (parsed == null && strict) throw invalidQueryError(`Invalid integer value for '${String(value)}'`);
-    return parsed;
+    return coerceStrictOrNull(parseIntegerValue(value), strict, `Invalid integer value for '${String(value)}'`);
   }
 
   if (only === 'number') {
-    const parsed = parseNumberValue(value);
-    if (parsed == null && strict) throw invalidQueryError(`Invalid number value for '${String(value)}'`);
-    return parsed;
+    return coerceStrictOrNull(parseNumberValue(value), strict, `Invalid number value for '${String(value)}'`);
   }
 
   if (only === 'string' && ['date', 'date-time'].includes(fieldSchema?.format)) {
-    const parsed = parseDateValue(value);
-    if (parsed == null && strict) throw invalidQueryError(`Invalid date value for '${String(value)}'`);
-    return parsed;
+    return coerceStrictOrNull(parseDateValue(value), strict, `Invalid date value for '${String(value)}'`);
   }
 
   return String(value);
+}
+
+// Return a parsed scalar, or in strict mode raise `invalid_query` when parsing
+// failed (parsed == null). Non-strict callers get null and route the value to
+// their own fallback.
+function coerceStrictOrNull(parsed, strict, message) {
+  if (parsed == null && strict) throw invalidQueryError(message);
+  return parsed;
 }
 
 // --- group_by_time calendar bucketing --------------------------------------
@@ -777,26 +779,41 @@ function compareComparableValues(left, right, fieldSchema) {
  */
 function compareLogicalPositions(left, right, manifestStream, order) {
   const direction = order === 'ASC' ? 1 : -1;
-  const cursorField = manifestStream?.cursor_field || null;
 
-  if (cursorField) {
-    const fieldSchema = getFieldSchema(manifestStream, cursorField);
-    const leftMissing = left?.cursor_value == null || left.cursor_value === '';
-    const rightMissing = right?.cursor_value == null || right.cursor_value === '';
-    if (leftMissing !== rightMissing) {
-      // Missing bucket is after present in ASC, before in DESC.
-      return (leftMissing ? 1 : -1) * direction;
-    }
-    if (!leftMissing && !rightMissing) {
-      const cmp = compareComparableValues(left.cursor_value, right.cursor_value, fieldSchema);
-      if (cmp !== 0) return cmp * direction;
-    }
-  }
+  const cursorCmp = compareCursorField(left, right, manifestStream, direction);
+  if (cursorCmp !== 0) return cursorCmp;
 
   const primaryKeyFields = normalizePrimaryKey(manifestStream?.primary_key);
   for (let i = 0; i < primaryKeyFields.length; i += 1) {
     const fieldSchema = getFieldSchema(manifestStream, primaryKeyFields[i]);
     const cmp = compareComparableValues(left?.primary_key?.[i], right?.primary_key?.[i], fieldSchema);
+    if (cmp !== 0) return cmp * direction;
+  }
+  return 0;
+}
+
+// Order two logical positions by the stream's cursor_field alone. Returns a
+// direction-applied comparison, or 0 to defer to the primary-key tiebreak
+// (no cursor_field declared, or both values equal/present-and-equal). A missing
+// cursor value sorts after a present one in ASC, before it in DESC.
+// A cursor value counts as "missing" when null/undefined or the empty string,
+// matching the SQL `__cursor_missing` bucket.
+function isMissingCursorValue(value) {
+  return value == null || value === '';
+}
+
+function compareCursorField(left, right, manifestStream, direction) {
+  const cursorField = manifestStream?.cursor_field || null;
+  if (!cursorField) return 0;
+
+  const leftMissing = isMissingCursorValue(left?.cursor_value);
+  const rightMissing = isMissingCursorValue(right?.cursor_value);
+  if (leftMissing !== rightMissing) {
+    return (leftMissing ? 1 : -1) * direction;
+  }
+  if (!leftMissing && !rightMissing) {
+    const fieldSchema = getFieldSchema(manifestStream, cursorField);
+    const cmp = compareComparableValues(left.cursor_value, right.cursor_value, fieldSchema);
     if (cmp !== 0) return cmp * direction;
   }
   return 0;
@@ -960,32 +977,37 @@ function validateCanonicalSort(value, manifestStream) {
   const sortableFields = cursorField ? new Set([cursorField]) : new Set();
   let resolved = null;
   for (const entry of entries) {
-    const direction = entry.startsWith('-') ? 'DESC' : 'ASC';
-    const field = direction === 'DESC' ? entry.slice(1) : entry;
-    if (!field) {
-      const err = invalidQueryError(`Empty sort field`, 'invalid_sort');
-      err.param = 'sort';
-      throw err;
+    const parsed = resolveSortEntry(entry, sortableFields);
+    if (resolved && resolved.direction !== parsed.direction) {
+      throw sortValidationError(`Conflicting sort directions for field '${parsed.field}'`);
     }
-    if (sortableFields.size === 0 || !sortableFields.has(field)) {
-      const err = invalidQueryError(
-        `Sort field '${field}' is not advertised as sortable; check /v1/schema for the canonical sort vocabulary.`,
-        'invalid_sort',
-      );
-      err.param = 'sort';
-      throw err;
-    }
-    if (resolved && resolved.direction !== direction) {
-      const err = invalidQueryError(
-        `Conflicting sort directions for field '${field}'`,
-        'invalid_sort',
-      );
-      err.param = 'sort';
-      throw err;
-    }
-    resolved = { field, direction };
+    resolved = parsed;
   }
   return resolved;
+}
+
+// Build an `invalid_sort` query error tagged with `param = 'sort'`.
+function sortValidationError(message) {
+  const err = invalidQueryError(message, 'invalid_sort');
+  err.param = 'sort';
+  return err;
+}
+
+// Parse one canonical-sort entry (`field` or `-field`) into {field, direction},
+// enforcing that the field is advertised as sortable. Throws a tagged
+// `invalid_sort` error otherwise.
+function resolveSortEntry(entry, sortableFields) {
+  const direction = entry.startsWith('-') ? 'DESC' : 'ASC';
+  const field = direction === 'DESC' ? entry.slice(1) : entry;
+  if (!field) {
+    throw sortValidationError('Empty sort field');
+  }
+  if (sortableFields.size === 0 || !sortableFields.has(field)) {
+    throw sortValidationError(
+      `Sort field '${field}' is not advertised as sortable; check /v1/schema for the canonical sort vocabulary.`,
+    );
+  }
+  return { field, direction };
 }
 
 function validateTopLevelAggregateParams(requestParams) {
@@ -1647,27 +1669,36 @@ async function hydrateExpandedRelations({
     // rather than constructing a bare `{ connectionId }` shape.
     const childIdentity = childIdentityOverride || { connectionId: connectorInstanceId };
     for (const parentRow of effectiveParentRows) {
-      const relationKey = parentRow.record_key;
-      const matches = groupedChildren.get(relationKey) || [];
-      if (!parentRow.responseRecord.expanded) parentRow.responseRecord.expanded = {};
-
-      if (expansion.relationship.cardinality === 'has_one') {
-        const first = matches[0];
-        parentRow.responseRecord.expanded[expansion.name] = first
-          ? buildResponseRecord(expansion.relationship.stream, first, childEffective, childIdentity)
-          : null;
-        continue;
-      }
-
-      parentRow.responseRecord.expanded[expansion.name] = {
-        object: 'list',
-        has_more: matches.length > expansion.limit,
-        data: matches.slice(0, expansion.limit).map((childRow) =>
-          buildResponseRecord(expansion.relationship.stream, childRow, childEffective, childIdentity),
-        ),
-      };
+      assignExpansionToParentRow(parentRow, expansion, groupedChildren, childEffective, childIdentity);
     }
   }
+}
+
+/**
+ * Hydrate one expansion onto a single parent row. Reads the parent's matched
+ * children out of `groupedChildren`, then writes `expanded[expansion.name]` as
+ * either a single record (`has_one`) or a bounded `list` object (`has_many`),
+ * projecting each child through the child grant's `childEffective` filter.
+ */
+function assignExpansionToParentRow(parentRow, expansion, groupedChildren, childEffective, childIdentity) {
+  const matches = groupedChildren.get(parentRow.record_key) || [];
+  if (!parentRow.responseRecord.expanded) parentRow.responseRecord.expanded = {};
+
+  if (expansion.relationship.cardinality === 'has_one') {
+    const first = matches[0];
+    parentRow.responseRecord.expanded[expansion.name] = first
+      ? buildResponseRecord(expansion.relationship.stream, first, childEffective, childIdentity)
+      : null;
+    return;
+  }
+
+  parentRow.responseRecord.expanded[expansion.name] = {
+    object: 'list',
+    has_more: matches.length > expansion.limit,
+    data: matches.slice(0, expansion.limit).map((childRow) =>
+      buildResponseRecord(expansion.relationship.stream, childRow, childEffective, childIdentity),
+    ),
+  };
 }
 
 /**
@@ -3500,6 +3531,13 @@ function buildBindingStorageTarget(connectorId, connectorInstanceId) {
   return { connector_id: connectorId, connector_instance_id: connectorInstanceId };
 }
 
+// Identity key for a meta warning: two warnings collapse iff their code, param,
+// message, and structured detail all match. Shared by the merge/append helpers
+// so their dedup semantics stay in lockstep.
+function warningDedupKey(w) {
+  return `${w.code}|${w.param || ''}|${w.message || ''}|${JSON.stringify(w.detail || null)}`;
+}
+
 function mergeMetaWarnings(target, incoming) {
   if (!incoming) return target;
   const next = { ...(target || {}) };
@@ -3507,7 +3545,7 @@ function mergeMetaWarnings(target, incoming) {
     const seen = new Set();
     const merged = [];
     for (const w of [...(next.warnings || []), ...incoming.warnings]) {
-      const key = `${w.code}|${w.param || ''}|${w.message || ''}|${JSON.stringify(w.detail || null)}`;
+      const key = warningDedupKey(w);
       if (seen.has(key)) continue;
       seen.add(key);
       merged.push(w);
@@ -3520,10 +3558,9 @@ function mergeMetaWarnings(target, incoming) {
 function appendUniqueWarning(meta, warning) {
   const next = { ...(meta || {}) };
   const existing = Array.isArray(next.warnings) ? next.warnings : [];
-  const key = `${warning.code}|${warning.param || ''}|${warning.message || ''}|${JSON.stringify(warning.detail || null)}`;
+  const key = warningDedupKey(warning);
   for (const w of existing) {
-    const k = `${w.code}|${w.param || ''}|${w.message || ''}|${JSON.stringify(w.detail || null)}`;
-    if (k === key) {
+    if (warningDedupKey(w) === key) {
       next.warnings = existing;
       return next;
     }
@@ -3959,15 +3996,18 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
     ? getFieldSchema(manifestStream, requestParams.field)
     : null;
 
-  let value = metric === 'sum' || metric === 'count' ? 0 : null;
-  let filteredRecordCount = 0;
-  let bestComparable = null;
-  let meta = null;
-  let responseShape = null;
   // Merge grouped buckets across disjoint bindings: counts in the same bucket
   // key are additive because each binding sees a disjoint record set.
-  const mergedBuckets = new Map();
-  let mergedLimit = null;
+  const acc = {
+    value: metric === 'sum' || metric === 'count' ? 0 : null,
+    filteredRecordCount: 0,
+    bestComparable: null,
+    meta: null,
+    responseShape: null,
+    mergedBuckets: new Map(),
+    mergedLimit: null,
+  };
+  const foldContext = { metric, isScalarGroup, isTimeBucket, aggregateFieldSchema };
   const results = await mapWithConcurrency(
     bindings,
     fanInReadConcurrency(opts),
@@ -3979,45 +4019,11 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
   );
 
   for (const result of results) {
-    if (!responseShape) {
-      responseShape = {
-        metric: result.metric,
-        field: result.field ?? null,
-        group_by: result.group_by ?? null,
-        group_by_time: result.group_by_time ?? null,
-        granularity: result.granularity ?? null,
-        time_zone: result.time_zone ?? null,
-        approximate: result.approximate === true,
-      };
-    }
-    filteredRecordCount += Number(result?.filtered_record_count || 0);
-    meta = mergeMetaWarnings(meta, result?.meta);
-    if ((isScalarGroup || isTimeBucket) && Array.isArray(result?.groups)) {
-      mergedLimit = result.limit ?? mergedLimit;
-      for (const bucket of result.groups) {
-        const mapKey = JSON.stringify(bucket.key ?? null);
-        const entry = mergedBuckets.get(mapKey) || { key: bucket.key ?? null, count: 0 };
-        entry.count += Number(bucket.count || 0);
-        mergedBuckets.set(mapKey, entry);
-      }
-      continue;
-    }
-    if (metric === 'sum' || metric === 'count') {
-      value += Number(result?.value || 0);
-      continue;
-    }
-    if (metric === 'min' || metric === 'max') {
-      const comparable = coerceComparableValue(result?.value, aggregateFieldSchema);
-      if (comparable == null) continue;
-      const shouldReplace = bestComparable == null
-        || (metric === 'min' ? comparable < bestComparable : comparable > bestComparable);
-      if (shouldReplace) {
-        bestComparable = comparable;
-        value = result.value;
-      }
-    }
+    foldBindingAggregate(acc, result, foldContext);
   }
-  for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+  for (const w of extraWarnings) acc.meta = appendUniqueWarning(acc.meta, w);
+  const { value, filteredRecordCount, meta, mergedBuckets, mergedLimit } = acc;
+  let { responseShape } = acc;
 
   responseShape ||= {
     metric,
@@ -4046,16 +4052,7 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
     const groupedResponse = {
       ...response,
       groups: [...mergedBuckets.values()]
-        .sort((left, right) => {
-          if (isScalarGroup) {
-            const countCmp = right.count - left.count;
-            if (countCmp !== 0) return countCmp;
-            return JSON.stringify(left.key).localeCompare(JSON.stringify(right.key));
-          }
-          if (left.key == null) return right.key == null ? 0 : 1;
-          if (right.key == null) return -1;
-          return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
-        })
+        .sort((left, right) => compareMergedBuckets(left, right, isScalarGroup))
         .slice(0, mergedLimit ?? undefined),
     };
     if (mergedLimit != null) groupedResponse.limit = mergedLimit;
@@ -4066,6 +4063,89 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
   response.value = value;
   if (meta && Object.keys(meta).length) response.meta = meta;
   return response;
+}
+
+/**
+ * Fold one binding's aggregate `result` into the cross-binding accumulator `acc`.
+ * Mutates `acc` in place: captures the response shape from the first result, sums
+ * `filtered_record_count`, merges meta warnings, and combines the metric value —
+ * additive for grouped buckets and sum/count, min/max-comparable otherwise.
+ * `ctx` carries the per-request invariants (metric, group flags, field schema).
+ */
+function foldBindingAggregate(acc, result, ctx) {
+  const { metric, isScalarGroup, isTimeBucket, aggregateFieldSchema } = ctx;
+  if (!acc.responseShape) {
+    acc.responseShape = captureAggregateResponseShape(result);
+  }
+  acc.filteredRecordCount += Number(result?.filtered_record_count || 0);
+  acc.meta = mergeMetaWarnings(acc.meta, result?.meta);
+  if ((isScalarGroup || isTimeBucket) && Array.isArray(result?.groups)) {
+    mergeGroupedBuckets(acc, result);
+    return;
+  }
+  if (metric === 'sum' || metric === 'count') {
+    acc.value += Number(result?.value || 0);
+    return;
+  }
+  if (metric === 'min' || metric === 'max') {
+    mergeComparableMetric(acc, result, metric, aggregateFieldSchema);
+  }
+}
+
+// Snapshot the response envelope (metric/field/grouping/granularity/zone) from
+// the first binding's result; subsequent bindings share the same shape.
+function captureAggregateResponseShape(result) {
+  return {
+    metric: result.metric,
+    field: result.field ?? null,
+    group_by: result.group_by ?? null,
+    group_by_time: result.group_by_time ?? null,
+    granularity: result.granularity ?? null,
+    time_zone: result.time_zone ?? null,
+    approximate: result.approximate === true,
+  };
+}
+
+// Add a binding's grouped buckets into the accumulator; counts for the same key
+// are additive across disjoint bindings.
+function mergeGroupedBuckets(acc, result) {
+  acc.mergedLimit = result.limit ?? acc.mergedLimit;
+  for (const bucket of result.groups) {
+    const mapKey = JSON.stringify(bucket.key ?? null);
+    const entry = acc.mergedBuckets.get(mapKey) || { key: bucket.key ?? null, count: 0 };
+    entry.count += Number(bucket.count || 0);
+    acc.mergedBuckets.set(mapKey, entry);
+  }
+}
+
+// Fold a min/max binding value into the running best-comparable, keeping the
+// original (uncoerced) value that won.
+function mergeComparableMetric(acc, result, metric, aggregateFieldSchema) {
+  const comparable = coerceComparableValue(result?.value, aggregateFieldSchema);
+  if (comparable == null) return;
+  const shouldReplace = acc.bestComparable == null
+    || (metric === 'min' ? comparable < acc.bestComparable : comparable > acc.bestComparable);
+  if (shouldReplace) {
+    acc.bestComparable = comparable;
+    acc.value = result.value;
+  }
+}
+
+/**
+ * Order merged fan-in buckets. Scalar `group_by` sorts by descending count with
+ * a stable JSON-key tiebreak; time buckets sort ascending by key with nulls
+ * last. Extracted from `aggregateRecordsAcrossBindings` to keep the merge/assembly
+ * body flat.
+ */
+function compareMergedBuckets(left, right, isScalarGroup) {
+  if (isScalarGroup) {
+    const countCmp = right.count - left.count;
+    if (countCmp !== 0) return countCmp;
+    return JSON.stringify(left.key).localeCompare(JSON.stringify(right.key));
+  }
+  if (left.key == null) return right.key == null ? 0 : 1;
+  if (right.key == null) return -1;
+  return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
 }
 
 /**

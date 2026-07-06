@@ -1,0 +1,6 @@
+# hone work hm-done-terminal-extract-0010 — baseline rung 'guard-byte-identity'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -c "after DONE" runtime/index.js
+# expect: 3 — the after-DONE guard strings (PARSE_ERROR variant + generic + comment) present with UNCHANGED count (measured baseline 2026-07-02: 3), moved not rewritten
+# exit: 0  duration: 0s  verdict: PASS
+
+3

@@ -1,0 +1,37 @@
+# hone work pl2-comparable-sort-position-extract-0004 — baseline rung 'direct-tests'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in test/canonical-sort-changes-feed-oracle.test.js test/record-query-helpers-validation.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0004_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit "$f" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc'
+# expect: All listed tests pass with one ephemeral Postgres database per test file, timeout 600, and --test-force-exit.
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ validateCanonicalSort returns null for an absent sort (0.466618ms)
+✔ validateCanonicalSort maps the sign prefix to direction on the cursor field (0.416778ms)
+✔ validateCanonicalSort rejects a non-cursor field, a missing cursor field, and conflicting directions (0.265735ms)
+✔ rejectListOnlyParamsForChangesFeed passes a bare changes feed and rejects list-only params (0.196284ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 63.10445
+✔ validateCountKind: null/empty pass through, unsupported/non-string throw invalid_request (0.61909ms)
+✔ validateWindowKind: only none|exact accepted; estimated is NOT a valid window (0.117092ms)
+✔ rejectListOnlyParamsForChangesFeed: flags list-only params, singular/plural grammar, empty passes (0.145002ms)
+✔ parsePageOrder: default DESC, asc/desc mapping, invalid throws (0.105521ms)
+✔ validateCanonicalSort: sign prefix controls direction against the cursor field (0.443977ms)
+✔ validateCanonicalSort: rejects empty field, non-cursor field, and missing cursor_field (0.144352ms)
+✔ validateCanonicalSort: conflicting directions across CSV entries throw (0.116442ms)
+✔ resolveListOrder: canonical sort wins; order honored only when sort absent; disagreement rejected (0.117732ms)
+✔ encodeKey/decodeKey: round-trip arrays and strings; malformed JSON falls back to raw (0.137403ms)
+✔ decorateRecordWithConnectionIdentity: null-guarded, trims, sets alias + display name (0.147823ms)
+✔ attachRequestWarningsToResponse: guards + appends to existing warnings (0.190884ms)
+✔ mergeMetaCount/mergeMetaWindow: preserve prior members, ignore array meta (0.127972ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 63.530877

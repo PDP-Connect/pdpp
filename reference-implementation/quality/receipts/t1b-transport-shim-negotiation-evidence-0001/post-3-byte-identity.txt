@@ -1,0 +1,5 @@
+# hone work t1b-transport-shim-negotiation-evidence-0001 — post rung 'byte-identity'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/server/transport.js
+# expect: empty — this packet changes tests only
+# exit: 0  duration: 0s  verdict: PASS
+

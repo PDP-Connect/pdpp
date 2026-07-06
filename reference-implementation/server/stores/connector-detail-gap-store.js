@@ -86,13 +86,22 @@ function parseJson(value) {
   return JSON.parse(value);
 }
 
-function normalizeGapInput(input) {
+function deriveGapIdentity(input) {
   const connectorId = nonEmptyString(input?.connectorId);
   const connectorInstanceId = nonEmptyString(input?.connectorInstanceId) || (connectorId ? defaultConnectorInstanceId(connectorId) : null);
   const stream = nonEmptyString(input?.stream);
   if (!connectorId) throw new Error('connector detail gap requires connectorId');
   if (!connectorInstanceId) throw new Error('connector detail gap requires connectorInstanceId');
   if (!stream) throw new Error('connector detail gap requires stream');
+  return { connectorId, connectorInstanceId, stream };
+}
+
+function deriveGapId(input, connectorId, connectorInstanceId, grantId, stream, parentStream, recordKey, detailLocator) {
+  return input.gapId || hashIdentity([connectorId, connectorInstanceId, grantId || '', stream, parentStream || '', recordKey || '', detailLocator || null]);
+}
+
+function normalizeGapInput(input) {
+  const { connectorId, connectorInstanceId, stream } = deriveGapIdentity(input);
 
   const source = sanitizeDetailGapMetadata(input.source || { kind: 'connector', id: connectorId });
   const detailLocator = sanitizeDetailGapMetadata(input.detailLocator ?? null);
@@ -104,15 +113,7 @@ function normalizeGapInput(input) {
   const recordKey = input.recordKey == null ? null : String(input.recordKey);
   const reason = nonEmptyString(input.reason) || null;
   const now = input.now || nowIso();
-  const gapId = input.gapId || hashIdentity([
-    connectorId,
-    connectorInstanceId,
-    grantId || '',
-    stream,
-    parentStream || '',
-    recordKey || '',
-    detailLocator || null,
-  ]);
+  const gapId = deriveGapId(input, connectorId, connectorInstanceId, grantId, stream, parentStream, recordKey, detailLocator);
 
   return {
     gapId,

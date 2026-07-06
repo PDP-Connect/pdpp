@@ -15,15 +15,17 @@ import test from 'node:test';
 import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
 import { createAttention } from '../runtime/attention.ts';
 import {
+  projectConnectorOutboxAxisFromHeartbeats,
+  projectLocalDeviceProgress,
+} from '../server/connector-outbox-axis.ts';
+import {
   canUseConnectorWideRunSummaryFallback,
   connectorSummariesCacheKey,
   decideConnectorSummariesCacheRead,
   isPublicReferenceConnector,
   LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
   mapWithConcurrency,
-  projectConnectorOutboxAxisFromHeartbeats,
   projectConnectorSummaryConnectionHealth,
-  projectLocalDeviceProgress,
 } from '../server/ref-control.ts';
 import { closeDb, initDb } from '../server/db.js';
 

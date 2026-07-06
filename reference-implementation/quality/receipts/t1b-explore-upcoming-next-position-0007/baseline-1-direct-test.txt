@@ -1,0 +1,41 @@
+# hone work t1b-explore-upcoming-next-position-0007 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in rs-explore-upcoming-reachability rs-explore-timeline-conformance; do db=pdpp_hone_t1b_eunp7_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'
+# expect: all pass with unchanged counts, before AND after the edit; repaired 2026-07-02 per iteration-4 shared-DB lint: per-file ephemeral DBs + --test-force-exit replicate the scripts/run-tests.js isolation contract
+# exit: 0  duration: 10s  verdict: PASS
+
+✔ Upcoming reachability (sqlite): every future record reachable, ties + stable total (20.231323ms)
+✔ Upcoming post-snapshot exclusion (sqlite): backfilled future excluded from pinned walk (8.527153ms)
+✔ Upcoming head limit (sqlite): a small feed limit + large upcomingLimit reveals the whole bounded set at once (6.468266ms)
+✔ Upcoming bounded URL (sqlite): the next cursor is a short opaque handle, not an O(partitions) blob (18.097114ms)
+✔ Exclude scope (sqlite): excluded connection/stream vanish from feed + Upcoming + the exact total (7.180939ms)
+✔ Upcoming reachability (postgres): every future record reachable, ties + stable total (3034.304801ms)
+✔ Upcoming post-snapshot exclusion (postgres): backfilled future excluded from pinned walk (692.135671ms)
+✔ Exclude scope (postgres): excluded connection/stream vanish from feed + Upcoming + the exact total (715.723514ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5026.599887
+✔ rs.explore.timeline: SQLite dual-backend conformance (14.556111ms)
+✔ rs.explore.timeline: SQLite scoped timeline conformance (5.869335ms)
+✔ rs.explore.timeline: future-dated records go to a separate Upcoming projection, not above today (SQLite) (5.905986ms)
+✔ rs.explore.timeline: the past/future boundary is PINNED in the cursor across pages (SQLite) (4.962049ms)
+✔ rs.explore.timeline: each record carries semantic_time and the feed is ordered by it (SQLite) (4.555172ms)
+✔ rs.explore.timeline: next_cursor is a short opaque handle, not an O(partitions) blob (HTTP 431 regression) (87.176954ms)
+✔ rs.explore.timeline: Postgres dual-backend conformance (2817.735946ms)
+✔ rs.explore.timeline: Postgres scoped timeline conformance (447.290821ms)
+✔ rs.explore.timeline: SQLite orders by SEMANTIC time, not ingest time (bug 2) (9.173875ms)
+✔ rs.explore.timeline: Postgres orders by SEMANTIC time, not ingest time (bug 2) (280.193074ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4147.657694
+NOTICE:  database "pdpp_hone_t1b_eunp7_rs_explore_upcoming_reachability" does not exist, skipping
+NOTICE:  database "pdpp_hone_t1b_eunp7_rs_explore_timeline_conformance" does not exist, skipping

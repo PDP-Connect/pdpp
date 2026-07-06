@@ -1,0 +1,91 @@
+candidate_id: tst-record-index-idempotency-0008
+created: "2026-07-02T10:35:00.000Z"
+subsystem: server/postgres-storage
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+files: [test/postgres-record-index-idempotency-oracle.test.js, server/postgres-storage.js]
+symbols: [ensurePostgresIndexDefinition, initPostgresStorage]
+public_surface:
+  - "storage bootstrap idempotency contract (main commit 2f122e547): initPostgresStorage MUST NOT drop/recreate a matching hot record index on every boot — a matching same-name index keeps its identity (oid stable) across restarts"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "Commit 2f122e547 ('fix(postgres): make record index bootstrap idempotent') fixed a real production defect: the bootstrap was dropping/recreating hot record/search indexes on EVERY boot, causing lock churn and rebuild cost. The fix gates recreation behind `if (matchesExpected) return;` in ensurePostgresIndexDefinition (postgres-storage.js:2221) under an advisory lock. The commit shipped test/postgres-record-index-bootstrap.test.js, but that test has NO demonstrated mutation-kill evidence — it is a plausibly-passing regression test whose ability to actually CATCH a re-regression is unproven. This packet adds a SHARP oid-stability oracle (a new file, disjoint touchset) and PROVES via the mutation ladder that removing the idempotency gate makes it go red — turning the commit's contract into pinned-and-mutation-verified coverage. The idempotency invariant is high-value: a silent regression reintroduces boot-time index churn on the live 18GB Postgres."
+plan:
+  transform_class: add-idempotency-oid-stability-oracle
+  instruction: "Create test/postgres-record-index-idempotency-oracle.test.js (NEW file; touch no source). Follow the harness of test/postgres-record-index-bootstrap.test.js EXACTLY (guard on PDPP_TEST_POSTGRES_URL; withTempDb helper that CREATEs/DROPs its own throwaway db off the admin /postgres URL; readIndex via pg_get_indexdef + oid). Pin the idempotency contract by asserting: (1) after two consecutive initPostgresStorage calls on the same fresh db, readIndex('idx_pg_records_stream_version').oid is IDENTICAL across the two boots (a matching index is NOT dropped/recreated) — the core 2f122e547 contract; (2) the index EXISTS and is valid after the first boot (oid present). Keep it to the record-stream index oid-stability assertion (the repair-side contract is pinned by tst-record-index-repair-0009 — do NOT duplicate). When PDPP_TEST_POSTGRES_URL is unset, register a single skipped test exactly like the sibling. Use pg Pool from the same import. node:assert/strict."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: high
+priority:
+  score: 8.3
+  computed: "2026-07-02T10:35:00.000Z"
+  inputs:
+    mass: 0
+    churn: 0
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: high
+  property_at_risk: "boot-time index idempotency — a regression re-drops/recreates hot indexes on every restart on the live 18GB Postgres, causing lock churn and rebuild cost with no error surfaced"
+authoring_evidence:
+  - kind: commit-read
+    detail: "git show 2f122e547 — fix(postgres): make record index bootstrap idempotent; +test/postgres-record-index-bootstrap.test.js (+113); ensurePostgresIndexDefinition guards recreation with `if (matchesExpected) return;` (postgres-storage.js:2221) under pg_advisory_lock"
+    result: the idempotency gate is the fixed contract; the shipped test asserts oid-stability but carries no mutation-kill evidence
+  - kind: probe-run
+    detail: ran the sibling test/postgres-record-index-bootstrap.test.js against a fresh ephemeral db (dropdb/createdb + PDPP_TEST_POSTGRES_URL) 2026-07-02
+    result: "2/2 pass in ~7s; the withTempDb harness works and the oid-stability assertion is live — confirms the new oracle's approach runs green on unmutated source"
+  - kind: seam-check
+    detail: "postgres-storage.js:2221 `if (matchesExpected) return;` is the single idempotency gate"
+    result: "disabling it (always drop/recreate) changes the oid across boots -> the oid-stability assertion fails; a clean, unique mutation seam"
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then git diff --quiet -- server/postgres-storage.js || { echo \"DIRTY source\"; exit 1; }; cp server/postgres-storage.js /tmp/tst0008-pg.bak; sed -i \"s/if (matchesExpected) return;/if (false \\&\\& matchesExpected) return;/\" server/postgres-storage.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0008_idem; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/postgres-record-index-idempotency-oracle.test.js >/dev/null 2>&1 || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst0008-pg.bak server/postgres-storage.js; rm -f /tmp/tst0008-pg.bak; git diff --quiet -- server/postgres-storage.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (idempotency gate disabled -> oid changes across boots -> oracle red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: idempotency oracle not yet created\"; exit 0; fi'"
+    expect: "POST: prints 'MUTANT KILLED' — disabling `if (matchesExpected) return;` forces a drop/recreate on the second boot, so the index oid changes and the oid-stability assertion FAILS; rc captured (never masked by dropdb), source restored byte-clean, ephemeral db torn down. BASELINE: prints 'BASELINE:' exit 0."
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0008_idem_g; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/postgres-record-index-idempotency-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi'"
+    expect: "POST: the idempotency oracle passes (oid stable across two boots), no unexpected skips. BASELINE: prints 'BASELINE:' exit 0."
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: diff-scope
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then git diff --stat -- server/postgres-storage.js; test -z \"$(git diff --name-only -- server/postgres-storage.js)\" && echo SRC-CLEAN || echo SRC-DIRTY; else echo \"BASELINE SRC-CLEAN\"; fi'"
+    expect: "prints SRC-CLEAN: server/postgres-storage.js byte-identical; only the new test file changed"
+    expect_check:
+      type: stdout_includes
+      value: SRC-CLEAN
+not_allowed: [non-test-source-change, behavior-change, new-dependency, shared-db-usage]
+maker_tier: standard
+judge_tier: strong
+maker_provider: codex
+judge_provider: claude
+batch_key: generate_evidence×effectful×server/postgres-storage
+touchset: [test/postgres-record-index-idempotency-oracle.test.js]
+estimates:
+  tokens: 45000
+  evidence_cost: medium
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "794223528fb9ab28afc710379dcfe44c626e34cd"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.9): The diff adds only the specified new test file; server/postgres-storage.js is proven byte-identical before and after (diff-scope SRC-CLEAN both baseline and post). The mutation-kill evidence is a precise single-seam mutation on the exact cited idempotency gate (postgres-storage.js:2221 `if (matchesExpected) return;`), correctly baselined as not-yet-created, then shown to turn the oracle red post-mutation with source restored byte-clean and the ephemeral db torn down. The oracle itself correctly asserts oid stability across two initPostgresStorage boots per the packet's contract, follows the sibling harness pattern, uses no new dependencies, and doesn't touch shared DB state."
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then git diff --quiet -- server/postgres-storage.js || { echo \"DIRTY source\"; exit 1; }; cp server/postgres-storage.js /tmp/tst0008-pg.bak; sed -i \"s/if (matchesExpected) return;/if (false \\&\\& matchesExpected) return;/\" server/postgres-storage.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0008_idem; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/postgres-record-index-idempotency-oracle.test.js >/dev/null 2>&1 || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst0008-pg.bak server/postgres-storage.js; rm -f /tmp/tst0008-pg.bak; git diff --quiet -- server/postgres-storage.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (idempotency gate disabled -> oid changes across boots -> oracle red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: idempotency oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=865cda3e bytes=45 receipt=quality/receipts/tst-record-index-idempotency-0008/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0008_idem_g; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/postgres-record-index-idempotency-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=caf12c67 bytes=31 receipt=quality/receipts/tst-record-index-idempotency-0008/baseline-2-direct-test-green.txt"
+    - "[baseline] diff-scope: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then git diff --stat -- server/postgres-storage.js; test -z \"$(git diff --name-only -- server/postgres-storage.js)\" && echo SRC-CLEAN || echo SRC-DIRTY; else echo \"BASELINE SRC-CLEAN\"; fi' -> exit 0 (0s) PASS; exit=0 djb2=2f6f9eca bytes=19 receipt=quality/receipts/tst-record-index-idempotency-0008/baseline-3-diff-scope.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then git diff --quiet -- server/postgres-storage.js || { echo \"DIRTY source\"; exit 1; }; cp server/postgres-storage.js /tmp/tst0008-pg.bak; sed -i \"s/if (matchesExpected) return;/if (false \\&\\& matchesExpected) return;/\" server/postgres-storage.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0008_idem; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/postgres-record-index-idempotency-oracle.test.js >/dev/null 2>&1 || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst0008-pg.bak server/postgres-storage.js; rm -f /tmp/tst0008-pg.bak; git diff --quiet -- server/postgres-storage.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (idempotency gate disabled -> oid changes across boots -> oracle red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: idempotency oracle not yet created\"; exit 0; fi' -> exit 0 (3s) PASS; exit=0 djb2=97e05ddb bytes=101 receipt=quality/receipts/tst-record-index-idempotency-0008/post-1-red-then-green-mutant-kill.txt"
+    - "[post] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0008_idem_g; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/postgres-record-index-idempotency-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (3s) PASS; exit=0 djb2=86e3f56e bytes=196 receipt=quality/receipts/tst-record-index-idempotency-0008/post-2-direct-test-green.txt"
+    - "[post] diff-scope: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then git diff --stat -- server/postgres-storage.js; test -z \"$(git diff --name-only -- server/postgres-storage.js)\" && echo SRC-CLEAN || echo SRC-DIRTY; else echo \"BASELINE SRC-CLEAN\"; fi' -> exit 0 (0s) PASS; exit=0 djb2=d3fe6147 bytes=10 receipt=quality/receipts/tst-record-index-idempotency-0008/post-3-diff-scope.txt"
+  tokens_actual: 47173
+  lesson: null
+resets:
+  - at: "2026-07-02T22:16:11.698Z"
+    from_status: blocked
+    reason: fix mutant-kill baseline expect_check (blocked → executable)

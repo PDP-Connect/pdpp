@@ -1,0 +1,85 @@
+candidate_id: tst2-detail-gap-page-request-0014
+created: "2026-07-06T12:03:00.000Z"
+repo_sha: ae9cb548cea1de7f547b81c6879f7e09a2d99006
+subsystem: runtime/detail-gap-paging
+files: [test/detail-gap-page-request-oracle.test.js, runtime/detail-gap-paging.js]
+symbols: [validateDetailGapsPageRequest]
+public_surface:
+  - "connector child-protocol DETAIL_GAPS_PAGE_REQUEST validation: reference_only true, non-empty request_id, positive max_bytes, declared-stream-only list, duplicate streams deduped in order"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "DETAIL_GAPS_PAGE_REQUEST is how a connector pages reference-only pending detail gaps after START. The validator is the fail-closed boundary: undeclared streams must throw before the store is queried, duplicate streams should not inflate work, and max_bytes must be a positive finite number. A dropped scope check can leak or request out-of-scope recovery rows."
+plan:
+  transform_class: add-mutation-killing-pure-oracle
+  instruction: "Create test/detail-gap-page-request-oracle.test.js. Import validateDetailGapsPageRequest. Build scopeByStream = new Map([['messages',{}], ['threads',{}]]). Assert a valid request {reference_only:true, request_id:'req1', max_bytes:123.9, streams:['messages','messages','threads']} returns {requestId:'req1', maxBytes:123, streams:['messages','threads']}. Assert streams:null/undefined returns streams:null, and an empty array also normalizes to null. Assert errors for reference_only false/missing, blank request_id, max_bytes 0/negative/Infinity, streams non-array, blank/non-string stream, and undeclared stream with message including 'undeclared stream'."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+priority:
+  score: 8
+  computed: "2026-07-06T12:03:00.000Z"
+  inputs:
+    mass: 0
+    churn: 0
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: high
+  property_at_risk: connector detail-gap paging must not serve undeclared streams or accept malformed byte-budget requests
+authoring_evidence:
+  - kind: source-read
+    detail: runtime/detail-gap-paging.js validateDetailGapsPageRequest returns maxBytes/requestId/streams and delegates stream normalization to a local fail-closed helper.
+    result: "Pure request validator, suitable for a no-DB oracle."
+  - kind: test-sweep
+    detail: "rg -n 'validateDetailGapsPageRequest|DETAIL_GAPS_PAGE_REQUEST' test"
+    result: "Existing runtime/detail-gap tests cover end-to-end behavior, but no by-name pure oracle pins duplicate-stream normalization and undeclared-stream rejection at the validator."
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/detail-gap-page-request-oracle.test.js ]; then git diff --quiet -- runtime/detail-gap-paging.js || { echo \"DIRTY source\"; exit 1; }; cp runtime/detail-gap-paging.js /tmp/tst2_detail_gap_page_request.bak; perl -0pi -e \"s/if \\(!scopeByStream\\.has\\(stream\\)\\) \\{/if (false && !scopeByStream.has(stream)) {/\" runtime/detail-gap-paging.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_detail_gap_page_request; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/detail-gap-page-request-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_detail_gap_page_request.bak runtime/detail-gap-paging.js; rm -f /tmp/tst2_detail_gap_page_request.bak; git diff --quiet -- runtime/detail-gap-paging.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (undeclared stream accepted)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: detail gap page request oracle not yet created\"; exit 0; fi'"
+    expect: "BASELINE: prints BASELINE and exits 0. POST: disabling the scopeByStream membership guard makes the undeclared-stream assertion fail, prints MUTANT KILLED, restores source."
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/detail-gap-page-request-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_detail_gap_page_request_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/detail-gap-page-request-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi'"
+    expect: "POST: page-request validator oracle passes. BASELINE: guarded green."
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: diff-scope
+    command: "cd \"$REPO_ROOT\" && sh -c 'test -z \"$(git diff --name-only -- runtime/detail-gap-paging.js)\" && echo SRC-CLEAN || echo SRC-DIRTY'"
+    expect: prints SRC-CLEAN.
+    expect_check:
+      type: stdout_includes
+      value: SRC-CLEAN
+not_allowed: [non-test-source-change, behavior-change, new-dependency, shared-db-usage]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: generate_evidence×pure_logic×runtime/detail-gap-paging
+touchset: [test/detail-gap-page-request-oracle.test.js]
+estimates:
+  tokens: 32000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "6109bdc2e38d850ea956adc29078816c40055d97"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.9): The diff adds only the specified pure-oracle test file; runtime/detail-gap-paging.js is untouched in both baseline and post-r1 diff-scope checks. The mutant-kill receipt shows the disabled undeclared-stream guard specifically breaks the 'rejects malformed page requests' test on the /undeclared stream/ assertion, and the green receipt shows all 3 tests pass with real source restored — this is a genuine, non-vacuous mutation kill matching the packet's stated risk. Test content matches the plan.instruction assertions (dedup-in-order, max_bytes floor, null/empty streams normalization, and all listed rejection cases) with no scope or not_allowed violations."
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/detail-gap-page-request-oracle.test.js ]; then git diff --quiet -- runtime/detail-gap-paging.js || { echo \"DIRTY source\"; exit 1; }; cp runtime/detail-gap-paging.js /tmp/tst2_detail_gap_page_request.bak; perl -0pi -e \"s/if \\(!scopeByStream\\.has\\(stream\\)\\) \\{/if (false && !scopeByStream.has(stream)) {/\" runtime/detail-gap-paging.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_detail_gap_page_request; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/detail-gap-page-request-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_detail_gap_page_request.bak runtime/detail-gap-paging.js; rm -f /tmp/tst2_detail_gap_page_request.bak; git diff --quiet -- runtime/detail-gap-paging.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (undeclared stream accepted)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: detail gap page request oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=e6306fee bytes=57 receipt=quality/receipts/tst2-detail-gap-page-request-0014/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/detail-gap-page-request-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_detail_gap_page_request_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/detail-gap-page-request-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=caf12c67 bytes=31 receipt=quality/receipts/tst2-detail-gap-page-request-0014/baseline-2-direct-test-green.txt"
+    - "[baseline] diff-scope: cd \"$REPO_ROOT\" && sh -c 'test -z \"$(git diff --name-only -- runtime/detail-gap-paging.js)\" && echo SRC-CLEAN || echo SRC-DIRTY' -> exit 0 (0s) PASS; exit=0 djb2=d3fe6147 bytes=10 receipt=quality/receipts/tst2-detail-gap-page-request-0014/baseline-3-diff-scope.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/detail-gap-page-request-oracle.test.js ]; then git diff --quiet -- runtime/detail-gap-paging.js || { echo \"DIRTY source\"; exit 1; }; cp runtime/detail-gap-paging.js /tmp/tst2_detail_gap_page_request.bak; perl -0pi -e \"s/if \\(!scopeByStream\\.has\\(stream\\)\\) \\{/if (false && !scopeByStream.has(stream)) {/\" runtime/detail-gap-paging.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_detail_gap_page_request; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/detail-gap-page-request-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_detail_gap_page_request.bak runtime/detail-gap-paging.js; rm -f /tmp/tst2_detail_gap_page_request.bak; git diff --quiet -- runtime/detail-gap-paging.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (undeclared stream accepted)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: detail gap page request oracle not yet created\"; exit 0; fi' -> exit 0 (1s) FAIL: output does not contain 'BASELINE'; exit=0 djb2=83f0c5fd bytes=1301 receipt=quality/receipts/tst2-detail-gap-page-request-0014/post-1-red-then-green-mutant-kill.txt"
+    - "[post-r1] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/detail-gap-page-request-oracle.test.js ]; then git diff --quiet -- runtime/detail-gap-paging.js || { echo \"DIRTY source\"; exit 1; }; cp runtime/detail-gap-paging.js /tmp/tst2_detail_gap_page_request.bak; perl -0pi -e \"s/if \\(!scopeByStream\\.has\\(stream\\)\\) \\{/if (false && !scopeByStream.has(stream)) {/\" runtime/detail-gap-paging.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_detail_gap_page_request; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/detail-gap-page-request-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_detail_gap_page_request.bak runtime/detail-gap-paging.js; rm -f /tmp/tst2_detail_gap_page_request.bak; git diff --quiet -- runtime/detail-gap-paging.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (undeclared stream accepted)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: detail gap page request oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=1c309710 bytes=1311 receipt=quality/receipts/tst2-detail-gap-page-request-0014/post-r1-1-red-then-green-mutant-kill.txt"
+    - "[post-r1] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/detail-gap-page-request-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_detail_gap_page_request_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/detail-gap-page-request-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=2baeeb40 bytes=350 receipt=quality/receipts/tst2-detail-gap-page-request-0014/post-r1-2-direct-test-green.txt"
+    - "[post-r1] diff-scope: cd \"$REPO_ROOT\" && sh -c 'test -z \"$(git diff --name-only -- runtime/detail-gap-paging.js)\" && echo SRC-CLEAN || echo SRC-DIRTY' -> exit 0 (0s) PASS; exit=0 djb2=d3fe6147 bytes=10 receipt=quality/receipts/tst2-detail-gap-page-request-0014/post-r1-3-diff-scope.txt"
+  tokens_actual: 87324
+  lesson: landed after 1 revision cycle(s) — first attempt did not clear the gate

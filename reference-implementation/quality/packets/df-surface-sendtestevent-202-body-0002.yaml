@@ -1,0 +1,86 @@
+candidate_id: df-surface-sendtestevent-202-body-0002
+created: "2026-07-02T00:25:00.000Z"
+repo_sha: "5f513d99295d14abb092db521a89ee7c72847d33"
+subsystem: server/event-subscriptions
+files:
+  - test/client-event-subscriptions-e2e.test.js
+  - server/routes/rs-mutation.ts
+  - openapi/reference-full.openapi.json
+symbols:
+  - "sendTestEvent route adapter (POST /v1/event-subscriptions/:subscription_id/test-event in rs-mutation.ts)"
+  - executeEnqueueTestEvent
+public_surface:
+  - "POST /v1/event-subscriptions/{subscription_id}/test-event (sendTestEvent) — 202 body { event_id }"
+behavior_status: contract
+ownership: OWN
+action: surface_repair
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "VERIFIED disagreement-by-silence (2026-07-01, HEAD 5f513d9): the OpenAPI declares the sendTestEvent 202 body as exactly { event_id: string minLength 1 } with additionalProperties:false and required [event_id]; the route adapter emits res.status(202).json({ event_id: out.eventId }) (server/routes/rs-mutation.ts, sendTestEvent handler); but NO test anywhere asserts that body — grep event_id in test/client-event-subscriptions-e2e.test.js returns zero matches; both 202 call sites (:267 and :471) assert only testResp.status === 202. The operation-level test (test/as-client-event-subscriptions-operation.test.js:234-235) pins the camelCase out.eventId internally, which structurally CANNOT pin the route-layer JSON key name — the event_id spelling is produced in the adapter. This is the sendTestEvent UNKNOWN from docs/research/b-contract-inventory-2026-07-01.md section 6.5 resolved: statuses are pinned, the declared response body shape is pinned nowhere. Repair the TEST side so code, spec, and tests agree; behavior untouched."
+plan:
+  transform_class: add-contract-shape-assertion
+  instruction: "In test/client-event-subscriptions-e2e.test.js, at BOTH existing 202 call sites for POST /v1/event-subscriptions/{id}/test-event (near :267 client-token flow and :471 owner-token flow), add assertions immediately after the status check pinning the declared body contract: deepEqual(Object.keys(testResp.body), [event_id]) and event_id is a non-empty string — mirroring the OpenAPI 202 schema (required [event_id], additionalProperties false, minLength 1). Follow the file's existing assert style (node:assert/strict). Touch no other file."
+expected_quality_gain: low
+owner_attention_reduction: medium
+product_impact: low
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: low
+  property_at_risk: "the 202 response body of a public operation must stay exactly { event_id: non-empty string }; today a silent rename or field addition at the adapter would ship undetected"
+authoring_evidence:
+  - kind: spec-extract
+    detail: jq on openapi/reference-full.openapi.json for the sendTestEvent op
+    result: "202 schema: type object, additionalProperties false, properties { event_id: string minLength 1 }, required [event_id]; declared statuses 202,401,403,404,409"
+  - kind: code-read
+    detail: "server/routes/rs-mutation.ts sendTestEvent handler (POST /v1/event-subscriptions/:subscription_id/test-event)"
+    result: "returns res.status(202).json({ event_id: out.eventId }) — code agrees with spec"
+  - kind: coverage-sweep
+    detail: grep -rn event_id test/client-event-subscriptions-e2e.test.js; grep -n eventId test/as-client-event-subscriptions-operation.test.js
+    result: "e2e file: ZERO event_id matches, both 202 sites (:267, :471) assert status only; operation test :234-235 asserts camelCase out.eventId which cannot cover the adapter-layer key spelling"
+evidence_required:
+  - rung: red-then-green
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --quiet -- server/routes/rs-mutation.ts && sed -i 's/json({ event_id:/json({ event_id_broken:/' server/routes/rs-mutation.ts && PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp node --test test/client-event-subscriptions-e2e.test.js; git checkout -- server/routes/rs-mutation.ts"
+    expect: "the seeded run FAILS on the new 202-body assertion (event_id missing); the guard git diff --quiet must have confirmed rs-mutation.ts was clean BEFORE seeding, and the trailing checkout restores it — paste the failing assertion output"
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp node --test test/client-event-subscriptions-e2e.test.js"
+    expect: all pass with the implementation restored; no new skips
+  - rung: diff-scope
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- test/client-event-subscriptions-e2e.test.js server/routes/rs-mutation.ts"
+    expect: only test/client-event-subscriptions-e2e.test.js changed; rs-mutation.ts byte-identical at commit
+not_allowed:
+  - implementation-change
+  - behavior-change
+  - openapi-change
+  - snapshot-testing-the-entire-envelope
+  - new-dependency
+maker_tier: cheap
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: surface_repair×pure_logic×server/event-subscriptions
+touchset: [test/client-event-subscriptions-e2e.test.js]
+estimates:
+  tokens: 25000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: e73a3796ebb144b1b114d24997918e18bd18197a
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.96): The change satisfies the packet: it touches only test/client-event-subscriptions-e2e.test.js and pins the 202 response body as exactly { event_id } with a non-empty string at both required sendTestEvent call sites. The supplied red-then-green evidence includes actual assertion failures for the seeded event_id_broken adapter change at both call sites, and the restored direct test run passes with no skips. Diff-scope shows no implementation or OpenAPI changes, so no not_allowed item is violated."
+  evidence_receipts:
+    - "[baseline] red-then-green: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --quiet -- server/routes/rs-mutation.ts && sed -i 's/json({ event_id:/json({ event_id_broken:/' server/routes/rs-mutation.ts && PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp node --test test/client-event-subscriptions-e2e.test.js; git checkout -- server/routes/rs-mutation.ts -> exit 0 (2s) PASS; exit=0 djb2=f5daa6c6 bytes=624 receipt=quality/receipts/df-surface-sendtestevent-202-body-0002/baseline-1-red-then-green.txt"
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp node --test test/client-event-subscriptions-e2e.test.js -> exit 0 (2s) PASS; exit=0 djb2=097c3da7 bytes=626 receipt=quality/receipts/df-surface-sendtestevent-202-body-0002/baseline-2-direct-test.txt"
+    - "[baseline] diff-scope: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- test/client-event-subscriptions-e2e.test.js server/routes/rs-mutation.ts -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/df-surface-sendtestevent-202-body-0002/baseline-3-diff-scope.txt"
+    - "[post] red-then-green: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --quiet -- server/routes/rs-mutation.ts && sed -i 's/json({ event_id:/json({ event_id_broken:/' server/routes/rs-mutation.ts && PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp node --test test/client-event-subscriptions-e2e.test.js; git checkout -- server/routes/rs-mutation.ts -> exit 0 (2s) PASS; exit=0 djb2=8112f470 bytes=2399 receipt=quality/receipts/df-surface-sendtestevent-202-body-0002/post-1-red-then-green.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp node --test test/client-event-subscriptions-e2e.test.js -> exit 0 (2s) PASS; exit=0 djb2=b0494f49 bytes=627 receipt=quality/receipts/df-surface-sendtestevent-202-body-0002/post-2-direct-test.txt"
+    - "[post] diff-scope: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- test/client-event-subscriptions-e2e.test.js server/routes/rs-mutation.ts -> exit 0 (0s) PASS; exit=0 djb2=002e4051 bytes=113 receipt=quality/receipts/df-surface-sendtestevent-202-body-0002/post-3-diff-scope.txt"
+  tokens_actual: 30882
+  lesson: null
+resets:
+  - at: "2026-07-02T02:39:41.046Z"
+    from_status: reverted
+    reason: batch-1 judge could not see rung output; iteration-2 adds output slices to judge evidence (c6b4faa)

@@ -1,0 +1,78 @@
+candidate_id: server-routes-ref-manual-upload-draft-connection-t0-fcff2422
+created: "2026-07-02T00:15:44.732Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server/routes
+files: [server/routes/ref-manual-upload-draft-connection.ts]
+symbols:
+  - publicBatchReceipt
+  - emitManualUploadAudit
+  - writeChunk
+  - suggestedDisplayNameFromValidation
+  - manualUploadArtifactNextStep
+  - loadManualUploadTargetConnection
+public_surface:
+  - "file matches public-surface glob 'server/routes/**' (v1 path heuristic — enumerate actual routes/tools in wave 2)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 11, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn 'publicBatchReceipt' cc=11. File attention: churn 9 × excess-cc mass 14 = 126; 6 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to publicBatchReceipt, emitManualUploadAudit, writeChunk, suggestedDisplayNameFromValidation, manualUploadArtifactNextStep, loadManualUploadTargetConnection in server/routes/ref-manual-upload-draft-connection.ts (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: medium
+priority:
+  score: 15.574
+  computed: "2026-07-02T00:15:44.732Z"
+  inputs:
+    mass: 14
+    churn: 9
+risk:
+  blast_radius: local
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/routes/ref-manual-upload-draft-connection.ts, tier T0 (repo_sha 6e8d8559c36b94d41bc4c42a9a31342e60b3b334)"
+    result: "6 flagged fn(s), Σ excess-cc 14, max cc 11, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/routes/ref-manual-upload-draft-connection.ts"
+    result: "9 commits in window; coupling(fan-in proxy)=1"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck"
+    expect: exit 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test"
+    expect: all tests pass; 0 fail; no new skips
+  - rung: complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/routes/ref-manual-upload-draft-connection.ts::publicBatchReceipt'"
+    expect: found=true and cognitive_before < 11 (packet baseline); red_scan unchanged
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting, public-shape-change]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: claude
+judge_provider: null
+batch_key: preserve_refactor×certified_transform×server/routes
+touchset: [server/routes/ref-manual-upload-draft-connection.ts]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: skipped
+outcome:
+  commit: null
+  skip_reason: "validated-non-defect(the six named functions are already flat (guard-clauses/single-expression returns) with no nesting or redundant conditions for a certified-local-tidy transform to remove; the file's actual complexity hotspot (`validateAndStageArtifact`) is …)"
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=40c8e323 bytes=124 receipt=quality/receipts/server-routes-ref-manual-upload-draft-connection-t0-fcff2422/baseline-1-typecheck.txt"
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test -> exit 0 (203s) PASS; exit=0 djb2=38e717be bytes=501514 receipt=quality/receipts/server-routes-ref-manual-upload-draft-connection-t0-fcff2422/baseline-2-direct-test.txt"
+    - "[baseline] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/routes/ref-manual-upload-draft-connection.ts::publicBatchReceipt' -> exit 0 (0s) PASS; exit=0 djb2=4487cac9 bytes=367 receipt=quality/receipts/server-routes-ref-manual-upload-draft-connection-t0-fcff2422/baseline-3-complexity-remeasure.txt [portable-path rewrite]"
+  tokens_actual: 21468
+  lesson: "maker (claude) validated the packet premise as a non-defect — a correct, permanent close, not a retry candidate"

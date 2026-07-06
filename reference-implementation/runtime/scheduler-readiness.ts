@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { canonicalConnectorKey } from "../server/connector-key.js";
-import type { ConnectorSchedule, SchedulerManifest, SchedulerReadinessResult } from "./scheduler.ts";
+import type { ConnectorSchedule, SchedulerManifest, SchedulerReadinessResult } from "./scheduler-domain-types.ts";
 
 // ─── Automatic-run readiness checks ────────────────────────────────────────
 
@@ -100,6 +100,29 @@ function browserSurfaceConfigured(): boolean {
   return false;
 }
 
+function resolveCodexLocalSourcePaths(): readonly [string, string] {
+  const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
+  return [
+    process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions"),
+    process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite"),
+  ];
+}
+
+async function checkCodexLocalSourcePathReadiness(): Promise<string | null> {
+  const [sessionsDir, stateDbPath] = resolveCodexLocalSourcePaths();
+  const missing: string[] = [];
+  if (!(await canAccessPath(sessionsDir))) {
+    missing.push(sessionsDir);
+  }
+  if (!(await canAccessPath(stateDbPath))) {
+    missing.push(stateDbPath);
+  }
+  if (missing.length === 0) {
+    return null;
+  }
+  return `Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`;
+}
+
 async function checkFirstPartyLocalSourceReadiness(
   connectorId: string,
   manifest: SchedulerManifest
@@ -109,18 +132,7 @@ async function checkFirstPartyLocalSourceReadiness(
   }
   const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
   if (canonicalId === "codex") {
-    const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
-    const requiredPaths = [
-      process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions"),
-      process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite"),
-    ];
-    const missing: string[] = [];
-    for (const path of requiredPaths) {
-      if (!(await canAccessPath(path))) {
-        missing.push(path);
-      }
-    }
-    return missing.length > 0 ? `Codex local source path(s) are missing or unreadable: ${missing.join(", ")}` : null;
+    return checkCodexLocalSourcePathReadiness();
   }
   if (canonicalId === "claude-code") {
     const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");

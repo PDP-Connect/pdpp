@@ -1,0 +1,583 @@
+{
+  "version": 1,
+  "agenda_id": "agenda-2026-07-02T03-17-50-652Z",
+  "created": "2026-07-02T03:17:50.652Z",
+  "trigger": "manual",
+  "challenge": false,
+  "provider": "claude",
+  "model": "opus",
+  "repo_sha": "f5870a5eb76f9606cb6d797a06298e0f6a1e6133",
+  "inventory_sha": "6e8d8559c36b94d41bc4c42a9a31342e60b3b334",
+  "doctrine_path": "/home/tnunamak/code/dotfiles/ai/research/code-quality/THE-PROJECT-QUALITY-PORTFOLIO-MACHINE.md",
+  "context_bytes": {
+    "sensor:meta": 544,
+    "sensor:tier-mass": 5996,
+    "sensor:hotspots": 1602,
+    "sensor:callback-smells": 2751,
+    "packet-pool": 6227,
+    "cost-actuals": 1463,
+    "b-inventory": 2908,
+    "ratification-queue": 2082,
+    "doctrine": 12546
+  },
+  "total_context_bytes": 36119,
+  "prompt_bytes": 40922,
+  "call": {
+    "duration_ms": 143691,
+    "cost_usd": 0.93093,
+    "tokens": {
+      "input": 17313,
+      "output": 11262
+    }
+  },
+  "verification": {
+    "sensor_citations": 16,
+    "verified": 16,
+    "failed": 0,
+    "demoted_items": 0
+  },
+  "items": [
+    {
+      "id": "b-content-ladder-direct-test-coverage",
+      "what": "Generate direct by-name contract tests asserting the structuredContent.content_ladder block shape/tiers (all 5 tiers), the crown-jewel progressive-disclosure invariant that currently has zero direct coverage.",
+      "why_now": "The B inventory names this the single highest-value public-contract gap: a spec'd, MODIFIED-openspec invariant ('must not dead-end content-only hosts') exercised only indirectly, never asserted by name. Evidence-generation here unlocks the ability to safely refactor the records/MCP surface that feeds it. Behavior-preserving (adds tests only) → autonomous.",
+      "evidence": [
+        {
+          "type": "b-inventory",
+          "citation": "b-contract-inventory-2026-07-01.md §6 finding 1",
+          "note": "content_ladder has ZERO by-keyword test coverage — 'Highest-value gap'",
+          "verified": null
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE §2 (MCP shapes / content_ladder progressive-disclosure is code quality, purity floor)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "evidence-generation",
+      "packet_ids": [],
+      "campaign_id": "b-public-contract-minimum",
+      "acceptance_criteria": [
+        "A test asserts structuredContent.content_ladder exists and enumerates its tiers by name",
+        "Each of the 5 tiers has a shape assertion",
+        "The 'must not dead-end content-only hosts' scenario is asserted directly, not via read_record_field reachability"
+      ],
+      "est_cost": {
+        "usd": 0.56,
+        "basis": "t1b-consent-ui-requested-stream-item-0005 landed evidence-gen at $0.54; df-surface-sendtestevent landed at $0.56"
+      },
+      "predicted_gain": "Pins the crown-jewel invariant by name → unlocks safe refactor of records/MCP surface; closes the top B gap.",
+      "verification": "verified",
+      "model_rank": 1,
+      "rank": 1
+    },
+    {
+      "id": "rt-index-handlemsg-a2-decomplect",
+      "what": "Judged A2 decomplection of runtime/index.js::handleMsg (cc=194) — the single highest-cc function in the owned core — into named sub-handlers with explicit state, behavior-preserving under maker≠checker gates.",
+      "why_now": "This is the staff-engineer target the streetlight planner missed: no packet in the pool touches it, yet it is the largest single complexity mass concentration in a high-churn file. runtime/index.js carries the most file mass in the core. Full paranoia is warranted (T2-property tier). Behavior-preserving → judged autonomous, but high proof cost.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "runtime/index.js:cc[handleMsg]=194",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/index.js:cc[handleMsg]=194"
+        },
+        {
+          "type": "sensor",
+          "citation": "runtime/index.js:excess[handleMsg]=189",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/index.js:excess[handleMsg]=189"
+        },
+        {
+          "type": "sensor",
+          "citation": "runtime/index.js:mass=713",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/index.js:mass=713"
+        },
+        {
+          "type": "sensor",
+          "citation": "runtime/index.js:attention=44206",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/index.js:attention=44206"
+        }
+      ],
+      "workflow_class": "A2",
+      "packet_ids": [],
+      "campaign_id": "a2-top-attention-hotspots",
+      "acceptance_criteria": [
+        "handleMsg dispatch split into named handlers with explicit context, no captured-mutable shared cells",
+        "Message-ordering / awaited-order behavior proven preserved (differential or characterization)",
+        "Different-model judge PASS; enclosing cc materially reduced (not relocation)"
+      ],
+      "est_cost": {
+        "usd": 2.93,
+        "basis": "runtime-scheduler-t0 A2-class attempt at $2.93 (reverted); expect ≥1 revision at this cc"
+      },
+      "predicted_gain": "Retires the largest single cognitive-load hotspot in the runtime message path; highest attention-per-concept-clarified in the core.",
+      "verification": "verified",
+      "model_rank": 2,
+      "rank": 2
+    },
+    {
+      "id": "srv-index-startserver-a2-decomplect",
+      "what": "Judged A2 decomplection of server/index.js::startServer (cc=67, T2-async-order) — the top flagged function by attention — separating startup phases into ordered, explicitly-sequenced steps.",
+      "why_now": "server/index.js is the highest-attention file in the entire core (attention=70850, hotspot score 97370) and startServer is its top flagged function by attention. No packet covers it. Async-ordering tier → needs judged proof of preserved await order, not a mechanical cut.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/index.js:cc[startServer]=67",
+          "verified": true,
+          "verify_detail": "reproduced: server/index.js:cc[startServer]=67"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/index.js:excess[startServer]=62",
+          "verified": true,
+          "verify_detail": "reproduced: server/index.js:excess[startServer]=62"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/index.js:attention=70850",
+          "verified": true,
+          "verify_detail": "reproduced: server/index.js:attention=70850"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/index.js:score=97370",
+          "verified": true,
+          "verify_detail": "reproduced: server/index.js:score=97370"
+        }
+      ],
+      "workflow_class": "A2",
+      "packet_ids": [],
+      "campaign_id": "a2-top-attention-hotspots",
+      "acceptance_criteria": [
+        "Startup phases extracted as named ordered steps; await sequence provably unchanged",
+        "No behavior change to server bootstrap (integration boot test green + differential)",
+        "Different-model judge PASS; enclosing cc reduced"
+      ],
+      "est_cost": {
+        "usd": 2.93,
+        "basis": "runtime-scheduler-t0 A2 attempt $2.93; async-order class ⇒ expect a revision"
+      },
+      "predicted_gain": "Clarifies the most-attended-to entry point in the repo (server boot), the highest churn×mass surface.",
+      "verification": "verified",
+      "model_rank": 3,
+      "rank": 3
+    },
+    {
+      "id": "prevention-anon-callback-cc-ratchet",
+      "what": "Build the NO-HIGH-COMPLEXITY-ANONYMOUS-CALLBACK ratchet: a lint/CI rule blocking new anonymous callbacks above a small cc threshold or capturing >N nonlocal names, forcing a named fn + explicit context.",
+      "why_now": "The doctrine names this the single highest-leverage Memo-7 outcome — the 84%-of-mass closure distribution is an AI-built-code smell, and 'preventing the distribution from regenerating may reduce future complexity more than downstream codemods ever could.' The callback smell sensor already computes exactly the inputs (cc, captured, captured-mutable, await-count). Prevention, not a refactor → autonomous ratchet.",
+      "evidence": [
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE §3 (generation policy + discovery ratchet — 'likely more valuable than any T0 codemod')",
+          "verified": null
+        },
+        {
+          "type": "sensor",
+          "citation": "runtime/index.js:cc[handleMsg]=194",
+          "note": "the distribution's tail this ratchet would have prevented",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/index.js:cc[handleMsg]=194"
+        },
+        {
+          "type": "corpus",
+          "citation": "SENSOR:CALLBACK-SMELLS (mass by class T2:1121 — the regenerating distribution)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "prevention",
+      "packet_ids": [],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "CI rule fails on a new anonymous callback exceeding the cc threshold or capture-count",
+        "Rule exempts existing flagged sites (ratchet, not retro-refactor) with a tracked baseline",
+        "Rule wired into the repo's existing lint/gate so it runs on PRs"
+      ],
+      "est_cost": {
+        "usd": 0.35,
+        "basis": "t1b-refctl-gap-terminality landed at $0.35 (small mechanical land); ratchet is comparable authoring scope"
+      },
+      "predicted_gain": "Stops the dominant complexity distribution (capturing anon callbacks) from regenerating — compounding, not one-shot.",
+      "verification": "verified",
+      "model_rank": 4,
+      "rank": 4
+    },
+    {
+      "id": "b-ref-vs-owner-control-plane-conflation",
+      "what": "B campaign to decide the /_ref/* vs /v1/owner/* near-duplicate control-plane conflation: run/schedule/revoke/reactivate exist under both prefixes with different auth guards (70 of 100 ops are control-plane).",
+      "why_now": "The B inventory calls this 'the clearest noun-conflation candidate' — two names likely serving overlapping concepts across 70% of the public operation surface. Behavior-CHANGING and owner-level → must be a ratified campaign / human decision, never autonomous. Doctrine puts B at 40-50% and this is the largest single conflation.",
+      "evidence": [
+        {
+          "type": "b-inventory",
+          "citation": "b-contract-inventory-2026-07-01.md §6 finding 4",
+          "verified": null
+        },
+        {
+          "type": "b-inventory",
+          "citation": "RATIFICATION-QUEUE row 2 (SLVP-Q weight low-med, largest conflation, Status OPEN)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "B",
+      "packet_ids": [],
+      "campaign_id": "b-public-contract-minimum",
+      "acceptance_criteria": [
+        "Owner decision recorded: collapse to one plane, or keep both with a documented audience/reason",
+        "If collapse: a migration + deprecation proposal packet drafted (not landed) with caller-visible-change inventory",
+        "Ratification-queue row 2 moves OPEN → RATIFIED/DECLINED"
+      ],
+      "est_cost": {
+        "usd": null,
+        "basis": "proposal-only; no maker land in this agenda — cost is owner review time, not a code job"
+      },
+      "predicted_gain": "Resolves the biggest public-noun conflation across 70% of the operation surface; largest B-axis attention reduction.",
+      "verification": "verified",
+      "model_rank": 5,
+      "rank": 5
+    },
+    {
+      "id": "df-evidence-package-schema-merge-oracle",
+      "what": "Generate the deterministic oracle/characterization test for package-rs-client schema-envelope merge, so the cc=77 capturing merge callback can later be safely decomplected.",
+      "why_now": "The callback sensor flags mergeSchemaEnvelopes (cc=77, security/DDL/marker: streamGrant) as a T2 seam with no direct test — exactly the T1c 'UNPROVEN, write characterization first' case the doctrine mandates. This evidence-generation packet already exists and unlocks blocked merge work. Autonomous (adds oracle only).",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/package-rs-client.js:mass=169",
+          "verified": true,
+          "verify_detail": "reproduced: server/package-rs-client.js:mass=169"
+        },
+        {
+          "type": "corpus",
+          "citation": "SENSOR:CALLBACK-SMELLS row mergeSchemaEnvelopes cc=77 excess=72 (security/DDL/marker: streamGrant)",
+          "verified": null
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE §1b gate 1 (no direct test → write the characterization test first, do not land on green-by-reachability)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "evidence-generation",
+      "packet_ids": [
+        "df-evidence-package-schema-merge-oracle-0004"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "A deterministic test pins mergeSchemaEnvelopes output over a mixed multi-envelope fixture",
+        "streamGrant/DDL-marker branches are each asserted",
+        "Test is green on current HEAD (characterization, behavior-preserving)"
+      ],
+      "est_cost": {
+        "usd": 0.56,
+        "basis": "df-surface-sendtestevent-202-body-0002 landed at $0.56 (evidence/surface class)"
+      },
+      "predicted_gain": "Converts an unprovable high-cc security seam into a decomplectable one; unblocks future merge refactor.",
+      "verification": "verified",
+      "model_rank": 6,
+      "rank": 6
+    },
+    {
+      "id": "t1a-semantic-backfill-hoist",
+      "what": "T1a clean hoist of server/search-semantic.js semanticIndexBackfillForManifest (cc=120, non-capturing, free-vars=∅) to a named pure top-level function.",
+      "why_now": "The callback sensor certifies this as non-capturing (free-vars=∅) → a genuine T1a with no hidden-state or capture surprise, the rare cheap seam clarification. The largest single cc the smell detector flagged as cleanly extractable. Packet exists. Behavior-preserving, local-hunk proof.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/search-semantic.js:mass=376",
+          "verified": true,
+          "verify_detail": "reproduced: server/search-semantic.js:mass=376"
+        },
+        {
+          "type": "corpus",
+          "citation": "SENSOR:CALLBACK-SMELLS row semanticIndexBackfillForManifest cc=120 excess=115 T1a — 'non-capturing (free-vars=∅) → hoist to a named pure top-level fn'",
+          "verified": null
+        }
+      ],
+      "workflow_class": "T1a",
+      "packet_ids": [
+        "server-search-semantic-t1a-230e24ed"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "Callback hoisted to a named top-level fn with explicit params; call site unchanged in behavior",
+        "tsc/lint + real test green; same eval order/count",
+        "Different-model judge PASS (exact_move class)"
+      ],
+      "est_cost": {
+        "usd": 0.51,
+        "basis": "srv-records-aggregate-groupsort-0002 exact_move landed at $0.51"
+      },
+      "predicted_gain": "Removes the largest cleanly-extractable callback (cc=120) from a high-mass search file; low risk, high certainty.",
+      "verification": "verified",
+      "model_rank": 7,
+      "rank": 7
+    },
+    {
+      "id": "t1b-streaming-input-telemetry-event",
+      "what": "T1b explicit-context extraction of the streaming input-telemetry event builder in server/streaming/routes.js, with its direct output-pinning test.",
+      "why_now": "server/streaming/routes.js is a T1b-dense file (registerStreamingRoutes captures immutable [streamingSessions,getCompanion,inputTelemetry] and [controller,companionFactory,...]) — the doctrine's canonical explicit-context archetype. Packet pair (source+test) already exists and the companion evidence packet 0012 pins output. This is exactly the qualified T1b the scaling rule wants.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/streaming/routes.js:mass=202",
+          "verified": true,
+          "verify_detail": "reproduced: server/streaming/routes.js:mass=202"
+        },
+        {
+          "type": "corpus",
+          "citation": "SENSOR:CALLBACK-SMELLS registerStreamingRoutes T1b — 'captures (immutable) [streamingSessions,getCompanion,inputTelemetry] → turn implicit env into explicit context param'",
+          "verified": null
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE §1b (the scarce high-value archetype: capturing closure + immutable capture + airtight direct unit test)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "T1b",
+      "packet_ids": [
+        "t1b-streaming-input-telemetry-event-0013",
+        "t1b-streaming-input-telemetry-evidence-0012"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "Implicit captures turned into an explicit context param; named fn",
+        "A direct unit test pins the telemetry-event output over every branch (not integration-reachability)",
+        "Genuine hidden-state-made-explicit OR enclosing-cc reduction (reject relocation); judge PASS"
+      ],
+      "est_cost": {
+        "usd": 0.59,
+        "basis": "t1b-records-binding-decorator-0009 landed at $0.59 (pure_logic T1b)"
+      },
+      "predicted_gain": "Makes a captured streaming-session context explicit in a high-coupling routes file; adds a durable direct test.",
+      "verification": "verified",
+      "model_rank": 8,
+      "rank": 8
+    },
+    {
+      "id": "b-error-envelope-boundary-decision",
+      "what": "B campaign to decide/document the two-error-envelope boundary: PDPP {error:{type,code,message}} (records/MCP) vs OAuthErrorSchema (/oauth/*, /consent/*, DCR).",
+      "why_now": "The B inventory flags two public error shapes coexisting on one surface — legitimate (OAuth is RFC-shaped) but under-documented as a deliberate boundary. Caller-visible → owner decision (document vs unify). Advances B-minimum without blocking A.",
+      "evidence": [
+        {
+          "type": "b-inventory",
+          "citation": "b-contract-inventory-2026-07-01.md §6 finding 2",
+          "verified": null
+        },
+        {
+          "type": "b-inventory",
+          "citation": "RATIFICATION-QUEUE row 3 (Status OPEN, SLVP-Q weight low)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "B",
+      "packet_ids": [],
+      "campaign_id": "b-public-contract-minimum",
+      "acceptance_criteria": [
+        "Owner decision: document the boundary as deliberate, or unify",
+        "If document: the boundary is written into the public error-model docs/OpenAPI with rationale",
+        "Ratification-queue row 3 resolved"
+      ],
+      "est_cost": {
+        "usd": null,
+        "basis": "proposal/doc-only; owner-review cost, not a maker land"
+      },
+      "predicted_gain": "Removes an under-documented public-surface surprise; low SLVP-Q but a purity-floor doc gap.",
+      "verification": "verified",
+      "model_rank": 9,
+      "rank": 9
+    },
+    {
+      "id": "docs-query-cookbook-expand-advisory",
+      "what": "Surface-repair the query cookbook + schema-capabilities so the related_stream_not_granted advisory noun is documented consistently with its thrown-error sibling field_not_granted.",
+      "why_now": "The B inventory finds a public-noun/internal-concept mismatch: related_stream_not_granted is an inert schema reason while its sibling field_not_granted is a thrown 403. The existing packet (judgment_first surface_repair) touches docs+schema-capabilities+contract test+openapi — a documentation/advisory fix, not a behavior change. Autonomous surface repair.",
+      "evidence": [
+        {
+          "type": "b-inventory",
+          "citation": "b-contract-inventory-2026-07-01.md §6 finding 3",
+          "verified": null
+        },
+        {
+          "type": "b-inventory",
+          "citation": "RATIFICATION-QUEUE row 1 (advisory-only path is a valid resolution)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "B",
+      "packet_ids": [
+        "docs-query-cookbook-expand-advisory-0003"
+      ],
+      "campaign_id": "b-public-contract-minimum",
+      "acceptance_criteria": [
+        "Cookbook + schema-capabilities document the advisory-vs-thrown asymmetry explicitly",
+        "A contract test asserts the documented shape of expand_capabilities[].reason",
+        "No caller-visible behavior change (advisory doc + test only); if promotion to a thrown error is preferred, escalate to human decision instead"
+      ],
+      "est_cost": {
+        "usd": 0.54,
+        "basis": "t1b-consent-ui... judgment_first-adjacent land at $0.54"
+      },
+      "predicted_gain": "Closes a public-noun/internal-concept mismatch via documentation; cheap B-axis win.",
+      "verification": "verified",
+      "model_rank": 10,
+      "rank": 10
+    },
+    {
+      "id": "rt-verdict-stream-rollups-oracle",
+      "what": "Generate the verdict-stream-rollup oracle test for runtime/connector-verdict-input.ts, enabling the paired rollup-entry T1b extraction.",
+      "why_now": "runtime is the second-highest mass subsystem; the rollup oracle packet (judgment_first evidence-gen) plus its paired t1b-verdict-stream-rollup-entry-0011 packet form an unlock: generate evidence → then extract. Evidence-generation is the doctrine's way to convert unprovable seams into decomplectable ones. Autonomous.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "runtime:mass=1227",
+          "verified": true,
+          "verify_detail": "reproduced: runtime:mass=1227"
+        },
+        {
+          "type": "sensor",
+          "citation": "runtime/rendered-verdict.ts:mass=73",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/rendered-verdict.ts:mass=73"
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE §1b gate 1 (write the characterization test first; do not land on green-by-reachability)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "evidence-generation",
+      "packet_ids": [
+        "rt-verdict-stream-rollups-oracle-0004",
+        "t1b-verdict-stream-rollup-entry-0011"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "A test pins verdict-rollup input/output over a representative fixture",
+        "Rollup entry branches asserted directly",
+        "Green on HEAD; enables the paired rollup-entry extraction"
+      ],
+      "est_cost": {
+        "usd": 0.56,
+        "basis": "evidence-gen lands cluster at ~$0.54-0.56"
+      },
+      "predicted_gain": "Unblocks a runtime T1b by generating its missing oracle; converts blocked → executable.",
+      "verification": "verified",
+      "model_rank": 11,
+      "rank": 11
+    },
+    {
+      "id": "t1b-transport-shim-negotiation",
+      "what": "T1b explicit-context extraction of the transport-shim negotiation logic in server/transport.js, with the fastify-transport test pinning output.",
+      "why_now": "server/transport.js (coupling=41, score=918) has a bounded, well-tested negotiation seam and an existing source+test packet. Note the prior t1b-transport-shim-negotiation-evidence-0001 was REVERTED (REVISE) — so this must gate hard on a DIRECT output test, not reachability, per the scaling rule. Ranked lower precisely because the last transport attempt bounced.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/transport.js:coupling=41",
+          "verified": true,
+          "verify_detail": "reproduced: server/transport.js:coupling=41"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/transport.js:score=918",
+          "verified": true,
+          "verify_detail": "reproduced: server/transport.js:score=918"
+        },
+        {
+          "type": "corpus",
+          "citation": "COST-ACTUALS t1b-transport-shim-negotiation-evidence-0001 · reverted · REVISE — prior attempt bounced; direct-test gate mandatory",
+          "verified": null
+        }
+      ],
+      "workflow_class": "T1b",
+      "packet_ids": [
+        "t1b-transport-shim-negotiation-0002"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "Negotiation captures made explicit; named fn",
+        "fastify-transport test pins the negotiated result directly (learn from the reverted evidence attempt)",
+        "Genuine decomplect (not relocation); judge PASS"
+      ],
+      "est_cost": {
+        "usd": 1.58,
+        "basis": "t1b-transport-shim-negotiation-evidence-0001 spent $1.58 before revert; budget for a revision"
+      },
+      "predicted_gain": "Clarifies transport negotiation seam — but only lands if the direct-test gate holds; otherwise SKIP is the correct outcome.",
+      "verification": "verified",
+      "model_rank": 12,
+      "rank": 12
+    }
+  ],
+  "campaigns": [
+    {
+      "id": "b-public-contract-minimum",
+      "named_target": "B-minimum public-contract catalogue (b-contract-inventory-2026-07-01.md)",
+      "why": "Doctrine puts B at 40-50% and says 'build B-minimum NOW'; the inventory surfaced 4 ratifiable items + the highest-value content_ladder test gap.",
+      "acceptance_criteria": [
+        "content_ladder has direct by-name contract-shape coverage",
+        "All 4 ratification-queue rows moved OPEN → RATIFIED/DECLINED with recorded rationale",
+        "Every B decision is either landed as behavior-preserving docs/tests or queued as a human-ratified proposal packet — none auto-landed as behavior change"
+      ]
+    },
+    {
+      "id": "a2-top-attention-hotspots",
+      "named_target": "Highest-attention owned complexity: server/index.js (attention=70850) + runtime/index.js (attention=44206), the staff-engineer targets the streetlight planner missed",
+      "why": "The deterministic planner ranked only small extractions and missed these; the doctrine's stopping condition sequences by attention-weighted leverage, and these are the two highest-attention cores with no packet coverage.",
+      "acceptance_criteria": [
+        "handleMsg (cc=194) and startServer (cc=67) each decomplected behavior-preserving under maker≠checker + different-model judge",
+        "Enclosing cc materially reduced (relocation rejected per canon R5)",
+        "Await-order / message-order invariants proven preserved (differential or characterization), not asserted by hope"
+      ]
+    }
+  ],
+  "not_chosen": [
+    {
+      "id": "server-auth-t0-850ad54c",
+      "what": "T0 certified transform on server/auth.js",
+      "reason": "server/auth.js is marked NOGO in HOTSPOTS (server/auth.js:score=68591 NOGO); it is a security surface (introspect, grant-contract, consent) gated behind owner_ratify. Not autonomous A-work; any change is a judged/B decision, not a T0 land."
+    },
+    {
+      "id": "server-index-t0-9b38c77a",
+      "what": "T0 certified transform on server/index.js",
+      "reason": "The T0 mass here is marginal vs the file's real cost, which is startServer/buildAsApp (chosen as A2). T0 on this file is the streetlight bias — mechanical cc-6/7 clearance that leaves the mass (attention=70850) untouched. Do the A2 first; T0 opportunistically after."
+    },
+    {
+      "id": "runtime-index-t0-a9edf2c4",
+      "what": "T0 certified transform on runtime/index.js",
+      "reason": "Same streetlight trap — T0 clears the 41.8%-by-count/16.3%-by-mass tail while handleMsg (cc=194) sits untouched. Superseded by rt-index-handlemsg-a2-decomplect."
+    },
+    {
+      "id": "server-records-t1a-35e2deec",
+      "what": "T1a exact-move on server/records.js",
+      "reason": "records.js's mass is in queryRecords (cc=99, T2-property) and the cross-binding aggregators (cc=73 each, T2-async) — property/async tiers needing judged proof, not an exact-move. The exact-move packet addresses a marginal slice; route the real mass to A2 in a later slice. Deferred, not rejected."
+    },
+    {
+      "id": "runtime-scheduler-a2",
+      "what": "A2 decomplect of runtime/scheduler.ts",
+      "reason": "The prior runtime-scheduler-t0 attempt REVERTED at $2.93 with a REJECT judge (COST-ACTUALS). Lower attention (runtime/scheduler.ts:attention=1260) than the chosen A2 targets and a known-hard/expensive surface — defer until the handleMsg/startServer A2 method is proven cheaper."
+    },
+    {
+      "id": "repo-tmp-claims-exhaust-0005",
+      "what": "Delete tmp-claims.jsonl (liveness_roots)",
+      "reason": "owner_ratify gate + a delete against a claims ledger I did not author; the guidance is to surface, not proceed. Belongs to the deterministic floor / owner, not the agenda-setter."
+    },
+    {
+      "id": "server-db-t0-94a605ef",
+      "what": "T0 on server/db.js",
+      "reason": "db.js mass is in the .transaction callbacks (cc=52/39, T2-property, DDL markers CREATE/DROP TABLE) — T2-in-disguise (T1c), not a T0. A T0 land here would move a metric without touching the transaction-seam mass. Route to evidence-gen + judged later."
+    }
+  ],
+  "deltas_from_prior": [
+    "(no prior agenda)"
+  ],
+  "human_decisions_needed": [
+    "Ratify /_ref/* vs /v1/owner/* control-plane conflation (70/100 ops): collapse to one plane or keep both with a documented audience? (Ratification-queue row 2, OPEN)",
+    "Ratify the two-error-envelope boundary (PDPP vs OAuthErrorSchema): document as deliberate, or unify? (Ratification-queue row 3, OPEN)",
+    "Decide related_stream_not_granted: leave advisory-only (autonomous doc packet handles it) vs promote to a thrown error / rename (behavior change requiring ratification). (Ratification-queue row 1, OPEN)",
+    "ESCALATION — doctrine-target demotion: server/auth.js (attention=41464, the 2nd-highest-attention file) is NOGO/owner_ratify and therefore excluded from autonomous A2. Confirm auth stays quarantined-with-justification (frozen security surface) rather than scheduled, per the stopping condition's category 5.",
+    "ESCALATION — doctrine-target demotion: server/records.js real mass (queryRecords cc=99, cross-binding aggregators cc=73×2) is deferred out of this agenda's top slice to A2 later. Confirm acceptable to sequence server/index.js + runtime/index.js ahead of it, or reprioritize records first."
+  ]
+}

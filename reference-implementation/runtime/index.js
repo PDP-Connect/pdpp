@@ -9,17 +9,22 @@ import { createInterface } from 'readline';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { createTraceContext, emitSpineEvent, getCurrentBootEpoch } from '../lib/spine.ts';
 import { emitControllerBootedAndStashEpoch } from '../lib/controller-boot.ts';
-import { isClosedPipeWriteError } from './pipe-errors.js';
-import { deriveTerminalReason } from './terminal-reason.js';
-import { createStderrTailBuffer } from './stderr-tail.js';
-import { redactStderrTail } from './stderr-redact.js';
+import { isClosedPipeWriteError } from './pipe-errors.ts';
+import { deriveTerminalReason } from './terminal-reason.ts';
+import { createStderrTailBuffer } from './stderr-tail.ts';
+import { redactStderrTail } from './stderr-redact.ts';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
 import { classifyRecoveryError, maybeQuarantineGap, maybeTerminateGap, resolveTerminalGapPolicy } from '../server/stores/terminal-gap-classifier.js';
 import { DEFAULT_QUARANTINE_POLICY } from './recovery-quarantine.ts';
-import { classifyRecoveryReason, resolveRecoveryAdmission } from './recovery-decision.ts';
-import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.js';
-import { createAttentionWriter } from './attention-writer.js';
+import { classifyRecoveryReason } from './recovery-decision.ts';
+import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.ts';
+import { createAttentionWriter } from './attention-writer.ts';
 import { canonicalConnectorKey } from '../server/connector-key.js';
+import { buildHttpFailure, buildIngestHttpFailure, buildInvalidIngestResponseFailure } from './ingest-failures.js';
+import { createDetailGapPageReader, validateDetailGapsPageRequest } from './detail-gap-paging.js';
+import { validateDoneError, validateDoneExitCode, validateDoneRecordsEmitted, validateDoneStatus } from './done-validators.js';
+import { validateProgressCollectionRate, validateProgressProviderBudget } from './progress-validators.js';
+import { classifyRuntimeFailure } from './classify-runtime-failure.js';
 
 // ─── Owned connector-child process-group registry ──────────────────────────
 //
@@ -114,211 +119,6 @@ function buildRunSourceDescriptor(connectorId) {
   return { kind: 'connector', id: connectorId };
 }
 
-function buildStartDetailGap(gap) {
-  return {
-    gap_id: gap.gap_id,
-    stream: gap.stream,
-    record_key: gap.record_key ?? null,
-    status: gap.status,
-    detail_locator: gap.detail_locator ?? null,
-    reference_only: true,
-  };
-}
-
-const DETAIL_GAP_PAGE_MIN_BYTES = 16 * 1024;
-const DETAIL_GAP_PAGE_DEFAULT_BYTES = 256 * 1024;
-const DETAIL_GAP_PAGE_MAX_BYTES = 1024 * 1024;
-const DETAIL_GAP_PAGE_MAX_CANDIDATE_ROWS = 500;
-const DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES = 1536;
-
-function boundedPositiveInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
-  if (!Number.isFinite(parsed) || parsed < min) return fallback;
-  return Math.max(min, Math.min(max, Math.floor(parsed)));
-}
-
-function detailGapPageByteBudget(requestedMaxBytes = null) {
-  return boundedPositiveInteger(
-    requestedMaxBytes ?? process.env.PDPP_DETAIL_GAP_PAGE_TARGET_BYTES,
-    DETAIL_GAP_PAGE_DEFAULT_BYTES,
-    { min: DETAIL_GAP_PAGE_MIN_BYTES, max: DETAIL_GAP_PAGE_MAX_BYTES },
-  );
-}
-
-function serializedDetailGapBytes(entry) {
-  try {
-    return Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1;
-  } catch {
-    return DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
-  }
-}
-
-function normalizeDetailGapPageStreams(streams, scopeByStream) {
-  if (streams == null) return null;
-  if (!Array.isArray(streams)) {
-    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.streams: expected string array');
-  }
-  const normalized = [];
-  const seen = new Set();
-  for (const stream of streams) {
-    if (typeof stream !== 'string' || !stream.trim()) {
-      throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.streams: expected non-empty string array');
-    }
-    if (!scopeByStream.has(stream)) {
-      throw new Error(`Connector emitted DETAIL_GAPS_PAGE_REQUEST for undeclared stream: ${stream}`);
-    }
-    if (seen.has(stream)) continue;
-    seen.add(stream);
-    normalized.push(stream);
-  }
-  return normalized.length ? normalized : null;
-}
-
-function validateDetailGapsPageRequest(msg, scopeByStream) {
-  if (msg.reference_only !== true) {
-    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.reference_only: expected true');
-  }
-  if (typeof msg.request_id !== 'string' || !msg.request_id.trim()) {
-    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.request_id: expected non-empty string');
-  }
-  if (msg.max_bytes != null && (!Number.isFinite(msg.max_bytes) || msg.max_bytes <= 0)) {
-    throw new Error('Connector emitted invalid DETAIL_GAPS_PAGE_REQUEST.max_bytes: expected positive number');
-  }
-  return {
-    maxBytes: msg.max_bytes == null ? null : Math.floor(msg.max_bytes),
-    requestId: msg.request_id,
-    streams: normalizeDetailGapPageStreams(msg.streams, scopeByStream),
-  };
-}
-
-/**
- * Summarize the connector-neutral recovery admission decisions for the gap rows
- * the store returned for one page, WITHOUT changing which rows are served.
- *
- * This is the observability half of the recovery governor (OpenSpec
- * `add-connector-neutral-recovery-governor`, tasks 2.1/2.6): the store already
- * gates the served set (`status = 'pending' AND next_attempt_after <= now`), so
- * these rows are exactly what the connector will attempt. We ask the pure
- * `resolveRecoveryAdmission` decision for each so the page-response event
- * carries machine-readable evidence — how many rows the governor would admit vs
- * defer, and the reason classes behind any deferral — so owner-only diagnostics
- * can answer "why did (or didn't) this recovery proceed" without re-deriving the
- * classification at another seam.
- *
- * The domain cooldown state is deliberately NOT threaded here: the page reader
- * runs inside an already-admitted run, and gating the served set on a domain
- * cooldown would drop pressure rows the store legitimately returned (and would
- * starve their terminalization budget). Admission is recorded as evidence, not
- * enforced as a second gate — the enforcement seams are the scheduler/manual
- * admission paths.
- */
-function summarizeDetailGapAdmission(rows) {
-  let admitted = 0;
-  const deferredByReason = Object.create(null);
-  let nextEligibleAt = null;
-  for (const row of rows) {
-    const admission = resolveRecoveryAdmission(row);
-    if (admission.ok) {
-      admitted += 1;
-      continue;
-    }
-    deferredByReason[admission.reason] = (deferredByReason[admission.reason] ?? 0) + 1;
-    // Surface the earliest next-eligible time across deferred rows so a denial
-    // can answer "when could this run next".
-    if (typeof admission.nextEligibleAt === 'string' && admission.nextEligibleAt) {
-      if (nextEligibleAt === null || admission.nextEligibleAt < nextEligibleAt) {
-        nextEligibleAt = admission.nextEligibleAt;
-      }
-    }
-  }
-  const deferred = rows.length - admitted;
-  return {
-    candidates: rows.length,
-    admitted,
-    deferred,
-    ...(deferred > 0 ? { deferred_by_reason: deferredByReason } : {}),
-    ...(nextEligibleAt ? { next_eligible_at: nextEligibleAt } : {}),
-  };
-}
-
-function createDetailGapPageReader({
-  connectorId,
-  connectorInstanceId,
-  detailGapStore,
-  grantId,
-  runId,
-  allServedGapIds,
-}) {
-  let observedAverageBytes = DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
-
-  return async function readDetailGapPage({ maxBytes = null, streams = null } = {}) {
-    const byteBudget = detailGapPageByteBudget(maxBytes);
-    const candidateLimit = Math.max(
-      1,
-      Math.min(
-        DETAIL_GAP_PAGE_MAX_CANDIDATE_ROWS,
-        Math.ceil((byteBudget / Math.max(1, observedAverageBytes)) * 1.5),
-      ),
-    );
-    const pendingGaps = (await detailGapStore.listPendingGaps({
-      connectorId,
-      connectorInstanceId,
-      grantId,
-      streams,
-      limit: candidateLimit,
-    })) ?? [];
-    // Connector-neutral admission evidence over the candidate rows (recorded,
-    // not enforced — see `summarizeDetailGapAdmission`). Computed on the store's
-    // candidate set so it reflects the same rows the connector will attempt.
-    const admission = summarizeDetailGapAdmission(pendingGaps);
-    const detailGaps = [];
-    const servedGapIds = [];
-    let serializedBytes = 2; // JSON array brackets; exact enough for page sizing.
-    let entryBytesTotal = 0;
-
-    for (const gap of pendingGaps) {
-      const entry = buildStartDetailGap(gap);
-      const entryBytes = serializedDetailGapBytes(entry);
-      if (detailGaps.length > 0 && serializedBytes + entryBytes > byteBudget) {
-        break;
-      }
-      detailGaps.push(entry);
-      servedGapIds.push(gap.gap_id);
-      serializedBytes += entryBytes;
-      entryBytesTotal += entryBytes;
-      if (serializedBytes >= byteBudget) {
-        break;
-      }
-    }
-
-    if (detailGaps.length > 0) {
-      const pageAverage = entryBytesTotal / detailGaps.length;
-      observedAverageBytes = Math.max(
-        1,
-        Math.round((observedAverageBytes * 0.65) + (pageAverage * 0.35)),
-      );
-      // Mark served gaps in_progress so attempt_count increments before the
-      // connector makes any provider requests. Re-deferred gaps (connector
-      // emits DETAIL_GAP again) revert to pending via upsertPendingGap while
-      // keeping the incremented attempt_count. Recovered gaps advance to
-      // 'recovered' via DETAIL_GAP_RECOVERED handling.
-      await Promise.all(servedGapIds.map((gapId) => detailGapStore.markGapStatus(gapId, 'in_progress', { runId })));
-      if (allServedGapIds) {
-        for (const gapId of servedGapIds) allServedGapIds.add(gapId);
-      }
-    }
-
-    return {
-      candidateLimit,
-      detailGaps,
-      servedGapIds,
-      maxBytes: byteBudget,
-      serializedBytes,
-      admission,
-    };
-  };
-}
-
 function appendUniqueFields(fields, extraFields) {
   const normalized = [...fields];
   const seen = new Set(fields);
@@ -360,86 +160,6 @@ function buildAvailableBindings(onInteraction) {
     bindings.interactive = {};
   }
   return bindings;
-}
-
-function runtimeFailureReasonFromResponse(status, code) {
-  if (status === 401) return 'authentication_error';
-  if (status === 403) return code || 'permission_error';
-  if (status === 429) return code || 'rate_limit_error';
-  if (status >= 400 && status < 500 && code) return code;
-  return null;
-}
-
-function buildHttpFailure(message, status, bodyText) {
-  let code = null;
-  try {
-    const parsed = JSON.parse(bodyText);
-    code = parsed?.error?.code || null;
-  } catch {}
-
-  const err = new Error(`${message}: ${status} ${bodyText}`);
-  const failureReason = runtimeFailureReasonFromResponse(status, code);
-  if (failureReason) {
-    err.failure_reason = failureReason;
-  }
-  if (code) {
-    err.pdpp_error_code = code;
-  }
-  err.response_status = status;
-  return err;
-}
-
-function responseBodyBytes(bodyText) {
-  return Buffer.byteLength(String(bodyText || ''), 'utf8');
-}
-
-function buildIngestFailureDetails({
-  batchSize,
-  bodyText,
-  contentType,
-  phase,
-  status,
-  stream,
-}) {
-  return {
-    stream,
-    batch_size: batchSize,
-    http_status: status,
-    phase,
-    response_content_type: contentType || null,
-    response_body_bytes: responseBodyBytes(bodyText),
-  };
-}
-
-function buildIngestHttpFailure(message, stream, batchSize, status, bodyText, contentType) {
-  const err = buildHttpFailure(message, status, bodyText);
-  if (!err.failure_reason) {
-    err.failure_reason = 'ingest_http_error';
-  }
-  err.ingest_failure = buildIngestFailureDetails({
-    batchSize,
-    bodyText,
-    contentType,
-    phase: 'http_response',
-    status,
-    stream,
-  });
-  return err;
-}
-
-function buildInvalidIngestResponseFailure({ batchSize, bodyText, cause, contentType, phase, status, stream }) {
-  const err = new Error(`Ingest response for ${stream} was invalid after HTTP ${status}: ${cause}`);
-  err.failure_reason = 'ingest_response_invalid';
-  err.response_status = status;
-  err.ingest_failure = buildIngestFailureDetails({
-    batchSize,
-    bodyText,
-    contentType,
-    phase,
-    status,
-    stream,
-  });
-  return err;
 }
 
 async function readIngestResponse(resp, stream, batchSize) {
@@ -910,13 +630,7 @@ function inferRecoveryAction(reason, message, interactionKind = null) {
 }
 
 function isRuntimeRetryableBrowserProfileError(message) {
-  if (typeof message !== 'string' || message.length === 0) {
-    return false;
-  }
-  const text = message.toLowerCase();
-  if (!text.includes('could not open browser profile')) {
-    return false;
-  }
+  const text = typeof message === 'string' ? message.toLowerCase() : '';
   return (
     (text.includes('network.setcachedisabled') && text.includes('session closed')) ||
     (text.includes('target.attachtotarget') && text.includes('session closed')) ||
@@ -1134,52 +848,6 @@ export function isTransientManifestDriftIngestFailure(err, stream, isInStartScop
   );
 }
 
-function classifyRuntimeFailure(err) {
-  if (typeof err?.failure_reason === 'string' && err.failure_reason.trim()) {
-    return err.failure_reason;
-  }
-  const message = err?.message || '';
-  if (
-    message === 'Interaction handler returned an invalid INTERACTION_RESPONSE envelope'
-    || message.startsWith('Invalid INTERACTION_RESPONSE status:')
-  ) {
-    return 'interaction_handler_invalid_response';
-  }
-  if (
-    message === 'Connector emitted INTERACTION while already waiting'
-    || message === 'Connector emitted INTERACTION but START.bindings omitted interactive'
-    || message.includes(' while waiting for INTERACTION_RESPONSE')
-    || message.startsWith('Connector emitted invalid INTERACTION.')
-    || message.startsWith('Connector emitted invalid STATE.')
-    || message.startsWith('Connector emitted INTERACTION for undeclared stream:')
-    || message.startsWith('Connector emitted invalid PROGRESS.')
-    || message.startsWith('Connector emitted invalid ASSISTANCE.')
-    || message.startsWith('Connector emitted unsupported ASSISTANCE.')
-    || message.startsWith('Connector emitted invalid SKIP_RESULT.')
-    || message.startsWith('Connector emitted invalid DETAIL_GAP.')
-    || message.startsWith('Connector emitted invalid DETAIL_COVERAGE.')
-    || message.startsWith('Connector emitted invalid DETAIL_GAP_RECOVERED.')
-    || message.startsWith('Connector emitted DETAIL_COVERAGE for undeclared stream:')
-    || message.startsWith('Connector emitted DETAIL_GAP_RECOVERED for undeclared stream:')
-    || message.startsWith('Connector detail coverage incomplete:')
-    || message.startsWith('Connector emitted PROGRESS for undeclared stream:')
-    || message.startsWith('Connector emitted SKIP_RESULT for undeclared stream:')
-    || message.startsWith('Connector emitted DETAIL_GAP for undeclared stream:')
-    || message.startsWith('Connector emitted invalid DONE status:')
-    || message.startsWith('Connector emitted invalid DONE.error')
-    || message.startsWith('Connector emitted invalid DONE.records_emitted:')
-    || message.startsWith('Connector reported records_emitted ')
-    || message.startsWith('Connector emitted RECORD')
-    || message.startsWith('Connector emitted STATE')
-    || message.startsWith('Connector emitted unknown message type:')
-    || message.startsWith('Connector emitted invalid JSONL:')
-    || message.startsWith('Connector exit code ')
-    || (message.startsWith('Connector emitted ') && message.includes(' after DONE'))
-  ) {
-    return 'connector_protocol_violation';
-  }
-  return 'runtime_error';
-}
 
 function buildStartScope(manifest, providedScope) {
   const manifestByStream = new Map((manifest?.streams || []).map((stream) => [stream.name, stream]));
@@ -1290,69 +958,6 @@ function passesTimeRange(data, timeRange, consentTimeField) {
   return true;
 }
 
-function validateDoneExitCode(doneMessage, exitCode) {
-  if (!doneMessage) return null;
-  if (doneMessage.status === 'succeeded' && exitCode !== 0) {
-    return new Error(`Connector exit code ${exitCode} does not match DONE status: succeeded`);
-  }
-  if ((doneMessage.status === 'failed' || doneMessage.status === 'cancelled') && exitCode === 0) {
-    return new Error(`Connector exit code ${exitCode} does not match DONE status: ${doneMessage.status}`);
-  }
-  return null;
-}
-
-function validateDoneRecordsEmitted(doneMessage, observedRecordsEmitted) {
-  if (!doneMessage) return null;
-  if (!Number.isInteger(doneMessage.records_emitted) || doneMessage.records_emitted < 0) {
-    return new Error(`Connector emitted invalid DONE.records_emitted: ${doneMessage.records_emitted}`);
-  }
-  if (doneMessage.records_emitted !== observedRecordsEmitted) {
-    return new Error(
-      `Connector reported records_emitted ${doneMessage.records_emitted} but runtime observed ${observedRecordsEmitted}`
-    );
-  }
-  return null;
-}
-
-function validateDoneStatus(status) {
-  if (status === 'succeeded' || status === 'failed' || status === 'cancelled') {
-    return null;
-  }
-  return new Error(`Connector emitted invalid DONE status: ${status}`);
-}
-
-const DONE_ERROR_CODE_RE = /^[a-z][a-z0-9_]{0,63}$/;
-
-function validateDoneError(status, error) {
-  if (error == null) return null;
-  if (status === 'succeeded') {
-    return new Error('Connector emitted invalid DONE.error: succeeded runs must not include terminal error details');
-  }
-  if (typeof error !== 'object' || Array.isArray(error)) {
-    return new Error('Connector emitted invalid DONE.error: expected object');
-  }
-  const unsupportedFields = Object.keys(error).filter(
-    (field) => field !== 'message' && field !== 'retryable' && field !== 'code',
-  );
-  if (unsupportedFields.length) {
-    return new Error(`Connector emitted invalid DONE.error: unsupported fields ${unsupportedFields.join(', ')}`);
-  }
-  if (error.code != null && (typeof error.code !== 'string' || !DONE_ERROR_CODE_RE.test(error.code))) {
-    return new Error('Connector emitted invalid DONE.error.code: expected bounded snake_case code');
-  }
-  if (typeof error.message !== 'string' || !error.message.trim()) {
-    return new Error('Connector emitted invalid DONE.error.message: expected non-empty string');
-  }
-  if (error.retryable != null && typeof error.retryable !== 'boolean') {
-    return new Error('Connector emitted invalid DONE.error.retryable: expected boolean');
-  }
-  return {
-    ...(error.code ? { code: error.code } : {}),
-    message: error.message.trim(),
-    retryable: error.retryable ?? null,
-  };
-}
-
 function requireOptionalNonEmptyString(value, fieldName) {
   if (value == null) return;
   if (typeof value !== 'string' || !value.trim()) {
@@ -1401,89 +1006,6 @@ function validateProgressMessage(msg, scopeByStream) {
   }
   if (msg.collection_rate != null) {
     validateProgressCollectionRate(msg.collection_rate);
-  }
-}
-
-const PROVIDER_BUDGET_PROGRESS_OBJECTS = new Set(['provider_budget_circuit_transition']);
-const PROVIDER_BUDGET_CIRCUIT_STATES = new Set(['closed', 'half_open', 'open']);
-const PROVIDER_BUDGET_CIRCUIT_REASONS = new Set([
-  'provider_failure',
-  'provider_throttle',
-  'reset_timeout',
-  'success',
-]);
-const PROVIDER_BUDGET_CIRCUIT_TRIGGERS = new Set([
-  'before_request',
-  'provider_failure',
-  'provider_throttle',
-  'success',
-]);
-
-function validateProgressProviderBudget(providerBudget) {
-  if (!providerBudget || typeof providerBudget !== 'object' || Array.isArray(providerBudget)) {
-    throw new Error('Connector emitted invalid PROGRESS.provider_budget: expected object');
-  }
-  if (!PROVIDER_BUDGET_PROGRESS_OBJECTS.has(providerBudget.object)) {
-    throw new Error('Connector emitted invalid PROGRESS.provider_budget.object');
-  }
-  const circuit = providerBudget.circuit;
-  if (!circuit || typeof circuit !== 'object' || Array.isArray(circuit)) {
-    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit: expected object');
-  }
-  if (!PROVIDER_BUDGET_CIRCUIT_STATES.has(circuit.previous_state)) {
-    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.previous_state');
-  }
-  if (!PROVIDER_BUDGET_CIRCUIT_STATES.has(circuit.state)) {
-    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.state');
-  }
-  if (!PROVIDER_BUDGET_CIRCUIT_REASONS.has(circuit.reason)) {
-    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.reason');
-  }
-  if (!PROVIDER_BUDGET_CIRCUIT_TRIGGERS.has(circuit.trigger)) {
-    throw new Error('Connector emitted invalid PROGRESS.provider_budget.circuit.trigger');
-  }
-  for (const fieldName of ['elapsed_ms', 'request_count']) {
-    const value = providerBudget[fieldName];
-    if (!Number.isFinite(value) || value < 0) {
-      throw new Error(`Connector emitted invalid PROGRESS.provider_budget.${fieldName}`);
-    }
-  }
-  const retryTokensRemaining = providerBudget.retry_tokens_remaining;
-  if (
-    retryTokensRemaining != null
-    && retryTokensRemaining !== 'unbounded'
-    && (!Number.isFinite(retryTokensRemaining) || retryTokensRemaining < 0)
-  ) {
-    throw new Error('Connector emitted invalid PROGRESS.provider_budget.retry_tokens_remaining');
-  }
-}
-
-const COLLECTION_RATE_BACKOFF_REASONS = new Set(['retry_after', 'throttle']);
-
-function validateProgressCollectionRate(collectionRate) {
-  if (!collectionRate || typeof collectionRate !== 'object' || Array.isArray(collectionRate)) {
-    throw new Error('Connector emitted invalid PROGRESS.collection_rate: expected object');
-  }
-  if (collectionRate.object !== 'collection_rate') {
-    throw new Error('Connector emitted invalid PROGRESS.collection_rate.object');
-  }
-  for (const fieldName of ['ceiling_interval_ms', 'ceiling_rate_per_min', 'current_interval_ms', 'effective_rate_per_min']) {
-    const value = collectionRate[fieldName];
-    if (!Number.isFinite(value) || value < 0) {
-      throw new Error(`Connector emitted invalid PROGRESS.collection_rate.${fieldName}: expected non-negative number`);
-    }
-  }
-  const lastBackoff = collectionRate.last_backoff;
-  if (lastBackoff != null) {
-    if (!lastBackoff || typeof lastBackoff !== 'object' || Array.isArray(lastBackoff)) {
-      throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff: expected object or null');
-    }
-    if (!Number.isFinite(lastBackoff.at_interval_ms) || lastBackoff.at_interval_ms < 0) {
-      throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff.at_interval_ms');
-    }
-    if (!COLLECTION_RATE_BACKOFF_REASONS.has(lastBackoff.reason)) {
-      throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff.reason');
-    }
   }
 }
 
@@ -2296,10 +1818,6 @@ export async function runConnector(opts) {
     });
   }
 
-  // Recovery admission evidence for the START-time detail-gap page (task 2.6).
-  // The START message itself is unchanged; this is an additive observability
-  // event so diagnostics can answer why the run's first recovery page did (or
-  // did not) proceed. Emitted only when a recovery page was actually read.
   if (startDetailGapAdmission) {
     onProgress({
       type: 'DETAIL_GAPS_START_ADMISSION',
@@ -3464,10 +2982,6 @@ export async function runConnector(opts) {
             serialized_bytes: page.serializedBytes,
             candidate_limit: page.candidateLimit,
             accepted,
-            // Connector-neutral recovery admission evidence for this page (task
-            // 2.6): admitted/deferred counts, deferral reason classes, and the
-            // earliest next-eligible time so diagnostics can answer why work did
-            // (or did not) proceed.
             admission: page.admission,
           });
           break;
@@ -3556,23 +3070,6 @@ export async function runConnector(opts) {
             }
           }
 
-          // D9/D10: a poison item that keeps failing deterministically (or via
-          // repeated interruption) with a TRANSIENT-looking signal never trips
-          // the non-transient terminal check above, so it would retry forever
-          // and consume the backlog's recovery budget. Quarantine it once its
-          // per-item no-progress budget is exhausted: a durable `terminal` +
-          // `quarantined` transition, counted and surfaced (never silently
-          // dropped), so siblings keep draining. `maybeQuarantineGap` is
-          // read-then-decide and only writes when the budget is crossed, so a
-          // slow-but-progressing item is never quarantined prematurely.
-          //
-          // Class gate: only genuinely no-progress classes count toward the
-          // poison budget. A planned `run_cap_deferred` (blast-radius stop) and
-          // `provider_pressure` (rate/upstream, gated by the cooldown, not the
-          // item) are NOT the item's fault — a legitimately-capped or
-          // pressure-deferred item that re-defers many times across runs must
-          // never be mistaken for poison. Those escalate through their own
-          // paths (run-cap resumption; source-pressure cooldown), not quarantine.
           {
             const redeferClass = classifyRecoveryReason(msg.reason || null);
             const quarantineEligibleClass =

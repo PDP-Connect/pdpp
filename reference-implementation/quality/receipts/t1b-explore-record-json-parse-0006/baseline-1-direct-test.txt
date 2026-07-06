@@ -1,0 +1,132 @@
+# hone work t1b-explore-record-json-parse-0006 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp node --test test/rs-explore-timeline-conformance.test.js test/rs-explore-timeline-oldest-ascending.test.js test/rs-explore-timeline-b1-b2-b3-regression.test.js
+# expect: all pass with unchanged counts, before AND after the edit
+# exit: 1  duration: 270s  verdict: FAIL (exit 1 (expected 0))
+
+✔ B1 (sqlite): records in partitions beyond 1024 are reachable (no silent cap) (499.792355ms)
+✔ B2 (sqlite): backfill record with old emitted_at does not leak onto page 2 (ingest-seq snapshot) (7.414311ms)
+✔ B3 (sqlite): merged feed returns distinct connector_id (type) and connector_instance_id (instance) (5.15778ms)
+✔ REWIND (sqlite): re-fetching page 1 pins to the original snapshot, not emitted_at (Load-more displacement) (6.627176ms)
+✖ B1 (postgres): records in partitions beyond 1024 are reachable (no silent cap) (13674.354579ms)
+✔ B2 (postgres): backfill record with old emitted_at does not leak onto page 2 (ingest-seq snapshot) (112083.63274ms)
+✖ B3 (postgres): merged feed returns distinct connector_id (type) and connector_instance_id (instance) (87753.91921ms)
+✔ rs.explore.timeline: SQLite dual-backend conformance (18.1889ms)
+✔ rs.explore.timeline: SQLite scoped timeline conformance (9.269833ms)
+✔ rs.explore.timeline: future-dated records go to a separate Upcoming projection, not above today (SQLite) (7.539663ms)
+✔ rs.explore.timeline: the past/future boundary is PINNED in the cursor across pages (SQLite) (6.197179ms)
+✔ rs.explore.timeline: each record carries semantic_time and the feed is ordered by it (SQLite) (4.807134ms)
+✔ rs.explore.timeline: next_cursor is a short opaque handle, not an O(partitions) blob (HTTP 431 regression) (115.697663ms)
+✖ rs.explore.timeline: Postgres dual-backend conformance (164902.01958ms)
+✖ rs.explore.timeline: Postgres scoped timeline conformance (60025.322652ms)
+✔ rs.explore.timeline: SQLite orders by SEMANTIC time, not ingest time (bug 2) (8.415513ms)
+✖ rs.explore.timeline: Postgres orders by SEMANTIC time, not ingest time (bug 2) (43895.868435ms)
+✔ T17 oldest pages ASCENDING from the earliest record, reaches the end (not a window reverse) (16.896087ms)
+✔ T11 membership is INVARIANT under direction (same record set, reversed sequence) (8.612382ms)
+✔ oldest asc keeps reachability when one partition exhausts on page 1 (13.04399ms)
+✔ §2 the future partition never leaks into the main feed under direction=asc (5.842463ms)
+✔ cursor pins direction: an oldest-first traversal keeps paging ascending across pages (7.674855ms)
+ℹ tests 22
+ℹ suites 0
+ℹ pass 17
+ℹ fail 5
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 269772.504098
+
+✖ failing tests:
+
+test at test/rs-explore-timeline-b1-b2-b3-regression.test.js:390:3
+✖ B1 (postgres): records in partitions beyond 1024 are reachable (no silent cap) (13674.354579ms)
+  error: duplicate key value violates unique constraint "pg_class_relname_nsp_index"
+      at /home/tnunamak/.tmp/pdpp-cq-sweep/node_modules/.pnpm/pg@8.20.0/node_modules/pg/lib/client.js:631:17
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async ensurePostgresRecordsBlobSearchInstanceIndexes (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/server/postgres-storage.js:2123:3)
+      at async migratePostgresRecordsBlobSearchInstanceColumns (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/server/postgres-storage.js:1996:5)
+      at async bootstrapPostgresSchema (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/server/postgres-storage.js:1472:5)
+      at async initPostgresStorage (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/server/postgres-storage.js:284:3)
+      at async TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-b1-b2-b3-regression.test.js:392:5)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    length: 274,
+    severity: 'ERROR',
+    code: '23505',
+    detail: 'Key (relname, relnamespace)=(idx_pg_records_stream_version, 101938) already exists.',
+    hint: undefined,
+    position: undefined,
+    internalPosition: undefined,
+    internalQuery: undefined,
+    where: undefined,
+    schema: 'pg_catalog',
+    table: 'pg_class',
+    column: undefined,
+    dataType: undefined,
+    constraint: 'pg_class_relname_nsp_index',
+    file: 'nbtinsert.c',
+    line: '666',
+    routine: '_bt_check_unique'
+  }
+
+test at test/rs-explore-timeline-b1-b2-b3-regression.test.js:418:3
+✖ B3 (postgres): merged feed returns distinct connector_id (type) and connector_instance_id (instance) (87753.91921ms)
+  AssertionError [ERR_ASSERTION]: postgres B3: expected at least one record for connector_instance_id=b3_cin_b1b2b3_1782955216099_378731_b3
+      at assertBothIdentitiesReturned (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-b1-b2-b3-regression.test.js:278:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-b1-b2-b3-regression.test.js:424:7)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test/rs-explore-timeline-conformance.test.js:555:3
+✖ rs.explore.timeline: Postgres dual-backend conformance (164902.01958ms)
+  Error: pageToEnd: too many pages — possible infinite loop
+      at pageToEnd (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-conformance.test.js:153:32)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async assertConformance (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-conformance.test.js:163:37)
+      at async TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-conformance.test.js:561:7)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+
+test at test/rs-explore-timeline-conformance.test.js:569:3
+✖ rs.explore.timeline: Postgres scoped timeline conformance (60025.322652ms)
+  AssertionError [ERR_ASSERTION]: postgres: stream scope must include all partition B records
+  
+  20 !== 6
+  
+      at assertScopedConformance (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-conformance.test.js:285:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-conformance.test.js:575:7)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 20,
+    expected: 6,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/rs-explore-timeline-conformance.test.js:714:3
+✖ rs.explore.timeline: Postgres orders by SEMANTIC time, not ingest time (bug 2) (43895.868435ms)
+  AssertionError [ERR_ASSERTION]: postgres: must return all seeded records
+  
+  50 !== 4
+  
+      at assertSemanticOrder (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-conformance.test.js:670:10)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/test/rs-explore-timeline-conformance.test.js:720:7)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 50,
+    expected: 4,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

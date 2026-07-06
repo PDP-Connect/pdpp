@@ -57,7 +57,7 @@ import {
   buildPendingConsentRequestUri,
   stageOAuthAuthorizationCodeRequest,
 } from './auth.js';
-import { createBlobStore } from './stores/blob-store.js';
+import { createBlobStore } from './stores/blob-store.ts';
 import {
   AmbiguousConnectionError,
   listActiveBindingsForGrant,
@@ -84,11 +84,11 @@ import {
 import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
-} from './stores/acquisition-batch-store.js';
+} from './stores/acquisition-batch-store.ts';
 import {
   createPostgresManualUploadArtifactStore,
   createSqliteManualUploadArtifactStore,
-} from './stores/manual-upload-artifact-store.js';
+} from './stores/manual-upload-artifact-store.ts';
 import {
   createPostgresConnectorInstanceCredentialStore,
   createSqliteConnectorInstanceCredentialStore,
@@ -130,7 +130,7 @@ import {
   setClientEventEnqueueHook,
   teardownConnectionSearchProjection,
 } from './records.js';
-import { DeviceBatchConflictError, createDeviceExporterStore, getDefaultDeviceExporterStore } from './stores/device-exporter-store.js';
+import { DeviceBatchConflictError, createDeviceExporterStore, getDefaultDeviceExporterStore } from './stores/device-exporter-store.ts';
 import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
 import {
   createWebPushSubscriptionStore,
@@ -166,7 +166,7 @@ import {
   rebuildRetainedSize,
   reconcileDirtyRetainedSize,
 } from './retained-size-read-model.js';
-import { buildRecordVersionStatsEnvelope } from './record-version-stats.js';
+import { buildRecordVersionStatsEnvelope } from './record-version-stats.ts';
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { runHybridSearch } from './search-hybrid.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
@@ -191,9 +191,9 @@ import {
 } from './collector-protocol.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { resolveOwnerExposurePosture } from './owner-exposure-posture.ts';
-import { registerInboxRoutes } from './inbox.js';
-import { createStreamingSessionStore } from './streaming/sessions.js';
-import { createDefaultStreamingCompanionFactory } from './streaming/companion-factory.js';
+import { registerInboxRoutes } from './inbox.ts';
+import { createStreamingSessionStore } from './streaming/sessions.ts';
+import { createDefaultStreamingCompanionFactory } from './streaming/companion-factory.ts';
 import { registerStreamingRoutes } from './streaming/routes.js';
 import { createRunTargetRegistry } from './streaming/run-target-registry.js';
 import { createPlayground } from './streaming/playground.js';
@@ -217,7 +217,7 @@ import {
   PDPP_CLI_DEFAULT_CLIENT_ID,
   getPdppCliPackageInfo,
 } from '../../packages/cli/src/package-info.js';
-import { isClosedPipeWriteError } from '../runtime/pipe-errors.js';
+import { isClosedPipeWriteError } from '../runtime/pipe-errors.ts';
 import { createApp, buildLogger } from './transport.js';
 import {
   escapeHtml as hostedEscape,
@@ -229,7 +229,7 @@ import {
   renderResultState,
   renderSurface,
 } from './hosted-ui.js';
-import { servedRootLandingIfBrowser } from './reference-root-landing.js';
+import { servedRootLandingIfBrowser } from './reference-root-landing.ts';
 import {
   collectRecordsTimelineEntries,
   getConnectorAttentionProjection,
@@ -240,9 +240,9 @@ import {
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
-import { markConnectorSummaryEvidenceDirty } from './connector-summary-read-model.js';
+import { markConnectorSummaryEvidenceDirty } from './connector-summary-read-model.ts';
 import { isHealthRelevant as isAttentionHealthRelevant } from '../runtime/attention.ts';
-import { getDefaultConnectorAttentionStore } from './stores/connector-attention-store.js';
+import { getDefaultConnectorAttentionStore } from './stores/connector-attention-store.ts';
 import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
@@ -252,7 +252,7 @@ import { createPackageRsClient, createRsClient } from './package-rs-client.js';
 import {
   resolveReferenceRevision,
   setReferenceRevisionHeader,
-} from './reference-revision.js';
+} from './reference-revision.ts';
 import { resolveReferenceTopology } from './reference-topology.ts';
 import { executeSchemaGet } from '../operations/rs-schema-get/index.ts';
 import { executeStreamsList } from '../operations/rs-streams-list/index.ts';

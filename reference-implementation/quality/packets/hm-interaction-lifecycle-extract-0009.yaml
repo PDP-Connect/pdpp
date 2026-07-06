@@ -1,0 +1,135 @@
+candidate_id: hm-interaction-lifecycle-extract-0009
+created: "2026-07-02T03:38:00.000Z"
+repo_sha: e7ede6e50ea9b2f3d60ba908862a846c833d7a5c
+subsystem: runtime
+files: [runtime/index.js]
+symbols:
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'INTERACTION' — pendingInteraction gate, violation promise, Promise.race(response|timeout|violation), attention lifecycle, stdin response"
+    line: 3005
+  - file: runtime/index.js
+    parent_fn: runConnector Promise executor
+    anchor: failPendingInteraction — cross-scope consumer of pendingInteraction/pendingInteractionViolationReject
+    line: 2854
+public_surface:
+  - "spine event_types run.interaction_required, run.assistance_requested, run.interaction_completed and the assistance resolution family (assistanceResolutionEventType)"
+  - "run failure messages: 'Connector emitted INTERACTION but START.bindings omitted interactive', 'Connector emitted INTERACTION while already waiting' (wire-unreachable defensive guard per hm-dispatch-guards-oracle-0001 redesign 2026-07-02 — preserve VERBATIM; keep-or-remove is owner ratification row 5), 'Interaction handler returned an invalid INTERACTION_RESPONSE envelope', 'Invalid INTERACTION_RESPONSE status'"
+  - "child-protocol INTERACTION_RESPONSE stdin line {type, request_id, status}"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: property_at_risk
+execution_gate: autonomous
+why_this_matters: "The INTERACTION arm (runtime/index.js:3005-3173) is the single largest cohesive slice of handleMsg's cc-194 mass and its most delicate: it arms a violation-rejection promise whose reject handle (pendingInteractionViolationReject, declared in the Promise-executor scope at 2747) is consumed by failPendingInteraction from OUTSIDE handleMsg — the only genuinely cross-scope mutable coupling in the dispatcher — then races connector response, optional timeout, and violation; validates the response envelope; drives the durable attention row through request→resolve (secret-sensitive kinds keep sensitivity 'secret' so the projection suppresses action_target); emits interaction_required/assistance_requested/interaction_completed plus the resolution event in contract order; appends the interaction_required known-gap on non-success with the manual_action/otp recovery-hint split; and answers the connector over stdin with the normalized status. Today that coupling is invisible closure capture; the agenda's acceptance criterion ('explicit context, no captured-mutable shared cells') demands it become an explicit, named gate object. This packet retires the largest cognitive-load slice in the runtime message path."
+plan:
+  transform_class: explicit-context-extraction
+  instruction: "In runtime/index.js ONLY: (1) Introduce an explicit gate object in runConnector scope: const interactionGate = { pending: null, violationReject: null }; — replacing BOTH the runConnector-scoped let pendingInteraction (2358) and the executor-scoped let pendingInteractionViolationReject (2747). Migrate ALL their readers/writers file-wide to the gate: failPendingInteraction (2854), handleOwnerCancel/cleanup paths, and the terminal/violation projection reads (grep every occurrence of both names; the executor functions now mutate interactionGate properties — an explicit shared record, not scattered cells). (2) Create module-level (column-0) named async function handleInteractionMsg(msg, ctx, emitSpineEventTracked) with the arm body verbatim, reading/writing ctx.interactionGate.pending / ctx.interactionGate.violationReject. EMITTER SEAM MANDATE (added 2026-07-02 run-8 per the TWO judge REJECTs on sibling hm-detail-page-coverage-extract-0007 — run-6 codex and run-7 claude both refused routing the effectful emitSpineEventTracked closure through ctx indirection): the arm's FOUR await emitSpineEventTracked({...}) calls stay BYTE-IDENTICAL; the tracked spine emitter enters as an EXPLICIT TRAILING PARAMETER named emitSpineEventTracked; the case arm becomes case 'INTERACTION': await handleInteractionMsg(msg, msgCtx, emitSpineEventTracked); break; — bare closure identifier as the argument, so the diff proves service identity syntactically; do NOT add an emitSpineEventTracked key to msgCtx and do NOT rewrite any emit as ctx.emitSpineEvent; any named family helper that emits receives emitSpineEventTracked as an explicit parameter the same way. Extend msgCtx with { interactionGate, onInteraction, terminateChild, writeChildStdin, attentionWriter, browserSurfaceLaunchEnv, getChildStdinClosedReason: () => childStdinClosedReason } (terminateChild and writeChildStdin are executor/runConnector-scoped services entering as explicit ctx members; childStdinClosedReason is read-only at one site — thread it via the getter to avoid a second mutable migration). (3) Preserve EXACTLY: the omitted-interactive and already-waiting guards (incl. terminateChild() before the throw), the violation-promise .catch(() => {}) swallow, the Promise.race member order [response, timeout?, violation], the responsePromise .catch(() => cancelled-envelope) normalization, clearTimeout in finally, envelope validation (type + request_id match, status enum), the four-event spine order and payload spreads (schema/timeout_seconds conditional spreads), attentionWriter.recordInteractionRequest BEFORE the race and resolveByRequestId AFTER interaction_completed, the non-success known-gap with kind-based recoveryHint, and the exact cell-clearing order: gate.pending = null → writeChildStdin(JSON with normalized status, 'interaction_response') → onProgress(connector_stdin_closed) fallback → gate.violationReject = null. If the extracted handler exceeds ~35 cc, decomplect within the family into named module-level helpers (e.g. raceInteractionResponse(msg, ctx), emitInteractionResolution(...)) with explicit params — never anonymous callbacks, never captured cells. CALL-STYLE MANDATE — repaired 2026-07-02 per run-4: context fields MUST be destructured into locals before invocation (const { onProgress } = msgCtx; onProgress(msg)), NEVER method-called off the context object (ctx.onProgress(msg) is FORBIDDEN). WHY: in strict mode a method call rebinds this inside the callback from undefined to the context object — an observable behavior change; run-4's judge REJECTed sibling hm-reporting-family-extract-0003 (confidence 0.84) for exactly this."
+expected_quality_gain: high
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 78
+  computed: "2026-07-02T03:38:00.000Z"
+  inputs:
+    mass: 55
+    churn: 63
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: high
+  property_at_risk: "interaction lifecycle integrity: exactly one pending interaction; violation/timeout/response race semantics; attention rows reach terminal lifecycle with secret-sensitivity preserved; connector always receives a normalized INTERACTION_RESPONSE (or the stdin-closed downgrade); spine event order stable for the dashboard projection"
+authoring_evidence:
+  - kind: sensor
+    detail: "INTERACTION arm spans runtime/index.js:3005-3173 (~169 lines) — the largest family; estimated ~55 of handleMsg's 194 cc"
+    result: "highest-mass, highest-risk slice; retiring it is the campaign's biggest single win"
+  - kind: coverage-check
+    detail: "run-interaction-control.test.js 12/12, runtime-cancel-run.test.js 2/2, collection-profile.test.js 124/124, attention-writer.test.js 15/15, event-spine blocked-interaction tests — all green 2026-07-02; the wire-reachable second-INTERACTION violation is the rl-interceptor guard (:3577) + terminateChild, pinned by collection-profile/cli/event-spine and by hm-dispatch-guards-oracle-0001 (redesigned 2026-07-02: the handleMsg-internal already-waiting guard at :3013 is wire-UNREACHABLE — preserved verbatim, protected through this extraction by the guard-byte-identity rung below, keep-or-remove queued as ratification row 5); full lifecycle ORDER (spine + attention-store call order + stdin timing, success and timeout paths) pinned ONLY by hm-await-order-interaction-timeout-0002d"
+    result: "with 0001+0002 landed, every await reordering or dropped attention call is red-detectable; without them this extraction would be unprovable — hard dependencies"
+  - kind: cell-audit
+    detail: "grep -n 'pendingInteraction\\|pendingInteractionViolationReject' runtime/index.js — writers/readers: handleMsg arm (3010-3171), failPendingInteraction (2854-2861), declaration sites 2358/2747"
+    result: "the campaign's only cross-scope mutable coupling; the explicit interactionGate record is the decomplection (state made explicit), not a relocation"
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch runtime-msg-order-interaction-timeout run-interaction-control runtime-cancel-run collection-profile attention-writer; do db=pdpp_hone_hm_ile9_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'"
+    expect: "all green with unchanged counts (baselines 2026-07-02: 12/12, 2/2, 124/124, 15/15 + both oracle files); the 0002 INTERACTION order tests green post-edit are THE ordering proof; repaired 2026-07-02 run-8 per the iteration-4 shared-DB lint: per-file ephemeral DBs (pdpp_hone_*) + --test-force-exit replicate the scripts/run-tests.js isolation contract (same pattern as sibling 0007/0011 rungs)"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: guard-byte-identity
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -c \"INTERACTION while already waiting\" runtime/index.js && grep -c \"invalid INTERACTION_RESPONSE envelope\" runtime/index.js && grep -c \"Invalid INTERACTION_RESPONSE status\" runtime/index.js && grep -c \"omitted interactive\" runtime/index.js"
+    expect: "2 / 2 / 2 / 2 — all four guard strings present with UNCHANGED counts (measured baseline 2026-07-02: each appears twice in runtime/index.js), moved not rewritten"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: no-stale-cells
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'grep -cE \"let pendingInteraction\\b|let pendingInteractionViolationReject\\b\" runtime/index.js || true'"
+    expect: "baseline: 2 (the loose cells exist). Post: 0 — both cells are GONE, migrated into the explicit interactionGate record, and their former readers all reference the gate; judge confirms the count"
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg'"
+    expect: "found=true; cognitive_before strictly BELOW this packet's pre-edit baseline receipt by roughly the family's ~55-cc share"
+    expect_check:
+      type: scope_fn_lt
+      value: 194
+  - rung: file-excess-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5"
+    expect: file_excess strictly below the pre-edit measured value; NEW flagged names limited to handleInteractionMsg + its named family helpers; judge enforces decomplection-not-relocation
+  - rung: no-new-anon-callbacks
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - guard-condition-or-error-string-change
+  - await-order-change
+  - race-member-or-normalization-change
+  - new-dependency
+  - new-module-file
+  - captured-mutable-cells-in-new-handlers
+  - method-calling-threaded-callbacks
+maker_tier: standard
+judge_tier: strong
+maker_provider: codex
+judge_provider: claude
+batch_key: preserve_refactor×property_at_risk×runtime
+touchset: [runtime/index.js]
+estimates:
+  tokens: 140000
+  evidence_cost: high
+depends_on:
+  - hm-dispatch-guards-oracle-0001
+  - hm-await-order-interaction-timeout-0002d
+  - hm-reporting-family-extract-0003
+unlocks: [hm-dispatch-table-coherence-0011]
+status: landed
+outcome:
+  commit: "5e9a671c4f4be5372fccf038fb81b27b11ee82f2"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.88): The extraction preserves the INTERACTION arm verbatim (guards, error strings, race order, event order, cell-clearing order all byte-identical per diff and receipts), correctly unifies the two loose cross-scope cells into a single named interactionGate object consumed by both handleMsg's new handler and failPendingInteraction, follows the emitter-seam and destructure-before-call mandates that sibling packets were rejected for violating, and introduces no new anonymous callbacks, new files, or captured-mutable cells. All required evidence rungs (tests, guard-byte-identity, no-stale-cells, typecheck, complexity-remeasure, file-excess-remeasure, callback-ratchet) are present with pre/post pairs showing the expected deltas."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch runtime-msg-order-interaction-timeout run-interaction-control runtime-cancel-run collection-profile attention-writer; do db=pdpp_hone_hm_ile9_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (30s) PASS; exit=0 djb2=e6ca6157 bytes=75292 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/baseline-1-direct-test.txt"
+    - "[baseline] guard-byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -c \"INTERACTION while already waiting\" runtime/index.js && grep -c \"invalid INTERACTION_RESPONSE envelope\" runtime/index.js && grep -c \"Invalid INTERACTION_RESPONSE status\" runtime/index.js && grep -c \"omitted interactive\" runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=17c7bdf5 bytes=8 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/baseline-2-guard-byte-identity.txt"
+    - "[baseline] no-stale-cells: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'grep -cE \"let pendingInteraction\\b|let pendingInteractionViolationReject\\b\" runtime/index.js || true' -> exit 0 (0s) PASS; exit=0 djb2=005970c1 bytes=2 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/baseline-3-no-stale-cells.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/baseline-4-typecheck.txt"
+    - "[baseline] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=e0d2dfeb bytes=279 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/baseline-5-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=a433ebbb bytes=7053 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/baseline-6-file-excess-remeasure.txt"
+    - "[baseline] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (5s) PASS; exit=0 djb2=4e3e5726 bytes=182 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/baseline-7-no-new-anon-callbacks.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch runtime-msg-order-interaction-timeout run-interaction-control runtime-cancel-run collection-profile attention-writer; do db=pdpp_hone_hm_ile9_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (34s) PASS; exit=0 djb2=bc2dac37 bytes=75292 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/post-1-direct-test.txt"
+    - "[post] guard-byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -c \"INTERACTION while already waiting\" runtime/index.js && grep -c \"invalid INTERACTION_RESPONSE envelope\" runtime/index.js && grep -c \"Invalid INTERACTION_RESPONSE status\" runtime/index.js && grep -c \"omitted interactive\" runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=17c7bdf5 bytes=8 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/post-2-guard-byte-identity.txt"
+    - "[post] no-stale-cells: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'grep -cE \"let pendingInteraction\\b|let pendingInteractionViolationReject\\b\" runtime/index.js || true' -> exit 0 (0s) PASS; exit=0 djb2=0059707f bytes=2 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/post-3-no-stale-cells.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/post-4-typecheck.txt"
+    - "[post] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=f7288cc4 bytes=279 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/post-5-complexity-remeasure.txt"
+    - "[post] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=f40441f4 bytes=7157 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/post-6-file-excess-remeasure.txt"
+    - "[post] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (5s) PASS; exit=0 djb2=4e3e5726 bytes=182 receipt=quality/receipts/hm-interaction-lifecycle-extract-0009/post-7-no-new-anon-callbacks.txt"
+  tokens_actual: 132731
+  lesson: null

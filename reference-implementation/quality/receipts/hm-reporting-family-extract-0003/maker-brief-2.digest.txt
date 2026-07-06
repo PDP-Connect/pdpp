@@ -1,0 +1,41 @@
+# hone work hm-reporting-family-extract-0003 — maker brief digest (attempt 2)
+# sha256(full brief)=97779d94a120c5a2488aba4f48ce70a9b88c7ba7493e9a910752679604eccb92 bytes=27989
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): runtime/index.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, new-dependency, new-module-file, captured-mutable-cells-in-new-handlers, spine-event-payload-or-order-change, method-calling-threaded-callbacks.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== PRIOR ATTEMPT — the judge's exact demands ==
+This packet was attempted before and deliberately reopened (reset #1, from reverted: call-style mandate folded in per run-4 REJECT (this-binding); siblings updated). The prior outcome below is the exact bar the previous attempt failed to clear — address it directly; do not repeat the failed approach.
+- judge_verdict: codex REVISE (confidence 0.82): The diff appears to satisfy the structural extraction requirements and the visible post-edit checks pass, but the supplied receipts do not show the required pre-edit direct-test run. For an effectful preserve_refactor, the baseline phase is part of the behavior-preservation evidence, and I cannot assume it passed from truncated evidence. This is fixable by supplying the missing baseline direct-test receipt/counts. || after revision: codex REJECT (confidence 0.84): This is a behavior-preservation packet, but the diff changes call semantics by invoking context-threaded functions as methods, especially `ctx.onProgress(msg)` instead of the original bare `onProgress(msg)`. In strict-mode JavaScript, a normal callback can observe `this` changing from `undefined` to the context object, so this is an observable behavior change even though the payloads look equivalent. The evidence does not cover this edge condition, and behavior changes are explicitly not allowed for this packet.
+- lesson: judge refused twice (REVISE→REJECT); packet bar not reachable by this maker
+== WORK PACKET (YAML) ==
+candidate_id: hm-reporting-family-extract-0003
+created: "2026-07-02T03:38:00.000Z"
+repo_sha: e7ede6e50ea9b2f3d60ba908862a846c833d7a5c
+subsystem: runtime
+files: [runtime/index.js]
+symbols:
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'PROGRESS' — validate, run.progress_reported spine emit, lastSeenCollectionRate, onProgress"
+    line: 3510
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'SKIP_RESULT' — buildKnownGap projection, run.stream_skipped spine emit, onProgress"
+    line: 3221
+public_surface:
+  - "spine event_types run.progress_reported, run.stream_skipped and their data fields (source, stream, message, count, total, provider_budget, collection_rate, reason, known_gap, diagnostics)"
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "handleMsg (cc 194, the largest complexity mass in the owned core) mixes thirteen message families in one closure that captures ~30 nonlocal names. The PROGRESS and SKIP_RESULT arms a

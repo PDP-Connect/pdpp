@@ -1,4 +1,4 @@
-// Pins the shared storage helpers (storage-utils.js) that replace the previously
+// Pins the shared storage helpers (storage-utils.ts) that replace the previously
 // duplicated copies in records.js (SQLite) and postgres-records.js (Postgres).
 // The unified resolvers are a superset of both old copies: they accept string,
 // snake_case, AND camelCase shapes, and have the audited empty-input behavior.
@@ -10,7 +10,7 @@ import {
   nowIso,
   resolveStorageConnectorId,
   resolveStorageConnectorInstanceId,
-} from '../server/storage-utils.js';
+} from '../server/storage-utils.ts';
 
 test('nowIso returns an ISO-8601 timestamp', () => {
   const iso = nowIso();

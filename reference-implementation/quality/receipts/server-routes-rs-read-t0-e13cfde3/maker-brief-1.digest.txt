@@ -1,0 +1,66 @@
+# hone work server-routes-rs-read-t0-e13cfde3 — maker brief digest (attempt 1)
+# sha256(full brief)=e58b76bb998b9e8eb0eef0e4dbfc7c9ce3b7b143a67a15a7351bfdcedf939cc5 bytes=4781
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/routes/rs-read.ts. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, new-dependency, relocation-without-decomplecting, public-shape-change.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: server-routes-rs-read-t0-e13cfde3
+created: "2026-07-02T00:15:44.732Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server/routes
+files: [server/routes/rs-read.ts]
+symbols:
+  - resolveAddressableForStream
+  - mergeResolverWarningsIntoBody
+  - serveResolvedBlob
+  - coerceWindowSelectorParams
+public_surface:
+  - "file matches public-surface glob 'server/routes/**' (v1 path heuristic — enumerate actual routes/tools in wave 2)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 11, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn 'resolveAddressableForStream' cc=11. File attention: churn 12 × excess-cc mass 11 = 132; 4 flagged fn(s) in this tier."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to resolveAddressableForStream, mergeResolverWarningsIntoBody, serveResolvedBlob, coerceWindowSelectorParams in server/routes/rs-read.ts (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: medium
+priority:
+  score: 15.919
+  computed: "2026-07-02T00:15:44.732Z"
+  inputs:
+    mass: 11
+    churn: 12
+risk:
+  blast_radius: local
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/routes/rs-read.ts, tier T0 (repo_sha 6e8d8559c36b94d41bc4c42a9a31342e60b3b334)"
+    result: "4 flagged fn(s), Σ excess-cc 11, max cc 11, router v1 tier T0"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/routes/rs-read.ts"
+    result: "12 commits in window; coupling(fan-in proxy)=2"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck"
+    expect: exit 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test"
+    expect: all tests pass; 0 fail; no new skips
+  - rung: complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --targ

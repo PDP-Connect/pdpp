@@ -1,0 +1,33 @@
+# hone work tst2-cli-read-aggregate-group-exclusive-0035 — post rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT/../packages/cli" && if [ -f test/read-aggregate-group-exclusive-oracle.test.js ]; then src=src/read/commands.js; bak=/tmp/tst2_0035_cli_read.bak; cp "$src" "$bak"; perl -0pi -e "s/if \\(flags\\[\\x27group-by\\x27\\] && flags\\[\\x27group-by-time\\x27\\]\\)/if (false && flags[\\x27group-by\\x27] && flags[\\x27group-by-time\\x27])/" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/read-aggregate-group-exclusive-oracle.test.js 2>&1 || rc=1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: aggregate group oracle not yet created"; exit 0; fi
+# expect: BASELINE guarded green while absent. POST disabling the exclusivity guard must let the invalid request build and make the oracle print MUTANT KILLED after source restore.
+# exit: 0  duration: 0s  verdict: PASS
+
+✖ read aggregate rejects group-by and group-by-time together (5.189444ms)
+✔ read aggregate builds group-by-time query shape (0.421238ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 47.21845
+
+✖ failing tests:
+
+test at test/read-aggregate-group-exclusive-oracle.test.js:7:1
+✖ read aggregate rejects group-by and group-by-time together (5.189444ms)
+  AssertionError [ERR_ASSERTION]: Missing expected exception.
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/packages/cli/test/read-aggregate-group-exclusive-oracle.test.js:8:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    operator: 'throws',
+    diff: 'simple'
+  }
+MUTANT KILLED

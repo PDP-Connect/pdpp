@@ -1,0 +1,5 @@
+# hone work srv-records-aggregate-groupsort-0002 — baseline rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/records.js
+# expect: comparator branch bodies byte-identical modulo indentation; only wrapping changed (named fn compareMergedAggregateGroups + explicit isScalarGroup param at the .sort callsite)
+# exit: 0  duration: 0s  verdict: PASS
+

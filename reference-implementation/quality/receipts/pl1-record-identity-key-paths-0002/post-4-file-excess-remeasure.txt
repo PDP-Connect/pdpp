@@ -1,0 +1,44 @@
+# hone work pl1-record-identity-key-paths-0002 — post rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'server/record-expand-helpers.js' --cog 5
+# expect: file_excess strictly below the pre-edit baseline (65); NEW flagged names limited to the two extracted validators, each at or below cc5
+# exit: 0  duration: 0s  verdict: FAIL (expect_check[file_excess_lt]: NEW function above the cog threshold post-change (baseline flagged=[assertRecordIdentity,buildEffectiveFilter,normalizeExpandRequest] post=[assertScalarKeyIdentity,assertCompoundKeyIdentity,buildEffectiveFilter,normalizeExpandRequest]) — complexity moved, not reduced)
+
+{
+  "file": "server/record-expand-helpers.js",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 8,
+  "flagged_count": 4,
+  "file_excess": 53,
+  "flagged": [
+    {
+      "fn": "assertScalarKeyIdentity",
+      "line": 49,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "assertCompoundKeyIdentity",
+      "line": 58,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "buildEffectiveFilter",
+      "line": 103,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "normalizeExpandRequest",
+      "line": 135,
+      "cc": 48,
+      "excess": 43
+    }
+  ],
+  "red_scan": [
+    "grant.streams",
+    "streamGrant",
+    "consent"
+  ]
+}

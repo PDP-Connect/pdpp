@@ -1,0 +1,1768 @@
+{
+  "generated_from": {
+    "repo_root": "/home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation",
+    "repo_sha": "82bdca52d3c4c7d41f45c096a15f1c23ece6e6e8",
+    "window": "6 months ago",
+    "cog_threshold": 5,
+    "scan_depth": 2,
+    "files_considered": 195,
+    "note": "score = churn × (1+cog) × (1+coupling/10); size is context, never a gate; nogo files ranked+flagged, not hidden"
+  },
+  "files": [
+    {
+      "file": "server/index.js",
+      "loc": 4312,
+      "churn": 325,
+      "cog": 27,
+      "coupling": 97,
+      "score": 97370,
+      "nogo": false
+    },
+    {
+      "file": "server/auth.js",
+      "loc": 5926,
+      "churn": 73,
+      "cog": 53,
+      "coupling": 164,
+      "score": 68591,
+      "nogo": true
+    },
+    {
+      "file": "server/records.js",
+      "loc": 4240,
+      "churn": 92,
+      "cog": 37,
+      "coupling": 124,
+      "score": 46846,
+      "nogo": false
+    },
+    {
+      "file": "runtime/index.js",
+      "loc": 4029,
+      "churn": 62,
+      "cog": 63,
+      "coupling": 97,
+      "score": 42458,
+      "nogo": false
+    },
+    {
+      "file": "runtime/controller.ts",
+      "loc": 3383,
+      "churn": 87,
+      "cog": 43,
+      "coupling": 60,
+      "score": 26796,
+      "nogo": false
+    },
+    {
+      "file": "server/ref-control.ts",
+      "loc": 4822,
+      "churn": 100,
+      "cog": 46,
+      "coupling": 13,
+      "score": 10810,
+      "nogo": false
+    },
+    {
+      "file": "server/search.js",
+      "loc": 1625,
+      "churn": 40,
+      "cog": 15,
+      "coupling": 103,
+      "score": 7232,
+      "nogo": false
+    },
+    {
+      "file": "server/db.js",
+      "loc": 3400,
+      "churn": 79,
+      "cog": 15,
+      "coupling": 45,
+      "score": 6952,
+      "nogo": false
+    },
+    {
+      "file": "lib/spine.ts",
+      "loc": 1576,
+      "churn": 27,
+      "cog": 19,
+      "coupling": 68,
+      "score": 4212,
+      "nogo": false
+    },
+    {
+      "file": "server/postgres-storage.js",
+      "loc": 2864,
+      "churn": 69,
+      "cog": 10,
+      "coupling": 36,
+      "score": 3491,
+      "nogo": false
+    },
+    {
+      "file": "server/metadata.ts",
+      "loc": 1368,
+      "churn": 46,
+      "cog": 7,
+      "coupling": 64,
+      "score": 2723,
+      "nogo": false
+    },
+    {
+      "file": "server/search-semantic.js",
+      "loc": 2417,
+      "churn": 34,
+      "cog": 31,
+      "coupling": 12,
+      "score": 2394,
+      "nogo": false
+    },
+    {
+      "file": "server/streaming/routes.js",
+      "loc": 1232,
+      "churn": 15,
+      "cog": 21,
+      "coupling": 52,
+      "score": 2046,
+      "nogo": false
+    },
+    {
+      "file": "runtime/connection-health.ts",
+      "loc": 2877,
+      "churn": 39,
+      "cog": 17,
+      "coupling": 15,
+      "score": 1755,
+      "nogo": false
+    },
+    {
+      "file": "server/queries/index.ts",
+      "loc": 892,
+      "churn": 32,
+      "cog": 4,
+      "coupling": 97,
+      "score": 1712,
+      "nogo": false
+    },
+    {
+      "file": "runtime/scheduler.ts",
+      "loc": 593,
+      "churn": 42,
+      "cog": 7,
+      "coupling": 35,
+      "score": 1512,
+      "nogo": false
+    },
+    {
+      "file": "server/postgres-records.js",
+      "loc": 1738,
+      "churn": 35,
+      "cog": 19,
+      "coupling": 9,
+      "score": 1330,
+      "nogo": false
+    },
+    {
+      "file": "server/transport.js",
+      "loc": 871,
+      "churn": 12,
+      "cog": 14,
+      "coupling": 41,
+      "score": 918,
+      "nogo": false
+    },
+    {
+      "file": "runtime/rendered-verdict.ts",
+      "loc": 1653,
+      "churn": 17,
+      "cog": 13,
+      "coupling": 7,
+      "score": 405,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/as-consent-ui-helpers.ts",
+      "loc": 1597,
+      "churn": 21,
+      "cog": 13,
+      "coupling": 3,
+      "score": 382,
+      "nogo": true
+    },
+    {
+      "file": "server/streaming/neko-adapter.js",
+      "loc": 1202,
+      "churn": 13,
+      "cog": 24,
+      "coupling": 1,
+      "score": 358,
+      "nogo": false
+    },
+    {
+      "file": "server/owner-auth.ts",
+      "loc": 872,
+      "churn": 9,
+      "cog": 8,
+      "coupling": 34,
+      "score": 356,
+      "nogo": true
+    },
+    {
+      "file": "server/routes/ref-connectors.ts",
+      "loc": 1261,
+      "churn": 18,
+      "cog": 6,
+      "coupling": 16,
+      "score": 328,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-device-exporters.ts",
+      "loc": 1931,
+      "churn": 8,
+      "cog": 26,
+      "coupling": 5,
+      "score": 324,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/connector-instance-store.js",
+      "loc": 944,
+      "churn": 19,
+      "cog": 4,
+      "coupling": 20,
+      "score": 285,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/rs-read.ts",
+      "loc": 2687,
+      "churn": 12,
+      "cog": 18,
+      "coupling": 2,
+      "score": 274,
+      "nogo": false
+    },
+    {
+      "file": "server/deployment-diagnostics.ts",
+      "loc": 1106,
+      "churn": 20,
+      "cog": 10,
+      "coupling": 2,
+      "score": 264,
+      "nogo": false
+    },
+    {
+      "file": "lib/postgres-spine.js",
+      "loc": 816,
+      "churn": 14,
+      "cog": 14,
+      "coupling": 1,
+      "score": 231,
+      "nogo": false
+    },
+    {
+      "file": "server/package-rs-client.js",
+      "loc": 859,
+      "churn": 9,
+      "cog": 20,
+      "coupling": 2,
+      "score": 227,
+      "nogo": false
+    },
+    {
+      "file": "server/connection-setup-plan.ts",
+      "loc": 923,
+      "churn": 12,
+      "cog": 8,
+      "coupling": 8,
+      "score": 194,
+      "nogo": false
+    },
+    {
+      "file": "server/streaming/run-target-registry.js",
+      "loc": 881,
+      "churn": 6,
+      "cog": 17,
+      "coupling": 6,
+      "score": 173,
+      "nogo": false
+    },
+    {
+      "file": "server/dataset-summary-read-model.js",
+      "loc": 957,
+      "churn": 9,
+      "cog": 12,
+      "coupling": 4,
+      "score": 164,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-manual-upload-draft-connection.ts",
+      "loc": 1519,
+      "churn": 9,
+      "cog": 15,
+      "coupling": 1,
+      "score": 158,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/rs-mutation.ts",
+      "loc": 1265,
+      "churn": 10,
+      "cog": 12,
+      "coupling": 2,
+      "score": 156,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/connector-detail-gap-store.js",
+      "loc": 589,
+      "churn": 11,
+      "cog": 7,
+      "coupling": 7,
+      "score": 150,
+      "nogo": false
+    },
+    {
+      "file": "runtime/attention.ts",
+      "loc": 585,
+      "churn": 7,
+      "cog": 4,
+      "coupling": 32,
+      "score": 147,
+      "nogo": false
+    },
+    {
+      "file": "server/streaming/playground.js",
+      "loc": 974,
+      "churn": 11,
+      "cog": 7,
+      "coupling": 5,
+      "score": 132,
+      "nogo": false
+    },
+    {
+      "file": "server/neko-surface-allocator-server.ts",
+      "loc": 1128,
+      "churn": 16,
+      "cog": 7,
+      "coupling": 0,
+      "score": 128,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/device-exporter-store.js",
+      "loc": 744,
+      "churn": 10,
+      "cog": 8,
+      "coupling": 4,
+      "score": 126,
+      "nogo": false
+    },
+    {
+      "file": "lib/db.ts",
+      "loc": 534,
+      "churn": 7,
+      "cog": 2,
+      "coupling": 45,
+      "score": 116,
+      "nogo": false
+    },
+    {
+      "file": "server/connector-key.js",
+      "loc": 298,
+      "churn": 7,
+      "cog": 2,
+      "coupling": 43,
+      "score": 111,
+      "nogo": false
+    },
+    {
+      "file": "server/streaming/cdp-adapter.js",
+      "loc": 726,
+      "churn": 4,
+      "cog": 20,
+      "coupling": 3,
+      "score": 109,
+      "nogo": false
+    },
+    {
+      "file": "server/web-push-notifications.js",
+      "loc": 861,
+      "churn": 12,
+      "cog": 5,
+      "coupling": 5,
+      "score": 108,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/browser-surface-lease-store.ts",
+      "loc": 567,
+      "churn": 13,
+      "cog": 4,
+      "coupling": 5,
+      "score": 98,
+      "nogo": false
+    },
+    {
+      "file": "server/postgres-search.js",
+      "loc": 734,
+      "churn": 16,
+      "cog": 4,
+      "coupling": 2,
+      "score": 96,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/as-consent.ts",
+      "loc": 708,
+      "churn": 6,
+      "cog": 11,
+      "coupling": 3,
+      "score": 94,
+      "nogo": true
+    },
+    {
+      "file": "server/retained-size-read-model.js",
+      "loc": 2239,
+      "churn": 3,
+      "cog": 16,
+      "coupling": 8,
+      "score": 92,
+      "nogo": false
+    },
+    {
+      "file": "runtime/scheduler/run-executor.ts",
+      "loc": 867,
+      "churn": 5,
+      "cog": 13,
+      "coupling": 3,
+      "score": 91,
+      "nogo": false
+    },
+    {
+      "file": "server/record-version-stats.js",
+      "loc": 572,
+      "churn": 10,
+      "cog": 6,
+      "coupling": 3,
+      "score": 91,
+      "nogo": false
+    },
+    {
+      "file": "server/hosted-ui.js",
+      "loc": 857,
+      "churn": 10,
+      "cog": 4,
+      "coupling": 7,
+      "score": 85,
+      "nogo": false
+    },
+    {
+      "file": "server/record-filters.js",
+      "loc": 278,
+      "churn": 6,
+      "cog": 8,
+      "coupling": 5,
+      "score": 81,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-admin.ts",
+      "loc": 591,
+      "churn": 8,
+      "cog": 8,
+      "coupling": 1,
+      "score": 79,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-static-secret-credentials.ts",
+      "loc": 695,
+      "churn": 9,
+      "cog": 7,
+      "coupling": 1,
+      "score": 79,
+      "nogo": false
+    },
+    {
+      "file": "runtime/scheduler-source-pressure-cooldown.ts",
+      "loc": 509,
+      "churn": 9,
+      "cog": 4,
+      "coupling": 7,
+      "score": 77,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-connection-intent.ts",
+      "loc": 401,
+      "churn": 15,
+      "cog": 3,
+      "coupling": 2,
+      "score": 72,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/client-event-subscription-store.ts",
+      "loc": 673,
+      "churn": 10,
+      "cog": 4,
+      "coupling": 3,
+      "score": 65,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-connections.ts",
+      "loc": 433,
+      "churn": 9,
+      "cog": 2,
+      "coupling": 13,
+      "score": 62,
+      "nogo": false
+    },
+    {
+      "file": "runtime/browser-surface/run-coordinator.ts",
+      "loc": 1180,
+      "churn": 2,
+      "cog": 22,
+      "coupling": 2,
+      "score": 55,
+      "nogo": false
+    },
+    {
+      "file": "runtime/browser-surface-leases.ts",
+      "loc": 298,
+      "churn": 15,
+      "cog": 1,
+      "coupling": 8,
+      "score": 54,
+      "nogo": false
+    },
+    {
+      "file": "server/client-event-delivery-worker.ts",
+      "loc": 277,
+      "churn": 12,
+      "cog": 3,
+      "coupling": 1,
+      "score": 53,
+      "nogo": false
+    },
+    {
+      "file": "server/auto-enroll-eligible-schedules.ts",
+      "loc": 406,
+      "churn": 8,
+      "cog": 4,
+      "coupling": 3,
+      "score": 52,
+      "nogo": false
+    },
+    {
+      "file": "server/owner-session.ts",
+      "loc": 289,
+      "churn": 4,
+      "cog": 2,
+      "coupling": 31,
+      "score": 49,
+      "nogo": true
+    },
+    {
+      "file": "server/connection-id-request.js",
+      "loc": 242,
+      "churn": 7,
+      "cog": 3,
+      "coupling": 7,
+      "score": 48,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-connection-delete.ts",
+      "loc": 351,
+      "churn": 7,
+      "cog": 2,
+      "coupling": 13,
+      "score": 48,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-connection-run.ts",
+      "loc": 389,
+      "churn": 9,
+      "cog": 3,
+      "coupling": 3,
+      "score": 47,
+      "nogo": false
+    },
+    {
+      "file": "server/cimd.js",
+      "loc": 443,
+      "churn": 4,
+      "cog": 5,
+      "coupling": 9,
+      "score": 46,
+      "nogo": false
+    },
+    {
+      "file": "server/polyfill-manifest-reconcile.ts",
+      "loc": 517,
+      "churn": 6,
+      "cog": 6,
+      "coupling": 1,
+      "score": 46,
+      "nogo": false
+    },
+    {
+      "file": "server/explore-timeline-substrate.ts",
+      "loc": 1119,
+      "churn": 4,
+      "cog": 9,
+      "coupling": 1,
+      "score": 44,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/scheduler-store.ts",
+      "loc": 557,
+      "churn": 9,
+      "cog": 2,
+      "coupling": 6,
+      "score": 43,
+      "nogo": false
+    },
+    {
+      "file": "runtime/browser-surface-readiness.ts",
+      "loc": 505,
+      "churn": 4,
+      "cog": 7,
+      "coupling": 3,
+      "score": 42,
+      "nogo": false
+    },
+    {
+      "file": "server/connection-identity.js",
+      "loc": 355,
+      "churn": 4,
+      "cog": 4,
+      "coupling": 11,
+      "score": 42,
+      "nogo": false
+    },
+    {
+      "file": "server/connector-summary-read-model.js",
+      "loc": 836,
+      "churn": 4,
+      "cog": 4,
+      "coupling": 11,
+      "score": 42,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-dataset.ts",
+      "loc": 675,
+      "churn": 3,
+      "cog": 8,
+      "coupling": 5,
+      "score": 41,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/root-and-discovery.ts",
+      "loc": 464,
+      "churn": 7,
+      "cog": 3,
+      "coupling": 3,
+      "score": 36,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-grants.ts",
+      "loc": 441,
+      "churn": 5,
+      "cog": 4,
+      "coupling": 4,
+      "score": 35,
+      "nogo": true
+    },
+    {
+      "file": "server/hosted-mcp-selection.js",
+      "loc": 246,
+      "churn": 4,
+      "cog": 6,
+      "coupling": 2,
+      "score": 34,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/rs-hosted-mcp.ts",
+      "loc": 306,
+      "churn": 9,
+      "cog": 2,
+      "coupling": 1,
+      "score": 30,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/connector-attention-store.js",
+      "loc": 415,
+      "churn": 5,
+      "cog": 3,
+      "coupling": 5,
+      "score": 30,
+      "nogo": false
+    },
+    {
+      "file": "server/ref-record-utils.ts",
+      "loc": 330,
+      "churn": 5,
+      "cog": 4,
+      "coupling": 1,
+      "score": 28,
+      "nogo": false
+    },
+    {
+      "file": "server/search-hybrid.js",
+      "loc": 185,
+      "churn": 5,
+      "cog": 3,
+      "coupling": 4,
+      "score": 28,
+      "nogo": false
+    },
+    {
+      "file": "runtime/scheduler-backoff.ts",
+      "loc": 374,
+      "churn": 6,
+      "cog": 2,
+      "coupling": 5,
+      "score": 27,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-connection-revoke.ts",
+      "loc": 366,
+      "churn": 7,
+      "cog": 2,
+      "coupling": 3,
+      "score": 27,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/as-oauth.ts",
+      "loc": 404,
+      "churn": 6,
+      "cog": 3,
+      "coupling": 1,
+      "score": 26,
+      "nogo": true
+    },
+    {
+      "file": "lib/controller-boot.ts",
+      "loc": 395,
+      "churn": 6,
+      "cog": 2,
+      "coupling": 4,
+      "score": 25,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-connection-schedule.ts",
+      "loc": 417,
+      "churn": 7,
+      "cog": 2,
+      "coupling": 2,
+      "score": 25,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/as-agent-connect.ts",
+      "loc": 362,
+      "churn": 3,
+      "cog": 6,
+      "coupling": 1,
+      "score": 23,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/as-authorize.ts",
+      "loc": 707,
+      "churn": 4,
+      "cog": 4,
+      "coupling": 1,
+      "score": 22,
+      "nogo": true
+    },
+    {
+      "file": "server/routes/ref-provider-auth.ts",
+      "loc": 842,
+      "churn": 3,
+      "cog": 5,
+      "coupling": 2,
+      "score": 22,
+      "nogo": true
+    },
+    {
+      "file": "server/routes/ref-static-secret-draft-connection.ts",
+      "loc": 437,
+      "churn": 5,
+      "cog": 3,
+      "coupling": 1,
+      "score": 22,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/connector-state-store.ts",
+      "loc": 253,
+      "churn": 4,
+      "cog": 4,
+      "coupling": 1,
+      "score": 22,
+      "nogo": false
+    },
+    {
+      "file": "runtime/scheduler/dispatch-governor.ts",
+      "loc": 575,
+      "churn": 2,
+      "cog": 7,
+      "coupling": 3,
+      "score": 21,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/_route-contract.ts",
+      "loc": 78,
+      "churn": 4,
+      "cog": 0,
+      "coupling": 42,
+      "score": 21,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-connector-templates.ts",
+      "loc": 264,
+      "churn": 4,
+      "cog": 3,
+      "coupling": 2,
+      "score": 19,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-static-secret-setup-status.ts",
+      "loc": 445,
+      "churn": 4,
+      "cog": 3,
+      "coupling": 1,
+      "score": 18,
+      "nogo": false
+    },
+    {
+      "file": "server/schema-capabilities.js",
+      "loc": 273,
+      "churn": 3,
+      "cog": 4,
+      "coupling": 2,
+      "score": 18,
+      "nogo": false
+    },
+    {
+      "file": "server/streaming/companion-factory.js",
+      "loc": 248,
+      "churn": 2,
+      "cog": 6,
+      "coupling": 3,
+      "score": 18,
+      "nogo": false
+    },
+    {
+      "file": "runtime/scheduler/pre-run-gate.ts",
+      "loc": 417,
+      "churn": 2,
+      "cog": 5,
+      "coupling": 4,
+      "score": 17,
+      "nogo": false
+    },
+    {
+      "file": "server/record-expand-helpers.js",
+      "loc": 218,
+      "churn": 3,
+      "cog": 3,
+      "coupling": 4,
+      "score": 17,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-connection-reactivate.ts",
+      "loc": 386,
+      "churn": 5,
+      "cog": 2,
+      "coupling": 1,
+      "score": 17,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-error-status.ts",
+      "loc": 97,
+      "churn": 6,
+      "cog": 1,
+      "coupling": 4,
+      "score": 17,
+      "nogo": false
+    },
+    {
+      "file": "runtime/static-secret-setup-status.ts",
+      "loc": 419,
+      "churn": 4,
+      "cog": 2,
+      "coupling": 2,
+      "score": 14,
+      "nogo": false
+    },
+    {
+      "file": "server/record-query-helpers.js",
+      "loc": 240,
+      "churn": 2,
+      "cog": 5,
+      "coupling": 2,
+      "score": 14,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-browser-enrollment-shell.ts",
+      "loc": 367,
+      "churn": 3,
+      "cog": 3,
+      "coupling": 2,
+      "score": 14,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/credential-encryption.js",
+      "loc": 246,
+      "churn": 3,
+      "cog": 2,
+      "coupling": 5,
+      "score": 14,
+      "nogo": false
+    },
+    {
+      "file": "runtime/attention-writer.js",
+      "loc": 428,
+      "churn": 2,
+      "cog": 5,
+      "coupling": 1,
+      "score": 13,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-run-status.ts",
+      "loc": 318,
+      "churn": 3,
+      "cog": 3,
+      "coupling": 1,
+      "score": 13,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/run-interaction.ts",
+      "loc": 157,
+      "churn": 2,
+      "cog": 2,
+      "coupling": 12,
+      "score": 13,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/connector-instance-credential-store.js",
+      "loc": 299,
+      "churn": 3,
+      "cog": 2,
+      "coupling": 4,
+      "score": 13,
+      "nogo": false
+    },
+    {
+      "file": "runtime/display-messages.ts",
+      "loc": 164,
+      "churn": 12,
+      "cog": 0,
+      "coupling": 0,
+      "score": 12,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-connection-diagnostics.ts",
+      "loc": 350,
+      "churn": 3,
+      "cog": 2,
+      "coupling": 3,
+      "score": 12,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-spine-correlations.ts",
+      "loc": 130,
+      "churn": 5,
+      "cog": 1,
+      "coupling": 2,
+      "score": 12,
+      "nogo": false
+    },
+    {
+      "file": "server/scheduler-manager-factory.js",
+      "loc": 472,
+      "churn": 1,
+      "cog": 10,
+      "coupling": 1,
+      "score": 12,
+      "nogo": false
+    },
+    {
+      "file": "runtime/browser-surface/index.ts",
+      "loc": 13,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 98,
+      "score": 11,
+      "nogo": false
+    },
+    {
+      "file": "runtime/connector-verdict-input.ts",
+      "loc": 205,
+      "churn": 5,
+      "cog": 1,
+      "coupling": 1,
+      "score": 11,
+      "nogo": false
+    },
+    {
+      "file": "runtime/run-automation-policy.ts",
+      "loc": 131,
+      "churn": 3,
+      "cog": 1,
+      "coupling": 8,
+      "score": 11,
+      "nogo": false
+    },
+    {
+      "file": "server/collector-protocol.ts",
+      "loc": 72,
+      "churn": 3,
+      "cog": 1,
+      "coupling": 8,
+      "score": 11,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/client-metadata.ts",
+      "loc": 84,
+      "churn": 3,
+      "cog": 1,
+      "coupling": 8,
+      "score": 11,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-spine-timelines.ts",
+      "loc": 162,
+      "churn": 3,
+      "cog": 2,
+      "coupling": 2,
+      "score": 11,
+      "nogo": false
+    },
+    {
+      "file": "server/connector-manifest-validation.ts",
+      "loc": 785,
+      "churn": 1,
+      "cog": 7,
+      "coupling": 2,
+      "score": 10,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/web-push.ts",
+      "loc": 193,
+      "churn": 2,
+      "cog": 1,
+      "coupling": 15,
+      "score": 10,
+      "nogo": false
+    },
+    {
+      "file": "server/version-disposition.js",
+      "loc": 354,
+      "churn": 3,
+      "cog": 2,
+      "coupling": 1,
+      "score": 10,
+      "nogo": false
+    },
+    {
+      "file": "runtime/neko-surface-allocator.ts",
+      "loc": 7,
+      "churn": 8,
+      "cog": 0,
+      "coupling": 1,
+      "score": 9,
+      "nogo": false
+    },
+    {
+      "file": "runtime/scheduler-readiness.ts",
+      "loc": 175,
+      "churn": 2,
+      "cog": 2,
+      "coupling": 1,
+      "score": 7,
+      "nogo": false
+    },
+    {
+      "file": "runtime/scheduler-retry-classifier.ts",
+      "loc": 87,
+      "churn": 3,
+      "cog": 1,
+      "coupling": 2,
+      "score": 7,
+      "nogo": false
+    },
+    {
+      "file": "server/connector-instance-utils.js",
+      "loc": 112,
+      "churn": 2,
+      "cog": 2,
+      "coupling": 2,
+      "score": 7,
+      "nogo": false
+    },
+    {
+      "file": "server/freshness.ts",
+      "loc": 70,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 23,
+      "score": 7,
+      "nogo": false
+    },
+    {
+      "file": "server/reference-topology.ts",
+      "loc": 161,
+      "churn": 2,
+      "cog": 2,
+      "coupling": 2,
+      "score": 7,
+      "nogo": false
+    },
+    {
+      "file": "server/search-fanout.js",
+      "loc": 37,
+      "churn": 3,
+      "cog": 1,
+      "coupling": 2,
+      "score": 7,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/static-secret-run-credentials.js",
+      "loc": 111,
+      "churn": 3,
+      "cog": 1,
+      "coupling": 1,
+      "score": 7,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/terminal-gap-classifier.js",
+      "loc": 237,
+      "churn": 2,
+      "cog": 2,
+      "coupling": 1,
+      "score": 7,
+      "nogo": false
+    },
+    {
+      "file": "server/streaming/cdp-companion.js",
+      "loc": 309,
+      "churn": 3,
+      "cog": 1,
+      "coupling": 1,
+      "score": 7,
+      "nogo": false
+    },
+    {
+      "file": "server/browser-enrollment-shell-retirement.ts",
+      "loc": 83,
+      "churn": 5,
+      "cog": 0,
+      "coupling": 1,
+      "score": 6,
+      "nogo": false
+    },
+    {
+      "file": "server/concurrency.ts",
+      "loc": 56,
+      "churn": 2,
+      "cog": 1,
+      "coupling": 6,
+      "score": 6,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/blob-store.js",
+      "loc": 106,
+      "churn": 5,
+      "cog": 0,
+      "coupling": 2,
+      "score": 6,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/manual-upload-artifact-store.js",
+      "loc": 283,
+      "churn": 1,
+      "cog": 4,
+      "coupling": 1,
+      "score": 6,
+      "nogo": false
+    },
+    {
+      "file": "server/streaming/sessions.js",
+      "loc": 9,
+      "churn": 4,
+      "cog": 0,
+      "coupling": 6,
+      "score": 6,
+      "nogo": false
+    },
+    {
+      "file": "runtime/browser-surface/profile-key.ts",
+      "loc": 29,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 15,
+      "score": 5,
+      "nogo": false
+    },
+    {
+      "file": "runtime/terminal-reason.js",
+      "loc": 56,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 15,
+      "score": 5,
+      "nogo": false
+    },
+    {
+      "file": "server/record-field-window.js",
+      "loc": 268,
+      "churn": 1,
+      "cog": 3,
+      "coupling": 2,
+      "score": 5,
+      "nogo": false
+    },
+    {
+      "file": "server/request-helpers.js",
+      "loc": 131,
+      "churn": 1,
+      "cog": 3,
+      "coupling": 2,
+      "score": 5,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/run-cancel.ts",
+      "loc": 81,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 14,
+      "score": 5,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/source-webhooks.ts",
+      "loc": 189,
+      "churn": 2,
+      "cog": 1,
+      "coupling": 2,
+      "score": 5,
+      "nogo": false
+    },
+    {
+      "file": "server/auth-middleware.js",
+      "loc": 183,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 4,
+      "score": 4,
+      "nogo": true
+    },
+    {
+      "file": "server/connector-schema-builder.js",
+      "loc": 177,
+      "churn": 1,
+      "cog": 3,
+      "coupling": 1,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/contract-validation.js",
+      "loc": 253,
+      "churn": 2,
+      "cog": 1,
+      "coupling": 1,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/inbox.js",
+      "loc": 178,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 2,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/manifest-resolution.js",
+      "loc": 127,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 3,
+      "score": 4,
+      "nogo": true
+    },
+    {
+      "file": "server/notification-policy.js",
+      "loc": 97,
+      "churn": 2,
+      "cog": 1,
+      "coupling": 1,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/owner-csrf.ts",
+      "loc": 215,
+      "churn": 2,
+      "cog": 1,
+      "coupling": 1,
+      "score": 4,
+      "nogo": true
+    },
+    {
+      "file": "server/record-aggregation.js",
+      "loc": 317,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 2,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/record-ingest-semantic-time.js",
+      "loc": 139,
+      "churn": 1,
+      "cog": 3,
+      "coupling": 1,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/reference-root-landing.js",
+      "loc": 183,
+      "churn": 2,
+      "cog": 1,
+      "coupling": 1,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/_owner-connection-helpers.ts",
+      "loc": 168,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 8,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/as-device-ui.ts",
+      "loc": 304,
+      "churn": 1,
+      "cog": 3,
+      "coupling": 1,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/as-grant-revoke.ts",
+      "loc": 193,
+      "churn": 1,
+      "cog": 3,
+      "coupling": 1,
+      "score": 4,
+      "nogo": true
+    },
+    {
+      "file": "server/routes/as-polyfill-connectors.ts",
+      "loc": 129,
+      "churn": 2,
+      "cog": 1,
+      "coupling": 1,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/ref-device-exporter-sanitize.ts",
+      "loc": 77,
+      "churn": 2,
+      "cog": 1,
+      "coupling": 1,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/storage-backend.js",
+      "loc": 93,
+      "churn": 2,
+      "cog": 0,
+      "coupling": 9,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/storage-utils.js",
+      "loc": 95,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 2,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/acquisition-batch-store.js",
+      "loc": 351,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 2,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/consent-store.js",
+      "loc": 138,
+      "churn": 3,
+      "cog": 0,
+      "coupling": 2,
+      "score": 4,
+      "nogo": true
+    },
+    {
+      "file": "server/streaming/neko-browser-client.js",
+      "loc": 120,
+      "churn": 1,
+      "cog": 3,
+      "coupling": 1,
+      "score": 4,
+      "nogo": false
+    },
+    {
+      "file": "runtime/scheduler-domain-types.ts",
+      "loc": 357,
+      "churn": 2,
+      "cog": 0,
+      "coupling": 7,
+      "score": 3,
+      "nogo": false
+    },
+    {
+      "file": "server/connection-activation-schedules.ts",
+      "loc": 150,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 1,
+      "score": 3,
+      "nogo": false
+    },
+    {
+      "file": "server/dcr-configuration.js",
+      "loc": 139,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 1,
+      "score": 3,
+      "nogo": false
+    },
+    {
+      "file": "server/retrieval-startup-backfill.js",
+      "loc": 109,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 1,
+      "score": 3,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/as-par.ts",
+      "loc": 88,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 3,
+      "score": 3,
+      "nogo": false
+    },
+    {
+      "file": "server/source-descriptor.js",
+      "loc": 126,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 3,
+      "score": 3,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/provider-auth-run-credentials.js",
+      "loc": 129,
+      "churn": 1,
+      "cog": 2,
+      "coupling": 1,
+      "score": 3,
+      "nogo": true
+    },
+    {
+      "file": "server/stores/source-webhook-event-store.ts",
+      "loc": 52,
+      "churn": 3,
+      "cog": 0,
+      "coupling": 1,
+      "score": 3,
+      "nogo": false
+    },
+    {
+      "file": "runtime/pipe-errors.js",
+      "loc": 38,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 2,
+      "score": 2,
+      "nogo": false
+    },
+    {
+      "file": "runtime/stderr-redact.js",
+      "loc": 56,
+      "churn": 2,
+      "cog": 0,
+      "coupling": 2,
+      "score": 2,
+      "nogo": false
+    },
+    {
+      "file": "runtime/stderr-tail.js",
+      "loc": 69,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 2,
+      "score": 2,
+      "nogo": false
+    },
+    {
+      "file": "server/oauth-substrate/primitives.ts",
+      "loc": 32,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 9,
+      "score": 2,
+      "nogo": true
+    },
+    {
+      "file": "server/owner-exposure-posture.ts",
+      "loc": 236,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 1,
+      "score": 2,
+      "nogo": false
+    },
+    {
+      "file": "server/provider-auth/google-data-portability.ts",
+      "loc": 348,
+      "churn": 2,
+      "cog": 0,
+      "coupling": 2,
+      "score": 2,
+      "nogo": true
+    },
+    {
+      "file": "server/reference-local-defaults.ts",
+      "loc": 61,
+      "churn": 2,
+      "cog": 0,
+      "coupling": 1,
+      "score": 2,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/as-dcr.ts",
+      "loc": 222,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 1,
+      "score": 2,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/owner-control.ts",
+      "loc": 85,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 8,
+      "score": 2,
+      "nogo": false
+    },
+    {
+      "file": "server/stores/owner-device-auth-store.js",
+      "loc": 130,
+      "churn": 2,
+      "cog": 0,
+      "coupling": 2,
+      "score": 2,
+      "nogo": true
+    },
+    {
+      "file": "server/stores/static-secret-credential-probe.js",
+      "loc": 68,
+      "churn": 1,
+      "cog": 1,
+      "coupling": 2,
+      "score": 2,
+      "nogo": false
+    },
+    {
+      "file": "runtime/connection-health-policy.ts",
+      "loc": 14,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 2,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "runtime/run-contracts.ts",
+      "loc": 49,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 2,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "runtime/satisfaction-watcher.ts",
+      "loc": 150,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 1,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/connection-scoped-run-env.js",
+      "loc": 152,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 3,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/connector-catalog.js",
+      "loc": 91,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 4,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/connector-run-evidence.js",
+      "loc": 52,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 2,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/dev-env-defaults.js",
+      "loc": 7,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 0,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/reference-revision.js",
+      "loc": 70,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 2,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/request-store-factories.js",
+      "loc": 49,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 3,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/connector-source-kind.ts",
+      "loc": 94,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 1,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/routes/hosted-ui-asset.ts",
+      "loc": 48,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 1,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/search-index-counts.js",
+      "loc": 40,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 3,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/streaming/input-telemetry.js",
+      "loc": 77,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 1,
+      "score": 1,
+      "nogo": false
+    },
+    {
+      "file": "server/streaming/remote-telemetry-registry.js",
+      "loc": 51,
+      "churn": 1,
+      "cog": 0,
+      "coupling": 2,
+      "score": 1,
+      "nogo": false
+    }
+  ]
+}

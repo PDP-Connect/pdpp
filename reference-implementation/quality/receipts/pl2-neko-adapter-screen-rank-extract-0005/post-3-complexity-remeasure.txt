@@ -1,0 +1,63 @@
+# hone work pl2-neko-adapter-screen-rank-extract-0005 — post rung 'complexity-remeasure'
+# command: cd "$REPO_ROOT" && sh -c 'cfg=/tmp/pdpp_rankNekoScreenConfigurations_5_biome.jsonc; printf %s "{\"root\":false,\"files\":{\"ignoreUnknown\":true,\"includes\":[\"server/**/*.js\",\"server/**/*.ts\",\"lib/**/*.js\",\"lib/**/*.ts\",\"runtime/**/*.js\",\"runtime/**/*.ts\"]},\"linter\":{\"enabled\":true,\"rules\":{\"complexity\":{\"noExcessiveCognitiveComplexity\":{\"level\":\"error\",\"options\":{\"maxAllowedComplexity\":5}}}}}}" > "$cfg"; npx biome lint --config-path="$cfg" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/streaming/neko-adapter.js 2>&1'
+# expect: Prints Biome cognitive-complexity diagnostics for server/streaming/neko-adapter.js; post-refactor rankNekoScreenConfigurations should be below its measured baseline 18 and the rung must keep maxAllowedComplexity 5 plus --max-diagnostics=300 with stderr captured by 2>&1.
+# exit: 0  duration: 0s  verdict: PASS
+
+server/streaming/neko-adapter.js:182:10 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━━
+
+  i Excessive complexity of 17 detected (max: 15).
+  
+    180 │ }
+    181 │ 
+  > 182 │ function buildViewportPayload(viewport, frameRate) {
+        │          ^^^^^^^^^^^^^^^^^^^^
+    183 │   const width = Number(viewport?.width);
+    184 │   const height = Number(viewport?.height);
+  
+  i Please refactor this function to reduce its complexity score from 17 to the max allowed complexity 15.
+  
+
+server/streaming/neko-adapter.js:909:18 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━━
+
+  i Excessive complexity of 16 detected (max: 15).
+  
+    907 │   }
+    908 │ 
+  > 909 │   async function applyViewportBestEffort(viewport, signal) {
+        │                  ^^^^^^^^^^^^^^^^^^^^^^^
+    910 │     if (!viewport || typeof viewport !== 'object') return null;
+    911 │     const payload =
+  
+  i Please refactor this function to reduce its complexity score from 16 to the max allowed complexity 15.
+  
+
+server/streaming/neko-adapter.js:981:18 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━━
+
+  i Excessive complexity of 18 detected (max: 15).
+  
+    979 │   }
+    980 │ 
+  > 981 │   async function pollLoop(signal) {
+        │                  ^^^^^^^^
+    982 │     while (!signal.aborted && started && !closed) {
+    983 │       try {
+  
+  i Please refactor this function to reduce its complexity score from 18 to the max allowed complexity 15.
+  
+
+server/streaming/neko-adapter.js:1023:18 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━━━
+
+  i Excessive complexity of 16 detected (max: 15).
+  
+    1021 │   }
+    1022 │ 
+  > 1023 │   async function dispatch(event) {
+         │                  ^^^^^^^^
+    1024 │     if (event?.type === 'viewport') {
+    1025 │       currentViewport = event;
+  
+  i Please refactor this function to reduce its complexity score from 16 to the max allowed complexity 15.
+  
+
+Checked 1 file in 4ms. No fixes applied.
+Found 4 infos.

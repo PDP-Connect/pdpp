@@ -1,0 +1,48 @@
+# hone work tst-mcp-parse-result-id-0010 — post rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT/../packages/mcp-server" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then src=src/tools.js; bak=$REPO_ROOT/.pdpp_hone_tst0010_tools.bak; cp "$src" "$bak"; sed -i "s/if (connectionSeparator === -1) {/if (connectionSeparator >= -1) {/" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED (separator branch forced always-taken -> self-contained id loses connectionId -> oracle red, source restored)"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: id-grammar oracle not yet created"; exit 0; fi'
+# expect: POST: prints 'MUTANT KILLED' — forcing the no-separator branch always-taken (connectionSeparator >= -1) makes 'conn_a/orders:o1' parse as legacy with connectionId null (stream:record split fails or mis-splits), which the deepEqual assertion catches; rc captured, source restored byte-clean. BASELINE: prints 'BASELINE:' exit 0.
+# timeout: 1800s (engine-default)
+# exit: 0  duration: 0s  verdict: PASS
+
+✖ parseRecordResultId parses self-contained result ids (0.631282ms)
+✔ parseRecordResultId parses legacy stream record ids (0.491779ms)
+✔ parseRecordResultId parses canonical record resource uris (0.167683ms)
+✖ parseRecordResultId falls back to embedded result grammar in record uris (0.112272ms)
+✔ parseRecordResultId rejects malformed ids (0.189574ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 3
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 74.362636
+
+✖ failing tests:
+
+test at test/parse-record-result-id-oracle.test.js:8:1
+✖ parseRecordResultId parses self-contained result ids (0.631282ms)
+  Error: id contains invalid characters
+      at requireSafeName (file:///home/tnunamak/.tmp/pdpp-ops/packages/mcp-server/src/tools.js:1041:11)
+      at parseStreamRecordId (file:///home/tnunamak/.tmp/pdpp-ops/packages/mcp-server/src/tools.js:2699:17)
+      at parseRecordResultId (file:///home/tnunamak/.tmp/pdpp-ops/packages/mcp-server/src/tools.js:2689:17)
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/packages/mcp-server/test/parse-record-result-id-oracle.test.js:9:20)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17)
+
+test at test/parse-record-result-id-oracle.test.js:44:1
+✖ parseRecordResultId falls back to embedded result grammar in record uris (0.112272ms)
+  Error: id contains invalid characters
+      at requireSafeName (file:///home/tnunamak/.tmp/pdpp-ops/packages/mcp-server/src/tools.js:1041:11)
+      at parseStreamRecordId (file:///home/tnunamak/.tmp/pdpp-ops/packages/mcp-server/src/tools.js:2699:17)
+      at parseRecordResultId (file:///home/tnunamak/.tmp/pdpp-ops/packages/mcp-server/src/tools.js:2689:17)
+      at parseRecordResultId (file:///home/tnunamak/.tmp/pdpp-ops/packages/mcp-server/src/tools.js:2682:16)
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/packages/mcp-server/test/parse-record-result-id-oracle.test.js:47:20)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+MUTANT KILLED (separator branch forced always-taken -> self-contained id loses connectionId -> oracle red, source restored)

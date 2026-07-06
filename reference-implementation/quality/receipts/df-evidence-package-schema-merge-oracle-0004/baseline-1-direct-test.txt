@@ -1,0 +1,6 @@
+# hone work df-evidence-package-schema-merge-oracle-0004 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/package-rs-client-merge-schema.test.js ]; then node --test test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi'
+# expect: baseline: oracle-not-yet-authored (file absent). Post: all pass; the test constructs clients via createPackageRsClient with an injected fake fetch and never patches module internals
+# exit: 0  duration: 0s  verdict: PASS
+
+oracle-not-yet-authored

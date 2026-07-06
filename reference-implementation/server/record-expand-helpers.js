@@ -34,22 +34,24 @@ export function normalizePrimaryKey(primaryKey) {
 // are known, falls back to the legacy `data.id` guard so the common ["id"] case
 // is never silently unvalidated. Throws an Error with code
 // 'invalid_record_identity' on mismatch.
-export function assertRecordIdentity(primaryKeyFields, key, data) {
-  if (data == null || typeof data !== 'object') return;
-  const fields = Array.isArray(primaryKeyFields) ? primaryKeyFields : [];
-
-  if (fields.length === 0) {
-    const single = typeof key === 'string' ? key : Array.isArray(key) && key.length === 1 ? key[0] : null;
-    if (single != null && data.id !== undefined && data.id !== single) {
-      const err = new Error(`key and data.id disagree: key=${single}, data.id=${data.id}`);
-      err.code = 'invalid_record_identity';
-      throw err;
-    }
-    return;
+// Legacy fallback used when no primary-key fields are known: the common
+// ["id"] case is never silently unvalidated. A single-field key arrives as a
+// scalar; anything else (or a mismatch) is compared against `data.id`.
+function assertLegacyIdIdentity(key, data) {
+  const single = typeof key === 'string' ? key : Array.isArray(key) && key.length === 1 ? key[0] : null;
+  if (single != null && data.id !== undefined && data.id !== single) {
+    const err = new Error(`key and data.id disagree: key=${single}, data.id=${data.id}`);
+    err.code = 'invalid_record_identity';
+    throw err;
   }
+}
 
-  // A single-field key arrives as a scalar (string or number; encodeKey stores
-  // either as a string downstream); a compound key arrives as an array.
+// Compare each declared primary-key field present in `data` against its
+// position in the key tuple. A single-field key arrives as a scalar (string or
+// number; encodeKey stores either as a string downstream); a compound key
+// arrives as an array. Fields omitted from `data`, and key positions the key
+// tuple does not provide, are not checked.
+function assertPrimaryKeyIdentity(fields, key, data) {
   const keyParts = typeof key === 'string' || typeof key === 'number' ? [String(key)] : Array.isArray(key) ? key : [];
   for (let i = 0; i < fields.length; i += 1) {
     const field = fields[i];
@@ -68,6 +70,18 @@ export function assertRecordIdentity(primaryKeyFields, key, data) {
       throw err;
     }
   }
+}
+
+export function assertRecordIdentity(primaryKeyFields, key, data) {
+  if (data == null || typeof data !== 'object') return;
+  const fields = Array.isArray(primaryKeyFields) ? primaryKeyFields : [];
+
+  if (fields.length === 0) {
+    assertLegacyIdIdentity(key, data);
+    return;
+  }
+
+  assertPrimaryKeyIdentity(fields, key, data);
 }
 
 export function parseIntegerValue(value) {

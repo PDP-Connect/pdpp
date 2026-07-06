@@ -30,6 +30,34 @@ export interface RunAutomationPolicyProjection {
   readonly trigger_kind: RunTriggerKind;
 }
 
+function createRunAutomationPolicyProjection({
+  allowedToStart,
+  automationMode,
+  deploymentReadiness,
+  notificationPosture,
+  reason,
+  requiresOwnerApproval,
+  triggerKind,
+}: {
+  readonly allowedToStart: boolean;
+  readonly automationMode: RunAutomationMode;
+  readonly deploymentReadiness: DeploymentReadinessInput;
+  readonly notificationPosture: RunAutomationPolicyProjection["notification_posture"];
+  readonly reason: string | null;
+  readonly requiresOwnerApproval: boolean;
+  readonly triggerKind: RunTriggerKind;
+}): RunAutomationPolicyProjection {
+  return {
+    allowed_to_start: allowedToStart,
+    automation_mode: automationMode,
+    deployment_readiness: deploymentReadiness,
+    notification_posture: notificationPosture,
+    reason,
+    requires_owner_approval: requiresOwnerApproval,
+    trigger_kind: triggerKind,
+  };
+}
+
 function policyBlocksAutomatic(refreshPolicy: AutomationRefreshPolicy | null | undefined): string | null {
   if (!refreshPolicy) {
     return null;
@@ -61,55 +89,57 @@ export function projectRunAutomationPolicy(input: RunAutomationPolicyInput): Run
   const deploymentReadiness = input.deploymentReadiness ?? { ready: true };
   const automaticPolicyReason = policyBlocksAutomatic(input.refreshPolicy);
   const isManualTrigger = input.triggerKind === "manual";
+  const manualAwareNotificationPosture = isManualTrigger ? "none" : "informational";
+  const requiresOwnerApproval = !isManualTrigger;
 
   if (automaticPolicyReason) {
-    return {
-      allowed_to_start: isManualTrigger,
-      automation_mode: "manual_only",
-      deployment_readiness: deploymentReadiness,
-      notification_posture: isManualTrigger ? "none" : "informational",
+    return createRunAutomationPolicyProjection({
+      allowedToStart: isManualTrigger,
+      automationMode: "manual_only",
+      deploymentReadiness,
+      notificationPosture: manualAwareNotificationPosture,
       reason: automaticPolicyReason,
-      requires_owner_approval: !isManualTrigger,
-      trigger_kind: input.triggerKind,
-    };
+      requiresOwnerApproval,
+      triggerKind: input.triggerKind,
+    });
   }
 
   if (!deploymentReadiness.ready) {
-    return {
-      allowed_to_start: isManualTrigger,
-      automation_mode: isManualTrigger ? "assisted" : "ask_before_run",
-      deployment_readiness: deploymentReadiness,
-      notification_posture: isManualTrigger ? "none" : "informational",
+    return createRunAutomationPolicyProjection({
+      allowedToStart: isManualTrigger,
+      automationMode: isManualTrigger ? "assisted" : "ask_before_run",
+      deploymentReadiness,
+      notificationPosture: manualAwareNotificationPosture,
       reason: deploymentReadiness.reason || "Runtime prerequisites are not currently satisfied.",
-      requires_owner_approval: !isManualTrigger,
-      trigger_kind: input.triggerKind,
-    };
+      requiresOwnerApproval,
+      triggerKind: input.triggerKind,
+    });
   }
 
   if (input.humanAttentionNeeded && !isManualTrigger) {
-    return {
-      allowed_to_start: false,
-      automation_mode: "ask_before_run",
-      deployment_readiness: deploymentReadiness,
-      notification_posture: "action_required",
+    return createRunAutomationPolicyProjection({
+      allowedToStart: false,
+      automationMode: "ask_before_run",
+      deploymentReadiness,
+      notificationPosture: "action_required",
       reason: "Connector needs owner attention before automatic refresh can continue.",
-      requires_owner_approval: true,
-      trigger_kind: input.triggerKind,
-    };
+      requiresOwnerApproval: true,
+      triggerKind: input.triggerKind,
+    });
   }
 
   const automationMode: RunAutomationMode = canNotifyDuringRun(input.refreshPolicy, { isManualTrigger })
     ? "assisted"
     : "unattended";
-  return {
-    allowed_to_start: true,
-    automation_mode: automationMode,
-    deployment_readiness: deploymentReadiness,
-    notification_posture: automationMode === "assisted" ? "action_required" : "none",
+  return createRunAutomationPolicyProjection({
+    allowedToStart: true,
+    automationMode,
+    deploymentReadiness,
+    notificationPosture: automationMode === "assisted" ? "action_required" : "none",
     reason: null,
-    requires_owner_approval: false,
-    trigger_kind: input.triggerKind,
-  };
+    requiresOwnerApproval: false,
+    triggerKind: input.triggerKind,
+  });
 }
 
 export function automationModeCopy(mode: RunAutomationMode): string {

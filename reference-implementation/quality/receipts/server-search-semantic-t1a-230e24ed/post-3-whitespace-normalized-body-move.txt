@@ -1,0 +1,20 @@
+# hone work server-search-semantic-t1a-230e24ed — post rung 'whitespace-normalized-body-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff -w -- server/search-semantic.js
+# expect: hoisted bodies appear verbatim under -w (indent-only change at the move site); no logic edits
+# exit: 0  duration: 0s  verdict: PASS
+
+diff --git a/reference-implementation/server/search-semantic.js b/reference-implementation/server/search-semantic.js
+index e416de420..6a5141431 100644
+--- a/reference-implementation/server/search-semantic.js
++++ b/reference-implementation/server/search-semantic.js
+@@ -1306,7 +1306,9 @@ function deleteBackfillProgress({ connectorId, connectorInstanceId = null, strea
+  *   - startServer (native mode)
+  *   - registerConnector (polyfill mode)
+  */
+-export async function semanticIndexBackfillForManifest({ manifest, log = () => {}, signal = null } = {}) {
++function noopSemanticBackfillLog() {}
++
++export async function semanticIndexBackfillForManifest({ manifest, log = noopSemanticBackfillLog, signal = null } = {}) {
+   if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
+   if (!backend) return;
+   activeBackfillCount += 1;

@@ -11,13 +11,13 @@
     "./public": "./src/public/index.ts",
     "./reference": "./src/reference/index.ts",
     "./builders": "./src/builders/index.ts",
-    "./openapi": "./src/openapi/index.js",
+    "./openapi": "./src/openapi/index.ts",
     "./validate": "./src/validate.ts"
   },
   "scripts": {
-    "generate:openapi": "node ./src/openapi/generate.js",
-    "generate:docs": "node ./src/docs/generate.js",
-    "generate:all": "node ./src/openapi/generate.js && node ./src/docs/generate.js",
+    "generate:openapi": "node ./src/openapi/generate.ts",
+    "generate:docs": "node ./src/docs/generate.ts",
+    "generate:all": "node ./src/openapi/generate.ts && node ./src/docs/generate.ts",
     "check:generated": "pnpm run generate:all && node ./scripts/check-generated.js",
     "test": "node --test --test-force-exit test/*.test.js",
     "typecheck": "tsc --noEmit",

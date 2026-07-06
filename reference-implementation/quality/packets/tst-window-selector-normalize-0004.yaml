@@ -1,0 +1,94 @@
+candidate_id: tst-window-selector-normalize-0004
+created: "2026-07-02T10:15:00.000Z"
+subsystem: server/record-field-window
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+files: [test/record-field-window-selector-oracle.test.js, server/record-field-window.js]
+symbols: [normalizeWindowSelector, assertFieldPath, classifyFieldType, assertReadableStringField]
+public_surface:
+  - "read_record_field window-selector validation: before_chars/after_chars require q; q exclusive with offset_chars; q must be non-empty; context_chars <= 8192 (FIELD_WINDOW_MAX_CONTEXT_CHARS); invalid_field_path (empty / NUL); field_not_found vs field_not_text typed errors; FieldWindowError.code + httpStatus"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "The RS-substrate half of the read_record_field guard rails lives in record-field-window.js as pure functions the DB-backed substrate test never asserts at their boundaries (ZERO mutation-kill evidence per prior analysis). Genuinely-unpinned: normalizeWindowSelector q-exclusivity (before_chars/after_chars require q -> invalid_window; q exclusive with offset_chars -> invalid_window; q must be a non-empty string -> invalid_window) and the context ceiling assertContextChars (> 8192 -> invalid_window naming the label); assertFieldPath NUL rejection (a field containing \\u0000 -> invalid_field_path, the anti-smuggling guard) and empty/non-string rejection; classifyFieldType mapping (text/string->string, integer/real/number->number, true/false/boolean->boolean, null->null, object->object, array->array, null/undefined->absent, else->other) which decides string-vs-nonstring; assertReadableStringField pure boundary (absent -> field_not_found 404, non-string -> field_not_text 422, string -> no throw). Each throw carries a code+httpStatus that the route maps to HTTP verbatim; a mutation to any status or guard ships a wrong public error with no failing test. Fast no-DB oracle."
+plan:
+  transform_class: add-pure-fn-selector-oracle
+  instruction: "Create test/record-field-window-selector-oracle.test.js (NEW file; touch no source). Import { normalizeWindowSelector, assertFieldPath, classifyFieldType, assertReadableStringField, FIELD_WINDOW_MAX_CONTEXT_CHARS, FIELD_WINDOW_DEFAULT_LIMIT } from '../server/record-field-window.js' (pure, no DB). For each throwing case use assert.throws with a matcher asserting err.code AND err.httpStatus (the route maps both). Pin: (1) normalizeWindowSelector({ before_chars: 10 }) throws code invalid_window httpStatus 400 (message 'before_chars and after_chars require q'); (2) normalizeWindowSelector({ q:'x', offset_chars: 5 }) throws invalid_window 400 ('q is exclusive with offset_chars'); (3) normalizeWindowSelector({ q:'' }) throws invalid_window 400 ('q must be a non-empty string'); (4) normalizeWindowSelector({ q:'x', before_chars: FIELD_WINDOW_MAX_CONTEXT_CHARS + 1 }) throws invalid_window 400 (context ceiling, message includes 'before_chars' and '<= 8192'); (5) a valid offset selector normalizeWindowSelector({ offset_chars: 4, limit_chars: 100 }) -> { mode:'offset', offset:4, limit:100 } and a valid query selector normalizeWindowSelector({ q:'foo', before_chars:10, after_chars:20 }) -> mode:'query', before:10, after:20, limit === 10+3+20 (explicit-context sum); (6) assertFieldPath('a\\u0000b') throws invalid_field_path 400 ('must not contain NUL'); assertFieldPath('') and assertFieldPath(123) throw invalid_field_path 400; assertFieldPath('body') does NOT throw; (7) classifyFieldType table: 'text'->'string','string'->'string','integer'->'number','real'->'number','number'->'number','true'->'boolean','false'->'boolean','boolean'->'boolean','null'->'null','object'->'object','array'->'array',null->'absent',undefined->'absent','weird'->'other'; (8) assertReadableStringField('f','absent') throws field_not_found 404; assertReadableStringField('f','object') throws field_not_text 422; assertReadableStringField('f','number') throws field_not_text 422; assertReadableStringField('f','string') does NOT throw. node:assert/strict."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+priority:
+  score: 8.7
+  computed: "2026-07-02T10:15:00.000Z"
+  inputs:
+    mass: 0
+    churn: 0
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: high
+  property_at_risk: "the selector guards + typed error codes/statuses are the public read_record_field validation contract; a weakened NUL guard, a flipped q-exclusivity, or a wrong field_not_found-vs-field_not_text status silently misleads callers with no runtime failure"
+authoring_evidence:
+  - kind: code-read
+    detail: "server/record-field-window.js:124-162 normalizeWindowSelector + :108-117 assertContextChars; :55-62 assertFieldPath (NUL guard :59); :225-248 classifyFieldType; :256-267 assertReadableStringField (field_not_found 404 / field_not_text 422)"
+    result: every guard + the type map + the readable-string boundary is pure and independently assertable; each error carries code + httpStatus
+  - kind: coverage-sweep
+    detail: "grep -rln normalizeWindowSelector / classifyFieldType / assertReadableStringField / assertFieldPath across test/ and packages/*/test/"
+    result: "no test imports these pure fns directly; the DB substrate test never asserts the NUL guard, the context ceiling, the type map, or the field_not_found-vs-field_not_text boundary by value"
+  - kind: probe-run
+    detail: scratch node --test import of record-field-window.js
+    result: "loads and runs with NO PDPP_TEST_POSTGRES_URL in ~57ms — pure, no DB at import (confirmed 2026-07-02)"
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then git diff --quiet -- server/record-field-window.js || { echo \"DIRTY source\"; exit 1; }; cp server/record-field-window.js /tmp/tst0004-rfw.bak; sed -i \"s/field_not_found/field_wrong_code/\" server/record-field-window.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0004_selector; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/record-field-window-selector-oracle.test.js >/dev/null 2>&1 || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst0004-rfw.bak server/record-field-window.js; rm -f /tmp/tst0004-rfw.bak; git diff --quiet -- server/record-field-window.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (field_not_found code renamed -> assertReadableStringField absent-case test red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: selector oracle not yet created\"; exit 0; fi'"
+    expect: "POST: prints 'MUTANT KILLED' — renaming the field_not_found code makes the assertReadableStringField('f','absent') case FAIL (it asserts err.code === 'field_not_found'); rc captured (never the dropdb's), source restored byte-clean, ephemeral DB torn down. BASELINE: prints 'BASELINE:' exit 0. NOTE: the maker must include a NUL-guard assertion too (assertFieldPath('a\\u0000b') -> invalid_field_path), pinned green in direct-test-green even though this rung seeds a different mutant."
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0004_selector_g; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/record-field-window-selector-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi'"
+    expect: "POST: the pure selector oracle passes fully, no skips. BASELINE: prints 'BASELINE:' exit 0."
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: diff-scope
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then git diff --stat -- server/record-field-window.js; test -z \"$(git diff --name-only -- server/record-field-window.js)\" && echo SRC-CLEAN || echo SRC-DIRTY; else echo \"BASELINE SRC-CLEAN\"; fi'"
+    expect: "prints SRC-CLEAN: server/record-field-window.js byte-identical; only the new test file changed"
+    expect_check:
+      type: stdout_includes
+      value: SRC-CLEAN
+not_allowed: [non-test-source-change, behavior-change, new-dependency, shared-db-usage]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: generate_evidence×pure_logic×server/record-field-window
+touchset: [test/record-field-window-selector-oracle.test.js]
+estimates:
+  tokens: 40000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "13d166ad36e9f57c429407e6d586f1585106440b"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.9): Diff-scope receipts (baseline/post/post-r2) confirm server/record-field-window.js is byte-identical — only the test file changed, satisfying not_allowed's non-test-source-change/behavior-change constraints. The added assertion (default offset limit via FIELD_WINDOW_DEFAULT_LIMIT) is additive oracle strengthening using a symbol the packet's own plan already listed for import, not scope creep. Mutant-kill and direct-test-green rungs pass identically pre- and post-change with the same 9-test structure, and the required q-exclusivity/NUL-guard/context-ceiling/type-map/field_not_found-vs-field_not_text assertions from the plan remain intact and unmodified."
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then git diff --quiet -- server/record-field-window.js || { echo \"DIRTY source\"; exit 1; }; cp server/record-field-window.js /tmp/tst0004-rfw.bak; sed -i \"s/field_not_found/field_wrong_code/\" server/record-field-window.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0004_selector; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/record-field-window-selector-oracle.test.js >/dev/null 2>&1 || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst0004-rfw.bak server/record-field-window.js; rm -f /tmp/tst0004-rfw.bak; git diff --quiet -- server/record-field-window.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (field_not_found code renamed -> assertReadableStringField absent-case test red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: selector oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=673597c2 bytes=112 receipt=quality/receipts/tst-window-selector-normalize-0004/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0004_selector_g; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/record-field-window-selector-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=ba1d1f95 bytes=870 receipt=quality/receipts/tst-window-selector-normalize-0004/baseline-2-direct-test-green.txt"
+    - "[baseline] diff-scope: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then git diff --stat -- server/record-field-window.js; test -z \"$(git diff --name-only -- server/record-field-window.js)\" && echo SRC-CLEAN || echo SRC-DIRTY; else echo \"BASELINE SRC-CLEAN\"; fi' -> exit 0 (0s) PASS; exit=0 djb2=d3fe6147 bytes=10 receipt=quality/receipts/tst-window-selector-normalize-0004/baseline-3-diff-scope.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then git diff --quiet -- server/record-field-window.js || { echo \"DIRTY source\"; exit 1; }; cp server/record-field-window.js /tmp/tst0004-rfw.bak; sed -i \"s/field_not_found/field_wrong_code/\" server/record-field-window.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0004_selector; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/record-field-window-selector-oracle.test.js >/dev/null 2>&1 || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst0004-rfw.bak server/record-field-window.js; rm -f /tmp/tst0004-rfw.bak; git diff --quiet -- server/record-field-window.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (field_not_found code renamed -> assertReadableStringField absent-case test red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: selector oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=673597c2 bytes=112 receipt=quality/receipts/tst-window-selector-normalize-0004/post-1-red-then-green-mutant-kill.txt"
+    - "[post] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0004_selector_g; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/record-field-window-selector-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=2ea2a8b1 bytes=870 receipt=quality/receipts/tst-window-selector-normalize-0004/post-2-direct-test-green.txt"
+    - "[post] diff-scope: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then git diff --stat -- server/record-field-window.js; test -z \"$(git diff --name-only -- server/record-field-window.js)\" && echo SRC-CLEAN || echo SRC-DIRTY; else echo \"BASELINE SRC-CLEAN\"; fi' -> exit 0 (0s) PASS; exit=0 djb2=d3fe6147 bytes=10 receipt=quality/receipts/tst-window-selector-normalize-0004/post-3-diff-scope.txt"
+    - "[post-r2] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then git diff --quiet -- server/record-field-window.js || { echo \"DIRTY source\"; exit 1; }; cp server/record-field-window.js /tmp/tst0004-rfw.bak; sed -i \"s/field_not_found/field_wrong_code/\" server/record-field-window.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0004_selector; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/record-field-window-selector-oracle.test.js >/dev/null 2>&1 || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst0004-rfw.bak server/record-field-window.js; rm -f /tmp/tst0004-rfw.bak; git diff --quiet -- server/record-field-window.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (field_not_found code renamed -> assertReadableStringField absent-case test red, source restored)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: selector oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=673597c2 bytes=112 receipt=quality/receipts/tst-window-selector-normalize-0004/post-r2-1-red-then-green-mutant-kill.txt"
+    - "[post-r2] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst0004_selector_g; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 300 node --test --test-force-exit test/record-field-window-selector-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=bbec9867 bytes=870 receipt=quality/receipts/tst-window-selector-normalize-0004/post-r2-2-direct-test-green.txt"
+    - "[post-r2] diff-scope: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/record-field-window-selector-oracle.test.js ]; then git diff --stat -- server/record-field-window.js; test -z \"$(git diff --name-only -- server/record-field-window.js)\" && echo SRC-CLEAN || echo SRC-DIRTY; else echo \"BASELINE SRC-CLEAN\"; fi' -> exit 0 (0s) PASS; exit=0 djb2=d3fe6147 bytes=10 receipt=quality/receipts/tst-window-selector-normalize-0004/post-r2-3-diff-scope.txt"
+  tokens_actual: 130824
+  lesson: landed after 1 revision cycle(s) — first attempt did not clear the gate
+resets:
+  - at: "2026-07-02T22:16:11.483Z"
+    from_status: blocked
+    reason: fix mutant-kill baseline expect_check (blocked → executable)

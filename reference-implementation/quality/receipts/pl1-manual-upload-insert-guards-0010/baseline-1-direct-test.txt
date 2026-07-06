@@ -1,0 +1,33 @@
+# hone work pl1-manual-upload-insert-guards-0010 — baseline rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1manualupload; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists $db; echo "rc=$rc"; exit $rc'
+# expect: manual-upload-draft-connection-route suite green with unchanged pass count; ephemeral DB isolates the artifact rows
+# exit: 0  duration: 4s  verdict: PASS
+
+✔ manual/upload setup descriptor is manifest-authored (190.518986ms)
+✔ WhatsApp manual/upload setup accepts large browser-staged media exports (124.330283ms)
+✔ owner upload creates an invisible draft with connection-scoped import binding (133.107939ms)
+✔ owner upload preview validates without creating a draft or writing acquisition state (135.094884ms)
+✔ staged owner upload returns before validation and exposes durable artifact status (159.18537ms)
+✔ staged uploads attach multiple files to one explicit manual-upload source (187.749597ms)
+✔ staged invalid upload fails without creating a source (127.399597ms)
+✔ staged duplicate upload points at the existing receipt without creating a source (155.22202ms)
+✔ repeated owner artifact returns the existing receipt without creating another draft (120.023217ms)
+✔ WhatsApp chat export is manifest-driven and accepts owner .txt artifacts (134.401421ms)
+✔ WhatsApp zip export with media attaches to an existing manual-upload connection (132.810773ms)
+✔ manual upload preview rejects an incompatible target connection before import (141.116041ms)
+✔ WhatsApp malformed zip is rejected before commit (118.911367ms)
+✔ Timeline manual upload records coverage-safe validation without fixed refresh cooldown (120.113928ms)
+✔ unsafe or unsupported file names are rejected before a draft row is created (122.856527ms)
+✔ Timeline validation rejects unsupported and empty files before a draft row is created (122.597483ms)
+✔ wrong-source account-report artifacts are rejected before commit instead of inferred as an account match (132.250394ms)
+✔ manual/upload setup refuses non-manual connectors and bearer-only callers (123.427737ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3267.166072
+rc=0
+NOTICE:  database "pdpp_hone_pl1manualupload" does not exist, skipping

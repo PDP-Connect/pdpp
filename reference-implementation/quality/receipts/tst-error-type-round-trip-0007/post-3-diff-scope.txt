@@ -1,0 +1,6 @@
+# hone work tst-error-type-round-trip-0007 — post rung 'diff-scope'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/ref-error-status-type-roundtrip-oracle.test.js ]; then git diff --stat -- server/routes/ref-error-status.ts; test -z "$(git diff --name-only -- server/routes/ref-error-status.ts)" && echo SRC-CLEAN || echo SRC-DIRTY; else echo "BASELINE SRC-CLEAN"; fi'
+# expect: prints SRC-CLEAN: ref-error-status.ts byte-identical; only the new test file changed
+# exit: 0  duration: 0s  verdict: PASS
+
+SRC-CLEAN

@@ -9,10 +9,7 @@
  * the gate logic can be read and tested without owning the full scheduler closure.
  */
 
-import {
-  type AutomationRefreshPolicy,
-  projectRunAutomationPolicy,
-} from "../run-automation-policy.ts";
+import { type AutomationRefreshPolicy, projectRunAutomationPolicy } from "../run-automation-policy.ts";
 import type {
   ConnectorSchedule,
   GrantAccessMode,
@@ -25,7 +22,7 @@ import type {
   SchedulerReadinessChecker,
   TerminalGrantFailureReason,
   UnresolvedAttentionEvidence,
-} from "../scheduler.ts";
+} from "../scheduler-domain-types.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
 
@@ -47,8 +44,8 @@ export interface PreRunGateDeps {
   isNeedsHuman: IsNeedsHumanHandler;
   onHumanRequiredStateEscalation: HumanRequiredStateEscalationHandler;
   readinessChecker: SchedulerReadinessChecker;
-  runtime: PreRunGateRuntimeState;
   recordAndNotify: (record: RunRecord) => RunRecord;
+  runtime: PreRunGateRuntimeState;
 }
 
 // ─── Gate outcome type ───────────────────────────────────────────────────────
@@ -197,10 +194,8 @@ function buildAutomationPolicySkip(
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
 export interface PreRunGate {
-  probeUnresolvedAttention(
-    connectorId: string,
-    connectorInstanceId: string
-  ): Promise<UnresolvedAttentionEvidence | null>;
+  decideDisabledGrant(connectorId: string, connectorInstanceId: string): "proceed" | "silent-skip" | RunRecord;
+  decideNotReady(schedule: ConnectorSchedule): Promise<"proceed" | "silent-skip" | RunRecord>;
   gateAttention(connectorId: string, connectorInstanceId: string, key: string): Promise<GateOutcome>;
   gateAutomationPolicy(
     connectorId: string,
@@ -208,22 +203,21 @@ export interface PreRunGate {
     key: string,
     policy: ReturnType<typeof projectRunAutomationPolicy>
   ): GateOutcome;
-  decideNotReady(schedule: ConnectorSchedule): Promise<"proceed" | "silent-skip" | RunRecord>;
+  gateGrantState(
+    connectorId: string,
+    connectorInstanceId: string,
+    grantAccessMode: NonNullable<ConnectorSchedule["grantAccessMode"]>
+  ): GateOutcome;
   gateNeedsHuman(connectorId: string, connectorInstanceId: string, key: string): GateOutcome;
   maybeSkipSingleUseExhausted(
     connectorId: string,
     connectorInstanceId: string,
     grantAccessMode: GrantAccessMode
   ): RunRecord | null;
-  decideDisabledGrant(
+  probeUnresolvedAttention(
     connectorId: string,
     connectorInstanceId: string
-  ): "proceed" | "silent-skip" | RunRecord;
-  gateGrantState(
-    connectorId: string,
-    connectorInstanceId: string,
-    grantAccessMode: NonNullable<ConnectorSchedule["grantAccessMode"]>
-  ): GateOutcome;
+  ): Promise<UnresolvedAttentionEvidence | null>;
   runAutomaticPreflight(
     schedule: ConnectorSchedule,
     key: string,

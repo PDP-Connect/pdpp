@@ -1,0 +1,83 @@
+candidate_id: tst2-progress-provider-budget-0012
+created: "2026-07-06T12:01:00.000Z"
+repo_sha: ae9cb548cea1de7f547b81c6879f7e09a2d99006
+subsystem: runtime/progress-validators
+files: [test/progress-provider-budget-oracle.test.js, runtime/progress-validators.js]
+symbols: [validateProgressProviderBudget]
+public_surface:
+  - "connector runtime PROGRESS.provider_budget contract: provider_budget_circuit_transition with bounded circuit enum, non-negative metrics, and retry_tokens_remaining as non-negative number | 'unbounded' | null"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "Provider-budget PROGRESS envelopes are connector-authored telemetry that the runtime trusts for budget/circuit diagnostics. The pure validator rejects malformed circuit states/reasons/triggers and negative counters, while explicitly allowing retry_tokens_remaining='unbounded'. Without a by-name oracle, a small enum or numeric-bound mutation can silently turn telemetry into contradictory operator state."
+plan:
+  transform_class: add-mutation-killing-pure-oracle
+  instruction: "Create test/progress-provider-budget-oracle.test.js. Import validateProgressProviderBudget. Build a valid provider_budget_circuit_transition object with circuit {previous_state:'closed', state:'open', reason:'provider_throttle', trigger:'provider_throttle'}, elapsed_ms:10, request_count:2, retry_tokens_remaining:'unbounded'. Assert the valid object does not throw; retry_tokens_remaining:null and a finite non-negative number also pass. Assert errors for null/array providerBudget, wrong object, missing/non-object circuit, invalid previous_state/state/reason/trigger, negative elapsed_ms, negative request_count, negative retry_tokens_remaining, and non-finite retry_tokens_remaining. Match error messages so each public field name is pinned."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+priority:
+  score: 8.2
+  computed: "2026-07-06T12:01:00.000Z"
+  inputs:
+    mass: 0
+    churn: 0
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: operator-visible provider budget telemetry must be shape-valid and must preserve the explicit unbounded retry-token sentinel
+authoring_evidence:
+  - kind: source-read
+    detail: "runtime/progress-validators.js validateProgressProviderBudget enforces object/circuit shape, four enum sets, non-negative elapsed_ms/request_count, and retry_tokens_remaining non-negative number or 'unbounded'."
+    result: Pure validator; no DB import.
+  - kind: test-sweep
+    detail: "rg -n 'validateProgressProviderBudget|PROGRESS.provider_budget' test"
+    result: No dedicated by-name test file for validateProgressProviderBudget.
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/progress-provider-budget-oracle.test.js ]; then git diff --quiet -- runtime/progress-validators.js || { echo \"DIRTY source\"; exit 1; }; cp runtime/progress-validators.js /tmp/tst2_progress_provider_budget.bak; perl -0pi -e \"s/retryTokensRemaining !== 'unbounded'/retryTokensRemaining !== 'never_unbounded'/\" runtime/progress-validators.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_progress_provider_budget; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/progress-provider-budget-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_progress_provider_budget.bak runtime/progress-validators.js; rm -f /tmp/tst2_progress_provider_budget.bak; git diff --quiet -- runtime/progress-validators.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (unbounded retry token sentinel rejected)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: progress provider budget oracle not yet created\"; exit 0; fi'"
+    expect: "BASELINE: prints BASELINE and exits 0. POST: rejecting the 'unbounded' sentinel makes the valid-object test fail, prints MUTANT KILLED, restores runtime/progress-validators.js."
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/progress-provider-budget-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_progress_provider_budget_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/progress-provider-budget-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi'"
+    expect: "POST: provider-budget oracle passes. BASELINE: guarded green."
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: diff-scope
+    command: "cd \"$REPO_ROOT\" && sh -c 'test -z \"$(git diff --name-only -- runtime/progress-validators.js)\" && echo SRC-CLEAN || echo SRC-DIRTY'"
+    expect: prints SRC-CLEAN; only the new test file remains changed.
+    expect_check:
+      type: stdout_includes
+      value: SRC-CLEAN
+not_allowed: [non-test-source-change, behavior-change, new-dependency, shared-db-usage]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: null
+batch_key: generate_evidence×pure_logic×runtime/progress-validators
+touchset: [test/progress-provider-budget-oracle.test.js]
+estimates:
+  tokens: 30000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/progress-provider-budget-oracle.test.js ]; then git diff --quiet -- runtime/progress-validators.js || { echo \"DIRTY source\"; exit 1; }; cp runtime/progress-validators.js /tmp/tst2_progress_provider_budget.bak; perl -0pi -e \"s/retryTokensRemaining !== 'unbounded'/retryTokensRemaining !== 'never_unbounded'/\" runtime/progress-validators.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_progress_provider_budget; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/progress-provider-budget-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_progress_provider_budget.bak runtime/progress-validators.js; rm -f /tmp/tst2_progress_provider_budget.bak; git diff --quiet -- runtime/progress-validators.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (unbounded retry token sentinel rejected)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: progress provider budget oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=9b560e18 bytes=58 receipt=quality/receipts/tst2-progress-provider-budget-0012/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/progress-provider-budget-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_progress_provider_budget_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/progress-provider-budget-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=caf12c67 bytes=31 receipt=quality/receipts/tst2-progress-provider-budget-0012/baseline-2-direct-test-green.txt"
+    - "[baseline] diff-scope: cd \"$REPO_ROOT\" && sh -c 'test -z \"$(git diff --name-only -- runtime/progress-validators.js)\" && echo SRC-CLEAN || echo SRC-DIRTY' -> exit 0 (0s) PASS; exit=0 djb2=d3fe6147 bytes=10 receipt=quality/receipts/tst2-progress-provider-budget-0012/baseline-3-diff-scope.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/progress-provider-budget-oracle.test.js ]; then git diff --quiet -- runtime/progress-validators.js || { echo \"DIRTY source\"; exit 1; }; cp runtime/progress-validators.js /tmp/tst2_progress_provider_budget.bak; perl -0pi -e \"s/retryTokensRemaining !== 'unbounded'/retryTokensRemaining !== 'never_unbounded'/\" runtime/progress-validators.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_progress_provider_budget; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/progress-provider-budget-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_progress_provider_budget.bak runtime/progress-validators.js; rm -f /tmp/tst2_progress_provider_budget.bak; git diff --quiet -- runtime/progress-validators.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (unbounded retry token sentinel rejected)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: progress provider budget oracle not yet created\"; exit 0; fi' -> exit 1 (1s) FAIL: exit 1 (expected 0); exit=1 djb2=72d7eaa8 bytes=776 receipt=quality/receipts/tst2-progress-provider-budget-0012/post-1-red-then-green-mutant-kill.txt"
+    - "[post-r1] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/progress-provider-budget-oracle.test.js ]; then git diff --quiet -- runtime/progress-validators.js || { echo \"DIRTY source\"; exit 1; }; cp runtime/progress-validators.js /tmp/tst2_progress_provider_budget.bak; perl -0pi -e \"s/retryTokensRemaining !== 'unbounded'/retryTokensRemaining !== 'never_unbounded'/\" runtime/progress-validators.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_progress_provider_budget; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/progress-provider-budget-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_progress_provider_budget.bak runtime/progress-validators.js; rm -f /tmp/tst2_progress_provider_budget.bak; git diff --quiet -- runtime/progress-validators.js || { echo \"RESTORE FAILED\"; exit 1; }; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED (unbounded retry token sentinel rejected)\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: progress provider budget oracle not yet created\"; exit 0; fi' -> exit 0 (0s) FAIL: output does not contain 'BASELINE'; exit=0 djb2=b1779547 bytes=6091 receipt=quality/receipts/tst2-progress-provider-budget-0012/post-r1-1-red-then-green-mutant-kill.txt"
+  tokens_actual: 97354
+  lesson: "transform failed its own evidence ladder at 'red-then-green-mutant-kill' — prior for generate_evidence×pure_logic×runtime/progress-validators down"

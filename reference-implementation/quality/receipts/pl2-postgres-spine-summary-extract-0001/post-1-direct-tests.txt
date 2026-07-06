@@ -1,0 +1,52 @@
+# hone work pl2-postgres-spine-summary-extract-0001 — post rung 'direct-tests'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in test/ref-spine-search-boundary.test.js test/ref-spine-correlations-list-operation.test.js test/ref-run-timeline-terminal-status.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0001_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit "$f" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc'
+# expect: All listed tests pass with one ephemeral Postgres database per test file, timeout 600, and --test-force-exit.
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ ref.spine.search operation has no host or storage concretes (0.945316ms)
+✔ ref.spine.search operation does not import lib/spine or lib/db (0.621461ms)
+✔ ref.spine.search operation does not import server modules (0.171533ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 36.150652
+✔ ref.spine.correlations.list emits trace_summary discriminator (0.710463ms)
+✔ ref.spine.correlations.list projects optional trace client metadata without replacing client_id (0.435557ms)
+✔ ref.spine.correlations.list emits grant_summary discriminator with source fallback (0.142853ms)
+✔ ref.spine.correlations.list projects optional grant client metadata without replacing client_id (0.115752ms)
+✔ ref.spine.correlations.list omits grant client metadata when unavailable (0.107752ms)
+✔ ref.spine.correlations.list filters internal maintenance connectors when host supplies predicate (0.128132ms)
+✔ ref.spine.correlations.list does not project client metadata on run summaries (0.710932ms)
+✔ ref.spine.correlations.list emits run_summary discriminator with failure_reason and needs_input (0.105232ms)
+✔ ref.spine.correlations.list projects browser-profile connection identity and surface failure reason (0.144083ms)
+✔ ref.spine.correlations.list does not invent connection identity from non-connection browser profiles (0.158183ms)
+✔ ref.spine.correlations.list omits next_cursor when the page does not expose one (0.096991ms)
+✔ ref.spine.correlations.list emits next_cursor when the page exposes one (0.081391ms)
+✔ ref.spine.correlations.list forwards the kind and filter bag to the dependency unchanged (0.076401ms)
+✔ ref.spine.correlations.list awaits dependency promises (2.93374ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 62.512914
+✔ getRunTerminalStatus resolves the tail terminal event independent of page window (9.040535ms)
+✔ run-timeline route reports terminal_status on the FIRST small-limit page (window-independent) (5.080618ms)
+✔ run-timeline route terminal_status is identical across pages of the same run (5.699147ms)
+✔ run-timeline route reports terminal_status null for an in-progress run (3.913247ms)
+✔ run-timeline route treats browser surface failure as a failed terminal run (3.919987ms)
+✔ run-timeline route maps run.abandoned to the abandoned terminal class (4.180082ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 130.3453

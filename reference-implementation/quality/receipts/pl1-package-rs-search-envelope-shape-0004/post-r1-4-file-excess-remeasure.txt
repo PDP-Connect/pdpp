@@ -1,0 +1,141 @@
+# hone work pl1-package-rs-search-envelope-shape-0004 — post-r1 rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'server/package-rs-client.js' --cog 5
+# expect: file_excess strictly below the pre-edit baseline (169); the only NEW flagged name permitted is placeSearchHitsInEnvelope
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "server/package-rs-client.js",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 48,
+  "flagged_count": 20,
+  "file_excess": 160,
+  "flagged": [
+    {
+      "fn": "getJson",
+      "line": 92,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "buildUrl",
+      "line": 143,
+      "cc": 20,
+      "excess": 15
+    },
+    {
+      "fn": "fanoutSchema",
+      "line": 162,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "<anon>",
+      "line": 189,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "sourceRequiredJson",
+      "line": 255,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "createEventSubForChild",
+      "line": 291,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "locateEventSubAndForward",
+      "line": 321,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "routeFor",
+      "line": 359,
+      "cc": 16,
+      "excess": 11
+    },
+    {
+      "fn": "searchQueryForChild",
+      "line": 398,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "typedError",
+      "line": 490,
+      "cc": 15,
+      "excess": 10
+    },
+    {
+      "fn": "mergeSchemaEnvelopes",
+      "line": 529,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "<anon>",
+      "line": 560,
+      "cc": 77,
+      "excess": 72
+    },
+    {
+      "fn": "mergeListEnvelopes",
+      "line": 635,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "<anon>",
+      "line": 644,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "mergeSearchEnvelopes",
+      "line": 702,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "<anon>",
+      "line": 712,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "extractSearchHits",
+      "line": 755,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "sourceMixForHits",
+      "line": 807,
+      "cc": 15,
+      "excess": 10
+    },
+    {
+      "fn": "mergeEventSubListEnvelopes",
+      "line": 844,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "<anon>",
+      "line": 851,
+      "cc": 10,
+      "excess": 5
+    }
+  ],
+  "red_scan": [
+    "streamGrant",
+    "bearer",
+    "introspect",
+    "oauth"
+  ]
+}

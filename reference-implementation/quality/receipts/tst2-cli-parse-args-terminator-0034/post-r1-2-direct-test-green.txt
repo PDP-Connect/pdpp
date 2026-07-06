@@ -1,0 +1,41 @@
+# hone work tst2-cli-parse-args-terminator-0034 — post-r1 rung 'direct-test-green'
+# command: cd "$REPO_ROOT/../packages/cli" && if [ -f test/parse-args-terminator-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/parse-args-terminator-oracle.test.js 2>&1 || rc=1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi
+# expect: POST: the parseArgs oracle passes. BASELINE: guarded green while absent.
+# exit: 1  duration: 0s  verdict: FAIL (exit 1 (expected 0))
+
+✔ parseArgs preserves dash-prefixed positionals after terminator (0.801265ms)
+✖ requirePositional reports missing required argument as usage error (0.658592ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 34.989509
+
+✖ failing tests:
+
+test at test/parse-args-terminator-oracle.test.js:14:1
+✖ requirePositional reports missing required argument as usage error (0.658592ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  2 !== 64
+  
+      at Object.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/packages/cli/test/parse-args-terminator-oracle.test.js:19:14)
+      at expectedException (node:assert:553:17)
+      at expectsError (node:assert:678:21)
+      at strict.throws (node:assert:734:3)
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/packages/cli/test/parse-args-terminator-oracle.test.js:15:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 64,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

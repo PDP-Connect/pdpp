@@ -45,7 +45,7 @@ import type {
   SchedulerManifest,
   SchedulerOptions,
   SetStateHandler,
-} from "../scheduler.ts";
+} from "../scheduler-domain-types.ts";
 import { type RunConnectorError, shouldRetryRunFailure } from "../scheduler-retry-classifier.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
@@ -272,22 +272,14 @@ async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorR
   return raw as RunConnectorResult;
 }
 
+// ─── Attempt watchdog ─────────────────────────────────────────────────────────
+
 interface AttemptWatchdog {
   cancel(): void;
   clear(): void;
   markProgress(): void;
   readonly signal: AbortSignal;
   timedOut(): boolean;
-}
-
-type ActiveRunStore = Pick<NonNullable<SchedulerOptions["schedulerStore"]>, "deleteActiveRun" | "upsertActiveRun">;
-
-function activeRunStoreFrom(schedulerStore: RunExecutorDeps["schedulerStore"]): ActiveRunStore | null {
-  return schedulerStore &&
-    typeof schedulerStore.upsertActiveRun === "function" &&
-    typeof schedulerStore.deleteActiveRun === "function"
-    ? schedulerStore
-    : null;
 }
 
 function createAttemptWatchdog(maxRunWallClockMs: number): AttemptWatchdog {
@@ -344,71 +336,6 @@ function runTimedOutError(result: RunConnectorResult, maxRunWallClockMs: number)
     run_id: result.run_id ?? null,
     terminal_reason: "run_timed_out",
     trace_id: result.trace_id ?? null,
-  };
-}
-
-function createActiveRunLease(input: {
-  readonly attempt: number;
-  readonly connectorId: string;
-  readonly connectorInstanceId: string;
-  readonly registerRunCancellation: RegisterRunCancellationHandler | null | undefined;
-  readonly startedAt: string;
-  readonly store: ActiveRunStore | null;
-  readonly cancelRun: () => void;
-}): {
-  clear(): Promise<void>;
-  register(run: Parameters<NonNullable<RunConnectorCall["onStarted"]>>[0]): void;
-} {
-  let activeRunId: string | null = null;
-  let activeRunRegistration: Promise<void> | null = null;
-  let unregisterCancellation: (() => void) | null = null;
-
-  return {
-    async clear() {
-      unregisterCancellation?.();
-      unregisterCancellation = null;
-      if (!(activeRunId && input.store)) {
-        return;
-      }
-      await activeRunRegistration;
-      await Promise.resolve(input.store.deleteActiveRun(input.connectorInstanceId, activeRunId)).catch(
-        (err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`[scheduler] failed to clear active run ${activeRunId} for ${input.connectorId}: ${message}`);
-        }
-      );
-    },
-    register(run) {
-      if (!input.store) {
-        return;
-      }
-      const startedRun = readStartedRunInfo(run);
-      if (!startedRun) {
-        return;
-      }
-      activeRunId = startedRun.runId;
-      unregisterCancellation =
-        input.registerRunCancellation?.({
-          cancel: input.cancelRun,
-          connectorId: input.connectorId,
-          connectorInstanceId: input.connectorInstanceId,
-          runId: startedRun.runId,
-        }) ?? null;
-      activeRunRegistration = Promise.resolve(
-        input.store.upsertActiveRun({
-          connector_instance_id: input.connectorInstanceId,
-          connector_id: input.connectorId,
-          run_id: startedRun.runId,
-          run_generation: input.attempt,
-          trace_id: startedRun.traceId,
-          scenario_id: startedRun.scenarioId,
-          started_at: input.startedAt,
-        })
-      ).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[scheduler] failed to persist active run for ${input.connectorId}: ${message}`);
-      });
-    },
   };
 }
 
@@ -740,40 +667,108 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     | { kind: "give-up"; error: RunConnectorError | null }
     | { kind: "retry"; error: RunConnectorError };
 
+  // The durable active-run lease + wall-clock watchdog for one attempt. Wraps the
+  // caller's RunConnectorCall so `onStarted` persists an active-run row and
+  // `onProgress` feeds the watchdog; `clear()` (run in runSingleAttempt's finally)
+  // awaits the pending upsert then deletes the row. Extracted verbatim from the
+  // former inline block in runSingleAttempt so the attempt body reads as pure
+  // control flow; behavior (lease timing, error logging, watchdog) is unchanged.
+  function createActiveRunAttemptLease(
+    schedule: ConnectorSchedule,
+    call: RunConnectorCall,
+    attempt: number,
+    startedAt: string
+  ): { call: RunConnectorCall; watchdog: ReturnType<typeof createAttemptWatchdog>; clear: () => Promise<void> } {
+    const { connectorId, connectorInstanceId = connectorId } = schedule;
+    let activeRunId: string | null = null;
+    let activeRunRegistration: Promise<void> | null = null;
+    let unregisterCancellation: (() => void) | null = null;
+    const originalOnStarted = call.onStarted;
+    const originalOnProgress = call.onProgress;
+    const activeRunStore =
+      schedulerStore &&
+      typeof schedulerStore.upsertActiveRun === "function" &&
+      typeof schedulerStore.deleteActiveRun === "function"
+        ? schedulerStore
+        : null;
+    const watchdog = createAttemptWatchdog(maxRunWallClockMs);
+
+    const leasedCall: RunConnectorCall = {
+      ...call,
+      cancelSignal: watchdog.signal,
+      onProgress: () => {
+        watchdog.markProgress();
+        originalOnProgress();
+      },
+      onStarted: (run) => {
+        originalOnStarted?.(run);
+        if (!activeRunStore) {
+          return;
+        }
+        const startedRun = readStartedRunInfo(run);
+        if (!startedRun) {
+          return;
+        }
+        activeRunId = startedRun.runId;
+        unregisterCancellation =
+          registerRunCancellation?.({
+            cancel: () => watchdog.cancel(),
+            connectorId,
+            connectorInstanceId,
+            runId: startedRun.runId,
+          }) ?? null;
+        activeRunRegistration = Promise.resolve(
+          activeRunStore.upsertActiveRun({
+            connector_instance_id: connectorInstanceId,
+            connector_id: connectorId,
+            run_id: startedRun.runId,
+            run_generation: attempt,
+            trace_id: startedRun.traceId,
+            scenario_id: startedRun.scenarioId,
+            started_at: startedAt,
+          })
+        ).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[scheduler] failed to persist active run for ${connectorId}: ${message}`);
+        });
+      },
+    };
+
+    const clear = async (): Promise<void> => {
+      unregisterCancellation?.();
+      unregisterCancellation = null;
+      watchdog.clear();
+      if (activeRunId && activeRunStore) {
+        // Await the (possibly still-pending) upsert registration before deleting
+        // so we never clear an active-run row before it was written.
+        const pendingRegistration: Promise<void> | null = activeRunRegistration;
+        if (pendingRegistration) {
+          await pendingRegistration;
+        }
+        await Promise.resolve(activeRunStore.deleteActiveRun(connectorInstanceId, activeRunId)).catch(
+          (err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[scheduler] failed to clear active run ${activeRunId} for ${connectorId}: ${message}`);
+          }
+        );
+      }
+    };
+
+    return { call: leasedCall, watchdog, clear };
+  }
+
   async function runSingleAttempt(
     schedule: ConnectorSchedule,
     call: RunConnectorCall,
     attempt: number
   ): Promise<AttemptOutcome> {
-    const { connectorId, connectorInstanceId = connectorId, maxRetries = 2 } = schedule;
+    const { maxRetries = 2 } = schedule;
     const startedAt = nowIso();
-    const originalOnStarted = call.onStarted;
-    const watchdog = createAttemptWatchdog(maxRunWallClockMs);
-    const activeRunLease = createActiveRunLease({
-      attempt,
-      cancelRun: () => watchdog.cancel(),
-      connectorId,
-      connectorInstanceId,
-      registerRunCancellation,
-      startedAt,
-      store: activeRunStoreFrom(schedulerStore),
-    });
-
-    const callWithActiveLease: RunConnectorCall = {
-      ...call,
-      cancelSignal: watchdog.signal,
-      onStarted: (run) => {
-        originalOnStarted?.(run);
-        activeRunLease.register(run);
-      },
-      onProgress: () => {
-        watchdog.markProgress();
-        call.onProgress();
-      },
-    };
+    const lease = createActiveRunAttemptLease(schedule, call, attempt, startedAt);
+    const { watchdog } = lease;
 
     try {
-      const result = await invokeRunConnector(callWithActiveLease);
+      const result = await invokeRunConnector(lease.call);
       if (watchdog.timedOut()) {
         return { kind: "give-up", error: runTimedOutError(result, maxRunWallClockMs) };
       }
@@ -797,8 +792,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       }
       return { kind: "give-up", error };
     } finally {
-      watchdog.clear();
-      await activeRunLease.clear();
+      await lease.clear();
     }
   }
 
@@ -877,75 +871,19 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     return !(isManual || via) && isManagedConnector(connectorId);
   }
 
-  type ManagedRunNowResult = Awaited<ReturnType<RunManagedConnectorViaController>>;
-
-  type ManagedRunAttemptOutcome =
-    | { kind: "controller-error"; message: string }
-    | { kind: "not-managed" }
-    | { kind: "surface-unavailable"; status: string }
-    | { kind: "terminal"; result: Exclude<ManagedRunNowResult, null> };
-
-  function normalizeManagedMaxRetries(maxRetries: number | undefined): number {
-    return Number.isFinite(maxRetries) && maxRetries !== undefined ? Math.max(0, Math.trunc(maxRetries)) : 2;
-  }
-
-  async function tryScheduledManagedRun(
-    via: RunManagedConnectorViaController,
+  // Routes a scheduled managed-connector run through controller.runNow and
+  // maps every outcome (contention, controller failure, surface unavailable,
+  // terminal success/failure) to a RunRecord. Returns null when runNowResult
+  // is null, signalling that the connector is not managed and launchRun should
+  // fall through to the runWithRetries path.
+  // Failure RunRecord for a managed run whose controller `runNow` THREW a
+  // non-deferrable error. Extracted from routeScheduledManagedRun verbatim.
+  function buildManagedRunControllerFailure(
     connectorId: string,
     connectorInstanceId: string,
-    ownerToken: string,
-    recoveryOnly: boolean
-  ): Promise<ManagedRunAttemptOutcome> {
-    try {
-      const result = await via(connectorId, {
-        connectorInstanceId,
-        ownerToken,
-        priorityClass: "scheduled_refresh",
-        recoveryOnly,
-        triggerKind: "scheduled",
-        referenceBaseUrl,
-        rsUrl,
-      });
-      if (result === null) {
-        return { kind: "not-managed" };
-      }
-      if (result.status && BROWSER_SURFACE_UNAVAILABLE_STATUSES.has(result.status)) {
-        return { kind: "surface-unavailable", status: result.status };
-      }
-      return { kind: "terminal", result };
-    } catch (err) {
-      const deferReason = controllerRunNowDeferReason(err);
-      if (deferReason) {
-        return { kind: "surface-unavailable", status: deferReason };
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      return { kind: "controller-error", message };
-    }
-  }
-
-  function shouldRetryManagedRunResult(
-    result: Exclude<ManagedRunNowResult, null>,
-    attempt: number,
-    maxRetries: number
-  ): boolean {
-    return (
-      result.status !== "succeeded" &&
-      attempt <= maxRetries &&
-      shouldRetryRunFailure({
-        connector_error: result.connector_error || null,
-        failure_reason: result.failure_reason || null,
-        known_gaps: result.known_gaps || null,
-        terminal_reason: result.terminal_reason || null,
-      })
-    );
-  }
-
-  function buildControllerRunNowFailureRecord(
-    connectorId: string,
-    connectorInstanceId: string,
-    message: string,
     startedAt: string,
-    attempt: number
+    message: string,
+    attempt = 1
   ): RunRecord {
     return {
       connectorId,
@@ -962,63 +900,34 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     };
   }
 
-  function buildManagedRunRecord(
+  // Terminal RunRecord for a managed run whose controller `runNow` RETURNED a
+  // result (succeeded/failed). Extracted from routeScheduledManagedRun verbatim.
+  function buildManagedRunTerminalRecord(
     connectorId: string,
     connectorInstanceId: string,
-    result: Exclude<ManagedRunNowResult, null>,
     startedAt: string,
-    attempt: number
+    runNowResult: NonNullable<Awaited<ReturnType<RunManagedConnectorViaController>>>,
+    attempt = 1
   ): RunRecord {
-    const status = schedulerStatusFromRuntimeResult(result.status);
     return {
       connectorId,
       connectorInstanceId: connectorInstanceId ?? null,
       source: buildScheduledRunSource(connectorId),
-      status,
+      status: schedulerStatusFromRuntimeResult(runNowResult.status),
       recordsEmitted: 0,
       checkpointSummary: null,
-      knownGaps: result.known_gaps || [],
-      connectorError: result.connector_error || null,
-      failureReason: result.failure_reason || null,
+      knownGaps: runNowResult.known_gaps || [],
+      connectorError: runNowResult.connector_error || null,
+      failureReason: runNowResult.failure_reason || null,
       startedAt,
       completedAt: nowIso(),
-      runId: result.run_id ?? null,
-      terminalReason: result.terminal_reason || null,
-      traceId: result.trace_id ?? null,
+      runId: runNowResult.run_id ?? null,
+      terminalReason: runNowResult.terminal_reason || null,
+      traceId: runNowResult.trace_id ?? null,
       attempt,
     };
   }
 
-  function buildManagedRetryExhaustedRecord(
-    connectorId: string,
-    connectorInstanceId: string,
-    result: ManagedRunNowResult,
-    attempt: number
-  ): RunRecord {
-    return {
-      connectorId,
-      connectorInstanceId: connectorInstanceId ?? null,
-      source: buildScheduledRunSource(connectorId),
-      status: "failed",
-      recordsEmitted: 0,
-      checkpointSummary: null,
-      knownGaps: result?.known_gaps || [],
-      connectorError: result?.connector_error || null,
-      failureReason: result?.failure_reason || null,
-      startedAt: nowIso(),
-      completedAt: nowIso(),
-      runId: result?.run_id ?? null,
-      terminalReason: result?.terminal_reason || null,
-      traceId: result?.trace_id ?? null,
-      attempt,
-    };
-  }
-
-  // Routes a scheduled managed-connector run through controller.runNow and
-  // maps every outcome (contention, controller failure, surface unavailable,
-  // terminal success/failure) to a RunRecord. Returns null when runNowResult
-  // is null, signalling that the connector is not managed and launchRun should
-  // fall through to the runWithRetries path.
   async function routeScheduledManagedRun(
     via: RunManagedConnectorViaController,
     connectorId: string,
@@ -1026,133 +935,150 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     ownerToken: string,
     options: { maxRetries?: number; recoveryOnly?: boolean } = {}
   ): Promise<RunRecord | null> {
-    const maxRetries = normalizeManagedMaxRetries(options.maxRetries);
+    const maxRetries =
+      options.maxRetries !== undefined && Number.isFinite(options.maxRetries)
+        ? Math.max(0, Math.trunc(options.maxRetries))
+        : 2;
     let attempt = 0;
-    let lastRetryableFailure: ManagedRunNowResult = null;
 
     while (attempt <= maxRetries) {
       attempt++;
       const startedAt = nowIso();
-      const outcome = await tryScheduledManagedRun(
-        via,
-        connectorId,
-        connectorInstanceId,
-        ownerToken,
-        options.recoveryOnly === true
-      );
-
-      if (outcome.kind === "not-managed") {
-        return null;
-      }
-      if (outcome.kind === "surface-unavailable") {
-        return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, outcome.status, connectorInstanceId));
-      }
-      if (outcome.kind === "controller-error") {
+      let runNowResult: Awaited<ReturnType<RunManagedConnectorViaController>>;
+      try {
+        runNowResult = await via(connectorId, {
+          connectorInstanceId,
+          ownerToken,
+          priorityClass: "scheduled_refresh",
+          recoveryOnly: options.recoveryOnly === true,
+          triggerKind: "scheduled",
+          referenceBaseUrl,
+          rsUrl,
+        });
+      } catch (err) {
+        const deferReason = controllerRunNowDeferReason(err);
+        if (deferReason) {
+          return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, deferReason, connectorInstanceId));
+        }
+        const message = err instanceof Error ? err.message : String(err);
         persistLastRunTime(connectorId, connectorInstanceId, Date.now());
         return recordAndNotify(
-          buildControllerRunNowFailureRecord(connectorId, connectorInstanceId, outcome.message, startedAt, attempt)
+          buildManagedRunControllerFailure(connectorId, connectorInstanceId, startedAt, message, attempt)
         );
       }
 
-      if (shouldRetryManagedRunResult(outcome.result, attempt, maxRetries)) {
-        lastRetryableFailure = outcome.result;
+      if (runNowResult === null) {
+        return null;
+      }
+
+      if (runNowResult.status && BROWSER_SURFACE_UNAVAILABLE_STATUSES.has(runNowResult.status)) {
+        return recordAndNotify(
+          buildBrowserSurfaceUnavailableSkip(connectorId, runNowResult.status, connectorInstanceId)
+        );
+      }
+
+      if (
+        runNowResult.status !== "succeeded" &&
+        attempt <= maxRetries &&
+        shouldRetryRunFailure({
+          connector_error: runNowResult.connector_error || null,
+          failure_reason: runNowResult.failure_reason || null,
+          known_gaps: runNowResult.known_gaps || null,
+          terminal_reason: runNowResult.terminal_reason || null,
+        })
+      ) {
         await sleep(backoffDelayMs(attempt));
         continue;
       }
 
       persistLastRunTime(connectorId, connectorInstanceId, Date.now());
-      if (outcome.result.status !== "succeeded" && managedRunRequiresOwnerAuthRepair(outcome.result)) {
+      if (runNowResult.status !== "succeeded" && managedRunRequiresOwnerAuthRepair(runNowResult)) {
         markNeedsHuman(connectorId, connectorInstanceId);
       }
-      return recordAndNotify(
-        buildManagedRunRecord(connectorId, connectorInstanceId, outcome.result, startedAt, attempt)
-      );
+      return recordAndNotify(buildManagedRunTerminalRecord(connectorId, connectorInstanceId, startedAt, runNowResult, attempt));
     }
 
-    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
-    return recordAndNotify(
-      buildManagedRetryExhaustedRecord(connectorId, connectorInstanceId, lastRetryableFailure, attempt)
-    );
+    throw new Error("unreachable managed run retry state");
   }
 
-  type StaticSecretLaunchResolution =
-    | { kind: "ready"; staticSecretEnv: Record<string, string> | null }
-    | { kind: "record"; record: RunRecord };
-
-  async function resolveStaticSecretForLaunch(
-    schedule: ConnectorSchedule,
-    isManual: boolean,
-    connectorInstanceId: string
-  ): Promise<StaticSecretLaunchResolution> {
+  // Phase 2 of launchRun: resolve connection-scoped static-secret credentials
+  // BEFORE launching — parity with the manual path (`controller.ts::runNow`).
+  // True static-secret connections must supply a source-scoped credential
+  // through this seam; a resolver throw is fail-closed so the scheduler refuses
+  // the launch rather than falling through to a deployment-wide provider-account
+  // secret. Browser-session sources may return null when no optional stored
+  // login credential exists; the connector can still reuse/repair the browser
+  // session according to its automation policy.
+  //
+  // Returns EITHER the resolved env OR a terminal RunRecord (`earlyReturn`) that
+  // launchRun must hand to recordAndNotify. Behavior-preserving extraction: the
+  // resolver call, persistLastRunTime, isManual/ownerRepairCode branching,
+  // markNeedsHuman, and both record builders are moved verbatim; recordAndNotify
+  // is still invoked exactly once by launchRun on the returned record.
+  async function resolveLaunchCredentials(
+    connectorId: string,
+    connectorInstanceId: string,
+    isManual: boolean
+  ): Promise<{ env: Record<string, string> | null } | { earlyReturn: RunRecord }> {
     if (!resolveStaticSecretRunEnv) {
-      return { kind: "ready", staticSecretEnv: null };
+      return { env: null };
     }
-
     try {
-      const staticSecretEnv = await resolveStaticSecretRunEnv({
-        connectorId: schedule.connectorId,
-        connectorInstanceId,
-      });
-      return { kind: "ready", staticSecretEnv };
+      return { env: await resolveStaticSecretRunEnv({ connectorId, connectorInstanceId }) };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      persistLastRunTime(schedule.connectorId, connectorInstanceId, Date.now());
+      persistLastRunTime(connectorId, connectorInstanceId, Date.now());
       const ownerRepairCode = ownerRepairCredentialCode(err);
       if (!isManual && ownerRepairCode) {
-        markNeedsHuman(schedule.connectorId, connectorInstanceId);
+        markNeedsHuman(connectorId, connectorInstanceId);
         return {
-          kind: "record",
-          record: recordAndNotify(
-            buildCredentialResolutionOwnerActionSkip(
-              schedule.connectorId,
-              ownerRepairCode,
-              message,
-              connectorInstanceId
-            )
+          earlyReturn: buildCredentialResolutionOwnerActionSkip(
+            connectorId,
+            ownerRepairCode,
+            message,
+            connectorInstanceId
           ),
         };
       }
-      return {
-        kind: "record",
-        record: recordAndNotify(buildCredentialResolutionFailure(schedule.connectorId, message, connectorInstanceId)),
-      };
+      return { earlyReturn: buildCredentialResolutionFailure(connectorId, message, connectorInstanceId) };
     }
   }
 
-  type ManagedScheduledLaunchResolution = { kind: "fallthrough" } | { kind: "record"; record: RunRecord };
-
-  async function routeManagedScheduledLaunch(
+  // Phase 3 of launchRun: load prior state, derive collectionMode, and build the
+  // onInteraction wrapper that marks an AUTOMATIC run needs-human the first time
+  // it surfaces a human-attention interaction. The wrapper closes over a mutable
+  // `currentRunId` box so the run id (set later by runWithRetries' onStarted)
+  // flows into the interaction context without changing WHEN markNeedsHuman
+  // fires. Extracted verbatim from launchRun.
+  async function buildLaunchInteractionContext(
     schedule: ConnectorSchedule,
     isManual: boolean,
-    connectorInstanceId: string,
-    ownerToken: string,
-    recoveryOnly: boolean
-  ): Promise<ManagedScheduledLaunchResolution> {
-    const { connectorId } = schedule;
-    if (scheduledManagedConnectorLacksRoutingSeam(isManual, runManagedConnectorViaController, connectorId)) {
-      return {
-        kind: "record",
-        record: recordAndNotify(
-          buildBrowserSurfaceUnavailableSkip(connectorId, "surface_routing_unavailable", connectorInstanceId)
-        ),
-      };
-    }
-    if (!(runManagedConnectorViaController && !isManual)) {
-      return { kind: "fallthrough" };
-    }
+    currentRunIdBox: { value: string | null }
+  ): Promise<{
+    state: Record<string, unknown> | null;
+    collectionMode: "full_refresh" | "incremental";
+    wrappedInteraction: InteractionHandler;
+  }> {
+    const { connectorId, connectorInstanceId = connectorId, manifest } = schedule;
+    const state = narrowState(await getState(connectorId, connectorInstanceId));
+    const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
+    const connectorDisplayName = displayNameForScheduledConnector(manifest, connectorId);
 
-    const managedOptions: { maxRetries?: number; recoveryOnly?: boolean } = { recoveryOnly };
-    if (schedule.maxRetries !== undefined) {
-      managedOptions.maxRetries = schedule.maxRetries;
-    }
-    const managed = await routeScheduledManagedRun(
-      runManagedConnectorViaController,
-      connectorId,
-      connectorInstanceId,
-      ownerToken,
-      managedOptions
-    );
-    return managed === null ? { kind: "fallthrough" } : { kind: "record", record: managed };
+    const wrappedInteraction: InteractionHandler = (interaction) => {
+      if (!isManual) {
+        markNeedsHuman(connectorId, connectorInstanceId);
+      }
+      return onInteraction(
+        withSchedulerInteractionContext(interaction, {
+          connectorDisplayName,
+          connectorId,
+          connectorInstanceId,
+          runId: currentRunIdBox.value,
+        })
+      );
+    };
+
+    return { state, collectionMode, wrappedInteraction };
   }
 
   async function launchRun(
@@ -1172,42 +1098,18 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     } = schedule;
     const persistState = grantAccessMode !== "single_use";
 
-    // Resolve connection-scoped static-secret credentials BEFORE launching —
-    // parity with the manual path (`controller.ts::runNow`). True static-secret
-    // connections must supply a source-scoped credential through this seam; a
-    // resolver throw is fail-closed so the scheduler refuses the launch rather
-    // than falling through to a deployment-wide provider-account secret.
-    // Browser-session sources may return null when no optional stored login
-    // credential exists; the connector can still reuse/repair the browser
-    // session according to its automation policy.
-    const staticSecretResolution = await resolveStaticSecretForLaunch(schedule, isManual, connectorInstanceId);
-    if (staticSecretResolution.kind === "record") {
-      return staticSecretResolution.record;
+    const credentials = await resolveLaunchCredentials(connectorId, connectorInstanceId, isManual);
+    if ("earlyReturn" in credentials) {
+      return recordAndNotify(credentials.earlyReturn);
     }
-    const { staticSecretEnv } = staticSecretResolution;
+    const staticSecretEnv = credentials.env;
 
-    const state = narrowState(await getState(connectorId, connectorInstanceId));
-    const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
-    let currentRunId: string | null = null;
-    const connectorDisplayName = displayNameForScheduledConnector(manifest, connectorId);
-
-    // Wrap onInteraction to detect when an automatic run surfaces a
-    // human-attention interaction. We mark the connector as needs-human so
-    // subsequent automatic ticks skip it rather than repeatedly prompting for
-    // OTP or manual browser action.
-    const wrappedInteraction: InteractionHandler = (interaction) => {
-      if (!isManual) {
-        markNeedsHuman(connectorId, connectorInstanceId);
-      }
-      return onInteraction(
-        withSchedulerInteractionContext(interaction, {
-          connectorDisplayName,
-          connectorId,
-          connectorInstanceId,
-          runId: currentRunId,
-        })
-      );
-    };
+    const currentRunIdBox: { value: string | null } = { value: null };
+    const { state, collectionMode, wrappedInteraction } = await buildLaunchInteractionContext(
+      schedule,
+      isManual,
+      currentRunIdBox
+    );
 
     // ── Restart-race guard: managed connector with no routing seam → DEFER ────
     //
@@ -1227,6 +1129,12 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     // The next tick — once the seam is wired — routes warm. Manual runs are
     // unaffected: the owner explicitly asked to retry now and bypasses this
     // gate entirely (and the manual path has its own surface acquisition).
+    if (scheduledManagedConnectorLacksRoutingSeam(isManual, runManagedConnectorViaController, connectorId)) {
+      return recordAndNotify(
+        buildBrowserSurfaceUnavailableSkip(connectorId, "surface_routing_unavailable", connectorInstanceId)
+      );
+    }
+
     // ── Managed-connector scheduled run: route through controller.runNow ──────
     //
     // Manual runs already go through controller.runNow (the owner calls the
@@ -1253,15 +1161,22 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     // run is already in-flight for this connector. The scheduler's own
     // runtime.activeRuns.has(key) guard in executeRun prevents double-dispatch
     // from within the scheduler. Both guards stay intact.
-    const managedLaunch = await routeManagedScheduledLaunch(
-      schedule,
-      isManual,
-      connectorInstanceId,
-      ownerToken,
-      recoveryOnly
-    );
-    if (managedLaunch.kind === "record") {
-      return managedLaunch.record;
+    if (runManagedConnectorViaController && !isManual) {
+      // Null return means connector is not managed — fall through to runWithRetries.
+      const managedRunOptions: { maxRetries?: number; recoveryOnly?: boolean } = { recoveryOnly };
+      if (schedule.maxRetries !== undefined) {
+        managedRunOptions.maxRetries = schedule.maxRetries;
+      }
+      const managed = await routeScheduledManagedRun(
+        runManagedConnectorViaController,
+        connectorId,
+        connectorInstanceId,
+        ownerToken,
+        managedRunOptions
+      );
+      if (managed !== null) {
+        return managed;
+      }
     }
 
     return await runWithRetries(schedule, {
@@ -1281,7 +1196,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       automationMode: automationPolicy.automation_mode,
       onInteraction: wrappedInteraction,
       onStarted: (run) => {
-        currentRunId = typeof run?.run_id === "string" ? run.run_id : null;
+        currentRunIdBox.value = typeof run?.run_id === "string" ? run.run_id : null;
       },
       onProgress: () => {
         // no-op; progress is driven by the runtime's own logging.

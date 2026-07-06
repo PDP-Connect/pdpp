@@ -1,0 +1,17 @@
+# hone work pl1-manual-upload-insert-guards-0010 — post-r1 rung 'complexity-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --target 'server/stores/manual-upload-artifact-store.ts::normalizeInsert'
+# expect: found=true; cognitive_before strictly below baseline 16 and below floor 10 (six-guard cluster removed)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "server/stores/manual-upload-artifact-store.ts::normalizeInsert",
+  "file": "server/stores/manual-upload-artifact-store.ts",
+  "function": "normalizeInsert",
+  "found": true,
+  "cognitive_before": 9,
+  "line": 209,
+  "caller_count": 5,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

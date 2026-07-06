@@ -1,0 +1,59 @@
+# hone work hm-await-order-state-flush-0002a — maker brief digest (attempt 1)
+# sha256(full brief)=9d4343dcaed02defad77a64734b7c7b3cb054eefb2a8d5eb1fcdf6d69db056e2 bytes=18770
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): test/runtime-msg-order-state-flush.test.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, implementation-change, new-dependency, wall-clock-sleep-as-sync-primitive, pinning-cross-stream-global-order, new-helper-files-outside-touchset, existence-assertions-where-order-is-the-contract.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== PRIOR ATTEMPT — the judge's exact demands ==
+This packet was attempted before and deliberately reopened (reset #2, from reverted: retry cross-pair: both prior attempts were claude-maker hang-class failures (authored/revised test hung direct-test, 2700s fail-closed timeout); judge REVISE concern (synchronous run.state_staged push into shared sequence log) threads via retry-context; codex maker now 2-for-2 zero-revision lands on sibling oracles 0002c/0002d with no hangs). The prior outcome below is the exact bar the previous attempt failed to clear — address it directly; do not repeat the failed approach.
+- judge_verdict: codex REVISE (confidence 0.9): The new test passes and kills the seeded mutant, but it violates the packet's core oracle design: it does not push run.state_staged into the shared log synchronously at emit time, and it does not mark ingest:completed from the RS response completion boundary. Instead it reads persisted spine events after the run and folds synthetic marks into the log by event_seq, which is a post-hoc reconstruction rather than the mandated synchronous observation model. This is fixable by using the requested spine sink/RS synchronous marks, so the appropriate verdict is REVISE rather than PASS.
+- lesson: judge-driven revision regressed the oracle; REVISE cycles need the oracle re-gate (it held)
+== WORK PACKET (YAML) ==
+created: "2026-07-02T09:53:40.301Z"
+repo_sha: a86ed53d654801067446ce2db1315e8115c60420
+subsystem: runtime
+behavior_status: likely_intended
+ownership: OWN
+action: generate_evidence
+proof_class: judgment_first
+execution_gate: autonomous
+expected_quality_gain: high
+owner_attention_reduction: low
+product_impact: low
+priority:
+  score: 94
+  computed: "2026-07-02T09:53:40.301Z"
+  inputs:
+    mass: 189
+    churn: 63
+not_allowed:
+  - behavior-change
+  - implementation-change
+  - new-dependency
+  - wall-clock-sleep-as-sync-primitive
+  - pinning-cross-stream-global-order
+  - new-helper-files-outside-touchset
+  - existence-assertions-where-order-is-the-contract
+maker_tier: standard
+judge_tier: strong
+maker_provider: null
+judge_provider: null
+batch_key: generate_evidence×judgment_first×runtime
+estimates:
+  tokens: 40000
+  evidence_cost: medium
+depends_on: []
+status: pending
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex REVISE (confidence 0.9): The new test passes and kills the seeded mutant, but it violates the packet's core oracle design: it does not push run.state_staged into the shared log 

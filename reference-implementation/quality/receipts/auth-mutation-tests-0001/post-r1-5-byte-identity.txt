@@ -1,0 +1,5 @@
+# hone work auth-mutation-tests-0001 — post-r1 rung 'byte-identity'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/server/auth.js
+# expect: empty — this packet changes tests only (server/auth.js is NOT in the touchset); also proves every red-then-green rung's seed was restored
+# exit: 0  duration: 0s  verdict: PASS
+

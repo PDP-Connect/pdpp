@@ -1,0 +1,659 @@
+{
+  "version": 1,
+  "agenda_id": "agenda-2026-07-02T03-46-33-441Z",
+  "created": "2026-07-02T03:46:33.441Z",
+  "trigger": "manual",
+  "challenge": false,
+  "provider": "claude",
+  "model": "opus",
+  "repo_sha": "82bdca52d3c4c7d41f45c096a15f1c23ece6e6e8",
+  "inventory_sha": "82bdca52d3c4c7d41f45c096a15f1c23ece6e6e8",
+  "doctrine_path": "/home/tnunamak/code/dotfiles/ai/research/code-quality/THE-PROJECT-QUALITY-PORTFOLIO-MACHINE.md",
+  "context_bytes": {
+    "sensor:meta": 603,
+    "sensor:tier-mass": 5972,
+    "sensor:hotspots": 1603,
+    "sensor:callback-smells": 2700,
+    "sensor:test-signals": 2868,
+    "packet-pool": 6241,
+    "cost-actuals": 1463,
+    "b-inventory": 3629,
+    "ratification-queue": 2082,
+    "doctrine": 12546,
+    "doctrine:named-targets": 2028,
+    "prior-agenda": 3704,
+    "selection-ledger": 1233,
+    "not-chosen-aging": 1145
+  },
+  "total_context_bytes": 47817,
+  "prompt_bytes": 52957,
+  "call": {
+    "duration_ms": 236955,
+    "cost_usd": 1.8565560000000003,
+    "tokens": {
+      "input": 20218,
+      "output": 18165
+    }
+  },
+  "verification": {
+    "sensor_citations": 23,
+    "verified": 21,
+    "failed": 2,
+    "demoted_items": 2
+  },
+  "items": [
+    {
+      "id": "auth-mutation-killing-tests",
+      "what": "Generate mutant-killing tests for server/auth.js (cookie-security + session-expiry + core token/consent invariants) to raise the ~60% auth mutation score before any auth refactor is attempted.",
+      "why_now": "Doctrine names this as a hard prerequisite: 'add mutant-killing tests BEFORE any auth refactor', and a prior mutation run left cookie-security/session-expiry mutants alive. auth.js is the single largest hotspot the machine cannot yet touch (NOGO, security surface); this evidence-generation is the ONLY thing that converts the auth-substrate-policy-split campaign from blocked to workable. Highest-leverage unblock in the portfolio.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/auth.js:score=68591",
+          "verified": true,
+          "verify_detail": "reproduced: server/auth.js:score=68591"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/auth.js:attention=41464",
+          "verified": true,
+          "verify_detail": "reproduced: server/auth.js:attention=41464"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/auth.js:loc=5926",
+          "verified": true,
+          "verify_detail": "reproduced: server/auth.js:loc=5926"
+        },
+        {
+          "type": "incident",
+          "citation": "DOCTRINE:NAMED-TARGETS auth-mutation-killing-tests — 'auth mutation score ~60%; cookie-security and session-expiry mutants survived'",
+          "verified": null
+        },
+        {
+          "type": "test-gap",
+          "citation": "DOCTRINE:NAMED-TARGETS auth-substrate-policy-split — 'requires auth-mutation-killing-tests first'",
+          "verified": null
+        }
+      ],
+      "workflow_class": "evidence-generation",
+      "packet_ids": [],
+      "campaign_id": "b-auth-substrate-policy-split",
+      "acceptance_criteria": [
+        "Mutation run over server/auth.js reports the previously-surviving cookie-security and session-expiry mutants as KILLED",
+        "New tests pin token issuance/introspection and consent-grant invariants by name (not by reachability)",
+        "Auth mutation score materially above the ~60% baseline, with the delta reported"
+      ],
+      "est_cost": {
+        "usd": 1.5,
+        "basis": "extrapolated from t1b-transport-shim-negotiation-evidence-0001 ($1.58) — a comparable characterization/evidence job on a seam surface"
+      },
+      "predicted_gain": "Unblocks the biggest owned hotspot (auth.js) for future decomplection; kills known-surviving security mutants — real safety, not proxy.",
+      "verification": "verified",
+      "model_rank": 1,
+      "rank": 1
+    },
+    {
+      "id": "hm-handlemsg-oracle-then-extract-campaign",
+      "what": "Advance the runtime/index.js handleMsg (cc=194) decomplection: first land the two characterization-oracle packets (dispatch-guards, awaited-order), then the family/scope/checkpoint extracts they unblock.",
+      "why_now": "handleMsg is the doctrine's explicitly named single highest-cc owned function (cc=194) and sits in the #2-attention file. The packet pool already decomposes it into evidence-first packets (hm-dispatch-guards-oracle-0001, hm-awaited-order-oracle-0002) that MUST precede the effectful/property-at-risk extracts (hm-reporting/record-scope/state-checkpoint/assistance) — matching doctrine's 'generate_evidence before preserve_refactor' ordering. Sequencing the oracles first is exactly how a staff engineer detonates a 194-cc hairball safely.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "runtime/index.js:cc[handleMsg]=194",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/index.js:cc[handleMsg]=194"
+        },
+        {
+          "type": "sensor",
+          "citation": "runtime/index.js:attention=44206",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/index.js:attention=44206"
+        },
+        {
+          "type": "sensor",
+          "citation": "runtime/index.js:mass=713",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/index.js:mass=713"
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE:NAMED-TARGETS runtime-handleMsg-decomplect — 'the highest-cc owned function; decomplect into named sub-handlers with explicit state'",
+          "verified": null
+        }
+      ],
+      "workflow_class": "A2",
+      "packet_ids": [
+        "hm-dispatch-guards-oracle-0001",
+        "hm-awaited-order-oracle-0002",
+        "hm-reporting-family-extract-0003",
+        "hm-record-scope-extract-0004",
+        "hm-state-checkpoint-extract-0005",
+        "hm-assistance-family-extract-0006"
+      ],
+      "campaign_id": "a2-top-attention-hotspots",
+      "acceptance_criteria": [
+        "Both oracle packets land with direct-output-pinning tests (not integration-by-reachability) green as red-then-green",
+        "handleMsg cc measurably reduced via named sub-handlers with explicit state, behavior proven preserved against the runtime event-spine tests",
+        "Each extract passes the T1b/A2 gate: genuine hidden-state-made-explicit or real enclosing-cc reduction, not relocation (canon R5)"
+      ],
+      "est_cost": {
+        "usd": 2.93,
+        "basis": "rt-index-handlemsg-a2-decomplect prior selection-ledger est $2.93 for the A2 loop; oracle packets extrapolate to ~$0.56 each"
+      },
+      "predicted_gain": "Detonates the largest single cognitive-load concentration in the runtime; converts a 194-cc god-function into named, individually-testable handlers.",
+      "verification": "verified",
+      "model_rank": 2,
+      "rank": 2
+    },
+    {
+      "id": "srv-index-startserver-buildasapp-a2-decomplect",
+      "what": "Judged A2 decomplection of server/index.js::startServer (cc=67, T2-async-order) and buildAsApp (cc=43, T2-property) — the two hairballs driving the top-attention file.",
+      "why_now": "server/index.js is the highest-attention owned file in the repo (churn 325 × mass 218). Its cost is concentrated in startServer and buildAsApp, the #1 and #2 flagged functions by attention. The competing server-index-t0 packet only clears the marginal T0 tail (16.3%-by-mass) and was correctly NOT-chosen last agenda as a streetlight trap; the real leverage is judged decomplection of these two functions.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/index.js:attention=70850",
+          "verified": true,
+          "verify_detail": "reproduced: server/index.js:attention=70850"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/index.js:cc[startServer]=67",
+          "verified": true,
+          "verify_detail": "reproduced: server/index.js:cc[startServer]=67"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/index.js:cc[buildAsApp]=43",
+          "verified": true,
+          "verify_detail": "reproduced: server/index.js:cc[buildAsApp]=43"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/index.js:churn=325",
+          "verified": true,
+          "verify_detail": "reproduced: server/index.js:churn=325"
+        }
+      ],
+      "workflow_class": "A2",
+      "packet_ids": [],
+      "campaign_id": "a2-top-attention-hotspots",
+      "acceptance_criteria": [
+        "startServer async-ordering seams named and made explicit without changing awaited order/count (T2-async invariant preserved)",
+        "buildAsApp property-shape branches decomplected with behavior proven against server integration tests + a different-model judge PASS",
+        "Enclosing cc genuinely reduced (not relocated); the T0-tail work explicitly left to the ratchet, not conflated with this"
+      ],
+      "est_cost": {
+        "usd": 2.93,
+        "basis": "srv-index-startserver-a2-decomplect prior selection-ledger est $2.93"
+      },
+      "predicted_gain": "Reduces cognitive load on the most-churned owned file's two hottest functions — highest attention-weighted leverage on the server side.",
+      "verification": "verified",
+      "model_rank": 3,
+      "rank": 3
+    },
+    {
+      "id": "prevention-anon-callback-cc-ratchet",
+      "what": "Build the NO-HIGH-COMPLEXITY-ANONYMOUS-CALLBACK lint/CI ratchet blocking new anonymous callbacks above a small cc threshold or capturing more than N nonlocal names.",
+      "why_now": "Doctrine calls the upstream generation-ratchet 'possibly the single highest-leverage Memo-7 outcome' and 'likely more valuable than any T0 codemod' — the 84%-of-mass closure distribution is an AI-built-code smell that will regenerate without a prevention rule. Sensors confirm the live population: 189 callbacks, 104 T2, top callback cc=120. Cheap and durable; stops the distribution reforming faster than any downstream refactor can drain it.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/search-semantic.js:cc[<anon>]=120",
+          "verified": true,
+          "verify_detail": "reproduced: server/search-semantic.js:cc[<anon>]=120"
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE §3 — 'Discovery ratchet (the callback/closure smell detector — likely more valuable than any T0 codemod)'",
+          "verified": null
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE:NAMED-TARGETS anon-callback-prevention-ratchet — scripts/code-quality/check-callback-ratchet.mjs",
+          "verified": null
+        }
+      ],
+      "workflow_class": "prevention",
+      "packet_ids": [],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "A CI-runnable check (scripts/code-quality/check-callback-ratchet.mjs) fails on a new anonymous callback exceeding the cc/capture threshold",
+        "Existing callbacks are grandfathered (ratchet, not a mass-rewrite); baseline recorded so the count can only go down",
+        "The rule is documented as a generation policy agents must follow"
+      ],
+      "est_cost": {
+        "usd": 0.35,
+        "basis": "prevention-anon-callback-cc-ratchet prior selection-ledger est $0.35"
+      },
+      "predicted_gain": "Freezes the complexity distribution from regenerating — compounding prevention that outlasts any single refactor.",
+      "verification": "verified",
+      "model_rank": 4,
+      "rank": 4
+    },
+    {
+      "id": "b-ref-vs-owner-control-plane-conflation",
+      "what": "B campaign to decide the /_ref/* vs /v1/owner/* near-duplicate control-plane conflation (run/schedule/revoke/reactivate exist under both prefixes with different auth guards; 70 of 100 ops are control-plane).",
+      "why_now": "B-inventory §6.4 flags this as the clearest noun-conflation candidate and ratification-queue #2 as the 'largest conflation'. It is the dominant public-contract structural question and directly serves the doctrine's B 40-50% budget direction. Behavior-changing → proposal + owner ratification.",
+      "evidence": [
+        {
+          "type": "b-inventory",
+          "citation": "B-INVENTORY §6.4 — 'The /_ref and /v1/owner planes are near-duplicate control surfaces … clearest noun-conflation candidate'",
+          "verified": null
+        },
+        {
+          "type": "b-inventory",
+          "citation": "RATIFICATION-QUEUE #2 — '/_ref/* vs /v1/owner/* … (70 of 100 ops are control-plane)' status OPEN",
+          "verified": null
+        }
+      ],
+      "workflow_class": "B",
+      "packet_ids": [],
+      "campaign_id": "b-public-contract-minimum",
+      "acceptance_criteria": [
+        "Determination of whether /_ref and /v1/owner are genuinely two audiences or one concept with two skins, with evidence per operation",
+        "A ratifiable proposal (collapse-to-one vs keep-both-with-documented-reason) recorded in the ratification queue",
+        "Auth-guard differences per duplicated op catalogued so the owner decides with full context"
+      ],
+      "est_cost": {
+        "usd": null,
+        "basis": "B proposal-only; prior b-ref-vs-owner-control-plane-conflation est $? in selection-ledger"
+      },
+      "predicted_gain": "Resolves the single largest public-surface conflation — 70% of the operation count sits in this plane.",
+      "verification": "verified",
+      "model_rank": 6,
+      "rank": 5
+    },
+    {
+      "id": "skipped-test-audit",
+      "what": "Audit every skipped test (58 static skip markers across 51 files AND runtime-skipped subtests) — each skip gets keep-with-reason, fix, or delete.",
+      "why_now": "Doctrine-named target. 58 static skips is a standing evidence-integrity hole: a skipped test is an unproven invariant masquerading as coverage, which directly feeds the streetlight failure mode (green-by-reachability). The audit is cheap discovery that converts silent gaps into explicit keep/fix/delete decisions and surfaces new evidence-generation leads.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "test/device-exporter-store.test.js:skips=3",
+          "verified": true,
+          "verify_detail": "reproduced: test/device-exporter-store.test.js:skips=3"
+        },
+        {
+          "type": "sensor",
+          "citation": "test/client-event-subscription-store-postgres.test.js:skips=2",
+          "verified": true,
+          "verify_detail": "reproduced: test/client-event-subscription-store-postgres.test.js:skips=2"
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE:NAMED-TARGETS skipped-test-audit — 'each skip gets keep-with-reason, fix, or delete … audit both' (static + runtime)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "evidence-generation",
+      "packet_ids": [],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "Every static skip marker (58) triaged to keep-with-explicit-reason / fix / delete",
+        "Runtime '# skipped' subtests enumerated separately (the static count != runtime count) and triaged",
+        "Fix/delete leads emitted as follow-on packets; kept skips carry a written justification"
+      ],
+      "est_cost": {
+        "usd": 0.5,
+        "basis": "discovery/triage pass; extrapolated from cheap evidence jobs (~$0.5) in cost-actuals"
+      },
+      "predicted_gain": "Closes an evidence-integrity blind spot; each resolved skip either restores a real invariant or removes dead ceremony.",
+      "verification": "verified",
+      "model_rank": 7,
+      "rank": 6
+    },
+    {
+      "id": "t1a-semantic-backfill-hoist",
+      "what": "T1a clean hoist of server/search-semantic.js semanticIndexBackfillForManifest (cc=120, non-capturing, free-vars=∅) to a named pure top-level function.",
+      "why_now": "This is the single largest callback smell in the repo (cc=120) and the callback detector explicitly classifies it as the cheap case: non-capturing (free-vars=∅) → hoist to a named pure top-level fn. T1a is the doctrine's genuinely-cheap seam lane; the maps to server-search-semantic-t1a-230e24ed in the pool. Rare high-mass + low-risk combination.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/search-semantic.js:cc[<anon>]=120",
+          "verified": true,
+          "verify_detail": "reproduced: server/search-semantic.js:cc[<anon>]=120"
+        },
+        {
+          "type": "test-gap",
+          "citation": "SENSOR:CALLBACK-SMELLS — 'semanticIndexBackfillForManifest · other · cc=120 · excess=115 · 0(0) · T1a · non-capturing (free-vars=∅) → hoist to a named pure top-level fn'",
+          "verified": null
+        }
+      ],
+      "workflow_class": "T1a",
+      "packet_ids": [
+        "server-search-semantic-t1a-230e24ed"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "Callback hoisted to a named top-level function with explicit params; tsc + real search tests green",
+        "Enclosing function cc genuinely reduced (not relocation) — confirmed free of capture surprise",
+        "A direct test pins the hoisted function's output, or characterization written first if none exists"
+      ],
+      "est_cost": {
+        "usd": 0.51,
+        "basis": "t1a-semantic-backfill-hoist prior selection-ledger est $0.51 (T1a lands ~$0.35-0.59 in cost-actuals)"
+      },
+      "predicted_gain": "Largest single callback (cc=120) named and made pure at the lowest risk class — high mass-per-dollar.",
+      "verification": "verified",
+      "model_rank": 9,
+      "rank": 7
+    },
+    {
+      "id": "t1b-streaming-input-telemetry-event",
+      "what": "T1b explicit-context extraction of the streaming input-telemetry event builder in server/streaming/routes.js, gated on its direct telemetry test.",
+      "why_now": "server/streaming/routes.js carries the largest T1b-explicit-context mass in the repo (T1b:70 of its 202 tier-mass) from registerStreamingRoutes callbacks capturing immutable env. The pool has the paired packet (t1b-streaming-input-telemetry-event-0013) AND its evidence packet (t1b-streaming-input-telemetry-evidence-0012). This is the canonical scarce T1b archetype (immutable captures + a direct test). T1b lands are proven cheap and high-PASS in cost-actuals.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/streaming/routes.js:mass=202",
+          "verified": true,
+          "verify_detail": "reproduced: server/streaming/routes.js:mass=202"
+        },
+        {
+          "type": "test-gap",
+          "citation": "SENSOR:CALLBACK-SMELLS — 'registerStreamingRoutes · other · cc=34 … T1b · captures (immutable) [streamingSessions,getCompanion,inputTelemetry] → turn implicit env into explicit context'",
+          "verified": null
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE §1b — scarce high-value T1b archetype: capturing closure w/ few immutable captures AND an airtight direct unit test",
+          "verified": null
+        }
+      ],
+      "workflow_class": "T1b",
+      "packet_ids": [
+        "t1b-streaming-input-telemetry-event-0013",
+        "t1b-streaming-input-telemetry-evidence-0012"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "A direct test pins the input-telemetry event builder output (evidence packet lands first if the direct test is absent)",
+        "Implicit captured env turned into an explicit context object/param; genuine hidden-state-made-explicit, not relocation",
+        "tsc + streaming routes tests green; different-model judge PASS"
+      ],
+      "est_cost": {
+        "usd": 0.59,
+        "basis": "t1b-streaming-input-telemetry-event prior selection-ledger est $0.59 (T1b lands $0.34-0.59 PASS in cost-actuals)"
+      },
+      "predicted_gain": "Makes the streaming routes' hidden env explicit on the highest-T1b-mass file; keeps the proven-cheap T1b accelerator lane warm.",
+      "verification": "verified",
+      "model_rank": 10,
+      "rank": 8
+    },
+    {
+      "id": "rt-verdict-stream-rollups-oracle-0004",
+      "what": "Generate the verdict-stream-rollup oracle test for runtime/connector-verdict-input.ts, enabling the paired rollup-entry T1b extraction.",
+      "why_now": "Evidence-generation that unblocks a paired preserve_refactor packet (t1b-verdict-stream-rollup-entry-0011) — the doctrine's 'write the characterization test first, then extract on proof' pattern. Both packets already exist in the pool (rt-verdict-stream-rollups-oracle-0004 + t1b-verdict-stream-rollup-entry-0011). Cheap, autonomous, judgment_first; extends the runtime coverage that the handleMsg campaign will also lean on.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "runtime/index.js:mass=713",
+          "verified": true,
+          "verify_detail": "reproduced: runtime/index.js:mass=713"
+        },
+        {
+          "type": "test-gap",
+          "citation": "PACKET-POOL rt-verdict-stream-rollups-oracle-0004 (generate_evidence×judgment_first) pairs with t1b-verdict-stream-rollup-entry-0011 (preserve_refactor×pure_logic)",
+          "verified": null
+        }
+      ],
+      "workflow_class": "evidence-generation",
+      "packet_ids": [
+        "rt-verdict-stream-rollups-oracle-0004",
+        "t1b-verdict-stream-rollup-entry-0011"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "Oracle test pins verdict-stream rollup output over representative inputs, red-then-green",
+        "The paired rollup-entry extraction becomes provable (evidence exists) and lands as genuine decomplect",
+        "No async-order/property invariant changed"
+      ],
+      "est_cost": {
+        "usd": 0.56,
+        "basis": "rt-verdict-stream-rollups-oracle prior selection-ledger est $0.56"
+      },
+      "predicted_gain": "Unblocks a clean runtime T1b extraction with direct-pin evidence; low cost, compounds runtime coverage.",
+      "verification": "verified",
+      "model_rank": 11,
+      "rank": 9
+    },
+    {
+      "id": "t1b-transport-shim-negotiation-0002",
+      "what": "T1b explicit-context extraction of the transport-shim negotiation logic in server/transport.js, gated on the fastify-transport test.",
+      "why_now": "server/transport.js is a coupling-heavy hotspot (coupling=41) with a clean pure-logic T1b packet already in the pool (t1b-transport-shim-negotiation-0002, preserve_refactor×pure_logic, autonomous). NOTE: the prior evidence variant (t1b-transport-shim-negotiation-evidence-0001) REVERTED with REVISE at $1.58 in cost-actuals — so this must gate hard on a direct test pinning the negotiation output, or it repeats that revert. Ranked last as a proven-risky-but-cheap lane filler with an explicit gate.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/transport.js:coupling=41",
+          "verified": true,
+          "verify_detail": "reproduced: server/transport.js:coupling=41"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/transport.js:score=918",
+          "verified": true,
+          "verify_detail": "reproduced: server/transport.js:score=918"
+        },
+        {
+          "type": "incident",
+          "citation": "COST-ACTUALS t1b-transport-shim-negotiation-evidence-0001 · reverted · $1.58 · REVISE — gate on a direct output-pinning test this time",
+          "verified": null
+        }
+      ],
+      "workflow_class": "T1b",
+      "packet_ids": [
+        "t1b-transport-shim-negotiation-0002"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "A direct test pins the transport-shim negotiation output before extraction (addresses the prior REVISE/revert)",
+        "Implicit context made explicit; genuine decomplect not relocation",
+        "tsc + fastify-transport test green; different-model judge PASS — else SKIP (do not land on green-by-reachability)"
+      ],
+      "est_cost": {
+        "usd": 1.58,
+        "basis": "t1b-transport-shim-negotiation-evidence-0001 actual $1.58 (reverted) — treat as ceiling; a clean land should be cheaper"
+      },
+      "predicted_gain": "Decomplects transport negotiation on a high-coupling file — if the gate holds; the gate rejecting it is also an acceptable outcome.",
+      "verification": "verified",
+      "model_rank": 12,
+      "rank": 10
+    },
+    {
+      "id": "b-storage-backend-contract-unification",
+      "what": "B campaign to unify the two storage contracts: server/postgres-storage.js and the sqlite backend share ZERO exported names — establish one seam with backends behind it.",
+      "why_now": "Doctrine-named target and a public-contract/architecture seam (own-rent-delete §3). Two independent storage contracts is the clearest structural decomplection the packet pool does NOT contain, and it is high-mass (postgres-storage.js mass=109, fns=69). Behavior-changing/architectural → B (proposal-only, human-ratified), never autonomous.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/postgres-storage.js:mass=109",
+          "verified": true,
+          "verify_detail": "reproduced: server/postgres-storage.js:mass=109"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/postgres-storage.js:fns=69",
+          "verified": false,
+          "verify_detail": "does not reproduce — inventory says 10, citation says 69"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/postgres-storage.js:score=3491",
+          "verified": true,
+          "verify_detail": "reproduced: server/postgres-storage.js:score=3491"
+        },
+        {
+          "type": "corpus",
+          "citation": "DOCTRINE:NAMED-TARGETS storage-backend-contract-unification — 'two storage contracts where the doctrine requires one seam with backends behind it'",
+          "verified": null
+        }
+      ],
+      "workflow_class": "B",
+      "packet_ids": [],
+      "campaign_id": "b-storage-backend-contract-unification",
+      "acceptance_criteria": [
+        "Inventory of the divergent exported surfaces of both backends with the seam boundary proposed",
+        "A proposal packet defining the single storage interface + backend adapters, queued to the ratification queue (not auto-landed)",
+        "Migration/behavior-preservation risk stated explicitly for owner decision"
+      ],
+      "est_cost": {
+        "usd": null,
+        "basis": "B proposal-only; no comparable land in cost-actuals (B items shown as est $?)"
+      },
+      "predicted_gain": "Collapses two competing storage contracts into one owned seam — removes a whole class of dual-maintenance divergence.",
+      "verification": "unverified",
+      "model_rank": 5,
+      "rank": 11
+    },
+    {
+      "id": "df-evidence-package-schema-merge-oracle-0004",
+      "what": "Generate the deterministic oracle/characterization test for package-rs-client schema-envelope merge, pinning the cc=77 capturing iterator callback's output.",
+      "why_now": "This is evidence-generation that unblocks the second-worst callback smell in the repo (mergeSchemaEnvelopes, cc=77, security/DDL/marker: streamGrant) — a T2 that cannot be safely touched without a direct oracle. The packet already exists in the pool (df-evidence-package-schema-merge-oracle-0004, autonomous, pure_logic). Cheap, proven pattern, and it converts a high-cc security-adjacent callback into refactorable state.",
+      "evidence": [
+        {
+          "type": "sensor",
+          "citation": "server/package-rs-client.js:mass=169",
+          "verified": true,
+          "verify_detail": "reproduced: server/package-rs-client.js:mass=169"
+        },
+        {
+          "type": "sensor",
+          "citation": "server/package-rs-client.js:cc[mergeSchemaEnvelopes]=77",
+          "verified": false,
+          "verify_detail": "does not reproduce — inventory says 7, citation says 77"
+        },
+        {
+          "type": "test-gap",
+          "citation": "SENSOR:CALLBACK-SMELLS — 'mergeSchemaEnvelopes · iterator · cc=77 · excess=72 … T2 · security/DDL/marker: streamGrant'",
+          "verified": null
+        }
+      ],
+      "workflow_class": "evidence-generation",
+      "packet_ids": [
+        "df-evidence-package-schema-merge-oracle-0004"
+      ],
+      "campaign_id": null,
+      "acceptance_criteria": [
+        "A deterministic oracle test pins mergeSchemaEnvelopes output over representative envelopes, red-then-green against a seeded regression",
+        "Coverage asserts the streamGrant/security branch behavior by name",
+        "Extraction of the callback becomes unblocked (evidence exists to prove preservation)"
+      ],
+      "est_cost": {
+        "usd": 0.56,
+        "basis": "df-evidence-package-schema-merge-oracle prior selection-ledger est $0.56"
+      },
+      "predicted_gain": "Turns the #2 callback hairball from untouchable into safely-refactorable; direct-pin evidence, not reachability.",
+      "verification": "unverified",
+      "model_rank": 8,
+      "rank": 12
+    }
+  ],
+  "campaigns": [
+    {
+      "id": "a2-top-attention-hotspots",
+      "named_target": "runtime-handleMsg-decomplect (+ server/index.js startServer/buildAsApp)",
+      "why": "The two highest-attention owned files (server/index.js attention=70850, runtime/index.js attention=44206) hold the staff-engineer complexity the streetlight planner missed; decomplect their hairball functions via evidence-first judged A2.",
+      "acceptance_criteria": [
+        "handleMsg (cc=194) reduced to named sub-handlers with explicit state, oracle-proven behavior-preserving",
+        "startServer (cc=67) and buildAsApp (cc=43) decomplected with async-order/property invariants proven preserved",
+        "Every land passes decomplect-not-relocation and different-model judge; T0 tail explicitly deferred to the ratchet"
+      ]
+    },
+    {
+      "id": "b-public-contract-minimum",
+      "named_target": "B-minimum public-contract catalogue (b-contract-inventory-2026-07-01.md)",
+      "why": "Keep A from becoming blind internal polish: resolve the open public-contract conflations/asymmetries the inventory surfaced, per doctrine's B 40-50% budget direction.",
+      "acceptance_criteria": [
+        "The /_ref vs /v1/owner conflation (ratification #2) reaches a ratifiable proposal",
+        "Remaining OPEN ratification items (error-envelope boundary, related_stream_not_granted, content-prose id asymmetry) each have a documented decision or queued proposal",
+        "No B item auto-lands; all behavior-changing outcomes route through the ratification queue"
+      ]
+    },
+    {
+      "id": "b-storage-backend-contract-unification",
+      "named_target": "storage-backend-contract-unification",
+      "why": "postgres-storage.js and the sqlite backend share ZERO exported names — two storage contracts where the doctrine requires one seam with backends behind it.",
+      "acceptance_criteria": [
+        "Divergent backend surfaces inventoried; single storage interface + adapters proposed",
+        "Behavior-preservation/migration risk stated for owner ratification",
+        "Proposal queued, not auto-landed (architectural/behavior-changing)"
+      ]
+    },
+    {
+      "id": "b-auth-substrate-policy-split",
+      "named_target": "auth-substrate-policy-split",
+      "why": "server/auth.js (~5.9k LOC, NOGO) braids commodity OAuth substrate with product policy; split substrate from policy behind a small interface — but ONLY after auth-mutation-killing-tests exist.",
+      "acceptance_criteria": [
+        "auth-mutation-killing-tests landed first (cookie-security/session-expiry mutants killed) — hard gate",
+        "Substrate/policy seam proposed behind a small interface as a B proposal",
+        "No autonomous refactor of auth.js at any point (NOGO); all changes human-ratified"
+      ]
+    }
+  ],
+  "not_chosen": [
+    {
+      "id": "server-auth-t0-850ad54c",
+      "what": "T0 certified-transform on server/auth.js",
+      "reason": "auth.js is NOGO in HOTSPOTS (score=68591), a security surface; doctrine forbids autonomous auth work and requires auth-mutation-killing-tests first. Routed to the b-auth-substrate-policy-split campaign, gated behind the mutation tests (item #1). Age 1 — not yet at run-floor."
+    },
+    {
+      "id": "server-index-t0-9b38c77a",
+      "what": "T0 certified-transform on server/index.js",
+      "reason": "Streetlight trap: the T0 tail is marginal mass (16.3% by mass across the repo) while the file's real cost is startServer/buildAsApp, chosen as A2 (item #3). Age 1."
+    },
+    {
+      "id": "runtime-index-t0-a9edf2c4",
+      "what": "T0 certified-transform on runtime/index.js",
+      "reason": "Same streetlight trap — clears the low-mass T0 tail while handleMsg (cc=194) is the real target, addressed by the hm-* campaign (item #2). Age 1."
+    },
+    {
+      "id": "server-records-t1a-35e2deec",
+      "what": "T1a exact-move on server/records.js",
+      "reason": "records.js mass lives in queryRecords (cc=99, T2-property) and the cross-binding aggregators (cc=73 each, T2-async) — T2-in-disguise, not a cheap T1a exact-move. Route to judged A2 later; not this cycle's budget. Age 1."
+    },
+    {
+      "id": "runtime-scheduler-a2",
+      "what": "A2 decomplect of runtime/scheduler.ts",
+      "reason": "The prior runtime-scheduler-t0 attempt REVERTED at $2.93 with a REJECT judge (COST-ACTUALS); lower attention than the chosen A2 targets. Defer until the handleMsg/startServer A2 lane is proven. Age 1."
+    },
+    {
+      "id": "repo-tmp-claims-exhaust-0005",
+      "what": "delete tmp-claims.jsonl (owner_ratify)",
+      "reason": "owner_ratify gate + a delete against a claims ledger I did not author; guidance is to surface not proceed. Raised in human_decisions_needed. Age 1."
+    },
+    {
+      "id": "server-db-t0-94a605ef",
+      "what": "T0 certified-transform on server/db.js",
+      "reason": "db.js mass is in the .transaction callbacks (cc=52/39, T2-property, DDL markers CREATE/DROP TABLE) — T2-in-disguise requiring full judged proof, not a T0 transform. Age 1."
+    },
+    {
+      "id": "b-content-ladder-direct-test-coverage",
+      "what": "prior #1 content_ladder by-name coverage",
+      "reason": "DONE — B-INVENTORY §6.1 shows RESOLVED 2026-07-01 (commit ce8dfc58b, 10 by-name tests at packages/mcp-server/test/content-ladder-contract.test.js). Dropped from this agenda."
+    },
+    {
+      "id": "t1b-spine-correlations-annotators-0003",
+      "what": "T1b spine-correlations annotators extraction",
+      "reason": "BLOCKED: packet pool + cost-actuals show a red baseline — rung 'direct-test' failed BEFORE any change (exit 1, expected 0). Cannot land on a red baseline; needs the baseline test fixed first (deterministic-floor territory, not an agenda choice)."
+    }
+  ],
+  "deltas_from_prior": [
+    "DROPPED prior #1 b-content-ladder-direct-test-coverage — B-INVENTORY §6.1 now marks it RESOLVED (commit ce8dfc58b, 10 by-name tests); no longer a gap.",
+    "PROMOTED auth-mutation-killing-tests to #1 — it was only implicit in the prior agenda (via the auth NOT-chosen note); doctrine makes it the hard gate that unblocks the entire auth campaign, so it leads.",
+    "RE-EXPRESSED the handleMsg A2 target (#2) as an oracle-first packet sequence (hm-*-oracle then hm-*-extract) rather than a single monolithic A2 item, matching the pool's evidence-first decomposition.",
+    "MERGED startServer and buildAsApp into one server/index.js A2 item (#3) — prior agenda listed only startServer; buildAsApp (cc=43) is the same file's #2 hairball and belongs in the same decomplect.",
+    "ADDED b-storage-backend-contract-unification as an explicit B campaign — a doctrine-named target absent from the prior agenda's ranked items.",
+    "ADDED skipped-test-audit (#7) — doctrine-named target not previously ranked; 58 static skips is a standing evidence-integrity gap.",
+    "CARRIED the cheap proven lanes (df-evidence-package-schema-merge-oracle, t1a-semantic-backfill-hoist, t1b-streaming-input-telemetry-event, rt-verdict-stream-rollups-oracle, t1b-transport-shim-negotiation) with an explicit gate on transport after its prior REVERT."
+  ],
+  "human_decisions_needed": [
+    "Approve the auth campaign gating: confirm that auth-mutation-killing-tests must land and kill the cookie-security/session-expiry mutants BEFORE any auth-substrate-policy-split refactor is proposed (doctrine gate — needs owner sign-off to proceed).",
+    "/_ref/* vs /v1/owner/* control planes (ratification #2): are these two genuine audiences, or one concept with two skins that should collapse? (behavior-changing, 70/100 ops).",
+    "storage-backend-contract-unification: ratify unifying postgres-storage.js and the sqlite backend behind a single storage interface — this is behavior/architecture-changing and cannot be auto-landed.",
+    "repo-tmp-claims-exhaust-0005: authorize (or decline) the owner_ratify delete of tmp-claims.jsonl — I will not delete a claims ledger I did not author without explicit owner ratification.",
+    "ESCALATION — no doctrine-named target was demoted below its worth this cycle; all six are ranked or campaign-tracked. Confirm the sequencing of auth work behind its mutation-test gate is acceptable rather than running auth as a B-inventory pass sooner."
+  ]
+}

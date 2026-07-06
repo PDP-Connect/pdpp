@@ -1,0 +1,59 @@
+# hone work t1b-transport-shim-negotiation-0002 — post rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/transport.js
+# expect: callback bodies byte-identical modulo indentation and the two header-param substitutions; no logic edits, no reordering
+# exit: 0  duration: 0s  verdict: PASS
+
+diff --git a/reference-implementation/server/transport.js b/reference-implementation/server/transport.js
+index 8ed199689..db4b234cc 100644
+--- a/reference-implementation/server/transport.js
++++ b/reference-implementation/server/transport.js
+@@ -323,9 +323 @@ function expressShim(request, reply) {
+-    req.is = (types) => {
+-      const ct = String(req.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase();
+-      if (!ct) return false;
+-      const candidates = Array.isArray(types) ? types : [types];
+-      for (const candidate of candidates) {
+-        if (matchesMediaType(ct, String(candidate).toLowerCase())) return candidate;
+-      }
+-      return false;
+-    };
++    req.is = (types) => matchedContentType(req.headers?.['content-type'], types);
+@@ -337,11 +329 @@ function expressShim(request, reply) {
+-    req.accepts = (types) => {
+-      const accept = String(req.headers?.accept || '').toLowerCase();
+-      const candidates = Array.isArray(types) ? types : [types];
+-      if (!accept || accept === '*/*') return candidates[0] || false;
+-      for (const candidate of candidates) {
+-        const short = String(candidate).toLowerCase();
+-        const long = short.includes('/') ? short : `application/${short}`;
+-        if (accept.includes(short) || accept.includes(long)) return candidate;
+-      }
+-      return false;
+-    };
++    req.accepts = (types) => acceptedType(req.headers?.accept, types);
+@@ -437,0 +420,25 @@ function expressShim(request, reply) {
++// Express's `req.is(type)` returns the matched type string or false.
++function matchedContentType(contentTypeHeader, types) {
++  const ct = String(contentTypeHeader || '').split(';')[0].trim().toLowerCase();
++  if (!ct) return false;
++  const candidates = Array.isArray(types) ? types : [types];
++  for (const candidate of candidates) {
++    if (matchesMediaType(ct, String(candidate).toLowerCase())) return candidate;
++  }
++  return false;
++}
++
++// Minimal `req.accepts(types)` returning the best match from the Accept
++// header. Handlers in PDPP only care about `req.accepts(['html', 'json'])`.
++function acceptedType(acceptHeader, types) {
++  const accept = String(acceptHeader || '').toLowerCase();
++  const candidates = Array.isArray(types) ? types : [types];
++  if (!accept || accept === '*/*') return candidates[0] || false;
++  for (const candidate of candidates) {
++    const short = String(candidate).toLowerCase();
++    const long = short.includes('/') ? short : `application/${short}`;
++    if (accept.includes(short) || accept.includes(long)) return candidate;
++  }
++  return false;
++}
++

@@ -1,0 +1,17 @@
+# hone work pl1-detail-gap-input-identity-0006 — baseline rung 'complexity-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --target 'server/stores/connector-detail-gap-store.js::normalizeGapInput'
+# expect: found=true; cognitive_before strictly below baseline 19 and below floor 12 (identity guards + gapId derivation removed)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "server/stores/connector-detail-gap-store.js::normalizeGapInput",
+  "file": "server/stores/connector-detail-gap-store.js",
+  "function": "normalizeGapInput",
+  "found": true,
+  "cognitive_before": 19,
+  "line": 89,
+  "caller_count": 2,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

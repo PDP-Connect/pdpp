@@ -40,7 +40,7 @@ import {
 import {
   POINT_IN_TIME_REAL_FIELD_STREAMS as SERVER_POINT_IN_TIME_STREAMS,
   RECURRING_POINT_IN_TIME_SNAPSHOT_STREAMS as SERVER_RECURRING_SNAPSHOT_STREAMS,
-} from '../server/version-disposition.js';
+} from '../server/version-disposition.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.resolve(__dirname, '..', 'scripts', 'compact-record-history.mjs');
@@ -280,7 +280,7 @@ for (const stream of ['accounts', 'credit_card_billing']) {
 // ─── Server disposition-registry in-sync guardrail ────────────────────────
 //
 // version_disposition is now DERIVED server-side
-// (reference-implementation/server/version-disposition.js) from this script's
+// (reference-implementation/server/version-disposition.ts) from this script's
 // COMPACTION_POLICIES registry plus two reference-maintained stream lists. The
 // server module is intentionally `pg`-free, so this Node test imports it
 // directly (no source-parsing of the browser bundle, which is what the prior

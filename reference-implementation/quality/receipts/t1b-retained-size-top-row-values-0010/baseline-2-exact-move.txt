@@ -1,0 +1,5 @@
+# hone work t1b-retained-size-top-row-values-0010 — baseline rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/retained-size-read-model.js
+# expect: value expressions byte-identical in the new fn and in the SAME positional order as the removed insert.run argument list; SQL string untouched
+# exit: 0  duration: 0s  verdict: PASS
+

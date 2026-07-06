@@ -1,0 +1,6 @@
+# hone work df-evidence-package-schema-merge-oracle-0004 — baseline rung 'red-then-green-partial'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/partial: results.some((r) => !r.ok)/partial: false/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS (partial-failure marking is pinned); restore leaves a clean tree — paste failing output
+# exit: 0  duration: 0s  verdict: PASS
+
+oracle-not-yet-authored

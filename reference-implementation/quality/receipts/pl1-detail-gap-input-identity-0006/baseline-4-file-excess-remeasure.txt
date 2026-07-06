@@ -1,0 +1,60 @@
+# hone work pl1-detail-gap-input-identity-0006 — baseline rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'server/stores/connector-detail-gap-store.js' --cog 5
+# expect: file_excess strictly below the pre-edit baseline (42); NEW flagged names limited to deriveGapIdentity/deriveGapId (each near or below cc5)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "server/stores/connector-detail-gap-store.js",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 20,
+  "flagged_count": 7,
+  "file_excess": 42,
+  "flagged": [
+    {
+      "fn": "sanitizeDetailGapMetadata",
+      "line": 55,
+      "cc": 16,
+      "excess": 11
+    },
+    {
+      "fn": "normalizeGapInput",
+      "line": 89,
+      "cc": 19,
+      "excess": 14
+    },
+    {
+      "fn": "rowToGap",
+      "line": 138,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "listPendingGaps",
+      "line": 283,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "countGapsByStatusForConnector",
+      "line": 323,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "markGapStatus",
+      "line": 338,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "markGapStatus",
+      "line": 508,
+      "cc": 8,
+      "excess": 3
+    }
+  ],
+  "red_scan": [
+    "bearer"
+  ]
+}

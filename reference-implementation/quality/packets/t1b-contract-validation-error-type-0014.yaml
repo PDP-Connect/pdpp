@@ -1,0 +1,85 @@
+candidate_id: t1b-contract-validation-error-type-0014
+created: "2026-07-02T02:10:00.000Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server/contract-validation
+files: [server/contract-validation.js, test/route-contract-validation.test.js]
+symbols:
+  - pdppErrorBody
+  - file: server/contract-validation.js
+    parent_fn: pdppErrorBody
+    anchor: const type IIFE over status
+    line: 140
+public_surface:
+  - "PDPP error envelope `error.type` values: invalid_request_error | authentication_error | permission_error | not_found_error | api_error (values MUST NOT change)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "pdppErrorBody derives the public error-envelope type field through an inline IIFE (cc 8) CAPTURING status from the destructured params: 400=>invalid_request_error, 401=>authentication_error, 403=>permission_error, 404=>not_found_error, else api_error. That status->type taxonomy is caller-visible contract (Stripe-style error classing) hidden inside envelope assembly with no addressable name. Hoisting it to a named module fn with status EXPLICIT gives the taxonomy a single-entry surface next to its envelope builder — smallest cut in this batch, but the mapping it names is load-bearing for every error the validation layer emits."
+plan:
+  transform_class: explicit-context-extraction
+  instruction: "In server/contract-validation.js hoist the IIFE body to a named module fn errorTypeForStatus(status) placed directly above pdppErrorBody: the if-cascade byte-identical (400/401/403/404 branches then the api_error fallback). pdppErrorBody becomes const type = errorTypeForStatus(status). Nothing else in the envelope assembly (param/request_id conditionals) changes; oauthErrorBody untouched."
+expected_quality_gain: low
+owner_attention_reduction: low
+product_impact: low
+priority:
+  score: 3
+  computed: "2026-07-02T02:10:00.000Z"
+  inputs:
+    mass: 3
+    churn: 1
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: low
+  property_at_risk: "the exact status->error.type mapping; a wrong branch misclasses every validation error of that status"
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/callback-smells.json — server/contract-validation.js:140 cc 8 captures [status]"
+    result: T1b class; single immutable capture; pure mapping
+  - kind: coverage-read
+    detail: "test/route-contract-validation.test.js:151,:217"
+    result: "pins error.type === 'invalid_request_error' for 400-class validation failures; test/fastify-transport.test.js also exercises the envelope"
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/route-contract-validation.test.js test/fastify-transport.test.js"
+    expect: "all pass with unchanged counts, before AND after the edit"
+  - rung: exact-move
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/contract-validation.js"
+    expect: if-cascade byte-identical inside the new named fn; pdppErrorBody body otherwise untouched
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - relocation-without-decomplecting
+  - new-dependency
+  - adding-or-reordering-status-branches
+maker_tier: cheap
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: preserve_refactor×pure_logic×server/contract-validation
+touchset: [server/contract-validation.js]
+estimates:
+  tokens: 20000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "429824dda9dca15de469da322f3ab78a2a526dbf"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.94): The diff performs the requested explicit-context extraction exactly: the original IIFE cascade is preserved in order and values inside errorTypeForStatus(status), and pdppErrorBody now calls that helper without changing the surrounding envelope assembly. The provided receipts cover the required before/post tests, exact diff check, and typecheck, and the visible diff shows no not_allowed behavior, public-shape, dependency, or branch-order change. This is a real small decomplecting step because the captured status dependency is made explicit and the taxonomy gets an addressable name."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/route-contract-validation.test.js test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=2eb93b6a bytes=4663 receipt=quality/receipts/t1b-contract-validation-error-type-0014/baseline-1-direct-test.txt"
+    - "[baseline] exact-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/contract-validation.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-contract-validation-error-type-0014/baseline-2-exact-move.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-contract-validation-error-type-0014/baseline-3-typecheck.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/route-contract-validation.test.js test/fastify-transport.test.js -> exit 0 (1s) PASS; exit=0 djb2=dff81707 bytes=4664 receipt=quality/receipts/t1b-contract-validation-error-type-0014/post-1-direct-test.txt"
+    - "[post] exact-move: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/contract-validation.js -> exit 0 (0s) PASS; exit=0 djb2=f8f88a6c bytes=1024 receipt=quality/receipts/t1b-contract-validation-error-type-0014/post-2-exact-move.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/t1b-contract-validation-error-type-0014/post-3-typecheck.txt"
+  tokens_actual: 37363
+  lesson: null

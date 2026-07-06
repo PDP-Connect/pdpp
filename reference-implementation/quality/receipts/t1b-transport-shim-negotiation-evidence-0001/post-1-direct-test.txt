@@ -1,0 +1,80 @@
+# hone work t1b-transport-shim-negotiation-evidence-0001 — post rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/fastify-transport.test.js
+# expect: all tests pass including the new req.is/req.accepts/req.get pins; count strictly greater than the pre-packet 5
+# exit: 0  duration: 1s  verdict: PASS
+
+✔ createApp() is native Fastify — no express middleware stack (16.175587ms)
+✔ routes declared with { contract } carry the contract-package schema directly on the Fastify route (6.567621ms)
+✔ unknown contract operation ids fail fast at registration time (1.477137ms)
+✔ every @pdpp/reference-contract manifest matches a live Fastify route on the reference server (136.283437ms)
+✔ every @pdpp/reference-contract manifest is declared via { contract: "opId" } at registration time (96.106168ms)
+✔ req.is(type) strips content-type parameters before matching (11.698486ms)
+✔ req.is(types[]) returns the first matching candidate string, not true (3.140937ms)
+✔ req.is(type) returns false when there is no content-type header (2.215881ms)
+✔ req.accepts(types) exact short-form match returns the matched candidate (7.989997ms)
+✔ req.accepts(types) expands short-form to application/<short> for long-form Accept headers (2.257321ms)
+✔ req.accepts(types) with */* Accept header returns the first candidate (2.12471ms)
+✔ req.accepts(types) with no Accept header returns the first candidate (2.055838ms)
+✔ req.accepts(types) returns false when nothing matches (2.698759ms)
+(node:1950200) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 exit listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ req.accepts(types) candidate order decides which candidate wins when the Accept header matches both (3.950053ms)
+✔ req.get(name) looks up headers case-insensitively (3.998414ms)
+[21:54:58.068] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "POST"
+    [35murl[39m: "/is-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 5
+[21:54:58.085] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-json-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:54:58.087] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-star-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:54:58.074] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/is-none-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:54:58.072] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "POST"
+    [35murl[39m: "/is-array-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 1
+[21:54:58.082] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-html-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:54:58.092] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-none-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:54:58.089] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-missing-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:54:58.096] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/accepts-order-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+[21:54:58.100] [32mINFO[39m (1950200): [36mrequest completed[39m
+    [35mmethod[39m: "GET"
+    [35murl[39m: "/get-header-echo"
+    [35mstatusCode[39m: 200
+    [35mresponseTime[39m: 0
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1352.326649

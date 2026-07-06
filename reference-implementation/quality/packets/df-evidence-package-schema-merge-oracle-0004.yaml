@@ -1,0 +1,96 @@
+candidate_id: df-evidence-package-schema-merge-oracle-0004
+created: "2026-07-02T00:25:00.000Z"
+repo_sha: "5f513d99295d14abb092db521a89ee7c72847d33"
+subsystem: server/package-rs-client
+files: [server/package-rs-client.js, test/package-rs-client-merge-schema.test.js]
+symbols:
+  - mergeSchemaEnvelopes
+  - createPackageRsClient
+  - file: server/package-rs-client.js
+    parent_fn: mergeSchemaEnvelopes
+    anchor: ".forEach"
+    line: 560
+public_surface:
+  - "GET /v1/schema as experienced by hosted-MCP grant-package consumers — merged envelope: data.streams[], data.granted_connections[], data.connectors[] + connector_count/stream_count, data.package, meta.package.partial"
+behavior_status: likely_intended
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "The .forEach callback inside mergeSchemaEnvelopes (server/package-rs-client.js:560) is the third-largest callback smell in the inventory (quality/inventory/callback-smells.json: cc=77, excess=72, captured mutable accumulators children/allConnectorItems/seenStream/allStreams; tier T2-property) — the router correctly refuses extraction without a named-property oracle, and NO test anywhere references mergeSchemaEnvelopes (grep across test/ and server/ matches only the definition site; verified 2026-07-01). Yet its semantics are what every hosted-MCP package consumer experiences on schema discovery: dedupe keyed name::grant_id::connection_id, dual-shape acceptance (canonical data.connectors[] vs legacy flat data.streams), source-tag precedence (item.source spreads OVER the member tag), partial-failure marking (meta.package.partial), first-ok base body when some children fail, first result verbatim when all fail. Creating this direct oracle is the blocked candidate's missing precondition: it unlocks the held T2 preserve_refactor of the cc-77 callback (expected follow-up candidate: server-package-rs-client-t2-mergeschema-refactor). Evidence generation only — no implementation change."
+plan:
+  transform_class: direct-unit-oracle
+  instruction: "Create test/package-rs-client-merge-schema.test.js. mergeSchemaEnvelopes is module-private — do NOT export it; exercise it through the exported seam: createPackageRsClient({ providerUrl, members, fetch: fakeFetch }) (server/package-rs-client.js:67 — fetch is injectable) and await client.getJson(/v1/schema), with fakeFetch returning canned per-child schema envelopes. Assert the merge POLICY by name, not incidental shape: (1) canonical-shape children (data.connectors[].streams[]) flatten into data.streams tagged with each child source, preserving data.connectors concatenated with connector_count and stream_count; (2) a legacy flat-shape child (data.streams directly on the body) still merges; (3) dedupe key is name::grant_id::connection_id — the same stream name from two members with different grant_id survives twice, a duplicate within one member collapses; (4) granted_connections dedupe by connection_id::grant_id; (5) source-tag precedence: an item-level source object spreads OVER the member tag; (6) one failed child sets meta.package.partial true while the merge continues from ok children, and when ALL children fail the first result is returned as-is; (7) data.package = { grant_package: true, member_count, sources } is always attached. server/package-rs-client.js must be byte-identical at commit; seeded regressions during evidence are transient and reverted."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "a test that freezes incidental envelope trivia instead of the merge policy (dedupe keys, source precedence, partial marking) would block the follow-up refactor rather than unlock it — assert named fields and policy outcomes, never deep-equal the whole envelope"
+authoring_evidence:
+  - kind: inventory
+    detail: quality/inventory/callback-smells.json row for server/package-rs-client.js parent_fn mergeSchemaEnvelopes anchor .forEach line 560 (inventory snapshot 6e8d8559c36b94d41bc4c42a9a31342e60b3b334)
+    result: "cc=77 excess=72, tier T2-property, captured mutable accumulators — extraction held pending a property oracle"
+  - kind: coverage-sweep
+    detail: grep -rln mergeSchemaEnvelopes test/ server/
+    result: only server/package-rs-client.js (definition) — zero direct test evidence
+  - kind: function-read
+    detail: "server/package-rs-client.js:529-633 read in full plus module header :1-38"
+    result: "merge policy confirmed as described (dedupe keys :581,:587,:597,:604; precedence spread :575-577; partial flag :629; first-ok base :548-551; package block :619-623); createPackageRsClient at :67 takes an injectable fetch, so the oracle needs no source change"
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/package-rs-client-merge-schema.test.js ]; then node --test test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi'"
+    expect: "baseline: oracle-not-yet-authored (file absent). Post: all pass; the test constructs clients via createPackageRsClient with an injected fake fetch and never patches module internals"
+  - rung: red-then-green-precedence
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/{ ...sourceTag, ...item.source }/{ ...item.source, ...sourceTag }/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi"
+    expect: "baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS (source-tag precedence is pinned); guard confirmed the file was clean before seeding; checkout restores it — paste failing output"
+  - rung: red-then-green-partial
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/partial: results.some((r) => !r.ok)/partial: false/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi"
+    expect: "baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS (partial-failure marking is pinned); restore leaves a clean tree — paste failing output"
+  - rung: byte-identity
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/package-rs-client.js && if [ -f test/package-rs-client-merge-schema.test.js ]; then git status --short test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi"
+    expect: "empty diff for server/package-rs-client.js at baseline and post; baseline additionally prints oracle-not-yet-authored (file absent); post: the new test file is the only addition in the touchset"
+not_allowed:
+  - implementation-change
+  - exporting-private-functions
+  - contract-change
+  - snapshot-testing-the-entire-envelope
+  - new-dependency
+maker_tier: standard
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: generate_evidence×pure_logic×server/package-rs-client
+touchset: [test/package-rs-client-merge-schema.test.js]
+estimates:
+  tokens: 60000
+  evidence_cost: medium
+depends_on: []
+unlocks: [server-package-rs-client-t2-mergeschema-refactor]
+status: landed
+outcome:
+  commit: "45e38589873c2c6016e940d4a36e07b1f0d90014"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.86): The change satisfies the packet by adding a direct oracle through the public client seam without implementation changes, private exports, new dependencies, or whole-envelope snapshot testing. The tests cover canonical and legacy stream merging, stream and granted_connection dedupe keys, source precedence, partial-success behavior, all-fail first-result passthrough, and data.package attachment. The supplied post-r2 evidence shows the oracle green, the two required seeded regressions red with pasted failures, and server/package-rs-client.js unchanged."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/package-rs-client-merge-schema.test.js ]; then node --test test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi' -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/baseline-1-direct-test.txt"
+    - "[baseline] red-then-green-precedence: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/{ ...sourceTag, ...item.source }/{ ...item.source, ...sourceTag }/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/baseline-2-red-then-green-precedence.txt"
+    - "[baseline] red-then-green-partial: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/partial: results.some((r) => !r.ok)/partial: false/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/baseline-3-red-then-green-partial.txt"
+    - "[baseline] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/package-rs-client.js && if [ -f test/package-rs-client-merge-schema.test.js ]; then git status --short test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/baseline-4-byte-identity.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/package-rs-client-merge-schema.test.js ]; then node --test test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi' -> exit 0 (0s) PASS; exit=0 djb2=f4225188 bytes=998 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/post-1-direct-test.txt"
+    - "[post] red-then-green-precedence: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/{ ...sourceTag, ...item.source }/{ ...item.source, ...sourceTag }/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=8618a093 bytes=1804 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/post-2-red-then-green-precedence.txt"
+    - "[post] red-then-green-partial: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/partial: results.some((r) => !r.ok)/partial: false/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=c329f9b5 bytes=1722 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/post-3-red-then-green-partial.txt"
+    - "[post] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/package-rs-client.js && if [ -f test/package-rs-client-merge-schema.test.js ]; then git status --short test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=2fe7e93a bytes=47 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/post-4-byte-identity.txt"
+    - "[post-r2] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/package-rs-client-merge-schema.test.js ]; then node --test test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi' -> exit 0 (0s) PASS; exit=0 djb2=e89598fc bytes=998 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/post-r2-1-direct-test.txt"
+    - "[post-r2] red-then-green-precedence: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/{ ...sourceTag, ...item.source }/{ ...item.source, ...sourceTag }/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=9ef6e6a4 bytes=1802 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/post-r2-2-red-then-green-precedence.txt"
+    - "[post-r2] red-then-green-partial: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/partial: results.some((r) => !r.ok)/partial: false/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=40bdea02 bytes=1722 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/post-r2-3-red-then-green-partial.txt"
+    - "[post-r2] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/package-rs-client.js && if [ -f test/package-rs-client-merge-schema.test.js ]; then git status --short test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=2fe7e93a bytes=47 receipt=quality/receipts/df-evidence-package-schema-merge-oracle-0004/post-r2-4-byte-identity.txt"
+  tokens_actual: 151437
+  lesson: landed after 1 revision cycle(s) — first attempt did not clear the gate
+resets:
+  - at: "2026-07-02T04:44:43.477Z"
+    from_status: blocked
+    reason: "repaired per run-1 diagnostic: baseline direct-test rung ran the not-yet-created oracle file unconditionally (instant $0 block); oracle rungs now guarded with the hm [ -f ] fallback pattern"

@@ -47,7 +47,7 @@ import {
 import {
   getDefaultConnectorAttentionStore,
   resetDefaultConnectorAttentionStoreCache,
-} from '../server/stores/connector-attention-store.js';
+} from '../server/stores/connector-attention-store.ts';
 
 const NOW_ISO = '2026-05-19T12:00:00.000Z';
 const PRIOR_SUCCESS_ISO = '2026-05-19T10:00:00.000Z';

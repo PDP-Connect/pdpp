@@ -1,0 +1,111 @@
+candidate_id: hm-state-checkpoint-extract-0005
+created: "2026-07-02T03:38:00.000Z"
+repo_sha: e7ede6e50ea9b2f3d60ba908862a846c833d7a5c
+subsystem: runtime
+files: [runtime/index.js]
+symbols:
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'STATE' — await flushBatch(msg.stream); newState[msg.stream] = msg.cursor; run.state_staged emit"
+    line: 2976
+public_surface:
+  - "spine event_type run.state_staged and its data fields (cursor, checkpoint_mode, state_streams_staged, state_commit_intent)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: property_at_risk
+execution_gate: autonomous
+why_this_matters: "The STATE arm (runtime/index.js:2976) stages a stream cursor for commit-on-success. Its await order is a durability invariant: flushBatch(msg.stream) MUST complete before newState[stream] is assigned and run.state_staged is emitted — a reordering stages a cursor whose records were never ingested, which silently loses data on the next incremental resume. Braided inside the cc-194 handleMsg it is invisible; as a named handler with explicit context the invariant is one screen tall and directly testable. Extraction only; the awaited order is proven preserved by the 0002 characterization oracle."
+plan:
+  transform_class: explicit-context-extraction
+  instruction: "In runtime/index.js ONLY: create module-level (column-0) named async function handleStateMsg(msg, ctx, emitSpineEventTracked) with the 'STATE' arm body verbatim (await flushBatch(msg.stream) FIRST via the ctx-destructured local, then newState[msg.stream] = msg.cursor, then the run.state_staged emit — the emit call stays BYTE-IDENTICAL to the arm: await emitSpineEventTracked({...}) with the identical payload including state_streams_staged: countStagedStateStreams() and state_commit_intent derived from persistState). EMITTER SEAM MANDATE (added 2026-07-02 run-8 per the TWO judge REJECTs on sibling hm-detail-page-coverage-extract-0007 — run-6 codex and run-7 claude both refused routing the effectful emitSpineEventTracked closure through ctx indirection): the tracked spine emitter enters as an EXPLICIT TRAILING PARAMETER named emitSpineEventTracked and the delegation passes the bare closure identifier, so the diff proves service identity syntactically; do NOT add an emitSpineEventTracked key to msgCtx and do NOT rewrite the emit as ctx.emitSpineEvent. Extend msgCtx with { newState, countStagedStateStreams, persistState } (newState is a reference-mutable object — explicit param, not capture; flushBatch already in msgCtx from hm-record-scope-extract-0004 — if execution order placed this packet first, add it here instead). The case arm becomes: case 'STATE': await handleStateMsg(msg, msgCtx, emitSpineEventTracked); break;. validateStateMessage is already module-scope — call it directly. No payload field, order, or error-string changes. CALL-STYLE MANDATE — repaired 2026-07-02 per run-4: context fields MUST be destructured into locals before invocation (const { onProgress } = msgCtx; onProgress(msg)), NEVER method-called off the context object (ctx.onProgress(msg) is FORBIDDEN). WHY: in strict mode a method call rebinds this inside the callback from undefined to the context object — an observable behavior change; run-4's judge REJECTed sibling hm-reporting-family-extract-0003 (confidence 0.84) for exactly this."
+expected_quality_gain: medium
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 74
+  computed: "2026-07-02T03:38:00.000Z"
+  inputs:
+    mass: 8
+    churn: 63
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: high
+  property_at_risk: "a stream's cursor is staged only after every buffered record for that stream has been flushed to the record store (crash-consistency of checkpointed_streaming); run.state_staged reports the true staged-stream count and commit intent"
+authoring_evidence:
+  - kind: sensor
+    detail: "scope-fn --target 'runtime/index.js::handleMsg' = 194; STATE arm is 2976-3003 (~28 lines, cc ~8)"
+    result: "small mass but async-order tier — routed property_at_risk per the agenda's T2 classification, not by size"
+  - kind: coverage-check
+    detail: "run.state_staged existence pinned (collection-profile, cli, event-spine — all green 2026-07-02); flush-before-stage ORDER pinned only by hm-await-order-state-flush-0002a (dependency)"
+    result: with 0002 landed the ordering regression is red-detectable; without it this extraction would be unprovable — hence the hard dependency
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-msg-order-state-flush runtime-handle-msg-dispatch collection-profile event-spine; do db=pdpp_hone_hm_sce5_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'"
+    expect: "all green with unchanged counts (collection-profile 124/124, event-spine 46/46 baselines 2026-07-02); the 0002 STATE flush-before-stage ordering test green post-edit is THE proof; repaired 2026-07-02 run-8 per the iteration-4 shared-DB lint: per-file ephemeral DBs (pdpp_hone_*) + --test-force-exit replicate the scripts/run-tests.js isolation contract (same pattern as sibling 0007/0011 rungs)"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg'"
+    expect: "found=true; cognitive_before strictly BELOW this packet's pre-edit baseline receipt"
+    expect_check:
+      type: scope_fn_lt
+      value: 194
+  - rung: file-excess-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5"
+    expect: file_excess strictly below the pre-edit measured value; only NEW flagged name (if any) is handleStateMsg
+  - rung: no-new-anon-callbacks
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - await-order-change
+  - new-dependency
+  - new-module-file
+  - captured-mutable-cells-in-new-handlers
+  - method-calling-threaded-callbacks
+maker_tier: standard
+judge_tier: strong
+maker_provider: codex
+judge_provider: claude
+batch_key: preserve_refactor×property_at_risk×runtime
+touchset: [runtime/index.js]
+estimates:
+  tokens: 55000
+  evidence_cost: medium
+depends_on:
+  - hm-dispatch-guards-oracle-0001
+  - hm-await-order-state-flush-0002a
+  - hm-reporting-family-extract-0003
+unlocks: [hm-dispatch-table-coherence-0011]
+status: landed
+outcome:
+  commit: "07a0da3332ff1b2dbffc192e06531516927ba123"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.9): Line-by-line comparison confirms the STATE arm was extracted verbatim into handleStateMsg with the flushBatch-before-newState-assignment-before-emit order fully preserved, byte-identical emit payload, and no public-shape or await-order changes. The packet's two hard-won mandates (emitSpineEventTracked as explicit trailing param, not ctx-routed; context fields destructured to locals, not method-called) are both satisfied exactly as specified. All evidence rungs pass pre/post with matching baselines (46/46 tests, 0 typecheck errors, cognitive complexity reduced 65→62, file_excess reduced 624→621, 0 new anon callbacks), and the STATE flush-before-stage ordering test (dependency 0002) is green post-edit, which is the proof this extraction didn't disturb the durability invariant."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-msg-order-state-flush runtime-handle-msg-dispatch collection-profile event-spine; do db=pdpp_hone_hm_sce5_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (32s) PASS; exit=0 djb2=15684df5 bytes=82460 receipt=quality/receipts/hm-state-checkpoint-extract-0005/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-state-checkpoint-extract-0005/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=b6b01d70 bytes=279 receipt=quality/receipts/hm-state-checkpoint-extract-0005/baseline-3-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=5ed3083d bytes=7053 receipt=quality/receipts/hm-state-checkpoint-extract-0005/baseline-4-file-excess-remeasure.txt"
+    - "[baseline] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (5s) PASS; exit=0 djb2=4e3e5726 bytes=182 receipt=quality/receipts/hm-state-checkpoint-extract-0005/baseline-5-no-new-anon-callbacks.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-msg-order-state-flush runtime-handle-msg-dispatch collection-profile event-spine; do db=pdpp_hone_hm_sce5_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc' -> exit 0 (32s) PASS; exit=0 djb2=0edf51e4 bytes=82462 receipt=quality/receipts/hm-state-checkpoint-extract-0005/post-1-direct-test.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-state-checkpoint-extract-0005/post-2-typecheck.txt"
+    - "[post] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=e0d2dfeb bytes=279 receipt=quality/receipts/hm-state-checkpoint-extract-0005/post-3-complexity-remeasure.txt"
+    - "[post] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=a433ebbb bytes=7053 receipt=quality/receipts/hm-state-checkpoint-extract-0005/post-4-file-excess-remeasure.txt"
+    - "[post] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (5s) PASS; exit=0 djb2=4e3e5726 bytes=182 receipt=quality/receipts/hm-state-checkpoint-extract-0005/post-5-no-new-anon-callbacks.txt"
+  tokens_actual: 133872
+  lesson: null

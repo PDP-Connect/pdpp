@@ -1419,57 +1419,82 @@ const RESUME_CLAIM_RE = /resum|refresh|next run|retry/i;
 const DIGIT_RE = /\d/;
 const MECHANISTIC_NOUN_RE = /(gap|retr|backlog|record)/i;
 
+function isViolation(violation: string | null): violation is string {
+  return violation !== null;
+}
+
+function missingFreshnessAnnotationViolation(
+  verdict: RenderedVerdict,
+  snapshot: ConnectionHealthSnapshot
+): string | null {
+  if (snapshot.axes.freshness !== "fresh" && !verdict.annotations.some((a) => a.kind === "freshness")) {
+    return "off-fresh verdict is missing its co-required freshness annotation (inv 1)";
+  }
+  return null;
+}
+
+function streamCollectionCountViolation(row: VerdictStreamRow): string | null {
+  if (row.collected !== null && row.considered !== null && row.collected > row.considered) {
+    return `stream ${row.stream_id} collected > considered (inv 2)`;
+  }
+  return null;
+}
+
+function terminalForwardStatementResumeViolation(verdict: RenderedVerdict): string | null {
+  if (verdict.detail.forward_disposition === "terminal" && RESUME_CLAIM_RE.test(verdict.forward_statement)) {
+    return "forward_statement claims recovery on a terminal disposition (inv 3)";
+  }
+  return null;
+}
+
+function terminalProgressHeadlineResumeViolation(verdict: RenderedVerdict): string | null {
+  if (verdict.detail.forward_disposition === "terminal" && RESUME_CLAIM_RE.test(verdict.progress.headline)) {
+    return "progress.headline claims recovery on a terminal disposition (inv 3)";
+  }
+  return null;
+}
+
+function connectionActionTerminalViolation(action: RequiredAction, dispositionTerminal: boolean): string | null {
+  if (action.affects.length === 0 && action.terminal !== dispositionTerminal) {
+    return `action ${action.kind} terminal disagrees with disposition oracle (inv 4)`;
+  }
+  return null;
+}
+
+function toneBelowBaseStateViolation(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string | null {
+  if (TONE_RANK[verdict.pill.tone] < TONE_RANK[baseStateTone(snapshot.state)]) {
+    return "pill.tone is below the base state tone — not worst-wins (inv 5)";
+  }
+  return null;
+}
+
+function toneLabelViolation(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string | null {
+  if (verdict.pill.label !== labelForPill(verdict.pill.tone, snapshot)) {
+    return "pill.label does not match tone plus active-work evidence (inv 6)";
+  }
+  return null;
+}
+
+function terminalStreamResumeStatementViolation(row: VerdictStreamRow): string | null {
+  if (row.disposition === "terminal" && RESUME_CLAIM_RE.test(row.statement)) {
+    return `stream ${row.stream_id} pairs terminal disposition with a resume statement (inv 7)`;
+  }
+  return null;
+}
+
 /** Honesty invariants 1–7 over the whole verdict. */
 function honestyViolations(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string[] {
-  const violations: string[] = [];
-
-  // (1) freshness-mandatory-off-fresh.
-  if (snapshot.axes.freshness !== "fresh" && !verdict.annotations.some((a) => a.kind === "freshness")) {
-    violations.push("off-fresh verdict is missing its co-required freshness annotation (inv 1)");
-  }
-
-  // (2) collected <= considered on every stream row.
-  for (const row of verdict.streams) {
-    if (row.collected !== null && row.considered !== null && row.collected > row.considered) {
-      violations.push(`stream ${row.stream_id} collected > considered (inv 2)`);
-    }
-  }
-
-  // (3) terminal disposition must not claim resumed collection.
-  if (verdict.detail.forward_disposition === "terminal" && RESUME_CLAIM_RE.test(verdict.forward_statement)) {
-    violations.push("forward_statement claims recovery on a terminal disposition (inv 3)");
-  }
-  if (verdict.detail.forward_disposition === "terminal" && RESUME_CLAIM_RE.test(verdict.progress.headline)) {
-    violations.push("progress.headline claims recovery on a terminal disposition (inv 3)");
-  }
-
-  // (4) terminal === (forward_disposition === "terminal") for every connection-level action.
   const dispositionTerminal = verdict.detail.forward_disposition === "terminal";
-  for (const action of verdict.required_actions) {
-    if (action.affects.length === 0 && action.terminal !== dispositionTerminal) {
-      violations.push(`action ${action.kind} terminal disagrees with disposition oracle (inv 4)`);
-    }
-  }
-
-  // (5) tone is worst-wins — never below the base state tone.
-  if (TONE_RANK[verdict.pill.tone] < TONE_RANK[baseStateTone(snapshot.state)]) {
-    violations.push("pill.tone is below the base state tone — not worst-wins (inv 5)");
-  }
-
-  // (6) label follows tone plus active-work evidence. Grey is "Not measured"
-  // unless current activity evidence proves the system is actually checking.
-  if (verdict.pill.label !== labelForPill(verdict.pill.tone, snapshot)) {
-    violations.push("pill.label does not match tone plus active-work evidence (inv 6)");
-  }
-
-  // (7) no contradictory chip pair: a terminal stream row must not carry a resume statement.
-  for (const row of verdict.streams) {
-    if (row.disposition === "terminal" && RESUME_CLAIM_RE.test(row.statement)) {
-      violations.push(`stream ${row.stream_id} pairs terminal disposition with a resume statement (inv 7)`);
-    }
-  }
-
-  return violations;
+  return [
+    missingFreshnessAnnotationViolation(verdict, snapshot),
+    ...verdict.streams.map(streamCollectionCountViolation),
+    terminalForwardStatementResumeViolation(verdict),
+    terminalProgressHeadlineResumeViolation(verdict),
+    ...verdict.required_actions.map((action) => connectionActionTerminalViolation(action, dispositionTerminal)),
+    toneBelowBaseStateViolation(verdict, snapshot),
+    toneLabelViolation(verdict, snapshot),
+    ...verdict.streams.map(terminalStreamResumeStatementViolation),
+  ].filter(isViolation);
 }
 
 /** Checks one calm/advisory annotation for disallowed kind or mechanistic count (inv S2). */

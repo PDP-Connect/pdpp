@@ -60,8 +60,23 @@
 //       reference-owner-agent-control-surface/spec.md
 //       reference-connector-instances/spec.md
 
-import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
-import { codeToStatus } from "./ref-error-status.ts";
+import {
+  auditActorKind,
+  buildAuditTrace,
+  httpStatusForOperationError,
+  readConnectionTarget,
+  rethrowAsAmbiguousConnection,
+} from "./_owner-connection-helpers.ts";
+import type {
+  ActiveBinding,
+  AmbiguousConnectionErrorLike,
+  ConnectorNamespace,
+  MiddlewareHandler,
+  PdppErrorFn,
+  RouteArg,
+  TraceContext,
+  WireConnection,
+} from "./_route-contract.ts";
 
 interface RouteRequest {
   readonly params: Readonly<Record<string, string>>;
@@ -90,22 +105,6 @@ interface AppLike {
   delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
-interface ConnectorNamespace {
-  readonly connectorId: string;
-  readonly connectorInstanceId: string;
-}
-
-interface ActiveBinding {
-  readonly connectorId?: string | null;
-  readonly connectorInstanceId: string;
-  readonly displayName?: string | null;
-}
-
-interface WireConnection {
-  connection_id: string;
-  display_name?: string;
-}
-
 // Non-secret deletion summary the store returns. Counts + stable ids only.
 interface DeleteSummary {
   readonly connection_id: string;
@@ -115,18 +114,6 @@ interface DeleteSummary {
   readonly device_refs_cleared: number;
   readonly schedule_deleted: boolean;
   readonly source_kind: string;
-}
-
-interface TraceContext {
-  readonly request_id: string;
-  readonly scenario_id: string;
-  readonly trace_id: string;
-}
-
-interface AmbiguousConnectionErrorLike extends Error {
-  available_connections: WireConnection[];
-  code: string;
-  retry_with: string;
 }
 
 export interface MountOwnerConnectionDeleteContext {
@@ -178,34 +165,6 @@ export interface MountOwnerConnectionDeleteContext {
     }
   ): Promise<ConnectorNamespace>;
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
-}
-
-function auditActorKind(req: RouteRequest): "owner_agent" | "client" | "mcp_package" | "unknown" {
-  const kind = req.tokenInfo?.pdpp_token_kind;
-  if (kind === "owner") {
-    return "owner_agent";
-  }
-  if (kind === "client" || kind === "mcp_package") {
-    return kind;
-  }
-  return "unknown";
-}
-
-function httpStatusForDeleteError(err: unknown): number {
-  const code = (err as { code?: unknown })?.code;
-  return typeof code === "string" ? (codeToStatus[code] ?? 500) : 500;
-}
-
-function buildAuditTrace(ctx: MountOwnerConnectionDeleteContext, req: RouteRequest, res: RouteResponse): TraceContext {
-  const scenarioId = typeof req.tokenInfo?.scenario_id === "string" ? req.tokenInfo.scenario_id : undefined;
-  const trace = scenarioId ? ctx.createTraceContext({ scenarioId }) : ctx.createTraceContext();
-  const requestId = ctx.ensureRequestId(res);
-  ctx.setReferenceTraceId(res, trace.trace_id);
-  return {
-    request_id: requestId,
-    scenario_id: trace.scenario_id,
-    trace_id: trace.trace_id,
-  };
 }
 
 // Emits one non-secret owner_agent.connection.delete spine event. Carries the
@@ -271,7 +230,7 @@ async function emitDeleteAudit(
         ? {
             error: {
               code: typeof code === "string" ? code : "api_error",
-              http_status: httpStatusForDeleteError(args.error),
+              http_status: httpStatusForOperationError(args.error),
             },
           }
         : {}),
@@ -293,7 +252,7 @@ function buildDeleteRequireOwner(
     }
     const err = new Error("Owner token required") as Error & { code: string };
     err.code = "permission_error";
-    const { connectionId, connectorKey } = readDeleteTarget(ctx, req, selector);
+    const { connectionId, connectorKey } = readConnectionTarget(ctx, req, selector);
     await emitDeleteAudit(ctx, req, res, {
       connectionId,
       connectorKey,
@@ -304,42 +263,6 @@ function buildDeleteRequireOwner(
     });
     ctx.pdppError(res, 403, "permission_error", "Owner token required");
   };
-}
-
-function readDeleteTarget(
-  ctx: MountOwnerConnectionDeleteContext,
-  req: RouteRequest,
-  selector: "connection_id" | "connector_id"
-): { connectionId: string | null; connectorKey: string | null } {
-  if (selector === "connection_id") {
-    const connectionId = req.params.connectionId ? decodeURIComponent(req.params.connectionId) : null;
-    return { connectionId, connectorKey: null };
-  }
-  const raw = req.params.connectorId ? decodeURIComponent(req.params.connectorId) : null;
-  const connectorKey = raw ? (ctx.canonicalConnectorKey(raw) ?? raw) : null;
-  return { connectionId: null, connectorKey };
-}
-
-// Maps the resolver's connector-only ambiguity to the public typed
-// ambiguous_connection (409) carrying the available connection_id values and
-// retry_with: connection_id. Any other resolver error is rethrown unchanged.
-async function rethrowAsAmbiguousConnection(
-  ctx: MountOwnerConnectionDeleteContext,
-  err: unknown,
-  ownerSubjectId: string,
-  connectorKey: string
-): Promise<never> {
-  if ((err as { code?: unknown })?.code !== "ambiguous_connector_instance") {
-    throw err;
-  }
-  const active = await Promise.resolve(ctx.listActiveBindingsForGrant({ ownerSubjectId, connectorId: connectorKey }));
-  const available = active
-    .map((binding) => ctx.projectBindingForWire(binding))
-    .filter((row): row is WireConnection => row !== null);
-  throw new ctx.AmbiguousConnectionError(
-    `Connector '${connectorKey}' has multiple active connections. Retry with a specific connection_id.`,
-    available
-  );
 }
 
 // Shared handler body for both routes. For the connector-only selector it

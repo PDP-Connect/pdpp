@@ -1,0 +1,58 @@
+# hone work pl2-browser-surface-target-validation-extract-0014 — baseline rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'runtime/browser-surface-readiness.ts' --cog 5
+# expect: file_excess drops below the fresh baseline 29 without introducing a newly flagged helper.
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "runtime/browser-surface-readiness.ts",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 12,
+  "flagged_count": 7,
+  "file_excess": 29,
+  "flagged": [
+    {
+      "fn": "<anon>",
+      "line": 157,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "<anon>",
+      "line": 167,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "probeBrowserSurfaceReadinessOverHttp",
+      "line": 222,
+      "cc": 12,
+      "excess": 7
+    },
+    {
+      "fn": "validateSurfaceShape",
+      "line": 290,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "isUsablePageTarget",
+      "line": 330,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "fetchJsonWithBudget",
+      "line": 394,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "fetchOkWithBudget",
+      "line": 457,
+      "cc": 7,
+      "excess": 2
+    }
+  ],
+  "red_scan": []
+}

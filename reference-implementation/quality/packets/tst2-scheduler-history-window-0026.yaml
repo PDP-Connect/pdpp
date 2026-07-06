@@ -1,0 +1,69 @@
+candidate_id: tst2-scheduler-history-window-0026
+created: "2026-07-06T23:13:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: server/stores/scheduler-store
+files: [test/scheduler-history-window-oracle.test.js, server/stores/scheduler-store.ts]
+symbols: [createSqliteSchedulerStore, createPostgresSchedulerStore, listRunHistory]
+public_surface: [scheduler history read model returns the newest bounded window in chronological order]
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "Existing scheduler tests call listRunHistory, but rg found no by-name scheduler-history-window oracle for the two-step newest-window-then-chronological contract. This pins schedule-history paging/windowing beyond the previous projection helper oracle."
+plan:
+  transform_class: add-seeded-mutation-oracle
+  instruction: "Create test/scheduler-history-window-oracle.test.js. Seed more than the requested history limit with tied completed_at timestamps and distinct ids/attempts, then assert listRunHistory(limit) returns only the newest limit rows and presents that selected window oldest-to-newest. Cover at least the SQLite store; include Postgres if the existing test helper makes it cheap."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: operator schedule history should not show the oldest rows just because the final presentation order is ascending
+authoring_evidence:
+  - kind: coverage-sweep
+    detail: "rg -n 'scheduler-history-window|completed_at ASC|completedAt.*history.*limit' test"
+    result: no exact window-order oracle
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT\" && if [ -f test/scheduler-history-window-oracle.test.js ]; then src=server/queries/controller/list-scheduler-run-history.sql; bak=/tmp/tst2_0026_scheduler_history.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/ORDER BY completed_at DESC, id DESC/ORDER BY completed_at ASC, id ASC/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0026; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-history-window-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi"
+    expect: POST changes the SQLite newest-window subquery to oldest-window; the new oracle kills it and source restoration is verified.
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/scheduler-history-window-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0026_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-history-window-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi'"
+    expect: "POST: the new oracle passes; BASELINE: guarded green while absent."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed: [non-test-source-change, behavior-change, new-dependency, shared-db-usage, git-command]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: null
+batch_key: generate_evidence×effectful×server/stores/scheduler-store
+touchset: [test/scheduler-history-window-oracle.test.js]
+estimates:
+  tokens: 40000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && if [ -f test/scheduler-history-window-oracle.test.js ]; then src=server/queries/controller/list-scheduler-run-history.sql; bak=/tmp/tst2_0026_scheduler_history.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/ORDER BY completed_at DESC, id DESC/ORDER BY completed_at ASC, id ASC/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0026; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-history-window-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=c168aace bytes=42 receipt=quality/receipts/tst2-scheduler-history-window-0026/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/scheduler-history-window-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0026_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-history-window-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=caf12c67 bytes=31 receipt=quality/receipts/tst2-scheduler-history-window-0026/baseline-2-direct-test-green.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && if [ -f test/scheduler-history-window-oracle.test.js ]; then src=server/queries/controller/list-scheduler-run-history.sql; bak=/tmp/tst2_0026_scheduler_history.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/ORDER BY completed_at DESC, id DESC/ORDER BY completed_at ASC, id ASC/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0026; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-history-window-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi -> exit 0 (3s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=79b0e631 bytes=1452 receipt=quality/receipts/tst2-scheduler-history-window-0026/post-1-red-then-green-mutant-kill.txt"
+    - "[post] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/scheduler-history-window-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0026_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-history-window-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 1 (3s, timeout 1800s) FAIL: exit 1 (expected 0); exit=1 timeout=1800s djb2=069461e0 bytes=1412 receipt=quality/receipts/tst2-scheduler-history-window-0026/post-2-direct-test-green.txt"
+    - "[post-r1] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && if [ -f test/scheduler-history-window-oracle.test.js ]; then src=server/queries/controller/list-scheduler-run-history.sql; bak=/tmp/tst2_0026_scheduler_history.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/ORDER BY completed_at DESC, id DESC/ORDER BY completed_at ASC, id ASC/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0026; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-history-window-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi -> exit 0 (3s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=4371de25 bytes=1452 receipt=quality/receipts/tst2-scheduler-history-window-0026/post-r1-1-red-then-green-mutant-kill.txt"
+    - "[post-r1] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/scheduler-history-window-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0026_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-history-window-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 1 (3s, timeout 1800s) FAIL: exit 1 (expected 0); exit=1 timeout=1800s djb2=59011e74 bytes=1412 receipt=quality/receipts/tst2-scheduler-history-window-0026/post-r1-2-direct-test-green.txt"
+  tokens_actual: 229246
+  lesson: "transform failed its own evidence ladder at 'direct-test-green' — prior for generate_evidence×effectful×server/stores/scheduler-store down"
+routing_class: certified-mechanical

@@ -73,7 +73,7 @@ import { pathToFileURL } from 'node:url';
 
 import pg from 'pg';
 
-import { deriveSpineSource } from '../../server/postgres-storage.js';
+import { deriveSpineSource } from '../../server/connector-instance-utils.ts';
 
 const { Pool } = pg;
 

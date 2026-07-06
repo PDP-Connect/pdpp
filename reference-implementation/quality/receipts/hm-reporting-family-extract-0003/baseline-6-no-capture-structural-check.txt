@@ -1,0 +1,6 @@
+# hone work hm-reporting-family-extract-0003 — baseline rung 'no-capture-structural-check'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'grep -cE "^(async )?function handle(Progress|SkipResult)Msg\(" runtime/index.js || true'
+# expect: baseline: 0 (handlers do not exist yet). Post: 2 — both handlers are column-0 module-level declarations (structurally incapable of capturing runConnector-scoped mutable cells); judge confirms the count
+# exit: 0  duration: 0s  verdict: PASS
+
+0

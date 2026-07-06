@@ -419,24 +419,9 @@ export async function rebuildDatasetSummaryProjection(dependencies, { signal } =
       // longer match the live tables.
       const conflictAt = nowIso();
       const after = getDatasetSummaryProjection();
-      writeDatasetSummaryProjection(
-        {
-          counts: after.counts,
-          retained_bytes: after.retained_bytes,
-          record_time_bounds: after.record_time_bounds,
-          ingested_time_bounds: after.ingested_time_bounds,
-          top_connector_candidates: after.top_connector_candidates,
-        },
-        {
-          computed_at: after.metadata.computed_at,
-          state: after.metadata.state === 'failed' ? 'failed' : 'stale',
-          stale_since: after.metadata.stale_since || conflictAt,
-          rebuild_status: 'idle',
-          last_error:
-            after.metadata.last_error ||
-            'dataset summary projection rebuild superseded by concurrent delta',
-          source_high_watermark: after.metadata.source_high_watermark || null,
-        },
+      writeDatasetSummaryProjectionPreservingSummary(
+        after,
+        supersededRebuildMetadata(after, conflictAt),
         conflictAt,
       );
       return getDatasetSummaryProjection();
@@ -445,43 +430,57 @@ export async function rebuildDatasetSummaryProjection(dependencies, { signal } =
   } catch (err) {
     const endedAt = nowIso();
     const current = getDatasetSummaryProjection();
-    // Cancellation is non-destructive: canonical evidence is untouched
-    // and the last-known projection rows survive. Mark the projection
-    // stale (not failed) so the operator surface still shows the prior
-    // freshness but reports honestly that the rebuild did not complete.
-    const aborted = isAbortError(err);
-    const metadata = aborted
-      ? {
-          computed_at: current.metadata.computed_at,
-          state: current.metadata.state === 'failed' ? 'failed' : 'stale',
-          stale_since: current.metadata.stale_since || startedAt,
-          rebuild_status: 'idle',
-          last_error:
-            current.metadata.last_error ||
-            sanitizeProjectionError(err.message || 'dataset summary projection rebuild cancelled'),
-          source_high_watermark: current.metadata.source_high_watermark || null,
-        }
-      : {
-          computed_at: current.metadata.computed_at,
-          state: 'failed',
-          stale_since: current.metadata.stale_since || startedAt,
-          rebuild_status: 'failed',
-          last_error: sanitizeProjectionError(err),
-          source_high_watermark: current.metadata.source_high_watermark || null,
-        };
-    writeDatasetSummaryProjection(
-      {
-        counts: current.counts,
-        retained_bytes: current.retained_bytes,
-        record_time_bounds: current.record_time_bounds,
-        ingested_time_bounds: current.ingested_time_bounds,
-        top_connector_candidates: current.top_connector_candidates,
-      },
-      metadata,
+    writeDatasetSummaryProjectionPreservingSummary(
+      current,
+      rebuildFailureMetadata(current, err, startedAt),
       endedAt,
     );
     throw err;
   }
+}
+
+// Metadata for a rebuild whose guarded commit lost the generation race:
+// keep the last-known freshness and record why the rebuild's fresh values
+// were discarded.
+function supersededRebuildMetadata(after, conflictAt) {
+  return {
+    computed_at: after.metadata.computed_at,
+    state: after.metadata.state === 'failed' ? 'failed' : 'stale',
+    stale_since: after.metadata.stale_since || conflictAt,
+    rebuild_status: 'idle',
+    last_error:
+      after.metadata.last_error ||
+      'dataset summary projection rebuild superseded by concurrent delta',
+    source_high_watermark: after.metadata.source_high_watermark || null,
+  };
+}
+
+// Metadata for a rebuild that threw. Cancellation is non-destructive:
+// canonical evidence is untouched and the last-known projection rows
+// survive, so an abort keeps the prior freshness and marks the projection
+// stale (not failed) while reporting honestly that the rebuild did not
+// complete. Any other error is a genuine failure.
+function rebuildFailureMetadata(current, err, startedAt) {
+  if (isAbortError(err)) {
+    return {
+      computed_at: current.metadata.computed_at,
+      state: current.metadata.state === 'failed' ? 'failed' : 'stale',
+      stale_since: current.metadata.stale_since || startedAt,
+      rebuild_status: 'idle',
+      last_error:
+        current.metadata.last_error ||
+        sanitizeProjectionError(err.message || 'dataset summary projection rebuild cancelled'),
+      source_high_watermark: current.metadata.source_high_watermark || null,
+    };
+  }
+  return {
+    computed_at: current.metadata.computed_at,
+    state: 'failed',
+    stale_since: current.metadata.stale_since || startedAt,
+    rebuild_status: 'failed',
+    last_error: sanitizeProjectionError(err),
+    source_high_watermark: current.metadata.source_high_watermark || null,
+  };
 }
 
 export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies, { signal } = {}) {
@@ -902,6 +901,27 @@ function markDatasetSummaryProjectionRebuilding(at) {
       source_high_watermark: current.metadata.source_high_watermark || null,
     },
     at,
+  );
+}
+
+// Write new metadata while carrying the projection's last-known summary
+// fields through unchanged. This is the "preserve the last-known summary,
+// overwrite only the metadata" shape shared by the stale/superseded/failed
+// paths, which must not resurrect stale computed values yet must keep the
+// operator surface showing the prior freshness. `projection` is an
+// already-read projection object (as returned by
+// getDatasetSummaryProjection); only its summary fields are read here.
+function writeDatasetSummaryProjectionPreservingSummary(projection, metadata, updatedAt) {
+  return writeDatasetSummaryProjection(
+    {
+      counts: projection.counts,
+      retained_bytes: projection.retained_bytes,
+      record_time_bounds: projection.record_time_bounds,
+      ingested_time_bounds: projection.ingested_time_bounds,
+      top_connector_candidates: projection.top_connector_candidates,
+    },
+    metadata,
+    updatedAt,
   );
 }
 

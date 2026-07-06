@@ -1,0 +1,122 @@
+candidate_id: hm-assistance-family-extract-0006
+created: "2026-07-02T03:38:00.000Z"
+repo_sha: e7ede6e50ea9b2f3d60ba908862a846c833d7a5c
+subsystem: runtime
+files: [runtime/index.js]
+symbols:
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'ASSISTANCE' — id minting, duplicate guard, openStructuredAssistance ledger, run.assistance_requested, attention upsert"
+    line: 3175
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'ASSISTANCE_STATUS' — closeStructuredAssistance, unknown-id guard"
+    line: 3209
+  - closeStructuredAssistance
+public_surface:
+  - spine event_type run.assistance_requested (structured-assistance path) and the assistance close events emitted via closeStructuredAssistance
+  - "run failure messages: 'Connector emitted duplicate ASSISTANCE.assistance_request_id', 'Connector emitted ASSISTANCE_STATUS for unknown assistance_request_id'"
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "The ASSISTANCE/ASSISTANCE_STATUS arms (runtime/index.js:3175, 3209) manage the structured-assistance ledger: mint-or-accept assistance_request_id, reject duplicates, record {kind, owner_action, progress_posture, response_contract, stream} in openStructuredAssistance, upsert the durable attention row (same secret-redaction rules as INTERACTION), and close entries on status messages rejecting unknown ids. This is one lifecycle split across two switch arms inside a cc-194 closure. Extracting both into named handlers sharing the explicit ledger Map makes the open/close pairing visible and removes ~14 cc from handleMsg. The ledger Map is also read by the run-terminal path (leftover-assistance handling), so it stays a runConnector-owned object passed by reference."
+plan:
+  transform_class: explicit-context-extraction
+  instruction: "In runtime/index.js ONLY: create module-level (column-0) named async functions handleAssistanceMsg(msg, ctx) and handleAssistanceStatusMsg(msg, ctx) with the two arm bodies verbatim. Extend msgCtx with { openStructuredAssistance, nextAssistanceRequestId, closeStructuredAssistance, attentionWriter, buildAssistanceRequestedDataFromMessage } — note nextAssistanceRequestId and closeStructuredAssistance remain runConnector-scoped named functions (they own the counter and the close-side spine emission); they enter the handlers as explicit ctx services, never as captured names. Case arms become thin delegations. Preserve exactly: the mint-if-absent id semantics (msg.assistance_request_id || ctx.nextAssistanceRequestId()), the duplicate-id throw string, the ledger entry shape, the run.assistance_requested payload built by buildAssistanceRequestedDataFromMessage, the attentionWriter.recordAssistanceRequest call, the onProgress(assistanceMsg) echo with the minted id, the unknown-id throw string, and the closeStructuredAssistance({...message}) conditional-spread shape. CALL-STYLE MANDATE — repaired 2026-07-02 per run-4: context fields MUST be destructured into locals before invocation (const { onProgress } = msgCtx; onProgress(msg)), NEVER method-called off the context object (ctx.onProgress(msg) is FORBIDDEN). WHY: in strict mode a method call rebinds this inside the callback from undefined to the context object — an observable behavior change; run-4's judge REJECTed sibling hm-reporting-family-extract-0003 (confidence 0.84) for exactly this."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: none
+priority:
+  score: 70
+  computed: "2026-07-02T03:38:00.000Z"
+  inputs:
+    mass: 14
+    churn: 63
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: "assistance ledger consistency: every opened assistance id is unique, closable exactly once, and surfaced to the attention projection; unknown/duplicate ids fail the run instead of corrupting the ledger"
+authoring_evidence:
+  - kind: coverage-check
+    detail: "grep -rl over test/: ASSISTANCE emission pinned in collection-profile.test.js + web-push-notifications.test.js; ASSISTANCE_STATUS in collection-profile.test.js; duplicate-id and unknown-id guards pinned by NO existing test — created by hm-dispatch-guards-oracle-0001"
+    result: "family pinned once 0001 lands; baselines green 2026-07-02: collection-profile 124/124, attention-writer 15/15"
+  - kind: cell-audit
+    detail: "openStructuredAssistance declared at runtime/index.js:2226 (const Map, runConnector scope); nextAssistanceRequestId closure-counter at 2228; closeStructuredAssistance at 2247; attentionWriter at 2239"
+    result: no scalar cells — all family state is the Map (by-reference in msgCtx) plus services; no runState extension needed
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/runtime-handle-msg-dispatch.test.js test/collection-profile.test.js test/attention-writer.test.js"
+    expect: "all green with unchanged counts (baselines 2026-07-02: collection-profile 124/124, attention-writer 15/15, plus the 0001 duplicate/unknown-id oracle tests)"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: guard-byte-identity
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -c \"duplicate ASSISTANCE.assistance_request_id\" runtime/index.js && grep -c \"ASSISTANCE_STATUS for unknown assistance_request_id\" runtime/index.js"
+    expect: "1 / 1 — both guard strings present exactly once, moved not rewritten"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg'"
+    expect: "found=true; cognitive_before strictly BELOW this packet's pre-edit baseline receipt"
+    expect_check:
+      type: scope_fn_lt
+      value: 194
+  - rung: file-excess-remeasure
+    command: "node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5"
+    expect: file_excess strictly below the pre-edit measured value; only NEW flagged names are the two named handlers
+  - rung: no-new-anon-callbacks
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs"
+    expect: exit 0
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - guard-condition-or-error-string-change
+  - new-dependency
+  - new-module-file
+  - captured-mutable-cells-in-new-handlers
+  - method-calling-threaded-callbacks
+maker_tier: standard
+judge_tier: strong
+maker_provider: claude
+judge_provider: codex
+batch_key: preserve_refactor×effectful×runtime
+touchset: [runtime/index.js]
+estimates:
+  tokens: 60000
+  evidence_cost: medium
+depends_on: [hm-dispatch-guards-oracle-0001, hm-reporting-family-extract-0003]
+unlocks: [hm-dispatch-table-coherence-0011]
+status: landed
+outcome:
+  commit: "71d36987c77cd209e942e1040dcff28cdf502cd6"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.91): The diff satisfies the packet’s explicit-context extraction: the new module-level handlers receive the shared Map and run-scoped services through ctx, destructure callback/service fields before invocation, and leave the case arms as thin delegations. Comparing removed and added code, the observable ASSISTANCE and ASSISTANCE_STATUS behavior is preserved, including guard strings, id minting, ledger entry shape, event payload construction, attention upsert, and close conditional-spread shape. The required post evidence is present and covers the effectful risk class: direct dispatch/profile/attention tests are green, guard strings remain exactly once, typecheck passes, handleMsg complexity drops from 160 to 147, file excess drops from 689 to 676, and callback ratchet passes."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/runtime-handle-msg-dispatch.test.js test/collection-profile.test.js test/attention-writer.test.js -> exit 0 (22s) PASS; exit=0 djb2=d1f8513a bytes=72310 receipt=quality/receipts/hm-assistance-family-extract-0006/baseline-1-direct-test.txt"
+    - "[baseline] guard-byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -c \"duplicate ASSISTANCE.assistance_request_id\" runtime/index.js && grep -c \"ASSISTANCE_STATUS for unknown assistance_request_id\" runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=7c781efb bytes=4 receipt=quality/receipts/hm-assistance-family-extract-0006/baseline-2-guard-byte-identity.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-assistance-family-extract-0006/baseline-3-typecheck.txt"
+    - "[baseline] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=1c2402da bytes=415 receipt=quality/receipts/hm-assistance-family-extract-0006/baseline-4-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=8868ea66 bytes=6854 receipt=quality/receipts/hm-assistance-family-extract-0006/baseline-5-file-excess-remeasure.txt"
+    - "[baseline] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (6s) PASS; exit=0 djb2=6d2bb7e5 bytes=182 receipt=quality/receipts/hm-assistance-family-extract-0006/baseline-6-no-new-anon-callbacks.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/runtime-handle-msg-dispatch.test.js test/collection-profile.test.js test/attention-writer.test.js -> exit 0 (21s) PASS; exit=0 djb2=3f11aaf3 bytes=72305 receipt=quality/receipts/hm-assistance-family-extract-0006/post-1-direct-test.txt"
+    - "[post] guard-byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -c \"duplicate ASSISTANCE.assistance_request_id\" runtime/index.js && grep -c \"ASSISTANCE_STATUS for unknown assistance_request_id\" runtime/index.js -> exit 0 (0s) PASS; exit=0 djb2=7c781efb bytes=4 receipt=quality/receipts/hm-assistance-family-extract-0006/post-2-guard-byte-identity.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/hm-assistance-family-extract-0006/post-3-typecheck.txt"
+    - "[post] complexity-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'runtime/index.js::handleMsg' -> exit 0 (0s) PASS; exit=0 djb2=ef9093a8 bytes=415 receipt=quality/receipts/hm-assistance-family-extract-0006/post-4-complexity-remeasure.txt"
+    - "[post] file-excess-remeasure: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=0f78342c bytes=6854 receipt=quality/receipts/hm-assistance-family-extract-0006/post-5-file-excess-remeasure.txt"
+    - "[post] no-new-anon-callbacks: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs -> exit 0 (5s) PASS; exit=0 djb2=6d2bb7e5 bytes=182 receipt=quality/receipts/hm-assistance-family-extract-0006/post-6-no-new-anon-callbacks.txt"
+  tokens_actual: 61625
+  lesson: null

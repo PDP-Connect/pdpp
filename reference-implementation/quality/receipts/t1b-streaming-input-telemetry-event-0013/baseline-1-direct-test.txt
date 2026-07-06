@@ -1,0 +1,66 @@
+# hone work t1b-streaming-input-telemetry-event-0013 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/run-interaction-stream-input-telemetry.test.js test/run-interaction-stream-routes.test.js
+# expect: all pass with unchanged counts, before AND after the edit (the telemetry test file exists — else this packet is blocked on t1b-streaming-input-telemetry-evidence-0012)
+# exit: 0  duration: 5s  verdict: PASS
+
+✔ managed n.eko approval is lease, surface, profile, run, interaction, readiness, and origin scoped (1.165781ms)
+✔ managed n.eko approval rejects a non-ready real lease-manager surface (0.102182ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ mint accepts a pending manual_action interaction (257.748538ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ mint accepts a pending otp interaction for browser-backed verification flows (175.042165ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ mint refuses an interaction kind that does not need browser control (161.624055ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ mint refuses a stale interaction id (148.244706ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ mint with a duplicate idempotency_key returns the same token (defense-in-depth against StrictMode/retry double-mints) (147.844129ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ mint with a different idempotency_key supersedes the prior token (legitimate re-open) (150.284953ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ SSE attach delivers an attached event and dispatches frames (154.466137ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ n.eko backend emits iframe path and proxies only after stream-token entry (171.017584ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ n.eko client config allows allocator-approved dynamic origin without exposing backend URLs (155.343963ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ n.eko client config rejects allocator-approved dynamic origin for the wrong interaction (151.425873ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ n.eko client config rejects unapproved dynamic origin (151.336651ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ n.eko viewport dispatch uses one native coordinate space for video and input (159.568869ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ n.eko entry can include noauth auto-login query params (144.751703ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ n.eko status diagnostics are scoped to the n.eko stream cookie (141.318142ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ n.eko status keeps native control available separate from strict stealth page CDP (147.142206ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ input POST dispatches to the companion after attach and rejects bad input (168.632971ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ SSE delivers multiple frames and acks each, even when ack rejects (148.937858ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ mint fails closed with 503 streaming_companion_unavailable when no companion is configured (173.753322ms)
+✔ input POST with an unknown token returns 401 with a WWW-Authenticate header (97.72447ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ resolving the interaction invalidates streaming and emits a resolved timeline event (166.712087ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ SSE forwards companion out-of-band events as named SSE events (144.781353ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ SSE handler emits keepalive comment pings while idle to prevent timeout (144.753233ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ reach-failure beacon emits run.stream_reach_failed with the typed reason and http status (144.949506ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ reach-failure beacon clamps an out-of-set reason to unknown (154.812073ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ reach-failure beacon is rejected when a different interaction is pending (165.25834ms)
+[ntfy] NTFY_TOPIC not set; skipping notification
+✔ reach-failure beacon requires an interaction_id (153.357678ms)
+ℹ tests 28
+ℹ suites 0
+ℹ pass 28
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5077.912675

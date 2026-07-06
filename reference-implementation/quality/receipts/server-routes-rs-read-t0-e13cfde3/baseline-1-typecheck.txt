@@ -1,0 +1,9 @@
+# hone work server-routes-rs-read-t0-e13cfde3 — baseline rung 'typecheck'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck
+# expect: exit 0
+# exit: 0  duration: 5s  verdict: PASS
+
+
+> pdpp-reference-implementation@0.1.0 typecheck /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation
+> tsc --noEmit
+

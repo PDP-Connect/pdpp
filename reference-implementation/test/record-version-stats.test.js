@@ -8,7 +8,7 @@ import {
   isVersionChurnCandidate,
   listRecordVersionGroundTruthForKeys,
   listRecordVersionGroundTruthStreams,
-} from '../server/record-version-stats.js';
+} from '../server/record-version-stats.ts';
 import {
   closePostgresStorage,
   initPostgresStorage,
@@ -21,7 +21,7 @@ import {
   createSqliteConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
 } from '../server/stores/connector-instance-store.js';
-import { REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT } from '../server/version-disposition.js';
+import { REVIEWED_COMPACTION_RESIDUE_REVIEWED_AT } from '../server/version-disposition.ts';
 
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/version-churn';
 const CONNECTOR_INSTANCE_ID = 'cin_test_version_churn';

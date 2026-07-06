@@ -26,14 +26,12 @@ import {
   type CoverageAxis,
   computeConnectionHealth,
   deriveForwardDisposition,
-  deriveOutboxAxisFromHeartbeat,
   type ForwardDisposition,
   type FreshnessAxis,
   type NextAction,
   type OutboxAxis,
   type OutboxDiagnosticCounts,
   type OutboxStalledCause,
-  rollupOutboxDiagnosticCounts,
 } from "../runtime/connection-health.ts";
 import {
   buildProgressEvidence,
@@ -41,25 +39,41 @@ import {
   synthesizeConnectorVerdict,
   type ManifestStreamLike as VerdictManifestStreamLike,
 } from "../runtime/connector-verdict-input.ts";
-import {
-  deriveRecoveryStall,
-  RECOVERY_STALL_CADENCE_MS,
-  type RecoveryAdmissionDiagnostics,
-  type RecoveryGapRow,
-  type RecoveryStallObservation,
-  summarizeRecoveryAdmissionDiagnostics,
-} from "../runtime/recovery-decision.ts";
 import type { RenderedVerdict } from "../runtime/rendered-verdict.ts";
-import { type PendingPressureGap, SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
+import { pickMostUrgentAttention } from "./attention-urgency.ts";
 import { getConnectorManifest } from "./auth.js";
 import {
   type EnrollmentShellLike,
   retireExpiredBrowserEnrollmentShells,
 } from "./browser-enrollment-shell-retirement.ts";
+import {
+  ACTIVE_WAITING_LEASE_STATUSES,
+  pickMostRecentSurface,
+  pickMostUrgentLease,
+} from "./browser-surface-selection.ts";
 import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
 import { staticSecretCredentialCaptureFromManifest } from "./connection-setup-plan.ts";
+import {
+  deriveStreamCoverageCondition,
+  pickAcceptedCoverage,
+  pickRequiredAcceptedCoverage,
+} from "./connector-coverage-policy.ts";
+import {
+  firstDegradingKnownGapReason,
+  firstPendingDetailGapReason,
+  hasDegradingKnownGap,
+  hasTerminalKnownGap,
+  isRetryableKnownGap,
+} from "./connector-gap-classification.ts";
+import {
+  type HeartbeatRow,
+  projectConnectorOutboxAxisFromHeartbeats,
+  projectLocalDeviceProgress,
+} from "./connector-outbox-axis.ts";
 import { getSqliteStoreCacheIdentity } from "./db.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
+import { mapPendingPressureGaps } from "./pending-pressure-gap-map.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { listLocalCoverageDiagnostics } from "./records.js";
 import {
@@ -71,12 +85,19 @@ import {
   timestampWithinWindow,
 } from "./ref-record-utils.ts";
 import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.js";
+import { parseCollectionRatePayload, readCollectionFactsFromTerminalData } from "./runtime-collection-facts.ts";
+import {
+  asBackoffRecord,
+  asScheduleRecord,
+  readNumber,
+  succeededRunSupersedesSchedulerBackoff,
+} from "./scheduler-backoff-read.ts";
 import {
   createPostgresAcquisitionBatchStore,
   createSqliteAcquisitionBatchStore,
-} from "./stores/acquisition-batch-store.js";
+} from "./stores/acquisition-batch-store.ts";
 import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
-import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.js";
+import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
 import {
   createPostgresConnectorInstanceCredentialStore,
@@ -86,7 +107,7 @@ import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
 } from "./stores/connector-instance-store.js";
-import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js";
+import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -163,8 +184,6 @@ interface ManifestStream extends ManifestStreamLike {
   };
   semantics?: string;
 }
-
-type AcceptedCoveragePolicy = "deferred" | "inventory_only" | "unavailable" | "unsupported";
 
 type ConnectorManifest = {
   connector_id?: string;
@@ -319,7 +338,7 @@ export interface RuntimeCollectionFacts {
   readonly streams: readonly RuntimeCollectionFact[];
 }
 
-interface ConnectorRunSummary {
+export interface ConnectorRunSummary {
   /**
    * The runtime `collection_facts` block read off this run's terminal event, or
    * `null` for a run that predates Tranche B, exited before the terminal builder
@@ -339,7 +358,7 @@ interface ConnectorRunSummary {
   readonly terminal_reason: string | null;
 }
 
-interface PendingDetailGapSummary {
+export interface PendingDetailGapSummary {
   /**
    * Recovery-attempt count for the gap (`connector_detail_gaps.attempt_count`).
    * `rowToGap` returns it; the source-pressure backlog rollup reads it as the
@@ -391,7 +410,6 @@ interface ConnectorDetailGapStoreLike {
     connectorId: string;
     connectorInstanceId?: string;
     limit?: number;
-    now?: string;
   }): Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
   listPendingGapsForConnector?: (
     connectorId: string,
@@ -486,15 +504,6 @@ export interface ConnectorSummary {
   readonly connector_id: string;
   readonly connector_instance_id: string;
   readonly display_name: string;
-  /**
-   * The connection's source kind and non-secret source-binding kind. Owner
-   * surfaces route repair BINDING-FIRST from this: a browser-session binding
-   * (`browser_collector`/`browser_enrollment_shell`) repairs by browser/session
-   * repair, not static-secret credential capture, even when the connector also
-   * supports a static secret. Connection-scoped fact, not a connector capability.
-   */
-  readonly source_kind: string;
-  readonly source_binding_kind: string | null;
   readonly freshness: Freshness;
   readonly last_run: ConnectorRunSummary | null;
   readonly last_successful_run: ConnectorRunSummary | null;
@@ -530,6 +539,15 @@ export interface ConnectorSummary {
   /** Durable connector-instance lifecycle state. Revoked rows remain owner-visible. */
   readonly revoked_at: string | null;
   readonly schedule: unknown;
+  readonly source_binding_kind: string | null;
+  /**
+   * The connection's source kind and non-secret source-binding kind. Owner
+   * surfaces route repair BINDING-FIRST from this: a browser-session binding
+   * (`browser_collector`/`browser_enrollment_shell`) repairs by browser/session
+   * repair, not static-secret credential capture, even when the connector also
+   * supports a static secret. Connection-scoped fact, not a connector capability.
+   */
+  readonly source_kind: string;
   readonly status: string | null;
   readonly stream_count?: number;
   /**
@@ -762,81 +780,6 @@ function readKnownGapsFromTerminalData(data: Record<string, unknown> | null): un
   return [];
 }
 
-function readSafeNonNegativeInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
-
-function readFiniteNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function readRuntimeCollectionFact(raw: unknown): RuntimeCollectionFact | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return null;
-  }
-  const entry = raw as Record<string, unknown>;
-  if (typeof entry.stream !== "string" || !entry.stream) {
-    return null;
-  }
-  return {
-    checkpoint: typeof entry.checkpoint === "string" ? entry.checkpoint : null,
-    collected: readFiniteNumber(entry.collected, 0),
-    // `considered` and `covered` are OMITTED upstream when unknown. Re-validate
-    // defensively: anything not a safe non-negative integer reads as absent,
-    // never as a fabricated denominator or numerator.
-    considered: readSafeNonNegativeInteger(entry.considered),
-    covered: readSafeNonNegativeInteger(entry.covered),
-    pending_detail_gaps: readFiniteNumber(entry.pending_detail_gaps, 0),
-    skipped: readCollectionFactSkip(entry.skipped),
-    stream: entry.stream,
-  };
-}
-
-/**
- * Read the runtime `collection_facts` block (the Tranche B per-stream fact
- * block) off a terminal-event payload. The runtime attaches only objective,
- * run-local facts here (collected count, considered-or-`unknown`, checkpoint,
- * skip, pending-detail-gap count) and stamps NO coverage condition or forward
- * disposition — those are derived on read by the control-plane projection
- * (`buildCollectionReport`). Returns `null` for an old run that predates the
- * block, a `run.failed` that exited before the terminal builder ran, or any
- * malformed payload — absence reads as "no facts", never as `complete`.
- */
-function readCollectionFactsFromTerminalData(data: Record<string, unknown> | null): RuntimeCollectionFacts | null {
-  if (!data) {
-    return null;
-  }
-  const block = data.collection_facts;
-  if (!block || typeof block !== "object" || Array.isArray(block)) {
-    return null;
-  }
-  const streams = (block as { streams?: unknown }).streams;
-  if (!Array.isArray(streams)) {
-    return null;
-  }
-  const entries: RuntimeCollectionFact[] = [];
-  for (const raw of streams) {
-    const fact = readRuntimeCollectionFact(raw);
-    if (fact) {
-      entries.push(fact);
-    }
-  }
-  return { streams: entries };
-}
-
-function readCollectionFactSkip(value: unknown): RuntimeCollectionFactSkip | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const skip = value as Record<string, unknown>;
-  const reason = typeof skip.reason === "string" ? skip.reason : null;
-  if (reason === null) {
-    return null;
-  }
-  const recoveryAction = typeof skip.recovery_action === "string" ? skip.recovery_action : null;
-  return { reason, ...(recoveryAction ? { recovery_action: recoveryAction } : {}) };
-}
-
 /**
  * Read the latest adaptive collection rate controller snapshot for a run.
  *
@@ -884,44 +827,6 @@ async function readLatestCollectionRateForRun(
     return parseCollectionRatePayload((parsed as Record<string, unknown>).collection_rate);
   }
   return null;
-}
-
-/**
- * Parse and validate a raw `collection_rate` payload from a spine event's
- * `data_json`. Returns `null` for any shape that does not match the expected
- * structure — old runs predating the field, missing payloads, or malformed
- * data all collapse to the honest `null` unknown.
- */
-function parseCollectionRatePayload(raw: unknown): CollectionRateSnapshot | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return null;
-  }
-  const r = raw as Record<string, unknown>;
-  if (r.object !== "collection_rate") {
-    return null;
-  }
-  const ceiling_interval_ms = typeof r.ceiling_interval_ms === "number" ? r.ceiling_interval_ms : null;
-  const ceiling_rate_per_min = typeof r.ceiling_rate_per_min === "number" ? r.ceiling_rate_per_min : null;
-  const current_interval_ms = typeof r.current_interval_ms === "number" ? r.current_interval_ms : null;
-  const effective_rate_per_min = typeof r.effective_rate_per_min === "number" ? r.effective_rate_per_min : null;
-  if (
-    ceiling_interval_ms === null ||
-    ceiling_rate_per_min === null ||
-    current_interval_ms === null ||
-    effective_rate_per_min === null
-  ) {
-    return null;
-  }
-  let last_backoff: CollectionRateSnapshot["last_backoff"] = null;
-  if (r.last_backoff != null) {
-    const lb = r.last_backoff as Record<string, unknown>;
-    const at_interval_ms = typeof lb.at_interval_ms === "number" ? lb.at_interval_ms : null;
-    const reason = typeof lb.reason === "string" ? lb.reason : null;
-    if (at_interval_ms !== null && reason !== null) {
-      last_backoff = { at_interval_ms, reason };
-    }
-  }
-  return { ceiling_interval_ms, ceiling_rate_per_min, current_interval_ms, effective_rate_per_min, last_backoff };
 }
 
 async function toConnectorRunSummary(summary: SpineSummary | null): Promise<ConnectorRunSummary | null> {
@@ -1644,163 +1549,6 @@ function hasPendingDetailGap(gaps: readonly PendingDetailGapSummary[] = []): boo
   return gaps.length > 0;
 }
 
-function hasDegradingKnownGap(run: ConnectorRunSummary | null): boolean {
-  if (!run) {
-    return false;
-  }
-  return run.known_gaps.some(isDegradingKnownGap);
-}
-
-function isDegradingKnownGap(gap: unknown): boolean {
-  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-    return true;
-  }
-  const severity = (gap as { severity?: unknown }).severity;
-  return severity !== "informational" && severity !== "recoverable";
-}
-
-/**
- * Decide whether `run.known_gaps` contains at least one *terminal* gap —
- * one whose severity is `actionable` (owner-fixable, no automated retry)
- * or unclassified. `transient` gaps are runtime-retried so they roll up
- * under `retryable_gap` instead. `informational` and `recoverable`
- * gaps don't degrade health per the connection-health coverage policy
- * and are ignored here.
- */
-function pendingDetailGapStreams(gaps: readonly PendingDetailGapSummary[] = []): ReadonlySet<string> {
-  const streams = new Set<string>();
-  for (const gap of gaps) {
-    if (gap && typeof gap.stream === "string" && gap.stream.length > 0) {
-      streams.add(gap.stream);
-    }
-  }
-  return streams;
-}
-
-function gapRecoveryAction(gap: unknown): string | null {
-  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-    return null;
-  }
-  const hint = (gap as { recovery_hint?: unknown }).recovery_hint;
-  if (typeof hint === "string") {
-    return hint;
-  }
-  if (hint && typeof hint === "object" && !Array.isArray(hint)) {
-    const action = (hint as { action?: unknown }).action;
-    return typeof action === "string" ? action : null;
-  }
-  return null;
-}
-
-function gapClassifierText(gap: unknown): string {
-  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-    return "";
-  }
-  const fields = gap as { kind?: unknown; message?: unknown; reason?: unknown };
-  return [fields.kind, fields.reason, fields.message]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ");
-}
-
-const OWNER_RECOVERABLE_GAP_RE = /\b(otp|mfa|2fa|manual|captcha|anti bot)\b/;
-
-function isOwnerRecoverableKnownGap(gap: unknown): boolean {
-  if (gapRecoveryAction(gap) === "manual_action_required") {
-    return true;
-  }
-  return OWNER_RECOVERABLE_GAP_RE.test(gapClassifierText(gap));
-}
-
-function isRuntimeRetryableKnownGap(gap: unknown): boolean {
-  return gapRecoveryAction(gap) === "retry_by_runtime";
-}
-
-function isKnownSkipShadowedByPendingDetailGap(gap: unknown, pendingStreams: ReadonlySet<string>): boolean {
-  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-    return false;
-  }
-  const knownGap = gap as { kind?: unknown; stream?: unknown };
-  if (knownGap.kind !== "skip_result" || typeof knownGap.stream !== "string" || !pendingStreams.has(knownGap.stream)) {
-    return false;
-  }
-  const action = gapRecoveryAction(gap);
-  // A stream-level SKIP_RESULT is only a diagnostic when the same stream has a
-  // pending DETAIL_GAP: the detail gap is the durable retry contract. Do not let
-  // an older skip with an absent/unknown hint turn that retryable contract into
-  // terminal/code-fix. Explicit owner/maintainer actions remain load-bearing.
-  return action === null || action === "unknown" || action === "retry_by_runtime";
-}
-
-function hasTerminalKnownGap(
-  run: ConnectorRunSummary | null,
-  pendingDetailGaps: readonly PendingDetailGapSummary[] = []
-): boolean {
-  if (!run) {
-    return false;
-  }
-  const pendingStreams = pendingDetailGapStreams(pendingDetailGaps);
-  return run.known_gaps.some((gap) => {
-    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-      // Unclassified gap shape — be conservative and treat as terminal so
-      // we never silently paint over evidence we can't read.
-      return true;
-    }
-    if (isKnownSkipShadowedByPendingDetailGap(gap, pendingStreams)) {
-      return false;
-    }
-    if (isOwnerRecoverableKnownGap(gap)) {
-      return false;
-    }
-    if (isRuntimeRetryableKnownGap(gap)) {
-      return false;
-    }
-    const severity = (gap as { severity?: unknown }).severity;
-    if (severity === "actionable") {
-      return true;
-    }
-    // Any other unknown severity counts as terminal (conservative);
-    // recognized non-degrading and retryable severities are not terminal.
-    return severity !== "informational" && severity !== "recoverable" && severity !== "transient";
-  });
-}
-
-function firstPendingDetailGapReason(gaps: readonly PendingDetailGapSummary[] = []): string | null {
-  for (const gap of gaps) {
-    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-      continue;
-    }
-    if (typeof gap.reason === "string" && gap.reason.length > 0) {
-      return gap.reason;
-    }
-    if (typeof gap.stream === "string" && gap.stream.length > 0) {
-      return `detail_gap:${gap.stream}`;
-    }
-  }
-  return gaps.length > 0 ? "detail_gap_pending" : null;
-}
-
-function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): string | null {
-  if (!run) {
-    return null;
-  }
-  for (const gap of run.known_gaps) {
-    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-      return null;
-    }
-    const severity = (gap as { severity?: unknown }).severity;
-    if (severity === "informational" || severity === "recoverable") {
-      continue;
-    }
-    const reason = (gap as { reason?: unknown }).reason;
-    if (typeof reason === "string" && reason.length > 0) {
-      return reason;
-    }
-  }
-  return null;
-}
-
 const OWNER_CANCEL_TERMINAL_REASONS: ReadonlySet<string> = new Set(["owner_cancel_forced", "owner_cancelled"]);
 
 function isOwnerCancelledRun(run: ConnectorRunSummary | null): boolean {
@@ -1957,87 +1705,6 @@ function mapCoverageAxis(
 }
 
 /**
- * Precedence: `unsupported` is the strongest accepted-coverage claim
- * (connector cannot collect by design), then `unavailable` (source-side
- * limit), then `deferred` (intentionally postponed), then
- * `inventory_only` (least surprising — only inventory was ever owed).
- */
-const ACCEPTED_COVERAGE_PRECEDENCE: readonly AcceptedCoveragePolicy[] = [
-  "unsupported",
-  "unavailable",
-  "deferred",
-  "inventory_only",
-];
-
-function pickAcceptedCoverage(streams: readonly ManifestStream[]): AcceptedCoveragePolicy | null {
-  if (streams.length === 0) {
-    return null;
-  }
-  const seen = new Set<AcceptedCoveragePolicy>();
-  for (const stream of streams) {
-    const policy = readAcceptedCoveragePolicy(stream);
-    if (policy !== null) {
-      seen.add(policy);
-    }
-  }
-  for (const policy of ACCEPTED_COVERAGE_PRECEDENCE) {
-    if (seen.has(policy)) {
-      return policy;
-    }
-  }
-  return null;
-}
-
-/**
- * Same precedence as `pickAcceptedCoverage`, but only considers streams
- * that are *both* declared `required: true` AND have an accepted-
- * coverage policy. This is the contradictory-manifest signal: the
- * connector simultaneously claims the stream is load-bearing AND
- * accepted-absent, so the projection refuses to project healthy.
- */
-function pickRequiredAcceptedCoverage(streams: readonly ManifestStream[]): AcceptedCoveragePolicy | null {
-  if (streams.length === 0) {
-    return null;
-  }
-  const seen = new Set<AcceptedCoveragePolicy>();
-  for (const stream of streams) {
-    if (!isRequiredStream(stream)) {
-      continue;
-    }
-    const policy = readAcceptedCoveragePolicy(stream);
-    if (policy !== null) {
-      seen.add(policy);
-    }
-  }
-  for (const policy of ACCEPTED_COVERAGE_PRECEDENCE) {
-    if (seen.has(policy)) {
-      return policy;
-    }
-  }
-  return null;
-}
-
-function readAcceptedCoveragePolicy(stream: ManifestStream | undefined): AcceptedCoveragePolicy | null {
-  if (!stream || typeof stream !== "object") {
-    return null;
-  }
-  const value = stream.coverage_policy;
-  if (value === "unsupported" || value === "unavailable" || value === "deferred" || value === "inventory_only") {
-    return value;
-  }
-  return null;
-}
-
-function isRequiredStream(stream: ManifestStream | undefined): boolean {
-  if (!stream || typeof stream !== "object") {
-    return false;
-  }
-  // Default to required when absent so a manifest-declared stream is
-  // load-bearing unless explicitly opted out.
-  return stream.required !== false;
-}
-
-/**
  * Build the projection's coverage evidence: the axis plus the
  * `requiredButAccepted` contradiction signal. The signal is only set
  * when at least one *required* stream declares an accepted-coverage
@@ -2110,120 +1777,10 @@ export interface CollectionReportEntry {
   readonly forward_disposition: ForwardDisposition;
   /** Count of pending recoverable detail gaps for this stream (locators stay in the detail-gap backlog). */
   readonly pending_detail_gaps: number;
-  /**
-   * True when `pending_detail_gaps` was derived from a bounded durable read that
-   * hit its limit. In that case the count is a floor, not an exact total.
-   */
   readonly pending_detail_gaps_is_floor: boolean;
   /** The `SKIP_RESULT` fact for this stream, or `null`. */
   readonly skipped: RuntimeCollectionFactSkip | null;
   readonly stream: string;
-}
-
-const RETRYABLE_SKIP_REASON_PATTERN = /(429|rate|temporar|retry|upstream_pressure|pressure)/;
-const DEFERRED_SKIP_REASON_PATTERN = /(out_of_scope|user_disabled|deferred|paused|postpon)/;
-const UNAVAILABLE_SKIP_REASON_PATTERN = /(unavailable|not_available|blocked|locked|upstream)/;
-const UNSUPPORTED_SKIP_REASON_PATTERN = /(unsupported|not_supported|capability|incapable)/;
-
-/**
- * Map a `SKIP_RESULT` reason / recovery action to a coverage condition that is
- * consistent with the skip and is NEVER `complete`. A retryable skip (transient
- * upstream pressure, or a `retry_by_runtime` recovery action) reads `retryable_gap`;
- * an intentionally-deferred or out-of-scope skip reads `deferred`; an
- * upstream-unavailable skip reads `unavailable`; a connector-cannot-collect skip
- * reads `unsupported`; anything else with no recovery path reads `terminal_gap`.
- * The manifest's declared `coverage_policy` (an accepted-coverage claim) takes
- * precedence over this inference and is applied by the caller.
- */
-function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): CoverageAxis {
-  const reason = skip.reason.toLowerCase();
-  if (skip.recovery_action === "retry_by_runtime") {
-    return "retryable_gap";
-  }
-  if (RETRYABLE_SKIP_REASON_PATTERN.test(reason)) {
-    return "retryable_gap";
-  }
-  if (DEFERRED_SKIP_REASON_PATTERN.test(reason)) {
-    return "deferred";
-  }
-  if (UNAVAILABLE_SKIP_REASON_PATTERN.test(reason)) {
-    return "unavailable";
-  }
-  if (UNSUPPORTED_SKIP_REASON_PATTERN.test(reason)) {
-    return "unsupported";
-  }
-  return "terminal_gap";
-}
-
-/**
- * Derive one stream's coverage condition from its runtime fact entry plus the
- * stream's manifest policy. Precedence (first match wins), mirroring the honesty
- * order the contract requires:
- *
- *   1. contradictory manifest (required AND accepted-absent)  -> the accepted axis
- *   2. SKIP_RESULT present  -> manifest accepted-coverage axis, else skip-derived axis
- *   3. pending recoverable detail gap(s)  -> `retryable_gap`
- *   4. known considered denominator  -> `partial` (covered-or-collected < considered)
- *                                        else accepted axis / `complete`
- *   5. unknown considered denominator (THE HONESTY GATE)  -> accepted axis / `unknown`
- *
- * `complete` is reached ONLY when a known considered denominator is satisfied; a
- * collected-records / no-gaps / no-considered stream reads `unknown`, never
- * `complete`. Staleness is NEVER encoded here — it is a freshness axis the
- * disposition speaks to, not a coverage condition.
- */
-function deriveStreamCoverageCondition(
-  fact: RuntimeCollectionFact,
-  manifestStream: ManifestStream | undefined
-): CoverageAxis {
-  const accepted = readAcceptedCoveragePolicy(manifestStream);
-  // 1. A required stream that also declares an accepted-absent policy is a
-  //    contradictory manifest; surface the accepted axis so it never paints
-  //    green (the connection-level rollup refuses to go healthy for the same
-  //    reason).
-  if (accepted !== null && manifestStream && isRequiredStream(manifestStream)) {
-    return accepted;
-  }
-  // 2. A skip is the connector's explicit statement that it did not collect the
-  //    stream. The manifest's accepted-coverage claim wins; otherwise infer a
-  //    skip-consistent, never-`complete` axis. When the same stream also carries
-  //    a pending DETAIL_GAP, that durable retry contract wins over an otherwise
-  //    terminal-looking diagnostic skip; unsupported/unavailable/deferred skip
-  //    reasons stay precise and non-green.
-  if (fact.skipped) {
-    const skipCoverage = accepted ?? mapSkipCoverageCondition(fact.skipped);
-    if (fact.pending_detail_gaps > 0 && skipCoverage === "terminal_gap") {
-      return "retryable_gap";
-    }
-    return skipCoverage;
-  }
-  // 3. A pending recoverable detail gap is a retryable boundary.
-  if (fact.pending_detail_gaps > 0) {
-    return "retryable_gap";
-  }
-  // 4. A known considered denominator distinguishes `partial` from covered. The
-  //    satisfying numerator is the connector-declared `covered` count when present
-  //    (the in-boundary items the run accounted for: emitted +
-  //    suppressed-because-unchanged), otherwise the raw `collected` count. The
-  //    `covered` path is what lets a steady-state full-sync run — which
-  //    re-enumerated its whole boundary and emitted nothing because every record
-  //    was unchanged — read `complete` instead of a false `partial`. It cannot
-  //    mask a dropped record: a weighed-but-dropped item is counted in neither
-  //    `collected` nor `covered`, so a real shortfall still reads `partial`.
-  if (fact.considered !== null) {
-    const satisfied = fact.covered ?? fact.collected;
-    if (satisfied < fact.considered) {
-      return "partial";
-    }
-    // The numerator satisfies the considered denominator: covered. A declared
-    // accepted-coverage policy (e.g. `inventory_only`, `deferred`) is the more
-    // precise honest claim than a bare `complete`.
-    return accepted ?? "complete";
-  }
-  // 5. No considered denominator: absence of evidence, NOT proof of completeness.
-  //    A declared accepted-coverage policy is still honest (the manifest owes no
-  //    further data); otherwise the condition is `unknown` — never `complete`.
-  return accepted ?? "unknown";
 }
 
 /**
@@ -2458,28 +2015,6 @@ async function getConnectorLocalCoverageAxis(
   }
 }
 
-/**
- * `transient` severity is the runtime's signal that the gap is
- * actively being re-tried without owner intervention. Per
- * the connection-health coverage policy, `recoverable` means the
- * gap has already been recovered (non-degrading) and `informational`
- * means the gap is out of scope by design (non-degrading); neither
- * counts as a retryable gap for the coverage axis rollup.
- */
-function isRetryableKnownGap(gap: unknown): boolean {
-  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-    return false;
-  }
-  if (isOwnerRecoverableKnownGap(gap)) {
-    return true;
-  }
-  if (isRuntimeRetryableKnownGap(gap)) {
-    return true;
-  }
-  const severity = (gap as { severity?: unknown }).severity;
-  return severity === "transient";
-}
-
 function mapRunStatus(status: string | null | undefined): "failed" | "succeeded" | null {
   if (!status) {
     return null;
@@ -2491,251 +2026,6 @@ function mapRunStatus(status: string | null | undefined): "failed" | "succeeded"
     return "failed";
   }
   return null;
-}
-
-function asScheduleRecord(schedule: unknown): Record<string, unknown> | null {
-  if (!schedule || typeof schedule !== "object" || Array.isArray(schedule)) {
-    return null;
-  }
-  return schedule as Record<string, unknown>;
-}
-
-function asBackoffRecord(schedule: Record<string, unknown> | null): Record<string, unknown> | null {
-  const backoff = schedule?.scheduler_backoff;
-  if (!backoff || typeof backoff !== "object" || Array.isArray(backoff)) {
-    return null;
-  }
-  return backoff as Record<string, unknown>;
-}
-
-function readNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function readIsoMillis(value: unknown): number | null {
-  if (typeof value !== "string" || !value) {
-    return null;
-  }
-  const millis = Date.parse(value);
-  return Number.isFinite(millis) ? millis : null;
-}
-
-function schedulerFailureAnchorMillis(schedule: Record<string, unknown> | null): number | null {
-  const candidates = [readIsoMillis(schedule?.last_finished_at), readIsoMillis(schedule?.last_started_at)].filter(
-    (value): value is number => value !== null
-  );
-  if (candidates.length === 0) {
-    return null;
-  }
-  return Math.max(...candidates);
-}
-
-function succeededRunSupersedesSchedulerBackoff(
-  lastRun: ConnectorRunSummary | null,
-  schedule: Record<string, unknown> | null
-): boolean {
-  if (lastRun?.status !== "succeeded") {
-    return false;
-  }
-  const runMillis = readIsoMillis(lastRun.last_at);
-  const failureAnchor = schedulerFailureAnchorMillis(schedule);
-  return runMillis !== null && (failureAnchor === null || runMillis >= failureAnchor);
-}
-
-/**
- * Stale-heartbeat threshold used by the outbox axis derivation. A
- * heartbeat older than this window with pending work present is treated
- * as stalled rather than active, so a collector that died mid-drain
- * does not sit forever in `active`. Chosen as a conservative single
- * constant for the milestone; future work may tune per-connector once
- * connection-scoped policy lands.
- */
-export const OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS = 30 * 60 * 1000;
-
-interface HeartbeatRow {
-  readonly connectorId: string;
-  readonly connectorInstanceId: string | null;
-  readonly deviceId: string;
-  readonly deviceRevokedAt: string | null;
-  readonly deviceStatus: string;
-  readonly lastError?: unknown;
-  readonly lastHeartbeatAt: string | null;
-  readonly lastHeartbeatStatus: string | null;
-  readonly lastIngestAt: string | null;
-  readonly outboxDiagnostics: OutboxDiagnosticCounts | null;
-  readonly recordsPending: number | null;
-  readonly sourceInstanceId: string;
-  readonly sourceStatus: string;
-  readonly updatedAt: string | null;
-}
-
-/**
- * Roll up per-source-instance heartbeat evidence into a single
- * connection outbox axis.
- *
- * - If no source instances exist for the connector, return `unknown`
- *   without marking the projection unreliable: the connector simply
- *   has no enrolled device-side collector, so no honest outbox claim
- *   can be made. The headline stays driven by the other axes.
- * - If at least one trusted source heartbeat exists, project each one
- *   and roll up: `stalled` dominates `active` dominates `idle`;
- *   any `unreliable: true` adds `outbox` to `unreliableSources`.
- */
-interface OutboxAxisAccumulator {
-  anyTrustedEvidence: boolean;
-  anyUnreliable: boolean;
-  sawTrustedIdle: boolean;
-  sawTrustedUnknown: boolean;
-  severity: "active" | "stalled" | null;
-  stalledCause: OutboxStalledCause | null;
-}
-
-function escalateOutboxAxisSeverity(
-  current: "active" | "stalled" | null,
-  rowAxis: OutboxAxis
-): "active" | "stalled" | null {
-  if (rowAxis === "stalled") {
-    return "stalled";
-  }
-  if (rowAxis === "active" && current !== "stalled") {
-    return "active";
-  }
-  return current;
-}
-
-// When sources disagree, surface the most-actionable cause first:
-// dead letters need a retry-then-rerun, a failed state read needs a rerun, and
-// stale-pending also needs a rerun. Higher rank wins.
-const STALLED_CAUSE_RANK: Record<OutboxStalledCause, number> = {
-  dead_letter_backlog: 3,
-  state_read_failed: 2,
-  stale_pending: 1,
-  transient_upload_failure: 0,
-};
-
-function escalateStalledCause(
-  current: OutboxStalledCause | null,
-  rowCause: OutboxStalledCause | null
-): OutboxStalledCause | null {
-  if (rowCause === null) {
-    return current;
-  }
-  if (current === null) {
-    return rowCause;
-  }
-  return STALLED_CAUSE_RANK[rowCause] > STALLED_CAUSE_RANK[current] ? rowCause : current;
-}
-
-function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, nowIso: string): void {
-  const trusted = row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
-  if (trusted) {
-    acc.anyTrustedEvidence = true;
-  }
-  const result = deriveOutboxAxisFromHeartbeat(
-    {
-      evidenceTrusted: trusted,
-      lastHeartbeatAt: row.lastHeartbeatAt,
-      lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
-      recordsPending: row.recordsPending,
-      deadLetterCount: row.outboxDiagnostics?.dead_letter ?? null,
-      deadLetterErrorClasses: deadLetterErrorClassesFromHeartbeat(row.lastError),
-    },
-    {
-      nowIso,
-      staleHeartbeatThresholdMs: OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS,
-    }
-  );
-  if (result.unreliable) {
-    acc.anyUnreliable = true;
-  }
-  if (!trusted) {
-    return;
-  }
-  acc.severity = escalateOutboxAxisSeverity(acc.severity, result.axis);
-  acc.stalledCause = escalateStalledCause(acc.stalledCause, result.cause);
-  if (result.axis === "idle") {
-    acc.sawTrustedIdle = true;
-  } else if (result.axis === "unknown") {
-    acc.sawTrustedUnknown = true;
-  }
-}
-
-export function projectConnectorOutboxAxisFromHeartbeats(
-  heartbeats: readonly HeartbeatRow[],
-  options: { readonly nowIso: string }
-): { axis: OutboxAxis; cause: OutboxStalledCause | null; unreliable: boolean; hasEvidence: boolean } {
-  if (heartbeats.length === 0) {
-    return { axis: "unknown", cause: null, unreliable: false, hasEvidence: false };
-  }
-  // Track each trusted row's contribution separately. We can only claim
-  // `idle` when every trusted row reports idle; a trusted row whose
-  // heartbeat we have never observed (axis = unknown) must not be
-  // silently treated as idle, or a dead collector with no record of life
-  // would paint the connection green.
-  const acc: OutboxAxisAccumulator = {
-    anyUnreliable: false,
-    anyTrustedEvidence: false,
-    sawTrustedIdle: false,
-    sawTrustedUnknown: false,
-    severity: null,
-    stalledCause: null,
-  };
-  for (const row of heartbeats) {
-    accumulateOutboxAxisRow(acc, row, options.nowIso);
-  }
-  // If every row is untrusted (e.g. all sources/devices revoked), there
-  // is no honest evidence — keep `unknown` rather than implying idle.
-  if (!acc.anyTrustedEvidence) {
-    return { axis: "unknown", cause: null, unreliable: acc.anyUnreliable, hasEvidence: false };
-  }
-  if (acc.severity !== null) {
-    // Cause only travels with a stalled axis; an `active` rollup carries none.
-    const cause = acc.severity === "stalled" ? acc.stalledCause : null;
-    return { axis: acc.severity, cause, unreliable: acc.anyUnreliable, hasEvidence: true };
-  }
-  // No trusted instance is actively working or stalled. We can only
-  // promise `idle` when every trusted instance reported idle — a missing
-  // heartbeat on any trusted instance keeps the axis `unknown`.
-  if (acc.sawTrustedIdle && !acc.sawTrustedUnknown) {
-    return { axis: "idle", cause: null, unreliable: acc.anyUnreliable, hasEvidence: true };
-  }
-  return { axis: "unknown", cause: null, unreliable: acc.anyUnreliable, hasEvidence: acc.sawTrustedIdle };
-}
-
-function deadLetterErrorClassesFromHeartbeat(value: unknown): { count: number; error_class: string }[] | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const record = value as { kind?: unknown; top_dead_letter_classes?: unknown };
-  if (record.kind !== "dead_letter_backlog" || !Array.isArray(record.top_dead_letter_classes)) {
-    return null;
-  }
-  const classes: { count: number; error_class: string }[] = [];
-  for (const item of record.top_dead_letter_classes) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-    const row = item as { count?: unknown; error_class?: unknown };
-    if (typeof row.error_class === "string" && typeof row.count === "number" && Number.isFinite(row.count)) {
-      classes.push({ error_class: row.error_class, count: row.count });
-    }
-  }
-  return classes.length > 0 ? classes : null;
-}
-
-function normalizeHeartbeatStatusForAxis(
-  value: string | null
-): "blocked" | "healthy" | "retrying" | "starting" | "stopped" | null {
-  switch (value) {
-    case "blocked":
-    case "healthy":
-    case "retrying":
-    case "starting":
-    case "stopped":
-      return value;
-    default:
-      return null;
-  }
 }
 
 /**
@@ -2777,54 +2067,6 @@ export async function getConnectorOutboxAxis(
   }
 }
 
-/**
- * Project a single `LocalDeviceProgress` from already-collected heartbeat
- * rows. Pure — the caller (typically `getConnectorOutboxAxis`) is
- * responsible for scoping the rows to one `connector_instance_id`.
- *
- * Returns `null` when no trusted source rows exist; we do not surface
- * device-side progress derived solely from revoked / inactive rows.
- */
-export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]): LocalDeviceProgress | null {
-  const trusted = heartbeats.filter(
-    (row) => row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null
-  );
-  if (trusted.length === 0) {
-    return null;
-  }
-  let lastHeartbeatAt: string | null = null;
-  let lastHeartbeatStatus: string | null = null;
-  let lastIngestAt: string | null = null;
-  let recordsPending = 0;
-  let sawPending = false;
-  for (const row of trusted) {
-    if (row.lastHeartbeatAt !== null && (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt)) {
-      lastHeartbeatAt = row.lastHeartbeatAt;
-      lastHeartbeatStatus = row.lastHeartbeatStatus;
-    }
-    if (row.lastIngestAt !== null && (lastIngestAt === null || row.lastIngestAt > lastIngestAt)) {
-      lastIngestAt = row.lastIngestAt;
-    }
-    if (typeof row.recordsPending === "number") {
-      recordsPending += row.recordsPending;
-      sawPending = true;
-    }
-  }
-  return {
-    last_heartbeat_at: lastHeartbeatAt,
-    last_heartbeat_status: lastHeartbeatStatus,
-    last_ingest_at: lastIngestAt,
-    // Roll up the per-source outbox diagnostics across the same trusted
-    // rows we already use for `records_pending`, so the connection summary
-    // can show the pending / dead-letter / stale-lease breakdown a stalled
-    // remediation needs. Revoked / inactive rows are filtered out above, so
-    // counts never leak from an untrusted device.
-    outbox_counts: rollupOutboxDiagnosticCounts(trusted.map((row) => row.outboxDiagnostics)),
-    records_pending: sawPending ? recordsPending : null,
-    source_count: trusted.length,
-  };
-}
-
 function combineUnreliableSources(
   detailGapsUnreliable: boolean,
   outboxUnreliable: boolean,
@@ -2855,25 +2097,6 @@ function combineUnreliableSources(
  * identity. Reason-filtering and the floor/null honesty rules live in
  * `deriveSourcePressureBacklog`, not here.
  */
-function readPendingGapLastPressureAt(gap: PendingDetailGapSummary): string | null {
-  if (typeof gap.last_attempt_at === "string") {
-    return gap.last_attempt_at;
-  }
-  if (typeof gap.updated_at === "string") {
-    return gap.updated_at;
-  }
-  return null;
-}
-
-function mapPendingPressureGaps(gaps: readonly PendingDetailGapSummary[]): readonly PendingPressureGap[] {
-  return gaps.map((gap) => ({
-    attemptCount: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
-    lastPressureAt: readPendingGapLastPressureAt(gap),
-    nextAttemptAfter: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
-    reason: typeof gap.reason === "string" ? gap.reason : null,
-  }));
-}
-
 /**
  * Lifecycles the connection-health projection treats as "open" for a
  * structured attention record. `attention.isHealthRelevant` enforces
@@ -2947,33 +2170,6 @@ function selectAttentionEvidence(input: {
  *   4. Earliest `created_at` as a stable tiebreak (don't flip CTAs on
  *      every refresh when two records are equally urgent).
  */
-function pickMostUrgentAttention(records: readonly [AttentionRecord, ...AttentionRecord[]]): AttentionRecord {
-  // The list is small (<= number of open attention records per
-  // connection — typically 0-2); a single reduce over the non-empty
-  // tuple keeps the urgency comparator local.
-  const [head, ...rest] = records;
-  return rest.reduce((best, candidate) => (compareAttentionUrgency(best, candidate) <= 0 ? best : candidate), head);
-}
-
-function compareAttentionUrgency(a: AttentionRecord, b: AttentionRecord): number {
-  const aResp = a.response_contract === "response_required" ? 1 : 0;
-  const bResp = b.response_contract === "response_required" ? 1 : 0;
-  if (aResp !== bResp) {
-    return bResp - aResp;
-  }
-  const aBlocked = a.progress_posture === "blocked" ? 1 : 0;
-  const bBlocked = b.progress_posture === "blocked" ? 1 : 0;
-  if (aBlocked !== bBlocked) {
-    return bBlocked - aBlocked;
-  }
-  const aExpiry = a.expires_at ? Date.parse(a.expires_at) : Number.POSITIVE_INFINITY;
-  const bExpiry = b.expires_at ? Date.parse(b.expires_at) : Number.POSITIVE_INFINITY;
-  if (aExpiry !== bExpiry) {
-    return aExpiry - bExpiry;
-  }
-  return Date.parse(a.created_at) - Date.parse(b.created_at);
-}
-
 function ownerActionForEvidence(action: OwnerAction): ConnectionAttentionEvidence["ownerAction"] {
   if (action === "none") {
     return null;
@@ -3040,66 +2236,6 @@ export interface ConnectorBrowserSurfaceProjection {
 interface BrowserSurfaceLeaseStoreReader {
   listNonTerminalLeases(): Promise<readonly BrowserSurfaceLease[]>;
   listSurfaces(): Promise<readonly BrowserSurface[]>;
-}
-
-const ACTIVE_WAITING_LEASE_STATUSES = new Set<BrowserSurfaceLease["status"]>([
-  "waiting_for_browser_surface",
-  "starting_surface",
-]);
-
-function rankRemoteSurfaceLease(status: BrowserSurfaceLease["status"]): number {
-  // Lower rank = more urgent. `leased` above `waiting` so an operator
-  // viewing a connection sees "running" before "queued" when both
-  // exist; the waiting variants share a rung.
-  if (status === "leased") {
-    return 0;
-  }
-  if (status === "starting_surface") {
-    return 1;
-  }
-  if (status === "waiting_for_browser_surface") {
-    return 2;
-  }
-  return 3;
-}
-
-function pickMostUrgentLease(leases: readonly BrowserSurfaceLease[]): BrowserSurfaceLease | null {
-  if (leases.length === 0) {
-    return null;
-  }
-  const [mostUrgent] = [...leases].sort((a, b) => {
-    const r = rankRemoteSurfaceLease(a.status) - rankRemoteSurfaceLease(b.status);
-    if (r !== 0) {
-      return r;
-    }
-    // Stable secondary: most-recent requested_at first.
-    const at = Date.parse(b.requested_at) - Date.parse(a.requested_at);
-    return Number.isFinite(at) ? at : 0;
-  });
-  return mostUrgent ?? null;
-}
-
-function surfaceRecencyMs(surface: BrowserSurface): number {
-  const lastUsed = Date.parse(surface.last_used_at);
-  if (Number.isFinite(lastUsed)) {
-    return lastUsed;
-  }
-  const created = Date.parse(surface.created_at);
-  return Number.isFinite(created) ? created : 0;
-}
-
-function pickMostRecentSurface(surfaces: readonly BrowserSurface[]): BrowserSurface | null {
-  if (surfaces.length === 0) {
-    return null;
-  }
-  const [mostRecent] = [...surfaces].sort((a, b) => {
-    const at = surfaceRecencyMs(b) - surfaceRecencyMs(a);
-    if (at !== 0) {
-      return at;
-    }
-    return b.surface_id.localeCompare(a.surface_id);
-  });
-  return mostRecent ?? null;
 }
 
 /**
@@ -4165,10 +3301,7 @@ function connectionIsBrowserSessionBound(instance: ConnectorInstanceRow): boolea
 // the connector is static-secret-capable AND the connection is NOT browser-
 // session-bound. (A future explicit auth-mode conversion would set the binding
 // accordingly; this reads the binding, never guesses from the connector alone.)
-function connectionIsStaticSecretBound(
-  instance: ConnectorInstanceRow,
-  staticSecretCapable: boolean
-): boolean {
+function connectionIsStaticSecretBound(instance: ConnectorInstanceRow, staticSecretCapable: boolean): boolean {
   return staticSecretCapable && !connectionIsBrowserSessionBound(instance);
 }
 
@@ -4626,26 +3759,6 @@ export interface OwnerConnectionDiagnosticsHealth {
   readonly state: ConnectionHealthSnapshot["state"];
 }
 
-// Owner-only recovery-admission diagnostics (OpenSpec
-// `add-connector-neutral-recovery-governor`, tasks 2.6/2.7). This is the durable
-// READ that answers "why didn't the most recent recovery attempt run" for one
-// connection: `admission` re-derives the connector-neutral admission decision
-// over the connection's bounded pending gap rows (substrate: `connector_detail_gaps`,
-// no new store — matching design.md's rollback guarantee) and `stall` is the
-// observe-only stall watchdog (eligible work with no attempt beyond the cadence
-// window). Both derive from the SAME pure decisions the runtime records on its
-// `DETAIL_GAPS_*` progress events, so the read and the event stream can never
-// disagree. Counts/classes/timing only — never a record payload, locator, or
-// secret. `read_limit` marks the pending read as bounded so a floor is never
-// presented as an exact total; `unreadable` is the honest "gap store read
-// failed" signal, distinct from "no recovery work".
-export interface OwnerConnectionDiagnosticsRecovery {
-  readonly admission: RecoveryAdmissionDiagnostics;
-  readonly read_limit: number | null;
-  readonly stall: RecoveryStallObservation;
-  readonly unreadable: boolean;
-}
-
 export interface OwnerConnectionDiagnostics {
   readonly connection_id: string;
   readonly connector_id: string;
@@ -4657,86 +3770,8 @@ export interface OwnerConnectionDiagnostics {
   readonly last_run: OwnerConnectionDiagnosticsRun | null;
   readonly last_successful_run: OwnerConnectionDiagnosticsRun | null;
   readonly object: "owner_connection_diagnostics";
-  readonly recovery: OwnerConnectionDiagnosticsRecovery;
   readonly rendered_verdict: RenderedVerdict;
   readonly schedule: { readonly enabled: boolean; readonly interval_seconds: number | null } | null;
-}
-
-// Map a bounded pending-gap summary onto the pure `RecoveryGapRow` the
-// recovery-decision helpers read. The connector id is injected from the read
-// scope (the summary projection omits it) so `resolveRecoveryAdmission` can
-// always derive a work domain; every other field is the durable non-secret
-// class/timing/attempt metadata. No locator, payload, or source identity is
-// forwarded.
-function pendingGapToRecoveryRow(gap: PendingDetailGapSummary, connectorId: string): RecoveryGapRow {
-  return {
-    connector_id: connectorId,
-    connector_instance_id: typeof gap.connector_instance_id === "string" ? gap.connector_instance_id : null,
-    reason: typeof gap.reason === "string" ? gap.reason : null,
-    status: typeof gap.status === "string" ? gap.status : null,
-    attempt_count: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
-    last_attempt_at: typeof gap.last_attempt_at === "string" ? gap.last_attempt_at : null,
-    next_attempt_after: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
-    updated_at: typeof gap.updated_at === "string" ? gap.updated_at : null,
-    stream: typeof gap.stream === "string" ? gap.stream : null,
-  };
-}
-
-// Bound applied to the cooldown-inclusive pending read below. A hit on this
-// bound marks the read as a floor, consistent with the other bounded gap reads.
-const RECOVERY_DIAGNOSTICS_READ_LIMIT = 100;
-
-// Build the owner-only recovery-admission diagnostics for one connection.
-//
-// This reads the connection's pending gaps regardless of their
-// `next_attempt_after` eligibility floor by using the connection-scoped pending
-// read with a far-future eligibility instant. That keeps the bound applied after
-// connection scoping (no sibling instance can crowd out this connection's rows)
-// while still including cooling-down rows. An ordinary "eligible now" read would
-// hide the very rows this surface must explain: a connection whose whole backlog
-// is cooling down would otherwise look empty, so diagnostics could not answer
-// "waiting until <time>". Reading the cooling-down rows is what lets
-// `resolveRecoveryAdmission` classify them as a `cooldown` deferral with a next-
-// eligible time.
-//
-// Observe-only: it computes the admission summary and the stall observation as
-// evidence; it never admits work, mutates a row, or arms a gate.
-async function buildOwnerConnectionDiagnosticsRecovery(
-  connectorId: string,
-  connectorInstanceId: string,
-  nowMs: number
-): Promise<OwnerConnectionDiagnosticsRecovery> {
-  try {
-    const store = getDefaultConnectorDetailGapStore() as ConnectorDetailGapStoreLike;
-    const pending = await Promise.resolve(
-      store.listPendingGaps({
-        connectorId,
-        connectorInstanceId,
-        limit: RECOVERY_DIAGNOSTICS_READ_LIMIT,
-        now: "9999-12-31T23:59:59.999Z",
-      })
-    );
-    const rows: RecoveryGapRow[] = pending.map((gap) => pendingGapToRecoveryRow(gap, connectorId));
-    return {
-      admission: summarizeRecoveryAdmissionDiagnostics(rows, { nowMs }),
-      stall: deriveRecoveryStall(rows, { nowMs, cadenceWindowMs: RECOVERY_STALL_CADENCE_MS }),
-      read_limit: RECOVERY_DIAGNOSTICS_READ_LIMIT,
-      unreadable: false,
-    };
-  } catch {
-    // Store read failed: honest "unreadable" so the owner sees a read failure,
-    // never a fabricated empty backlog.
-    return emptyRecoveryDiagnostics(true);
-  }
-}
-
-function emptyRecoveryDiagnostics(unreadable: boolean): OwnerConnectionDiagnosticsRecovery {
-  return {
-    admission: { candidates: 0, admitted: 0, deferred: 0 },
-    stall: { eligibleCandidates: 0, lastAttemptAt: null, stalled: false },
-    read_limit: RECOVERY_DIAGNOSTICS_READ_LIMIT,
-    unreadable,
-  };
 }
 
 // Projects a `ConnectorRunSummary` to the diagnostics-facing run shape. Only the
@@ -4782,15 +3817,6 @@ export async function getOwnerConnectionDiagnostics(
     return null;
   }
   const health = summary.connection_health;
-  // Recovery-admission diagnostics for exactly this connection (tasks 2.6/2.7).
-  // Scoped to `summary.connection_id` (== the resolved connector_instance_id) so
-  // the answer to "why didn't recovery run" is for this binding, never a
-  // sibling's backlog. Observe-only; the read never admits work or arms a gate.
-  const recovery = await buildOwnerConnectionDiagnosticsRecovery(
-    summary.connector_id,
-    summary.connection_id,
-    Date.now()
-  );
   return {
     object: "owner_connection_diagnostics",
     connection_id: summary.connection_id,
@@ -4807,7 +3833,6 @@ export async function getOwnerConnectionDiagnostics(
     },
     last_run: projectDiagnosticsRun(summary.last_run),
     last_successful_run: projectDiagnosticsRun(summary.last_successful_run),
-    recovery,
     rendered_verdict: summary.rendered_verdict,
     // Last successful ingest time for push-mode (local-device) connections.
     // `null` for scheduler-managed connections with no device heartbeat, which

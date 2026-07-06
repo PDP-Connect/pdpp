@@ -1,0 +1,19 @@
+# hone work tst-mcp-parse-result-id-0010 — post rung 'direct-test-green'
+# command: cd "$REPO_ROOT/../packages/mcp-server" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi'
+# expect: POST: the id-grammar oracle passes fully, no skips. BASELINE: prints 'BASELINE:' exit 0.
+# timeout: 1800s (engine-default)
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ parseRecordResultId parses self-contained result ids (0.915677ms)
+✔ parseRecordResultId parses legacy stream record ids (0.143203ms)
+✔ parseRecordResultId parses canonical record resource uris (0.227494ms)
+✔ parseRecordResultId falls back to embedded result grammar in record uris (0.181173ms)
+✔ parseRecordResultId rejects malformed ids (0.212393ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 54.474496

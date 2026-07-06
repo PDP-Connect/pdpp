@@ -1,0 +1,5 @@
+# hone work pl1-spine-source-resolvers-0003 — post rung 'typecheck'
+# command: cd "$REPO_ROOT" && npx tsc --noEmit
+# expect: 0 errors
+# exit: 0  duration: 4s  verdict: PASS
+

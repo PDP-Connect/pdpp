@@ -1,0 +1,49 @@
+# hone work pl2-run-target-descriptor-normalize-extract-0006 — baseline rung 'complexity-remeasure'
+# command: cd "$REPO_ROOT" && sh -c 'cfg=/tmp/pdpp_normalizeTargetDescriptor_6_biome.jsonc; printf %s "{\"root\":false,\"files\":{\"ignoreUnknown\":true,\"includes\":[\"server/**/*.js\",\"server/**/*.ts\",\"lib/**/*.js\",\"lib/**/*.ts\",\"runtime/**/*.js\",\"runtime/**/*.ts\"]},\"linter\":{\"enabled\":true,\"rules\":{\"complexity\":{\"noExcessiveCognitiveComplexity\":{\"level\":\"error\",\"options\":{\"maxAllowedComplexity\":5}}}}}}" > "$cfg"; npx biome lint --config-path="$cfg" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/streaming/run-target-registry.js 2>&1'
+# expect: Prints Biome cognitive-complexity diagnostics for server/streaming/run-target-registry.js; post-refactor normalizeTargetDescriptor should be below its measured baseline 48 and the rung must keep maxAllowedComplexity 5 plus --max-diagnostics=300 with stderr captured by 2>&1.
+# exit: 0  duration: 0s  verdict: PASS
+
+server/streaming/run-target-registry.js:295:10 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━
+
+  i Excessive complexity of 48 detected (max: 15).
+  
+    293 │ }
+    294 │ 
+  > 295 │ function normalizeTargetDescriptor(input, { isNekoDescriptorApproved } = {}) {
+        │          ^^^^^^^^^^^^^^^^^^^^^^^^^
+    296 │   const source = input?.descriptor && typeof input.descriptor === 'object' ? input.descriptor : input;
+    297 │   const backend = optionalString(source?.backend) || 'cdp';
+  
+  i Please refactor this function to reduce its complexity score from 48 to the max allowed complexity 15.
+  
+
+server/streaming/run-target-registry.js:446:12 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━
+
+  i Excessive complexity of 25 detected (max: 15).
+  
+    444 │   }
+    445 │ 
+  > 446 │   function register({
+        │            ^^^^^^^^
+    447 │     runId,
+    448 │     interactionId,
+  
+  i Please refactor this function to reduce its complexity score from 25 to the max allowed complexity 15.
+  
+
+server/streaming/run-target-registry.js:739:14 lint/complexity/noExcessiveCognitiveComplexity ━━━━━━━━━━
+
+  i Excessive complexity of 36 detected (max: 15).
+  
+    737 │       '/admin/runs/:runId/interactions/:interactionId/streaming-target';
+    738 │ 
+  > 739 │     function handleRegister(req, res) {
+        │              ^^^^^^^^^^^^^^
+    740 │       try {
+    741 │         const runId = decodeURIComponent(req.params.runId);
+  
+  i Please refactor this function to reduce its complexity score from 36 to the max allowed complexity 15.
+  
+
+Checked 1 file in 3ms. No fixes applied.
+Found 3 infos.

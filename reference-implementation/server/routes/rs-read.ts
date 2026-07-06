@@ -731,20 +731,14 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
 
         await ctx.emitQueryReceived(queryContext, req);
 
-        await ctx.emitSpineEvent({
-          event_type: "disclosure.served",
-          trace_id: traceId,
-          scenario_id: scenarioId,
-          actor_type: actorType,
-          actor_id: actorId,
-          subject_type: "subject",
-          subject_id: tokenInfo.subject_id || null,
-          object_type: "query",
-          object_id: queryId,
-          status: "succeeded",
-          grant_id: tokenInfo.grant_id || null,
-          client_id: tokenInfo.client_id || null,
-          token_id: authorizationTokenId(req),
+        await emitDisclosureServed(ctx, {
+          req,
+          tokenInfo,
+          actorType,
+          actorId,
+          traceId,
+          scenarioId,
+          queryId,
           data: {
             source: result.sourceDescriptor,
             query_shape: "connector_list",
@@ -985,6 +979,28 @@ function buildFullDetailConstraintError(
   return null;
 }
 
+// Request-shaping selectors read off the `/v1/schema` query string. Grouped so
+// the route handler resolves them in one call and stays under the complexity bar.
+interface SchemaRequestSelectors {
+  compactView: boolean;
+  connectionScope: string | null;
+  explicitFullDetail: boolean;
+  streamScope: string | null;
+}
+
+// Pure: the additive `query_shape: "schema"` telemetry body for the request.
+// Only present selectors are attached, mirroring the prior inline spreads.
+function buildSchemaQueryData(selectors: SchemaRequestSelectors): Record<string, unknown> {
+  const { compactView, explicitFullDetail, streamScope, connectionScope } = selectors;
+  return {
+    query_shape: "schema",
+    ...(compactView ? { requested_view: "compact" } : {}),
+    ...(explicitFullDetail ? { requested_detail: "full" } : {}),
+    ...(streamScope ? { requested_stream: streamScope } : {}),
+    ...(connectionScope ? { requested_connection_id: connectionScope } : {}),
+  };
+}
+
 // GET /v1/schema — one-shot capability/schema discovery for the bearer
 export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
   app.get("/v1/schema", { contract: "getSchema" }, ctx.requireToken, async (req: RouteRequest, res: RouteResponse) => {
@@ -1005,6 +1021,7 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
       const explicitFullDetail = !compactView && readSchemaDetail(req.query) === "full";
       const streamScope = readSchemaStreamScope(req.query);
       const connectionScope = readSchemaConnectionScope(req.query);
+      const selectors: SchemaRequestSelectors = { compactView, explicitFullDetail, streamScope, connectionScope };
 
       queryContext = {
         tokenInfo,
@@ -1017,13 +1034,7 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
           tokenInfo.pdpp_token_kind === "owner"
             ? ctx.buildOwnerQuerySourceDescriptor(req, ctx.opts)
             : ctx.buildClientSourceDescriptor(tokenInfo),
-        queryData: {
-          query_shape: "schema",
-          ...(compactView ? { requested_view: "compact" } : {}),
-          ...(explicitFullDetail ? { requested_detail: "full" } : {}),
-          ...(streamScope ? { requested_stream: streamScope } : {}),
-          ...(connectionScope ? { requested_connection_id: connectionScope } : {}),
-        },
+        queryData: buildSchemaQueryData(selectors),
       };
 
       // Build the actor input + connector-item dependencies for this bearer.
@@ -1058,20 +1069,14 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
 
       await ctx.emitQueryReceived(queryContext, req);
 
-      await ctx.emitSpineEvent({
-        event_type: "disclosure.served",
-        trace_id: traceId,
-        scenario_id: scenarioId,
-        actor_type: actorType,
-        actor_id: actorId,
-        subject_type: "subject",
-        subject_id: tokenInfo.subject_id || null,
-        object_type: "query",
-        object_id: queryId,
-        status: "succeeded",
-        grant_id: tokenInfo.grant_id || null,
-        client_id: tokenInfo.client_id || null,
-        token_id: authorizationTokenId(req),
+      await emitDisclosureServed(ctx, {
+        req,
+        tokenInfo,
+        actorType,
+        actorId,
+        traceId,
+        scenarioId,
+        queryId,
         data: {
           source: result.sourceDescriptor,
           query_shape: "schema",
@@ -1466,38 +1471,14 @@ export function mountRsStreamDetail(app: AppLike, ctx: MountRsReadContext): void
           queryData: { query_shape: "stream_metadata" },
         };
 
-        if (tokenInfo.pdpp_token_kind === "owner") {
-          const ownerScope = await ctx.resolveOwnerReadScope(req, ctx.opts);
-          sourceDescriptor = ctx.buildSourceDescriptor(ownerScope.source);
-          queryContext.sourceDescriptor = sourceDescriptor;
-          const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
-          manifest = ownerResolved.manifest;
-          storageBinding = ownerResolved.storageBinding;
-        } else {
-          const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
-          manifest = grantResolved.manifest;
-          sourceDescriptor = grantResolved.source;
-          queryContext.sourceDescriptor = sourceDescriptor;
-          storageBinding = grantResolved.storageBinding;
-        }
+        ({ storageBinding, manifest, sourceDescriptor } = await resolveReadScope(ctx, req, tokenInfo, queryContext));
 
         await ctx.emitQueryReceived(queryContext, req);
 
-        const operationInput =
-          tokenInfo.pdpp_token_kind === "owner"
-            ? {
-                actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
-                streamName: req.params.stream,
-              }
-            : {
-                actor: {
-                  kind: "client",
-                  subject_id: tokenInfo.subject_id || null,
-                  client_id: tokenInfo.client_id || null,
-                  grant_id: tokenInfo.grant_id || null,
-                },
-                streamName: req.params.stream,
-              };
+        const operationInput = {
+          actor: buildReadActor(tokenInfo),
+          streamName: req.params.stream,
+        };
 
         const dependencies = {
           getSourceDescriptor: () => sourceDescriptor,
@@ -1550,21 +1531,15 @@ export function mountRsStreamDetail(app: AppLike, ctx: MountRsReadContext): void
           relationships: unknown[];
         } & Record<string, unknown>;
 
-        await ctx.emitSpineEvent({
-          event_type: "disclosure.served",
-          trace_id: traceId,
-          scenario_id: scenarioId,
-          actor_type: actorType,
-          actor_id: actorId,
-          subject_type: "subject",
-          subject_id: tokenInfo.subject_id || null,
-          object_type: "query",
-          object_id: queryId,
-          status: "succeeded",
-          grant_id: tokenInfo.grant_id || null,
-          client_id: tokenInfo.client_id || null,
-          stream_id: req.params.stream,
-          token_id: authorizationTokenId(req),
+        await emitDisclosureServed(ctx, {
+          req,
+          tokenInfo,
+          actorType,
+          actorId,
+          traceId,
+          scenarioId,
+          queryId,
+          streamId: req.params.stream ?? null,
           data: {
             source: result.sourceDescriptor,
             query_shape: "stream_metadata",
@@ -1855,21 +1830,15 @@ export function mountRsRecordsList(app: AppLike, ctx: MountRsReadContext): void 
           throw err;
         }
 
-        await ctx.emitSpineEvent({
-          event_type: "disclosure.served",
-          trace_id: traceId,
-          scenario_id: scenarioId,
-          actor_type: actorType,
-          actor_id: actorId,
-          subject_type: "subject",
-          subject_id: tokenInfo.subject_id || null,
-          object_type: "query",
-          object_id: queryId,
-          status: "succeeded",
-          grant_id: tokenInfo.grant_id || null,
-          client_id: tokenInfo.client_id || null,
-          stream_id: req.params.stream,
-          token_id: authorizationTokenId(req),
+        await emitDisclosureServed(ctx, {
+          req,
+          tokenInfo,
+          actorType,
+          actorId,
+          traceId,
+          scenarioId,
+          queryId,
+          streamId: req.params.stream ?? null,
           data: { source: result.sourceDescriptor, ...result.disclosureData },
         });
 
@@ -1930,33 +1899,11 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
           },
         };
 
-        if (tokenInfo.pdpp_token_kind === "owner") {
-          const ownerScope = await ctx.resolveOwnerReadScope(req, ctx.opts);
-          queryContext.sourceDescriptor = ctx.buildSourceDescriptor(ownerScope.source);
-          const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
-          storageBinding = ownerResolved.storageBinding;
-          manifest = ownerResolved.manifest;
-          sourceDescriptor = ctx.buildSourceDescriptor(ownerScope.source);
-          queryContext.sourceDescriptor = sourceDescriptor;
-        } else {
-          const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
-          storageBinding = grantResolved.storageBinding;
-          manifest = grantResolved.manifest;
-          sourceDescriptor = grantResolved.source;
-          queryContext.sourceDescriptor = sourceDescriptor;
-        }
+        ({ storageBinding, manifest, sourceDescriptor } = await resolveReadScope(ctx, req, tokenInfo, queryContext));
         await ctx.emitQueryReceived(queryContext, req);
 
         const operationInput = {
-          actor:
-            tokenInfo.pdpp_token_kind === "owner"
-              ? { kind: "owner", subject_id: tokenInfo.subject_id || null }
-              : {
-                  kind: "client",
-                  subject_id: tokenInfo.subject_id || null,
-                  client_id: tokenInfo.client_id || null,
-                  grant_id: tokenInfo.grant_id || null,
-                },
+          actor: buildReadActor(tokenInfo),
           streamName: req.params.stream,
           recordId: requestedRecordId,
           expandOptions: {
@@ -2016,21 +1963,15 @@ export function mountRsRecordDetail(app: AppLike, ctx: MountRsReadContext): void
           throw err;
         }
 
-        await ctx.emitSpineEvent({
-          event_type: "disclosure.served",
-          trace_id: traceId,
-          scenario_id: scenarioId,
-          actor_type: actorType,
-          actor_id: actorId,
-          subject_type: "subject",
-          subject_id: tokenInfo.subject_id || null,
-          object_type: "query",
-          object_id: queryId,
-          status: "succeeded",
-          grant_id: tokenInfo.grant_id || null,
-          client_id: tokenInfo.client_id || null,
-          stream_id: req.params.stream,
-          token_id: authorizationTokenId(req),
+        await emitDisclosureServed(ctx, {
+          req,
+          tokenInfo,
+          actorType,
+          actorId,
+          traceId,
+          scenarioId,
+          queryId,
+          streamId: req.params.stream ?? null,
           data: { source: result.sourceDescriptor, ...result.disclosureData },
         });
         return res.json(
@@ -2256,67 +2197,80 @@ function buildSearchHelpers(req: RouteRequest, ctx: MountRsReadContext): Record<
   };
 }
 
+// Shared inner handler for all three search routes (lexical, semantic, hybrid).
+// The only differences between the three are the `query_shape` label stored in
+// `queryContext.queryData` and the `ctx.run*Search` method invoked — both are
+// supplied via `opts`.  Everything else (header setup, queryContext construction,
+// emitQueryReceived, emitDisclosureServed, res.json, catch block) is identical.
+async function runSearchRouteHandler(
+  ctx: MountRsReadContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  opts: {
+    queryShape: string;
+    runSearch: (args: Record<string, unknown>) => Promise<{ envelope: unknown; disclosureData: unknown }>;
+  }
+): Promise<unknown> {
+  let queryContext: QueryContext | null = null;
+  try {
+    const { tokenInfo } = req;
+    const queryId = ctx.ensureRequestId(res);
+    const { actorType, actorId, traceId, scenarioId } = ctx.buildQueryActorContext(tokenInfo);
+    ctx.setReferenceTraceId(res, traceId);
+
+    const isOwner = tokenInfo.pdpp_token_kind === "owner";
+    queryContext = {
+      tokenInfo,
+      queryId,
+      actorType,
+      actorId,
+      traceId,
+      scenarioId,
+      sourceDescriptor: isOwner ? null : ctx.buildClientSourceDescriptor(tokenInfo),
+      streamId: null,
+      queryData: { query_shape: opts.queryShape },
+    };
+    await ctx.emitQueryReceived(queryContext, req);
+
+    const { envelope, disclosureData } = await opts.runSearch({
+      req,
+      opts: ctx.opts,
+      tokenInfo,
+      ...buildSearchHelpers(req, ctx),
+    });
+
+    await emitDisclosureServed(ctx, {
+      req,
+      tokenInfo,
+      actorType,
+      actorId,
+      traceId,
+      scenarioId,
+      queryId,
+      streamId: null,
+      data: disclosureData as Record<string, unknown>,
+    });
+
+    return res.json(ctx.finalizeCanonicalEnvelope(envelope, req));
+  } catch (err) {
+    if (queryContext) {
+      return await ctx.rejectQuery(res, req, queryContext, err);
+    }
+    return ctx.handleError(res, err);
+  }
+}
+
 // GET /v1/search — public lexical retrieval extension.
 export function mountRsSearchLexical(app: AppLike, ctx: MountRsReadContext): void {
   app.get(
     "/v1/search",
     { contract: "searchRecordsLexical" },
     ctx.requireToken,
-    async (req: RouteRequest, res: RouteResponse) => {
-      let queryContext: QueryContext | null = null;
-      try {
-        const { tokenInfo } = req;
-        const queryId = ctx.ensureRequestId(res);
-        const { actorType, actorId, traceId, scenarioId } = ctx.buildQueryActorContext(tokenInfo);
-        ctx.setReferenceTraceId(res, traceId);
-
-        const isOwner = tokenInfo.pdpp_token_kind === "owner";
-        queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
-          actorId,
-          traceId,
-          scenarioId,
-          sourceDescriptor: isOwner ? null : ctx.buildClientSourceDescriptor(tokenInfo),
-          streamId: null,
-          queryData: { query_shape: "search" },
-        };
-        await ctx.emitQueryReceived(queryContext, req);
-
-        const { envelope, disclosureData } = await ctx.runLexicalSearch({
-          req,
-          opts: ctx.opts,
-          tokenInfo,
-          ...buildSearchHelpers(req, ctx),
-        });
-
-        await ctx.emitSpineEvent({
-          event_type: "disclosure.served",
-          trace_id: traceId,
-          scenario_id: scenarioId,
-          actor_type: actorType,
-          actor_id: actorId,
-          subject_type: "subject",
-          subject_id: tokenInfo.subject_id || null,
-          object_type: "query",
-          object_id: queryId,
-          status: "succeeded",
-          grant_id: tokenInfo.grant_id || null,
-          client_id: tokenInfo.client_id || null,
-          stream_id: null,
-          token_id: authorizationTokenId(req),
-          data: disclosureData,
-        });
-
-        return res.json(ctx.finalizeCanonicalEnvelope(envelope, req));
-      } catch (err) {
-        if (queryContext) {
-          return await ctx.rejectQuery(res, req, queryContext, err);
-        }
-        return ctx.handleError(res, err);
-      }
-    }
+    (req: RouteRequest, res: RouteResponse) =>
+      runSearchRouteHandler(ctx, req, res, {
+        queryShape: "search",
+        runSearch: (args) => ctx.runLexicalSearch(args),
+      })
   );
 }
 
@@ -2337,61 +2291,11 @@ export function mountRsSearchSemantic(app: AppLike, ctx: MountRsReadContext): vo
     "/v1/search/semantic",
     { contract: "searchRecordsSemantic" },
     ctx.requireToken,
-    async (req: RouteRequest, res: RouteResponse) => {
-      let queryContext: QueryContext | null = null;
-      try {
-        const { tokenInfo } = req;
-        const queryId = ctx.ensureRequestId(res);
-        const { actorType, actorId, traceId, scenarioId } = ctx.buildQueryActorContext(tokenInfo);
-        ctx.setReferenceTraceId(res, traceId);
-
-        const isOwner = tokenInfo.pdpp_token_kind === "owner";
-        queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
-          actorId,
-          traceId,
-          scenarioId,
-          sourceDescriptor: isOwner ? null : ctx.buildClientSourceDescriptor(tokenInfo),
-          streamId: null,
-          queryData: { query_shape: "search_semantic" },
-        };
-        await ctx.emitQueryReceived(queryContext, req);
-
-        const { envelope, disclosureData } = await ctx.runSemanticSearch({
-          req,
-          opts: ctx.opts,
-          tokenInfo,
-          ...buildSearchHelpers(req, ctx),
-        });
-
-        await ctx.emitSpineEvent({
-          event_type: "disclosure.served",
-          trace_id: traceId,
-          scenario_id: scenarioId,
-          actor_type: actorType,
-          actor_id: actorId,
-          subject_type: "subject",
-          subject_id: tokenInfo.subject_id || null,
-          object_type: "query",
-          object_id: queryId,
-          status: "succeeded",
-          grant_id: tokenInfo.grant_id || null,
-          client_id: tokenInfo.client_id || null,
-          stream_id: null,
-          token_id: authorizationTokenId(req),
-          data: disclosureData,
-        });
-
-        return res.json(ctx.finalizeCanonicalEnvelope(envelope, req));
-      } catch (err) {
-        if (queryContext) {
-          return await ctx.rejectQuery(res, req, queryContext, err);
-        }
-        return ctx.handleError(res, err);
-      }
-    }
+    (req: RouteRequest, res: RouteResponse) =>
+      runSearchRouteHandler(ctx, req, res, {
+        queryShape: "search_semantic",
+        runSearch: (args) => ctx.runSemanticSearch(args),
+      })
   );
 }
 
@@ -2414,61 +2318,11 @@ export function mountRsSearchHybrid(app: AppLike, ctx: MountRsReadContext): void
     "/v1/search/hybrid",
     { contract: "searchRecordsHybrid" },
     ctx.requireToken,
-    async (req: RouteRequest, res: RouteResponse) => {
-      let queryContext: QueryContext | null = null;
-      try {
-        const { tokenInfo } = req;
-        const queryId = ctx.ensureRequestId(res);
-        const { actorType, actorId, traceId, scenarioId } = ctx.buildQueryActorContext(tokenInfo);
-        ctx.setReferenceTraceId(res, traceId);
-
-        const isOwner = tokenInfo.pdpp_token_kind === "owner";
-        queryContext = {
-          tokenInfo,
-          queryId,
-          actorType,
-          actorId,
-          traceId,
-          scenarioId,
-          sourceDescriptor: isOwner ? null : ctx.buildClientSourceDescriptor(tokenInfo),
-          streamId: null,
-          queryData: { query_shape: "search_hybrid" },
-        };
-        await ctx.emitQueryReceived(queryContext, req);
-
-        const { envelope, disclosureData } = await ctx.runHybridSearch({
-          req,
-          opts: ctx.opts,
-          tokenInfo,
-          ...buildSearchHelpers(req, ctx),
-        });
-
-        await ctx.emitSpineEvent({
-          event_type: "disclosure.served",
-          trace_id: traceId,
-          scenario_id: scenarioId,
-          actor_type: actorType,
-          actor_id: actorId,
-          subject_type: "subject",
-          subject_id: tokenInfo.subject_id || null,
-          object_type: "query",
-          object_id: queryId,
-          status: "succeeded",
-          grant_id: tokenInfo.grant_id || null,
-          client_id: tokenInfo.client_id || null,
-          stream_id: null,
-          token_id: authorizationTokenId(req),
-          data: disclosureData,
-        });
-
-        return res.json(ctx.finalizeCanonicalEnvelope(envelope, req));
-      } catch (err) {
-        if (queryContext) {
-          return await ctx.rejectQuery(res, req, queryContext, err);
-        }
-        return ctx.handleError(res, err);
-      }
-    }
+    (req: RouteRequest, res: RouteResponse) =>
+      runSearchRouteHandler(ctx, req, res, {
+        queryShape: "search_hybrid",
+        runSearch: (args) => ctx.runHybridSearch(args),
+      })
   );
 }
 
@@ -2712,7 +2566,7 @@ async function serveResolvedBlob(
 }
 
 // GET /v1/blobs/:blob_id — per-binding blob-visibility read. Storage reads
-// flow through the `BlobStore` capability (server/stores/blob-store.js),
+// flow through the `BlobStore` capability (server/stores/blob-store.ts),
 // constructed once via `ctx.createBlobStore()` at mount time exactly as the
 // inline `const blobStore = createBlobStore()` did. The route owns the
 // binding scan and the per-stream grant-scope `connection_id` re-check (P1/P2

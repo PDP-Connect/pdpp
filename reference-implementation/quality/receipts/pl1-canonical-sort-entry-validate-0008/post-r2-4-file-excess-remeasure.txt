@@ -1,0 +1,52 @@
+# hone work pl1-canonical-sort-entry-validate-0008 — post-r2 rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'server/record-query-helpers.ts' --cog 5
+# expect: file_excess strictly below the pre-edit baseline (22); the only NEW flagged name permitted is validateSortEntry
+# exit: 0  duration: 0s  verdict: FAIL (expect_check[file_excess_lt]: NEW function above the cog threshold post-change (baseline flagged=[rejectListOnlyParamsForChangesFeed,validateCanonicalSort,resolveListOrder,decorateRecordWithConnectionIdentity,attachRequestWarningsToResponse] post=[rejectListOnlyParamsForChangesFeed,validateSortEntry,validateCanonicalSort,resolveListOrder,decorateRecordWithConnectionIdentity,attachRequestWarningsToResponse]) — complexity moved, not reduced)
+
+{
+  "file": "server/record-query-helpers.ts",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 12,
+  "flagged_count": 6,
+  "file_excess": 12,
+  "flagged": [
+    {
+      "fn": "rejectListOnlyParamsForChangesFeed",
+      "line": 77,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "validateSortEntry",
+      "line": 114,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "validateCanonicalSort",
+      "line": 138,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "resolveListOrder",
+      "line": 185,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "decorateRecordWithConnectionIdentity",
+      "line": 238,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "attachRequestWarningsToResponse",
+      "line": 267,
+      "cc": 9,
+      "excess": 4
+    }
+  ],
+  "red_scan": []
+}

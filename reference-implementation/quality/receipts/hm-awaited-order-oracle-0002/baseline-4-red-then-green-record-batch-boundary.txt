@@ -1,0 +1,6 @@
+# hone work hm-awaited-order-oracle-0002 — baseline rung 'red-then-green-record-batch-boundary'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-order.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/length >= BATCH_SIZE/length > BATCH_SIZE/' runtime/index.js && node --test test/runtime-handle-msg-order.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
+# expect: baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2): seeded run FAILS naming the RECORD batch-boundary test — the mutation tightens the flush condition (runtime/index.js:2971; grep -c 'length >= BATCH_SIZE' runtime/index.js == 1), so with PDPP_RUNTIME_BATCH_SIZE=2 and 3 records the mandated 2+1 ingest-POST split collapses to a single flush; this proves contract (4) — whose ABSENCE the run-2 judge named — exists and discriminates; checkout restores it
+# exit: 0  duration: 0s  verdict: PASS
+
+oracle-not-yet-authored

@@ -59,6 +59,9 @@ pre-commit:
     # been migrated are not flagged retroactively — only new introductions
     # are blocked. Grandfathered call sites remain tracked by OpenSpec.
 
+    - name: reference-implementation:complexity-mass-ratchet
+      glob: "reference-implementation/{lib,server,runtime}/**/*.{ts,tsx,js,jsx}"
+      run: node reference-implementation/scripts/quality-ratchet/check-mass-ratchet.mjs --files "{staged_files}"
     - name: reference-implementation:no-direct-prepare
       # Direct `db.prepare(sql)` is forbidden outside three legitimate
       # locations:

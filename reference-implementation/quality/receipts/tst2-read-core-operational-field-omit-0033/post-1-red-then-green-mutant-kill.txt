@@ -1,0 +1,41 @@
+# hone work tst2-read-core-operational-field-omit-0033 — post rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT/../packages/read-core" && if [ -f test/operational-field-omit-oracle.test.js ]; then src=src/index.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0033_read_core.bak; cp "$src" "$bak"; perl -0pi -e "s/  \\x27connection_id\\x27,\\n//" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/operational-field-omit-oracle.test.js 2>&1 || rc=1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: operational omit oracle not yet created"; exit 0; fi
+# expect: BASELINE guarded green while absent. POST removing connection_id from the omit set must create an extra field window and the oracle must print MUTANT KILLED after byte-clean restore.
+# timeout: 1800s (engine-default)
+# exit: 0  duration: 0s  verdict: PASS
+
+✖ buildRecordContentLadder omits operational fields from evidence projections (2.063347ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 62.989009
+
+✖ failing tests:
+
+test at test/operational-field-omit-oracle.test.js:6:1
+✖ buildRecordContentLadder omits operational fields from evidence projections (2.063347ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+  +   'connection_id',
+      'body'
+    ]
+  
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/packages/read-core/test/operational-field-omit-oracle.test.js:18:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'connection_id', 'body' ],
+    expected: [ 'body' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+MUTANT KILLED

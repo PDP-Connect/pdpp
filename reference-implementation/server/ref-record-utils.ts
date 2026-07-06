@@ -91,6 +91,24 @@ export function compareTimestampValues(left: unknown, right: unknown): number {
   return String(left ?? "").localeCompare(String(right ?? ""));
 }
 
+// True when `value` falls on the wrong side of `bound` — before the
+// window's lower `start` bound, or after its upper `end` bound. `side`
+// is the single axis: it selects the date-boundary suffix parseDateLike
+// snaps date-only strings to (start → 00:00:00.000, end → 23:59:59.999),
+// the numeric out-of-range direction (below vs above), and the matching
+// lexical direction used when either operand isn't date-parseable. The
+// lexical branch is the deliberate fallback for non-timestamp strings:
+// same string-ordering the numeric path implies, so unparseable values
+// still order consistently against the bound.
+function isOutsideBound(value: string, bound: string, side: "start" | "end"): boolean {
+  const valueMillis = parseDateLike(value, side);
+  const boundMillis = parseDateLike(bound, side);
+  if (valueMillis !== null && boundMillis !== null) {
+    return side === "start" ? valueMillis < boundMillis : valueMillis > boundMillis;
+  }
+  return side === "start" ? String(value) < String(bound) : String(value) > String(bound);
+}
+
 export function timestampWithinWindow(
   value: unknown,
   since: string | null | undefined,
@@ -99,27 +117,11 @@ export function timestampWithinWindow(
   if (typeof value !== "string" || !value.trim()) {
     return false;
   }
-  if (since) {
-    const valueMillis = parseDateLike(value, "start");
-    const sinceMillis = parseDateLike(since, "start");
-    if (valueMillis !== null && sinceMillis !== null) {
-      if (valueMillis < sinceMillis) {
-        return false;
-      }
-    } else if (String(value) < String(since)) {
-      return false;
-    }
+  if (since && isOutsideBound(value, since, "start")) {
+    return false;
   }
-  if (until) {
-    const valueMillis = parseDateLike(value, "end");
-    const untilMillis = parseDateLike(until, "end");
-    if (valueMillis !== null && untilMillis !== null) {
-      if (valueMillis > untilMillis) {
-        return false;
-      }
-    } else if (String(value) > String(until)) {
-      return false;
-    }
+  if (until && isOutsideBound(value, until, "end")) {
+    return false;
   }
   return true;
 }
@@ -169,6 +171,17 @@ function isSimpleWordQuery(query: string): boolean {
   return SIMPLE_WORD_QUERY_RE.test(query);
 }
 
+// True when the `len`-char slice of `text` starting at `index` is not glued
+// to an alphanumeric character on either side — i.e. it sits on a whole-word
+// boundary. Positions before the string start / past its end count as
+// boundaries (null → not alphanumeric), so a hit flush against either edge is
+// a whole-word match.
+function isWholeWordMatch(text: string, index: number, len: number): boolean {
+  const before = index > 0 ? (text[index - 1] ?? null) : null;
+  const after = index + len < text.length ? (text[index + len] ?? null) : null;
+  return !(isAlphaNumeric(before) || isAlphaNumeric(after));
+}
+
 function tokenizeQuery(query: unknown): string[] {
   return String(query ?? "").match(UNICODE_TOKEN_RE) ?? [];
 }
@@ -188,9 +201,7 @@ function findMatchIndex(value: string, needle: string): number {
     if (index === -1) {
       return -1;
     }
-    const before = index > 0 ? (lower[index - 1] ?? null) : null;
-    const after = index + needle.length < lower.length ? (lower[index + needle.length] ?? null) : null;
-    if (!(isAlphaNumeric(before) || isAlphaNumeric(after))) {
+    if (isWholeWordMatch(lower, index, needle.length)) {
       return index;
     }
     fromIndex = index + needle.length;
@@ -203,47 +214,62 @@ export interface QueryMatch {
   snippet: string;
 }
 
+// A leaf match: `rendered` is the text searched, `snippet` is the excerpt
+// to surface for it. The string branch renders the raw value and derives a
+// windowed snippet around the hit; the scalar branch renders the value and
+// surfaces it whole. Both share the "find hit → -1 means no match → build
+// QueryMatch at this field path" shape, which lives here once.
+function matchLeaf(
+  rendered: string,
+  needle: string,
+  parts: ReadonlyArray<string | number>,
+  snippet: (index: number) => string
+): QueryMatch | null {
+  const index = findMatchIndex(rendered, needle);
+  if (index === -1) {
+    return null;
+  }
+  return {
+    field: fieldPathToString(parts),
+    snippet: snippet(index),
+  };
+}
+
+// Descend into a container (array or record) and return the first child that
+// matches, in the order `entries` yields — array index order or
+// Object.entries key order. Unbraids container-descent from leaf-matching:
+// both branches share the "recurse extending the field path → return first
+// non-null" shape, which lives here once.
+function searchChildren(
+  entries: Iterable<[string | number, unknown]>,
+  needle: string,
+  parts: ReadonlyArray<string | number>
+): QueryMatch | null {
+  for (const [key, child] of entries) {
+    const match = searchValue(child, needle, [...parts, key]);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
 function searchValue(value: unknown, needle: string, parts: ReadonlyArray<string | number>): QueryMatch | null {
   if (typeof value === "string") {
-    const index = findMatchIndex(value, needle);
-    if (index === -1) {
-      return null;
-    }
-    return {
-      field: fieldPathToString(parts),
-      snippet: buildSnippet(value, index, needle.length),
-    };
+    return matchLeaf(value, needle, parts, (index) => buildSnippet(value, index, needle.length));
   }
 
   if (typeof value === "number" || typeof value === "boolean") {
     const rendered = String(value);
-    const index = findMatchIndex(rendered, needle);
-    if (index === -1) {
-      return null;
-    }
-    return {
-      field: fieldPathToString(parts),
-      snippet: rendered,
-    };
+    return matchLeaf(rendered, needle, parts, () => rendered);
   }
 
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i += 1) {
-      const match = searchValue(value[i], needle, [...parts, i]);
-      if (match) {
-        return match;
-      }
-    }
-    return null;
+    return searchChildren(value.entries(), needle, parts);
   }
 
   if (isRecord(value)) {
-    for (const [key, child] of Object.entries(value)) {
-      const match = searchValue(child, needle, [...parts, key]);
-      if (match) {
-        return match;
-      }
-    }
+    return searchChildren(Object.entries(value), needle, parts);
   }
 
   return null;

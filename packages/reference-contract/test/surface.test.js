@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { listOperations, validateRequest, validateResponse } from '../src/index.ts';
-import { generateDocs } from '../src/docs/generate.js';
-import { generateOpenApi } from '../src/openapi/index.js';
+import { generateDocs } from '../src/docs/generate.ts';
+import { generateOpenApi } from '../src/openapi/index.ts';
 import {
   BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
   BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,

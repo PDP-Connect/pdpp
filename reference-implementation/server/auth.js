@@ -7,7 +7,7 @@
  * - Issues opaque bearer tokens (random strings)
  * - Implements RFC 7662-style introspection with PDPP extensions
  */
-import { createHash, randomBytes } from 'crypto';
+import { randomBytes } from 'crypto';
 import {
   BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
   BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
@@ -35,18 +35,19 @@ import {
   listActiveBindingsForGrant,
   projectBindingForWire,
 } from './connection-identity.js';
-
-function generateToken() {
-  return randomBytes(32).toString('hex');
-}
-
-function generateOAuthRefreshToken() {
-  return `rt_${randomBytes(32).toString('base64url')}`;
-}
-
-function hashOAuthRefreshToken(refreshToken) {
-  return createHash('sha256').update(String(refreshToken)).digest('base64url');
-}
+import {
+  base64UrlSha256,
+  generateOAuthRefreshToken,
+  generateToken,
+  hashOAuthRefreshToken,
+  PKCE_CODE_VERIFIER_RE,
+  SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS,
+} from './oauth-substrate/primitives.ts';
+import {
+  invalidConnectorManifest,
+  resolveManifestSensitivity,
+  validateConnectorManifest,
+} from './connector-manifest-validation.ts';
 
 function generateId(prefix = 'id') {
   return `${prefix}_${randomBytes(8).toString('hex')}`;
@@ -88,8 +89,6 @@ const SUPPORTED_DYNAMIC_CLIENT_GRANT_TYPES = new Set([
 ]);
 const SUPPORTED_DYNAMIC_CLIENT_RESPONSE_TYPES = new Set(['code']);
 const SUPPORTED_DYNAMIC_CLIENT_APPLICATION_TYPES = new Set(['web', 'native']);
-const SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS = new Set(['S256']);
-const PKCE_CODE_VERIFIER_RE = /^[A-Za-z0-9._~-]{43,128}$/;
 const SUPPORTED_REGISTRATION_MODES = new Set(['dynamic', 'pre_registered_public']);
 const SUPPORTED_DYNAMIC_CLIENT_METADATA_FIELDS = new Set([
   'application_type',
@@ -153,8 +152,6 @@ const SUPPORTED_PENDING_SELECTION_FIELDS = new Set([
   'streams',
   'type',
 ]);
-const SUPPORTED_RANGE_OPERATORS = new Set(['gte', 'gt', 'lte', 'lt']);
-
 function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
@@ -167,98 +164,6 @@ function bindingError(code, message) {
 
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
-}
-
-function isTopLevelSearchableStringField(fieldSchema) {
-  const type = fieldSchema?.type;
-  if (type === 'string') return true;
-  if (!Array.isArray(type) || !type.includes('string')) return false;
-  return type.every((entry) => entry === 'string' || entry === 'null');
-}
-
-/**
- * Mirror of the records-path cursor-field compatibility check. Kept small and
- * colocated with the validator so authoring mistakes are caught at registration
- * rather than at first read. Must stay in sync with
- * reference-implementation/server/records.js::classifyCursorFieldSqlSupport.
- */
-function isReferenceCompatibleCursorSchema(fieldSchema) {
-  if (!fieldSchema || typeof fieldSchema !== 'object') return false;
-  const rawType = fieldSchema.type;
-  const typeList = Array.isArray(rawType) ? rawType : rawType != null ? [rawType] : [];
-  const nonNull = typeList.filter((t) => t !== 'null');
-  if (nonNull.length !== 1) return false;
-  const only = nonNull[0];
-  if (only === 'integer' || only === 'number') return true;
-  if (only === 'string') {
-    return fieldSchema.format === 'date' || fieldSchema.format === 'date-time';
-  }
-  return false;
-}
-
-function isRangeQueryableFieldSchema(fieldSchema) {
-  return isReferenceCompatibleCursorSchema(fieldSchema);
-}
-
-function nonNullSchemaTypes(schema) {
-  const rawType = schema?.type;
-  const typeList = Array.isArray(rawType) ? rawType : rawType != null ? [rawType] : [];
-  return typeList.filter((type) => type !== 'null');
-}
-
-function schemaTypeIncludes(fieldSchema, typeName) {
-  const rawType = fieldSchema?.type;
-  if (rawType === typeName) return true;
-  return Array.isArray(rawType) && rawType.includes(typeName);
-}
-
-function validateBlobRefSchemaDeclaration(stream, fieldSchema, code) {
-  if (!schemaTypeIncludes(fieldSchema, 'object')) {
-    throw invalidConnectorManifest(`Stream '${stream.name}' blob_ref must be an object or nullable object`, code);
-  }
-  const properties = fieldSchema.properties;
-  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
-    throw invalidConnectorManifest(`Stream '${stream.name}' blob_ref must declare object properties`, code);
-  }
-  for (const [fieldName, expectedType] of Object.entries({
-    blob_id: 'string',
-    mime_type: 'string',
-    size_bytes: 'integer',
-    sha256: 'string',
-  })) {
-    if (!properties[fieldName] || properties[fieldName].type !== expectedType) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' blob_ref.${fieldName} must be type ${expectedType}`, code);
-    }
-  }
-  const required = Array.isArray(fieldSchema.required) ? fieldSchema.required : [];
-  if (!required.includes('blob_id')) {
-    throw invalidConnectorManifest(`Stream '${stream.name}' blob_ref must require blob_id`, code);
-  }
-}
-
-function isNumericAggregateFieldSchema(fieldSchema) {
-  const nonNull = nonNullSchemaTypes(fieldSchema);
-  return nonNull.length === 1 && (nonNull[0] === 'integer' || nonNull[0] === 'number');
-}
-
-function isMinMaxAggregateFieldSchema(fieldSchema) {
-  return isReferenceCompatibleCursorSchema(fieldSchema);
-}
-
-function isScalarAggregateGroupFieldSchema(fieldSchema) {
-  const nonNull = nonNullSchemaTypes(fieldSchema);
-  if (nonNull.length !== 1) return false;
-  return ['boolean', 'integer', 'number', 'string'].includes(nonNull[0]);
-}
-
-// `group_by_time` buckets a date/date-time field with calendar `date_trunc`
-// semantics, so the declared field must be a string with format date or
-// date-time (nullable variant allowed). See:
-//   openspec/changes/add-aggregate-time-buckets-and-distinct
-function isTimeBucketAggregateFieldSchema(fieldSchema) {
-  const nonNull = nonNullSchemaTypes(fieldSchema);
-  if (nonNull.length !== 1 || nonNull[0] !== 'string') return false;
-  return fieldSchema?.format === 'date' || fieldSchema?.format === 'date-time';
 }
 
 function resolveConfiguredNativeStorageBinding(opts = {}) {
@@ -2278,77 +2183,6 @@ async function revokeClientAccessArtifacts(
   return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount, disabledSubscriptionCount };
 }
 
-/**
- * RFC 7592 client deletion, owner-session-gated by the route.
- * - Refuses non-dynamic clients (protects pre-registered seeds).
- * - Refuses if the acting subject doesn't match the registered
- *   `metadata.issuer_subject_id` (stops cross-operator deletes).
- * - Cascade-revokes every active grant and hosted-MCP grant package tied to
- *   the client via the existing revoke codepaths so spine events fire.
- * - Idempotent on subsequent calls (returns `not_found`).
- *
- * Returns revoked grant/package/token counts on success. Throws an error
- * with a `code` of `not_found` | `forbidden` otherwise.
- */
-export async function deleteRegisteredClient(clientId, { actingSubjectId, requestId, traceId } = {}) {
-  if (!clientId) {
-    const err = new Error('client_id is required');
-    err.code = 'invalid_request';
-    throw err;
-  }
-
-  const client = await getRegisteredClient(clientId);
-  if (!client) {
-    const err = new Error(`Unknown client_id: ${clientId}`);
-    err.code = 'not_found';
-    throw err;
-  }
-  if (client.registration_mode !== 'dynamic') {
-    const err = new Error('Pre-registered clients cannot be deleted via the registration management API');
-    err.code = 'forbidden';
-    throw err;
-  }
-  const ownerSubject = client.metadata.issuer_subject_id || null;
-  if (!ownerSubject || ownerSubject !== actingSubjectId) {
-    const err = new Error('Caller is not the operator who registered this client');
-    err.code = 'forbidden';
-    throw err;
-  }
-
-  const {
-    revokedGrantIds,
-    revokedPackageIds,
-    revokedOwnerTokenCount,
-    disabledSubscriptionCount,
-  } = await revokeClientAccessArtifacts(clientId, { requestId, traceId });
-
-  await getRegisteredClientStore().deleteByClientId(clientId);
-
-  await emitSpineEvent({
-    event_type: 'client.deleted',
-    trace_id: traceId,
-    scenario_id: undefined,
-    request_id: requestId,
-    actor_type: 'subject',
-    actor_id: actingSubjectId,
-    subject_type: 'subject',
-    subject_id: actingSubjectId,
-    object_type: 'client',
-    object_id: clientId,
-    status: 'succeeded',
-    client_id: clientId,
-    data: {
-      registration_mode: 'dynamic',
-      revoked_grant_count: revokedGrantIds.length,
-      revoked_package_count: revokedPackageIds.length,
-      revoked_owner_token_count: revokedOwnerTokenCount,
-      disabled_subscription_count: disabledSubscriptionCount,
-    },
-  });
-
-  return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount, disabledSubscriptionCount };
-}
-
 // Owner-facing client labels are short display strings, not credential
 // material. Cap the update path defensively (RFC 7591 registration itself
 // applies no length ceiling, but the owner-console rename affordance is a
@@ -2431,6 +2265,77 @@ export async function updateRegisteredClientName(clientId, { clientName, actingS
     created_at: updated?.created_at || client.created_at,
     updated_at: updated?.updated_at || null,
   };
+}
+
+/**
+ * RFC 7592 client deletion, owner-session-gated by the route.
+ * - Refuses non-dynamic clients (protects pre-registered seeds).
+ * - Refuses if the acting subject doesn't match the registered
+ *   `metadata.issuer_subject_id` (stops cross-operator deletes).
+ * - Cascade-revokes every active grant and hosted-MCP grant package tied to
+ *   the client via the existing revoke codepaths so spine events fire.
+ * - Idempotent on subsequent calls (returns `not_found`).
+ *
+ * Returns revoked grant/package/token counts on success. Throws an error
+ * with a `code` of `not_found` | `forbidden` otherwise.
+ */
+export async function deleteRegisteredClient(clientId, { actingSubjectId, requestId, traceId } = {}) {
+  if (!clientId) {
+    const err = new Error('client_id is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+
+  const client = await getRegisteredClient(clientId);
+  if (!client) {
+    const err = new Error(`Unknown client_id: ${clientId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  if (client.registration_mode !== 'dynamic') {
+    const err = new Error('Pre-registered clients cannot be deleted via the registration management API');
+    err.code = 'forbidden';
+    throw err;
+  }
+  const ownerSubject = client.metadata.issuer_subject_id || null;
+  if (!ownerSubject || ownerSubject !== actingSubjectId) {
+    const err = new Error('Caller is not the operator who registered this client');
+    err.code = 'forbidden';
+    throw err;
+  }
+
+  const {
+    revokedGrantIds,
+    revokedPackageIds,
+    revokedOwnerTokenCount,
+    disabledSubscriptionCount,
+  } = await revokeClientAccessArtifacts(clientId, { requestId, traceId });
+
+  await getRegisteredClientStore().deleteByClientId(clientId);
+
+  await emitSpineEvent({
+    event_type: 'client.deleted',
+    trace_id: traceId,
+    scenario_id: undefined,
+    request_id: requestId,
+    actor_type: 'subject',
+    actor_id: actingSubjectId,
+    subject_type: 'subject',
+    subject_id: actingSubjectId,
+    object_type: 'client',
+    object_id: clientId,
+    status: 'succeeded',
+    client_id: clientId,
+    data: {
+      registration_mode: 'dynamic',
+      revoked_grant_count: revokedGrantIds.length,
+      revoked_package_count: revokedPackageIds.length,
+      revoked_owner_token_count: revokedOwnerTokenCount,
+      disabled_subscription_count: disabledSubscriptionCount,
+    },
+  });
+
+  return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount, disabledSubscriptionCount };
 }
 
 async function disableClientEventSubscriptionsForDeletedClient(clientId, disabledReason = 'client_deleted') {
@@ -2530,629 +2435,6 @@ export async function registerDynamicClient(input = {}, extraMetadata = {}) {
     policy_uri: registered.metadata.policy_uri || (asBase ? asBase : undefined),
     tos_uri: registered.metadata.tos_uri || (asBase ? asBase : undefined),
   };
-}
-
-function invalidConnectorManifest(message, code = 'invalid_request') {
-  const err = new Error(message);
-  err.code = code;
-  return err;
-}
-
-function isPositiveInteger(value) {
-  return Number.isInteger(value) && value > 0;
-}
-
-// Allowed values for the `capabilities.refresh_policy` declaration.
-// Kept inline (rather than imported from a shared module) so the
-// reference validator stays self-contained: this is reference/polyfill
-// metadata, not normative PDPP core protocol, and the vocabulary
-// SHOULD be promoted through a Collection Profile or companion spec
-// before it is treated as portable across implementations. See
-// `openspec/changes/add-connector-refresh-policy-controls/specs/polyfill-runtime/spec.md`.
-const REFRESH_POLICY_RECOMMENDED_MODES = new Set(['automatic', 'manual', 'paused']);
-const REFRESH_POLICY_INTERACTION_POSTURES = new Set([
-  'none',
-  'credentials',
-  'otp_likely',
-  'manual_action_likely',
-]);
-const REFRESH_POLICY_SENSITIVITY_LEVELS = new Set(['low', 'medium', 'high']);
-const REFRESH_POLICY_ALLOWED_KEYS = new Set([
-  'recommended_mode',
-  'recommended_interval_seconds',
-  'minimum_interval_seconds',
-  'maximum_staleness_seconds',
-  'assisted_after_owner_auth',
-  'interaction_posture',
-  'session_lifetime_seconds',
-  'rate_limit_sensitivity',
-  'bot_detection_sensitivity',
-  'background_safe',
-  'rationale',
-]);
-const RUNTIME_REQUIREMENT_BINDINGS = new Set(['browser', 'filesystem', 'interactive', 'network']);
-const STREAM_AVAILABILITY_STATES = new Set(['supported', 'unsupported_in_mode', 'experimental', 'deprecated']);
-const STREAM_AVAILABILITY_ALLOWED_KEYS = new Set(['future_modes', 'mode', 'reason', 'state']);
-
-function validateRuntimeRequirements(manifest, code) {
-  const requirements = manifest.runtime_requirements;
-  if (requirements === undefined || requirements === null) return;
-  if (typeof requirements !== 'object' || Array.isArray(requirements)) {
-    throw invalidConnectorManifest('runtime_requirements must be an object when declared', code);
-  }
-  const bindings = requirements.bindings;
-  if (bindings === undefined || bindings === null) return;
-  if (typeof bindings !== 'object' || Array.isArray(bindings)) {
-    throw invalidConnectorManifest('runtime_requirements.bindings must be an object when declared', code);
-  }
-  const unknownBindings = Object.keys(bindings).filter((binding) => !RUNTIME_REQUIREMENT_BINDINGS.has(binding));
-  if (unknownBindings.length) {
-    throw invalidConnectorManifest(
-      `runtime_requirements.bindings has unsupported keys: ${unknownBindings.join(', ')}`,
-      code,
-    );
-  }
-  for (const [binding, requirement] of Object.entries(bindings)) {
-    if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)) {
-      throw invalidConnectorManifest(`runtime_requirements.bindings.${binding} must be an object`, code);
-    }
-    if (requirement.required !== undefined && typeof requirement.required !== 'boolean') {
-      throw invalidConnectorManifest(`runtime_requirements.bindings.${binding}.required must be a boolean`, code);
-    }
-  }
-  const externalTools = requirements.external_tools;
-  if (externalTools === undefined || externalTools === null) return;
-  if (!Array.isArray(externalTools)) {
-    throw invalidConnectorManifest('runtime_requirements.external_tools must be an array when declared', code);
-  }
-  const allowedToolKeys = new Set(['detect', 'install_hint', 'license', 'min_version', 'name', 'purpose']);
-  const seenToolNames = new Set();
-  for (const [index, tool] of externalTools.entries()) {
-    if (!tool || typeof tool !== 'object' || Array.isArray(tool)) {
-      throw invalidConnectorManifest(`runtime_requirements.external_tools[${index}] must be an object`, code);
-    }
-    const unknownKeys = Object.keys(tool).filter((key) => !allowedToolKeys.has(key));
-    if (unknownKeys.length) {
-      throw invalidConnectorManifest(
-        `runtime_requirements.external_tools[${index}] has unsupported keys: ${unknownKeys.join(', ')}`,
-        code,
-      );
-    }
-    for (const fieldName of ['name', 'license', 'purpose']) {
-      if (!isNonEmptyString(tool[fieldName])) {
-        throw invalidConnectorManifest(
-          `runtime_requirements.external_tools[${index}].${fieldName} must be a non-empty string`,
-          code,
-        );
-      }
-    }
-    if (seenToolNames.has(tool.name)) {
-      throw invalidConnectorManifest(`runtime_requirements.external_tools duplicates tool '${tool.name}'`, code);
-    }
-    seenToolNames.add(tool.name);
-    for (const fieldName of ['install_hint', 'min_version']) {
-      if (tool[fieldName] !== undefined && !isNonEmptyString(tool[fieldName])) {
-        throw invalidConnectorManifest(
-          `runtime_requirements.external_tools[${index}].${fieldName} must be a non-empty string`,
-          code,
-        );
-      }
-    }
-    if (tool.detect !== undefined) {
-      if (!tool.detect || typeof tool.detect !== 'object' || Array.isArray(tool.detect)) {
-        throw invalidConnectorManifest(`runtime_requirements.external_tools[${index}].detect must be an object`, code);
-      }
-      const allowedDetectKeys = new Set(['args', 'executable', 'exit_code']);
-      const unknownDetectKeys = Object.keys(tool.detect).filter((key) => !allowedDetectKeys.has(key));
-      if (unknownDetectKeys.length) {
-        throw invalidConnectorManifest(
-          `runtime_requirements.external_tools[${index}].detect has unsupported keys: ${unknownDetectKeys.join(', ')}`,
-          code,
-        );
-      }
-      if (!isNonEmptyString(tool.detect.executable)) {
-        throw invalidConnectorManifest(
-          `runtime_requirements.external_tools[${index}].detect.executable must be a non-empty string`,
-          code,
-        );
-      }
-      if (
-        tool.detect.args !== undefined
-        && (!Array.isArray(tool.detect.args) || tool.detect.args.some((arg) => typeof arg !== 'string'))
-      ) {
-        throw invalidConnectorManifest(
-          `runtime_requirements.external_tools[${index}].detect.args must be an array of strings`,
-          code,
-        );
-      }
-      if (
-        tool.detect.exit_code !== undefined
-        && (!Number.isInteger(tool.detect.exit_code) || tool.detect.exit_code < 0)
-      ) {
-        throw invalidConnectorManifest(
-          `runtime_requirements.external_tools[${index}].detect.exit_code must be a non-negative integer`,
-          code,
-        );
-      }
-    }
-  }
-}
-
-function validateRefreshPolicyCapability(manifest, code) {
-  const capabilities = manifest.capabilities;
-  if (capabilities === undefined || capabilities === null) return;
-  if (typeof capabilities !== 'object' || Array.isArray(capabilities)) {
-    throw invalidConnectorManifest('capabilities must be an object when declared', code);
-  }
-  const policy = capabilities.refresh_policy;
-  if (policy === undefined) return;
-  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) {
-    throw invalidConnectorManifest('capabilities.refresh_policy must be an object when declared', code);
-  }
-  const unknownKeys = Object.keys(policy).filter((key) => !REFRESH_POLICY_ALLOWED_KEYS.has(key));
-  if (unknownKeys.length) {
-    throw invalidConnectorManifest(
-      `capabilities.refresh_policy has unsupported keys: ${unknownKeys.join(', ')}`,
-      code,
-    );
-  }
-  if (!isNonEmptyString(policy.recommended_mode) || !REFRESH_POLICY_RECOMMENDED_MODES.has(policy.recommended_mode)) {
-    throw invalidConnectorManifest(
-      'capabilities.refresh_policy.recommended_mode must be one of: automatic, manual, paused',
-      code,
-    );
-  }
-  if (!isNonEmptyString(policy.rationale)) {
-    throw invalidConnectorManifest(
-      'capabilities.refresh_policy.rationale must be a non-empty owner-readable string',
-      code,
-    );
-  }
-  for (const intervalKey of [
-    'recommended_interval_seconds',
-    'minimum_interval_seconds',
-    'maximum_staleness_seconds',
-    'session_lifetime_seconds',
-  ]) {
-    if (policy[intervalKey] !== undefined && !isPositiveInteger(policy[intervalKey])) {
-      throw invalidConnectorManifest(
-        `capabilities.refresh_policy.${intervalKey} must be a positive integer when declared`,
-        code,
-      );
-    }
-  }
-  if (
-    policy.recommended_interval_seconds !== undefined
-    && policy.minimum_interval_seconds !== undefined
-    && policy.recommended_interval_seconds < policy.minimum_interval_seconds
-  ) {
-    throw invalidConnectorManifest(
-      'capabilities.refresh_policy.recommended_interval_seconds must be >= minimum_interval_seconds',
-      code,
-    );
-  }
-  if (
-    policy.interaction_posture !== undefined
-    && (!isNonEmptyString(policy.interaction_posture) || !REFRESH_POLICY_INTERACTION_POSTURES.has(policy.interaction_posture))
-  ) {
-    throw invalidConnectorManifest(
-      'capabilities.refresh_policy.interaction_posture must be one of: none, credentials, otp_likely, manual_action_likely',
-      code,
-    );
-  }
-  for (const sensitivityKey of ['rate_limit_sensitivity', 'bot_detection_sensitivity']) {
-    if (
-      policy[sensitivityKey] !== undefined
-      && (!isNonEmptyString(policy[sensitivityKey]) || !REFRESH_POLICY_SENSITIVITY_LEVELS.has(policy[sensitivityKey]))
-    ) {
-      throw invalidConnectorManifest(
-        `capabilities.refresh_policy.${sensitivityKey} must be one of: low, medium, high`,
-        code,
-      );
-    }
-  }
-  if (policy.background_safe !== undefined && typeof policy.background_safe !== 'boolean') {
-    throw invalidConnectorManifest(
-      'capabilities.refresh_policy.background_safe must be a boolean when declared',
-      code,
-    );
-  }
-  if (policy.assisted_after_owner_auth !== undefined && typeof policy.assisted_after_owner_auth !== 'boolean') {
-    throw invalidConnectorManifest(
-      'capabilities.refresh_policy.assisted_after_owner_auth must be a boolean when declared',
-      code,
-    );
-  }
-}
-
-const MANIFEST_SENSITIVITY_LEVELS = new Set(['standard', 'sensitive']);
-const DEFAULT_MANIFEST_SENSITIVITY = 'standard';
-
-function validateManifestSensitivity(manifest, code) {
-  const sensitivity = manifest.sensitivity;
-  if (sensitivity === undefined) return;
-  if (!isNonEmptyString(sensitivity) || !MANIFEST_SENSITIVITY_LEVELS.has(sensitivity)) {
-    throw invalidConnectorManifest(
-      'sensitivity must be "standard" or "sensitive" when declared',
-      code,
-    );
-  }
-}
-
-export function resolveManifestSensitivity(manifest = {}) {
-  return manifest?.sensitivity === 'sensitive' ? 'sensitive' : DEFAULT_MANIFEST_SENSITIVITY;
-}
-
-function validateStreamExpandDeclarations({
-  code,
-  manifestStreamsByName,
-  schemaProperties,
-  stream,
-}) {
-  const declared = stream.query?.expand;
-  if (declared === undefined) return;
-  if (!Array.isArray(declared) || declared.length === 0) {
-    throw invalidConnectorManifest(`Stream '${stream.name}' query.expand must be a non-empty array`, code);
-  }
-
-  const relationships = new Map();
-  for (const relationship of stream.relationships || []) {
-    if (!isNonEmptyString(relationship?.name)) continue;
-    relationships.set(relationship.name, relationship);
-  }
-
-  const seen = new Set();
-  for (const capability of declared) {
-    if (!isNonEmptyString(capability?.name)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entries must include a non-empty name`, code);
-    }
-    if (seen.has(capability.name)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand has duplicate entry '${capability.name}'`, code);
-    }
-    seen.add(capability.name);
-
-    const relationship = relationships.get(capability.name);
-    if (!relationship) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' must match a same-stream relationships[] entry`, code);
-    }
-    if (!isNonEmptyString(relationship.stream)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' relationship '${relationship.name}' must include a related stream`, code);
-    }
-    if (!isNonEmptyString(relationship.foreign_key)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' relationship '${relationship.name}' must include a foreign_key`, code);
-    }
-    if (!['has_one', 'has_many'].includes(relationship.cardinality)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' relationship '${relationship.name}' must use cardinality has_one or has_many`, code);
-    }
-
-    const relatedStream = manifestStreamsByName.get(relationship.stream);
-    if (!relatedStream) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' references unknown related stream '${relationship.stream}'`, code);
-    }
-    const relatedProperties = relatedStream?.schema?.properties;
-    if (!relatedProperties || typeof relatedProperties !== 'object' || Array.isArray(relatedProperties)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' related stream '${relationship.stream}' must include schema.properties`, code);
-    }
-    if (!Object.prototype.hasOwnProperty.call(relatedProperties, relationship.foreign_key)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' foreign_key '${relationship.foreign_key}' must be a top-level property on related stream '${relationship.stream}'`, code);
-    }
-
-    if (capability.default_limit !== undefined && !isPositiveInteger(capability.default_limit)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' default_limit must be a positive integer`, code);
-    }
-    if (capability.max_limit !== undefined && !isPositiveInteger(capability.max_limit)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' max_limit must be a positive integer`, code);
-    }
-    if (
-      capability.default_limit !== undefined
-      && capability.max_limit !== undefined
-      && capability.default_limit > capability.max_limit
-    ) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' default_limit must be less than or equal to max_limit`, code);
-    }
-    if (relationship.cardinality === 'has_one' && (capability.default_limit !== undefined || capability.max_limit !== undefined)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' query.expand entry '${capability.name}' must not declare limits for has_one relationships`, code);
-    }
-
-    // The parent stream's schema was already validated above; this extra check
-    // keeps the validator close to the runtime's parent-record-key join shape.
-    if (!schemaProperties || typeof schemaProperties !== 'object' || Array.isArray(schemaProperties)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' must include schema.properties`, code);
-    }
-  }
-}
-
-function validateStreamAvailabilityDeclaration(stream, code) {
-  const availability = stream.availability;
-  if (availability === undefined || availability === null) return;
-  if (typeof availability !== 'object' || Array.isArray(availability)) {
-    throw invalidConnectorManifest(`Stream '${stream.name}' availability must be an object`, code);
-  }
-  const unknownKeys = Object.keys(availability).filter((key) => !STREAM_AVAILABILITY_ALLOWED_KEYS.has(key));
-  if (unknownKeys.length) {
-    throw invalidConnectorManifest(
-      `Stream '${stream.name}' availability has unsupported keys: ${unknownKeys.join(', ')}`,
-      code,
-    );
-  }
-  if (!isNonEmptyString(availability.state) || !STREAM_AVAILABILITY_STATES.has(availability.state)) {
-    throw invalidConnectorManifest(
-      `Stream '${stream.name}' availability.state must be one of: supported, unsupported_in_mode, experimental, deprecated`,
-      code,
-    );
-  }
-  if (availability.state === 'unsupported_in_mode' && !isNonEmptyString(availability.mode)) {
-    throw invalidConnectorManifest(
-      `Stream '${stream.name}' availability.mode must be a non-empty string when state is unsupported_in_mode`,
-      code,
-    );
-  }
-  for (const fieldName of ['mode', 'reason']) {
-    if (availability[fieldName] !== undefined && !isNonEmptyString(availability[fieldName])) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' availability.${fieldName} must be a non-empty string`, code);
-    }
-  }
-  if (
-    availability.future_modes !== undefined
-    && (!Array.isArray(availability.future_modes)
-      || availability.future_modes.length === 0
-      || availability.future_modes.some((mode) => !isNonEmptyString(mode)))
-  ) {
-    throw invalidConnectorManifest(
-      `Stream '${stream.name}' availability.future_modes must be a non-empty array of strings`,
-      code,
-    );
-  }
-}
-
-function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts = {}) {
-  const hasConnectorId = isNonEmptyString(manifest.connector_id);
-  const hasConnectorKey = isNonEmptyString(manifest.connector_key);
-  if (!(hasConnectorId || hasConnectorKey)) {
-    throw invalidConnectorManifest('connector_key or connector_id is required', code);
-  }
-  if (hasConnectorKey && !isConnectorKey(manifest.connector_key)) {
-    throw invalidConnectorManifest('connector_key must be a non-empty slug-like key, not a URL', code);
-  }
-  if (hasConnectorId && hasConnectorKey) {
-    const connectorId = manifest.connector_id.trim();
-    const connectorKey = manifest.connector_key.trim();
-    const canonicalFromConnectorId = canonicalConnectorKey(manifest.connector_id);
-    if (canonicalFromConnectorId && canonicalFromConnectorId !== connectorKey) {
-      throw invalidConnectorManifest('connector_key must match the canonical key for connector_id', code);
-    }
-    if (!canonicalFromConnectorId && connectorId !== connectorKey) {
-      throw invalidConnectorManifest(
-        'connector_id must match connector_key; use manifest_uri for registry or document provenance',
-        code,
-      );
-    }
-  }
-  if (isNonEmptyString(manifest.provider_id)) {
-    throw invalidConnectorManifest('Connector registry only accepts connector manifests; provider_id is not allowed', code);
-  }
-  if (manifest.storage_binding !== undefined) {
-    throw invalidConnectorManifest('Connector registry only accepts connector manifests; storage_binding is not allowed', code);
-  }
-  if (!Array.isArray(manifest.streams) || manifest.streams.length === 0) {
-    throw invalidConnectorManifest('Connector manifests must include a non-empty streams array', code);
-  }
-
-  validateRuntimeRequirements(manifest, code);
-  validateRefreshPolicyCapability(manifest, code);
-  validateManifestSensitivity(manifest, code);
-
-  const manifestStreamsByName = new Map(
-    manifest.streams
-      .filter((stream) => isNonEmptyString(stream?.name))
-      .map((stream) => [stream.name, stream]),
-  );
-  const seenStreamNames = new Set();
-  for (const stream of manifest.streams) {
-    if (!isNonEmptyString(stream?.name)) {
-      throw invalidConnectorManifest('Each connector stream must include a non-empty name', code);
-    }
-    if (seenStreamNames.has(stream.name)) {
-      throw invalidConnectorManifest(`Duplicate stream name: ${stream.name}`, code);
-    }
-    seenStreamNames.add(stream.name);
-    validateStreamAvailabilityDeclaration(stream, code);
-
-    const schemaProperties = stream?.schema?.properties;
-    if (!schemaProperties || typeof schemaProperties !== 'object' || Array.isArray(schemaProperties)) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' must include schema.properties`, code);
-    }
-    const schemaFieldNames = new Set(Object.keys(schemaProperties));
-
-    const primaryKey = Array.isArray(stream.primary_key)
-      ? stream.primary_key
-      : (isNonEmptyString(stream.primary_key) ? [stream.primary_key] : []);
-    if (!primaryKey.length || primaryKey.some((field) => !isNonEmptyString(field))) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' must include a non-empty primary_key`, code);
-    }
-    const unknownPrimaryKeyFields = primaryKey.filter((field) => !schemaFieldNames.has(field));
-    if (unknownPrimaryKeyFields.length) {
-      throw invalidConnectorManifest(`Stream '${stream.name}' primary_key fields must exist in schema.properties: ${unknownPrimaryKeyFields.join(', ')}`, code);
-    }
-
-    for (const fieldName of ['cursor_field', 'consent_time_field']) {
-      if (stream[fieldName] != null && !schemaFieldNames.has(stream[fieldName])) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' ${fieldName} must exist in schema.properties`, code);
-      }
-    }
-
-    if (schemaProperties.blob_ref !== undefined) {
-      validateBlobRefSchemaDeclaration(stream, schemaProperties.blob_ref, code);
-    }
-
-    // Reference guardrail: the SQL-backed records path only supports a narrow
-    // set of `cursor_field` shapes (see
-    // reference-implementation/server/records.js::classifyCursorFieldSqlSupport).
-    // Reject incompatible declarations at registration time so the same bug
-    // class (500s on /records for shipped manifests) cannot recur.
-    //
-    // Skipped on read (`skipCursorFieldSortCheck: true`): a DB that predates
-    // this guardrail may still hold stale manifests; blocking reads on them
-    // would defeat the whole point of the runtime JS-comparator fallback in
-    // records.js. Registration-time paths always enforce the check.
-    if (stream.cursor_field != null && !opts.skipCursorFieldSortCheck) {
-      const cursorSchema = schemaProperties[stream.cursor_field];
-      if (!isReferenceCompatibleCursorSchema(cursorSchema)) {
-        throw invalidConnectorManifest(
-          `Stream '${stream.name}' cursor_field '${stream.cursor_field}' has an unsupported schema for the reference records path. ` +
-            'Supported shapes: integer, number, string with format "date" or "date-time", or the nullable variants of those. ' +
-            `Declared: type=${JSON.stringify(cursorSchema?.type)}${cursorSchema?.format ? ` format="${cursorSchema.format}"` : ''}.`,
-          code,
-        );
-      }
-    }
-
-    const seenViewIds = new Set();
-    for (const view of stream.views || []) {
-      if (!isNonEmptyString(view?.id)) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' views must include a non-empty id`, code);
-      }
-      if (seenViewIds.has(view.id)) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' has duplicate view id '${view.id}'`, code);
-      }
-      seenViewIds.add(view.id);
-      if (!Array.isArray(view.fields) || !view.fields.length || view.fields.some((field) => !isNonEmptyString(field))) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' view '${view.id}' must include a non-empty fields array`, code);
-      }
-      const unknownViewFields = view.fields.filter((field) => !schemaFieldNames.has(field));
-      if (unknownViewFields.length) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' view '${view.id}' references unknown fields: ${unknownViewFields.join(', ')}`, code);
-      }
-    }
-
-    // query.search.lexical_fields — the public lexical-retrieval extension's
-    // stream-level declaration. v1 accepts only top-level scalar text fields
-    // declared in schema.properties: `type: "string"` and the common nullable
-    // form `type: ["string", "null"]`. Nested paths, arrays, blobs, unknown
-    // fields, and non-string scalar types are rejected. See:
-    //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
-    if (stream.query?.search?.lexical_fields !== undefined) {
-      const declared = stream.query.search.lexical_fields;
-      if (!Array.isArray(declared) || declared.length === 0) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields must be a non-empty array of strings`, code);
-      }
-      if (declared.some((field) => !isNonEmptyString(field))) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields entries must be non-empty strings`, code);
-      }
-      for (const fieldName of declared) {
-        if (!schemaFieldNames.has(fieldName)) {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields references unknown field '${fieldName}'`, code);
-        }
-        const fieldSchema = schemaProperties[fieldName];
-        if (!isTopLevelSearchableStringField(fieldSchema)) {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.lexical_fields entry '${fieldName}' must be a top-level string or nullable-string field; v1 does not support nested paths, arrays, blobs, or non-string scalar types`, code);
-        }
-      }
-    }
-
-    // query.search.semantic_fields — the public semantic-retrieval experimental
-    // extension's stream-level declaration. Independent from lexical_fields:
-    // either, both, or neither MAY be declared on a stream, and a field listed
-    // in one is NOT automatically listed in the other. Same v1 shape constraints
-    // as lexical_fields: top-level scalar text fields declared in schema.properties
-    // (`type: "string"` or the common nullable form `type: ["string", "null"]`);
-    // nested paths, arrays, blobs, non-string scalars, and unknown fields are
-    // rejected. Records whose field value is actually null are skipped at index
-    // time (see server/search-semantic.js::rebuildSemanticIndexForStream). See:
-    //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
-    if (stream.query?.search?.semantic_fields !== undefined) {
-      const declared = stream.query.search.semantic_fields;
-      if (!Array.isArray(declared) || declared.length === 0) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields must be a non-empty array of strings`, code);
-      }
-      if (declared.some((field) => !isNonEmptyString(field))) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields entries must be non-empty strings`, code);
-      }
-      for (const fieldName of declared) {
-        if (!schemaFieldNames.has(fieldName)) {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields references unknown field '${fieldName}'`, code);
-        }
-        const fieldSchema = schemaProperties[fieldName];
-        if (!isTopLevelSearchableStringField(fieldSchema)) {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.search.semantic_fields entry '${fieldName}' must be a top-level string or nullable-string field; v1 does not support nested paths, arrays, blobs, or non-string scalar types`, code);
-        }
-      }
-    }
-
-    if (stream.query?.range_filters !== undefined) {
-      const declared = stream.query.range_filters;
-      if (!declared || typeof declared !== 'object' || Array.isArray(declared)) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' query.range_filters must be an object keyed by field name`, code);
-      }
-      for (const [fieldName, operators] of Object.entries(declared)) {
-        if (!schemaFieldNames.has(fieldName)) {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.range_filters references unknown field '${fieldName}'`, code);
-        }
-        if (!Array.isArray(operators) || operators.length === 0 || operators.some((operator) => !SUPPORTED_RANGE_OPERATORS.has(operator))) {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.range_filters entry '${fieldName}' must use supported operators: gte, gt, lte, lt`, code);
-        }
-        const fieldSchema = schemaProperties[fieldName];
-        if (!isRangeQueryableFieldSchema(fieldSchema)) {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.range_filters entry '${fieldName}' must be an integer, number, date, date-time, or nullable variant`, code);
-        }
-      }
-    }
-
-    if (stream.query?.aggregations !== undefined) {
-      const declared = stream.query.aggregations;
-      if (!declared || typeof declared !== 'object' || Array.isArray(declared)) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations must be an object`, code);
-      }
-      const allowedKeys = new Set(['count', 'sum', 'min', 'max', 'group_by', 'group_by_time', 'count_distinct']);
-      const unknownKeys = Object.keys(declared).filter((key) => !allowedKeys.has(key));
-      if (unknownKeys.length) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations has unsupported keys: ${unknownKeys.join(', ')}`, code);
-      }
-      if (declared.count !== undefined && declared.count !== true) {
-        throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.count must be true when declared`, code);
-      }
-      for (const key of ['sum', 'min', 'max', 'group_by', 'group_by_time', 'count_distinct']) {
-        const fields = declared[key];
-        if (fields === undefined) continue;
-        if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => !isNonEmptyString(field))) {
-          throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.${key} must be a non-empty array of field names`, code);
-        }
-        const seenFields = new Set();
-        for (const fieldName of fields) {
-          if (seenFields.has(fieldName)) {
-            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.${key} duplicates field '${fieldName}'`, code);
-          }
-          seenFields.add(fieldName);
-          if (!schemaFieldNames.has(fieldName)) {
-            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.${key} references unknown field '${fieldName}'`, code);
-          }
-          const fieldSchema = schemaProperties[fieldName];
-          if (key === 'sum' && !isNumericAggregateFieldSchema(fieldSchema)) {
-            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.sum entry '${fieldName}' must be an integer, number, or nullable variant`, code);
-          }
-          if ((key === 'min' || key === 'max') && !isMinMaxAggregateFieldSchema(fieldSchema)) {
-            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.${key} entry '${fieldName}' must be an integer, number, date, date-time, or nullable variant`, code);
-          }
-          if (key === 'group_by' && !isScalarAggregateGroupFieldSchema(fieldSchema)) {
-            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.group_by entry '${fieldName}' must be a top-level scalar field; arrays, objects, blobs, and ambiguous types are not supported`, code);
-          }
-          if (key === 'group_by_time' && !isTimeBucketAggregateFieldSchema(fieldSchema)) {
-            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.group_by_time entry '${fieldName}' must be a string field with format date or date-time, or the nullable variant`, code);
-          }
-          if (key === 'count_distinct' && !isScalarAggregateGroupFieldSchema(fieldSchema)) {
-            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.count_distinct entry '${fieldName}' must be a top-level scalar field; arrays, objects, blobs, and ambiguous types are not supported`, code);
-          }
-        }
-      }
-    }
-
-    validateStreamExpandDeclarations({
-      code,
-      manifestStreamsByName,
-      schemaProperties,
-      stream,
-    });
-  }
 }
 
 /**
@@ -4461,10 +3743,6 @@ export async function exchangeGrantScopedDeviceCode({ clientId, deviceCode }) {
   }
 
   return payload;
-}
-
-function base64UrlSha256(value) {
-  return createHash('sha256').update(String(value)).digest('base64url');
 }
 
 function isUsableAuthorizationCodePkceChallenge(challenge, method) {

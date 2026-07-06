@@ -80,7 +80,7 @@ import {
   listRetainedSizeConnections,
   rebuildRetainedSize,
 } from '../server/retained-size-read-model.js';
-import { createBlobStore } from '../server/stores/blob-store.js';
+import { createBlobStore } from '../server/stores/blob-store.ts';
 import { createConnectorStateStore } from '../server/stores/connector-state-store.ts';
 import { createSchedulerStore } from '../server/stores/scheduler-store.ts';
 

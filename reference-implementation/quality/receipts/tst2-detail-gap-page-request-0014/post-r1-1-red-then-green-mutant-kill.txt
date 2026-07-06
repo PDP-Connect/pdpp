@@ -1,0 +1,37 @@
+# hone work tst2-detail-gap-page-request-0014 — post-r1 rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/detail-gap-page-request-oracle.test.js ]; then git diff --quiet -- runtime/detail-gap-paging.js || { echo "DIRTY source"; exit 1; }; cp runtime/detail-gap-paging.js /tmp/tst2_detail_gap_page_request.bak; perl -0pi -e "s/if \(!scopeByStream\.has\(stream\)\) \{/if (false && !scopeByStream.has(stream)) {/" runtime/detail-gap-paging.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_detail_gap_page_request; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/detail-gap-page-request-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_detail_gap_page_request.bak runtime/detail-gap-paging.js; rm -f /tmp/tst2_detail_gap_page_request.bak; git diff --quiet -- runtime/detail-gap-paging.js || { echo "RESTORE FAILED"; exit 1; }; if [ $rc -eq 1 ]; then echo "MUTANT KILLED (undeclared stream accepted)"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: detail gap page request oracle not yet created"; exit 0; fi'
+# expect: BASELINE: prints BASELINE and exits 0. POST: disabling the scopeByStream membership guard makes the undeclared-stream assertion fail, prints MUTANT KILLED, restores source.
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ BASELINE: validateDetailGapsPageRequest normalizes a valid page request (0.698612ms)
+✔ validateDetailGapsPageRequest normalizes absent or empty streams to null (0.098101ms)
+✖ validateDetailGapsPageRequest rejects malformed page requests (0.54769ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 2
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 31.184395
+
+✖ failing tests:
+
+test at test/detail-gap-page-request-oracle.test.js:38:1
+✖ validateDetailGapsPageRequest rejects malformed page requests (0.54769ms)
+  AssertionError [ERR_ASSERTION]: Missing expected exception.
+      at TestContext.<anonymous> (file:///home/tnunamak/.tmp/pdpp-ops/reference-implementation/test/detail-gap-page-request-oracle.test.js:81:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /undeclared stream/,
+    operator: 'throws',
+    diff: 'simple'
+  }
+MUTANT KILLED (undeclared stream accepted)

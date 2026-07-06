@@ -1,0 +1,9 @@
+# hone work pl2-comparable-sort-position-extract-0004 — baseline rung 'typecheck'
+# command: cd "$REPO_ROOT" && timeout 600 pnpm typecheck
+# expect: TypeScript project typechecks with zero errors.
+# exit: 0  duration: 4s  verdict: PASS
+
+
+> pdpp-reference-implementation@0.1.0 typecheck /home/tnunamak/.tmp/pdpp-ops/reference-implementation
+> tsc --noEmit
+

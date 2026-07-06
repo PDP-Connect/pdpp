@@ -1,0 +1,58 @@
+# hone work pl1-semantic-rebuild-flush-dispatch-0005 — post rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1semrebuild_retr; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/semantic-retrieval.test.js || rc=1; dropdb --if-exists $db; echo "rc=$rc"; exit $rc'
+# expect: semantic-retrieval suite green with unchanged pass count; ephemeral DB isolates the backfill state
+# exit: 0  duration: 6s  verdict: PASS
+
+✔ RS metadata advertises capabilities.semantic_retrieval with all required keys when supported (176.79947ms)
+✔ RS metadata omits capabilities.semantic_retrieval when extension is disabled (107.959078ms)
+✔ RS metadata omits semantic retrieval and route 404s when backend is unavailable (93.72349ms)
+✔ dashboard capability probe returns true when semantic is advertised (111.019783ms)
+✔ dashboard capability probe returns false when semantic is disabled (118.854334ms)
+✔ semantic advertisement is independent from lexical advertisement (216.026166ms)
+✔ happy-path semantic search returns list envelope with retrieval_mode:"semantic" (121.96742ms)
+✔ semantic search omits score when capability metadata does not advertise score support (133.684512ms)
+✔ missing q returns invalid_request (113.730351ms)
+✔ forbidden parameters are all rejected with invalid_request (integration) (124.103928ms)
+✔ filtered semantic search applies declared range and no-match filters before vector lookup (109.064677ms)
+✔ filtered semantic search rejects invalid filters and still-forbidden parameters (138.954186ms)
+✔ cross_stream:false advertisement requires streams[] (139.054858ms)
+✔ client-token streams[] not in grant returns grant_stream_not_allowed (104.252581ms)
+✔ owner-token streams[]=<nonexistent> returns empty list, not error (99.909662ms)
+✔ client grant authorizing only one of two declared semantic_fields restricts matched_fields and snippet (104.887152ms)
+✔ stream declared in semantic_fields but with empty grant∩declared intersection contributes zero hits (110.597405ms)
+✔ snippet text is a verbatim contiguous substring of the matched field (property test) (103.011128ms)
+✔ search-semantic.js has zero imports from search.js (no silent lexical fallback) (0.418628ms)
+✔ owner cross-connector search returns hits from every owner-visible connector that matches (101.962179ms)
+✔ owner record_url round-trips to a valid single-record read (99.831511ms)
+✔ owner request including connector_id= is rejected as invalid_request (112.643112ms)
+✔ next_cursor round-trips within a session (owner) (113.603989ms)
+✔ lexical cursor passed to /v1/search/semantic is rejected as invalid_cursor (99.994754ms)
+✔ semantic enablement does not break /v1/search (lexical surface) (94.459294ms)
+✔ restart regression: semantic coverage survives process restart without re-ingest (218.146264ms)
+✔ restart regression: streams with only empty semantic field values do not rebuild forever (214.474619ms)
+✔ semantic indexing caps oversized text before embedding (116.574802ms)
+✔ semantic search caches repeated query embeddings for fresh searches (131.849478ms)
+✔ semantic upsert with an empty field deletes only that record, not the whole scope (121.9977ms)
+✔ semantic index metadata isolates instances and client search fans in across active bindings (109.596227ms)
+✔ interrupted semantic backfill with existing meta resumes instead of rebuilding from scratch (220.004298ms)
+✔ interrupted semantic backfill resumes and embeds only missing record-field pairs (427.331257ms)
+✔ backend identity change flips index_state to stale until rebuild restores (217.233728ms)
+✔ shipped gmail manifest contributes semantic coverage after reconcile without record re-ingest (130.370641ms)
+﹣ multilingual-minilm profile builds embeddings and returns semantic hits (0.134112ms) # set PDPP_MULTILINGUAL_MINILM_SMOKE=1 to run the external model-download smoke
+✔ parseSemanticSearchParams accepts the v1 allowlist, rejects everything else (0.511199ms)
+✔ resolveSemanticPerConnectorLimit scales with requested page size instead of always using the public maximum (0.050651ms)
+✔ buildPostgresSemanticPlanRequests merges unfiltered scopes and preserves filtered candidate requests (0.169483ms)
+✔ semantic backend env resolver defaults to deterministic stub outside operational dev mode (0.056341ms)
+✔ semantic backend env resolver can disable semantic retrieval entirely (0.046991ms)
+✔ semantic backend env resolver rejects unknown local profile IDs (0.130842ms)
+✔ semantic backend env resolver exposes local multilingual profile metadata without loading a model (0.276345ms)
+ℹ tests 43
+ℹ suites 0
+ℹ pass 42
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 5669.24877
+rc=0
+NOTICE:  database "pdpp_hone_pl1semrebuild_retr" does not exist, skipping

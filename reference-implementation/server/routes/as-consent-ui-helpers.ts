@@ -763,6 +763,19 @@ function buildClientClaimsBlock(streams: StreamItem[], ui: ConsentUiRenderer): s
   return renderAuthorshipBlock("client", "Client-authored claims", body, ui);
 }
 
+function renderRequestedStreamItem(stream: StreamItem, ui: ConsentUiRenderer): string {
+  const fragments = [
+    stream.time_range ? `since ${stream.time_range.since || "any"}` : null,
+    stream.fields ? `fields: ${stream.fields.join(", ")}` : null,
+    stream.view ? `view: ${stream.view}` : null,
+    stream.necessity === "optional" ? "optional" : null,
+  ].filter(Boolean);
+  const meta = fragments.length
+    ? ` <span class="hosted-ui-stream-meta">${ui.escapeHtml(fragments.join(" · "))}</span>`
+    : "";
+  return `<li><span class="hosted-ui-stream-name">${ui.escapeHtml(stream.name)}</span>${meta}</li>`;
+}
+
 function buildStreamsBlock(
   requestedStreams: StreamItem[],
   sourceLabel: string,
@@ -790,20 +803,7 @@ function buildStreamsBlock(
         ${resolvedList}
       </div>`;
   }
-  const streamItems = requestedStreams
-    .map((s) => {
-      const fragments = [
-        s.time_range ? `since ${s.time_range.since || "any"}` : null,
-        s.fields ? `fields: ${s.fields.join(", ")}` : null,
-        s.view ? `view: ${s.view}` : null,
-        s.necessity === "optional" ? "optional" : null,
-      ].filter(Boolean);
-      const meta = fragments.length
-        ? ` <span class="hosted-ui-stream-meta">${ui.escapeHtml(fragments.join(" · "))}</span>`
-        : "";
-      return `<li><span class="hosted-ui-stream-name">${ui.escapeHtml(s.name)}</span>${meta}</li>`;
-    })
-    .join("");
+  const streamItems = requestedStreams.map((s) => renderRequestedStreamItem(s, ui)).join("");
   return `
       <div>
         <span class="pdpp-title">Streams requested</span>

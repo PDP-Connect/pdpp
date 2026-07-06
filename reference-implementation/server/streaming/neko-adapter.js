@@ -7,7 +7,7 @@
  * treat both backends the same.
  */
 
-import { createNekoBrowserClient } from './neko-browser-client.js';
+import { createNekoBrowserClient } from './neko-browser-client.ts';
 
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const DEFAULT_SCREENCAST_PATH = 'api/room/screen/cast.jpg';
@@ -286,22 +286,24 @@ function screenConfigFitsCover(config, targetWidth, targetHeight) {
   return screenConfigScore(config, targetWidth, targetHeight).cropRatio <= MAX_COVER_CROP_RATIO;
 }
 
-function rankNekoScreenConfigurations(configs, targetWidth, targetHeight) {
-  return [...configs].sort((a, b) => {
-    const aScore = screenConfigScore(a, targetWidth, targetHeight);
-    const bScore = screenConfigScore(b, targetWidth, targetHeight);
-    const aFits = aScore.cropRatio <= MAX_COVER_CROP_RATIO;
-    const bFits = bScore.cropRatio <= MAX_COVER_CROP_RATIO;
-    if (aFits !== bFits) return aFits ? -1 : 1;
-    if (aFits && bFits) {
-      if (aScore.scaleDelta !== bScore.scaleDelta) return aScore.scaleDelta - bScore.scaleDelta;
-      if (aScore.cropRatio !== bScore.cropRatio) return aScore.cropRatio - bScore.cropRatio;
-      return Math.abs(aScore.sourceArea - aScore.targetArea) - Math.abs(bScore.sourceArea - bScore.targetArea);
-    }
-    if (aScore.cropRatio !== bScore.cropRatio) return aScore.cropRatio - bScore.cropRatio;
+function compareNekoScreenConfigurations(a, b, targetWidth, targetHeight) {
+  const aScore = screenConfigScore(a, targetWidth, targetHeight);
+  const bScore = screenConfigScore(b, targetWidth, targetHeight);
+  const aFits = aScore.cropRatio <= MAX_COVER_CROP_RATIO;
+  const bFits = bScore.cropRatio <= MAX_COVER_CROP_RATIO;
+  if (aFits !== bFits) return aFits ? -1 : 1;
+  if (aFits && bFits) {
     if (aScore.scaleDelta !== bScore.scaleDelta) return aScore.scaleDelta - bScore.scaleDelta;
+    if (aScore.cropRatio !== bScore.cropRatio) return aScore.cropRatio - bScore.cropRatio;
     return Math.abs(aScore.sourceArea - aScore.targetArea) - Math.abs(bScore.sourceArea - bScore.targetArea);
-  });
+  }
+  if (aScore.cropRatio !== bScore.cropRatio) return aScore.cropRatio - bScore.cropRatio;
+  if (aScore.scaleDelta !== bScore.scaleDelta) return aScore.scaleDelta - bScore.scaleDelta;
+  return Math.abs(aScore.sourceArea - aScore.targetArea) - Math.abs(bScore.sourceArea - bScore.targetArea);
+}
+
+function rankNekoScreenConfigurations(configs, targetWidth, targetHeight) {
+  return [...configs].sort((a, b) => compareNekoScreenConfigurations(a, b, targetWidth, targetHeight));
 }
 
 function viewportDimensions(viewport) {
@@ -823,6 +825,50 @@ export function createNekoCompanion(options = {}) {
     }
   }
 
+  async function reapplyPageMetricsBestEffort(status, expectedViewport) {
+    try {
+      await applyBrowserViewportBestEffort(expectedViewport, abortController?.signal);
+      status.page_metrics_reapplied = true;
+      status.page = await readPageViewportStatus(abortController?.signal);
+      const remainingMismatch = pageMetricsMismatch(status.page, expectedViewport);
+      if (remainingMismatch) {
+        status.page_metrics_mismatch_after_reapply = remainingMismatch;
+      }
+    } catch (err) {
+      status.page_metrics_reapply_error = {
+        code: err?.code || 'neko_page_metrics_reapply_failed',
+        message: err?.message || 'n.eko page metrics reapply failed',
+      };
+    }
+  }
+
+  async function collectPageViewportStatus(status) {
+    if (!assistiveBrowserControlAllowed) {
+      status.page_cdp_available = false;
+      status.page_cdp_skipped = {
+        browser_owner_mode: browserOwnerMode,
+        stealth_mode: stealthMode,
+      };
+      return;
+    }
+    try {
+      status.page_cdp_available = true;
+      status.page = await readPageViewportStatus(abortController?.signal);
+      const expectedViewport = lastBrowserViewport || currentViewport;
+      const mismatch = pageMetricsMismatch(status.page, expectedViewport);
+      if (mismatch) {
+        status.page_metrics_mismatch = mismatch;
+        await reapplyPageMetricsBestEffort(status, expectedViewport);
+      }
+    } catch (err) {
+      status.page_cdp_available = false;
+      status.page_cdp_error = {
+        code: err?.code || 'neko_page_status_failed',
+        message: err?.message || 'n.eko page status failed',
+      };
+    }
+  }
+
   async function queryNekoStatus() {
     const status = {};
 
@@ -847,45 +893,17 @@ export function createNekoCompanion(options = {}) {
       stealth_mode: stealthMode,
     };
 
-    if (assistiveBrowserControlAllowed) {
-      try {
-        status.page_cdp_available = true;
-        status.page = await readPageViewportStatus(abortController?.signal);
-        const expectedViewport = lastBrowserViewport || currentViewport;
-        const mismatch = pageMetricsMismatch(status.page, expectedViewport);
-        if (mismatch) {
-          status.page_metrics_mismatch = mismatch;
-          try {
-            await applyBrowserViewportBestEffort(expectedViewport, abortController?.signal);
-            status.page_metrics_reapplied = true;
-            status.page = await readPageViewportStatus(abortController?.signal);
-            const remainingMismatch = pageMetricsMismatch(status.page, expectedViewport);
-            if (remainingMismatch) {
-              status.page_metrics_mismatch_after_reapply = remainingMismatch;
-            }
-          } catch (err) {
-            status.page_metrics_reapply_error = {
-              code: err?.code || 'neko_page_metrics_reapply_failed',
-              message: err?.message || 'n.eko page metrics reapply failed',
-            };
-          }
-        }
-      } catch (err) {
-        status.page_cdp_available = false;
-        status.page_cdp_error = {
-          code: err?.code || 'neko_page_status_failed',
-          message: err?.message || 'n.eko page status failed',
-        };
-      }
-    } else {
-      status.page_cdp_available = false;
-      status.page_cdp_skipped = {
-        browser_owner_mode: browserOwnerMode,
-        stealth_mode: stealthMode,
-      };
-    }
+    await collectPageViewportStatus(status);
 
     return status;
+  }
+
+  function mergeAppliedScreenIntoViewport(viewport, appliedScreen) {
+    if (!appliedScreen) return viewport;
+    if (viewportHasSeparateScreenDimensions(viewport)) {
+      return { ...viewport, screenHeight: appliedScreen.height, screenWidth: appliedScreen.width };
+    }
+    return { ...viewport, height: appliedScreen.height, width: appliedScreen.width };
   }
 
   async function applyViewportBestEffort(viewport, signal) {
@@ -921,19 +939,7 @@ export function createNekoCompanion(options = {}) {
       }
     }
 
-    const browserViewport = appliedScreen
-      ? viewportHasSeparateScreenDimensions(viewport)
-        ? {
-            ...viewport,
-            screenHeight: appliedScreen.height,
-            screenWidth: appliedScreen.width,
-          }
-        : {
-            ...viewport,
-            height: appliedScreen.height,
-            width: appliedScreen.width,
-          }
-      : viewport;
+    const browserViewport = mergeAppliedScreenIntoViewport(viewport, appliedScreen);
     lastBrowserViewport = browserViewport;
     await applyBrowserViewportBestEffort(browserViewport, signal);
     return browserViewport;

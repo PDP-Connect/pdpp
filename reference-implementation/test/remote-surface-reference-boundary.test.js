@@ -7,11 +7,11 @@ function read(path) {
 }
 
 test('reference streaming routes adapt package session/protocol APIs while preserving _ref ownership', () => {
-  const sessionsShim = read('reference-implementation/server/streaming/sessions.js');
+  const sessionsShim = read('reference-implementation/server/streaming/sessions.ts');
   const routes = read('reference-implementation/server/streaming/routes.js');
 
-  assert.match(sessionsShim, /from '@opendatalabs\/remote-surface\/server'/);
-  assert.match(routes, /from '@opendatalabs\/remote-surface\/protocol'/);
+  assert.match(sessionsShim, /from ['"]@opendatalabs\/remote-surface\/server['"]/);
+  assert.match(routes, /from ['"]@opendatalabs\/remote-surface\/protocol['"]/);
   assert.match(routes, /\/_ref\/runs\/:runId\/run-interaction-stream/);
   assert.match(routes, /\/_ref\/run-interaction-streams\/:token\/events/);
   assert.match(routes, /object: 'run_interaction_stream_session'/);
@@ -38,7 +38,7 @@ test('dynamic n.eko allocation seams use package leases while Docker lifecycle s
   const remoteSurfacePackage = read('packages/remote-surface/README.md');
   const compose = read('docker-compose.neko.yml');
 
-  assert.match(leaseStore, /from "@opendatalabs\/remote-surface\/leases"/);
+  assert.match(leaseStore, /from ['"]@opendatalabs\/remote-surface\/leases['"]/);
   assert.match(remoteSurfacePackage, /Docker\/Compose\/sidecar allocation/);
   assert.match(compose, /neko:/);
   assert.doesNotMatch(remoteSurfacePackage, /docker\.sock/);

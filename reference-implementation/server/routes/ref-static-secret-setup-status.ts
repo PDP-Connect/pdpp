@@ -113,12 +113,12 @@ export interface MountRefStaticSecretSetupStatusContext {
   createRequestConnectorInstanceCredentialStore(): ConnectorInstanceCredentialStore;
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
   getOwnerSubjectId(req: unknown): string;
-  // Window-independent terminal status for a run by run_id: "failed" |
-  // "completed" | "cancelled" | "abandoned" | null (still running / unknown).
-  getRunTerminalStatus(runId: string): Promise<string | null>;
   // Bounded lookup of the run.start event timestamp, used to prove whether a
   // terminal verification run belongs to the current credential rotation.
   getRunStartedAt(runId: string): Promise<string | null>;
+  // Window-independent terminal status for a run by run_id: "failed" |
+  // "completed" | "cancelled" | "abandoned" | null (still running / unknown).
+  getRunTerminalStatus(runId: string): Promise<string | null>;
   handleError(res: unknown, err: unknown): void;
   pdppError: PdppErrorFn;
   requireOwnerSession: MiddlewareHandler;
@@ -170,10 +170,7 @@ function bindingKind(sourceBinding: unknown): string | null {
   return typeof kind === "string" ? kind : null;
 }
 
-function setupKindForConnection(
-  sourceBinding: unknown,
-  manifest: ConnectorManifestLike
-): ConnectionSetupKind {
+function setupKindForConnection(sourceBinding: unknown, manifest: ConnectorManifestLike): ConnectionSetupKind {
   const kind = bindingKind(sourceBinding);
   if (kind === "manual_upload" || kind === "manual_upload_draft") {
     return "manual_upload";

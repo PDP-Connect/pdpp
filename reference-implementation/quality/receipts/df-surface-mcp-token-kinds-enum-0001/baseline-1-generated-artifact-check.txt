@@ -1,0 +1,19 @@
+# hone work df-surface-mcp-token-kinds-enum-0001 — baseline rung 'generated-artifact-check'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/packages/reference-contract && pnpm run check:generated
+# expect: exit 0 — regenerated OpenAPI + docs artifacts are byte-identical to the committed files
+# exit: 0  duration: 1s  verdict: PASS
+
+
+> @pdpp/reference-contract@0.1.0 check:generated /home/tnunamak/.tmp/pdpp-cq-sweep/packages/reference-contract
+> pnpm run generate:all && node ./scripts/check-generated.js
+
+
+> @pdpp/reference-contract@0.1.0 generate:all /home/tnunamak/.tmp/pdpp-cq-sweep/packages/reference-contract
+> node ./src/openapi/generate.js && node ./src/docs/generate.js
+
+wrote /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/openapi/reference-public.openapi.json
+wrote /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/openapi/reference-full.openapi.json
+wrote /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/docs/generated/reference-routes.md
+wrote /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/docs/generated/reference-ref-routes.md
+wrote /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation/docs/generated/query-cookbook.md
+Generated reference artifacts are current.

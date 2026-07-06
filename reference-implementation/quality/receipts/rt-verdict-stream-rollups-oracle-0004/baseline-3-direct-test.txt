@@ -1,0 +1,36 @@
+# hone work rt-verdict-stream-rollups-oracle-0004 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/connector-verdict-input.test.js ]; then node --test test/connector-verdict-input.test.js test/owner-verdict-wire.test.js test/shadow-comparison.test.js; else node --test test/owner-verdict-wire.test.js test/shadow-comparison.test.js; fi'
+# expect: baseline (new file absent): owner-verdict-wire and shadow-comparison green; post: new file green alongside them, existing counts unchanged, 0 fail
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ owner-wire: synthesizeConnectorVerdict returns a verdict with all required top-level fields (1.976886ms)
+✔ owner-wire: fresh healthy connection → green pill + calm channel (0.223364ms)
+✔ owner-wire: outbox unknown does not downgrade an otherwise complete non-outbox connector (0.168504ms)
+✔ owner-wire: denominator-only unknown stream rows do not override connection-level complete coverage (0.169103ms)
+✔ owner-wire: latest-run partial sample rows do not override connection-level complete coverage (0.168073ms)
+✔ owner-wire: stale manual-refresh connection → Healthy pill + advisory refresh action (0.292335ms)
+✔ owner-wire: degraded retryable with resumable disposition → non-green pill + advisory Retry now (0.775645ms)
+✔ owner-wire: no terminal run but one current stream gap is coherent retryable advisory (0.251685ms)
+✔ owner-wire: toGrantScopedVerdict strips detail and trace (0.243805ms)
+✔ owner-wire: runtime_ok=false caps channel at calm regardless of snapshot state (0.400608ms)
+✔ owner-wire: per-stream rollup is present on the verdict streams array (0.169893ms)
+✔ owner-wire: synthesizer clamps collected to considered (impossible 3/2 cannot escape) (0.135213ms)
+  ✔ SILENCE [chatgpt_scheduled_fresh] Healthy→Healthy ch:calm — Silence correction: 2532 recovered gaps routed to detail only; dashboard stays calm
+  ✔ SILENCE [amazon_manual_stale] Healthy→Healthy ch:advisory — Silence correction: stale manual source stays Healthy while freshness and Refresh now move to advisory detail
+  ✔ FIXED_LIE [chase_retryable_gap] Needs you→Degraded ch:advisory — Fixed false urgency: retryable degraded gap is Degraded/advisory with Retry now, not Needs you
+  ✔ SILENCE [synthetic_terminal_code_fix] Can't collect→Can't collect ch:advisory — Silence correction: terminal gap routed as maintainer status (advisory), never owner attention button
+  ✔ SILENCE [synthetic_runtime_fault] Needs you→Degraded ch:calm — Silence correction: runtime fault caps per-connection channel at calm (S4); one global indicator instead of N alarms
+✔ shadow-comparison: no unexpected_drift across all fixtures (3.566706ms)
+✔ shadow-comparison[chatgpt_scheduled_fresh]: ChatGPT: scheduled, fresh today, 2532 recovered gaps (all drained) (0.238945ms)
+✔ shadow-comparison[amazon_manual_stale]: Amazon: manual-refresh, 31-day stale (0.281126ms)
+✔ shadow-comparison[chase_retryable_gap]: Chase: degraded, one retryable gap frozen ~2 months (0.783495ms)
+✔ shadow-comparison[synthetic_terminal_code_fix]: Synthetic: terminal gap, code_fix required (maintainer-only) (0.273465ms)
+✔ shadow-comparison[synthetic_runtime_fault]: Synthetic: runtime fault (runtime_ok=false) — channel capped at calm (0.191954ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 117.420761

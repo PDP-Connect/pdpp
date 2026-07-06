@@ -1,0 +1,17 @@
+# hone work server-db-t0-94a605ef — baseline rung 'complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/db.js::resolveInstanceId'
+# expect: found=true and cognitive_before < 7 (packet baseline); red_scan unchanged
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "server/db.js::resolveInstanceId",
+  "file": "server/db.js",
+  "function": "resolveInstanceId",
+  "found": true,
+  "cognitive_before": 7,
+  "line": 1693,
+  "caller_count": 34,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

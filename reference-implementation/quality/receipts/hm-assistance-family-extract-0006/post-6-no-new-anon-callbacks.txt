@@ -1,0 +1,6 @@
+# hone work hm-assistance-family-extract-0006 — post rung 'no-new-anon-callbacks'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node scripts/code-quality/check-callback-ratchet.mjs
+# expect: exit 0
+# exit: 0  duration: 5s  verdict: PASS
+
+✓ callback-ratchet OK — 0 new anonymous callbacks at cc>=10 (baseline: 189 grandfathered); 3 baseline callback(s) resolved since last baseline — progress; consider --update-baseline

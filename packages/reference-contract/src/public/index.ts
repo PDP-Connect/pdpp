@@ -1671,7 +1671,7 @@ export const publicManifests = [
     // distinct manifest id for the AS surface so the contract registry
     // maintains a 1:1 map between operation ids and route bindings; the
     // generated OpenAPI document deduplicates the two `GET /` entries to
-    // avoid a path collision (see openapi/generate.js).
+    // avoid a path collision (see openapi/generate.ts).
     id: "getAsDiscoveryIndex",
     method: "GET",
     path: "/",
@@ -2127,20 +2127,20 @@ export const publicManifests = [
                     minItems: 1,
                     items: NonEmptyStringSchema,
                   },
-                    snippet: {
-                      type: "object",
-                      additionalProperties: false,
-                      properties: {
-                        field: NonEmptyStringSchema,
-                        text: { type: "string" },
-                      },
-                      required: ["field", "text"],
+                  snippet: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      field: NonEmptyStringSchema,
+                      text: { type: "string" },
                     },
-                    match_windows: {
-                      type: "array",
-                      items: SearchMatchWindowSchema,
-                    },
+                    required: ["field", "text"],
                   },
+                  match_windows: {
+                    type: "array",
+                    items: SearchMatchWindowSchema,
+                  },
+                },
                 required: ["object", "stream", "record_key", "connector_id", "emitted_at", "matched_fields"],
               },
             },

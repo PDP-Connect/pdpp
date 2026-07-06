@@ -1,0 +1,38 @@
+# hone work hm-record-scope-extract-0004 — maker brief digest (attempt 1)
+# sha256(full brief)=84d9f5b132555ec446a821fba1760b0d7fc49fc9e06ff11ee0e3a4187f4f0d6c bytes=10075
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): runtime/index.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, guard-condition-or-error-string-change, new-dependency, new-module-file, captured-mutable-cells-in-new-handlers, method-calling-threaded-callbacks.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: hm-record-scope-extract-0004
+created: "2026-07-02T03:38:00.000Z"
+repo_sha: e7ede6e50ea9b2f3d60ba908862a846c833d7a5c
+subsystem: runtime
+files: [runtime/index.js]
+symbols:
+  - file: runtime/index.js
+    parent_fn: handleMsg
+    anchor: "case 'RECORD' — scope guards (resources/fields/time_range) + recordBatch push + BATCH_SIZE flush"
+    line: 2937
+  - recordMatchesScopeResource
+  - passesTimeRange
+public_surface:
+  - "run failure messages: 'Connector emitted RECORD for undeclared stream', 'Connector emitted RECORD outside declared resources for stream', 'Connector emitted RECORD with fields outside START.scope for stream', 'Connector emitted RECORD outside declared time_range for stream'"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: property_at_risk
+execution_gate: autonomous
+why_this_matters: "The RECORD arm of handleMsg (runtime/index.js:2937) is the runtime's grant-scope enforcement point: every connector-emitted record passes the declared-stream check, recordMatchesScopeResource, the START.scope field allowlist (streamScope.fields + manifest schema.required), and the consent_time_field time_range guard before it may enter the ingest batch. It is braided into a cc-194 closure with twelve unrelated families; extracting it to a named module-level handler with explicit context removes ~20 cc from handleMsg while making the scope guard individually readable and testable. The guard logic itself must not change by a byte — this is the 'no field outside grant scope' property the whole PDPP trust model rests on."
+plan:
+  transform_class: explicit-context-extraction
+  instruction: "In runtime/index.js ONLY: create module-level (column-0) named async function handleRecordMsg(msg, ctx) containing the 'RECORD' arm body verbatim; the case arm becomes await handleRecordMsg(msg, msgCtx); break;. Extend the msgCtx object established by hm-reporting-family-extract-0003 with { recordBatch, emittedByStream, flushBatch, batchSize: BATCH_SIZE } (recordBatch and emittedByStream are reference-mutable containers — passing the reference is explicit context, not closure capture). Migrate the scalar cell totalEmitted (let, runtime/index.js:2346) into the runState holder (runState.totalEmitted) and update ALL its readers file-wide (it feeds DONE records_emitted reconciliation via validateDoneRecordsEmitted and the terminal summary — grep every use). The four guard blocks (undeclared stream throw; recordMatchesScopeResource throw; allowedFields/extraFields throw; passesTimeR

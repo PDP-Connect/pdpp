@@ -1,0 +1,397 @@
+# hone work hm-reporting-family-extract-0003 — baseline rung 'file-excess-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --file 'runtime/index.js' --cog 5
+# expect: file_excess strictly below the pre-edit measured value (campaign start 713); the only NEW flagged names are the two named handlers (each below its source arm's share); judge verifies mass was decomplected into explicit-context handlers, not relocated into a grab-bag
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "runtime/index.js",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 115,
+  "flagged_count": 63,
+  "file_excess": 713,
+  "flagged": [
+    {
+      "fn": "<anon>",
+      "line": 55,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "recordMatchesScopeResource",
+      "line": 91,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "normalizeDetailGapPageStreams",
+      "line": 154,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "validateDetailGapsPageRequest",
+      "line": 175,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "readDetailGapPage",
+      "line": 202,
+      "cc": 19,
+      "excess": 14
+    },
+    {
+      "fn": "buildScopeFields",
+      "line": 276,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "runtimeFailureReasonFromResponse",
+      "line": 308,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "readIngestResponse",
+      "line": 388,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "buildConnectorExitFailureMessage",
+      "line": 496,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "projectDiagnosticsNode",
+      "line": 598,
+      "cc": 21,
+      "excess": 16
+    },
+    {
+      "fn": "buildCollectionFacts",
+      "line": 716,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "<anon>",
+      "line": 748,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "<anon>",
+      "line": 757,
+      "cc": 18,
+      "excess": 13
+    },
+    {
+      "fn": "<anon>",
+      "line": 777,
+      "cc": 13,
+      "excess": 8
+    },
+    {
+      "fn": "<anon>",
+      "line": 787,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "<anon>",
+      "line": 805,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "inferRecoveryAction",
+      "line": 831,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "normalizeRecoveryHint",
+      "line": 854,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "normalizeGapScope",
+      "line": 872,
+      "cc": 19,
+      "excess": 14
+    },
+    {
+      "fn": "classifyKnownGapSeverity",
+      "line": 898,
+      "cc": 16,
+      "excess": 11
+    },
+    {
+      "fn": "toPublicIngestFailure",
+      "line": 991,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "toPublicShape",
+      "line": 1019,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "classifyRuntimeFailure",
+      "line": 1042,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "validateAndNormalizeStreamScope",
+      "line": 1098,
+      "cc": 26,
+      "excess": 21
+    },
+    {
+      "fn": "buildStartScope",
+      "line": 1144,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "validateStartState",
+      "line": 1173,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "validateStateMessage",
+      "line": 1186,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "passesTimeRange",
+      "line": 1198,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "validateDoneExitCode",
+      "line": 1209,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "validateDoneError",
+      "line": 1240,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "validateProgressMessage",
+      "line": 1294,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "validateProgressProviderBudget",
+      "line": 1330,
+      "cc": 16,
+      "excess": 11
+    },
+    {
+      "fn": "validateProgressCollectionRate",
+      "line": 1371,
+      "cc": 16,
+      "excess": 11
+    },
+    {
+      "fn": "validateSkipResultMessage",
+      "line": 1398,
+      "cc": 24,
+      "excess": 19
+    },
+    {
+      "fn": "validateDetailGapMessage",
+      "line": 1434,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "validateInteractionMessage",
+      "line": 1509,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "sanitizeAssistanceInputSchema",
+      "line": 1554,
+      "cc": 16,
+      "excess": 11
+    },
+    {
+      "fn": "sanitizeAssistanceAttachment",
+      "line": 1593,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "validateAssistanceMessage",
+      "line": 1614,
+      "cc": 26,
+      "excess": 21
+    },
+    {
+      "fn": "buildAssistanceRequestedDataFromInteraction",
+      "line": 1671,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "buildAssistanceRequestedDataFromMessage",
+      "line": 1702,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "assistanceResolutionEventType",
+      "line": 1718,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "buildBrowserSurfaceLaunchEnv",
+      "line": 1768,
+      "cc": 17,
+      "excess": 12
+    },
+    {
+      "fn": "runConnector",
+      "line": 1803,
+      "cc": 41,
+      "excess": 36
+    },
+    {
+      "fn": "<anon>",
+      "line": 1973,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "writeChildStdin",
+      "line": 2041,
+      "cc": 17,
+      "excess": 12
+    },
+    {
+      "fn": "closeStructuredAssistance",
+      "line": 2247,
+      "cc": 14,
+      "excess": 9
+    },
+    {
+      "fn": "checkpointCommitStatus",
+      "line": 2395,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "recoveryHintFromTerminalConnectorError",
+      "line": 2411,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "buildKnownGapsForTerminal",
+      "line": 2428,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "buildRunTerminalData",
+      "line": 2452,
+      "cc": 36,
+      "excess": 31
+    },
+    {
+      "fn": "assertDetailCoverageSatisfiedBeforeCommit",
+      "line": 2597,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "commitState",
+      "line": 2674,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "<anon>",
+      "line": 2742,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "terminateChild",
+      "line": 2756,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "<anon>",
+      "line": 2764,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "handleOwnerCancel",
+      "line": 2786,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "cleanupChildHandles",
+      "line": 2816,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "processNext",
+      "line": 2863,
+      "cc": 21,
+      "excess": 16
+    },
+    {
+      "fn": "handleMsg",
+      "line": 2928,
+      "cc": 194,
+      "excess": 189
+    },
+    {
+      "fn": "<anon>",
+      "line": 3572,
+      "cc": 12,
+      "excess": 7
+    },
+    {
+      "fn": "<anon>",
+      "line": 3600,
+      "cc": 95,
+      "excess": 90
+    },
+    {
+      "fn": "loadSyncState",
+      "line": 4004,
+      "cc": 9,
+      "excess": 4
+    }
+  ],
+  "red_scan": [
+    "bearer",
+    "consent"
+  ]
+}

@@ -1,0 +1,71 @@
+candidate_id: tst2-stderr-redaction-contract-0023
+created: "2026-07-06T18:23:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: runtime/stderr-redact
+files: [test/stderr-redact-oracle.test.js, runtime/stderr-redact.ts]
+symbols: [redactStderrTail]
+public_surface:
+  - "connector stderr redaction contract: URL userinfo, keyed credentials, PEM blocks, OTPs, and long opaque tokens"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "There are broad stderr-redaction tests, but this packet asks for a mutation-killing table of every documented redaction class and the redacted boolean. A weakening can leak operator secrets into durable run.failed diagnostics."
+plan:
+  transform_class: add-seeded-mutation-oracle
+  instruction: "Create test/stderr-redact-oracle.test.js. Import redactStderrTail. Assert non-string/empty values return safe empty-or-original text with redacted false; URL userinfo is replaced with [REDACTED]@; keyed token/password/cookie/authorization values become marker=[REDACTED]; PEM blocks become [REDACTED_PEM]; standalone six-digit OTPs become [REDACTED_OTP]; long opaque strings are redacted; and redacted is true only when text changed."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: durable connector diagnostics must redact obvious secret and OTP material before persistence.
+authoring_evidence:
+  - kind: source-read
+    detail: runtime/stderr-redact.ts exports redactStderrTail as pure projection/shape helpers.
+    result: candidate is reachable without starting the server or editing production code
+  - kind: coverage-sweep
+    detail: rg by exported symbol names across test/ before authoring
+    result: no dedicated by-name oracle exists for this exact public contract table
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/stderr-redact-oracle.test.js ]; then src=runtime/stderr-redact.ts; bak=/tmp/tst2_stderr_redaction_contract_0023.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/next = next.replace(OTP_RE, \"[REDACTED_OTP]\");/// OTP redaction disabled by seeded mutant/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0023; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/stderr-redact-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi'"
+    expect: "BASELINE prints BASELINE and exits 0 while the oracle file is absent. POST applies the seeded one-line mutant, runs the new test with an isolated Postgres DB, restores the source with cmp verification, and prints MUTANT KILLED only when the new oracle fails against the mutant."
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/stderr-redact-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0023_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/stderr-redact-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi'"
+    expect: "POST: the new oracle passes under node --test --test-force-exit using its own ephemeral Postgres database. BASELINE: guarded green while the file is absent."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed: [non-test-source-change, behavior-change, new-dependency, shared-db-usage, git-command]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: null
+batch_key: generate_evidence×pure_logic×runtime/stderr-redact
+touchset: [test/stderr-redact-oracle.test.js]
+estimates:
+  tokens: 35000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: reverted
+outcome:
+  commit: null
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/stderr-redact-oracle.test.js ]; then src=runtime/stderr-redact.ts; bak=/tmp/tst2_stderr_redaction_contract_0023.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/next = next.replace(OTP_RE, \"[REDACTED_OTP]\");/// OTP redaction disabled by seeded mutant/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0023; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/stderr-redact-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=c168aace bytes=42 receipt=quality/receipts/tst2-stderr-redaction-contract-0023/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/stderr-redact-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0023_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/stderr-redact-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=caf12c67 bytes=31 receipt=quality/receipts/tst2-stderr-redaction-contract-0023/baseline-2-direct-test-green.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/stderr-redact-oracle.test.js ]; then src=runtime/stderr-redact.ts; bak=/tmp/tst2_stderr_redaction_contract_0023.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/next = next.replace(OTP_RE, \"[REDACTED_OTP]\");/// OTP redaction disabled by seeded mutant/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0023; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/stderr-redact-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi' -> exit 1 (0s) FAIL: exit 1 (expected 0); exit=1 djb2=2e4b27ba bytes=65 receipt=quality/receipts/tst2-stderr-redaction-contract-0023/post-1-red-then-green-mutant-kill.txt"
+    - "[post-r1] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/stderr-redact-oracle.test.js ]; then src=runtime/stderr-redact.ts; bak=/tmp/tst2_stderr_redaction_contract_0023.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/next = next.replace(OTP_RE, \"[REDACTED_OTP]\");/// OTP redaction disabled by seeded mutant/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0023; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/stderr-redact-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi' -> exit 1 (0s) FAIL: exit 1 (expected 0); exit=1 djb2=2e4b27ba bytes=65 receipt=quality/receipts/tst2-stderr-redaction-contract-0023/post-r1-1-red-then-green-mutant-kill.txt"
+  tokens_actual: 60733
+  lesson: "transform failed its own evidence ladder at 'red-then-green-mutant-kill' — prior for generate_evidence×pure_logic×runtime/stderr-redact down"
+routing_class: certified-mechanical

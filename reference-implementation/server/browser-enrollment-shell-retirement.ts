@@ -20,6 +20,28 @@ export interface EnrollmentShellLike {
   readonly status: string;
 }
 
+// Has this one enrollment shell's TTL expired relative to `nowMs`? The `nowMs`
+// cutoff that the enclosing filter used to capture from its closure is now an
+// EXPLICIT parameter, so this is a pure predicate over one shell. Only draft/
+// active shells carrying a real `browser_enrollment_shell` binding with a
+// parseable declared TTL are eligible; anything else (wrong status, wrong
+// binding kind, missing/malformed TTL) is conservatively not-yet-expired.
+function enrollmentShellExpired(shell: EnrollmentShellLike, nowMs: number): boolean {
+  if (shell.status !== "draft" && shell.status !== "active") {
+    return false;
+  }
+  const binding = shell.sourceBinding as Partial<BrowserEnrollmentShellSourceBinding> | null;
+  if (binding?.kind !== "browser_enrollment_shell") {
+    return false;
+  }
+  const expiresAt = binding.enrollment_expires_at;
+  if (typeof expiresAt !== "string") {
+    return false;
+  }
+  const expiresMs = new Date(expiresAt).getTime();
+  return !Number.isNaN(expiresMs) && expiresMs <= nowMs;
+}
+
 // Returns the connectorInstanceIds of browser-enrollment shells whose TTL has
 // expired relative to `now`. Draft and active shell rows are both eligible:
 // active only means a run started, not that enrollment completed. Missing or
@@ -28,23 +50,7 @@ export interface EnrollmentShellLike {
 // declared TTL).
 export function expiredEnrollmentShellIds(shells: readonly EnrollmentShellLike[], now: string): readonly string[] {
   const nowMs = new Date(now).getTime();
-  return shells
-    .filter((shell) => {
-      if (shell.status !== "draft" && shell.status !== "active") {
-        return false;
-      }
-      const binding = shell.sourceBinding as Partial<BrowserEnrollmentShellSourceBinding> | null;
-      if (binding?.kind !== "browser_enrollment_shell") {
-        return false;
-      }
-      const expiresAt = binding.enrollment_expires_at;
-      if (typeof expiresAt !== "string") {
-        return false;
-      }
-      const expiresMs = new Date(expiresAt).getTime();
-      return !Number.isNaN(expiresMs) && expiresMs <= nowMs;
-    })
-    .map((shell) => shell.connectorInstanceId);
+  return shells.filter((shell) => enrollmentShellExpired(shell, nowMs)).map((shell) => shell.connectorInstanceId);
 }
 
 export interface ShellRetirementStore {

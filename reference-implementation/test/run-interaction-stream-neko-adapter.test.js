@@ -9,7 +9,7 @@ import {
 } from '../server/streaming/neko-adapter.js';
 import {
   createDefaultStreamingCompanionFactory as createStreamingBackendCompanionFactory,
-} from '../server/streaming/companion-factory.js';
+} from '../server/streaming/companion-factory.ts';
 
 function makeResponse({ status = 200, body = '', headers = {}, json } = {}) {
   const headerMap = new Map(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));

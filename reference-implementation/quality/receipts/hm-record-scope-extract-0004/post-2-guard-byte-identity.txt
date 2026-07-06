@@ -1,0 +1,9 @@
+# hone work hm-record-scope-extract-0004 — post rung 'guard-byte-identity'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -F "recordMatchesScopeResource(streamScope.resources, key, data, manifestStream)" runtime/index.js && grep -F "passesTimeRange(data, streamScope.time_range, consentTimeField)" runtime/index.js && grep -c "outside declared resources for stream" runtime/index.js && grep -c "fields outside START.scope for stream" runtime/index.js
+# expect: both guard call expressions present verbatim; each guard error string appears exactly once (1 / 1) — the guards were moved, not rewritten
+# exit: 0  duration: 0s  verdict: PASS
+
+  if (!recordMatchesScopeResource(streamScope.resources, key, data, manifestStream)) {
+    if (consentTimeField && !passesTimeRange(data, streamScope.time_range, consentTimeField)) {
+1
+1

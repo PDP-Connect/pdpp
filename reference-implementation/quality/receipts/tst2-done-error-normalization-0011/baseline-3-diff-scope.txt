@@ -1,0 +1,6 @@
+# hone work tst2-done-error-normalization-0011 — baseline rung 'diff-scope'
+# command: cd "$REPO_ROOT" && sh -c 'test -z "$(git diff --name-only -- runtime/done-validators.js)" && echo SRC-CLEAN || echo SRC-DIRTY'
+# expect: prints SRC-CLEAN; this packet only creates test/done-error-normalization-oracle.test.js.
+# exit: 0  duration: 0s  verdict: PASS
+
+SRC-CLEAN

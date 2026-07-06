@@ -1,0 +1,53 @@
+# hone work tst2-read-core-operational-field-omit-0033 — maker brief digest (attempt 1)
+# sha256(full brief)=b52ea519e8d0ab770e596ab810b48be60e5eb0fe8a745f4236fe3e954b4f5aa3 bytes=5910
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Path-coordinate note: Codex is running from the git root so its workspace-write sandbox covers the whole repository. The touchset in this brief has been rewritten to git-root-relative paths; follow the Binding rules touchset over any stale relative path prose in plan.instruction.
+Binding rules:
+- Modify ONLY these files (the touchset): packages/read-core/test/operational-field-omit-oracle.test.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: non-test-source-change, production-source-change, behavior-change, new-dependency, git-command.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: tst2-read-core-operational-field-omit-0033
+created: "2026-07-06T23:53:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: packages/read-core/content-ladder
+files:
+  - "../packages/read-core/test/operational-field-omit-oracle.test.js"
+  - "../packages/read-core/src/index.js"
+symbols: [buildRecordContentLadder, recordContentFields, OMIT_FIELD_KEYS]
+public_surface:
+  - read-core content ladders omit operational identity fields from model-visible field windows and JSON projections
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: Operational handles such as connection_id are already represented in ladder identity. Duplicating them as evidence fields wastes context and can create misleading read_record_field affordances.
+plan:
+  transform_class: add-seeded-mutation-oracle
+  instruction: "Create packages/read-core/test/operational-field-omit-oracle.test.js. Build a ladder for id 'cin_a/messages:m1' with data containing connection_id:'cin_a', stream:'messages', id:'m1', metadata:{x:1}, and body:'hello'. Assert field_windows contains only body and json_fields does not contain metadata. Touch no source."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: content ladders should not turn operational identity fields into bogus evidence fields
+authoring_evidence:
+  - kind: coverage-sweep
+    detail: "rg -n 'operational field|OMIT_FIELD_KEYS|metadata.*json_fields|connection_id.*field_windows' packages/read-core/test"
+    result: no focused omit-list oracle found
+  - kind: code-read
+    detail: packages/read-core/src/index.js OMIT_FIELD_KEYS drives both string field windows and JSON field projections
+    result: pure package-level contract
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/operational-field-omit-oracle.test.js ]; then src=src/index.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0033_read_core.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/  \\\\x27connection_id\\\\x27,\\\\n//\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"

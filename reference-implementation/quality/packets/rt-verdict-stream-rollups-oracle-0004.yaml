@@ -1,0 +1,93 @@
+candidate_id: rt-verdict-stream-rollups-oracle-0004
+created: "2026-07-01T00:00:00.000Z"
+repo_sha: b6899084b0973a0a312c59f75bbadb0beac44404
+subsystem: runtime/connector-verdict
+files:
+  - reference-implementation/runtime/connector-verdict-input.ts
+  - reference-implementation/test/connector-verdict-input.test.js
+symbols: [buildStreamRollups, streamPriority, isRetryableCoverage]
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: generate_evidence
+proof_class: judgment_first
+execution_gate: autonomous
+why_this_matters: "buildStreamRollups (runtime/connector-verdict-input.ts:96) is a structurally perfect T1b extraction candidate (cc-7 .map callback, pure projection, five captures) that cannot be worked because it has ZERO direct evidence: it is exported, but the only export any test imports is synthesizeConnectorVerdict (verified 2026-07-01: test/shadow-comparison.test.js:37 and test/owner-verdict-wire.test.js:19 import synthesizeConnectorVerdict only; server/ref-control.ts is the production consumer). Its semantics carry owner-visible verdict policy: worst-wins rollup priority via streamPriority (default required; explicitly non-required with accepted coverage policy -> accepted_absence; explicitly non-required otherwise -> optional; and the documented contradictory-manifest rule — required + accepted policy stays required so a manifest cannot annotate-away its own gap), retryable coverage (retryable_gap|partial|gaps, OR pending_detail_gaps > 0), and the connection-level attention axis threaded onto each non-complete stream. This packet's job is to CREATE the missing oracle: a direct unit test file pinning those named invariants, which unlocks the follow-up preserve_refactor of the .map callback and protects the verdict wire. This is evidence generation only — no implementation change."
+plan:
+  transform_class: direct-unit-oracle-generation
+  instruction: "Create test/connector-verdict-input.test.js (repo-relative; --repo already IS reference-implementation) importing buildStreamRollups + streamPriority directly (follow the import style of test/owner-verdict-wire.test.js:19). Assertions must name: (1) contradictory-manifest rule (required:true + coverage_policy accepted stays 'required'), (2) accepted_absence and optional classification, (3) retryable via each of retryable_gap/partial/gaps AND via pending_detail_gaps>0 with complete coverage, (4) attention threading only onto non-complete streams, (5) unknown stream (not in manifest) defaults to required. Discrimination against the TWO mandated seeded regressions — restructured 2026-07-02 per run-2: both REVISE verdicts refused this packet solely because the failing seeded runs were never pasted; makers cannot write receipts (quality/ is forbidden to them), so both mutations are baked into ENGINE-RUN rungs (df-0004 pattern): red-then-green-required-default flips the required default in streamPriority (stream.required !== false -> === false, runtime/connector-verdict-input.ts:80) and red-then-green-retryable-pending-gaps drops the '|| entry.pending_detail_gaps > 0' clause from buildStreamRollups' retryable computation (:105); each rung seeds, runs the oracle expecting at least one named test to FAIL, captures the failing run into receipts, and restores. Author the tests so each mutation reds at least one named test. Do NOT mutate connector-verdict-input.ts yourself. Assert named fields, not deep-equal blobs."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: a test that pins the WRONG invariant (implementation trivia instead of the priority/retryable/attention policy) would freeze accidental behavior as contract
+authoring_evidence:
+  - kind: coverage-sweep
+    detail: "verified 2026-07-01: test/shadow-comparison.test.js:37 and test/owner-verdict-wire.test.js:19 import synthesizeConnectorVerdict only; server/ref-control.ts is the production consumer of buildStreamRollups"
+    result: buildStreamRollups has zero direct test evidence despite being exported
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/connector-verdict-input.test.js ]; then node --test test/connector-verdict-input.test.js test/owner-verdict-wire.test.js test/shadow-comparison.test.js; else node --test test/owner-verdict-wire.test.js test/shadow-comparison.test.js; fi'"
+    expect: "baseline (new file absent): owner-verdict-wire and shadow-comparison green; post: new file green alongside them, existing counts unchanged, 0 fail"
+  - rung: red-then-green-required-default
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/connector-verdict-input.test.js ]; then git diff --quiet -- runtime/connector-verdict-input.ts && sed -i 's/stream.required !== false/stream.required === false/' runtime/connector-verdict-input.ts && node --test test/connector-verdict-input.test.js; git checkout -- runtime/connector-verdict-input.ts; else echo oracle-not-yet-authored; fi"
+    expect: "baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2 — engine-run mutation, df-0004 pattern): seeded run FAILS naming at least one streamPriority test (required-default / contradictory-manifest pins) — the mutation flips the required default (runtime/connector-verdict-input.ts:80; sed target verified unique 2026-07-02: grep -cF 'stream.required !== false' runtime/connector-verdict-input.ts == 1); guard confirmed the file was clean before seeding; checkout restores it — this receipt IS mandated failing run (a) that both run-2 REVISE verdicts said was missing"
+  - rung: red-then-green-retryable-pending-gaps
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/connector-verdict-input.test.js ]; then git diff --quiet -- runtime/connector-verdict-input.ts && sed -i 's/ || entry.pending_detail_gaps > 0//' runtime/connector-verdict-input.ts && node --test test/connector-verdict-input.test.js; git checkout -- runtime/connector-verdict-input.ts; else echo oracle-not-yet-authored; fi"
+    expect: "baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2): seeded run FAILS naming the pending_detail_gaps>0-is-retryable test — the mutation drops that clause from buildStreamRollups' retryable computation (runtime/connector-verdict-input.ts:105; sed target verified unique 2026-07-02: grep -cF '|| entry.pending_detail_gaps > 0' runtime/connector-verdict-input.ts == 1); guard confirmed the file was clean before seeding; checkout restores it — this receipt IS mandated failing run (b)"
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+  - rung: byte-identity
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/connector-verdict-input.ts"
+    expect: empty at commit — implementation byte-identical; also proves both red-then-green rungs restored their seeds (restructured 2026-07-02 per run-2)
+  - rung: validation-verdict
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && sh -c 'if [ -f reference-implementation/test/connector-verdict-input.test.js ]; then git diff -- reference-implementation/test/connector-verdict-input.test.js; else echo oracle-not-yet-authored; fi'"
+    expect: "baseline: oracle-not-yet-authored (file absent). Post: independent judge (different provider than maker) reviews the TEST diff only; question: do these assertions pin the documented policy (doc comments in connector-verdict-input.ts) rather than incidental output shape, and would they catch the two seeded regressions?"
+not_allowed:
+  - implementation-change (connector-verdict-input.ts must be byte-identical at commit; seeded regressions are transient and reverted)
+  - contract-change
+  - "snapshot-testing-the-entire-envelope (assert named fields, not deep-equal blobs)"
+  - new-dependency
+maker_tier: standard
+judge_tier: standard
+maker_provider: claude
+judge_provider: codex
+batch_key: generate_evidence×judgment_first×runtime/connector-verdict
+touchset: [test/connector-verdict-input.test.js]
+estimates:
+  tokens: 60000
+  evidence_cost: medium
+depends_on: []
+unlocks: [t1b-verdict-stream-rollup-entry-0011]
+status: landed
+outcome:
+  commit: f968ce61d6b7f862a78b0be81f1681e2fa061ed1
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.92): The added oracle directly imports and tests buildStreamRollups and streamPriority, pinning the contradictory-manifest rule, accepted_absence versus optional classification, retryable coverage including pending_detail_gaps, attention threading, and unknown-stream required default. The diff does not change the implementation and does not add dependencies or snapshot the whole envelope. The evidence includes post green runs plus actual failing output for both mandated seeded regressions, and byte-identity confirms the transient implementation mutations were restored."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/connector-verdict-input.test.js ]; then node --test test/connector-verdict-input.test.js test/owner-verdict-wire.test.js test/shadow-comparison.test.js; else node --test test/owner-verdict-wire.test.js test/shadow-comparison.test.js; fi' -> exit 0 (0s) PASS; exit=0 djb2=2029bf08 bytes=2787 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/baseline-1-direct-test.txt"
+    - "[baseline] red-then-green-required-default: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/connector-verdict-input.test.js ]; then git diff --quiet -- runtime/connector-verdict-input.ts && sed -i 's/stream.required !== false/stream.required === false/' runtime/connector-verdict-input.ts && node --test test/connector-verdict-input.test.js; git checkout -- runtime/connector-verdict-input.ts; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/baseline-2-red-then-green-required-default.txt"
+    - "[baseline] red-then-green-retryable-pending-gaps: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/connector-verdict-input.test.js ]; then git diff --quiet -- runtime/connector-verdict-input.ts && sed -i 's/ || entry.pending_detail_gaps > 0//' runtime/connector-verdict-input.ts && node --test test/connector-verdict-input.test.js; git checkout -- runtime/connector-verdict-input.ts; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/baseline-3-red-then-green-retryable-pending-gaps.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/baseline-4-typecheck.txt"
+    - "[baseline] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/connector-verdict-input.ts -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/baseline-5-byte-identity.txt"
+    - "[baseline] validation-verdict: cd /home/tnunamak/.tmp/pdpp-cq-sweep && sh -c 'if [ -f reference-implementation/test/connector-verdict-input.test.js ]; then git diff -- reference-implementation/test/connector-verdict-input.test.js; else echo oracle-not-yet-authored; fi' -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/baseline-6-validation-verdict.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/connector-verdict-input.test.js ]; then node --test test/connector-verdict-input.test.js test/owner-verdict-wire.test.js test/shadow-comparison.test.js; else node --test test/owner-verdict-wire.test.js test/shadow-comparison.test.js; fi' -> exit 0 (0s) PASS; exit=0 djb2=83ea6289 bytes=4109 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/post-1-direct-test.txt"
+    - "[post] red-then-green-required-default: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/connector-verdict-input.test.js ]; then git diff --quiet -- runtime/connector-verdict-input.ts && sed -i 's/stream.required !== false/stream.required === false/' runtime/connector-verdict-input.ts && node --test test/connector-verdict-input.test.js; git checkout -- runtime/connector-verdict-input.ts; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=d1270581 bytes=5297 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/post-2-red-then-green-required-default.txt"
+    - "[post] red-then-green-retryable-pending-gaps: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/connector-verdict-input.test.js ]; then git diff --quiet -- runtime/connector-verdict-input.ts && sed -i 's/ || entry.pending_detail_gaps > 0//' runtime/connector-verdict-input.ts && node --test test/connector-verdict-input.test.js; git checkout -- runtime/connector-verdict-input.ts; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=a9a42605 bytes=2381 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/post-3-red-then-green-retryable-pending-gaps.txt"
+    - "[post] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/post-4-typecheck.txt"
+    - "[post] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/connector-verdict-input.ts -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/post-5-byte-identity.txt"
+    - "[post] validation-verdict: cd /home/tnunamak/.tmp/pdpp-cq-sweep && sh -c 'if [ -f reference-implementation/test/connector-verdict-input.test.js ]; then git diff -- reference-implementation/test/connector-verdict-input.test.js; else echo oracle-not-yet-authored; fi' -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/rt-verdict-stream-rollups-oracle-0004/post-6-validation-verdict.txt"
+  tokens_actual: 78792
+  lesson: null
+resets:
+  - at: "2026-07-02T04:44:43.438Z"
+    from_status: blocked
+    reason: "repaired per run-1 diagnostic: unguarded baseline oracle rung (red baseline block) + touchset carried reference-implementation/ prefix though --repo already IS reference-implementation; rungs guarded, touchset corrected to test/connector-verdict-input.test.js"
+  - at: "2026-07-02T06:58:39.878Z"
+    from_status: reverted
+    reason: "restructured: evidence moved into engine-run mutation rungs per run-2 structural lesson (df-0004 pattern)"

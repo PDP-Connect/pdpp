@@ -1,0 +1,6 @@
+# hone work tst-mcp-read-selector-guards-0001 — post rung 'diff-scope'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f reference-implementation/../packages/mcp-server/test/read-record-field-selector-contract.test.js ]; then git diff --stat -- packages/mcp-server/src; test -z "$(git diff --name-only -- packages/mcp-server/src)" && echo SRC-CLEAN || echo SRC-DIRTY; else echo "BASELINE SRC-CLEAN"; fi'
+# expect: prints SRC-CLEAN: only the new test file changed; zero changed lines under packages/mcp-server/src (BASELINE prints 'BASELINE SRC-CLEAN')
+# exit: 0  duration: 0s  verdict: PASS
+
+BASELINE SRC-CLEAN

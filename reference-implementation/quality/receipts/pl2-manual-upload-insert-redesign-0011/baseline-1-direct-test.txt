@@ -1,0 +1,32 @@
+# hone work pl2-manual-upload-insert-redesign-0011 — baseline rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0011_manual; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/manual-upload-draft-connection-route.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo "rc=$rc"; exit $rc'
+# expect: Manual-upload route coverage remains green against an isolated Postgres database.
+# exit: 0  duration: 4s  verdict: PASS
+
+✔ manual/upload setup descriptor is manifest-authored (220.415954ms)
+✔ WhatsApp manual/upload setup accepts large browser-staged media exports (142.299857ms)
+✔ owner upload creates an invisible draft with connection-scoped import binding (153.847985ms)
+✔ owner upload preview validates without creating a draft or writing acquisition state (134.120727ms)
+✔ staged owner upload returns before validation and exposes durable artifact status (163.239945ms)
+✔ staged uploads attach multiple files to one explicit manual-upload source (207.613626ms)
+✔ staged invalid upload fails without creating a source (137.953023ms)
+✔ staged duplicate upload points at the existing receipt without creating a source (196.408053ms)
+✔ repeated owner artifact returns the existing receipt without creating another draft (150.315665ms)
+✔ WhatsApp chat export is manifest-driven and accepts owner .txt artifacts (150.565129ms)
+✔ WhatsApp zip export with media attaches to an existing manual-upload connection (136.827663ms)
+✔ manual upload preview rejects an incompatible target connection before import (142.156004ms)
+✔ WhatsApp malformed zip is rejected before commit (125.969277ms)
+✔ Timeline manual upload records coverage-safe validation without fixed refresh cooldown (136.694171ms)
+✔ unsafe or unsupported file names are rejected before a draft row is created (134.032636ms)
+✔ Timeline validation rejects unsupported and empty files before a draft row is created (133.247782ms)
+✔ wrong-source account-report artifacts are rejected before commit instead of inferred as an account match (130.882472ms)
+✔ manual/upload setup refuses non-manual connectors and bearer-only callers (130.21378ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3648.285218
+rc=0

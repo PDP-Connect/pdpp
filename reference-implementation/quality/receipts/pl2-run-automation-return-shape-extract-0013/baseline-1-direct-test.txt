@@ -1,0 +1,40 @@
+# hone work pl2-run-automation-return-shape-extract-0013 — baseline rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0013; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/run-automation-policy.test.js test/run-automation-policy-branches.test.js test/run-automation-policy-precedence.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo "rc=$rc"; exit $rc'
+# expect: Run automation policy tests remain green.
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ projectRunAutomationPolicy gates a scheduled run when deployment is not ready (0.795243ms)
+✔ projectRunAutomationPolicy allows a manual run under an unready deployment as assisted (0.124393ms)
+✔ projectRunAutomationPolicy supplies a fallback reason when deployment readiness omits one (0.104242ms)
+✔ projectRunAutomationPolicy defaults deployment readiness to ready when null or omitted (0.584971ms)
+✔ projectRunAutomationPolicy projects recommended_mode=manual as manual_only for a scheduled run (0.193604ms)
+✔ projectRunAutomationPolicy lets a manual trigger start a manual_only (paused) policy (0.107692ms)
+✔ projectRunAutomationPolicy makes a credentials-posture scheduled run assisted (0.090051ms)
+✔ projectRunAutomationPolicy keeps a none-posture scheduled run unattended (0.088391ms)
+✔ projectRunAutomationPolicy suppresses assisted posture under assisted_after_owner_auth on a scheduled run (0.111742ms)
+✔ projectRunAutomationPolicy still assists a manual trigger despite assisted_after_owner_auth (0.163163ms)
+✔ automationModeCopy returns the exact owner-facing copy per mode (0.133573ms)
+✔ automationModeCopy falls back to the manual-gesture copy for an unknown mode (0.084891ms)
+✔ not-ready + scheduled trigger → ask_before_run, informational, owner approval required (0.53505ms)
+✔ not-ready + manual trigger → assisted, allowed to start, no owner approval (0.086111ms)
+✔ not-ready with no reason falls back to the default prerequisites message (0.074091ms)
+✔ deployment_readiness echoes the input; absent readiness defaults to ready (0.494269ms)
+✔ a blocking policy wins over not-ready (returns the policy reason, manual_only) (0.141713ms)
+✔ a blocking policy on a MANUAL trigger allows the run and stays manual_only (0.080042ms)
+✔ not-ready wins over human-attention-needed (readiness branch, not the attention branch) (0.067311ms)
+✔ attention-needed fires only when ready AND non-manual; a manual trigger bypasses it to assisted/unattended (0.083162ms)
+✔ run automation policy projects every trigger kind without changing the trigger identity (0.884126ms)
+✔ run automation policy distinguishes unattended, assisted, ask-before-run, and manual-only modes (0.175383ms)
+✔ run automation policy preserves existing unsafe automatic-schedule reasons (0.204574ms)
+✔ assisted-after-owner-auth policy schedules unattended and reserves auth repair for manual runs (0.235714ms)
+✔ same assisted browser manifest handles valid, expired, and restored session evidence without manifest mutation (0.702792ms)
+✔ automation mode copy is owner-facing and non-empty (0.203423ms)
+ℹ tests 26
+ℹ suites 0
+ℹ pass 26
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 83.096118
+rc=0

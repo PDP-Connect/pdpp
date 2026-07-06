@@ -1,0 +1,7 @@
+# hone work df-surface-mcp-token-kinds-enum-0001 — baseline rung 'spec-agreement'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -c mcp_package openapi/reference-full.openapi.json openapi/reference-public.openapi.json
+# expect: count >= 1 in each artifact (the /mcp op token-kinds declaration now includes mcp_package); manual jq spot-check confirms the base op still permits owner+client
+# exit: 0  duration: 0s  verdict: PASS
+
+openapi/reference-full.openapi.json:17
+openapi/reference-public.openapi.json:0

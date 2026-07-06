@@ -9,7 +9,7 @@
 //
 // Full runtime orchestration (job lifecycle, connector spawn, record
 // ingest, state persistence, retries) still lives in
-// `runtime/index.js` / `runtime/scheduler.ts`. The controller wraps, rather
+// `runtime/index.ts` / `runtime/scheduler.ts`. The controller wraps, rather
 // than replaces, those concerns. Approvals and the connector inventory
 // come from `server/auth.js` directly; the controller does not re-export
 // them.
@@ -517,7 +517,7 @@ export interface Controller {
    * The managed browser-surface lease manager the controller was built with
    * (or `undefined` when browser surfaces are disabled). Re-exported so the
    * SCHEDULER can route managed-connector runs through the warm neko lease the
-   * way `runNow` does: the scheduler wiring in server/index.js keys both its
+   * way `runNow` does: the scheduler wiring in server/index.ts keys both its
    * managed-routing seam (`runManagedConnectorViaController`) and its
    * `isManagedConnector` predicate off `controller.browserSurfaceLeaseManager`.
    * Without this re-export the property is `undefined`, the seam is wired to
@@ -547,7 +547,7 @@ export interface Controller {
    * cleanly vs. which timed out.
    *
    * Intended caller: the parent process's SIGTERM handler in
-   * `server/index.js`. Ensures connector children have time to release
+   * `server/index.ts`. Ensures connector children have time to release
    * their Chromium contexts (Layer A `shutdown-hook.ts` in
    * `polyfill-connectors/src`) before the parent exits and closes their
    * stdio pipes. See the layered SLVP design:
@@ -634,16 +634,6 @@ export class ControllerError extends Error {
    * Set alongside `nextEligibleAt` on `provider_pressure_cooldown` errors.
    */
   readonly pendingPressureGapCount: number | undefined;
-  /**
-   * Connector-neutral recovery-admission denial class (OpenSpec
-   * `add-connector-neutral-recovery-governor`, tasks 2.3/2.6). When an
-   * owner-started retry/refresh is declined by the recovery-admission gate, this
-   * records the same neutral reason vocabulary a `RecoveryAdmission` denial
-   * carries (`"cooldown" | "budget" | "owner_required" | "system_issue"`), so
-   * owner-only diagnostics classify a manual denial with the same taxonomy as an
-   * automatic one. The connector-specific `code` (`provider_pressure_cooldown`)
-   * and its HTTP status are unchanged; this is additive evidence.
-   */
   readonly recoveryAdmissionReason: RecoveryAdmissionDenialReason | undefined;
   readonly runId: string | undefined;
 
@@ -905,36 +895,80 @@ function readManifestRefreshPolicy(manifest: ConnectorManifest | null | undefine
   return policy && typeof policy === "object" && !Array.isArray(policy) ? (policy as RefreshPolicy) : null;
 }
 
+// Index one reference-fixture manifest file into the fingerprint map. No-op for
+// non-JSON files, malformed manifests, and manifests missing a usable
+// connector_id or fingerprint.
+function indexReferenceFixtureFile(file: string, entries: Map<string, ManifestFingerprint>): void {
+  if (!file.endsWith(".json")) {
+    return;
+  }
+  try {
+    const manifest = JSON.parse(readFileSync(join(REFERENCE_MANIFESTS_DIR, file), "utf8")) as ConnectorManifest | null;
+    if (!manifest || typeof manifest !== "object") {
+      return;
+    }
+    const connectorId = (manifest as { connector_id?: unknown } | null)?.connector_id;
+    if (typeof connectorId !== "string" || !connectorId.trim()) {
+      return;
+    }
+    const fp = fingerprintManifest(manifest);
+    if (fp) {
+      setManifestLookupAliases(entries, connectorId.trim(), manifest, fp);
+    }
+  } catch {
+    // Ignore malformed local fixture manifests during runtime path discovery.
+  }
+}
+
 function loadReferenceFixtureFingerprints(): Map<string, ManifestFingerprint> {
   if (referenceFixtureFingerprints) {
     return referenceFixtureFingerprints;
   }
   const entries = new Map<string, ManifestFingerprint>();
   for (const file of readdirSync(REFERENCE_MANIFESTS_DIR)) {
-    if (!file.endsWith(".json")) {
-      continue;
-    }
-    try {
-      const manifest = JSON.parse(
-        readFileSync(join(REFERENCE_MANIFESTS_DIR, file), "utf8")
-      ) as ConnectorManifest | null;
-      if (!manifest || typeof manifest !== "object") {
-        continue;
-      }
-      const connectorId = (manifest as { connector_id?: unknown } | null)?.connector_id;
-      if (typeof connectorId !== "string" || !connectorId.trim()) {
-        continue;
-      }
-      const fp = fingerprintManifest(manifest);
-      if (fp) {
-        setManifestLookupAliases(entries, connectorId.trim(), manifest, fp);
-      }
-    } catch {
-      // Ignore malformed local fixture manifests during runtime path discovery.
-    }
+    indexReferenceFixtureFile(file, entries);
   }
   referenceFixtureFingerprints = entries;
   return entries;
+}
+
+// Index one polyfill manifest file into the connector-path and fingerprint
+// maps. No-op for non-JSON files, connectors without an on-disk implementation,
+// malformed manifests, or manifests missing a usable connector_id.
+function indexPolyfillManifestFile(
+  file: string,
+  paths: Map<string, string>,
+  fingerprints: Map<string, ManifestFingerprint>
+): void {
+  if (!file.endsWith(".json")) {
+    return;
+  }
+  const connectorName = file.replace(JSON_EXTENSION_RE, "");
+  const connectorPath = [
+    join(POLYFILL_CONNECTORS_DIR, connectorName, "index.ts"),
+    join(POLYFILL_CONNECTORS_DIR, connectorName, "index.js"),
+  ].find((candidatePath) => existsSync(candidatePath));
+  if (!connectorPath) {
+    return;
+  }
+  try {
+    const manifest = JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, file), "utf8")) as ConnectorManifest | null;
+    if (!manifest || typeof manifest !== "object") {
+      return;
+    }
+    const connectorId = (manifest as { connector_id?: unknown } | null)?.connector_id;
+    if (typeof connectorId !== "string" || !connectorId.trim()) {
+      return;
+    }
+    const trimmedId = connectorId.trim();
+    setManifestLookupAliases(paths, trimmedId, manifest, connectorPath);
+    const fp = fingerprintManifest(manifest);
+    if (fp) {
+      setManifestLookupAliases(fingerprints, trimmedId, manifest, fp);
+    }
+  } catch {
+    // Ignore malformed manifests when building the local connector-path map.
+  }
 }
 
 function loadPolyfillConnectorPaths(): Map<string, string> {
@@ -943,40 +977,9 @@ function loadPolyfillConnectorPaths(): Map<string, string> {
   }
   const paths = new Map<string, string>();
   const fingerprints = new Map<string, ManifestFingerprint>();
-  if (!existsSync(POLYFILL_MANIFESTS_DIR)) {
-    polyfillConnectorPaths = paths;
-    polyfillManifestFingerprints = fingerprints;
-    return paths;
-  }
-  for (const file of readdirSync(POLYFILL_MANIFESTS_DIR)) {
-    if (!file.endsWith(".json")) {
-      continue;
-    }
-    const connectorName = file.replace(JSON_EXTENSION_RE, "");
-    const connectorPath = [
-      join(POLYFILL_CONNECTORS_DIR, connectorName, "index.ts"),
-      join(POLYFILL_CONNECTORS_DIR, connectorName, "index.js"),
-    ].find((candidatePath) => existsSync(candidatePath));
-    if (!connectorPath) {
-      continue;
-    }
-    try {
-      const manifest = JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, file), "utf8")) as ConnectorManifest | null;
-      if (!manifest || typeof manifest !== "object") {
-        continue;
-      }
-      const connectorId = (manifest as { connector_id?: unknown } | null)?.connector_id;
-      if (typeof connectorId !== "string" || !connectorId.trim()) {
-        continue;
-      }
-      const trimmedId = connectorId.trim();
-      setManifestLookupAliases(paths, trimmedId, manifest, connectorPath);
-      const fp = fingerprintManifest(manifest);
-      if (fp) {
-        setManifestLookupAliases(fingerprints, trimmedId, manifest, fp);
-      }
-    } catch {
-      // Ignore malformed manifests when building the local connector-path map.
+  if (existsSync(POLYFILL_MANIFESTS_DIR)) {
+    for (const file of readdirSync(POLYFILL_MANIFESTS_DIR)) {
+      indexPolyfillManifestFile(file, paths, fingerprints);
     }
   }
   polyfillConnectorPaths = paths;
@@ -1099,7 +1102,7 @@ interface ScheduleHistoryFacts {
   /** Error/skip code for the most recent terminal row, when that row was not successful. */
   readonly latestErrorCode: string | null;
   readonly latestFinishedAt: string | null;
-  /** Most recent run that actually started (status in {succeeded, failed, cancelled}). */
+  /** Most recent run that actually started (status in {succeeded, failed}). */
   readonly latestStartedAt: string | null;
   readonly latestStatus: "cancelled" | "failed" | "skipped" | "succeeded" | null;
   /** Most recent `succeeded` record's `completedAt`. */
@@ -1188,19 +1191,28 @@ function collectConnectorIds(
   return connectorIds;
 }
 
-function pressureGapLastObservedAt(gap: Pick<PendingDetailGapRow, "last_attempt_at" | "updated_at">): string | null {
-  if (typeof gap.last_attempt_at === "string") {
-    return gap.last_attempt_at;
-  }
-  if (typeof gap.updated_at === "string") {
-    return gap.updated_at;
-  }
-  return null;
-}
-
 // Bucket pending source-pressure detail-gap rows onto their connection's facts.
 // Keeps only the source-pressure reasons and maps each row to the lane-agnostic
 // `PendingPressureGap` shape the cooldown consumes.
+// Project a pending detail-gap row into the cooldown-model gap shape. The
+// caller has already validated `reason` is a source-pressure reason string.
+// Prefers the durable `last_attempt_at`, falling back to `updated_at` when the
+// connector deferred before a retry lease existed.
+function projectPendingPressureGap(row: PendingDetailGapRow, reason: string): PendingPressureGap {
+  let lastPressureAt: string | null = null;
+  if (typeof row.last_attempt_at === "string") {
+    lastPressureAt = row.last_attempt_at;
+  } else if (typeof row.updated_at === "string") {
+    lastPressureAt = row.updated_at;
+  }
+  return {
+    reason,
+    attemptCount: typeof row.attempt_count === "number" ? row.attempt_count : null,
+    nextAttemptAfter: typeof row.next_attempt_after === "string" ? row.next_attempt_after : null,
+    lastPressureAt,
+  };
+}
+
 function bucketPressureGapsByInstance(
   gaps: readonly PendingDetailGapRow[],
   connectorId: string,
@@ -1211,12 +1223,7 @@ function bucketPressureGapsByInstance(
       continue;
     }
     const instanceKey = gap.connector_instance_id || connectorId;
-    ensure(instanceKey).pendingPressureGaps.push({
-      reason: gap.reason,
-      attemptCount: typeof gap.attempt_count === "number" ? gap.attempt_count : null,
-      nextAttemptAfter: typeof gap.next_attempt_after === "string" ? gap.next_attempt_after : null,
-      lastPressureAt: pressureGapLastObservedAt(gap),
-    });
+    ensure(instanceKey).pendingPressureGaps.push(projectPendingPressureGap(gap, gap.reason));
   }
 }
 
@@ -1295,15 +1302,15 @@ function applyHistoryRowToScheduleFacts(entry: MutableScheduleHistoryFacts, row:
   if (!entry.latestFinishedAt || row.completedAt > entry.latestFinishedAt) {
     entry.latestFinishedAt = row.completedAt;
   }
-  // Only `succeeded`/`failed`/`cancelled` records correspond to a run that
-  // actually started. `skipped` records carry a `startedAt` for bookkeeping but the
+  // Only `succeeded`/`failed` records correspond to a run that actually
+  // started. `skipped` records carry a `startedAt` for bookkeeping but the
   // connector child never spawned, so we hold `last_started_at` back. This
   // is what lets the dashboard and the doctor probe distinguish "ran but is
   // currently idle" from "currently being skipped (not_ready / needs_human /
   // disabled grant)".
   if (
     entry.latestStartedAt === null &&
-    (row.status === "succeeded" || row.status === "failed" || row.status === "cancelled") &&
+    (row.status === "succeeded" || row.status === "failed") &&
     typeof row.startedAt === "string"
   ) {
     entry.latestStartedAt = row.startedAt;
@@ -1434,7 +1441,7 @@ async function buildAttentionOutcomeRecorder(args: { runId: string; requestId: s
   const runId = args.runId;
   // Lazy import keeps the runtime startup graph small; this module is only
   // loaded when an interaction actually fires push delivery.
-  const { getDefaultConnectorAttentionStore } = await import("../server/stores/connector-attention-store.js");
+  const { getDefaultConnectorAttentionStore } = await import("../server/stores/connector-attention-store.ts");
   const store = getDefaultConnectorAttentionStore() as {
     recordNotificationOutcomeById?: (input: {
       attentionId: string;
@@ -1952,7 +1959,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const browserSurfaceReadinessTimeoutMs = opts.browserSurfaceReadinessTimeoutMs;
   const browserSurfaceLeaseStore = opts.browserSurfaceLeaseStore;
   // Default is `null` — disabled unless explicitly wired. The production
-  // path (`resolveNekoBrowserSurfaceControllerOptions` in server/index.js)
+  // path (`resolveNekoBrowserSurfaceControllerOptions` in server/index.ts)
   // installs the default HTTP probe; tests opt in only when they exercise
   // probe behavior. This keeps the readiness gate from running against
   // a fake n.eko url in every controller test.
@@ -2206,11 +2213,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   function parseEpochMs(value: unknown): number {
-    let numeric = Number.NaN;
+    let numeric: number;
     if (typeof value === "number") {
       numeric = value;
     } else if (typeof value === "string") {
       numeric = Number(value);
+    } else {
+      numeric = Number.NaN;
     }
     return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
   }
@@ -2638,6 +2647,67 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
+  // Collect the connector's pending source-pressure gaps for the requested
+  // connection instance, projected into the shape the cooldown computation reads.
+  async function collectPendingPressureGaps(
+    connectorId: string,
+    connectorInstanceId: string
+  ): Promise<PendingPressureGap[]> {
+    const pendingGapRows = await Promise.resolve(
+      detailGapStore.listPendingGapsForConnector(connectorId, { limit: 200 })
+    );
+    const pendingPressureRows = pendingGapRows
+      .filter((row) => (row.connector_instance_id || connectorId) === connectorInstanceId)
+      .filter((row) => typeof row.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(row.reason));
+    return filterFreshPressureRows(pendingPressureRows, Date.now())
+      .map((row) => projectPendingPressureGap(row, row.reason as string));
+  }
+
+  // Provider-pressure cooldown gate. Ordinary manual runs respect the same
+  // cross-run cooldown the scheduler uses; throws `provider_pressure_cooldown`
+  // when the connector is still cooling off. An explicit `force: true` skips the
+  // gate entirely (a separately-named action, never the default "Sync now" button).
+  async function assertNotSourcePressureCoolingOff(connectorId: string, options: RunNowOptions): Promise<void> {
+    if (options.force) {
+      return;
+    }
+    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const pendingPressureGaps = await collectPendingPressureGaps(connectorId, connectorInstanceId);
+    if (pendingPressureGaps.length === 0) {
+      return;
+    }
+    // Use base interval 0 when no schedule is known — the cooldown still
+    // computes a valid decision and any connector-authored
+    // nextAttemptAfter floor is honoured.
+    const schedule = await Promise.resolve(schedulerStore.getSchedule(connectorInstanceId)).catch(() => null);
+    const baseIntervalMs = schedule ? Math.max(1, schedule.interval_seconds) * 1000 : 0;
+    const lastRunTimeMs = await getLastRunTimeMs(connectorId, connectorInstanceId);
+    // Route through the connection variant so the profile is resolved +
+    // asserted (no bare cooldown call can bypass §10-B). This gate only
+    // reads `isSourcePressureCooldownDeferring`, so the escalation health
+    // state is unused here — but using one production entry keeps the seam
+    // uniform.
+    const cooldown = computeConnectionSourcePressureCooldown(
+      connectorId,
+      pendingPressureGaps,
+      baseIntervalMs,
+      lastRunTimeMs,
+      { consecutiveCooldownCycles: maxPressureGapAttemptCount(pendingPressureGaps) }
+    );
+    if (isSourcePressureCooldownDeferring(cooldown)) {
+      throw new ControllerError(
+        `Provider pressure cooldown active — next eligible retry at ${cooldown.nextRunAt}. ` +
+          `Use force: true to override. Pending pressure gaps: ${cooldown.pendingPressureGapCount}.`,
+        "provider_pressure_cooldown",
+        {
+          nextEligibleAt: cooldown.nextRunAt,
+          pendingPressureGapCount: cooldown.pendingPressureGapCount,
+          recoveryAdmissionReason: "cooldown",
+        }
+      );
+    }
+  }
+
   async function validateRunNowPreconditions(
     connectorId: string,
     options: RunNowOptions,
@@ -2649,62 +2719,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     assertNoConflictingActiveRun(key);
 
-    // Provider-pressure cooldown gate. Ordinary manual runs respect the same
-    // cross-run cooldown the scheduler uses. An explicit `force: true` bypasses
-    // it (a separately-named action, never the default "Sync now" button).
-    if (!options.force) {
-      const connectorInstanceId = options.connectorInstanceId || connectorId;
-      const pendingGapRows = await Promise.resolve(
-        detailGapStore.listPendingGapsForConnector(connectorId, { limit: 200 })
-      );
-      const pendingPressureRows = pendingGapRows
-        .filter((row) => (row.connector_instance_id || connectorId) === connectorInstanceId)
-        .filter((row) => typeof row.reason === "string" && SOURCE_PRESSURE_GAP_REASONS.has(row.reason));
-      const freshPressureRows = filterFreshPressureRows(pendingPressureRows, Date.now());
-      const pendingPressureGaps: PendingPressureGap[] = freshPressureRows.map((row) => ({
-        reason: row.reason as string,
-        attemptCount: typeof row.attempt_count === "number" ? row.attempt_count : null,
-        nextAttemptAfter: typeof row.next_attempt_after === "string" ? row.next_attempt_after : null,
-        lastPressureAt: pressureGapLastObservedAt(row),
-      }));
-
-      if (pendingPressureGaps.length > 0) {
-        // Use base interval 0 when no schedule is known — the cooldown still
-        // computes a valid decision and any connector-authored
-        // nextAttemptAfter floor is honoured.
-        const schedule = await Promise.resolve(schedulerStore.getSchedule(connectorInstanceId)).catch(() => null);
-        const baseIntervalMs = schedule ? Math.max(1, schedule.interval_seconds) * 1000 : 0;
-        const lastRunTimeMs = await getLastRunTimeMs(connectorId, connectorInstanceId);
-        // Route through the connection variant so the profile is resolved +
-        // asserted (no bare cooldown call can bypass §10-B). This gate only
-        // reads `isSourcePressureCooldownDeferring`, so the escalation health
-        // state is unused here — but using one production entry keeps the seam
-        // uniform.
-        const cooldown = computeConnectionSourcePressureCooldown(
-          connectorId,
-          pendingPressureGaps,
-          baseIntervalMs,
-          lastRunTimeMs,
-          { consecutiveCooldownCycles: maxPressureGapAttemptCount(pendingPressureGaps) }
-        );
-        if (isSourcePressureCooldownDeferring(cooldown)) {
-          throw new ControllerError(
-            `Provider pressure cooldown active — next eligible retry at ${cooldown.nextRunAt}. ` +
-              `Use force: true to override. Pending pressure gaps: ${cooldown.pendingPressureGapCount}.`,
-            "provider_pressure_cooldown",
-            {
-              nextEligibleAt: cooldown.nextRunAt,
-              pendingPressureGapCount: cooldown.pendingPressureGapCount,
-              // Connector-neutral admission denial class (task 2.3): an
-              // owner-started retry declined by provider pressure maps to the
-              // same `RecoveryAdmission` reason an automatic recovery denial
-              // carries. The `code`/HTTP status stay provider-pressure-specific.
-              recoveryAdmissionReason: "cooldown",
-            }
-          );
-        }
-      }
-    }
+    await assertNotSourcePressureCoolingOff(connectorId, options);
 
     const connectorPath = await Promise.resolve(resolveConnectorPath(connectorId, manifest, options));
     if (!connectorPath) {
@@ -3068,7 +3083,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // ─── Graceful-shutdown drain ────────────────────────────────────────────
   //
   // Await all in-flight run promises with a hard deadline. The parent's
-  // SIGTERM handler in server/index.js calls this before process.exit.
+  // SIGTERM handler in server/index.ts calls this before process.exit.
   // Returns the count drained, the count timed out, and elapsed wall-clock
   // time so the caller can log a useful summary.
   function drainActiveRuns(timeoutMs: number): Promise<DrainSummary> {
@@ -3164,7 +3179,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
-  function respondToInteraction(runId: string, input: RunInteractionResponseInput = {}): RunInteractionAck {
+  // Validate an interaction response against the run's pending interaction and
+  // build the resolver payload. Throws typed ControllerErrors for the caller to
+  // surface; on success returns the validated entry, its pending record, and the
+  // response to hand back to the connector child.
+  function resolveInteractionResponse(
+    runId: string,
+    input: RunInteractionResponseInput
+  ): { entry: ActiveRunInteraction; pending: PendingInteraction; response: InteractionResponse } {
     const entry = activeRunInteractions.get(runId);
     if (!entry) {
       throw new ControllerError(`No active run with id: ${runId}`, "not_found");
@@ -3194,19 +3216,33 @@ export function createController(opts: ControllerOptions = {}): Controller {
       response.data = data as Record<string, unknown>;
     }
 
-    const pending = entry.pending;
+    return { entry, pending: entry.pending, response };
+  }
+
+  // Emit the deferred browser-surface cancellation event when a cancelled
+  // interaction leaves a leased surface for this run behind.
+  function emitInteractionCancelledLeaseEvent(runId: string, connectorId: string): void {
+    if (!browserSurfaceLeaseManager) {
+      return;
+    }
+    const lease = browserSurfaceLeaseManager
+      .listLeases()
+      .find((candidate) => candidate.run_id === runId && candidate.status === "leased");
+    const traceContext = activeRunTraceContexts.get(runId);
+    if (lease && traceContext) {
+      browserSurface.emitLeaseEvent("run.browser_surface_cancelled", connectorId, runId, traceContext, lease);
+    }
+  }
+
+  function respondToInteraction(runId: string, input: RunInteractionResponseInput = {}): RunInteractionAck {
+    const { entry, pending, response } = resolveInteractionResponse(runId, input);
+
     entry.pending = null;
     pending.resolve(response);
-    if (input.status === "cancelled" && browserSurfaceLeaseManager) {
-      const lease = browserSurfaceLeaseManager
-        .listLeases()
-        .find((candidate) => candidate.run_id === runId && candidate.status === "leased");
-      const traceContext = activeRunTraceContexts.get(runId);
-      if (lease && traceContext) {
-        browserSurface.emitLeaseEvent("run.browser_surface_cancelled", entry.connector_id, runId, traceContext, lease);
-      }
+    if (response.status === "cancelled") {
+      emitInteractionCancelledLeaseEvent(runId, entry.connector_id);
     }
-    return { accepted: true, status: input.status };
+    return { accepted: true, status: response.status };
   }
 
   async function cancelRun(runId: string): Promise<CancelRunResult> {
@@ -3284,7 +3320,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // Re-exported so the scheduler can route managed-connector runs through the
     // warm browser-surface lease (see the Controller interface doc above). This
     // is the in-scope const from createController's options; exposing it makes
-    // server/index.js's scheduler seam + isManagedConnector predicate live.
+    // server/index.ts's scheduler seam + isManagedConnector predicate live.
     browserSurfaceLeaseManager,
     // Approval + connector inventory live in `auth.js`
     // (`listPendingApprovals`, `listConnectors`, `getConnectorManifest`).

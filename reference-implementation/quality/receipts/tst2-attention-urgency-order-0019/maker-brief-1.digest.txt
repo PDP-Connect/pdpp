@@ -1,0 +1,52 @@
+# hone work tst2-attention-urgency-order-0019 — maker brief digest (attempt 1)
+# sha256(full brief)=a38f24af5b81229a59a93cce49cdd6f138c20b470e5f24a3d122cf4d5ae37005 bytes=6461
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): test/attention-urgency-oracle.test.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: non-test-source-change, behavior-change, new-dependency, shared-db-usage, git-command.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: tst2-attention-urgency-order-0019
+created: "2026-07-06T18:19:00.000Z"
+repo_sha: "current-tree-no-git-sandbox"
+subsystem: server/attention-urgency
+files: ["test/attention-urgency-oracle.test.js", "server/attention-urgency.ts"]
+symbols:
+  - "compareAttentionUrgency"
+  - "pickMostUrgentAttention"
+public_surface:
+  - "open attention ranking: response_required, blocked posture, earliest expiry, earliest creation"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "Connection health surfaces one attention item per connection. No by-name oracle pins the comparator precedence, so a small comparison inversion could show a lower-urgency optional prompt above a required blocked prompt."
+plan:
+  transform_class: add-seeded-mutation-oracle
+  instruction: "Create test/attention-urgency-oracle.test.js with minimal attention-record objects. Assert compareAttentionUrgency orders response_required before optional, blocked before progressing when response contract ties, earlier expires_at before later/null, and earlier created_at as final tie-break. Assert pickMostUrgentAttention returns the same winner from an unsorted tuple."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "owner-facing attention projections must rank the most urgent actionable prompt first."
+authoring_evidence:
+  - kind: "source-read"
+    detail: "server/attention-urgency.ts exports compareAttentionUrgency, pickMostUrgentAttention as pure projection/shape helpers."
+    result: "candidate is reachable without starting the server or editing production code"
+  - kind: "coverage-sweep"
+    detail: "rg by exported symbol names across test/ before authoring"
+    result: "no dedicated by-name oracle exists for this exact public contract table"
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/attention-urgency-oracle.test.js ]; then src=server/attention-urgency.ts; bak=/tmp/tst2_attention_urgency_order_0019.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/return bResp - aResp;/return aResp - bResp;/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0019; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/nul

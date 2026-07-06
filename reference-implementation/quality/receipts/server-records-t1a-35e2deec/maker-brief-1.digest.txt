@@ -1,0 +1,70 @@
+# hone work server-records-t1a-35e2deec — maker brief digest (attempt 1)
+# sha256(full brief)=faf5ecb5aea8832ecc6a20f170cfa9aad4a985a14fd07ea1be11958b25c3d88c bytes=4560
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/records.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, new-dependency, relocation-without-decomplecting.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: server-records-t1a-35e2deec
+created: "2026-07-02T00:15:44.730Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server
+files: [server/records.js]
+symbols:
+  - file: server/records.js
+    parent_fn: aggregateRecords
+    anchor: ".sort"
+    line: 2276
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: exact_move
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] callback captures NOTHING (AST free-vars=∅) → hoist to a named pure top-level fn Top fn '.sort' cc=17. File attention: churn 90 × excess-cc mass 12 = 1080; 1 flagged fn(s) in this tier."
+plan:
+  transform_class: hoist-to-named-module-fn
+  instruction: "Hoist the anonymous callback(s) .sort@L2276(in aggregateRecords) in server/records.js to named top-level functions (zero function-scope captures — exact move). Name each for the concept it implements; body must be identical under whitespace normalization; call sites reference the new names."
+expected_quality_gain: medium
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 19.265
+  computed: "2026-07-02T00:15:44.730Z"
+  inputs:
+    mass: 12
+    churn: 90
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: low
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/records.js, tier T1-extractable-callback (repo_sha 6e8d8559c36b94d41bc4c42a9a31342e60b3b334)"
+    result: "1 flagged fn(s), Σ excess-cc 12, max cc 17, router v1 tier T1-extractable-callback"
+  - kind: churn
+    detail: "git log --since='6 months ago' -- server/records.js"
+    result: "90 commits in window; coupling(fan-in proxy)=124"
+  - kind: ast-scope
+    detail: "true free-variable analysis (TS compiler API; function-scope captures only, v1.1 module-scope fix)"
+    result: "captures=[] mutable=[] module_refs=[]"
+evidence_required:
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm typecheck"
+    expect: exit 0
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && pnpm test"
+    expect: all tests pass; 0 fail; no new skips
+  - rung: whitespace-normalized-body-move
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff -w -- server/records.js"
+    expect: hoisted bodies appear verbatim under -w (indent-only change at the move site); no logic edits
+not_allowed: [behavior-change,

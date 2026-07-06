@@ -1,0 +1,17 @@
+# hone work pl1-field-window-query-mode-0013 — baseline rung 'complexity-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --target 'server/record-field-window.js::normalizeWindowSelector'
+# expect: found=true; cognitive_before strictly below baseline 15 and below floor 10 (query-mode assembly removed)
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "server/record-field-window.js::normalizeWindowSelector",
+  "file": "server/record-field-window.js",
+  "function": "normalizeWindowSelector",
+  "found": true,
+  "cognitive_before": 15,
+  "line": 124,
+  "caller_count": 4,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

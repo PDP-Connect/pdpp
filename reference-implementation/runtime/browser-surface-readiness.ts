@@ -99,6 +99,16 @@ interface UsableDevtoolsPageTarget {
   readonly webSocketDebuggerUrl: string;
 }
 
+type TargetListProjectionResult =
+  | {
+      readonly ok: true;
+      readonly pageTargetCount: number;
+    }
+  | {
+      readonly failure: BrowserSurfaceReadinessProbeFailure;
+      readonly ok: false;
+    };
+
 export const DEFAULT_BROWSER_SURFACE_READINESS_PROBE_TIMEOUT_MS = 5000;
 export const DEFAULT_MID_WAIT_SURFACE_LOSS_POLL_INTERVAL_MS = 10_000;
 
@@ -252,25 +262,9 @@ export async function probeBrowserSurfaceReadinessOverHttp(
   if (!targetsResult.ok) {
     return targetsResult.failure;
   }
-  const targets = targetsResult.payload;
-  if (!Array.isArray(targets)) {
-    return {
-      ok: false,
-      code: "browser_surface_cdp_disconnected",
-      detail: `cdp_url ${baseUrl}json/list did not return a target array`,
-    };
-  }
-
-  const pageTargets = targets.filter((entry): entry is UsableDevtoolsPageTarget => isUsablePageTarget(entry));
-  if (pageTargets.length === 0) {
-    return {
-      ok: false,
-      code: "browser_surface_page_stale",
-      detail:
-        targets.length === 0
-          ? `cdp_url ${baseUrl}json/list reported zero targets`
-          : `cdp_url ${baseUrl}json/list reported ${String(targets.length)} target(s) but none are usable page targets`,
-    };
+  const targetListProjection = projectUsablePageTargetCount(baseUrl, targetsResult.payload);
+  if (!targetListProjection.ok) {
+    return targetListProjection.failure;
   }
 
   const targetCreateResult = await createAndCloseSmokeTarget(baseUrl, fetchImpl, timeoutMs);
@@ -282,7 +276,7 @@ export async function probeBrowserSurfaceReadinessOverHttp(
 
   return {
     ok: true,
-    pageTargetCount: pageTargets.length,
+    pageTargetCount: targetListProjection.pageTargetCount,
     ...(browserVersion ? { browserVersion } : {}),
   };
 }
@@ -345,6 +339,36 @@ function isUsablePageTarget(entry: unknown): entry is UsableDevtoolsPageTarget {
     return false;
   }
   return true;
+}
+
+function projectUsablePageTargetCount(baseUrl: string, targets: unknown): TargetListProjectionResult {
+  if (!Array.isArray(targets)) {
+    return {
+      ok: false,
+      failure: {
+        ok: false,
+        code: "browser_surface_cdp_disconnected",
+        detail: `cdp_url ${baseUrl}json/list did not return a target array`,
+      },
+    };
+  }
+
+  const pageTargets = targets.filter((entry): entry is UsableDevtoolsPageTarget => isUsablePageTarget(entry));
+  if (pageTargets.length === 0) {
+    return {
+      ok: false,
+      failure: {
+        ok: false,
+        code: "browser_surface_page_stale",
+        detail:
+          targets.length === 0
+            ? `cdp_url ${baseUrl}json/list reported zero targets`
+            : `cdp_url ${baseUrl}json/list reported ${String(targets.length)} target(s) but none are usable page targets`,
+      },
+    };
+  }
+
+  return { ok: true, pageTargetCount: pageTargets.length };
 }
 
 async function createAndCloseSmokeTarget(

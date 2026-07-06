@@ -1,0 +1,86 @@
+candidate_id: pl2-neko-adapter-screen-rank-extract-0005
+created: "2026-07-06T18:35:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: server/streaming/neko-adapter
+files: [server/streaming/neko-adapter.js]
+symbols: [rankNekoScreenConfigurations]
+public_surface:
+  - "internal behavior-preserving extraction target server/streaming/neko-adapter.js::rankNekoScreenConfigurations"
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "Fresh Biome sweep command (npx biome lint with noExcessiveCognitiveComplexity, --max-diagnostics=300, output captured with 2>&1) measured server/streaming/neko-adapter.js::rankNekoScreenConfigurations at cognitive complexity 18. The surrounding 200-line hard-skip screen found no grant.streams, streamGrant.fields, field_not_granted, access_mode, redirect_uri, forbidden-ip, token/consent/bearer/scope-enforcement, startServer/boot, queryRecords, normalizeAggregateRequest, fetchCimdDocument, validateCanonicalSort, rebuildSemanticIndexForStream, or normalizeInsert hit for this target."
+plan:
+  transform_class: safe-pool-explicit-seam-extraction
+  instruction: "In server/streaming/neko-adapter.js only, extract the screen-configuration comparator used by rankNekoScreenConfigurations into a named helper that receives target width/height explicitly. Preserve stable tie-break order and avoid touching session/polling code. Extraction mandate: create a real seam with explicit parameters, no new module unless the helper interface is deeper than the moved block, no public contract change, no unrelated formatting churn, and no relocation-only helper bag."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: none
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: "behavior of server/streaming/neko-adapter.js::rankNekoScreenConfigurations and its existing callers must be preserved while lowering local cognitive load"
+authoring_evidence:
+  - kind: complexity-sweep
+    detail: "REPO_ROOT=$PWD npx biome lint --config-path=/tmp/pdpp-biome-complexity.jsonc --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server lib runtime 2>&1"
+    result: "measured server/streaming/neko-adapter.js::rankNekoScreenConfigurations cognitive complexity 18"
+  - kind: hard-skip-screen
+    detail: "~200 lines around server/streaming/neko-adapter.js::rankNekoScreenConfigurations grepped for the prompt no-go strings"
+    result: no hard-skip string matched for this selected target
+evidence_required:
+  - rung: direct-tests
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in server/streaming/neko-adapter.test.js test/run-interaction-stream-cdp-adapter.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0005_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit \"$f\" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc'"
+    expect: "All listed tests pass with one ephemeral Postgres database per test file, timeout 600, and --test-force-exit."
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck"
+    expect: TypeScript project typechecks with zero errors.
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "cd \"$REPO_ROOT\" && sh -c 'cfg=/tmp/pdpp_rankNekoScreenConfigurations_5_biome.jsonc; printf %s \"{\\\"root\\\":false,\\\"files\\\":{\\\"ignoreUnknown\\\":true,\\\"includes\\\":[\\\"server/**/*.js\\\",\\\"server/**/*.ts\\\",\\\"lib/**/*.js\\\",\\\"lib/**/*.ts\\\",\\\"runtime/**/*.js\\\",\\\"runtime/**/*.ts\\\"]},\\\"linter\\\":{\\\"enabled\\\":true,\\\"rules\\\":{\\\"complexity\\\":{\\\"noExcessiveCognitiveComplexity\\\":{\\\"level\\\":\\\"error\\\",\\\"options\\\":{\\\"maxAllowedComplexity\\\":5}}}}}}\" > \"$cfg\"; npx biome lint --config-path=\"$cfg\" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/streaming/neko-adapter.js 2>&1'"
+    expect: "Prints Biome cognitive-complexity diagnostics for server/streaming/neko-adapter.js; post-refactor rankNekoScreenConfigurations should be below its measured baseline 18 and the rung must keep maxAllowedComplexity 5 plus --max-diagnostics=300 with stderr captured by 2>&1."
+    expect_check:
+      type: stdout_regex
+      value: "rankNekoScreenConfigurations|Checked"
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - new-dependency
+  - shared-db-usage
+  - git-command
+  - relocation-without-decomplecting
+  - hard-skip-surface-touch
+maker_tier: standard
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: preserve_refactor×effectful×server/streaming/neko-adapter
+touchset: [server/streaming/neko-adapter.js]
+estimates:
+  tokens: 50000
+  evidence_cost: medium
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: "4467c75ff8cabeb6d4357bf824f449e9d252a466"
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.85): Line-by-line diff comparison confirms the extracted compareNekoScreenConfigurations preserves the exact branch order, conditions, and operators from the original inline comparator, including the subtle fallthrough tie-break ordering for the non-fitting case (cropRatio before scaleDelta) — this is a genuine behavior-preserving extraction, not relocation dressed as refactoring, since target width/height are now explicit parameters and the outer function shrinks to a single sort call. Scope is limited to the one file with no not_allowed violations. Test and typecheck evidence show identical pass counts/hashes before and after; complexity evidence is circumstantial (infos 5->4, bytes 2618->2009) since the tail output is clipped and doesn't show the target function's exact post-refactor score, but this gap doesn't undermine the strong direct-diff proof of preservation."
+  evidence_receipts:
+    - "[baseline] direct-tests: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in server/streaming/neko-adapter.test.js test/run-interaction-stream-cdp-adapter.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0005_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit \"$f\" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc' -> exit 0 (1s) PASS; exit=0 djb2=5c264f56 bytes=2490 receipt=quality/receipts/pl2-neko-adapter-screen-rank-extract-0005/baseline-1-direct-tests.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-neko-adapter-screen-rank-extract-0005/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: cd \"$REPO_ROOT\" && sh -c 'cfg=/tmp/pdpp_rankNekoScreenConfigurations_5_biome.jsonc; printf %s \"{\\\"root\\\":false,\\\"files\\\":{\\\"ignoreUnknown\\\":true,\\\"includes\\\":[\\\"server/**/*.js\\\",\\\"server/**/*.ts\\\",\\\"lib/**/*.js\\\",\\\"lib/**/*.ts\\\",\\\"runtime/**/*.js\\\",\\\"runtime/**/*.ts\\\"]},\\\"linter\\\":{\\\"enabled\\\":true,\\\"rules\\\":{\\\"complexity\\\":{\\\"noExcessiveCognitiveComplexity\\\":{\\\"level\\\":\\\"error\\\",\\\"options\\\":{\\\"maxAllowedComplexity\\\":5}}}}}}\" > \"$cfg\"; npx biome lint --config-path=\"$cfg\" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/streaming/neko-adapter.js 2>&1' -> exit 0 (0s) PASS; exit=0 djb2=310ee0b4 bytes=2618 receipt=quality/receipts/pl2-neko-adapter-screen-rank-extract-0005/baseline-3-complexity-remeasure.txt"
+    - "[post] direct-tests: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; i=0; for f in server/streaming/neko-adapter.test.js test/run-interaction-stream-cdp-adapter.test.js; do i=$((i+1)); db=pdpp_hone_pl2_0005_$i; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit \"$f\" || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; done; exit $rc' -> exit 0 (1s) PASS; exit=0 djb2=7f2ea21b bytes=2490 receipt=quality/receipts/pl2-neko-adapter-screen-rank-extract-0005/post-1-direct-tests.txt"
+    - "[post] typecheck: cd \"$REPO_ROOT\" && timeout 600 pnpm typecheck -> exit 0 (4s) PASS; exit=0 djb2=b8c0b330 bytes=119 receipt=quality/receipts/pl2-neko-adapter-screen-rank-extract-0005/post-2-typecheck.txt"
+    - "[post] complexity-remeasure: cd \"$REPO_ROOT\" && sh -c 'cfg=/tmp/pdpp_rankNekoScreenConfigurations_5_biome.jsonc; printf %s \"{\\\"root\\\":false,\\\"files\\\":{\\\"ignoreUnknown\\\":true,\\\"includes\\\":[\\\"server/**/*.js\\\",\\\"server/**/*.ts\\\",\\\"lib/**/*.js\\\",\\\"lib/**/*.ts\\\",\\\"runtime/**/*.js\\\",\\\"runtime/**/*.ts\\\"]},\\\"linter\\\":{\\\"enabled\\\":true,\\\"rules\\\":{\\\"complexity\\\":{\\\"noExcessiveCognitiveComplexity\\\":{\\\"level\\\":\\\"error\\\",\\\"options\\\":{\\\"maxAllowedComplexity\\\":5}}}}}}\" > \"$cfg\"; npx biome lint --config-path=\"$cfg\" --only=lint/complexity/noExcessiveCognitiveComplexity --max-diagnostics=300 server/streaming/neko-adapter.js 2>&1' -> exit 0 (0s) PASS; exit=0 djb2=1507a953 bytes=2009 receipt=quality/receipts/pl2-neko-adapter-screen-rank-extract-0005/post-3-complexity-remeasure.txt"
+  tokens_actual: 73087
+  lesson: null
+routing_class: extraction

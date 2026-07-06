@@ -1,0 +1,5 @@
+# hone work t1b-records-binding-decorator-0009 — baseline rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/records.js
+# expect: one new named fn whose body is byte-identical to the removed duplicate callback bodies (modulo indentation); exactly two callsite rewires; no other lines touched
+# exit: 0  duration: 0s  verdict: PASS
+

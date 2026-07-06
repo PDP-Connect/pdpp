@@ -1,0 +1,57 @@
+# hone work pl2-source-pressure-time-max-extract-0015 — baseline rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0015; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/scheduler-source-pressure-cooldown.test.js test/scheduler-source-pressure-cooldown-suppression.test.js test/controller-source-pressure-cooldown-projection.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo "rc=$rc"; exit $rc'
+# expect: Source-pressure cooldown tests remain green.
+# exit: 0  duration: 2s  verdict: PASS
+
+✔ a connection with pending upstream_pressure gaps projects cooling_off with a deferred next_run_at (19.955881ms)
+✔ no pending pressure gaps -> no cooling_off (the connection is not throttled) (9.269612ms)
+✔ pending pressure gaps after elapsed cooldown project as eligible, not cooling_off (10.790219ms)
+✔ non-pressure detail gaps do not project cooling_off (12.357677ms)
+✔ cooldown next_run_at grows with pressure persistence (22.447524ms)
+✔ a DISABLED schedule with pending pressure gaps projects no cooling_off (nothing will auto-resume) (12.838405ms)
+✔ a manual / background-unsafe connector cannot enable an automatic schedule (creation-time gate) (14.400792ms)
+✔ a connection with pending upstream_pressure gaps cools off — one skip per identity, no spawn (427.008934ms)
+✔ pending pressure gaps do not defer once the computed nextRunAt has arrived (26.661478ms)
+✔ scheduler skip history does not slide source-pressure cooldown forward (51.509154ms)
+✔ the cooling-off audit line re-arms when the pressure picture changes (50.681019ms)
+✔ a future nextAttemptAfter floor is enforced, not only displayed (277.49549ms)
+✔ a recovered run clears the cooldown — the connection becomes eligible again (278.530228ms)
+[scheduler] source-pressure gap probe failed for cooldown-probe-failure-connector: durable detail-gap store unreachable
+✔ source-pressure cooldown does not bleed across connections (251.550775ms)
+[scheduler] source-pressure gap probe failed for cooldown-probe-failure-connector: durable detail-gap store unreachable
+✔ source-pressure probe failure must not silently suppress runs (fail-open) (52.575153ms)
+✔ no pending gaps yields no cooldown and a nextRunAt of lastRun + base interval (2.31486ms)
+✔ a recovered run (pending pressure set becomes empty) clears cooldown — never stuck (0.134922ms)
+✔ a single freshly-observed pressure gap engages cooldown at the floor multiplier (1x) (0.276535ms)
+✔ rate_limited is also a pressure reason (0.220604ms)
+✔ cooldown grows exponentially with the gaps max recovery attempt count (0.175463ms)
+✔ the max attempt count across gaps drives growth (most-persistent gap wins) (0.114852ms)
+✔ the identity changes as persistence grows so the audit line re-arms (0.795784ms)
+✔ the cooldown exponent is capped by maxCooldownExp (0.121733ms)
+✔ the cooldown is capped by maxCooldownMs (6h default) (0.139593ms)
+✔ explicit small maxCooldownMs caps the effective interval (0.184104ms)
+✔ non-pressure gap reasons do not engage cooldown (no accidental throttle) (0.927357ms)
+✔ run_cap_deferred is not a source-pressure reason and does not engage cooldown (0.134023ms)
+✔ mixed gaps count only the pressure-reason subset (0.105762ms)
+✔ an explicit next_attempt_after later than the computed cooldown is honoured as the floor (0.100962ms)
+✔ an explicit next_attempt_after earlier than the computed cooldown does not shorten it (0.096012ms)
+✔ lastPressureAt anchors cooldown instead of later scheduler skip history (0.083492ms)
+✔ force: true bypasses cooldown even with deep persistent pressure (0.075911ms)
+✔ ordinary manual run (no force flag) respects cooldown — same as scheduled (0.078051ms)
+✔ deferring predicate is true only before the computed nextRunAt (0.101632ms)
+✔ deferring predicate is false when pressure gaps are absent (0.062221ms)
+✔ malformed timing inputs do not throw or emit invalid timestamps (0.137922ms)
+✔ malformed attemptCount falls back to 0 (floor multiplier) (0.098551ms)
+✔ pressure reasons are exactly upstream_pressure and rate_limited (0.59465ms)
+✔ default tunables are pinned so drift is intentional (0.064261ms)
+✔ attempt_count > 0 produces a longer effective interval than attempt_count = 0 (0.095362ms)
+✔ each additional unrecovered recovery attempt strictly increases the cooldown (0.124032ms)
+ℹ tests 41
+ℹ suites 0
+ℹ pass 41
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1613.1993
+rc=0

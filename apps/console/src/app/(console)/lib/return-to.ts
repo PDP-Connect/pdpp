@@ -5,8 +5,9 @@
  * normalize a user-supplied `return_to` value before redirecting back into the
  * console after owner-session login. The console owner routes are clean
  * top-level nouns (`/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`,
- * `/connect`, `/notifications`, `/schedules`, and the clean deployment/admin nouns). Any value
- * that is not a safe same-origin owner path collapses to `/` (the overview).
+ * `/connect`, `/notifications`, `/schedules`, and the clean deployment/admin
+ * nouns). Any value that is not a safe same-origin owner path collapses to `/`
+ * (the overview).
  */
 
 const C0_CONTROL_END = 0x1f;

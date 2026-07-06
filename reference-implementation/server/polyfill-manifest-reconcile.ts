@@ -374,76 +374,62 @@ function isPubliclyListedShippedManifest(manifest: PolyfillManifest): boolean {
   return (publicListingRaw as { listed?: unknown }).listed === true;
 }
 
-async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<EntryDelta> {
-  const shipped = await loadShippedManifest(ctx.manifestsDir, entryName, ctx.log);
+type ManifestEntryBranch =
+  | { kind: "invalid"; delta: EntryDelta }
+  | { kind: "valid"; shipped: PolyfillManifest; connectorId: string };
+
+function validateOrReconcileInvalidManifestEntry(shipped: PolyfillManifest | null): ManifestEntryBranch {
   if (!shipped) {
-    return { errors: 1 };
+    return { kind: "invalid", delta: { errors: 1 } };
   }
   const connectorIdRaw = shipped.connector_id;
   if (typeof connectorIdRaw !== "string" || connectorIdRaw.length === 0) {
+    return { kind: "invalid", delta: { skipped: 1 } };
+  }
+  return { kind: "valid", shipped, connectorId: connectorIdRaw };
+}
+
+async function reconcileInvalidPersistedManifestEntry(
+  shipped: PolyfillManifest,
+  connectorId: string,
+  entryName: string,
+  log: ReconcileLog
+): Promise<EntryDelta> {
+  const registration = await applyShippedManifest(shipped, connectorId, entryName, log);
+  return {
+    errors: registration.ok ? 0 : 1,
+    updated: registration.ok ? 1 : 0,
+  };
+}
+
+async function reconcileMissingManifestEntry(
+  shipped: PolyfillManifest,
+  connectorId: string,
+  entryName: string,
+  log: ReconcileLog
+): Promise<EntryDelta> {
+  if (!isPubliclyListedShippedManifest(shipped)) {
     return { skipped: 1 };
   }
-  const connectorId = connectorIdRaw;
-  let persisted: unknown;
-  try {
-    persisted = await getConnectorManifestTyped(connectorId);
-  } catch (err) {
-    ctx.log(`[manifest-reconcile] lookup failed for ${connectorId}: ${errorMessage(err)}`);
-    // A persisted first-party manifest can become invalid after the
-    // reference tightens manifest validation (for example when a query
-    // capability is removed or renamed). Treat that as a repairable
-    // stale-row condition for shipped manifests: overwrite the DB row with
-    // the checked-in manifest instead of letting the stale row poison
-    // scheduler startup. Do not invalidate records here; we cannot safely
-    // fingerprint an invalid persisted manifest, and ordinary capability
-    // metadata repairs should preserve owner data.
-    const registration = await applyShippedManifest(shipped, connectorId, entryName, ctx.log);
-    return {
-      errors: registration.ok ? 0 : 1,
-      updated: registration.ok ? 1 : 0,
-    };
+  const registration = await applyShippedManifest(shipped, connectorId, entryName, log);
+  if (!registration.ok) {
+    return { errors: 1 };
   }
-  if (!persisted) {
-    // Connector not yet registered. Reconciliation is primarily about
-    // repairing existing DB rows, but the operator catalog must also be
-    // honest about which first-party manifests claim to be listable.
-    // Register listed=true shipped manifests so the operator catalog can
-    // show them on a fresh database before any schedule or run row
-    // exists. Hidden / unproven manifests stay unregistered until they
-    // are exercised (or explicitly promoted to listed=true via a future
-    // manifest edit).
-    //
-    // Safety: this branch only runs for files inside the first-party
-    // shipped manifests dir, so user-custom connectors are never
-    // auto-seeded by reconciliation. Registration is NOT schedule
-    // enablement — schedules still require an explicit operator action,
-    // and the scheduler eligibility filter (refresh_policy.background_safe)
-    // continues to gate background runs independently.
-    if (!isPubliclyListedShippedManifest(shipped)) {
-      return { skipped: 1 };
-    }
-    const registration = await applyShippedManifest(shipped, connectorId, entryName, ctx.log);
-    if (!registration.ok) {
-      return { errors: 1 };
-    }
-    ctx.log(`[manifest-reconcile] registered listed first-party manifest ${connectorId} from ${entryName}`);
-    return { registered: 1 };
-  }
-  if (manifestsEqual(shipped, persisted)) {
-    return { unchanged: 1 };
-  }
-  // Default path: the manifest changed shape but the diff is ordinary
-  // polyfill evolution (description, semantic_fields, schema additions,
-  // stream views). Re-register without touching records — owner data is
-  // preserved across manifest fixes.
-  //
-  // Narrow exception: when the persisted manifest fingerprint matches a
-  // reference-fixture fingerprint AND the shipped polyfill fingerprint
-  // is different, the records currently in the RS were emitted by the
-  // seed connector against fixture identities (Taylor Swift, Adele,
-  // seedowner/personal-site, ...). Those records are safe to drop and
-  // unsafe to advertise as fresh real data. Spec:
-  // openspec/changes/reconcile-invalidates-stale-records/.
+  log(`[manifest-reconcile] registered listed first-party manifest ${connectorId} from ${entryName}`);
+  return { registered: 1 };
+}
+
+function reconcileUnchangedManifestEntry(): EntryDelta {
+  return { unchanged: 1 };
+}
+
+async function reconcileChangedManifestEntry(
+  shipped: PolyfillManifest,
+  persisted: unknown,
+  connectorId: string,
+  entryName: string,
+  ctx: EntryContext
+): Promise<EntryDelta> {
   const fixtureTransition = isFixtureToPolyfillTransition(
     connectorId,
     persisted,
@@ -467,6 +453,64 @@ async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<Ent
     invalidatedRecords,
     updated: registration.ok ? 1 : 0,
   };
+}
+
+async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<EntryDelta> {
+  const shipped = await loadShippedManifest(ctx.manifestsDir, entryName, ctx.log);
+  const loadedEntry = validateOrReconcileInvalidManifestEntry(shipped);
+  if (loadedEntry.kind === "invalid") {
+    return loadedEntry.delta;
+  }
+  const { connectorId } = loadedEntry;
+  let persisted: unknown;
+  try {
+    persisted = await getConnectorManifestTyped(connectorId);
+  } catch (err) {
+    ctx.log(`[manifest-reconcile] lookup failed for ${connectorId}: ${errorMessage(err)}`);
+    // A persisted first-party manifest can become invalid after the
+    // reference tightens manifest validation (for example when a query
+    // capability is removed or renamed). Treat that as a repairable
+    // stale-row condition for shipped manifests: overwrite the DB row with
+    // the checked-in manifest instead of letting the stale row poison
+    // scheduler startup. Do not invalidate records here; we cannot safely
+    // fingerprint an invalid persisted manifest, and ordinary capability
+    // metadata repairs should preserve owner data.
+    return reconcileInvalidPersistedManifestEntry(loadedEntry.shipped, connectorId, entryName, ctx.log);
+  }
+  if (!persisted) {
+    // Connector not yet registered. Reconciliation is primarily about
+    // repairing existing DB rows, but the operator catalog must also be
+    // honest about which first-party manifests claim to be listable.
+    // Register listed=true shipped manifests so the operator catalog can
+    // show them on a fresh database before any schedule or run row
+    // exists. Hidden / unproven manifests stay unregistered until they
+    // are exercised (or explicitly promoted to listed=true via a future
+    // manifest edit).
+    //
+    // Safety: this branch only runs for files inside the first-party
+    // shipped manifests dir, so user-custom connectors are never
+    // auto-seeded by reconciliation. Registration is NOT schedule
+    // enablement — schedules still require an explicit operator action,
+    // and the scheduler eligibility filter (refresh_policy.background_safe)
+    // continues to gate background runs independently.
+    return reconcileMissingManifestEntry(loadedEntry.shipped, connectorId, entryName, ctx.log);
+  }
+  if (manifestsEqual(loadedEntry.shipped, persisted)) {
+    return reconcileUnchangedManifestEntry();
+  }
+  // Default path: the manifest changed shape but the diff is ordinary
+  // polyfill evolution (description, semantic_fields, schema additions,
+  // stream views). Re-register without touching records — owner data is
+  // preserved across manifest fixes.
+  //
+  // Narrow exception: when the persisted manifest fingerprint matches a
+  // reference-fixture fingerprint AND the shipped polyfill fingerprint
+  // is different, the records currently in the RS were emitted by the
+  // seed connector against fixture identities (Taylor Swift, Adele,
+  // seedowner/personal-site, ...). Those records are safe to drop and
+  // unsafe to advertise as fresh real data. Spec:
+  // openspec/changes/reconcile-invalidates-stale-records/.
+  return reconcileChangedManifestEntry(loadedEntry.shipped, persisted, connectorId, entryName, ctx);
 }
 
 /**

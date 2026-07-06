@@ -1,0 +1,46 @@
+# hone work pl2-browser-surface-target-validation-extract-0014 — post rung 'direct-test'
+# command: cd "$REPO_ROOT" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_pl2_0014; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/browser-surface-readiness.test.js test/browser-surface-readiness-probe.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; echo "rc=$rc"; exit $rc'
+# expect: Browser surface readiness tests remain green.
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ surface health other than ready → browser_surface_not_ready without any fetch (0.62386ms)
+✔ missing or non-http cdp_url → browser_surface_not_ready (0.154073ms)
+✔ all four stages succeed → ok with page-target count and browser version (1.024858ms)
+✔ ok without a Browser string omits browserVersion (never fabricated) (0.234514ms)
+✔ version endpoint HTTP error → browser_surface_cdp_disconnected (0.135792ms)
+✔ version payload missing webSocketDebuggerUrl → browser_surface_cdp_disconnected (0.122662ms)
+✔ version network throw (not aborted) → browser_surface_cdp_unreachable (0.134392ms)
+✔ version malformed JSON → browser_surface_cdp_disconnected (0.137872ms)
+✔ list not an array → browser_surface_cdp_disconnected (0.141362ms)
+✔ list empty → browser_surface_page_stale (zero targets) (0.217774ms)
+✔ list has targets but none usable (devtools:// + wrong type) → browser_surface_page_stale (0.146163ms)
+✔ new target returns a non-usable target → browser_surface_page_stale (0.128092ms)
+✔ close endpoint HTTP error after a good new target → browser_surface_cdp_disconnected (0.111992ms)
+✔ createDefaultBrowserSurfaceReadinessProbe rejects a non-positive-integer timeout (0.269384ms)
+✔ the injected probe drives the happy path end-to-end (0.109911ms)
+✔ probe returns ok when DevTools answers and can create a smoke page target (14.685482ms)
+✔ probe normalizes cdp_url without trailing slash (0.886925ms)
+✔ probe returns browser_surface_not_ready when surface health is not ready (0.150113ms)
+✔ probe returns browser_surface_not_ready when cdp_url is missing (0.078671ms)
+✔ probe returns browser_surface_not_ready when cdp_url scheme is unsupported (0.651971ms)
+✔ probe returns browser_surface_cdp_unreachable on fetch error (0.222424ms)
+✔ probe returns browser_surface_cdp_disconnected on non-200 status (0.267755ms)
+✔ probe returns browser_surface_cdp_disconnected on malformed version payload (0.248984ms)
+✔ probe returns browser_surface_cdp_disconnected on malformed JSON (0.370266ms)
+✔ probe returns browser_surface_page_stale when target list is empty (0.338996ms)
+✔ probe returns browser_surface_page_stale when only devtools:// internal targets (0.253464ms)
+✔ probe returns browser_surface_page_stale when targets exist but none are 'page' type (0.215653ms)
+✔ probe returns browser_surface_cdp_disconnected when smoke target creation fails (0.266194ms)
+✔ probe uses PUT for smoke target creation (0.380147ms)
+✔ probe returns browser_surface_probe_timeout when fetch is aborted (10.037842ms)
+✔ default factory validates timeoutMs (0.285295ms)
+✔ BROWSER_SURFACE_READINESS_PROBE_CODES enumerates the documented failure codes (0.05095ms)
+ℹ tests 32
+ℹ suites 0
+ℹ pass 32
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 91.08377
+rc=0

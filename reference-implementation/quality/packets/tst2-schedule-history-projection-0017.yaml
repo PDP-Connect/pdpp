@@ -1,0 +1,72 @@
+candidate_id: tst2-schedule-history-projection-0017
+created: "2026-07-06T18:17:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: runtime/schedule-history-projection
+files: [test/schedule-history-projection-oracle.test.js, runtime/schedule-history-projection.ts]
+symbols: [applyHistoryRowToScheduleFacts, deriveLatestScheduleFacts, hydrateScheduleHistoryFromLastRunTimes]
+public_surface:
+  - "scheduler history projection facts: latest terminal status, started/succeeded anchors, and safe scheduler error codes"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: The controller dashboard reads these pure facts to distinguish skipped bookkeeping from real run starts. No by-name test currently pins that skipped records do not populate latestStartedAt or that unsafe scheduler errors collapse to scheduler_error.
+plan:
+  transform_class: add-seeded-mutation-oracle
+  instruction: "Create test/schedule-history-projection-oracle.test.js. Import the exported pure helpers. Build mutable facts through ensureScheduleHistoryFacts, feed succeeded/failed/skipped rows, and assert reverse-newest-wins semantics: latestStatus and latestErrorCode come from the newest terminal row, skipped rows do not set latestStartedAt, failed/succeeded rows do, latestSuccessfulAt is the newest success, last-run-times hydrate latestFinishedAt only when absent and max lastRunTimeMs, safe scheduler error prefixes are preserved while arbitrary error text becomes scheduler_error."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: schedule projections must not claim a connector started just because a skipped bookkeeping row exists.
+authoring_evidence:
+  - kind: source-read
+    detail: "runtime/schedule-history-projection.ts exports applyHistoryRowToScheduleFacts, deriveLatestScheduleFacts, hydrateScheduleHistoryFromLastRunTimes as pure projection/shape helpers."
+    result: candidate is reachable without starting the server or editing production code
+  - kind: coverage-sweep
+    detail: rg by exported symbol names across test/ before authoring
+    result: no dedicated by-name oracle exists for this exact public contract table
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/schedule-history-projection-oracle.test.js ]; then src=runtime/schedule-history-projection.ts; bak=/tmp/tst2_schedule_history_projection_0017.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/row.status === \"succeeded\" || row.status === \"failed\"/row.status === \"succeeded\" || row.status === \"failed\" || row.status === \"skipped\"/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0017; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/schedule-history-projection-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi'"
+    expect: "BASELINE prints BASELINE and exits 0 while the oracle file is absent. POST applies the seeded one-line mutant, runs the new test with an isolated Postgres DB, restores the source with cmp verification, and prints MUTANT KILLED only when the new oracle fails against the mutant."
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/schedule-history-projection-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0017_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/schedule-history-projection-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi'"
+    expect: "POST: the new oracle passes under node --test --test-force-exit using its own ephemeral Postgres database. BASELINE: guarded green while the file is absent."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed: [non-test-source-change, behavior-change, new-dependency, shared-db-usage, git-command]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: generate_evidence×pure_logic×runtime/schedule-history-projection
+touchset: [test/schedule-history-projection-oracle.test.js]
+estimates:
+  tokens: 35000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: b3295abc2512119f8b176f6fb7367f38cdb9fd91
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.82): Diff adds exactly the touchset file (test/schedule-history-projection-oracle.test.js), makes no production code changes (satisfying not_allowed non-test-source-change), and the five tests directly pin every contract point in the plan instruction: skipped rows don't set latestStartedAt, newest-terminal-row-wins for status/error, newest success sticks for latestSuccessfulAt, safe error prefixes vs scheduler_error fallback, and last-run-time hydration semantics. The mutation-kill and direct-green receipts both show correct baseline (file absent) and post states (mutant killed, 5/5 green), with source restoration verified by cmp."
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/schedule-history-projection-oracle.test.js ]; then src=runtime/schedule-history-projection.ts; bak=/tmp/tst2_schedule_history_projection_0017.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/row.status === \"succeeded\" || row.status === \"failed\"/row.status === \"succeeded\" || row.status === \"failed\" || row.status === \"skipped\"/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0017; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/schedule-history-projection-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=c168aace bytes=42 receipt=quality/receipts/tst2-schedule-history-projection-0017/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/schedule-history-projection-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0017_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/schedule-history-projection-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=caf12c67 bytes=31 receipt=quality/receipts/tst2-schedule-history-projection-0017/baseline-2-direct-test-green.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/schedule-history-projection-oracle.test.js ]; then src=runtime/schedule-history-projection.ts; bak=/tmp/tst2_schedule_history_projection_0017.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/row.status === \"succeeded\" || row.status === \"failed\"/row.status === \"succeeded\" || row.status === \"failed\" || row.status === \"skipped\"/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0017; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/schedule-history-projection-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi' -> exit 0 (0s) FAIL: output does not contain 'BASELINE'; exit=0 djb2=2988dcbc bytes=939 receipt=quality/receipts/tst2-schedule-history-projection-0017/post-1-red-then-green-mutant-kill.txt"
+    - "[post-r1] red-then-green-mutant-kill: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/schedule-history-projection-oracle.test.js ]; then src=runtime/schedule-history-projection.ts; bak=/tmp/tst2_schedule_history_projection_0017.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/row.status === \"succeeded\" || row.status === \"failed\"/row.status === \"succeeded\" || row.status === \"failed\" || row.status === \"skipped\"/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0017; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/schedule-history-projection-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: mutation oracle not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=0adaed65 bytes=1013 receipt=quality/receipts/tst2-schedule-history-projection-0017/post-r1-1-red-then-green-mutant-kill.txt"
+    - "[post-r1] direct-test-green: cd \"$REPO_ROOT\" && sh -c 'if [ -f test/schedule-history-projection-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0017_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/schedule-history-projection-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi' -> exit 0 (0s) PASS; exit=0 djb2=76167e46 bytes=675 receipt=quality/receipts/tst2-schedule-history-projection-0017/post-r1-2-direct-test-green.txt"
+  tokens_actual: 110040
+  lesson: landed after 1 revision cycle(s) — first attempt did not clear the gate
+routing_class: certified-mechanical

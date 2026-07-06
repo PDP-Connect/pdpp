@@ -142,11 +142,17 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authConnectorsListIds: SmallEnumerationQuery;
   readonly authConnectorsUpsert: MutationQuery;
   readonly authGrantPackageMembersGetPackageIdByGrant: ReadOneQuery;
+  readonly authGrantPackageMembersInsert: MutationQuery;
+  readonly authGrantPackageMembersListActiveByPackage: SmallEnumerationQuery;
   readonly authGrantPackageMembersListAllByPackage: SmallEnumerationQuery;
   readonly authGrantPackageMembersMarkRevokedByGrant: MutationQuery;
+  readonly authGrantPackageMembersMarkRevokedByPackage: MutationQuery;
   // Auth — grant_packages (operator-visible read surface)
+  readonly authGrantPackagesGetById: ReadOneQuery;
   readonly authGrantPackagesCount: ReadOneQuery;
+  readonly authGrantPackagesInsert: MutationQuery;
   readonly authGrantPackagesListAll: SmallEnumerationQuery;
+  readonly authGrantPackagesMarkRevoked: MutationQuery;
   readonly authGrantsGetForIssuance: ReadOneQuery;
   readonly authGrantsGetForRevocation: ReadOneQuery;
   // Auth — grants
@@ -170,6 +176,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authOauthRefreshTokensInsert: MutationQuery;
   readonly authOauthRefreshTokensMarkUsed: MutationQuery;
   readonly authOauthRefreshTokensRevokeByGrant: MutationQuery;
+  readonly authOauthRefreshTokensRevokeByPackage: MutationQuery;
   // Auth — owner_device_auth (owner CLI device-flow authentication)
   readonly authOwnerDeviceAuthGetByApprovalId: ReadOneQuery;
   readonly authOwnerDeviceAuthGetByDeviceCode: ReadOneQuery;
@@ -190,10 +197,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authTokensCountActiveByClientId: ReadOneQuery;
   readonly authTokensGetIntrospection: ReadOneQuery;
   readonly authTokensInsertClient: MutationQuery;
+  readonly authTokensInsertMcpPackage: MutationQuery;
   readonly authTokensInsertOwner: MutationQuery;
   readonly authTokensListActiveByClientId: SmallEnumerationQuery;
   readonly authTokensRevokeByClientId: MutationQuery;
   readonly authTokensRevokeByGrant: MutationQuery;
+  readonly authTokensRevokeByPackage: MutationQuery;
   readonly authTokensRevokeByTokenId: MutationQuery;
   readonly blobsGetRowById: ReadOneQuery;
   readonly blobsGetStoredById: ReadOneQuery;
@@ -224,7 +233,6 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // connector-instance row). Sealed secrets only; never projected to reads.
   readonly connectorInstanceCredentialsDeleteByInstance: MutationQuery;
   readonly connectorInstanceCredentialsGetByInstance: ReadOneQuery;
-  readonly connectorInstanceCredentialsMarkRejectedByInstance: MutationQuery;
   readonly connectorInstanceCredentialsRevokeByInstance: MutationQuery;
   readonly connectorInstanceCredentialsUpsert: MutationQuery;
   readonly connectorInstancesGetByBinding: ReadOneQuery;
@@ -290,15 +298,25 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordsDatasetGetTopConnectorsByRecordCount: IterateQuery;
   readonly recordsDeleteCountRecordsByConnector: ReadOneQuery;
   // Records — owner-driven deletion paths.
+  readonly recordsDeleteCountRecordsByInstance: ReadOneQuery;
   readonly recordsDeleteCountRecordsByStream: ReadOneQuery;
+  readonly recordsDeleteDeleteAttentionRecordsByInstance: MutationQuery;
   readonly recordsDeleteDeleteBlobBindingsByConnector: MutationQuery;
+  readonly recordsDeleteDeleteBlobBindingsByInstance: MutationQuery;
+  readonly recordsDeleteDeleteBlobBindingsByStream: MutationQuery;
+  readonly recordsDeleteDeleteBlobsByInstance: MutationQuery;
   readonly recordsDeleteDeleteRecordChangesByConnector: MutationQuery;
+  readonly recordsDeleteDeleteRecordChangesByInstance: MutationQuery;
   readonly recordsDeleteDeleteRecordChangesByStream: MutationQuery;
   readonly recordsDeleteDeleteRecordsByConnector: MutationQuery;
+  readonly recordsDeleteDeleteRecordsByInstance: MutationQuery;
   readonly recordsDeleteDeleteRecordsByStream: MutationQuery;
   readonly recordsDeleteDeleteVersionCounterByConnector: MutationQuery;
+  readonly recordsDeleteDeleteVersionCounterByInstance: MutationQuery;
   readonly recordsDeleteDeleteVersionCounterByStream: MutationQuery;
   readonly recordsDeleteListDistinctStreamsByConnector: SmallEnumerationQuery;
+  readonly recordsDeleteListInstanceStreamsByConnector: SmallEnumerationQuery;
+  readonly recordsDeleteListStreamsByInstance: SmallEnumerationQuery;
   readonly recordsGetFieldWindow: ReadOneQuery;
   // Records — point-read for /v1/records/{id}.
   readonly recordsGetLiveRecordByKey: ReadOneQuery;
@@ -724,10 +742,20 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "recordsSnapshotsListChangeGroups",
     // Records — deletion.
     "recordsDeleteCountRecordsByStream",
+    "recordsDeleteCountRecordsByInstance",
     "recordsDeleteDeleteRecordsByStream",
+    "recordsDeleteDeleteRecordsByInstance",
     "recordsDeleteDeleteRecordChangesByStream",
+    "recordsDeleteDeleteRecordChangesByInstance",
     "recordsDeleteDeleteVersionCounterByStream",
+    "recordsDeleteDeleteVersionCounterByInstance",
+    "recordsDeleteDeleteBlobBindingsByStream",
+    "recordsDeleteDeleteBlobBindingsByInstance",
+    "recordsDeleteDeleteBlobsByInstance",
+    "recordsDeleteDeleteAttentionRecordsByInstance",
     "recordsDeleteListDistinctStreamsByConnector",
+    "recordsDeleteListInstanceStreamsByConnector",
+    "recordsDeleteListStreamsByInstance",
     "recordsDeleteCountRecordsByConnector",
     "recordsDeleteDeleteRecordsByConnector",
     "recordsDeleteDeleteRecordChangesByConnector",

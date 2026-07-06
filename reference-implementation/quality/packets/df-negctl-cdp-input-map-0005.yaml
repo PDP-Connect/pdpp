@@ -1,0 +1,72 @@
+candidate_id: df-negctl-cdp-input-map-0005
+created: "2026-07-02T00:25:00.000Z"
+repo_sha: "5f513d99295d14abb092db521a89ee7c72847d33"
+subsystem: server/streaming
+files:
+  - server/streaming/cdp-companion.js
+  - test/run-interaction-stream-cdp-adapter.test.js
+  - test/run-interaction-stream-companion.test.js
+symbols: [mapInputEventToCdp]
+public_surface: []
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "[METRIC-NOMINATED — SEMANTIC VALIDATION PENDING; metrics nominate, they never decide] tier-mass inventory (snapshot 6e8d8559c36b94d41bc4c42a9a31342e60b3b334) flags mapInputEventToCdp at server/streaming/cdp-companion.js:68 with cc=49, tier T1-seam — the largest flagged function in server/streaming. The nomination is complexity mass alone: no semantic defect has been validated for this function. It is a documented pure function (comment :64-67 — pure so it can be unit-tested without a real CDP session) translating wire input events (mouse/keyboard/touch/scroll/paste across their actions) into CDP command lists, and it already has direct coverage in test/run-interaction-stream-cdp-adapter.test.js and test/run-interaction-stream-companion.test.js. Whether the cc mass is incidental complexity (a braid worth decomplecting) or essential wire-protocol case count dictated by the CDP Input domain is exactly the question the maker must answer BEFORE touching anything."
+plan:
+  transform_class: validate-then-decomplect
+  instruction: "STEP 0 — VALIDATE THE DEFECT BEFORE ANY EDIT: read mapInputEventToCdp (server/streaming/cdp-companion.js:68 onward) end-to-end and decide whether the flagged complexity is a real braid (shared mutable state, duplicated non-obvious logic, mixed policy and translation, hidden ordering dependencies) or essential domain case count (parallel, independent event-type-to-CDP mappings whose branch count is fixed by the CDP Input API: mouse move/click/dblclick/down/up, keyboard keydown/keyup with printable-vs-raw and virtual-key pairing, touch start/move/end, scroll, paste — each branch a trivial local mapping plus explicit invalid_input guards). If it is essential case count with no braid, DO NOT refactor: set status=skipped with outcome.skip_reason validated-non-defect and record the semantic rationale in outcome.lesson — that IS the successful outcome of this packet. Only if a genuine braid is found may you decomplect it, behavior-preserved: every type-and-action pair must produce byte-identical CDP command lists under differential probes (old vs new), and the existing two test files must pass unchanged."
+expected_quality_gain: low
+owner_attention_reduction: low
+product_impact: none
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: low
+  property_at_risk: "the wire-event-to-CDP translation table: exact params per branch (dblclick emits the 4-event pressed/released x2 sequence with clickCount 1 then 2; touchEnd sends empty touchPoints; printable keys use keyDown+text while non-printable use rawKeyDown; windowsVirtualKeyCode/nativeVirtualKeyCode pair only when a VK mapping exists)"
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe row: server/streaming/cdp-companion.js fn mapInputEventToCdp line 68 (inventory snapshot 6e8d8559)"
+    result: "cc=49, tier T1-seam — nominated on complexity mass; no semantic validation attached by the collector"
+  - kind: coverage-sweep
+    detail: grep -rln mapInputEventToCdp test/ server/
+    result: direct consumers server/streaming/routes.js and cdp-adapter.js; existing direct tests test/run-interaction-stream-cdp-adapter.test.js and test/run-interaction-stream-companion.test.js — an oracle already exists
+  - kind: function-read
+    detail: "server/streaming/cdp-companion.js:54-190 read at authoring time"
+    result: "pure function, zero captures beyond module-const lookup tables (BUTTON_MAP, VIRTUAL_KEY_CODES); branches are parallel per-type/action mappings with uniform invalid_input error handling; authoring-time judgment says essential case count, but the MAKER must reach its own verdict from the code, not from this note"
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/run-interaction-stream-cdp-adapter.test.js test/run-interaction-stream-companion.test.js"
+    expect: all pass with unchanged counts — required both when concluding skipped(validated-non-defect) and after any change
+  - rung: validation-verdict
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/streaming/cdp-companion.js"
+    expect: "EMPTY diff when the verdict is skipped(validated-non-defect) — record the rationale in outcome.skip_reason/lesson; if the diff is non-empty, differential-probe receipts (old-vs-new CDP command lists for every type-and-action pair including dblclick sequence, touchEnd empty touchPoints, printable vs rawKeyDown, VK pairing) MUST be pasted into outcome.evidence_receipts"
+not_allowed:
+  - refactoring-before-validating-the-defect
+  - relocation-without-decomplecting
+  - behavior-change
+  - new-dependency
+  - weakening-or-deleting-existing-tests
+maker_tier: standard
+judge_tier: standard
+maker_provider: claude
+judge_provider: null
+batch_key: preserve_refactor×pure_logic×server/streaming
+touchset: [server/streaming/cdp-companion.js]
+estimates:
+  tokens: 40000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: skipped
+outcome:
+  commit: null
+  skip_reason: "maker-no-diff: maker completed but modified nothing"
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/run-interaction-stream-cdp-adapter.test.js test/run-interaction-stream-companion.test.js -> exit 0 (0s) PASS; exit=0 djb2=1b1c8516 bytes=2587 receipt=quality/receipts/df-negctl-cdp-input-map-0005/baseline-1-direct-test.txt"
+    - "[baseline] validation-verdict: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/streaming/cdp-companion.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/df-negctl-cdp-input-map-0005/baseline-2-validation-verdict.txt"
+  tokens_actual: 21844
+  lesson: maker (claude) replied without editing; packet instruction may be unactionable as written

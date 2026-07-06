@@ -1,0 +1,17 @@
+# hone work pl1-acquisition-batch-insert-guards-0011 — post-r1 rung 'complexity-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --target 'server/stores/acquisition-batch-store.js::normalizeInsert'
+# expect: found=true; cognitive_before strictly below baseline 23 and below floor 18 (four-guard cluster removed)
+# exit: 0  duration: 0s  verdict: FAIL (expect_check[scope_fn_lt]: cognitive_before=19, expected < 18 — no measured complexity reduction)
+
+{
+  "target": "server/stores/acquisition-batch-store.js::normalizeInsert",
+  "file": "server/stores/acquisition-batch-store.js",
+  "function": "normalizeInsert",
+  "found": true,
+  "cognitive_before": 19,
+  "line": 82,
+  "caller_count": 5,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

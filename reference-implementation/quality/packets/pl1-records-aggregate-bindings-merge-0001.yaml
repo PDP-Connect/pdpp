@@ -1,0 +1,121 @@
+candidate_id: pl1-records-aggregate-bindings-merge-0001
+created: "2026-07-02T10:00:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/records
+files: [server/records.js]
+symbols:
+  - aggregateRecordsAcrossBindings
+  - file: server/records.js
+    parent_fn: aggregateRecordsAcrossBindings
+    anchor: "per-result accumulation for-of loop (grouped-bucket merge + sum/count + min/max reduction), currently inline ~L3585-3623"
+    line: 3585
+public_surface:
+  - "aggregation response envelope { object:'aggregation', stream, metric, field, group_by, group_by_time, granularity, time_zone, approximate, filtered_record_count, value?, groups?, limit?, meta? } returned by /v1/records/:stream/aggregate multi-binding fan-in"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: effectful
+execution_gate: autonomous
+why_this_matters: "aggregateRecordsAcrossBindings (cc73, scope-fn red_scan empty — 'pure decomplect target') fans aggregateRecords across disjoint bindings and folds the per-binding results into one envelope. Its single for-of loop braids THREE separate reductions that only share the loop cursor: (1) grouped-bucket key-merge into mergedBuckets, (2) additive sum/count into value, (3) comparable min/max selection into bestComparable/value. Each already-grant-scoped per-binding result is merged by pure arithmetic here — no grant.streams / streamGrant / field enforcement lives in this function (aggregateRecords upstream owns that). Extracting the grouped-bucket merge and the min/max selection into named pure helpers removes the two nested-branch reductions from the loop body, cutting ~14 cc while leaving the additive value fold and the response assembly in place. The count_distinct cross-connection guard, the single-binding short-circuit, mergeMetaWarnings, and the final response shape stay byte-identical."
+plan:
+  transform_class: extract-pure-reduction-helpers
+  instruction: "In server/records.js ONLY. Create TWO module-level (column-0) pure named functions ABOVE aggregateRecordsAcrossBindings:\n\n(A) function mergeGroupedAggregateBuckets(mergedBuckets, groups) — accepts the accumulator Map as its FIRST explicit parameter (parameter name mergedBuckets == the closure identifier at the call site) and the result.groups array as its second; contains VERBATIM the inner body currently at ~L3601-3606: `for (const bucket of groups) { const mapKey = JSON.stringify(bucket.key ?? null); const entry = mergedBuckets.get(mapKey) || { key: bucket.key ?? null, count: 0 }; entry.count += Number(bucket.count || 0); mergedBuckets.set(mapKey, entry); }`. It mutates the passed-in Map in place and returns nothing. Rename the loop variable from `bucket` only if needed for the param name; keep `groups` as the param.\n\n(B) function selectComparableExtremum(metric, currentBest, currentValue, resultValue, aggregateFieldSchema) — pure; contains VERBATIM the min/max block currently at ~L3613-3622 rewritten to RETURN the chosen { best, value } rather than assign outer locals: `const comparable = coerceComparableValue(resultValue, aggregateFieldSchema); if (comparable == null) return { best: currentBest, value: currentValue }; const shouldReplace = currentBest == null || (metric === 'min' ? comparable < currentBest : comparable > currentBest); return shouldReplace ? { best: comparable, value: resultValue } : { best: currentBest, value: currentValue };`. coerceComparableValue is a module-scope helper — call it directly, do NOT thread it.\n\nSEAM MECHANISM (explicit, mandatory): mergeGroupedAggregateBuckets takes the accumulator Map as a named first parameter whose NAME IS the caller's closure identifier `mergedBuckets`, so the call site reads `mergeGroupedAggregateBuckets(mergedBuckets, result.groups);` with the bare identifier — no closure capture, the Map is threaded by explicit parameter. selectComparableExtremum is fully value-in / value-out: it captures NOTHING; the call site destructures its return: `const picked = selectComparableExtremum(metric, bestComparable, value, result.value, aggregateFieldSchema); bestComparable = picked.best; value = picked.value;`.\n\nCALL-SITE REWRITE inside the existing for-of over `results`: replace the grouped-bucket inner for-loop (L3601-3606) with `mergedBuckets.set` — i.e. `for (const bucket of result.groups) {...}` becomes `mergeGroupedAggregateBuckets(mergedBuckets, result.groups);` (keep the surrounding `if ((isScalarGroup || isTimeBucket) && Array.isArray(result?.groups)) { mergedLimit = result.limit ?? mergedLimit; <CALL>; continue; }` exactly, including the mergedLimit assignment and continue). Replace the min/max block (L3613-3622) with the destructured selectComparableExtremum call above, keeping the enclosing `if (metric === 'min' || metric === 'max') {...}` arm.\n\nPRESERVE EXACTLY: the single-binding short-circuit (bindings.length===1 → aggregateRecords + extraWarnings meta append), the count_distinct throw, perBindingParams delete of connection_id/connector_instance_id, mapWithConcurrency fan-out, responseShape first-result capture, filteredRecordCount accumulation, mergeMetaWarnings(meta,...), the appendUniqueWarning extraWarnings loop, the `value = metric==='sum'||'count' ? 0 : null` init, the grouped vs scalar response branches, the `.sort(compareMergedAggregateGroups)` + `.slice(0, mergedLimit ?? undefined)`, and every response field. Number() coercions stay byte-identical. NO new module file, NO public-shape change."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: none
+priority:
+  score: 74
+  computed: "2026-07-02T10:00:00.000Z"
+  inputs:
+    mass: 68
+    churn: 40
+risk:
+  blast_radius: subsystem
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: "cross-binding aggregate merge arithmetic — a dropped bucket, a wrong min/max pick, or an off-by-one in the additive fold would silently return a wrong aggregate value to a multi-connection caller"
+authoring_evidence:
+  - kind: red-probe
+    detail: "scope-fn --target 'server/records.js::aggregateRecordsAcrossBindings' → red_scan [] , red_hint 'no security markers — pure decomplect target', cognitive_before 73"
+    result: clean — no grant.streams/streamGrant/field_not_granted/consent/bearer/token in this function body; grant enforcement lives in aggregateRecords upstream
+  - kind: coverage-check
+    detail: aggregateRecordsAcrossBindings pinned by test/storage-fan-in-read-contract.test.js; grouped/time-bucket + min/max merge pinned by test/rs-streams-aggregate-boundary.test.js and test/aggregate-time-buckets.test.js
+    result: multi-binding fan-in merge has existing by-name oracles
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in storage-fan-in-read-contract rs-streams-aggregate-boundary aggregate-time-buckets; do db=pdpp_hone_pl1recagg_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; echo \"== $f ==\"; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; echo \"rc=$rc\"; exit $rc'"
+    expect: all three suites green with unchanged pass counts; per-file ephemeral DB isolates shared-state races (matches scripts/run-tests.js isolation contract)
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/records.js::aggregateRecordsAcrossBindings'"
+    expect: found=true; cognitive_before strictly below the pre-edit baseline 73 and below the machine floor 60 (two nested reductions removed from the loop body)
+    expect_check:
+      type: scope_fn_lt
+      value: 60
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/records.js' --cog 5"
+    expect: "file_excess strictly below the pre-edit measured baseline (435); the only NEW flagged names permitted are the two extracted helpers, and each must sit at or below cc5 (they should not flag at all)"
+    expect_check:
+      type: file_excess_lt
+      value: 435
+  - rung: seam-static-pin
+    command: "cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/records.js\",\"utf8\");if(!s.includes(\"function mergeGroupedAggregateBuckets\")){console.log(\"baseline: helpers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");let rc=0;const checks=[[\"mergeGroupedAggregateBuckets declares (mergedBuckets, groups)\",/function mergeGroupedAggregateBuckets\\( ?mergedBuckets, ?groups,? ?\\)/],[\"call site passes bare accumulator identifier mergedBuckets\",/mergeGroupedAggregateBuckets\\( ?mergedBuckets, ?result\\.groups ?\\)/],[\"selectComparableExtremum is declared\",/function selectComparableExtremum\\(/],[\"selectComparableExtremum result is destructured at call site\",/selectComparableExtremum\\([^)]*\\)[^;]*;/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);'"
+    expect: "exit 0, every line PASS. Baseline (helpers absent): vacuous PASS. Post: pins the explicit-parameter seam — the accumulator Map is threaded as a bare-identifier parameter (no closure capture) and the extremum helper is value-in/value-out with its return destructured."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - new-dependency
+  - new-module-file
+  - captured-mutable-cells-in-new-helpers
+  - grant-enforcement-change
+maker_tier: standard
+judge_tier: strong
+maker_provider: codex
+judge_provider: null
+batch_key: preserve_refactor×effectful×server/records
+touchset: [server/records.js]
+estimates:
+  tokens: 55000
+  evidence_cost: medium
+depends_on: []
+unlocks: []
+status: skipped
+outcome:
+  commit: null
+  skip_reason: "CLOSED 2026-07-05 (two-strike review, action c/close). The packet's numeric premises are stale/obsolete against the current tree and its whole-file bar is unreachable by construction: (1) STALE TARGET — the packet was authored (repo_sha 078bd4d) claiming aggregateRecordsAcrossBindings is a cc73 monster with floor <60, but records.js was refactored since (commits 8891a1c5d 'split foldBindingAggregate into per-strategy helpers', af194b9e2, abd7c0b84, a1fb800a4). The function now measures cc=36 fresh (its own baseline receipt already recorded 36), ALREADY below the packet's own <60 floor, so complexity-remeasure passed vacuously both attempts — it never measured a reduction. (2) EXTRACTION ALREADY LANDED — the equivalents of the two helpers this packet wanted to create already exist in records.js: mergeGroupedBuckets (cc6) and compareMergedBuckets (cc10), plus foldBindingAggregate (cc10). The grouped-bucket-merge / comparable-extremum decomplection was substantially done upstream; re-doing it against a moved code shape is why the maker could not make the numbers move. (3) FANTASY WHOLE-FILE BAR — the file-excess rung hardcoded <435, but the fresh AND receipt baseline of records.js is 641. Even a zero-cost perfect extraction from 641 can never reach 435; both attempts died at file_excess=641 (identical digest f31af0a6). (4) RESIDUAL NOT WORTH SPEND — records.js file-excess (641) is dominated by four much larger functions (queryRecords cc99, queryRecordsAcrossBindings cc73, normalizeAggregateRequest cc68, aggregateRecords cc56); aggregateRecordsAcrossBindings is 5th at cc36 and its remaining excess is the loop-carried additive value fold braided with response assembly (effectful, judge-rejected once) — inherent complexity, low-value against the file's real cost centers. If the aggregation subsystem is revisited, target the cc56-99 giants instead, freshly re-measured. No source touched; retired as skipped."
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in storage-fan-in-read-contract rs-streams-aggregate-boundary aggregate-time-buckets; do db=pdpp_hone_pl1recagg_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; echo \"== $f ==\"; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; echo \"rc=$rc\"; exit $rc' -> exit 0 (2s) PASS; exit=0 djb2=c56a8e15 bytes=5206 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/records.js::aggregateRecordsAcrossBindings' -> exit 0 (0s) PASS; exit=0 djb2=6b36e0e7 bytes=323 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/baseline-3-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/records.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=427f6a5b bytes=5649 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/baseline-4-file-excess-remeasure.txt"
+    - "[baseline] seam-static-pin: cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/records.js\",\"utf8\");if(!s.includes(\"function mergeGroupedAggregateBuckets\")){console.log(\"baseline: helpers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");let rc=0;const checks=[[\"mergeGroupedAggregateBuckets declares (mergedBuckets, groups)\",/function mergeGroupedAggregateBuckets\\( ?mergedBuckets, ?groups,? ?\\)/],[\"call site passes bare accumulator identifier mergedBuckets\",/mergeGroupedAggregateBuckets\\( ?mergedBuckets, ?result\\.groups ?\\)/],[\"selectComparableExtremum is declared\",/function selectComparableExtremum\\(/],[\"selectComparableExtremum result is destructured at call site\",/selectComparableExtremum\\([^)]*\\)[^;]*;/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);' -> exit 0 (0s) PASS; exit=0 djb2=64f5b16c bytes=46 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/baseline-5-seam-static-pin.txt"
+    - "[post] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in storage-fan-in-read-contract rs-streams-aggregate-boundary aggregate-time-buckets; do db=pdpp_hone_pl1recagg_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; echo \"== $f ==\"; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; echo \"rc=$rc\"; exit $rc' -> exit 0 (3s) PASS; exit=0 djb2=65cdb395 bytes=5203 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/post-1-direct-test.txt"
+    - "[post] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/post-2-typecheck.txt"
+    - "[post] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/records.js::aggregateRecordsAcrossBindings' -> exit 0 (0s) PASS; exit=0 djb2=c7b24028 bytes=323 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/post-3-complexity-remeasure.txt"
+    - "[post] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/records.js' --cog 5 -> exit 0 (0s) FAIL: expect_check[file_excess_lt]: file_excess=641, expected < 435 (packet baseline) — whole-file Σ excess-cc did not decrease; exit=0 djb2=f31af0a6 bytes=5548 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/post-4-file-excess-remeasure.txt"
+    - "[post-r1] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in storage-fan-in-read-contract rs-streams-aggregate-boundary aggregate-time-buckets; do db=pdpp_hone_pl1recagg_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; echo \"== $f ==\"; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; echo \"rc=$rc\"; exit $rc' -> exit 0 (3s) PASS; exit=0 djb2=a738eb15 bytes=5201 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/post-r1-1-direct-test.txt"
+    - "[post-r1] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/post-r1-2-typecheck.txt"
+    - "[post-r1] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/records.js::aggregateRecordsAcrossBindings' -> exit 0 (0s) PASS; exit=0 djb2=c7b24028 bytes=323 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/post-r1-3-complexity-remeasure.txt"
+    - "[post-r1] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/records.js' --cog 5 -> exit 0 (0s) FAIL: expect_check[file_excess_lt]: file_excess=641, expected < 435 (packet baseline) — whole-file Σ excess-cc did not decrease; exit=0 djb2=f31af0a6 bytes=5548 receipt=quality/receipts/pl1-records-aggregate-bindings-merge-0001/post-r1-4-file-excess-remeasure.txt"
+  tokens_actual: 126336
+  lesson: "CLOSED (c) 2026-07-05: not a bar-tuning case — the target premise is obsolete (records.js already refactored: fn now cc36 not cc73, and mergeGroupedBuckets/compareMergedBuckets/foldBindingAggregate equivalents already landed) and the <435 whole-file bar was unreachable vs the real 641 baseline. Effectful residual (loop-carried value fold) is inherent complexity on the file's 5th-largest fn; the real cost centers are queryRecords/queryRecordsAcrossBindings/normalizeAggregateRequest/aggregateRecords (cc56-99). Lesson for the packet author: fresh-measure against HEAD, not repo_sha, before pinning complexity floors — a stale floor passes vacuously and a stale whole-file baseline makes the file-excess rung impossible."
+resets:
+  - at: "2026-07-02T22:07:57.516Z"
+    from_status: reverted
+    reason: "re-route: extraction class -> codex maker/claude judge (tonight forced claude-maker = wrong pairing, all reverted)"
+  - at: "2026-07-05T20:30:00.000Z"
+    from_status: reverted
+    reason: "two-strike CLOSE (c): stale premise + fantasy bar. Fresh re-measure: target cc36 (already below the packet's own <60 floor, so complexity rung passed vacuously), extraction equivalents already landed upstream, and the <435 file-excess bar is unreachable vs the real 641 baseline. Retired as skipped; no successor (residual is inherent loop-carried braiding on a non-cost-center fn)."

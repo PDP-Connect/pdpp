@@ -1,0 +1,51 @@
+# hone work tst2-stderr-redaction-contract-0023 — maker brief digest (attempt 2)
+# sha256(full brief)=260f72a6b43a12588ee7e32c787ec20ff065bd8e826a22760f9c44215414dcda bytes=8459
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): test/stderr-redact-oracle.test.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: non-test-source-change, behavior-change, new-dependency, shared-db-usage, git-command.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: tst2-stderr-redaction-contract-0023
+created: "2026-07-06T18:23:00.000Z"
+repo_sha: "current-tree-no-git-sandbox"
+subsystem: runtime/stderr-redact
+files: ["test/stderr-redact-oracle.test.js", "runtime/stderr-redact.ts"]
+symbols:
+  - "redactStderrTail"
+public_surface:
+  - "connector stderr redaction contract: URL userinfo, keyed credentials, PEM blocks, OTPs, and long opaque tokens"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "There are broad stderr-redaction tests, but this packet asks for a mutation-killing table of every documented redaction class and the redacted boolean. A weakening can leak operator secrets into durable run.failed diagnostics."
+plan:
+  transform_class: add-seeded-mutation-oracle
+  instruction: "Create test/stderr-redact-oracle.test.js. Import redactStderrTail. Assert non-string/empty values return safe empty-or-original text with redacted false; URL userinfo is replaced with [REDACTED]@; keyed token/password/cookie/authorization values become marker=[REDACTED]; PEM blocks become [REDACTED_PEM]; standalone six-digit OTPs become [REDACTED_OTP]; long opaque strings are redacted; and redacted is true only when text changed."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "durable connector diagnostics must redact obvious secret and OTP material before persistence."
+authoring_evidence:
+  - kind: "source-read"
+    detail: "runtime/stderr-redact.ts exports redactStderrTail as pure projection/shape helpers."
+    result: "candidate is reachable without starting the server or editing production code"
+  - kind: "coverage-sweep"
+    detail: "rg by exported symbol names across test/ before authoring"
+    result: "no dedicated by-name oracle exists for this exact public contract table"
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT\" && sh -c 'if [ -f test/stderr-redact-oracle.test.js ]; then src=runtime/stderr-redact.ts; bak=/tmp/tst2_stderr_redaction_contract_0023.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/next = next.replace(OTP_RE, \"[REDACTED_OTP]\");/// OTP redaction disabled by seeded mutant/\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0023; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; c

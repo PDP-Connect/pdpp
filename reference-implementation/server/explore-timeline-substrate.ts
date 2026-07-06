@@ -510,6 +510,54 @@ function upcomingAfterPositionMap(
  * the page keeps its incoming position (carried unchanged) so the next page
  * re-probes it from where it left off.
  */
+/** Explicit context for {@link nextUpcomingPositionForPartition}, formerly closure captures. */
+interface NextUpcomingPositionLookups {
+  readonly afterByKey: Map<string, UpcomingPartitionPosition>;
+  readonly cutByPartition: ReadonlySet<number>;
+  readonly lastEmittedByPartition: Map<number, PartitionRow>;
+  readonly partitionOverflow: readonly boolean[];
+}
+
+/**
+ * Per-partition cursor policy: whether this partition appears in the next-page
+ * cursor and at WHICH resume position. Returns null when the partition is
+ * exhausted (omitted from the next cursor). Otherwise returns its resume
+ * position — either the last row of ITS that was emitted into this page, or,
+ * if it contributed nothing but still has rows (all after the cut), its
+ * incoming position carried unchanged so the next page re-probes from there.
+ */
+function nextUpcomingPositionForPartition(
+  partition: ExploreTimelinePartition,
+  partitionIndex: number,
+  lookups: NextUpcomingPositionLookups
+): UpcomingPartitionPosition | null {
+  const { lastEmittedByPartition, partitionOverflow, cutByPartition, afterByKey } = lookups;
+  const lastEmitted = lastEmittedByPartition.get(partitionIndex);
+  const hasMore = (partitionOverflow[partitionIndex] ?? false) || cutByPartition.has(partitionIndex);
+  if (!hasMore) {
+    return null; // exhausted: omit from the next cursor
+  }
+  if (lastEmitted) {
+    return {
+      connectorId: lastEmitted.connectorId,
+      connectorType: lastEmitted.connectorType,
+      stream: lastEmitted.stream,
+      lastSemanticTime: lastEmitted.semanticTime,
+      lastRecordKey: lastEmitted.recordKey,
+    };
+  }
+  // Contributed nothing to this page but still has rows (all after the cut):
+  // carry its incoming position unchanged so the next page re-probes from there.
+  const incoming = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream));
+  return {
+    connectorId: partition.connectorId,
+    connectorType: partition.connectorType,
+    stream: partition.stream,
+    lastSemanticTime: incoming?.lastSemanticTime ?? null,
+    lastRecordKey: incoming?.lastRecordKey ?? null,
+  };
+}
+
 function finalizeUpcoming(args: {
   input: UpcomingFetchInput;
   tagged: TaggedUpcomingRow[];
@@ -533,33 +581,18 @@ function finalizeUpcoming(args: {
     cutByPartition.add(t.partitionIndex);
   }
 
+  const lookups: NextUpcomingPositionLookups = {
+    lastEmittedByPartition,
+    partitionOverflow,
+    cutByPartition,
+    afterByKey,
+  };
   const nextPositions: UpcomingPartitionPosition[] = [];
   input.partitions.forEach((partition, partitionIndex) => {
-    const lastEmitted = lastEmittedByPartition.get(partitionIndex);
-    const hasMore = (partitionOverflow[partitionIndex] ?? false) || cutByPartition.has(partitionIndex);
-    if (!hasMore) {
-      return; // exhausted: omit from the next cursor
+    const pos = nextUpcomingPositionForPartition(partition, partitionIndex, lookups);
+    if (pos) {
+      nextPositions.push(pos);
     }
-    if (lastEmitted) {
-      nextPositions.push({
-        connectorId: lastEmitted.connectorId,
-        connectorType: lastEmitted.connectorType,
-        stream: lastEmitted.stream,
-        lastSemanticTime: lastEmitted.semanticTime,
-        lastRecordKey: lastEmitted.recordKey,
-      });
-      return;
-    }
-    // Contributed nothing to this page but still has rows (all after the cut):
-    // carry its incoming position unchanged so the next page re-probes from there.
-    const incoming = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream));
-    nextPositions.push({
-      connectorId: partition.connectorId,
-      connectorType: partition.connectorType,
-      stream: partition.stream,
-      lastSemanticTime: incoming?.lastSemanticTime ?? null,
-      lastRecordKey: incoming?.lastRecordKey ?? null,
-    });
   });
 
   return {
@@ -578,20 +611,20 @@ function compareUpcomingAsc(a: PartitionRow, b: PartitionRow): number {
 
 export function buildSqliteExploreTimelineDeps(): ExploreTimelineDependencies {
   return {
-    async listPartitions(scope) {
-      return sqliteListPartitions(scope);
+    listPartitions(scope) {
+      return Promise.resolve(sqliteListPartitions(scope));
     },
-    async fetchSnapshotAnchor() {
-      return sqliteFetchSnapshotAnchor();
+    fetchSnapshotAnchor() {
+      return Promise.resolve(sqliteFetchSnapshotAnchor());
     },
-    async fetchPartitionPage(input) {
-      return sqliteFetchPartitionPage(input);
+    fetchPartitionPage(input) {
+      return Promise.resolve(sqliteFetchPartitionPage(input));
     },
-    async countNewSinceSnapshot(input) {
-      return sqliteCountNewSinceSnapshot(input);
+    countNewSinceSnapshot(input) {
+      return Promise.resolve(sqliteCountNewSinceSnapshot(input));
     },
-    async fetchUpcoming(input) {
-      return sqliteFetchUpcoming(input);
+    fetchUpcoming(input) {
+      return Promise.resolve(sqliteFetchUpcoming(input));
     },
     saveCursorBlob(blob) {
       // Synchronous SQLite write wrapped to satisfy the Promise-typed dep.

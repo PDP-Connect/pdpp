@@ -1,0 +1,42 @@
+# hone work t1b-records-binding-decorator-0009 — post rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/records.js
+# expect: one new named fn whose body is byte-identical to the removed duplicate callback bodies (modulo indentation); exactly two callsite rewires; no other lines touched
+# exit: 0  duration: 0s  verdict: PASS
+
+diff --git a/reference-implementation/server/records.js b/reference-implementation/server/records.js
+index f2600292f..95a256fdb 100644
+--- a/reference-implementation/server/records.js
++++ b/reference-implementation/server/records.js
+@@ -3669,0 +3670,10 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
++function decorateStreamSummaryWithBinding(summary, wireBinding) {
++  const decorated = { ...summary };
++  if (wireBinding?.connection_id) {
++    decorated.connection_id = wireBinding.connection_id;
++    decorated.connector_instance_id = wireBinding.connection_id;
++    if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
++  }
++  return decorated;
++}
++
+@@ -3694,9 +3704 @@ export async function listStreamsAcrossBindings(defaultBindings, grant, manifest
+-        return perBinding.map((summary) => {
+-          const decorated = { ...summary };
+-          if (wireBinding?.connection_id) {
+-            decorated.connection_id = wireBinding.connection_id;
+-            decorated.connector_instance_id = wireBinding.connection_id;
+-            if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
+-          }
+-          return decorated;
+-        });
++        return perBinding.map((summary) => decorateStreamSummaryWithBinding(summary, wireBinding));
+@@ -3739,9 +3741 @@ export async function listStreamsAcrossBindings(defaultBindings, grant, manifest
+-        return perBinding.map((summary) => {
+-        const decorated = { ...summary };
+-        if (wireBinding?.connection_id) {
+-          decorated.connection_id = wireBinding.connection_id;
+-          decorated.connector_instance_id = wireBinding.connection_id;
+-          if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
+-        }
+-        return decorated;
+-        });
++        return perBinding.map((summary) => decorateStreamSummaryWithBinding(summary, wireBinding));

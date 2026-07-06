@@ -41,8 +41,23 @@
 //        #"Owner-agent control mutations SHALL be auditable and secret-safe"
 //         → "Mutation fails")
 
-import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
-import { codeToStatus } from "./ref-error-status.ts";
+import {
+  auditActorKind,
+  buildAuditTrace,
+  httpStatusForOperationError,
+  readConnectionTarget,
+  rethrowAsAmbiguousConnection,
+} from "./_owner-connection-helpers.ts";
+import type {
+  ActiveBinding,
+  AmbiguousConnectionErrorLike,
+  ConnectorNamespace,
+  MiddlewareHandler,
+  PdppErrorFn,
+  RouteArg,
+  TraceContext,
+  WireConnection,
+} from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -74,39 +89,6 @@ type NextFn = () => unknown | Promise<unknown>;
 
 interface AppLike {
   post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-}
-
-// Capability-shaped namespace bag — the host resolver returns at least these
-// fields. Other resolver-only fields pass through opaquely.
-interface ConnectorNamespace {
-  readonly connectorId: string;
-  readonly connectorInstanceId: string;
-}
-
-interface ActiveBinding {
-  readonly connectorId?: string | null;
-  readonly connectorInstanceId: string;
-  readonly displayName?: string | null;
-}
-
-interface WireConnection {
-  connection_id: string;
-  display_name?: string;
-}
-
-interface TraceContext {
-  readonly request_id: string;
-  readonly scenario_id: string;
-  readonly trace_id: string;
-}
-
-// Typed ambiguity error the host's `AmbiguousConnectionError` produces. The
-// host writer (`handleError`) maps `code: "ambiguous_connection"` to HTTP 409
-// and copies `available_connections` / `retry_with` onto the envelope.
-interface AmbiguousConnectionErrorLike extends Error {
-  available_connections: WireConnection[];
-  code: string;
-  retry_with: string;
 }
 
 export interface MountOwnerConnectionRunContext {
@@ -173,34 +155,6 @@ export interface MountOwnerConnectionRunContext {
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
-function auditActorKind(req: RouteRequest): "owner_agent" | "client" | "mcp_package" | "unknown" {
-  const kind = req.tokenInfo?.pdpp_token_kind;
-  if (kind === "owner") {
-    return "owner_agent";
-  }
-  if (kind === "client" || kind === "mcp_package") {
-    return kind;
-  }
-  return "unknown";
-}
-
-function httpStatusForRunError(err: unknown): number {
-  const code = (err as { code?: unknown })?.code;
-  return typeof code === "string" ? (codeToStatus[code] ?? 500) : 500;
-}
-
-function buildAuditTrace(ctx: MountOwnerConnectionRunContext, req: RouteRequest, res: RouteResponse): TraceContext {
-  const scenarioId = typeof req.tokenInfo?.scenario_id === "string" ? req.tokenInfo.scenario_id : undefined;
-  const trace = scenarioId ? ctx.createTraceContext({ scenarioId }) : ctx.createTraceContext();
-  const requestId = ctx.ensureRequestId(res);
-  ctx.setReferenceTraceId(res, trace.trace_id);
-  return {
-    request_id: requestId,
-    scenario_id: trace.scenario_id,
-    trace_id: trace.trace_id,
-  };
-}
-
 // Emits one non-secret `owner_agent.connection.run` spine event. The `selector`
 // records whether the action was addressed by `connection_id` or by
 // `connector_id` (the latter is the path that can be ambiguous). The audit
@@ -255,7 +209,7 @@ async function emitRunAudit(
         ? {
             error: {
               code: typeof code === "string" ? code : "api_error",
-              http_status: httpStatusForRunError(args.error),
+              http_status: httpStatusForOperationError(args.error),
             },
           }
         : {}),
@@ -278,7 +232,7 @@ function buildRunRequireOwner(
     }
     const err = new Error("Owner token required") as Error & { code: string };
     err.code = "permission_error";
-    const { connectionId, connectorKey } = readRunTarget(ctx, req, selector);
+    const { connectionId, connectorKey } = readConnectionTarget(ctx, req, selector);
     await emitRunAudit(ctx, req, res, {
       connectionId,
       connectorKey,
@@ -289,46 +243,6 @@ function buildRunRequireOwner(
     });
     ctx.pdppError(res, 403, "permission_error", "Owner token required");
   };
-}
-
-// Reads the addressed target from the request path for audit labelling. For a
-// connection-scoped route this is the `connection_id`; for a connector-scoped
-// route it is the canonical connector key.
-function readRunTarget(
-  ctx: MountOwnerConnectionRunContext,
-  req: RouteRequest,
-  selector: "connection_id" | "connector_id"
-): { connectionId: string | null; connectorKey: string | null } {
-  if (selector === "connection_id") {
-    const connectionId = req.params.connectionId ? decodeURIComponent(req.params.connectionId) : null;
-    return { connectionId, connectorKey: null };
-  }
-  const raw = req.params.connectorId ? decodeURIComponent(req.params.connectorId) : null;
-  const connectorKey = raw ? (ctx.canonicalConnectorKey(raw) ?? raw) : null;
-  return { connectionId: null, connectorKey };
-}
-
-// Maps the store's connector-only ambiguity (`ambiguous_connector_instance`)
-// to the public, typed `ambiguous_connection` (409) error carrying the
-// available `connection_id` values + owner-meaningful labels and
-// `retry_with: connection_id`. Any other resolver error is rethrown unchanged.
-async function rethrowAsAmbiguousConnection(
-  ctx: MountOwnerConnectionRunContext,
-  err: unknown,
-  ownerSubjectId: string,
-  connectorKey: string
-): Promise<never> {
-  if ((err as { code?: unknown })?.code !== "ambiguous_connector_instance") {
-    throw err;
-  }
-  const active = await Promise.resolve(ctx.listActiveBindingsForGrant({ ownerSubjectId, connectorId: connectorKey }));
-  const available = active
-    .map((binding) => ctx.projectBindingForWire(binding))
-    .filter((row): row is WireConnection => row !== null);
-  throw new ctx.AmbiguousConnectionError(
-    `Connector '${connectorKey}' has multiple active connections. Retry with a specific connection_id.`,
-    available
-  );
 }
 
 function readRunId(started: unknown): string | null {

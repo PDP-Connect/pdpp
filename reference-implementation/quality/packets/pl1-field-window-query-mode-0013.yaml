@@ -1,0 +1,106 @@
+candidate_id: pl1-field-window-query-mode-0013
+created: "2026-07-02T10:12:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/record-field-window
+files: [server/record-field-window.js]
+symbols: [normalizeWindowSelector]
+public_surface:
+  - "field-window selector result { mode:'offset'|'query', ... } and fieldWindowError('invalid_window', ...) messages: 'before_chars and after_chars require q', 'q is exclusive with offset_chars', 'q must be a non-empty string' (400)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "normalizeWindowSelector (cc15, scope-fn red_scan empty — the file's field_not_granted marker lives in a SIBLING grant-check, not in this body) resolves a read-record-field window request into either an offset-mode or a query-mode selector. It braids the mutual-exclusion parameter validation, the offset-mode early return, and a substantial query-mode assembly (non-empty-q guard, before/after context-char parsing, explicit-context-aware requested-limit computation, MAX clamp, and the query-mode result object). The query-mode assembly is a self-contained sub-computation given (params, boundedLimit, limitClamped). Extracting it into a named pure helper removes that branch's whole body from the entry function, cutting ~8 cc while every invalid_window error and the limit/clamp arithmetic stay byte-identical. Pure function, no grant enforcement in scope."
+plan:
+  transform_class: extract-query-mode-builder
+  instruction: "In server/record-field-window.js ONLY. Create ONE module-level (column-0) pure named function ABOVE normalizeWindowSelector:\n\nfunction buildQueryModeWindow(params, boundedLimit, limitClamped) — returns the query-mode selector object. Contains VERBATIM the query branch currently at L138-160 (everything AFTER the `if (!hasQParam) { return {...}; }` early return): the non-empty-q guard (`if (typeof params.q !== 'string' || params.q.length === 0) throw fieldWindowError('invalid_window', 'q must be a non-empty string', 400);`), the `before = assertContextChars(params.before_chars, 'before_chars')` / `after = assertContextChars(params.after_chars, 'after_chars')` lines, `explicitContext`, the `requestedLimit` ternary, `effectiveLimit = Math.min(requestedLimit, FIELD_WINDOW_MAX_LIMIT)`, and the returned `{ mode: 'query', query: params.q, before, after, offset: 0, limit: effectiveLimit, limitClamped: limitClamped || requestedLimit > FIELD_WINDOW_MAX_LIMIT }`. fieldWindowError, assertContextChars, FIELD_WINDOW_DEFAULT_LIMIT, FIELD_WINDOW_MAX_LIMIT are module-scope — reference directly.\n\nSEAM MECHANISM (explicit): buildQueryModeWindow takes THREE explicit parameters whose NAMES equal the caller's locals — params, boundedLimit, limitClamped — so normalizeWindowSelector delegates with bare identifiers. normalizeWindowSelector keeps: the two mutual-exclusion guards, the `clampWindowBounds({ offsetChars: params.offset_chars, limitChars: params.limit_chars })` destructure, the `if (!hasQParam) return { mode: 'offset', offset, limit: boundedLimit, limitClamped };` early return, and finally `return buildQueryModeWindow(params, boundedLimit, limitClamped);`.\n\nHARD PRESERVE: the mutual-exclusion guards (before/after require q; q exclusive with offset_chars) with exact messages/400, the clampWindowBounds call arguments, the offset-mode return shape, and — inside the extracted helper — the exact requestedLimit ternary (explicitContext ? before + params.q.length + after : FIELD_WINDOW_DEFAULT_LIMIT vs boundedLimit), the Math.min clamp, and the limitClamped OR expression. NO change to clampWindowBounds. NO new module file, NO behavior change."
+expected_quality_gain: medium
+owner_attention_reduction: low
+product_impact: none
+priority:
+  score: 51
+  computed: "2026-07-02T10:12:00.000Z"
+  inputs:
+    mass: 14
+    churn: 8
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: field-window selector — a changed limit/clamp computation or dropped q-exclusivity guard would return the wrong byte window or accept a contradictory request; the invalid_window contract is caller-visible on read_record_field
+authoring_evidence:
+  - kind: red-probe
+    detail: "scope-fn --target on record-field-window.js::normalizeWindowSelector → red_scan [], cognitive_before 15; body grep for grant/consent/bearer/token/field_not_granted → NONE (the file-level field_not_granted marker is in a sibling grant-scoped function, not this selector)"
+    result: pure selector; grant enforcement is elsewhere in the file
+  - kind: coverage-check
+    detail: "normalizeWindowSelector pinned by test/record-field-window-substrate.test.js (offset-mode, query-mode, mutual-exclusion rejection, and limit-clamp cases)"
+    result: both modes + the guards have by-name oracle coverage
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1fieldwin; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/record-field-window-substrate.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc'"
+    expect: record-field-window-substrate suite green with unchanged pass count; ephemeral DB isolates state
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/record-field-window.js::normalizeWindowSelector'"
+    expect: found=true; cognitive_before strictly below baseline 15 and below floor 10 (query-mode assembly removed)
+    expect_check:
+      type: scope_fn_lt
+      value: 10
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/record-field-window.js' --cog 5"
+    expect: file_excess strictly below the pre-edit baseline (23); the only NEW flagged name permitted is buildQueryModeWindow
+    expect_check:
+      type: file_excess_lt
+      value: 23
+  - rung: seam-and-message-pin
+    command: "cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/record-field-window.js\",\"utf8\");const w=s.replace(/\\s+/g,\" \");let rc=0;const msgs=[\"before_chars and after_chars require q\",\"q is exclusive with offset_chars\",\"q must be a non-empty string\"];for(const m of msgs){const ok=s.includes(m);console.log((ok?\"PASS \":\"FAIL \")+\"message preserved: \"+m);if(!ok)rc=1;}if(!s.includes(\"function buildQueryModeWindow\")){console.log(\"baseline: helper not extracted; vacuous PASS for seam\");process.exit(rc);}const seam=[[\"buildQueryModeWindow(params, boundedLimit, limitClamped) declared\",/function buildQueryModeWindow\\( ?params, ?boundedLimit, ?limitClamped,? ?\\)/],[\"delegated with bare identifiers\",/return buildQueryModeWindow\\( ?params, ?boundedLimit, ?limitClamped ?\\)/],[\"offset-mode early return preserved\",/return \\{ ?mode: 'offset', ?offset, ?limit: boundedLimit, ?limitClamped ?\\}/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);'"
+    expect: "exit 0, every line PASS. All three invalid_window messages enforced at baseline+post. Post: buildQueryModeWindow declared with three explicit named params, delegated with bare identifiers, and the offset-mode early return preserved verbatim."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - error-message-change
+  - limit-clamp-change
+  - mutual-exclusion-guard-change
+  - new-dependency
+  - new-module-file
+maker_tier: standard
+judge_tier: standard
+maker_provider: claude
+judge_provider: null
+batch_key: preserve_refactor×pure_logic×server/record-field-window
+touchset: [server/record-field-window.js]
+estimates:
+  tokens: 34000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: skipped
+outcome:
+  commit: null
+  skip_reason: "touchset-violation (revision cycle): reference-implementation/biome-cog.json; ALL changes reverted"
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1fieldwin; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/record-field-window-substrate.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=6167df87 bytes=314 receipt=quality/receipts/pl1-field-window-query-mode-0013/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-field-window-query-mode-0013/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/record-field-window.js::normalizeWindowSelector' -> exit 0 (0s) PASS; exit=0 djb2=a917987e bytes=332 receipt=quality/receipts/pl1-field-window-query-mode-0013/baseline-3-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/record-field-window.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=d402f40d bytes=512 receipt=quality/receipts/pl1-field-window-query-mode-0013/baseline-4-file-excess-remeasure.txt"
+    - "[baseline] seam-and-message-pin: cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/record-field-window.js\",\"utf8\");const w=s.replace(/\\s+/g,\" \");let rc=0;const msgs=[\"before_chars and after_chars require q\",\"q is exclusive with offset_chars\",\"q must be a non-empty string\"];for(const m of msgs){const ok=s.includes(m);console.log((ok?\"PASS \":\"FAIL \")+\"message preserved: \"+m);if(!ok)rc=1;}if(!s.includes(\"function buildQueryModeWindow\")){console.log(\"baseline: helper not extracted; vacuous PASS for seam\");process.exit(rc);}const seam=[[\"buildQueryModeWindow(params, boundedLimit, limitClamped) declared\",/function buildQueryModeWindow\\( ?params, ?boundedLimit, ?limitClamped,? ?\\)/],[\"delegated with bare identifiers\",/return buildQueryModeWindow\\( ?params, ?boundedLimit, ?limitClamped ?\\)/],[\"offset-mode early return preserved\",/return \\{ ?mode: 'offset', ?offset, ?limit: boundedLimit, ?limitClamped ?\\}/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);' -> exit 0 (0s) PASS; exit=0 djb2=181fc8f4 bytes=227 receipt=quality/receipts/pl1-field-window-query-mode-0013/baseline-5-seam-and-message-pin.txt"
+    - "[post] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1fieldwin; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/record-field-window-substrate.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=cfb49576 bytes=313 receipt=quality/receipts/pl1-field-window-query-mode-0013/post-1-direct-test.txt"
+    - "[post] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-field-window-query-mode-0013/post-2-typecheck.txt"
+    - "[post] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/record-field-window.js::normalizeWindowSelector' -> exit 0 (0s) PASS; exit=0 djb2=03d3fff5 bytes=331 receipt=quality/receipts/pl1-field-window-query-mode-0013/post-3-complexity-remeasure.txt"
+    - "[post] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/record-field-window.js' --cog 5 -> exit 0 (0s) FAIL: expect_check[file_excess_lt]: NEW function above the cog threshold post-change (baseline flagged=[clampWindowBounds,normalizeWindowSelector,classifyFieldType] post=[clampWindowBounds,buildQueryModeWindow,normalizeWindowSelector,classifyFieldType]) — complexity moved, not reduced; exit=0 djb2=46405b95 bytes=611 receipt=quality/receipts/pl1-field-window-query-mode-0013/post-4-file-excess-remeasure.txt"
+  tokens_actual: 48991
+  lesson: maker (claude) violated the touchset during revision

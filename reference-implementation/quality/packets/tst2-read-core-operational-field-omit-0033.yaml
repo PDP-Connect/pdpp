@@ -1,0 +1,73 @@
+candidate_id: tst2-read-core-operational-field-omit-0033
+created: "2026-07-06T23:53:00.000Z"
+repo_sha: current-tree-no-git-sandbox
+subsystem: packages/read-core/content-ladder
+files:
+  - "../packages/read-core/test/operational-field-omit-oracle.test.js"
+  - "../packages/read-core/src/index.js"
+symbols: [buildRecordContentLadder, recordContentFields, OMIT_FIELD_KEYS]
+public_surface:
+  - read-core content ladders omit operational identity fields from model-visible field windows and JSON projections
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: Operational handles such as connection_id are already represented in ladder identity. Duplicating them as evidence fields wastes context and can create misleading read_record_field affordances.
+plan:
+  transform_class: add-seeded-mutation-oracle
+  instruction: "Create packages/read-core/test/operational-field-omit-oracle.test.js. Build a ladder for id 'cin_a/messages:m1' with data containing connection_id:'cin_a', stream:'messages', id:'m1', metadata:{x:1}, and body:'hello'. Assert field_windows contains only body and json_fields does not contain metadata. Touch no source."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: medium
+risk:
+  blast_radius: subsystem
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: content ladders should not turn operational identity fields into bogus evidence fields
+authoring_evidence:
+  - kind: coverage-sweep
+    detail: "rg -n 'operational field|OMIT_FIELD_KEYS|metadata.*json_fields|connection_id.*field_windows' packages/read-core/test"
+    result: no focused omit-list oracle found
+  - kind: code-read
+    detail: packages/read-core/src/index.js OMIT_FIELD_KEYS drives both string field windows and JSON field projections
+    result: pure package-level contract
+evidence_required:
+  - rung: red-then-green-mutant-kill
+    command: "cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/operational-field-omit-oracle.test.js ]; then src=src/index.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0033_read_core.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/  \\\\x27connection_id\\\\x27,\\\\n//\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/operational-field-omit-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: operational omit oracle not yet created\"; exit 0; fi"
+    expect: BASELINE guarded green while absent. POST removing connection_id from the omit set must create an extra field window and the oracle must print MUTANT KILLED after byte-clean restore.
+    expect_check:
+      type: stdout_regex
+      value: "BASELINE:|MUTANT KILLED"
+  - rung: direct-test-green
+    command: "cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/operational-field-omit-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/operational-field-omit-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi"
+    expect: "POST: the operational-field omit oracle passes. BASELINE: guarded green while absent."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed: [non-test-source-change, production-source-change, behavior-change, new-dependency, git-command]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: claude
+batch_key: generate_evidence×pure_logic×packages/read-core/content-ladder
+touchset: ["../packages/read-core/test/operational-field-omit-oracle.test.js"]
+estimates:
+  tokens: 26000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: c98301abbc681c66acab7f2030c538ca49dfef68
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "claude PASS (confidence 0.93): The diff creates exactly the specified test file, touches no production source, and the evidence receipts show a genuine red-then-green mutant kill (removing connection_id from OMIT_FIELD_KEYS produces a real assertion failure with a legitimate actual/expected diff) plus a clean post-fix pass. This matches the plan instruction exactly and stays within not_allowed constraints (no source change, no new deps, no git commands)."
+  evidence_receipts:
+    - "[baseline] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/operational-field-omit-oracle.test.js ]; then src=src/index.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0033_read_core.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/  \\\\x27connection_id\\\\x27,\\\\n//\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/operational-field-omit-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: operational omit oracle not yet created\"; exit 0; fi -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=59ec9b54 bytes=50 receipt=quality/receipts/tst2-read-core-operational-field-omit-0033/baseline-1-red-then-green-mutant-kill.txt"
+    - "[baseline] direct-test-green: cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/operational-field-omit-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/operational-field-omit-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=caf12c67 bytes=31 receipt=quality/receipts/tst2-read-core-operational-field-omit-0033/baseline-2-direct-test-green.txt"
+    - "[post] red-then-green-mutant-kill: cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/operational-field-omit-oracle.test.js ]; then src=src/index.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0033_read_core.bak; cp \"$src\" \"$bak\"; perl -0pi -e \"s/  \\\\x27connection_id\\\\x27,\\\\n//\" \"$src\"; if cmp -s \"$src\" \"$bak\"; then cp \"$bak\" \"$src\"; rm -f \"$bak\"; echo \"MUTATION NOT APPLIED\"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/operational-field-omit-oracle.test.js 2>&1 || rc=1; cp \"$bak\" \"$src\"; cmp -s \"$src\" \"$bak\" || { echo \"RESTORE FAILED\"; rm -f \"$bak\"; exit 1; }; rm -f \"$bak\"; if [ $rc -eq 1 ]; then echo \"MUTANT KILLED\"; exit 0; else echo \"MUTANT SURVIVED\"; exit 1; fi; else echo \"BASELINE: operational omit oracle not yet created\"; exit 0; fi -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=f43cdd39 bytes=1095 receipt=quality/receipts/tst2-read-core-operational-field-omit-0033/post-1-red-then-green-mutant-kill.txt"
+    - "[post] direct-test-green: cd \"$REPO_ROOT/../packages/read-core\" && if [ -f test/operational-field-omit-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/operational-field-omit-oracle.test.js 2>&1 || rc=1; exit $rc; else echo \"BASELINE: test not yet created\"; exit 0; fi -> exit 0 (0s, timeout 1800s) PASS; exit=0 timeout=1800s djb2=833da24f bytes=189 receipt=quality/receipts/tst2-read-core-operational-field-omit-0033/post-2-direct-test-green.txt"
+  tokens_actual: 69523
+  lesson: null
+routing_class: certified-mechanical

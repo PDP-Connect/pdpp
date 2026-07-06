@@ -1,0 +1,47 @@
+# hone work t1b-refctl-gap-terminality-0004 — post rung 'exact-move'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/ref-control.ts
+# expect: callback body byte-identical modulo indentation + explicit pendingStreams param; no edits to isKnownSkipShadowedByPendingDetailGap or gapRecoveryAction
+# exit: 0  duration: 0s  verdict: PASS
+
+diff --git a/reference-implementation/server/ref-control.ts b/reference-implementation/server/ref-control.ts
+index 9d369383b..56b54fd12 100644
+--- a/reference-implementation/server/ref-control.ts
++++ b/reference-implementation/server/ref-control.ts
+@@ -1651,0 +1652,18 @@ function isKnownSkipShadowedByPendingDetailGap(gap: unknown, pendingStreams: Rea
++function knownGapIsTerminal(gap: unknown, pendingStreams: ReadonlySet<string>): boolean {
++  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
++    // Unclassified gap shape — be conservative and treat as terminal so
++    // we never silently paint over evidence we can't read.
++    return true;
++  }
++  if (isKnownSkipShadowedByPendingDetailGap(gap, pendingStreams)) {
++    return false;
++  }
++  const severity = (gap as { severity?: unknown }).severity;
++  if (severity === "actionable") {
++    return true;
++  }
++  // Any other unknown severity counts as terminal (conservative);
++  // recognized non-degrading and retryable severities are not terminal.
++  return severity !== "informational" && severity !== "recoverable" && severity !== "transient";
++}
++
+@@ -1660,17 +1678 @@ function hasTerminalKnownGap(
+-  return run.known_gaps.some((gap) => {
+-    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+-      // Unclassified gap shape — be conservative and treat as terminal so
+-      // we never silently paint over evidence we can't read.
+-      return true;
+-    }
+-    if (isKnownSkipShadowedByPendingDetailGap(gap, pendingStreams)) {
+-      return false;
+-    }
+-    const severity = (gap as { severity?: unknown }).severity;
+-    if (severity === "actionable") {
+-      return true;
+-    }
+-    // Any other unknown severity counts as terminal (conservative);
+-    // recognized non-degrading and retryable severities are not terminal.
+-    return severity !== "informational" && severity !== "recoverable" && severity !== "transient";
+-  });
++  return run.known_gaps.some((gap) => knownGapIsTerminal(gap, pendingStreams));

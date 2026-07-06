@@ -1,0 +1,18 @@
+# hone work server-routes-ref-connectors-t0-6c8904a3 — baseline rung 'complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/routes/ref-connectors.ts::getConnectorDetail'
+# executed-command (portable-path rewrite): node /home/tnunamak/.tmp/minnows-substrate/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/routes/ref-connectors.ts::getConnectorDetail'
+# expect: found=true and cognitive_before < 11 (packet baseline); red_scan unchanged
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "server/routes/ref-connectors.ts::getConnectorDetail",
+  "file": "server/routes/ref-connectors.ts",
+  "function": "getConnectorDetail",
+  "found": true,
+  "cognitive_before": 11,
+  "line": 370,
+  "caller_count": 6,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

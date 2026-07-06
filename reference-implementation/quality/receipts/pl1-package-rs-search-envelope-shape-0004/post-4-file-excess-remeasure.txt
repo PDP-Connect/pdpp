@@ -1,0 +1,147 @@
+# hone work pl1-package-rs-search-envelope-shape-0004 — post rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'server/package-rs-client.js' --cog 5
+# expect: file_excess strictly below the pre-edit baseline (169); the only NEW flagged name permitted is placeSearchHitsInEnvelope
+# exit: 0  duration: 0s  verdict: FAIL (expect_check[file_excess_lt]: NEW function above the cog threshold post-change (baseline flagged=[getJson,buildUrl,fanoutSchema,<anon>,sourceRequiredJson,createEventSubForChild,locateEventSubAndForward,routeFor,searchQueryForChild,typedError,mergeSchemaEnvelopes,<anon>,mergeListEnvelopes,<anon>,mergeSearchEnvelopes,<anon>,extractSearchHits,sourceMixForHits,mergeEventSubListEnvelopes,<anon>] post=[getJson,buildUrl,fanoutSchema,<anon>,sourceRequiredJson,createEventSubForChild,locateEventSubAndForward,routeFor,searchQueryForChild,typedError,mergeSchemaEnvelopes,<anon>,mergeListEnvelopes,<anon>,placeSearchHitsInEnvelope,mergeSearchEnvelopes,<anon>,extractSearchHits,sourceMixForHits,mergeEventSubListEnvelopes,<anon>]) — complexity moved, not reduced)
+
+{
+  "file": "server/package-rs-client.js",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 44,
+  "flagged_count": 21,
+  "file_excess": 164,
+  "flagged": [
+    {
+      "fn": "getJson",
+      "line": 92,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "buildUrl",
+      "line": 143,
+      "cc": 20,
+      "excess": 15
+    },
+    {
+      "fn": "fanoutSchema",
+      "line": 162,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "<anon>",
+      "line": 189,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "sourceRequiredJson",
+      "line": 255,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "createEventSubForChild",
+      "line": 291,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "locateEventSubAndForward",
+      "line": 321,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "routeFor",
+      "line": 359,
+      "cc": 16,
+      "excess": 11
+    },
+    {
+      "fn": "searchQueryForChild",
+      "line": 398,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "typedError",
+      "line": 490,
+      "cc": 15,
+      "excess": 10
+    },
+    {
+      "fn": "mergeSchemaEnvelopes",
+      "line": 529,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "<anon>",
+      "line": 560,
+      "cc": 77,
+      "excess": 72
+    },
+    {
+      "fn": "mergeListEnvelopes",
+      "line": 635,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "<anon>",
+      "line": 644,
+      "cc": 10,
+      "excess": 5
+    },
+    {
+      "fn": "placeSearchHitsInEnvelope",
+      "line": 671,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "mergeSearchEnvelopes",
+      "line": 686,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "<anon>",
+      "line": 696,
+      "cc": 9,
+      "excess": 4
+    },
+    {
+      "fn": "extractSearchHits",
+      "line": 739,
+      "cc": 8,
+      "excess": 3
+    },
+    {
+      "fn": "sourceMixForHits",
+      "line": 791,
+      "cc": 15,
+      "excess": 10
+    },
+    {
+      "fn": "mergeEventSubListEnvelopes",
+      "line": 828,
+      "cc": 7,
+      "excess": 2
+    },
+    {
+      "fn": "<anon>",
+      "line": 835,
+      "cc": 10,
+      "excess": 5
+    }
+  ],
+  "red_scan": [
+    "streamGrant",
+    "bearer",
+    "introspect",
+    "oauth"
+  ]
+}

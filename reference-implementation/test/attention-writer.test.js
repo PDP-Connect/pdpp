@@ -1,5 +1,5 @@
 /**
- * Tests for runtime/attention-writer.js — the production writer that
+ * Tests for runtime/attention-writer.ts — the production writer that
  * closes the `complete-ri-operator-console-reliability` task 5.3 gap by
  * persisting structured attention rows as INTERACTION/ASSISTANCE
  * messages flow through `runConnector`.
@@ -34,13 +34,13 @@ import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createAttentionWriter } from '../runtime/attention-writer.js';
+import { createAttentionWriter } from '../runtime/attention-writer.ts';
 import { runConnector } from '../runtime/index.js';
 import {
   createSqliteConnectorAttentionStore,
   getDefaultConnectorAttentionStore,
   resetDefaultConnectorAttentionStoreCache,
-} from '../server/stores/connector-attention-store.js';
+} from '../server/stores/connector-attention-store.ts';
 import {
   getConnectorAttentionProjection,
   projectConnectorSummaryConnectionHealth,
@@ -461,7 +461,7 @@ test(
   'real store path: default store returns null when neither writer nor record present',
   withTempDb(async () => {
     // Sanity check: the default store path is reachable from the writer
-    // (so runtime/index.js doesn't have to inject one in production)
+    // (so runtime/index.ts doesn't have to inject one in production)
     // and an empty connector yields an empty open list rather than a
     // false-healthy state.
     const store = getDefaultConnectorAttentionStore();

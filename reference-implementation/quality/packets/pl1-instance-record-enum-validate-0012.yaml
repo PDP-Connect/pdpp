@@ -1,0 +1,106 @@
+candidate_id: pl1-instance-record-enum-validate-0012
+created: "2026-07-02T10:11:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/stores/connector-instance-store
+files: [server/stores/connector-instance-store.js]
+symbols: [normalizeRecord]
+public_surface:
+  - assertOneOf validation errors for connector-instance sourceKind and status (thrown when a value is outside VALID_SOURCE_KINDS / VALID_STATUSES)
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "normalizeRecord (cc10, scope-fn red_scan empty) validates then builds a connector-instance record. It braids ENUM VALIDATION (two required-field guards plus two assertOneOf membership checks over VALID_SOURCE_KINDS and VALID_STATUSES) with ROW CONSTRUCTION (source-binding key derivation + a defaulted object literal including a content-addressed connectorInstanceId default). Extracting the enum-resolution-and-validation into a named pure helper that returns the validated { sourceKind, status } separates validation from construction, removing the assertOneOf branch cluster from the builder. Pure function, no I/O. NOTE: this is the RECORD normalizer, NOT the admission-status resolver resolveOwnerConnectorInstanceNamespace / resolveByExplicitInstanceId (those gate draft read-reachability and are deliberately OUT OF SCOPE)."
+plan:
+  transform_class: extract-enum-validation
+  instruction: "In server/stores/connector-instance-store.js ONLY. Create ONE module-level (column-0) pure named function ABOVE normalizeRecord:\n\nfunction resolveInstanceRecordEnums(record) — returns { sourceKind, status }. Contains VERBATIM the required-field guards + the two enum resolutions/validations currently at L152-156: `if (!record.ownerSubjectId) throw new Error('ownerSubjectId is required.'); if (!record.connectorId) throw new Error('connectorId is required.'); const sourceKind = record.sourceKind ?? 'manual'; assertOneOf(VALID_SOURCE_KINDS, sourceKind, 'sourceKind'); const status = record.status ?? 'active'; assertOneOf(VALID_STATUSES, status, 'status'); return { sourceKind, status };`. assertOneOf, VALID_SOURCE_KINDS, VALID_STATUSES are module-scope — reference directly.\n\nSEAM MECHANISM (explicit): resolveInstanceRecordEnums takes ONE explicit parameter named `record` (== the caller's parameter identifier), so normalizeRecord delegates with a bare identifier and destructures the result: `const { sourceKind, status } = resolveInstanceRecordEnums(record);`.\n\nHARD PRESERVE: the two required-field Error messages byte-for-byte, the `?? 'manual'`/`?? 'active'` defaults BEFORE the assertOneOf calls, the assertOneOf argument order (SET, value, label), and — remaining in normalizeRecord AFTER the destructure — the sourceBindingJson = stableJson(record.sourceBinding ?? {}) line, the sourceBindingKey = record.sourceBindingKey ?? makeConnectorInstanceSourceBindingKey(record.sourceBinding ?? {}) line, and the ENTIRE returned object literal including the connectorInstanceId ?? makeConnectorInstanceId({ ownerSubjectId, connectorId, sourceKind, sourceBindingKey }) default and every other field/default in exact order. NO new module file, NO behavior change. DO NOT touch resolveOwnerConnectorInstanceNamespace or resolveByExplicitInstanceId (admission-status gates)."
+expected_quality_gain: low
+owner_attention_reduction: low
+product_impact: none
+priority:
+  score: 41
+  computed: "2026-07-02T10:11:00.000Z"
+  inputs:
+    mass: 5
+    churn: 6
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: low
+  property_at_risk: connector-instance record enum validation — loosening the sourceKind/status membership check would let an invalid enum persist and corrupt the content-addressed connectorInstanceId derivation
+authoring_evidence:
+  - kind: red-probe
+    detail: "scope-fn --target on connector-instance-store.js::normalizeRecord → red_scan [], cognitive_before 10; body has no grant/consent/bearer/token markers; the admission-gate helpers (resolveOwnerConnectorInstanceNamespace/resolveByExplicitInstanceId) are explicitly excluded from touch"
+    result: pure validator+builder; admission gates untouched
+  - kind: coverage-check
+    detail: normalizeRecord reached through the store put/create path exercised by test/connector-instance-store.test.js (valid sourceKind/status and invalid-enum rejection cases)
+    result: by-name store oracle exists
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1instrec; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/connector-instance-store.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc'"
+    expect: connector-instance-store suite green with unchanged pass count; ephemeral DB isolates state
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/stores/connector-instance-store.js::normalizeRecord'"
+    expect: found=true; cognitive_before strictly below baseline 10 and below floor 6 (enum-validation cluster removed)
+    expect_check:
+      type: scope_fn_lt
+      value: 6
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/connector-instance-store.js' --cog 5"
+    expect: file_excess strictly below the pre-edit baseline (18); the only NEW flagged name permitted is resolveInstanceRecordEnums (should not flag)
+    expect_check:
+      type: file_excess_lt
+      value: 18
+  - rung: seam-and-gate-untouched-pin
+    command: "cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/stores/connector-instance-store.js\",\"utf8\");const w=s.replace(/\\s+/g,\" \");let rc=0;const gateIntact=/allowStatuses = \\[.active.\\]/.test(w)&&s.includes(\"resolveByExplicitInstanceId\");console.log((gateIntact?\"PASS \":\"FAIL \")+\"admission gate untouched (allowStatuses active default + resolveByExplicitInstanceId present)\");if(!gateIntact)rc=1;const asserts=(s.match(/assertOneOf\\(/g)||[]).length;console.log((asserts>=2?\"PASS \":\"FAIL \")+\"assertOneOf enum checks preserved (>=2)\");if(asserts<2)rc=1;if(!s.includes(\"function resolveInstanceRecordEnums\")){console.log(\"baseline: helper not extracted; vacuous PASS for seam\");process.exit(rc);}const seam=[[\"resolveInstanceRecordEnums(record) declared\",/function resolveInstanceRecordEnums\\( ?record,? ?\\)/],[\"delegated + destructured with bare identifier\",/const \\{ ?sourceKind, ?status ?\\} = resolveInstanceRecordEnums\\( ?record ?\\)/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);'"
+    expect: "exit 0, every line PASS. Enforces the admission gate stays untouched (allowStatuses ['active'] default + resolveByExplicitInstanceId present) AND both assertOneOf checks survive, at baseline+post. Post: resolveInstanceRecordEnums declared with the single named param `record` and delegated+destructured with a bare identifier."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - error-message-change
+  - enum-membership-change
+  - admission-gate-modification
+  - new-dependency
+  - new-module-file
+maker_tier: cheap
+judge_tier: standard
+maker_provider: codex
+judge_provider: null
+batch_key: preserve_refactor×pure_logic×server/stores/connector-instance-store
+touchset: [server/stores/connector-instance-store.js]
+estimates:
+  tokens: 28000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: skipped
+outcome:
+  commit: null
+  skip_reason: "unactionable(exact plan preserves enough nullish-default branches in normalizeRecord that the required complexity target remains 6, not <6.)"
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts:
+    - "[baseline] direct-test: cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1instrec; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/connector-instance-store.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc' -> exit 0 (4s) PASS; exit=0 djb2=bdec7da4 bytes=848 receipt=quality/receipts/pl1-instance-record-enum-validate-0012/baseline-1-direct-test.txt"
+    - "[baseline] typecheck: cd \"$REPO_ROOT\" && npx tsc --noEmit -> exit 0 (4s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/pl1-instance-record-enum-validate-0012/baseline-2-typecheck.txt"
+    - "[baseline] complexity-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/stores/connector-instance-store.js::normalizeRecord' -> exit 0 (0s) PASS; exit=0 djb2=eed33c85 bytes=340 receipt=quality/receipts/pl1-instance-record-enum-validate-0012/baseline-3-complexity-remeasure.txt"
+    - "[baseline] file-excess-remeasure: node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/stores/connector-instance-store.js' --cog 5 -> exit 0 (0s) PASS; exit=0 djb2=4b971ef3 bytes=631 receipt=quality/receipts/pl1-instance-record-enum-validate-0012/baseline-4-file-excess-remeasure.txt"
+    - "[baseline] seam-and-gate-untouched-pin: cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/stores/connector-instance-store.js\",\"utf8\");const w=s.replace(/\\s+/g,\" \");let rc=0;const gateIntact=/allowStatuses = \\[.active.\\]/.test(w)&&s.includes(\"resolveByExplicitInstanceId\");console.log((gateIntact?\"PASS \":\"FAIL \")+\"admission gate untouched (allowStatuses active default + resolveByExplicitInstanceId present)\");if(!gateIntact)rc=1;const asserts=(s.match(/assertOneOf\\(/g)||[]).length;console.log((asserts>=2?\"PASS \":\"FAIL \")+\"assertOneOf enum checks preserved (>=2)\");if(asserts<2)rc=1;if(!s.includes(\"function resolveInstanceRecordEnums\")){console.log(\"baseline: helper not extracted; vacuous PASS for seam\");process.exit(rc);}const seam=[[\"resolveInstanceRecordEnums(record) declared\",/function resolveInstanceRecordEnums\\( ?record,? ?\\)/],[\"delegated + destructured with bare identifier\",/const \\{ ?sourceKind, ?status ?\\} = resolveInstanceRecordEnums\\( ?record ?\\)/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);' -> exit 0 (0s) PASS; exit=0 djb2=d1a35674 bytes=198 receipt=quality/receipts/pl1-instance-record-enum-validate-0012/baseline-5-seam-and-gate-untouched-pin.txt"
+  tokens_actual: 91877
+  lesson: maker (codex) could not act on plan.instruction as written — rewrite the instruction before retrying
+resets:
+  - at: "2026-07-02T22:07:57.395Z"
+    from_status: reverted
+    reason: "re-route: extraction class -> codex maker/claude judge (tonight forced claude-maker = wrong pairing, all reverted)"

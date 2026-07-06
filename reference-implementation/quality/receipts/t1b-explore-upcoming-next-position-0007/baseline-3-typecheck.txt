@@ -1,0 +1,5 @@
+# hone work t1b-explore-upcoming-next-position-0007 — baseline rung 'typecheck'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit
+# expect: 0 errors
+# exit: 0  duration: 5s  verdict: PASS
+

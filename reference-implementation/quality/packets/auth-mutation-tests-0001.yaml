@@ -1,0 +1,131 @@
+candidate_id: auth-mutation-tests-0001
+created: "2026-07-02T08:25:00.000Z"
+repo_sha: f968ce61d6b7f862a78b0be81f1681e2fa061ed1
+subsystem: server
+files:
+  - server/auth.js
+  - server/owner-session.ts
+  - test/owner-session.test.js
+  - test/owner-csrf.test.js
+  - test/cli.test.js
+  - test/helpers/consent-device-auth-conformance.js
+  - test/helpers/sqlite-consent-device-auth-driver.js
+symbols:
+  - introspect
+  - exchangeGrantScopedDeviceCode
+  - getPendingConsent
+  - approveGrant
+  - file: server/auth.js
+    parent_fn: isExpired
+    anchor: "shared expiry predicate — new Date(row.expires_at).getTime() <= Date.now(); gates 12 call sites (pending consent :3239/:3292, device exchange :3483, oauth codes :4788/:4862/:4911)"
+    line: 64
+  - file: server/auth.js
+    parent_fn: introspect
+    anchor: "RFC 7662 expiry branch — active:false + inactive_reason grant_expired|token_expired"
+    line: 5708
+  - file: server/auth.js
+    parent_fn: expiresInIso
+    anchor: TTL arithmetic for every issued pending consent / device code / oauth code
+    line: 60
+public_surface:
+  - "RFC 8628 device-exchange error code expired_token ('Device code has expired')"
+  - "RFC 7662 introspection envelope: active:false with inactive_reason grant_expired|token_expired"
+  - "pending-consent lookup/approve surface: expired rows are not_found ('Pending consent request has expired')"
+behavior_status: contract
+ownership: OWN
+action: generate_evidence
+proof_class: property_at_risk
+execution_gate: autonomous
+why_this_matters: "Agenda #1 (auth-mutation-killing-tests, divergence-flagged at zero realized spend across 3 batches): doctrine names mutant-killing tests as a hard prerequisite — 'add mutant-killing tests BEFORE any auth refactor' — and a prior mutation run left cookie-security and session-expiry mutants alive at ~60% score. server/auth.js (5,926 LOC, attention 41,464, hotspot score 68,591) is the largest owned hotspot and is NOGO for autonomous refactor; this evidence-generation packet is the only move that converts the b-auth-substrate-policy-split campaign from blocked to workable. Verification 2026-07-02 falsified half the provenance: the cookie-security class does not live in auth.js at all (zero cookie code there; the session cookie is built in server/owner-session.ts and its flags are already pinned by name in test/owner-session.test.js, test/owner-csrf.test.js and test/owner-session-env.test.js) — so this packet narrows to the expiry-enforcement class inside server/auth.js, where three grep-unique mutation sites (isExpired :64-66 gating 12 call sites, the introspection expiry branch :5708, expiresInIso TTL arithmetic :60-62) have no fast by-name oracle: expiry coverage today is either store-conformance-shaped or buried in the slow CLI integration suite, and the device-exchange expired_token contract is asserted nowhere through production code."
+plan:
+  transform_class: direct-unit-oracle-generation
+  instruction: "Add test/auth-expiry-enforcement.test.js — targeted mutant-killing tests for the credential-expiry enforcement sites in server/auth.js (agenda item auth-mutation-killing-tests: prior mutation run reported ~60% score with cookie-security and session-expiry survivors). SCOPE NARROWING, VERIFIED 2026-07-02 — do NOT write cookie-attribute tests: server/auth.js contains ZERO cookie code (grep -i over httponly/samesite/secure/cookie: 0 matches); the session cookie is built in server/owner-session.ts buildOwnerSessionSetCookie (:190-205) and its HttpOnly/SameSite/Path/Secure/Max-Age attributes are ALREADY pinned by name in test/owner-session.test.js:44-58 and :70-71, the SameSite=Strict opt-in on the live server in test/owner-csrf.test.js:715-726, the TTL default + env override in test/owner-session-env.test.js, and expired-session-token rejection (owner-session.ts:113) in test/owner-session.test.js:39-42 — duplicating any of those is an automatic REVISE. What is NOT pinned fast and by name is expiry enforcement inside server/auth.js; pin these four contracts with EXACTLY these test names: (1) 'fresh pending consent: lookup succeeds with a future expires_at' — start a device flow, then assert getPendingConsent returns the pending view and its expires_at parses to a FUTURE instant (kills TTL-arithmetic mutants in expiresInIso :60-62). (2) 'expired pending consent: lookup returns null and approve is refused not_found' — rewind the row (UPDATE pending_consents SET expires_at = <past ISO> WHERE device_code = ?, the exact seam pattern of test/helpers/sqlite-consent-device-auth-driver.js:183-191), then assert getPendingConsent (:3235, isExpired gate at :3239) returns null and approveGrant (:3280) throws code not_found with message containing 'Pending consent request has expired' (:3292-3297). (3) 'expired device code: grant-scoped exchange fails expired_token' — rewind, then exchangeGrantScopedDeviceCode (:3467) must throw the RFC 8628 expired_token error 'Device code has expired' (:3483-3486). (4) 'expired client token: introspect returns active false with inactive_reason grant_expired' — issue a client grant token via the normal flow, assert introspect() reports active:true BEFORE the rewind (so the test discriminates the branch, not the fixture), then UPDATE tokens SET expires_at = <past ISO> WHERE token_id = ? (the pattern of test/cli.test.js:661-665) and assert introspect (:5678) returns active:false with inactive_reason grant_expired (expiry branch :5708-5731). HARNESS: self-contained SINGLE file — import production functions directly from ../server/auth.js (getPendingConsent, approveGrant, exchangeGrantScopedDeviceCode, introspect are all exported) and the DB handle from ../server/db.js (initDb/getDb/closeDb against a mkdtemp sqlite path, the style of test/helpers/sqlite-consent-device-auth-driver.js:26-47), or run the in-process server via startServer the way test/b3-introspection-resources-conformance.test.js does where a route-level flow is simpler; either way create NO other file — anything outside the touchset is a fail-closed revert. Move time by direct row UPDATEs on expires_at, never wall-clock sleeps. EXISTING-COVERAGE HONESTY (verified 2026-07-02): the consent-device conformance suites already cover expired-pending-consent lookup/approve/deny via the forceExpirePendingConsent seam (test/helpers/consent-device-auth-conformance.js:259-301), and test/cli.test.js:657-673 covers introspect grant_expired through the slow CLI integration harness — this oracle's value is FAST, by-name, single-file pinning that the auth-substrate-policy-split refactor loop can run per-iteration, plus the device-exchange expired_token contract that no test currently asserts through production code ('Device code has expired' appears in test/ only inside helper reimplementations); 'Authorization code has expired' (:4912, PKCE code exchange) is also unpinned anywhere — pin it too ONLY if you can drive exchangeOAuthAuthorizationCode without bloating the harness; it is optional, the four named contracts are mandatory. PROCESS (non-negotiable): run node --test test/auth-expiry-enforcement.test.js iteratively DURING authoring and only conclude when it is green against UNMUTATED code — this oracle characterizes what auth.js does today; if an assertion is red on unmutated code your harness or your reading is wrong, fix that before handing back; never hand back a file whose own direct-test rung is red. Seeded-regression discrimination is ENGINE-RUN (makers cannot write receipts — quality/ is forbidden to them): three red-then-green-* rungs each seed one grep-unique mutation in server/auth.js via sed, run this oracle expecting the matching named test to FAIL, and restore — (m1) isExpired body to return false (:65), (m2) introspection expiry condition to false (:5708), (m3) expiresInIso TTL sign flip (:61). Author each test so its mutation reds it by name. Do NOT mutate server/auth.js yourself; the rungs seed and restore it, and the byte-identity rung proves restoration."
+expected_quality_gain: high
+owner_attention_reduction: medium
+product_impact: none
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: high
+  property_at_risk: "auth credential-expiry enforcement (consent/device-code/token lifetimes) — a vacuous oracle here would bless a later auth refactor that silently stops expiring credentials; duplicating already-pinned cookie-flag tests would fake progress on the ~60% mutation score without touching the surviving class"
+authoring_evidence:
+  - kind: coverage-sweep
+    detail: "grep -n -i 'httponly|samesite|secure|set-cookie|cookie' server/auth.js (2026-07-02)"
+    result: "0 matches — the cookie-security mutant class does NOT live in server/auth.js; the session-cookie attribute site is server/owner-session.ts buildOwnerSessionSetCookie :190-205 (HttpOnly :194, sameSiteAttribute :185-187, conditional Secure, Max-Age)"
+  - kind: coverage-sweep
+    detail: "cookie-flag + session-expiry pins already in test/: owner-session.test.js:44-58 and :70-71 (HttpOnly, SameSite=Lax, Path=/, Secure, Max-Age on set-cookie + clear-cookie), :39-42 (expired session token rejected via decodeOwnerSession, owner-session.ts:113); owner-csrf.test.js:715-726 (SameSite=Strict live-server opt-in); owner-session-env.test.js (TTL default 604800 + PDPP_OWNER_SESSION_TTL_SECONDS override)"
+    result: cookie-security class is already killed by name — packet narrowed to server/auth.js expiry enforcement; do-not-duplicate encoded in not_allowed
+  - kind: mutation-site-verification
+    detail: "grep -cF over server/auth.js (2026-07-02): 'return new Date(row.expires_at).getTime() <= Date.now();' / 'row.expires_at && new Date(row.expires_at) < new Date()' / 'Date.now() + seconds'"
+    result: "1 / 1 / 1 — all three sed targets grep-unique (server/auth.js:65, :5708, :61); isExpired gates 12 call sites incl. pending-consent lookup :3239, approve :3292, device exchange :3483, oauth codes :4788/:4862/:4911"
+  - kind: coverage-sweep
+    detail: "expiry-path pins today: consent-device conformance covers expired pending consent via the forceExpirePendingConsent seam (test/helpers/consent-device-auth-conformance.js:259-301, driver comment at sqlite-consent-device-auth-driver.js:187 confirms it exercises the production isExpired()); cli.test.js:657-673 covers introspect grant_expired via the CLI harness; grep 'Device code has expired' over test/ hits only helper reimplementations (memory/postgres drivers), no assertion through production exchange; 'Authorization code has expired' unpinned anywhere"
+    result: "the device-exchange expired_token contract and a fast by-name expiry oracle are the genuine gaps; the introspection and pending-consent arms add speed and locality, not first coverage — recorded honestly"
+  - kind: baseline-run
+    detail: node --test test/owner-session.test.js (2026-07-02)
+    result: "9/9 pass, 0 fail, 0 skipped, 471ms — baseline suite for the direct-test rung verified green"
+evidence_required:
+  - rung: direct-test
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/auth-expiry-enforcement.test.js ]; then node --test test/auth-expiry-enforcement.test.js test/owner-session.test.js; else node --test test/owner-session.test.js; fi'"
+    expect: "baseline (new file absent): owner-session 9/9 green; post: the new oracle green alongside it, 0 fail, no new skips, all four named contract tests present and passing"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: red-then-green-expiry-predicate
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/return new Date(row.expires_at).getTime() <= Date.now();/return false;/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi"
+    expect: "baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming 'expired pending consent: lookup returns null and approve is refused not_found' and 'expired device code: grant-scoped exchange fails expired_token' — the mutation makes isExpired always false (server/auth.js:64-66; sed target verified unique 2026-07-02: grep -cF 'return new Date(row.expires_at).getTime() <= Date.now();' server/auth.js == 1), so rewound rows are treated as live: the expired pending consent is returned by lookup and the expired device code exchanges instead of failing expired_token; guard confirms a clean file before seeding; checkout restores it"
+  - rung: red-then-green-introspect-expiry
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/row.expires_at && new Date(row.expires_at) < new Date()/false/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi"
+    expect: "baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming 'expired client token: introspect returns active false with inactive_reason grant_expired' — the mutation disables the RFC 7662 expiry branch (server/auth.js:5708; grep -cF 'row.expires_at && new Date(row.expires_at) < new Date()' server/auth.js == 1) so the rewound token introspects active:true; the pre-rewind active:true half of the test stays green, isolating the branch; checkout restores it"
+  - rung: red-then-green-ttl-arithmetic
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/Date.now() + seconds/Date.now() - seconds/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi"
+    expect: "baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming 'fresh pending consent: lookup succeeds with a future expires_at' — the mutation flips expiresInIso TTL arithmetic (server/auth.js:60-62; grep -cF 'Date.now() + seconds' server/auth.js == 1) so every issued pending consent / device code is born already expired and the fresh-lookup happy path observes null or a past expires_at; checkout restores it"
+  - rung: byte-identity
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/server/auth.js"
+    expect: "empty — this packet changes tests only (server/auth.js is NOT in the touchset); also proves every red-then-green rung's seed was restored"
+  - rung: typecheck
+    command: "cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - implementation-change
+  - new-dependency
+  - wall-clock-sleep-as-sync-primitive
+  - cookie-flag-test-duplication
+  - new-helper-files-outside-touchset
+maker_tier: standard
+judge_tier: strong
+maker_provider: claude
+judge_provider: codex
+batch_key: generate_evidence×property_at_risk×server
+touchset: [test/auth-expiry-enforcement.test.js]
+estimates:
+  tokens: 110000
+  evidence_cost: medium
+depends_on: []
+unlocks: []
+status: landed
+outcome:
+  commit: a86ed53d654801067446ce2db1315e8115c60420
+  skip_reason: null
+  blocked_on: null
+  judge_verdict: "codex PASS (confidence 0.86): The diff satisfies the packet’s required test-only scope and includes all four mandatory contract tests by exact name. The final direct-test and typecheck rungs are green, byte-identity for server/auth.js is empty, and the supplied mutation outputs show the expiry predicate, introspection expiry, and TTL arithmetic mutants being killed by the intended tests. The mutation rung exit codes are masked by the restore command, but the visible outputs still provide the property-at-risk evidence required here."
+  evidence_receipts:
+    - "[baseline] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/auth-expiry-enforcement.test.js ]; then node --test test/auth-expiry-enforcement.test.js test/owner-session.test.js; else node --test test/owner-session.test.js; fi' -> exit 0 (1s) PASS; exit=0 djb2=f0a47bda bytes=980 receipt=quality/receipts/auth-mutation-tests-0001/baseline-1-direct-test.txt"
+    - "[baseline] red-then-green-expiry-predicate: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/return new Date(row.expires_at).getTime() <= Date.now();/return false;/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/auth-mutation-tests-0001/baseline-2-red-then-green-expiry-predicate.txt"
+    - "[baseline] red-then-green-introspect-expiry: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/row.expires_at && new Date(row.expires_at) < new Date()/false/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/auth-mutation-tests-0001/baseline-3-red-then-green-introspect-expiry.txt"
+    - "[baseline] red-then-green-ttl-arithmetic: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/Date.now() + seconds/Date.now() - seconds/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi -> exit 0 (0s) PASS; exit=0 djb2=82b862cb bytes=24 receipt=quality/receipts/auth-mutation-tests-0001/baseline-4-red-then-green-ttl-arithmetic.txt"
+    - "[baseline] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/server/auth.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/auth-mutation-tests-0001/baseline-5-byte-identity.txt"
+    - "[baseline] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/auth-mutation-tests-0001/baseline-6-typecheck.txt"
+    - "[post] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/auth-expiry-enforcement.test.js ]; then node --test test/auth-expiry-enforcement.test.js test/owner-session.test.js; else node --test test/owner-session.test.js; fi' -> exit 1 (1s) FAIL: exit 1 (expected 0); exit=1 djb2=893e6656 bytes=2461 receipt=quality/receipts/auth-mutation-tests-0001/post-1-direct-test.txt"
+    - "[post-r1] direct-test: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/auth-expiry-enforcement.test.js ]; then node --test test/auth-expiry-enforcement.test.js test/owner-session.test.js; else node --test test/owner-session.test.js; fi' -> exit 0 (1s) PASS; exit=0 djb2=7aa88418 bytes=1336 receipt=quality/receipts/auth-mutation-tests-0001/post-r1-1-direct-test.txt"
+    - "[post-r1] red-then-green-expiry-predicate: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/return new Date(row.expires_at).getTime() <= Date.now();/return false;/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi -> exit 0 (1s) PASS; exit=0 djb2=b7f0abfa bytes=4263 receipt=quality/receipts/auth-mutation-tests-0001/post-r1-2-red-then-green-expiry-predicate.txt"
+    - "[post-r1] red-then-green-introspect-expiry: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/row.expires_at && new Date(row.expires_at) < new Date()/false/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi -> exit 0 (1s) PASS; exit=0 djb2=80a51573 bytes=1162 receipt=quality/receipts/auth-mutation-tests-0001/post-r1-3-red-then-green-introspect-expiry.txt"
+    - "[post-r1] red-then-green-ttl-arithmetic: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/Date.now() + seconds/Date.now() - seconds/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi -> exit 0 (1s) PASS; exit=0 djb2=0f7db6d9 bytes=1758 receipt=quality/receipts/auth-mutation-tests-0001/post-r1-4-red-then-green-ttl-arithmetic.txt"
+    - "[post-r1] byte-identity: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/server/auth.js -> exit 0 (0s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/auth-mutation-tests-0001/post-r1-5-byte-identity.txt"
+    - "[post-r1] typecheck: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit -> exit 0 (5s) PASS; exit=0 djb2=00001505 bytes=0 receipt=quality/receipts/auth-mutation-tests-0001/post-r1-6-typecheck.txt"
+  tokens_actual: 82550
+  lesson: landed after 1 revision cycle(s) — first attempt did not clear the gate

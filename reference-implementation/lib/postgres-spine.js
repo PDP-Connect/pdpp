@@ -226,7 +226,6 @@ function encodeSummaryCursor(summary) {
 const RUN_TERMINAL_EVENT_TYPES = new Set([
   'run.completed',
   'run.failed',
-  'run.browser_surface_failed',
   'run.cancelled',
   'run.abandoned',
 ]);
@@ -277,18 +276,33 @@ export async function postgresGetRunStartedEvent(runId) {
   return result.rows[0] ?? null;
 }
 
-async function summarizeRows(id, rows, aggregate = {}) {
-  const events = rows.map(hydrate).filter(Boolean);
+function selectSummaryEventFields(events) {
   const first = events[0] || {};
   const last = events[events.length - 1] || first;
   const kinds = [...new Set(events.map((event) => event.event_type).filter(Boolean))];
   const failureEvent = events.find((event) => event.status === 'failed' || event.status === 'rejected');
+  const hasRunStarted = events.some((event) => event.event_type === 'run.started');
+  const needsInput = events.some((event) => event.status === 'needs_input');
+  return { failureEvent, first, hasRunStarted, kinds, last, needsInput };
+}
+
+function selectSummarySourceProjection(events) {
   const sources = events.map(sourceFromEvent).filter(Boolean);
   const source = sources[0] || null;
   const connector = sources.find((candidate) => candidate.kind === 'connector') || null;
+  return { connector, source };
+}
+
+function pickSummaryBrowserSurfaceProjection(events) {
   const browserSurface = findLatestBrowserSurfaceProjection(events);
   const browserSurfaceConnectionId = connectionIdFromBrowserSurfaceProfileKey(browserSurface);
+  return {
+    browserSurfaceConnectionId,
+    browserSurfaceFields: pickBrowserSurfaceFields(browserSurface),
+  };
+}
 
+async function projectSummaryStatus(id, events) {
   // Status projection — mirror lib/spine.ts summarizeEvents logic.
   //
   // Run-correlation summaries must reflect the run's lifecycle status
@@ -325,7 +339,13 @@ async function summarizeRows(id, rows, aggregate = {}) {
       }
     }
   }
+  return status;
+}
 
+function assembleSummaryObject(id, aggregate, events, eventFields, sourceProjection, browserSurfaceProjection, status) {
+  const { failureEvent, first, hasRunStarted, kinds, last, needsInput } = eventFields;
+  const { connector, source } = sourceProjection;
+  const { browserSurfaceConnectionId, browserSurfaceFields } = browserSurfaceProjection;
   return {
     id,
     actor_id: last.actor_id || null,
@@ -341,7 +361,7 @@ async function summarizeRows(id, rows, aggregate = {}) {
           event_type: failureEvent.event_type,
           reason: typeof failureEvent.data?.reason === 'string' ? failureEvent.data.reason : null,
         }
-      : status === 'failed' && events.some((event) => event.event_type === 'run.started')
+      : status === 'failed' && hasRunStarted
         ? {
             event_type: 'run.started',
             reason: 'orphaned_started_run',
@@ -351,7 +371,7 @@ async function summarizeRows(id, rows, aggregate = {}) {
     grant_id: last.grant_id || null,
     kinds,
     last_at: aggregate.last_at || last.occurred_at || null,
-    needs_input: events.some((event) => event.status === 'needs_input'),
+    needs_input: needsInput,
     request_id: last.request_id || null,
     run_id: last.run_id || null,
     source,
@@ -359,8 +379,17 @@ async function summarizeRows(id, rows, aggregate = {}) {
     source_kind: source?.kind || null,
     status,
     trace_id: last.trace_id || null,
-    ...pickBrowserSurfaceFields(browserSurface),
+    ...browserSurfaceFields,
   };
+}
+
+async function summarizeRows(id, rows, aggregate = {}) {
+  const events = rows.map(hydrate).filter(Boolean);
+  const eventFields = selectSummaryEventFields(events);
+  const sourceProjection = selectSummarySourceProjection(events);
+  const browserSurfaceProjection = pickSummaryBrowserSurfaceProjection(events);
+  const status = await projectSummaryStatus(id, events);
+  return assembleSummaryObject(id, aggregate, events, eventFields, sourceProjection, browserSurfaceProjection, status);
 }
 
 function mergeEventRows(rows) {
@@ -644,6 +673,19 @@ export async function postgresClientMetadataForClients(clientIds) {
   return out;
 }
 
+function annotateGrantPackageId(summary, packageByGrant) {
+  if (!summary) return summary;
+  const gid = summary.grant_id || summary.id;
+  const packageId = gid ? packageByGrant.get(gid) : null;
+  return packageId ? { ...summary, grant_package_id: packageId } : summary;
+}
+
+function annotateClientMetadata(summary, clientById) {
+  if (!summary?.client_id) return summary;
+  const client = clientById.get(summary.client_id);
+  return client ? { ...summary, client } : summary;
+}
+
 export async function postgresListSpineCorrelations(kind, filters = {}) {
   const column = COLUMN_BY_KIND[kind];
   if (!column) return { summaries: [], hasMore: false, nextCursor: null };
@@ -737,12 +779,7 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
       .filter((v) => typeof v === 'string' && v.length > 0);
     const packageByGrant = await postgresGrantPackageIdsForGrants(ids);
     if (packageByGrant.size > 0) {
-      summaries = summaries.map((s) => {
-        if (!s) return s;
-        const gid = s.grant_id || s.id;
-        const packageId = gid ? packageByGrant.get(gid) : null;
-        return packageId ? { ...s, grant_package_id: packageId } : s;
-      });
+      summaries = summaries.map((s) => annotateGrantPackageId(s, packageByGrant));
     }
   }
 
@@ -752,11 +789,7 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
       .filter((v) => typeof v === 'string' && v.length > 0))];
     const clientById = await postgresClientMetadataForClients(clientIds);
     if (clientById.size > 0) {
-      summaries = summaries.map((s) => {
-        if (!s?.client_id) return s;
-        const client = clientById.get(s.client_id);
-        return client ? { ...s, client } : s;
-      });
+      summaries = summaries.map((s) => annotateClientMetadata(s, clientById));
     }
   }
 

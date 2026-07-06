@@ -1,0 +1,40 @@
+# hone work pl2-manual-upload-insert-redesign-0011 — baseline rung 'file-excess-remeasure'
+# command: node "$HONE_ROOT/collectors/scope-fn.mjs" --repo "$REPO_ROOT" --file 'server/stores/manual-upload-artifact-store.ts' --cog 5
+# expect: Whole-file excess drops from 19 to the computed target 8: normalizeInsert leaves the flagged set and no new helper is flagged.
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "file": "server/stores/manual-upload-artifact-store.ts",
+  "found": true,
+  "cog_threshold": 5,
+  "fn_count": 7,
+  "flagged_count": 4,
+  "file_excess": 19,
+  "flagged": [
+    {
+      "fn": "numberOrNull",
+      "line": 146,
+      "cc": 6,
+      "excess": 1
+    },
+    {
+      "fn": "normalizeInsert",
+      "line": 188,
+      "cc": 16,
+      "excess": 11
+    },
+    {
+      "fn": "normalizePatch",
+      "line": 227,
+      "cc": 11,
+      "excess": 6
+    },
+    {
+      "fn": "update",
+      "line": 301,
+      "cc": 6,
+      "excess": 1
+    }
+  ],
+  "red_scan": []
+}

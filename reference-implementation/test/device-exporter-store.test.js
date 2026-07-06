@@ -6,7 +6,7 @@ import {
   DeviceBatchConflictError,
   createPostgresDeviceExporterStore,
   createSqliteDeviceExporterStore,
-} from '../server/stores/device-exporter-store.js';
+} from '../server/stores/device-exporter-store.ts';
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,

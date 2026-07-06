@@ -651,6 +651,28 @@ function readRunResources(req: RouteRequest): Readonly<Record<string, readonly s
   return resources;
 }
 
+async function executeRunNow(
+  ctx: MountRefConnectorsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  namespace: ConnectorNamespace
+): Promise<void> {
+  const resources = readRunResources(req);
+  const started = await ctx.runNow(namespace.connectorId, {
+    connectorInstanceId: namespace.connectorInstanceId,
+    force: readExplicitRunForce(req),
+    ...(resources ? { resources } : {}),
+  });
+  ctx.invalidateConnectorSummariesCache?.();
+  // Scoped, awaited dirty marking: starting a run is a run-lifecycle event
+  // that changes this connection's last-run evidence. Instance id known.
+  await ctx.markConnectorSummaryEvidenceDirty?.({
+    connectorInstanceId: namespace.connectorInstanceId,
+    reason: "ref run-now started a run for this connection",
+  });
+  res.status(202).json(started);
+}
+
 export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContext): void {
   app.post(
     "/_ref/connectors/:connectorId/run",
@@ -660,20 +682,7 @@ export function mountRefConnectorRun(app: AppLike, ctx: MountRefConnectorsContex
       try {
         const connectorId = decodeURIComponent(req.params.connectorId as string);
         const namespace = await resolveRefConnectorNamespace(ctx, req, connectorId);
-        const resources = readRunResources(req);
-        const started = await ctx.runNow(namespace.connectorId, {
-          connectorInstanceId: namespace.connectorInstanceId,
-          force: readExplicitRunForce(req),
-          ...(resources ? { resources } : {}),
-        });
-        ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: starting a run is a run-lifecycle event
-        // that changes this connection's last-run evidence. Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref run-now started a run for this connection",
-        });
-        res.status(202).json(started);
+        await executeRunNow(ctx, req, res, namespace);
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -692,20 +701,7 @@ export function mountRefConnectionRun(app: AppLike, ctx: MountRefConnectorsConte
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId, {
           allowStatuses: ["active", "draft"],
         });
-        const resources = readRunResources(req);
-        const started = await ctx.runNow(namespace.connectorId, {
-          connectorInstanceId: namespace.connectorInstanceId,
-          force: readExplicitRunForce(req),
-          ...(resources ? { resources } : {}),
-        });
-        ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: starting a run is a run-lifecycle event
-        // that changes this connection's last-run evidence. Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref run-now started a run for this connection",
-        });
-        res.status(202).json(started);
+        await executeRunNow(ctx, req, res, namespace);
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -779,6 +775,25 @@ export function mountRefConnectionScheduleUpsert(app: AppLike, ctx: MountRefConn
   );
 }
 
+async function executeScheduleToggle(
+  ctx: MountRefConnectorsContext,
+  res: RouteResponse,
+  namespace: ConnectorNamespace,
+  enabled: boolean,
+  reason: string
+): Promise<void> {
+  const schedule = await ctx.setScheduleEnabled(namespace.connectorId, enabled, {
+    connectorInstanceId: namespace.connectorInstanceId,
+  });
+  await ctx.onScheduleMutation?.();
+  ctx.invalidateConnectorSummariesCache?.();
+  await ctx.markConnectorSummaryEvidenceDirty?.({
+    connectorInstanceId: namespace.connectorInstanceId,
+    reason,
+  });
+  res.json(schedule);
+}
+
 export function mountRefConnectorSchedulePause(app: AppLike, ctx: MountRefConnectorsContext): void {
   app.post(
     "/_ref/connectors/:connectorId/schedule/pause",
@@ -788,18 +803,13 @@ export function mountRefConnectorSchedulePause(app: AppLike, ctx: MountRefConnec
       try {
         const connectorId = decodeURIComponent(req.params.connectorId as string);
         const namespace = await resolveRefConnectorNamespace(ctx, req, connectorId);
-        const schedule = await ctx.setScheduleEnabled(namespace.connectorId, false, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        await ctx.onScheduleMutation?.();
-        ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: pausing a schedule changes this
-        // connection's schedule/refresh-policy evidence. Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref schedule pause changed connection schedule evidence",
-        });
-        res.json(schedule);
+        await executeScheduleToggle(
+          ctx,
+          res,
+          namespace,
+          false,
+          "ref schedule pause changed connection schedule evidence"
+        );
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -816,18 +826,13 @@ export function mountRefConnectionSchedulePause(app: AppLike, ctx: MountRefConne
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId);
-        const schedule = await ctx.setScheduleEnabled(namespace.connectorId, false, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        await ctx.onScheduleMutation?.();
-        ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: pausing a schedule changes this
-        // connection's schedule/refresh-policy evidence. Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref schedule pause changed connection schedule evidence",
-        });
-        res.json(schedule);
+        await executeScheduleToggle(
+          ctx,
+          res,
+          namespace,
+          false,
+          "ref schedule pause changed connection schedule evidence"
+        );
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -844,18 +849,13 @@ export function mountRefConnectorScheduleResume(app: AppLike, ctx: MountRefConne
       try {
         const connectorId = decodeURIComponent(req.params.connectorId as string);
         const namespace = await resolveRefConnectorNamespace(ctx, req, connectorId);
-        const schedule = await ctx.setScheduleEnabled(namespace.connectorId, true, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        await ctx.onScheduleMutation?.();
-        ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: resuming a schedule changes this
-        // connection's schedule/refresh-policy evidence. Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref schedule resume changed connection schedule evidence",
-        });
-        res.json(schedule);
+        await executeScheduleToggle(
+          ctx,
+          res,
+          namespace,
+          true,
+          "ref schedule resume changed connection schedule evidence"
+        );
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -872,23 +872,42 @@ export function mountRefConnectionScheduleResume(app: AppLike, ctx: MountRefConn
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId);
-        const schedule = await ctx.setScheduleEnabled(namespace.connectorId, true, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        await ctx.onScheduleMutation?.();
-        ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: resuming a schedule changes this
-        // connection's schedule/refresh-policy evidence. Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref schedule resume changed connection schedule evidence",
-        });
-        res.json(schedule);
+        await executeScheduleToggle(
+          ctx,
+          res,
+          namespace,
+          true,
+          "ref schedule resume changed connection schedule evidence"
+        );
       } catch (err) {
         ctx.handleError(res, err);
       }
     }
   );
+}
+
+async function executeScheduleDelete(
+  ctx: MountRefConnectorsContext,
+  res: RouteResponse,
+  namespace: ConnectorNamespace,
+  notFoundMessage: string
+): Promise<void> {
+  const deleted = await ctx.deleteSchedule(namespace.connectorId, {
+    connectorInstanceId: namespace.connectorInstanceId,
+  });
+  if (!deleted) {
+    ctx.pdppError(res, 404, "not_found", notFoundMessage);
+    return;
+  }
+  await ctx.onScheduleMutation?.();
+  ctx.invalidateConnectorSummariesCache?.();
+  // Scoped, awaited dirty marking: deleting a schedule changes this
+  // connection's schedule/refresh-policy evidence. Instance id known.
+  await ctx.markConnectorSummaryEvidenceDirty?.({
+    connectorInstanceId: namespace.connectorInstanceId,
+    reason: "ref schedule delete changed connection schedule evidence",
+  });
+  res.status(204).end();
 }
 
 export function mountRefConnectorScheduleDelete(app: AppLike, ctx: MountRefConnectorsContext): void {
@@ -900,22 +919,7 @@ export function mountRefConnectorScheduleDelete(app: AppLike, ctx: MountRefConne
       try {
         const connectorId = decodeURIComponent(req.params.connectorId as string);
         const namespace = await resolveRefConnectorNamespace(ctx, req, connectorId);
-        const deleted = await ctx.deleteSchedule(namespace.connectorId, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        if (!deleted) {
-          ctx.pdppError(res, 404, "not_found", `Schedule not found for connector: ${connectorId}`);
-          return;
-        }
-        await ctx.onScheduleMutation?.();
-        ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: deleting a schedule changes this
-        // connection's schedule/refresh-policy evidence. Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref schedule delete changed connection schedule evidence",
-        });
-        res.status(204).end();
+        await executeScheduleDelete(ctx, res, namespace, `Schedule not found for connector: ${connectorId}`);
       } catch (err) {
         ctx.handleError(res, err);
       }
@@ -932,22 +936,7 @@ export function mountRefConnectionScheduleDelete(app: AppLike, ctx: MountRefConn
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId);
-        const deleted = await ctx.deleteSchedule(namespace.connectorId, {
-          connectorInstanceId: namespace.connectorInstanceId,
-        });
-        if (!deleted) {
-          ctx.pdppError(res, 404, "not_found", `Schedule not found for connection: ${connectorInstanceId}`);
-          return;
-        }
-        await ctx.onScheduleMutation?.();
-        ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: deleting a schedule changes this
-        // connection's schedule/refresh-policy evidence. Instance id known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: namespace.connectorInstanceId,
-          reason: "ref schedule delete changed connection schedule evidence",
-        });
-        res.status(204).end();
+        await executeScheduleDelete(ctx, res, namespace, `Schedule not found for connection: ${connectorInstanceId}`);
       } catch (err) {
         ctx.handleError(res, err);
       }

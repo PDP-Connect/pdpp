@@ -1,0 +1,9 @@
+# hone work pl1-package-rs-search-envelope-shape-0006 — baseline rung 'accumulation-untouched-pin'
+# command: cd "$REPO_ROOT" && node -e 'const fs=require("fs");const s=fs.readFileSync("server/package-rs-client.js","utf8");const w=s.replace(/\s+/g," ");let rc=0;const mustHave=[["per-hit for-of push loop intact (no map/spread)",/for \(const hit of hits\) \{ mergedHits\.push\(decorateSearchHitWithSource\(hit, memberSourceTag\(child\.member\)\)\); \}/],["no forbidden mergedHits spread-push",/mergedHits\.push\(\.\.\./,true],["no forbidden hits.map accumulation",/mergedHits *= *hits\.map|mergedHits\.push\(\.\.\.hits\.map/,true]];for(const c of mustHave){const present=c[0]&&c[1].test(w);const forbidden=c[2]===true;const ok=forbidden?!present:present;console.log((ok?"PASS ":"FAIL ")+c[0]);if(!ok)rc=1;}if(s.includes("function placeSearchHitsInEnvelope")){const pin=/placeSearchHitsInEnvelope\( ?baseBody, ?limitedHits, ?totalScanned ?\)/.test(w);console.log((pin?"PASS ":"FAIL ")+"placeSearchHitsInEnvelope delegated with bare identifiers (baseBody, limitedHits, totalScanned)");if(!pin)rc=1;}else{console.log("PASS baseline: shape writer not yet extracted (accumulation-untouched still enforced)");}process.exit(rc);'
+# expect: exit 0, every line PASS. Enforces the twice-rejected per-row push class can never recur: the per-hit for-of push loop must be present verbatim, no `mergedHits.push(...` spread and no `hits.map` accumulation may appear, and (post) the shape writer is delegated with bare closure identifiers. Baseline PASSes because the accumulation checks hold before extraction too.
+# exit: 0  duration: 0s  verdict: PASS
+
+PASS per-hit for-of push loop intact (no map/spread)
+PASS no forbidden mergedHits spread-push
+PASS no forbidden hits.map accumulation
+PASS baseline: shape writer not yet extracted (accumulation-untouched still enforced)

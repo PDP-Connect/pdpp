@@ -1,0 +1,431 @@
+# hone work hm-detail-page-coverage-extract-0007 — post-r1 rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'set -e; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; for f in runtime-handle-msg-dispatch connector-detail-gap-store detail-coverage-recovered-gap-regression collection-profile; do db=pdpp_hone_hm_dpce7_$(echo $f | tr - _); dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db node --test --test-force-exit test/$f.test.js || rc=1; dropdb --if-exists $db; done; exit $rc'
+# expect: all green with unchanged counts (baselines 2026-07-02: 26/26, 2/2, 124/124); repaired 2026-07-02 per iteration-4 shared-DB lint: per-file ephemeral DBs + --test-force-exit replicate the scripts/run-tests.js isolation contract
+# exit: 0  duration: 27s  verdict: PASS
+
+✔ handleMsg dispatch: unrecognized msg.type fails the run naming the unknown type (64.75762ms)
+✔ handleMsg dispatch: a RECORD after DONE fails naming the after-DONE guard (88.650181ms)
+✔ handleMsg dispatch: malformed JSONL after DONE fails naming the invalid-JSONL-after-DONE guard (83.075491ms)
+✔ handleMsg dispatch: a second INTERACTION while one is unresolved is intercepted and terminates the child (579.609452ms)
+✔ handleMsg dispatch: duplicate ASSISTANCE.assistance_request_id fails naming the duplicate id (75.393423ms)
+✔ handleMsg dispatch: ASSISTANCE_STATUS for an unknown assistance_request_id fails naming the id (55.135376ms)
+✔ handleMsg dispatch: a DETAIL_GAP that exhausts its recovery budget on a non-transient error emits run.detail_gap_terminal (78.245964ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1147.9163
+✔ connector detail gap store upserts pending gaps, updates status, and redacts unsafe metadata (15.895397ms)
+✔ connector detail gaps are isolated by connector instance (9.697645ms)
+✔ connector detail gap store is idempotent by gap identity when connector-supplied gap ids change (9.493222ms)
+✔ listPendingGapsForConnector returns gaps across every connector instance for diagnostics (10.604651ms)
+✔ countGapsByStatusForConnector returns an exact reason-scoped recovered count across instances (9.532542ms)
+✔ sanitizeDetailGapMetadata does not preserve full URLs or secret-bearing fields (0.334246ms)
+✔ runtime records DETAIL_GAP before successful terminal handling (37.445396ms)
+✔ runtime includes pending detail gaps in START as reference-only safe rows (36.790404ms)
+✔ runtime loads pending detail gaps only for the requested connector instance (35.210446ms)
+✔ connector-emitted DETAIL_GAP survives real-store persistence and reappears in the next run START.detail_gaps (63.329674ms)
+✔ runtime drains more than 100 pending detail gaps in one run through paged recovery requests (62.326076ms)
+✔ runtime pages large detail-gap payloads by byte budget while still draining semantics (40.271867ms)
+✔ serving a pending gap in START increments attempt_count to 1 via in_progress mark (39.977182ms)
+✔ recovered gap preserves incremented attempt_count after DETAIL_GAP_RECOVERED (12.17592ms)
+✔ re-deferred pressure gap remains pending with attempt_count > 0 after runtime re-defers it (11.229723ms)
+✔ gap served but not recovered is reset to pending after connector exits without recovery (42.840784ms)
+✔ recovered gap is not reset to pending by run cleanup (43.242101ms)
+✔ prior-run in_progress gap is reclaimed to pending before a new run serves gaps (35.189846ms)
+✔ countGapsByStatusForConnector returns an exact reason-scoped recovered count (Postgres) (2750.768055ms)
+✔ connector-emitted DETAIL_GAP survives Postgres persistence and reappears in START.detail_gaps (295.926256ms)
+✔ runtime fails closed when pending detail gap loading fails before START (13.766118ms)
+✔ runtime marks DETAIL_GAP_RECOVERED only after prior records flush successfully (44.629096ms)
+✔ runtime fails closed when DETAIL_GAP persistence fails (33.21026ms)
+✔ runtime rejects state commit when required DETAIL_COVERAGE has no hydrated detail or durable gap (31.399857ms)
+✔ runtime commits state when required DETAIL_COVERAGE is backed by matching pending DETAIL_GAP (33.913592ms)
+✔ runtime preserves no-commit behavior for failed, cancelled, and protocol-violating runs (82.335877ms)
+ℹ tests 26
+ℹ suites 0
+ℹ pass 26
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3939.118363
+[runtime] {"type":"DETAIL_GAP","stream":"messages","record_key":"X","reason":"retry_exhausted","retryable":true,"detail_locator":{"kind":"chatgpt.conversation","conversation_id":"X"},"gap_id":"gap_f183fb827591c287ac6cf64fa8ed27dd"}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"conversations","stream":"messages"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+✔ a recovered detail gap re-deferred with the same identity must not fail the commit gate (211.681404ms)
+[runtime] {"type":"DETAIL_GAP","stream":"messages","record_key":"OLD","reason":"retry_exhausted","retryable":true,"detail_locator":{"kind":"chatgpt.conversation","conversation_id":"OLD"},"gap_id":"gap_ba387f513936afafef21afd4d456383b"}
+[runtime] {"type":"DETAIL_GAP","stream":"messages","record_key":"NEW","reason":"retry_exhausted","retryable":true,"detail_locator":{"kind":"chatgpt.conversation","conversation_id":"NEW"},"gap_id":"gap_f4cf1dc955197c0ab2ddf3152da3d7af"}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"conversations","stream":"messages"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+✔ run.detail_gap_recorded fires once at first sighting, NOT on a prior-run re-defer (160.152693ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1337.131014
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+▶ Collection Profile conformance
+  ✔ runtime sends spec-shaped START with non-empty scope and no legacy config (208.289093ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ incremental runs pass prior state through START (142.828289ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ single_use runs ignore provided prior state and pass null through START (129.756344ms)
+  ✔ runtime rejects explicitly empty START.scope instead of broadening to all manifest streams (0.505819ms)
+  ✔ runtime rejects wildcard stream names in explicit START.scope (0.202424ms)
+  ✔ runtime rejects explicit START.scope streams that do not exist in the manifest (0.218844ms)
+  ✔ runtime rejects invalid START.collection_mode values instead of passing them through (0.198564ms)
+  ✔ runtime rejects invalid START.state shapes instead of passing them through (0.218794ms)
+  ✔ runtime rejects scalar START.state stream cursors instead of passing them through (0.220064ms)
+  ✔ runtime rejects malformed START.scope resources selectors instead of passing them through (0.254665ms)
+  ✔ runtime rejects malformed START.scope fields selectors instead of passing them through (0.203253ms)
+  ✔ runtime rejects malformed START.scope time_range selectors instead of passing them through (0.213454ms)
+  ✔ runtime rejects unresolved START.scope view selectors instead of passing them through (0.188074ms)
+  ✔ runtime rejects issuance-time START.scope necessity values instead of passing them through (0.197994ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime normalizes START.scope fields to include schema-required, primary_key, and time_range fields (142.307781ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ connectors can branch on START.collection_mode (165.462688ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ connectors can branch on START.scope resources and time_range selectors (111.937862ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ connectors can branch on normalized START.scope fields selectors (119.198673ms)
+[runtime] {"type":"ingest","stream":"items","accepted":2,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":2}
+  ✔ runtime ingests RECORD messages to the RS (135.922405ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1}
+  ✔ STATE is only committed when DONE status is succeeded (164.360259ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0}
+  ✔ pre-progress ChatGPT failure persists actionable known gap metadata (125.469907ms)
+  ✔ loadSyncState includes connector_instance_id when provided (3.537684ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ runConnector scopes ingest and checkpoint PUTs by connector_instance_id (29.415371ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects scalar STATE.cursor values as protocol violations (164.672424ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":2}
+  ✔ the last STATE for a stream wins when a run stages multiple checkpoints (149.498491ms)
+[runtime] {"type":"stderr","text":"connector crashed after staging one stream checkpoint\n"}
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":2,"exit_code":1,"reason":"connector_exit_without_done"}
+  ✔ STATE currently flushes and stages only the named stream when other streams still have buffered records (146.17019ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":2}
+  ✔ multiple staged stream checkpoints commit successfully without requiring a cross-stream ordering guarantee (140.986686ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"stderr","text":"connector crashed after staging two stream checkpoints\n"}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":2,"exit_code":1,"reason":"connector_exit_without_done"}
+  ✔ multiple staged stream checkpoints still commit nothing when the run fails after staging (146.658139ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":2,"exit_code":0,"reason":"runtime_error"}
+  ✔ checkpoint persistence failures after DONE(succeeded) stay inspectable and expose partial commit counts (134.791985ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ single_use runs do not persist STATE even on success (142.952292ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ grant-scoped STATE stays isolated from global state and other grants (221.9679ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ single_use with grant-scoped STATE still persists nothing (144.076892ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects RECORD messages outside declared START.scope (129.796944ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects RECORD messages outside declared START.scope resources (143.212217ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ runtime accepts RECORD messages within manifest-declared resource field (125.265382ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects RECORD messages with fields outside START.scope (112.217867ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects RECORD messages outside declared START.scope time_range (106.692117ms)
+  ✔ runtime rejects connectors with unsatisfied required bindings (0.406678ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime satisfies required interactive bindings and advertises them in START (26.881236ms)
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime omits interactive from START.bindings when interaction handling is explicitly disabled (22.648999ms)
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"rate_limited","message":"Platform returned 429"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime accepts SKIP_RESULT messages without error (148.362319ms)
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"export_no_download","message":"export failed","diagnostics":{"phase":"export_artifact_wait_failed","diag":{"url":"https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001","title":"USAA Checking","dialogs_open":1},"artifact":{"cdpReady":true,"cdpError":null,"candidates":[{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1247}]},"error":"download_empty"}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime forwards bounded SKIP_RESULT.diagnostics into the spine event and known gap (152.305781ms)
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"export_no_download","message":"redacted-path","diagnostics":{"auth":"password=supersecret token=abc123","otp_seen":"observed 123456 in dialog","nested":{"cookie":"cookie=sess_abc123"}}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime redacts secret-shaped strings inside SKIP_RESULT.diagnostics (140.310214ms)
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"export_no_download","message":"huge","diagnostics":{"phase":"export_artifact_wait_failed","artifact":{"candidates":[{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/0?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/1?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/2?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/3?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/4?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/5?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/6?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/7?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/8?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/9?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/10?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/11?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/12?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/13?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/14?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/15?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/16?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/17?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/18?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/19?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/20?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/21?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/22?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/23?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/24?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/25?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/26?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/27?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/28?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/29?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/30?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/31?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/32?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/33?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/34?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/35?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/36?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/37?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/38?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/39?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/40?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/41?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/42?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/43?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/44?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/45?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/46?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/47?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/48?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/49?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/50?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/51?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/52?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/53?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/54?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/55?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/56?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/57?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/58?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/59?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/60?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/61?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/62?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"},{"source":"cdp","status":200,"reason":"not_expected_body","contentType":"text/html","bodyBytes":1024,"url":"https://www.usaa.com/export/candidate/63?padding=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"}]}}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime replaces oversized SKIP_RESULT.diagnostics with a size_overflow sentinel (133.187485ms)
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"export_no_download","message":"non-object diag","diagnostics":"oops"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"export_no_download","message":"non-object diag","diagnostics":[1,2,3]}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"export_no_download","message":"non-object diag","diagnostics":123}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime drops non-object SKIP_RESULT.diagnostics without rejecting the message (384.741169ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime preserves a valid DETAIL_COVERAGE.considered count on the spine event (170.036131ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime drops malformed / unsafe DETAIL_COVERAGE.considered to unknown without rejecting (970.786454ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime accepts a boundary DETAIL_COVERAGE.considered of 0 and the max safe integer (241.690575ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ existing DETAIL_COVERAGE with no considered stays unknown (no field) and unchanged (113.405919ms)
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"partial_export","message":"declared a considered inventory","diagnostics":{"phase":"inventory_counted","considered":1200}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime preserves a valid SKIP_RESULT.diagnostics.considered count (118.297556ms)
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"partial_export","message":"bad considered","diagnostics":{"phase":"inventory_counted","considered":-5,"note":"keep me"}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"partial_export","message":"bad considered","diagnostics":{"phase":"inventory_counted","considered":2.5,"note":"keep me"}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"partial_export","message":"bad considered","diagnostics":{"phase":"inventory_counted","considered":"900","note":"keep me"}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"partial_export","message":"bad considered","diagnostics":{"phase":"inventory_counted","considered":null,"note":"keep me"}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"partial_export","message":"bad considered","diagnostics":{"phase":"inventory_counted","considered":9007199254740992,"note":"keep me"}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ runtime drops malformed / unsafe SKIP_RESULT.diagnostics.considered while keeping the rest of diagnostics (681.048841ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"partial_export","message":"declared considered","diagnostics":{"considered":50}}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ 2.2a layer boundary: terminal collection_facts carries facts only, no coverage_axis / forward_disposition (129.416998ms)
+[runtime] {"type":"ingest","stream":"items","accepted":2,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":3}
+  ✔ 2.2a: one collection_facts entry per in-scope stream, each with collected + checkpoint, no verdict (142.82702ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ 2.2a: a zero-record in-scope stream still gets an honest collected:0 entry, considered absent (129.591351ms)
+[runtime] {"type":"SKIP_RESULT","stream":"items","reason":"partial_export","message":"could not export","recovery_hint":"retry_by_runtime"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ 2.2a: a SKIP_RESULT stream carries the skip fact, no complete verdict (144.351258ms)
+[runtime] {"type":"DETAIL_GAP","stream":"other_items","parent_stream":"items","record_key":"i1","reason":"temporary_unavailable","retryable":true,"gap_id":"gap_224ed79930448a34ea677e1eb84aab3a"}
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ 2.2a: a pending DETAIL_GAP shows pending_detail_gaps>=1 by count, not restated locators (127.34547ms)
+[runtime] {"type":"ingest","stream":"items","accepted":2,"rejected":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":2}
+  ✔ 2.2a: considered honesty — declared value carried, absence stays unknown, never set to collected (159.839136ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ 2.2a: declared considered prefers DETAIL_COVERAGE.considered over required_keys.length (125.594298ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"other_items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ 2.2a: required_keys.length is the considered fallback when no considered is declared (128.186365ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"items"}
+[runtime] {"type":"ingest","stream":"items","accepted":2,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":2}
+  ✔ 2.2a: a list-stream DETAIL_COVERAGE (empty keys + considered) declares the considered denominator without blocking commit (task 4.1 mechanism) (136.543866ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ 4.4: a steady-state list-considered DETAIL_COVERAGE carries `covered` onto the spine event AND the terminal facts block (137.012224ms)
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+[runtime] {"type":"DETAIL_COVERAGE","reference_only":true,"state_stream":"items","stream":"items"}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ 4.4: a malformed / unsafe DETAIL_COVERAGE.covered is dropped to unknown (omitted), considered preserved (816.551857ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ 2.2a: a RECORD/STATE/DONE-only connector still yields a valid facts block with unknown considered (task 2.6 at runtime scope) (116.442503ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ 2.2a (2.7 invariant): the facts block perturbs no existing terminal-event field (127.527403ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1}
+  ✔ 2.2a: the facts block also rides the run.failed terminal event, still facts-only (127.529033ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1}
+  ✔ runtime reports known gaps for partial flush then failed terminal state (134.676862ms)
+[runtime] {"type":"done","status":"cancelled","records_emitted":0}
+  ✔ runtime reports manual-action known gaps without persisting interaction responses (151.73285ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects malformed SKIP_RESULT envelopes as protocol violations (162.399263ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects SKIP_RESULT for undeclared streams as a protocol violation (127.462612ms)
+  ✔ runtime accepts PROGRESS messages without error (129.895486ms)
+  ✔ runtime persists collection_rate in spine events and terminal event (145.518038ms)
+  ✔ connection_health.collection_rate is null when no rate event has been emitted (146.614838ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects malformed PROGRESS envelopes as protocol violations (132.421452ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects malformed PROGRESS counters as protocol violations (144.108392ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects malformed PROGRESS total counters as protocol violations (178.391301ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects PROGRESS for undeclared streams as a protocol violation (119.152931ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects unknown connector message types as protocol violations (149.415258ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects invalid connector JSONL as a protocol violation (167.528876ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ INTERACTION round-trip allows connector to continue collecting (146.077548ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ browser-surface-backed otp INTERACTION projects streamable assistance with secret input (139.855315ms)
+[runtime] {"type":"ASSISTANCE","assistance_request_id":"asst_1","progress_posture":"running","owner_action":"act_elsewhere","response_contract":"none","sensitivity":"non_secret","message":"Approve at https://example.com/sensitive?token=secret with qr_secret=raw-qr-secret.","timeout_seconds":120,"input_schema":{"type":"object","properties":{"otp":{"type":"string","default":"654321"},"password":{"type":"string","format":"password","examples":["durable-password"]},"note":{"type":"string","default":"safe-default-also-redacted"}}},"attachments":[{"kind":"url","role":"approval","label":"Open approval page https://example.com/sensitive?token=label-secret","ref":"approval_ref_1","url":"https://example.com/sensitive?token=secret","cdp_url":"ws://example.com/devtools/browser/secret"},{"kind":"qr","role":"approval","label":"Scan QR qr_secret=label-qr-secret","ref":"qr_ref_1","status":"available qr_secret=status-qr-secret","payload":"otpauth://totp/example?secret=RAWQRSECRET","image_data":"data:image/png;base64,RAWQRSECRET"}]}
+[runtime] {"type":"ASSISTANCE_STATUS","assistance_request_id":"asst_1","status":"resolved","message":"Approval accepted at https://example.com/done?bearer=secret."}
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ nonblocking ASSISTANCE records assistance without interaction-required behavior (186.62832ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects response-required ASSISTANCE without compatibility path (120.606418ms)
+[runtime] {"type":"ASSISTANCE","assistance_request_id":"asst_retry","progress_posture":"waiting_retry","owner_action":"none","response_contract":"none","sensitivity":"none","message":"Waiting for upstream retry window."}
+[runtime] {"type":"ASSISTANCE_STATUS","assistance_request_id":"asst_retry","status":"escalated","message":"Retry window expired; owner action is now required."}
+[runtime] {"type":"done","status":"succeeded","records_emitted":0}
+  ✔ nonblocking ASSISTANCE records retry/backoff and explicit escalation transitions (132.056964ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects connector output emitted while waiting for INTERACTION_RESPONSE (139.424068ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects STATE emitted while waiting for INTERACTION_RESPONSE and does not stage checkpoints (142.435232ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects PROGRESS emitted while waiting for INTERACTION_RESPONSE and does not record progress artifacts (151.064688ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects SKIP_RESULT emitted while waiting for INTERACTION_RESPONSE and does not record skip artifacts (161.381474ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects a second INTERACTION emitted while waiting for INTERACTION_RESPONSE (206.664562ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects DONE emitted while waiting for INTERACTION_RESPONSE and does not record terminal artifacts (135.915094ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects invalid JSONL emitted while waiting for INTERACTION_RESPONSE and does not record completion artifacts (130.408885ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ runtime returns INTERACTION timeout responses when the handler does not answer in time (182.579288ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ runtime returns INTERACTION cancelled responses when the handler aborts (131.047816ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"interaction_handler_invalid_response"}
+  ✔ invalid INTERACTION_RESPONSE envelopes fail the run and record an explicit runtime reason (113.722693ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ malformed INTERACTION envelopes fail the run before the interaction enters the durable timeline (117.682426ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ malformed INTERACTION timeout_seconds fail the run before the interaction enters the durable timeline (133.290827ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ malformed INTERACTION schema values fail the run before the interaction enters the durable timeline (114.693831ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects INTERACTION for undeclared streams as a protocol violation (128.259636ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ runtime rejects INTERACTION when START.bindings omit interactive and records no interaction artifacts (113.460589ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1}
+  ✔ DONE(failed) does not flush remaining buffered records (121.22381ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"ingest","stream":"other_items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":2}
+  ✔ DONE(failed) after staging multiple stream checkpoints still commits none of them (122.251977ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ malformed DONE.error envelopes are rejected as protocol violations before terminal artifacts are recorded as connector failures (116.656036ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ DONE.error with unsupported fields is rejected as a protocol violation before terminal artifacts are recorded as connector failures (132.170687ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ DONE(succeeded) with terminal error details is rejected as a protocol violation before success artifacts are recorded (172.070227ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"cancelled","records_emitted":1}
+  ✔ DONE(cancelled) after staging a checkpoint commits nothing and records a cancelled terminal run (157.139167ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"exit_code":0,"reason":"connector_protocol_violation"}
+  ✔ DONE(cancelled) with an exit code of 0 is treated as a protocol violation and commits no checkpoints (170.820285ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reported_records_emitted":2,"exit_code":1,"reason":"connector_protocol_violation"}
+  ✔ DONE(cancelled) with mismatched records_emitted is treated as a protocol violation and still commits no checkpoints (146.314392ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"connector_protocol_violation"}
+  ✔ messages after DONE are treated as protocol violations and prevent checkpoint commit (150.522268ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ PROGRESS after DONE is treated as a protocol violation and never enters durable run artifacts (126.167868ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ INTERACTION after DONE is treated as a protocol violation and never enters durable run artifacts (177.011847ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ SKIP_RESULT after DONE is treated as a protocol violation and never enters durable run artifacts (145.923865ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ STATE after DONE is treated as a protocol violation and never stages checkpoint artifacts (127.170316ms)
+[runtime] {"type":"done","status":"failed","records_emitted":0,"reason":"connector_protocol_violation"}
+  ✔ invalid JSONL after DONE is treated as a protocol violation and never records completion artifacts (138.919799ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"exit_code":1,"reason":"connector_protocol_violation"}
+  ✔ DONE(succeeded) with a non-zero exit code is treated as a protocol violation and prevents checkpoint commit (130.023268ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"exit_code":0,"reason":"connector_protocol_violation"}
+  ✔ DONE(failed) with an exit code of 0 is treated as a protocol violation and commits no checkpoints (129.056661ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reported_records_emitted":2,"exit_code":0,"reason":"connector_protocol_violation"}
+  ✔ DONE(succeeded) with mismatched records_emitted is treated as a protocol violation and prevents checkpoint commit (121.192168ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reported_records_emitted":2,"exit_code":1,"reason":"connector_protocol_violation"}
+  ✔ DONE(failed) with mismatched records_emitted is treated as a protocol violation and still commits no checkpoints (128.380829ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"reason":"connector_protocol_violation"}
+  ✔ DONE with an invalid status is treated as a protocol violation and commits no checkpoints (154.358887ms)
+[runtime] {"type":"stderr","text":"connector crashed unexpectedly\n"}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"exit_code":1,"reason":"connector_exit_without_done"}
+  ✔ unexpected connector exit before STATE fails the run, preserves no state, and leaves buffered records unflushed (117.485981ms)
+[runtime] {"type":"stderr","text":"connector crashed unexpectedly\n"}
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":1,"exit_code":1,"reason":"connector_exit_without_done"}
+  ✔ unexpected connector exit after STATE fails the run, preserves no state, and records run.failed (122.177435ms)
+[runtime] {"type":"done","status":"failed","records_emitted":1,"exit_code":0,"reason":"connector_exit_without_done"}
+  ✔ graceful connector exit without DONE still fails the run and records run.failed (122.674805ms)
+[runtime] {"type":"ingest","stream":"items","accepted":3,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":7,"reason":"ingest_response_invalid"}
+  ✔ invalid ingest response at STATE fails specifically and preserves dropped-tail accounting (126.609226ms)
+[runtime] {"type":"stderr","text":"connector crashed after crossing one ingest batch boundary\n"}
+[runtime] {"type":"ingest","stream":"items","accepted":50,"rejected":0}
+[runtime] {"type":"done","status":"failed","records_emitted":51,"exit_code":1,"reason":"connector_exit_without_done"}
+  ✔ unexpected connector exit after a batch flush preserves flushed records but drops the remaining buffered tail (153.96389ms)
+[runtime] {"type":"ingest","stream":"items","accepted":1,"rejected":0}
+[runtime] {"type":"done","status":"succeeded","records_emitted":1}
+  ✔ STATE from one connector does not affect another connectors state (131.085707ms)
+✔ Collection Profile conformance (17514.777998ms)
+ℹ tests 124
+ℹ suites 0
+ℹ pass 124
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 18442.188349
+NOTICE:  database "pdpp_hone_hm_dpce7_runtime_handle_msg_dispatch" does not exist, skipping
+NOTICE:  database "pdpp_hone_hm_dpce7_connector_detail_gap_store" does not exist, skipping
+NOTICE:  database "pdpp_hone_hm_dpce7_detail_coverage_recovered_gap_regression" does not exist, skipping
+NOTICE:  database "pdpp_hone_hm_dpce7_collection_profile" does not exist, skipping

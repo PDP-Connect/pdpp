@@ -1,0 +1,102 @@
+candidate_id: pl1-spine-source-resolvers-0003
+created: "2026-07-02T10:02:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/connector-instance-utils
+files: [server/connector-instance-utils.ts]
+symbols: [deriveSpineSource]
+public_surface: []
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "deriveSpineSource (cc23, scope-fn red_scan empty) resolves a { kind, id } source binding from two independent inputs in priority order: first from the spine event payload (payload.source → payload.source_binding → bare connector_id/provider_id fields), then falling back to the stored row (row.source_kind/source_id → row.provider_id → runtime actor_id). The payload-resolution block and the row-fallback block share nothing but the return contract; they are braided only by sequential position. Extracting each into a named pure resolver that returns { kind, id } | null lets deriveSpineSource read as a short priority chain (`resolveSpineSourceFromPayload(payload) ?? resolveSpineSourceFromRow(row)`), removing ~14 cc of nested hasOwnProperty / nonEmptyString branching from the entry function. All functions here are already documented as pure (no I/O, only node:crypto), so this is a clean pure-logic decomplect. NOTE: the string 'boot' appears only in this module's SIBLING test name (spine-source-boot-backfill), never in deriveSpineSource's body — no boot/startServer path is touched."
+plan:
+  transform_class: extract-priority-resolvers
+  instruction: "In server/connector-instance-utils.ts ONLY. Create TWO module-level (column-0) pure named functions ABOVE deriveSpineSource:\n\n(A) function resolveSpineSourceFromPayload(payload) — contains VERBATIM the payload block (current L79-92): the `if (payload && typeof payload === 'object' && !Array.isArray(payload)) { ... }` body — the two hasOwnProperty('source')/('source_binding') parseSpineSourceShape probes with their early returns, and the connectorId/providerId nonEmptyString disambiguation. If none match, return null (make the function fall off the end returning null). parseSpineSourceShape and nonEmptyString are module-scope siblings — call them directly, do NOT thread.\n\n(B) function resolveSpineSourceFromRow(row) — contains VERBATIM the row-fallback block (current L94-110): source_kind/source_id via isSourceKind, then provider_id → provider_native, then the `row.actor_type === 'runtime' && actorId` → connector case, else return null.\n\nSEAM MECHANISM (explicit): both resolvers are value-in / value-out — they capture NOTHING and take exactly one explicit parameter (payload / row) named identically to the caller's argument, so deriveSpineSource delegates with bare identifiers. deriveSpineSource's ENTIRE body becomes: `const fromPayload = resolveSpineSourceFromPayload(payload); if (fromPayload) return fromPayload; return resolveSpineSourceFromRow(row);` (a nullish-priority chain; do NOT collapse to `??` if that would change the truthiness test — the original returns the payload result only when it is a truthy object, which matches `if (fromPayload) return fromPayload`).\n\nPRESERVE EXACTLY: the priority order (payload before row), every nonEmptyString/isSourceKind call, the `connectorId && !providerId` / `providerId && !connectorId` XOR-style disambiguation in BOTH blocks, and the exact return shapes { kind, id }. NO new module file, NO behavior change, NO signature change to deriveSpineSource."
+expected_quality_gain: medium
+owner_attention_reduction: medium
+product_impact: none
+priority:
+  score: 56
+  computed: "2026-07-02T10:02:00.000Z"
+  inputs:
+    mass: 18
+    churn: 10
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: low
+  property_at_risk: connector-instance source derivation feeds the spine source identity used for record attribution; a mis-resolved source would mis-attribute records to the wrong connector/provider
+authoring_evidence:
+  - kind: red-probe
+    detail: "scope-fn --target 'server/connector-instance-utils.ts::deriveSpineSource' → red_scan [], cognitive_before 23; module header documents 'All functions are pure: no I/O, no side effects, no imports beyond node:crypto'"
+    result: "pure resolver, no security markers"
+  - kind: coverage-check
+    detail: "deriveSpineSource pinned by test/spine-source-boot-backfill.test.js (exercises payload-source, payload legacy fields, and row fallback branches)"
+    result: both resolution paths have by-name oracle coverage
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1spine_boot; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/spine-source-boot-backfill.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc'"
+    expect: spine-source-boot-backfill suite green with unchanged pass count; ephemeral DB isolates storage state
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/connector-instance-utils.ts::deriveSpineSource'"
+    expect: found=true; cognitive_before strictly below baseline 23 and below floor 8 (deriveSpineSource reduced to a two-step priority chain)
+    expect_check:
+      type: scope_fn_lt
+      value: 8
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/connector-instance-utils.ts' --cog 5"
+    expect: file_excess strictly below the pre-edit baseline (27); NEW flagged names limited to the two resolvers (each should sit near cc5)
+    expect_check:
+      type: file_excess_lt
+      value: 27
+  - rung: seam-static-pin
+    command: "cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/connector-instance-utils.ts\",\"utf8\");if(!s.includes(\"function resolveSpineSourceFromPayload\")){console.log(\"baseline: resolvers not extracted; vacuous PASS\");process.exit(0);}const w=s.replace(/\\s+/g,\" \");let rc=0;const checks=[[\"resolveSpineSourceFromPayload(payload) declared\",/function resolveSpineSourceFromPayload\\( ?payload,? ?\\)/],[\"resolveSpineSourceFromRow(row) declared\",/function resolveSpineSourceFromRow\\( ?row,? ?\\)/],[\"payload delegation bare-identifier\",/resolveSpineSourceFromPayload\\( ?payload ?\\)/],[\"row delegation bare-identifier\",/resolveSpineSourceFromRow\\( ?row ?\\)/],[\"payload checked before row (priority preserved)\",/if ?\\( ?fromPayload ?\\) ?return fromPayload;/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);'"
+    expect: "exit 0, every line PASS. Baseline (resolvers absent): vacuous PASS. Post: both resolvers declared with explicit single named params, both delegated with bare identifiers, and payload priority preserved via `if (fromPayload) return fromPayload`."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - resolution-priority-change
+  - new-dependency
+  - new-module-file
+  - captured-mutable-cells-in-new-helpers
+maker_tier: cheap
+judge_tier: standard
+maker_provider: null
+judge_provider: null
+batch_key: preserve_refactor×pure_logic×server/connector-instance-utils
+touchset: [server/connector-instance-utils.ts]
+estimates:
+  tokens: 30000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: skipped
+outcome:
+  commit: null
+  skip_reason: "ALREADY DECOMPLECTED by the Jul-3 unification — closed as validated-non-defect after re-anchor + fresh measurement (2026-07-05). git-follow: server/connector-instance-utils.js was migrated .js->.ts in place (unify commit c0a68ee48 deletes the .js). In the current .ts tree the exact transform this packet proposed is ALREADY LANDED: the payload block is extracted into a module-level pure function deriveSpineSourceFromPayload(payload) and deriveSpineSource is now the priority chain `const fromPayload = deriveSpineSourceFromPayload(payload); if (fromPayload) return fromPayload; ...row-fallback` (server/connector-instance-utils.ts:108,136). FRESH MEASUREMENT (scope-fn, biome maxAllowedComplexity=1 ground truth): deriveSpineSource cognitive_before=6 (was baseline 23 — a 17-point reduction already banked; well below this packet's target floor of 8). The only residual file_excess (18) is parseSpineSourceShape cc14 + deriveSpineSourceFromPayload cc13 — a DIFFERENT scope than this packet, which targeted deriveSpineSource's braiding specifically. No decomplect left for THIS packet to perform; forcing the second (row) resolver extraction would be net-neutral churn on an already-clean cc6 entry function. Closed honestly rather than re-worked."
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts: []
+  tokens_actual: null
+  lesson: "unification captured this refactor before the packet ran; when re-anchoring a preserve_refactor packet after a heavy upstream refactor, re-measure the target FIRST — deriveSpineSource dropped 23->6 without this packet, so the honest disposition is skipped/validated-non-defect, not re-work."
+resets:
+  - at: "2026-07-02T22:07:57.579Z"
+    from_status: reverted
+    reason: "re-route: extraction class -> codex maker/claude judge (tonight forced claude-maker = wrong pairing, all reverted)"
+  - at: "2026-07-05T00:00:00.000Z"
+    from_status: pending
+    reason: "re-anchor .js->.ts after Jul-3 unification; fresh measurement shows deriveSpineSource already decomplected (cc23->6) -> closed skipped/validated-non-defect"

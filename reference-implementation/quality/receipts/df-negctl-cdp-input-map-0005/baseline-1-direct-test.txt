@@ -1,0 +1,43 @@
+# hone work df-negctl-cdp-input-map-0005 — baseline rung 'direct-test'
+# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && node --test test/run-interaction-stream-cdp-adapter.test.js test/run-interaction-stream-companion.test.js
+# expect: all pass with unchanged counts — required both when concluding skipped(validated-non-defect) and after any change
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ cdp adapter sends Page.enable, viewport override, and startScreencast on start() (2.334891ms)
+✔ cdp adapter dispatches frames to onFrame subscribers and acks back-pressure (5.258602ms)
+✔ cdp adapter maps wire input events through mapInputEventToCdp (1.344754ms)
+✔ cdp adapter surfaces CDP error responses via dispatch() (0.807224ms)
+✔ cdp adapter rejects pending commands when the socket closes (0.282615ms)
+✔ createDefaultStreamingCompanionFactory returns null when no resolver is supplied (15.216148ms)
+✔ createDefaultStreamingCompanionFactory returns a factory when resolver is supplied (0.097052ms)
+✔ resolver-backed companion: returns null companion when run_id or interaction_id is missing (0.096912ms)
+✔ resolver-backed companion: passes both run_id and interaction_id through to resolver (0.249024ms)
+✔ resolver-backed companion: rejects start with streaming_target_unregistered when resolver returns null (0.169663ms)
+✔ resolver-backed companion: pre-start onFrame unsubscribe revokes registration after start (0.639631ms)
+✔ cdp adapter emits url_changed for main-frame Page.frameNavigated and ignores sub-frames (0.516519ms)
+✔ cdp adapter emits popup_opened/closed for additional page targets only (0.409367ms)
+✔ cdp adapter emits url_changed from Target.targetInfoChanged for SPA navigation (0.357166ms)
+✔ cdp adapter onEvent unsubscribe stops further deliveries (0.339466ms)
+✔ cdp adapter survives Target.setDiscoverTargets failure on start (0.274405ms)
+✔ resolver-backed companion: pre-start onEvent replays into inner companion after start (0.458908ms)
+✔ mouse mousemove → Input.dispatchMouseEvent (mouseMoved) (0.780264ms)
+✔ mouse click → press + release (0.502199ms)
+✔ mouse dblclick emits two press/release pairs with clickCount progression (0.105002ms)
+✔ keyboard printable key sets text and keyDown (0.109092ms)
+✔ keyboard named key uses rawKeyDown and a virtual key code (0.128902ms)
+✔ touch start translates to Input.dispatchTouchEvent with one touch point (0.147112ms)
+✔ touch end emits an empty touchPoints list (0.114782ms)
+✔ scroll → mouseWheel with deltas (0.124463ms)
+✔ viewport → Emulation.setDeviceMetricsOverride and restarts screencast (0.219734ms)
+✔ unknown event types raise invalid_input (0.452288ms)
+✔ buildScreencastParams clamps quality and applies sane defaults (0.135192ms)
+✔ mock companion routes pushFrame to subscribers and accumulates dispatched commands (0.319166ms)
+✔ resolved companion can resolve n.eko backend before start (0.893966ms)
+ℹ tests 30
+ℹ suites 0
+ℹ pass 30
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 220.326676

@@ -1,0 +1,33 @@
+# hone work pl1-instance-record-enum-validate-0012 — maker brief digest (attempt 2)
+# sha256(full brief)=082bad218caaa284db1073916ef1279321fb7908df228c5d47456dd3bfafd291 bytes=12086
+# first 4096 chars follow
+
+You are the MAKER in a repo-quality engine, executing exactly ONE work packet in this repository (your current working directory). The packet below is the entire contract.
+Binding rules:
+- Modify ONLY these files (the touchset): server/stores/connector-instance-store.js. Creating, editing, deleting, or renaming ANY other file voids the whole run — the engine reverts everything.
+- Obey every not_allowed item: behavior-change, public-shape-change, error-message-change, enum-membership-change, admission-gate-modification, new-dependency, new-module-file.
+- Do exactly what plan.instruction says. No scope creep, no drive-by fixes, no comment or formatting churn outside the named functions.
+- Do NOT commit, stage, branch, or run any git write operation. Do NOT add dependencies. Do NOT touch anything under quality/.
+- Do NOT run the test suite; the engine runs the packet's evidence_required commands itself after you finish.
+- When done, reply with a short summary: which functions changed, what transform you applied, and why behavior is preserved.
+- If you conclude the code is ALREADY CORRECT and the packet premise is a non-defect, make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: validated-non-defect — <one-line rationale>
+- If you CANNOT act on plan.instruction as written (target missing, contradiction with the actual code, instruction not executable), make NO edits and end your reply with one line exactly of the form: HONE-VERDICT: unactionable — <one-line reason>
+== WORK PACKET (YAML) ==
+candidate_id: pl1-instance-record-enum-validate-0012
+created: "2026-07-02T10:11:00.000Z"
+repo_sha: 078bd4d00e1c06243d73fa07eada24678e14624b
+subsystem: server/stores/connector-instance-store
+files: [server/stores/connector-instance-store.js]
+symbols:
+  - normalizeRecord
+public_surface:
+  - "assertOneOf validation errors for connector-instance sourceKind and status (thrown when a value is outside VALID_SOURCE_KINDS / VALID_STATUSES)"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "normalizeRecord (cc10, scope-fn red_scan empty) validates then builds a connector-instance record. It braids ENUM VALIDATION (two required-field guards plus two assertOneOf membership checks over VALID_SOURCE_KINDS and VALID_STATUSES) with ROW CONSTRUCTION (source-binding key derivation + a defaulted object literal including a content-addressed connectorInstanceId default). Extracting the enum-resolution-and-validation into a named pure helper that returns the validated { sourceKind, status } separates validation from construction, removing the assertOneOf branch cluster from the builder. Pure function, no I/O. NOTE: this is the RECORD normalizer, NOT the admission-status resolver resolveOwnerConnectorInstanceNamespace / resolveByExplicitInstanceId (those gate draft read-reachability and are deliberately OUT OF SCOPE)."
+plan:
+  transform_class: extract-enum-validation
+  instruction: "In server/stores/connector-instance-store.js ONLY. Create ONE module-level (column-0) pure named function ABOVE normalizeRecord:\n\nfunction resolveInstanceRecordEnums(record) — returns { sourceKind, status }. Contains VERBATIM the required-field guards + the two enum resolutions/validations currently at L152-156: `if (!record.ownerSubjectId) throw new Error('ownerSubjectId is required.'); if (!record.connectorId) throw new Error('connectorId is required.'); const sourceKind = record.sourceKind ?? 'manual'; assertOneOf(VALID_SOURCE_KINDS, sourceKind, 'sourceKind'); const status = record.status ?? 'active'; assertOneOf(VALID_STATUSES, status, 'status'); return { sourceKind, status };`. assertOneOf, VALID_SOURCE_KINDS, VALID_STATUSES are module-scope — reference directly.\n\nSEAM MECHANISM (explicit): resolveInstanceRecordEnums takes ONE explicit parameter named `record` (== the caller's parameter identifier), so normalizeRecord delegates with a bare identifier and destructures the result: `const { sourceKind, status } = resolveInstanceRecordEnums(record);`.\n\nHARD PRES

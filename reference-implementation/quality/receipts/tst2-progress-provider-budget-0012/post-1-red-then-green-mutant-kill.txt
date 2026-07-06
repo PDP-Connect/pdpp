@@ -1,0 +1,21 @@
+# hone work tst2-progress-provider-budget-0012 — post rung 'red-then-green-mutant-kill'
+# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/progress-provider-budget-oracle.test.js ]; then git diff --quiet -- runtime/progress-validators.js || { echo "DIRTY source"; exit 1; }; cp runtime/progress-validators.js /tmp/tst2_progress_provider_budget.bak; perl -0pi -e "s/retryTokensRemaining !== 'unbounded'/retryTokensRemaining !== 'never_unbounded'/" runtime/progress-validators.js; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_progress_provider_budget; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/progress-provider-budget-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp /tmp/tst2_progress_provider_budget.bak runtime/progress-validators.js; rm -f /tmp/tst2_progress_provider_budget.bak; git diff --quiet -- runtime/progress-validators.js || { echo "RESTORE FAILED"; exit 1; }; if [ $rc -eq 1 ]; then echo "MUTANT KILLED (unbounded retry token sentinel rejected)"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: progress provider budget oracle not yet created"; exit 0; fi'
+# expect: BASELINE: prints BASELINE and exits 0. POST: rejecting the 'unbounded' sentinel makes the valid-object test fail, prints MUTANT KILLED, restores runtime/progress-validators.js.
+# exit: 1  duration: 1s  verdict: FAIL (exit 1 (expected 0))
+
+✔ validateProgressProviderBudget accepts valid provider-budget circuit transitions (0.595711ms)
+✔ validateProgressProviderBudget rejects non-object provider_budget payloads (0.271065ms)
+✔ validateProgressProviderBudget rejects the wrong provider_budget object discriminator (0.082521ms)
+✔ validateProgressProviderBudget rejects missing or non-object circuit payloads (0.108412ms)
+✔ validateProgressProviderBudget rejects invalid circuit enum fields by name (3.885766ms)
+✔ validateProgressProviderBudget rejects negative provider-budget counters by name (0.237244ms)
+✔ validateProgressProviderBudget rejects non-finite retry_tokens_remaining by name (0.156023ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 49.569205
+MUTANT SURVIVED

@@ -1,0 +1,15 @@
+# hone work tst2-read-core-fallback-identity-0032 — post rung 'direct-test-green'
+# command: cd "$REPO_ROOT/../packages/read-core" && if [ -f test/fallback-identity-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/fallback-identity-oracle.test.js 2>&1 || rc=1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi
+# expect: POST: the fallback identity oracle passes. BASELINE: guarded green while absent.
+# timeout: 1800s (engine-default)
+# exit: 0  duration: 0s  verdict: PASS
+
+✔ buildRecordContentLadder preserves fallback identity for projected records (1.741412ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 69.131648

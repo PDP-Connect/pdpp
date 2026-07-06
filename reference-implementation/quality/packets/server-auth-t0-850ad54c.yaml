@@ -1,0 +1,77 @@
+candidate_id: server-auth-t0-850ad54c
+created: "2026-07-02T00:15:44.734Z"
+repo_sha: "6e8d8559c36b94d41bc4c42a9a31342e60b3b334"
+subsystem: server
+files: [server/auth.js]
+symbols:
+  - requireStructuredPendingRequestBindings
+  - requireStructuredGrantBindings
+  - resolveApprovedEntryIndexes
+  - normalizePersistedPackageMemberSource
+  - listGrantPackagesForOwner
+  - requireValidParentPackageLinkage
+  - normalizeClientDisplay
+  - normalizeStreamSelection
+  - mapRegisteredClientRow
+public_surface: [next_cursor]
+behavior_status: likely_intended
+ownership: OWN
+action: preserve_refactor
+proof_class: certified_transform
+execution_gate: autonomous
+why_this_matters: "[v1 deterministic heuristic, confidence 0.8 — metric-nominated; semantic validation pending (metrics nominate, never decide)] cc 11, no security/async-order/seam signal → eligible to ATTEMPT a certified mechanical transform (routing does NOT prove Tier-0) Top fn 'requireStructuredPendingRequestBindings' cc=11. File attention: churn 73 × excess-cc mass 39 = 2847; 9 flagged fn(s) in this tier. PATH MATCHES NO-GO PATTERN (essential security complexity) — owner_ratify gate applied."
+plan:
+  transform_class: certified-local-tidy
+  instruction: "Apply certified local simplifications to requireStructuredPendingRequestBindings, requireStructuredGrantBindings, resolveApprovedEntryIndexes, normalizePersistedPackageMemberSource, listGrantPackagesForOwner, requireValidParentPackageLinkage (+3 more — see quality/inventory/tier-mass.json) in server/auth.js (guard-clause flattening, branch de-nesting, redundant-condition removal) — mechanical transforms with checkable side conditions only; no seam moves, no renames of exported symbols."
+expected_quality_gain: high
+owner_attention_reduction: high
+product_impact: none
+priority:
+  score: 13.219
+  computed: "2026-07-02T00:15:44.734Z"
+  inputs:
+    mass: 39
+    churn: 73
+risk:
+  blast_radius: cross-cutting
+  reversibility: branch-revert
+  silent_wrongness_cost: medium
+  property_at_risk: null
+authoring_evidence:
+  - kind: inventory
+    detail: "quality/inventory/tier-mass.json universe rows for server/auth.js, tier T0 (repo_sha 6e8d8559c36b94d41bc4c42a9a31342e60b3b334)"
+    result: "9 flagged fn(s), Σ excess-cc 39, max cc 11, router v1 tier T0"
+  - kind: churn
+    detail: "historical churn inventory for server/auth.js over the prior 6-month window"
+    result: "73 commits in window; coupling(fan-in proxy)=164"
+evidence_required:
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && pnpm typecheck 2>&1"
+    expect: exit 0
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && pnpm test 2>&1"
+    expect: all tests pass; 0 fail; no new skips
+  - rung: complexity-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target \"server/auth.js::requireStructuredPendingRequestBindings\" 2>&1"
+    expect: found=true and cognitive_before < 11 (packet baseline); red_scan unchanged
+not_allowed: [behavior-change, new-dependency, relocation-without-decomplecting, public-shape-change, git-command]
+maker_tier: cheap
+judge_tier: standard
+maker_provider: null
+judge_provider: null
+batch_key: preserve_refactor×certified_transform×server
+touchset: [server/auth.js]
+estimates:
+  tokens: 60000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: skipped
+outcome:
+  commit: null
+  skip_reason: "obsolete/rejected: prior run was judge-reverted for insufficient behavioral proof across a security-adjacent auth file explicitly flagged as a NO-GO pattern; this should be decomposed into narrower owner-ratified evidence packets before retrying."
+  blocked_on: null
+  judge_verdict: "claude REJECT (confidence 0.6): The normalizePersistedPackageMemberSource change alters observable behavior: when ownerSubjectId is not a non-empty string or connectorId is falsy, the original code fell through to the shared `delete sanitized.display_name; return sanitized;` tail, whereas the new code returns immediately after that same delete — same outcome there, but the new early-return path also now runs even when connectorId is falsy but the old code's outer `if` guarded the async DB lookup only, not the final return, so the refactor is behavior-preserving in this instance. However, the real defect is in `resolveApprovedEntryIndexes`: original used strict `undefined`/`null` checks against `opts.approvedSourceIndexes` while the new code introduces `approvedSourceIndexes == null`, which is loose-equality equivalent to the original's explicit dual check — functionally identical. The actual violation is that this packet's action is preserve_refactor with not_allowed:[behavior-change], but the diff touches 9 functions across a security-critical auth file with only generic pre/post typecheck+test+single-function complexity remeasure as evidence; there is no line-by-line behavioral proof for 8 of the 9 changed functions (only requireStructuredPendingRequestBindings was remeasured), and the test suite shown covers web-push/notification paths, not dedicated tests for grant binding validation, package member normalization, or client row mapping edge cases — insufficient evidence for a cross-cutting, security-adjacent file explicitly flagged as a NO-GO pattern requiring owner ratification, which this packet does not show occurred."
+  evidence_receipts: []
+  tokens_actual: null
+  lesson: "judge rejected prior broad auth refactor for insufficient behavioral proof across security-adjacent functions; packet skipped rather than retried as a broad cleanup"

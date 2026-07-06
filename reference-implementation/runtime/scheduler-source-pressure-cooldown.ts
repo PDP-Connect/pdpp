@@ -453,32 +453,25 @@ function summarizeReasons(gaps: readonly PendingPressureGap[]): string {
   return [...reasons].sort().join(",");
 }
 
-function maxNextAttemptAfterMs(gaps: readonly PendingPressureGap[]): number {
+function maxTimestampFieldMs(
+  gaps: readonly PendingPressureGap[],
+  field: "nextAttemptAfter" | "lastPressureAt"
+): number {
   let max = 0;
   for (const gap of gaps) {
-    if (typeof gap.nextAttemptAfter !== "string") {
-      continue;
-    }
-    const parsed = Date.parse(gap.nextAttemptAfter);
-    if (Number.isFinite(parsed) && parsed > max) {
-      max = parsed;
-    }
+    const value = gap[field];
+    const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+    max = Number.isFinite(parsed) ? Math.max(max, parsed) : max;
   }
   return max;
 }
 
+function maxNextAttemptAfterMs(gaps: readonly PendingPressureGap[]): number {
+  return maxTimestampFieldMs(gaps, "nextAttemptAfter");
+}
+
 function maxLastPressureAtMs(gaps: readonly PendingPressureGap[]): number {
-  let max = 0;
-  for (const gap of gaps) {
-    if (typeof gap.lastPressureAt !== "string") {
-      continue;
-    }
-    const parsed = Date.parse(gap.lastPressureAt);
-    if (Number.isFinite(parsed) && parsed > max) {
-      max = parsed;
-    }
-  }
-  return max;
+  return maxTimestampFieldMs(gaps, "lastPressureAt");
 }
 
 function normalizeFiniteNonNegativeMs(value: number, fallback: number): number {

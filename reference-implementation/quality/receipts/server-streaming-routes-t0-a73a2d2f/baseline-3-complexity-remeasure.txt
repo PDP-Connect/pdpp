@@ -1,0 +1,18 @@
+# hone work server-streaming-routes-t0-a73a2d2f — baseline rung 'complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/streaming/routes.js::destroyCompanion'
+# executed-command (portable-path rewrite): node /home/tnunamak/.tmp/minnows-substrate/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/streaming/routes.js::destroyCompanion'
+# expect: found=true and cognitive_before < 11 (packet baseline); red_scan unchanged
+# exit: 0  duration: 1s  verdict: PASS
+
+{
+  "target": "server/streaming/routes.js::destroyCompanion",
+  "file": "server/streaming/routes.js",
+  "function": "destroyCompanion",
+  "found": true,
+  "cognitive_before": 11,
+  "line": 384,
+  "caller_count": 2,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}

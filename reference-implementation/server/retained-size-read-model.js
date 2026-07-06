@@ -1398,6 +1398,37 @@ function freshTopMetadata(computedAt) {
   });
 }
 
+function topRowInsertValues(row, rank, scope, measure, computedAt, metadata) {
+  const measures = {
+    current_record_json_bytes: Number(row.current_record_json_bytes || 0),
+    record_history_json_bytes: Number(row.record_history_json_bytes || 0),
+    blob_bytes: Number(row.blob_bytes || 0),
+    record_count: Number(row.record_count || 0),
+    record_history_count: Number(row.record_history_count || 0),
+    blob_count: Number(row.blob_count || 0),
+  };
+  return [
+    scope,
+    measure,
+    rank,
+    row.grain_key,
+    row.connector_instance_id || null,
+    row.connector_id || null,
+    row.stream || null,
+    row.record_key || null,
+    row.blob_id || null,
+    measures.current_record_json_bytes,
+    measures.record_history_json_bytes,
+    measures.blob_bytes,
+    Number(row.total_retained_bytes || totalBytesFromMeasures(measures)),
+    measures.record_count,
+    measures.record_history_count,
+    measures.blob_count,
+    computedAt,
+    metadata,
+  ];
+}
+
 function insertTopRowsSqlite(db, scope, measure, rows, computedAt) {
   const metadata = freshTopMetadata(computedAt);
   const insert = db.prepare(
@@ -1411,34 +1442,7 @@ function insertTopRowsSqlite(db, scope, measure, rows, computedAt) {
      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
   );
   rows.forEach((row, index) => {
-    const measures = {
-      current_record_json_bytes: Number(row.current_record_json_bytes || 0),
-      record_history_json_bytes: Number(row.record_history_json_bytes || 0),
-      blob_bytes: Number(row.blob_bytes || 0),
-      record_count: Number(row.record_count || 0),
-      record_history_count: Number(row.record_history_count || 0),
-      blob_count: Number(row.blob_count || 0),
-    };
-    insert.run(
-      scope,
-      measure,
-      index + 1,
-      row.grain_key,
-      row.connector_instance_id || null,
-      row.connector_id || null,
-      row.stream || null,
-      row.record_key || null,
-      row.blob_id || null,
-      measures.current_record_json_bytes,
-      measures.record_history_json_bytes,
-      measures.blob_bytes,
-      Number(row.total_retained_bytes || totalBytesFromMeasures(measures)),
-      measures.record_count,
-      measures.record_history_count,
-      measures.blob_count,
-      computedAt,
-      metadata,
-    );
+    insert.run(...topRowInsertValues(row, index + 1, scope, measure, computedAt, metadata));
   });
 }
 

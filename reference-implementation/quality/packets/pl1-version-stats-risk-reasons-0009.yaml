@@ -1,0 +1,106 @@
+candidate_id: pl1-version-stats-risk-reasons-0009
+created: "2026-07-02T10:08:00.000Z"
+repo_sha: "078bd4d00e1c06243d73fa07eada24678e14624b"
+subsystem: server/record-version-stats
+files: [server/record-version-stats.ts]
+symbols: [buildRecordVersionStatsRow]
+public_surface:
+  - "record-version-stats row fields incl. risk_reasons array (base churn reasons plus 'projection_missing' and 'projection_dirty'), risk_level, version_disposition, version_remediation"
+behavior_status: contract
+ownership: OWN
+action: preserve_refactor
+proof_class: pure_logic
+execution_gate: autonomous
+why_this_matters: "buildRecordVersionStatsRow (cc15, scope-fn red_scan empty) assembles one record-version-stats row. It braids four concerns behind one function: source-value resolution from groundTruth/row, the churn classification call, projection-state risk-reason augmentation, and disposition/remediation labeling. The risk-reason augmentation — cloning classification.riskReasons and conditionally pushing 'projection_missing' (when projectionMissing) and 'projection_dirty' (when row.dirty) — is a self-contained pure derivation given (classification, projectionMissing, dirty). Extracting it into a named pure helper removes that conditional cluster from the assembly, cutting cc while every pushed reason, order, and the response literal stay byte-identical. The disposition/remediation labels are documented as reference-controlled (NO connector-authored value feeds them) — they are NOT grant/consent enforcement and stay in place, untouched."
+plan:
+  transform_class: extract-risk-reason-augmentation
+  instruction: "In server/record-version-stats.ts ONLY. Create ONE module-level (column-0) pure named function ABOVE buildRecordVersionStatsRow:\n\nfunction augmentRiskReasons(classification, projectionMissing, dirty) — returns the final risk_reasons array. Contains VERBATIM the augmentation currently at ~L392-400: `const riskReasons = [...classification.riskReasons]; if (projectionMissing) { riskReasons.push('projection_missing'); } if (dirty) { riskReasons.push('projection_dirty'); } return riskReasons;`.\n\nSEAM MECHANISM (explicit): augmentRiskReasons takes THREE explicit parameters whose NAMES equal the caller's locals — classification, projectionMissing, dirty — so the call site delegates with bare identifiers and the helper captures nothing. Replace the inline `const riskReasons = [...classification.riskReasons]; if (projectionMissing) {...}; if (Boolean(row.dirty)) {...}` block with: `const riskReasons = augmentRiskReasons(classification, projectionMissing, Boolean(row.dirty));`.\n\nHARD PRESERVE: the source-value resolution (groundTruth/row current_record_count / record_history_count / record_key_count coercions), the classifyRecordVersionChurn({...}) call and its argument shape, the `projectionMissing` computation (`Boolean(row.projection_missing) || !projectionByKey.has(rowKey(row))`), the `Boolean(row.dirty)` passed as the third arg (so the pushed 'projection_dirty' condition is identical), classifyVersionDisposition / classifyVersionRemediation calls with their exact argument objects AND their explanatory comments, and the ENTIRE returned response literal with its exact key order and the `Number(classification.versionsPerRecord.toFixed(3))` formatting. The push order (base reasons, then projection_missing, then projection_dirty) is load-bearing — preserve it. NO new module file, NO behavior change."
+expected_quality_gain: low
+owner_attention_reduction: low
+product_impact: none
+priority:
+  score: 44
+  computed: "2026-07-02T10:08:00.000Z"
+  inputs:
+    mass: 10
+    churn: 8
+risk:
+  blast_radius: local
+  reversibility: trivial
+  silent_wrongness_cost: medium
+  property_at_risk: "record-version-stats risk_reasons — dropping or reordering a reason would mislead the owner's data-retention risk view; MEMORY notes this file was previously touched under a live-worker race, so touchset discipline matters"
+authoring_evidence:
+  - kind: red-probe
+    detail: "scope-fn --target on record-version-stats.ts::buildRecordVersionStatsRow → red_scan [], cognitive_before 15 (at authoring repo_sha 078bd4d, pre-unification .js); file-wide red_scan []; disposition/remediation comments state NO connector-authored value feeds them"
+    result: pure assembler; no grant/consent enforcement in scope
+  - kind: coverage-check
+    detail: "buildRecordVersionStatsRow output rows pinned by test/record-version-stats.test.js (risk_level/risk_reasons incl. projection_missing/projection_dirty, disposition, remediation)"
+    result: by-name oracle exists
+  - kind: ownership-check
+    detail: record-version-stats.js appears in ZERO pending/in_progress packet touchsets (the only packet grep-matching the name — t1b-spine-correlations-annotators-0003 — is LANDED and its touchset is lib/postgres-spine.js). No live worker owns this file via the packet pool.
+    result: touchset is disjoint and unclaimed
+evidence_required:
+  - rung: direct-test
+    command: "cd \"$REPO_ROOT\" && sh -c 'export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; rc=0; db=pdpp_hone_pl1verstats; dropdb --if-exists $db; createdb $db; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/record-version-stats.test.js || rc=1; dropdb --if-exists $db; echo \"rc=$rc\"; exit $rc'"
+    expect: record-version-stats suite green with unchanged pass count; ephemeral DB isolates state
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: typecheck
+    command: "cd \"$REPO_ROOT\" && npx tsc --noEmit"
+    expect: "0 errors"
+    expect_check:
+      type: exit_code
+      value: 0
+  - rung: complexity-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --target 'server/record-version-stats.ts::buildRecordVersionStatsRow'"
+    expect: found=true; cognitive_before strictly below baseline 15 and below floor 11 (risk-reason augmentation cluster removed)
+    expect_check:
+      type: scope_fn_lt
+      value: 11
+  - rung: file-excess-remeasure
+    command: "node \"$HONE_ROOT/collectors/scope-fn.mjs\" --repo \"$REPO_ROOT\" --file 'server/record-version-stats.ts' --cog 5"
+    expect: file_excess strictly below the pre-edit baseline (32); the only NEW flagged name permitted is augmentRiskReasons (should not flag)
+    expect_check:
+      type: file_excess_lt
+      value: 32
+  - rung: seam-and-reason-pin
+    command: "cd \"$REPO_ROOT\" && node -e 'const fs=require(\"fs\");const s=fs.readFileSync(\"server/record-version-stats.ts\",\"utf8\");const w=s.replace(/\\s+/g,\" \");let rc=0;for(const r of [\"projection_missing\",\"projection_dirty\"]){const ok=s.includes(r);console.log((ok?\"PASS \":\"FAIL \")+\"risk reason preserved: \"+r);if(!ok)rc=1;}if(!s.includes(\"function augmentRiskReasons\")){console.log(\"baseline: helper not extracted; vacuous PASS for seam checks\");process.exit(rc);}const seam=[[\"augmentRiskReasons(classification, projectionMissing, dirty) declared\",/function augmentRiskReasons\\( ?classification, ?projectionMissing, ?dirty,? ?\\)/],[\"delegated with bare identifiers + Boolean(row.dirty) preserved\",/const riskReasons = augmentRiskReasons\\( ?classification, ?projectionMissing, ?Boolean\\(row\\.dirty\\) ?\\)/],[\"push order: missing before dirty\",/riskReasons\\.push\\('projection_missing'\\);[^]*riskReasons\\.push\\('projection_dirty'\\)/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?\"PASS \":\"FAIL \")+c[0]);if(!ok)rc=1;}process.exit(rc);'"
+    expect: "exit 0, every line PASS. Both risk-reason strings preserved at baseline+post. Post: augmentRiskReasons declared with three explicit named params, delegated with bare identifiers passing Boolean(row.dirty) as the third arg, and the push order (projection_missing before projection_dirty) preserved."
+    expect_check:
+      type: exit_code
+      value: 0
+not_allowed:
+  - behavior-change
+  - public-shape-change
+  - risk-reason-set-change
+  - risk-reason-order-change
+  - new-dependency
+  - new-module-file
+maker_tier: cheap
+judge_tier: standard
+maker_provider: null
+judge_provider: null
+batch_key: preserve_refactor×pure_logic×server/record-version-stats
+touchset: [server/record-version-stats.ts]
+estimates:
+  tokens: 30000
+  evidence_cost: low
+depends_on: []
+unlocks: []
+status: skipped
+outcome:
+  commit: null
+  skip_reason: "TARGET SYMBOL GONE — closed after re-anchor + fresh measurement (2026-07-05). git-follow: server/record-version-stats.js was migrated .js->.ts in place (unify commit cb3559de0). During that migration the named function this packet targeted, buildRecordVersionStatsRow, was INLINED into an anonymous `.map((row: Row) => { ... })` callback inside buildRecordVersionStatsEnvelope (server/record-version-stats.ts:535-597). scope-fn --target 'server/record-version-stats.ts::buildRecordVersionStatsRow' returns found=false — the addressable symbol the packet's symbols/instruction/seam-pins are all keyed to no longer exists. The risk-reason augmentation the packet meant to extract now lives inline in that anon callback (measured at cc19 as an unnamed `.map` body; file_excess=36). Re-anchoring is NOT possible without authoring a DIFFERENT packet: a worker would first have to hoist the anon callback into a named function, then extract augmentRiskReasons — a two-step transform this packet does not describe and whose instruction/not_allowed/seam-static-pin all reference a function name that is absent. Closed honestly (target-symbol-inlined) rather than silently retargeting."
+  blocked_on: null
+  judge_verdict: null
+  evidence_receipts: []
+  tokens_actual: null
+  lesson: "the TS migration inlined the named buildRecordVersionStatsRow into an anon .map callback, so the packet's by-name seam pins have no anchor; when a re-anchor would require authoring a materially different transform (hoist-then-extract), close skipped/target-symbol-gone rather than rewrite the packet in place."
+resets:
+  - at: "2026-07-02T22:07:57.612Z"
+    from_status: reverted
+    reason: "re-route: extraction class -> codex maker/claude judge (tonight forced claude-maker = wrong pairing, all reverted)"
+  - at: "2026-07-05T00:00:00.000Z"
+    from_status: pending
+    reason: "re-anchor attempt .js->.ts after Jul-3 unification; target symbol buildRecordVersionStatsRow was inlined into an anon .map (scope-fn found=false) -> closed skipped/target-symbol-gone"

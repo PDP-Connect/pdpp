@@ -1,0 +1,18 @@
+# hone work server-metadata-t0-067f607d — baseline rung 'complexity-remeasure'
+# command: node /home/tnunamak/code/minnows/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/metadata.ts::isPrivateNetworkHost'
+# executed-command (portable-path rewrite): node /home/tnunamak/.tmp/minnows-substrate/tools/hone/collectors/scope-fn.mjs --repo /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation --target 'server/metadata.ts::isPrivateNetworkHost'
+# expect: found=true and cognitive_before < 11 (packet baseline); red_scan unchanged
+# exit: 0  duration: 0s  verdict: PASS
+
+{
+  "target": "server/metadata.ts::isPrivateNetworkHost",
+  "file": "server/metadata.ts",
+  "function": "isPrivateNetworkHost",
+  "found": true,
+  "cognitive_before": 11,
+  "line": 65,
+  "caller_count": 2,
+  "red_scan": [],
+  "red_hint": "no security markers — pure decomplect target",
+  "note": null
+}
