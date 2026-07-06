@@ -1166,6 +1166,58 @@ test('Collection Profile conformance', async (t) => {
     }
   });
 
+  await t.test('pre-progress browser profile attach race remains runtime-retryable', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, {
+      ...MINIMAL_MANIFEST,
+      connector_id: 'chatgpt',
+    });
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'DONE',
+        status: 'failed',
+        records_emitted: 0,
+        error: {
+          message:
+            'chatgpt_preprogress_failure: runtime_exception: could not open browser profile: Protocol error (Network.setCacheDisabled): Internal server error, session closed.',
+          retryable: false,
+        },
+      },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'failed');
+      const runFailedGap = result.known_gaps.find((gap) => gap.kind === 'run_failed');
+      assert.ok(runFailedGap, `expected run_failed known gap, got ${JSON.stringify(result.known_gaps)}`);
+      assert.equal(runFailedGap.reason, 'connector_reported_failed');
+      assert.equal(runFailedGap.recovery_hint?.action, 'retry_by_runtime');
+      assert.equal(runFailedGap.recovery_hint?.retryable, true);
+
+      const asUrl = `http://localhost:${asPort}`;
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
+      assert.equal(failedEvent.data.known_gaps[0].recovery_hint?.action, 'retry_by_runtime');
+      assert.equal(failedEvent.data.known_gaps[0].recovery_hint?.retryable, true);
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
   await t.test('loadSyncState includes connector_instance_id when provided', async () => {
     const connectorId = 'instance_state_connector';
     const connectorInstanceId = 'cin_instance_state_work';

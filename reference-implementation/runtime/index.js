@@ -909,6 +909,21 @@ function inferRecoveryAction(reason, message, interactionKind = null) {
   return 'unknown';
 }
 
+function isRuntimeRetryableBrowserProfileError(message) {
+  if (typeof message !== 'string' || message.length === 0) {
+    return false;
+  }
+  const text = message.toLowerCase();
+  if (!text.includes('could not open browser profile')) {
+    return false;
+  }
+  return (
+    (text.includes('network.setcachedisabled') && text.includes('session closed')) ||
+    (text.includes('target.attachtotarget') && text.includes('session closed')) ||
+    text.includes('internal server error, session closed')
+  );
+}
+
 function normalizeRecoveryHint(input, { reason = null, message = null, interactionKind = null } = {}) {
   const inferredAction = inferRecoveryAction(reason, message, interactionKind);
   if (typeof input === 'string' && RECOVERY_ACTIONS.has(input)) {
@@ -2504,6 +2519,9 @@ export async function runConnector(opts) {
       return 'refresh_credentials';
     }
     const message = typeof connectorError?.message === 'string' ? connectorError.message : '';
+    if (isRuntimeRetryableBrowserProfileError(message)) {
+      return 'retry_by_runtime';
+    }
     if (message.includes('chatgpt_preprogress_failure: refresh_credentials:')) {
       return 'refresh_credentials';
     }
