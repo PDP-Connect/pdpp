@@ -84,6 +84,11 @@ services:
       PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: ${PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS:-}
       PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: ${PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER:-}
       PDPP_CAPTURE_FIXTURES: ${PDPP_CAPTURE_FIXTURES:-}
+      # Live/debug capture artifacts belong in persistent runtime storage, not
+      # in the deploy checkout. A checkout bind can disappear after a temp
+      # deploy worktree is reaped, which can wedge connector startup while
+      # capture mode is enabled.
+      PDPP_CAPTURE_ROOT_DIR: ${PDPP_CAPTURE_ROOT_DIR:-/root/.pdpp/fixture-captures}
       PDPP_BROWSER_SURFACE_DIAGNOSTICS: ${PDPP_BROWSER_SURFACE_DIAGNOSTICS:-}
       # Operator-forced browser-surface routing. Leave EMPTY in the normal
       # managed deployment: when PDPP_NEKO_MANAGED_CONNECTORS is configured
@@ -145,9 +150,6 @@ services:
       # .pdpp-data/pdpp.sqlite` and the host-published Postgres port.
       - pdpp-transformers:/var/cache/pdpp/transformers
       - pdpp-home:/root/.pdpp
-      # Raw fixture captures are gitignored but useful for debugging live
-      # connector UI/API drift when PDPP_CAPTURE_FIXTURES=1.
-      - ./packages/polyfill-connectors/fixtures:/app/packages/polyfill-connectors/fixtures
       # File connector imports. Override the host-side paths with
       # PDPP_DOCKER_CLAUDE_CODE_HOME / PDPP_DOCKER_CODEX_HOME when running
       # claude_code or codex inside this Docker service.

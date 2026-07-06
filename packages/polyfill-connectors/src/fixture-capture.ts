@@ -19,9 +19,10 @@
  * neither is set, `createCaptureSession` returns null and the runtime
  * makes no automatic capture calls.
  *
- * Active sessions write under
- * `packages/polyfill-connectors/fixtures/<connector>/raw/<runId>/` local raw
- * kinds of capture:
+ * Active sessions write under `PDPP_CAPTURE_ROOT_DIR/<connector>/raw/<runId>/`.
+ * When `PDPP_CAPTURE_ROOT_DIR` is unset, local development defaults to
+ * `packages/polyfill-connectors/fixtures/<connector>/raw/<runId>/`.
+ * Captured raw kinds:
  *
  *   records/<stream>.jsonl     one JSON per emitted RECORD.data (generic,
  *                               free to any connector that uses a shared
@@ -57,6 +58,7 @@ import type { Page } from "playwright";
 import type { RecordData } from "./connector-runtime.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const DEFAULT_CAPTURE_ROOT = join(PACKAGE_ROOT, "fixtures");
 const ARIA_SNAPSHOT_TIMEOUT_MS = 2000;
 const LOCATOR_PROBE_TIMEOUT_MS = 1000;
 const LOCATOR_PROBE_ARIA_DEPTH = 2;
@@ -354,7 +356,9 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
   // explicit always-retain trumps conditional retain.
   const keepOnSuccess = alwaysRetain;
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
-  const baseDir = join(PACKAGE_ROOT, "fixtures", connectorName, "raw", runId);
+  const configuredRoot = process.env.PDPP_CAPTURE_ROOT_DIR?.trim();
+  const captureRoot = configuredRoot && configuredRoot.length > 0 ? configuredRoot : DEFAULT_CAPTURE_ROOT;
+  const baseDir = join(captureRoot, connectorName, "raw", runId);
   try {
     mkdirSync(join(baseDir, "records"), { recursive: true });
     mkdirSync(join(baseDir, "aria"), { recursive: true });

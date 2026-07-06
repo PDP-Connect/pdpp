@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import type { Page } from "playwright";
@@ -185,6 +187,21 @@ test("captureDom invokes an optional trace checkpoint hook after page capture", 
 test("createCaptureSession returns null when raw capture mode is disabled", () => {
   withEnv({ PDPP_CAPTURE_FIXTURES: undefined, PDPP_CAPTURE_ON_FAILURE: undefined }, () => {
     assert.equal(createCaptureSession(`fixture_capture_disabled_${process.pid}_${Date.now()}`), null);
+  });
+});
+
+test("createCaptureSession honors PDPP_CAPTURE_ROOT_DIR", () => {
+  const root = mkdtempSync(join(tmpdir(), "pdpp-capture-root-"));
+  withEnv({ PDPP_CAPTURE_FIXTURES: "1", PDPP_CAPTURE_ON_FAILURE: undefined, PDPP_CAPTURE_ROOT_DIR: root }, () => {
+    const connectorName = `fixture_capture_custom_root_${process.pid}_${Date.now()}`;
+    const capture = createCaptureSession(connectorName);
+    assert.ok(capture);
+    try {
+      assert.equal(capture.baseDir.startsWith(join(root, connectorName, "raw")), true);
+      assert.equal(existsSync(`${capture.baseDir}/records`), true);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
   });
 });
 

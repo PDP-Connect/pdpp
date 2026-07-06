@@ -580,7 +580,7 @@ The three committed pilots double as the per-shape reference for new connectors:
 
 **Smoke-test the capture pipeline**
 
-`pnpm exec tsx bin/test-fixture-capture.ts` runs a self-contained end-to-end check (no network, no browser) that capture + scrub produce sanitized output from PII-bearing input. Run it after changing anything in `fixture-capture.ts`, `scrub-defaults.ts`, or `scrub-fixtures.ts`.
+`pnpm exec tsx bin/test-fixture-capture.ts` runs a self-contained end-to-end check (no network, no browser) that capture + scrub produce sanitized output from PII-bearing input. Local development writes raw captures under `fixtures/<connector>/raw/` by default; deployed reference stacks can set `PDPP_CAPTURE_ROOT_DIR` so live diagnostics live in persistent runtime storage instead of the checkout. Run the smoke after changing anything in `fixture-capture.ts`, `scrub-defaults.ts`, or `scrub-fixtures.ts`.
 
 ### Pre-ship checklist
 
