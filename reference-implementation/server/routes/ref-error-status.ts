@@ -37,6 +37,47 @@ export function typeFor(status: number): string {
   return "api_error";
 }
 
+export interface RecoveryAdmissionWireExtras {
+  readonly next_eligible_at?: string;
+  readonly pending_pressure_gap_count?: number;
+  readonly recovery_admission_reason?: string;
+}
+
+/**
+ * Project controller recovery-admission facts onto the public typed-error
+ * envelope. The controller uses camelCase internal fields; the HTTP envelope
+ * uses snake_case so clients can react without parsing prose.
+ */
+export function recoveryAdmissionExtrasForWire(err: unknown): RecoveryAdmissionWireExtras {
+  const source = err as
+    | {
+        recoveryAdmissionReason?: unknown;
+        nextEligibleAt?: unknown;
+        pendingPressureGapCount?: unknown;
+      }
+    | null
+    | undefined;
+  const extras: {
+    next_eligible_at?: string;
+    pending_pressure_gap_count?: number;
+    recovery_admission_reason?: string;
+  } = {};
+  if (typeof source?.recoveryAdmissionReason === "string" && source.recoveryAdmissionReason) {
+    extras.recovery_admission_reason = source.recoveryAdmissionReason;
+  }
+  if (typeof source?.nextEligibleAt === "string" && source.nextEligibleAt) {
+    extras.next_eligible_at = source.nextEligibleAt;
+  }
+  if (
+    typeof source?.pendingPressureGapCount === "number" &&
+    Number.isFinite(source.pendingPressureGapCount) &&
+    source.pendingPressureGapCount >= 0
+  ) {
+    extras.pending_pressure_gap_count = source.pendingPressureGapCount;
+  }
+  return extras;
+}
+
 /**
  * Map a domain error `code` to its HTTP status. Callers default to 500 for any
  * code not listed here (`codeToStatus[code] || 500`). This table is the single

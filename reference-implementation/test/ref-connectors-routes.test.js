@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 import { getDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
+import { createSqliteConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -89,6 +90,26 @@ async function seedSpotifyInstance(connectorId) {
     createdAt: NOW,
     updatedAt: NOW,
   });
+}
+
+async function seedProviderPressureGap(connectorId) {
+  const store = createSqliteConnectorDetailGapStore();
+  const now = new Date().toISOString();
+  const nextAttemptAfter = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  await store.upsertPendingGap({
+    gapId: 'gap_route_provider_pressure',
+    connectorId,
+    connectorInstanceId: SPOTIFY_INSTANCE_ID,
+    stream: 'tracks',
+    recordKey: 'track_1',
+    detailLocator: { route_template: 'GET /v1/tracks/{id}' },
+    reason: 'upstream_pressure',
+    nextAttemptAfter,
+    discoveredRunId: 'run_route_discovery',
+    lastRunId: 'run_route_prior',
+    now,
+  });
+  return nextAttemptAfter;
 }
 
 test('GET /_ref/connectors returns list envelope', async () => {
@@ -241,6 +262,28 @@ test('POST /_ref/connections/:connectorInstanceId/run returns 202 (started run)'
     });
     assert.equal(resp.status, 202);
     assert.ok(resp.body !== null && typeof resp.body === 'object');
+  });
+});
+
+test('POST /_ref/connections/:connectorInstanceId/run returns recovery admission fields during provider-pressure cooldown', async () => {
+  await withServer(async ({ asUrl }) => {
+    const manifest = await registerSpotifyManifest(asUrl);
+    const connectorId = connectorKeyForManifest(manifest);
+    await seedSpotifyInstance(connectorId);
+    const nextAttemptAfter = await seedProviderPressureGap(connectorId);
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/run`, {
+      method: 'POST',
+    });
+
+    assert.equal(status, 425);
+    assert.equal(body?.error?.code, 'provider_pressure_cooldown');
+    assert.equal(body?.error?.recovery_admission_reason, 'cooldown');
+    assert.equal(body?.error?.pending_pressure_gap_count, 1);
+    assert.ok(
+      Date.parse(body?.error?.next_eligible_at) >= Date.parse(nextAttemptAfter),
+      `next_eligible_at should honor the connector retry floor: ${body?.error?.next_eligible_at}`,
+    );
   });
 });
 

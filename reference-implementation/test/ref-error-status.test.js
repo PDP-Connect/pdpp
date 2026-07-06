@@ -7,7 +7,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { codeToStatus, typeFor } from '../server/routes/ref-error-status.ts';
+import {
+  codeToStatus,
+  recoveryAdmissionExtrasForWire,
+  typeFor,
+} from '../server/routes/ref-error-status.ts';
 
 test('typeFor maps each known HTTP status to its canonical error type', () => {
   assert.equal(typeFor(400), 'invalid_request_error');
@@ -61,4 +65,30 @@ test('typeFor(codeToStatus[code]) yields the envelope type for each mapped code'
   assert.equal(typeFor(codeToStatus.invalid_request), 'invalid_request_error');
   // ambiguous_connection is 409 → falls back to api_error type (by design).
   assert.equal(typeFor(codeToStatus.ambiguous_connection), 'api_error');
+});
+
+test('recoveryAdmissionExtrasForWire projects controller fields into HTTP envelope names', () => {
+  assert.deepEqual(
+    recoveryAdmissionExtrasForWire({
+      recoveryAdmissionReason: 'cooldown',
+      nextEligibleAt: '2026-07-06T16:00:00.000Z',
+      pendingPressureGapCount: 3,
+    }),
+    {
+      recovery_admission_reason: 'cooldown',
+      next_eligible_at: '2026-07-06T16:00:00.000Z',
+      pending_pressure_gap_count: 3,
+    },
+  );
+});
+
+test('recoveryAdmissionExtrasForWire omits malformed fields', () => {
+  assert.deepEqual(
+    recoveryAdmissionExtrasForWire({
+      recoveryAdmissionReason: '',
+      nextEligibleAt: null,
+      pendingPressureGapCount: -1,
+    }),
+    {},
+  );
 });

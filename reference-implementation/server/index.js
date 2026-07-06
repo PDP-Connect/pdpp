@@ -74,7 +74,7 @@ import {
 import { canonicalConnectorKey, isInternalConnectorId } from './connector-key.js';
 import { attachActivationScheduleIfAutomatic } from './connection-activation-schedules.ts';
 import { projectStorageDisplayName, resolveRequestConnectionId } from './connection-id-request.js';
-import { codeToStatus, typeFor } from './routes/ref-error-status.ts';
+import { codeToStatus, recoveryAdmissionExtrasForWire, typeFor } from './routes/ref-error-status.ts';
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -626,6 +626,15 @@ function pdppError(res, status, code, message, param = null, extras = null) {
     if (typeof extras.retry_with === 'string') {
       body.error.retry_with = extras.retry_with;
     }
+    if (typeof extras.recovery_admission_reason === 'string') {
+      body.error.recovery_admission_reason = extras.recovery_admission_reason;
+    }
+    if (typeof extras.next_eligible_at === 'string') {
+      body.error.next_eligible_at = extras.next_eligible_at;
+    }
+    if (typeof extras.pending_pressure_gap_count === 'number') {
+      body.error.pending_pressure_gap_count = extras.pending_pressure_gap_count;
+    }
   }
   const resourceMetadataUrl = status === 401 ? getProtectedResourceMetadataUrl(res) : null;
   if (resourceMetadataUrl) {
@@ -773,6 +782,7 @@ function handleError(res, err) {
   const extras = {};
   if (Array.isArray(err.available_connections)) extras.available_connections = err.available_connections;
   if (typeof err.retry_with === 'string') extras.retry_with = err.retry_with;
+  Object.assign(extras, recoveryAdmissionExtrasForWire(err));
   pdppError(res, status, code, err.message, err.param || null, extras);
 }
 
