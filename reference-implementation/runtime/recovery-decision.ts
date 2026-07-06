@@ -577,6 +577,251 @@ export function hasFreshPressureEvidence(
   return filterFreshPressureRows(rows, nowMs, evidenceWindowMs).length > 0;
 }
 
+// ─── Owner-only admission diagnostics (task 2.6) ─────────────────────────────
+//
+// The runtime already records the connector-neutral admission decision as
+// evidence on the `DETAIL_GAPS_START_ADMISSION` / `DETAIL_GAPS_PAGE_RESPONSE`
+// progress events (`summarizeDetailGapAdmission` in `runtime/index.js`) and on a
+// manual denial's `recoveryAdmissionReason`. Those are per-run, event-stream
+// facts. The missing half of task 2.6 is an owner-only READ that answers, at any
+// time and without re-deriving classification at another seam, "why did (or did
+// not) the most recent recovery attempt run for this connection".
+//
+// This function is the pure decision behind that read. It re-derives the SAME
+// `resolveRecoveryAdmission` decision over a connection's durable pending gap
+// rows (the substrate is `connector_detail_gaps`, matching design.md's rollback
+// guarantee — no new store), summarizes admitted vs deferred counts and reason
+// classes, and computes a single owner-facing `why_not_now` when NOTHING is
+// admissible now. It exposes only counts, classes, and timing — never a record
+// payload, locator, or secret. It is observe-only: it makes no decision the
+// scheduler or manual gate acts on; those seams own enforcement.
+
+/**
+ * Owner-only recovery-admission diagnostics for one connection, derived from its
+ * durable pending gap rows. `why_not_now` is present only when no row is
+ * admissible right now; it names the single most owner-relevant blocker so
+ * diagnostics can answer "why didn't the most recent attempt run" directly.
+ */
+export interface RecoveryAdmissionDiagnostics {
+  /** Rows the governor would admit for a recovery attempt right now. */
+  readonly admitted: number;
+  /** Total candidate pending rows considered (bounded by the caller's read). */
+  readonly candidates: number;
+  /** Rows the governor would defer right now. */
+  readonly deferred: number;
+  /** Per-reason-class deferral counts. Present only when `deferred > 0`. */
+  readonly deferred_by_reason?: Readonly<Record<RecoveryAdmissionDenialReason, number>>;
+  /** Earliest ISO next-eligible time across deferred rows, when any is known. */
+  readonly next_eligible_at?: string;
+  /**
+   * The single owner-facing blocker reason, present ONLY when nothing is
+   * admissible now (`admitted === 0 && candidates > 0`). Ordered by owner
+   * relevance: an `owner_required` or `system_issue` blocker (the owner or a
+   * maintainer must act) outranks a `budget` or a `cooldown` (the system will
+   * resume on its own).
+   */
+  readonly why_not_now?: RecoveryAdmissionDenialReason;
+}
+
+/** Owner-relevance order for the top-line `why_not_now`. Lower index wins. */
+const WHY_NOT_NOW_PRECEDENCE: readonly RecoveryAdmissionDenialReason[] = [
+  "owner_required",
+  "system_issue",
+  "budget",
+  "cooldown",
+];
+
+/**
+ * Summarize the connector-neutral recovery admission over a connection's durable
+ * pending gap rows for owner-only diagnostics (task 2.6). Pure: the caller
+ * supplies the rows (a bounded read of `connector_detail_gaps`) and `now`; this
+ * re-derives `resolveRecoveryAdmission` per row and rolls the decisions up.
+ *
+ * When at least one row is admissible, `why_not_now` is omitted — the connection
+ * is not blocked, it simply has eligible recovery work. When NOTHING is
+ * admissible, `why_not_now` names the single most owner-relevant blocker so the
+ * diagnostics read answers "why didn't it run" without the owner reading raw
+ * per-row classes.
+ */
+export function summarizeRecoveryAdmissionDiagnostics(
+  rows: readonly RecoveryGapRow[],
+  options: RecoveryAdmissionOptions = {}
+): RecoveryAdmissionDiagnostics {
+  const candidateRows = rows ?? [];
+  let admitted = 0;
+  const deferredByReason = new Map<RecoveryAdmissionDenialReason, number>();
+  let nextEligibleAt: string | null = null;
+  for (const row of candidateRows) {
+    const admission = resolveRecoveryAdmission(row, options);
+    if (admission.ok) {
+      admitted += 1;
+      continue;
+    }
+    deferredByReason.set(admission.reason, (deferredByReason.get(admission.reason) ?? 0) + 1);
+    if (
+      typeof admission.nextEligibleAt === "string" &&
+      admission.nextEligibleAt &&
+      (nextEligibleAt === null || admission.nextEligibleAt < nextEligibleAt)
+    ) {
+      nextEligibleAt = admission.nextEligibleAt;
+    }
+  }
+  const deferred = candidateRows.length - admitted;
+  const diagnostics: {
+    admitted: number;
+    candidates: number;
+    deferred: number;
+    deferred_by_reason?: Record<RecoveryAdmissionDenialReason, number>;
+    next_eligible_at?: string;
+    why_not_now?: RecoveryAdmissionDenialReason;
+  } = {
+    candidates: candidateRows.length,
+    admitted,
+    deferred,
+  };
+  if (deferred > 0) {
+    diagnostics.deferred_by_reason = Object.fromEntries(deferredByReason) as Record<
+      RecoveryAdmissionDenialReason,
+      number
+    >;
+  }
+  if (nextEligibleAt) {
+    diagnostics.next_eligible_at = nextEligibleAt;
+  }
+  // `why_not_now` only when the connection has candidate work but none is
+  // admissible now — otherwise there IS eligible work and nothing to explain.
+  if (candidateRows.length > 0 && admitted === 0) {
+    diagnostics.why_not_now = pickWhyNotNow(deferredByReason);
+  }
+  return diagnostics;
+}
+
+function pickWhyNotNow(
+  deferredByReason: ReadonlyMap<RecoveryAdmissionDenialReason, number>
+): RecoveryAdmissionDenialReason {
+  for (const reason of WHY_NOT_NOW_PRECEDENCE) {
+    if (deferredByReason.has(reason)) {
+      return reason;
+    }
+  }
+  // Every deferral reason is covered by the precedence list; this is only
+  // reached if the set is empty, which the caller already guards against.
+  return "cooldown";
+}
+
+// ─── Stall watchdog (task 2.7, observe-only) ─────────────────────────────────
+//
+// design.md D8 / spec "Stalled eligibility becomes observable": queued recovery
+// is a live scheduling state with a liveness obligation. Eligible work that
+// receives no attempt beyond the expected cadence window is not "still catching
+// up" — it is a detectable stall the runtime must surface as a system condition
+// to owner-only diagnostics, never leave as silent queue rot.
+//
+// This is the RUNTIME/server-side observation, distinct from and complementary
+// to the console projection's `deriveRecoveryStep(...) === "stalled"` (task 4.5,
+// `apps/console/.../source-recovery-state.ts`), which reads the projected
+// backlog. Here we read the durable gap rows directly (their real
+// `last_attempt_at` / `updated_at` recency) so diagnostics can report the stall
+// with the row-level evidence it has.
+//
+// CRITICAL (task 2.7): this OBSERVES ONLY. It returns a decision object; it
+// never admits work, mutates a row, arms/clears a cooldown, or bypasses any
+// gate. A stall is a report, not a force-admit — the whole point is that the
+// watchdog surfaces coupling bugs (like the live 51-holds-942 residue) without
+// itself becoming a way around the governor.
+
+/**
+ * The default cadence window the runtime stall watchdog arms against. Matches
+ * the console surface's `RECOVERY_STALL_CADENCE_MS` (6h) so the runtime and UI
+ * agree on when eligible-but-unattempted work is a stall rather than normal
+ * cadence. Deliberately generous relative to normal recovery cadence.
+ */
+export const RECOVERY_STALL_CADENCE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The observe-only stall observation for one connection. `stalled` is true when
+ * at least one row is admissible now (eligible) yet the newest attempt across
+ * the eligible rows is older than the cadence window — eligible work has stopped
+ * receiving attempts. Carries the supporting recency evidence and the count of
+ * eligible rows so diagnostics can render the system condition.
+ */
+export interface RecoveryStallObservation {
+  /** Number of rows admissible right now (eligible for a recovery attempt). */
+  readonly eligibleCandidates: number;
+  /** ISO time of the most recent attempt across eligible rows, or null if none. */
+  readonly lastAttemptAt: string | null;
+  /** True when eligible work has received no attempt within the cadence window. */
+  readonly stalled: boolean;
+}
+
+export interface RecoveryStallOptions extends RecoveryAdmissionOptions {
+  /** Cadence window in ms. Defaults to {@link RECOVERY_STALL_CADENCE_MS}. */
+  readonly cadenceWindowMs?: number;
+}
+
+/**
+ * Observe whether a connection's eligible recovery work has stalled: eligible
+ * now, but no attempt within the cadence window. Pure and side-effect-free.
+ *
+ * A row counts toward the stall only when {@link resolveRecoveryAdmission} would
+ * admit it now — a row waiting on a cooldown or an owner-required blocker is NOT
+ * a stall, it is correctly deferred. The stall fires when admissible work is
+ * being ignored (nothing is attempting it) beyond the cadence window. When `now`
+ * is omitted the observation is time-free and never reports a stall (matching the
+ * console derivation's time-free contract).
+ */
+export function deriveRecoveryStall(
+  rows: readonly RecoveryGapRow[],
+  options: RecoveryStallOptions = {}
+): RecoveryStallObservation {
+  const candidateRows = rows ?? [];
+  const cadenceWindowMs = normalizeNonNegativeInteger(options.cadenceWindowMs, RECOVERY_STALL_CADENCE_MS);
+  let eligibleCandidates = 0;
+  let newestAttemptMs: number | null = null;
+  let newestAttemptIso: string | null = null;
+  for (const row of candidateRows) {
+    if (!resolveRecoveryAdmission(row, options).ok) {
+      continue;
+    }
+    eligibleCandidates += 1;
+    const attemptIso = lastPressureAtForGap(row); // last_attempt_at then updated_at
+    const attemptMs = parseIso(attemptIso);
+    if (attemptMs !== null && (newestAttemptMs === null || attemptMs > newestAttemptMs)) {
+      newestAttemptMs = attemptMs;
+      newestAttemptIso = attemptIso;
+    }
+  }
+
+  const stalled = computeStalled({
+    eligibleCandidates,
+    newestAttemptMs,
+    cadenceWindowMs,
+    nowMs: options.nowMs,
+  });
+  return { eligibleCandidates, lastAttemptAt: newestAttemptIso, stalled };
+}
+
+function computeStalled(input: {
+  cadenceWindowMs: number;
+  eligibleCandidates: number;
+  newestAttemptMs: number | null;
+  nowMs: number | undefined;
+}): boolean {
+  // Time-free (no `now`) never reports a stall; a zero/negative window disables
+  // the watchdog; no eligible work cannot be stalled.
+  if (input.nowMs === undefined || input.cadenceWindowMs <= 0 || input.eligibleCandidates === 0) {
+    return false;
+  }
+  const nowMs = normalizeEpochMs(input.nowMs);
+  // No attempt timestamp at all on eligible work IS a stall: eligible work that
+  // has never recorded an attempt is not receiving attempts. A newest attempt
+  // older than the cadence window is likewise a stall.
+  if (input.newestAttemptMs === null) {
+    return true;
+  }
+  return nowMs - input.newestAttemptMs > input.cadenceWindowMs;
+}
+
 // ─── Local helpers (pure) ────────────────────────────────────────────────────
 
 function nonEmpty(value: unknown): string | null {

@@ -104,8 +104,8 @@ function anchorStore(connectorId, lastRunTimeMs) {
 function pressureGap({ attemptCount = 6 } = {}) {
   return {
     attemptCount,
-    lastPressureAt: null,
-    nextAttemptAfter: null,
+    lastPressureAt: new Date().toISOString(),
+    nextAttemptAfter: new Date(Date.now() + 60_000).toISOString(),
     reason: 'upstream_pressure',
   };
 }
@@ -168,6 +168,72 @@ test('T1+T2: scheduled managed-connector run calls runManagedConnectorViaControl
   }
 });
 
+test('T2c: scheduled managed connector retries runtime-retryable terminal known gaps before recording failure', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-retry-'));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const connectorId = 'chatgpt';
+    const completedRuns = [];
+    const controllerCalls = [];
+    const runtimeGap = {
+      kind: 'run_failed',
+      reason: 'connector_reported_failed',
+      stream: null,
+      severity: 'actionable',
+      message:
+        'chatgpt_preprogress_failure: runtime_exception: could not open browser profile: Protocol error (Network.setCacheDisabled): Internal server error, session closed.',
+      recovery_hint: { action: 'retry_by_runtime', retryable: true },
+    };
+
+    const scheduler = createScheduler({
+      connectors: [{
+        connectorId,
+        connectorPath,
+        manifest: BACKGROUND_SAFE_MANIFEST,
+        intervalMs: 25,
+        maxRetries: 2,
+        ownerToken: 'owner-token',
+      }],
+      rsUrl: 'http://localhost.invalid',
+      onInteraction: async () => ({ accepted: true, status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      runManagedConnectorViaController: async () => {
+        controllerCalls.push(Date.now());
+        if (controllerCalls.length === 1) {
+          return {
+            run_id: 'run-runtime-race-001',
+            status: 'failed',
+            trace_id: 'trace-runtime-race-001',
+            known_gaps: [runtimeGap],
+            connector_error: { message: String(runtimeGap.message), retryable: false },
+          };
+        }
+        return {
+          run_id: 'run-runtime-race-002',
+          status: 'succeeded',
+          trace_id: 'trace-runtime-race-002',
+        };
+      },
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      scheduler.stop();
+
+      assert.equal(controllerCalls.length, 2, 'runtime-retryable managed failure should be retried by scheduler');
+      const [record] = completedRuns;
+      assert.equal(record.status, 'succeeded');
+      assert.equal(record.runId, 'run-runtime-race-002');
+      assert.equal(record.attempt, 2);
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('T2b: scheduled managed-connector recovery dispatch preserves recoveryOnly', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-'));
   try {
@@ -204,8 +270,9 @@ test('T2b: scheduled managed-connector recovery dispatch preserves recoveryOnly'
       scheduler.stop();
 
       assert.equal(calls.length >= 1, true, 'runManagedConnectorViaController must be called');
-      assert.equal(calls[0].id, connectorId, 'connectorId forwarded correctly');
-      assert.equal(calls[0].opts.recoveryOnly, true, 'recovery-only dispatch intent must reach controller route');
+      const recoveryCall = calls.find((call) => call.opts.recoveryOnly === true);
+      assert.ok(recoveryCall, 'recovery-only dispatch intent must reach controller route');
+      assert.equal(recoveryCall.id, connectorId, 'connectorId forwarded correctly');
     } finally {
       scheduler.stop();
     }

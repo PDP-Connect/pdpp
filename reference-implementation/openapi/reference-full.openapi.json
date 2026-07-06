@@ -20971,6 +20971,100 @@
                       "type": "object",
                       "additionalProperties": true
                     },
+                    "recovery": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "admission": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "candidates": {
+                              "type": "integer"
+                            },
+                            "admitted": {
+                              "type": "integer"
+                            },
+                            "deferred": {
+                              "type": "integer"
+                            },
+                            "deferred_by_reason": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "cooldown": {
+                                  "type": "integer"
+                                },
+                                "budget": {
+                                  "type": "integer"
+                                },
+                                "owner_required": {
+                                  "type": "integer"
+                                },
+                                "system_issue": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "next_eligible_at": {
+                              "type": "string"
+                            },
+                            "why_not_now": {
+                              "type": "string",
+                              "enum": [
+                                "cooldown",
+                                "budget",
+                                "owner_required",
+                                "system_issue"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "candidates",
+                            "admitted",
+                            "deferred"
+                          ]
+                        },
+                        "stall": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "stalled": {
+                              "type": "boolean"
+                            },
+                            "eligibleCandidates": {
+                              "type": "integer"
+                            },
+                            "lastAttemptAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "stalled",
+                            "eligibleCandidates",
+                            "lastAttemptAt"
+                          ]
+                        },
+                        "read_limit": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "unreadable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "admission",
+                        "stall",
+                        "read_limit",
+                        "unreadable"
+                      ]
+                    },
                     "rendered_verdict": {
                       "type": "object",
                       "additionalProperties": true
@@ -20988,6 +21082,7 @@
                     "last_ingest_at",
                     "schedule",
                     "freshness",
+                    "recovery",
                     "rendered_verdict"
                   ]
                 }
@@ -21490,6 +21585,100 @@
                       "type": "object",
                       "additionalProperties": true
                     },
+                    "recovery": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "admission": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "candidates": {
+                              "type": "integer"
+                            },
+                            "admitted": {
+                              "type": "integer"
+                            },
+                            "deferred": {
+                              "type": "integer"
+                            },
+                            "deferred_by_reason": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "cooldown": {
+                                  "type": "integer"
+                                },
+                                "budget": {
+                                  "type": "integer"
+                                },
+                                "owner_required": {
+                                  "type": "integer"
+                                },
+                                "system_issue": {
+                                  "type": "integer"
+                                }
+                              }
+                            },
+                            "next_eligible_at": {
+                              "type": "string"
+                            },
+                            "why_not_now": {
+                              "type": "string",
+                              "enum": [
+                                "cooldown",
+                                "budget",
+                                "owner_required",
+                                "system_issue"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "candidates",
+                            "admitted",
+                            "deferred"
+                          ]
+                        },
+                        "stall": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "stalled": {
+                              "type": "boolean"
+                            },
+                            "eligibleCandidates": {
+                              "type": "integer"
+                            },
+                            "lastAttemptAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "stalled",
+                            "eligibleCandidates",
+                            "lastAttemptAt"
+                          ]
+                        },
+                        "read_limit": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "unreadable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "admission",
+                        "stall",
+                        "read_limit",
+                        "unreadable"
+                      ]
+                    },
                     "rendered_verdict": {
                       "type": "object",
                       "additionalProperties": true
@@ -21507,6 +21696,7 @@
                     "last_ingest_at",
                     "schedule",
                     "freshness",
+                    "recovery",
                     "rendered_verdict"
                   ]
                 }

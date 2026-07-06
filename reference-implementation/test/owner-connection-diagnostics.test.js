@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { listSpineEventsPage } from '../lib/spine.ts';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 import { startServer } from '../server/index.js';
+import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -238,6 +239,16 @@ test('owner-agent bearer reads connection-scoped diagnostics by connection_id an
     assert.ok('last_ingest_at' in body, 'response carries last_ingest_at');
     assert.ok('schedule' in body, 'response carries schedule');
     assert.ok('freshness' in body, 'response carries freshness');
+    // Owner-only recovery-admission diagnostics (tasks 2.6/2.7) are always
+    // present. A never-run connection with no seeded gaps has no candidates, so
+    // nothing is admitted or deferred, there is no blocker to explain, and the
+    // observe-only stall watchdog reports no stall.
+    assert.ok(body?.recovery, 'response carries recovery diagnostics');
+    assert.deepEqual(body.recovery.admission, { candidates: 0, admitted: 0, deferred: 0 });
+    assert.equal(body.recovery.admission.why_not_now, undefined);
+    assert.equal(body.recovery.stall.stalled, false);
+    assert.equal(body.recovery.stall.eligibleCandidates, 0);
+    assert.equal(body.recovery.unreadable, false);
     assert.ok(body?.rendered_verdict, 'response carries rendered_verdict');
     assert.ok(body.rendered_verdict.pill, 'rendered_verdict carries pill');
     assert.ok(
@@ -487,5 +498,201 @@ test('owner-agent control document advertises inspect_diagnostics as supported w
     assert.equal(diagnostics.status, 'supported');
     assert.equal(diagnostics.method, 'GET');
     assert.equal(diagnostics.url, `${rsUrl}/v1/owner/connections/{connection_id}/diagnostics`);
+  });
+});
+
+// ─── Recovery-admission diagnostics (tasks 2.6 / 2.7) ────────────────────────
+//
+// These prove the durable owner-only read answers "why didn't the most recent
+// recovery attempt run" (2.6) and surfaces a stalled eligible backlog as an
+// observable system condition (2.7), derived from the connection's real
+// `connector_detail_gaps` rows — no fabricated evidence, no new store.
+
+const RECOVERY_STALL_CADENCE_MS = 6 * 60 * 60 * 1000;
+
+test('2.6 diagnostics answers why_not_now=cooldown for a fully-cooling-down backlog', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_cooldown',
+      connectorId: connectorKey,
+      displayName: 'cooldown connection',
+      sourceBindingKey: 'cooldown@example.com',
+    });
+
+    // Two pending recovery gaps whose own next-attempt floor is in the future:
+    // every candidate is deferred by its per-item cooldown, so nothing is
+    // admissible now.
+    const gapStore = getDefaultConnectorDetailGapStore();
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // +1h
+    for (const recordKey of ['track_a', 'track_b']) {
+      await gapStore.upsertPendingGap({
+        connectorId: connectorKey,
+        connectorInstanceId: 'cin_spotify_cooldown',
+        stream: 'tracks',
+        recordKey,
+        reason: 'retry_exhausted',
+        nextAttemptAfter: future,
+      });
+    }
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      '/v1/owner/connections/cin_spotify_cooldown/diagnostics',
+    );
+    assert.equal(status, 200);
+    const { admission, stall } = body.recovery;
+    assert.equal(admission.candidates, 2, 'both pending gaps are candidates');
+    assert.equal(admission.admitted, 0, 'nothing is admissible while cooling down');
+    assert.equal(admission.deferred, 2);
+    assert.equal(admission.deferred_by_reason.cooldown, 2);
+    assert.equal(admission.next_eligible_at, future, 'read surfaces the next eligible time');
+    assert.equal(admission.why_not_now, 'cooldown', 'diagnostics answers why it did not run');
+    // Cooling-down work is correctly deferred — NOT a stall.
+    assert.equal(stall.eligibleCandidates, 0);
+    assert.equal(stall.stalled, false);
+  });
+});
+
+test('2.6 diagnostics answers why_not_now=owner_required over a cooldown row', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_owner',
+      connectorId: connectorKey,
+      displayName: 'owner-required connection',
+      sourceBindingKey: 'owner-required@example.com',
+    });
+
+    const gapStore = getDefaultConnectorDetailGapStore();
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await gapStore.upsertPendingGap({
+      connectorId: connectorKey,
+      connectorInstanceId: 'cin_spotify_owner',
+      stream: 'tracks',
+      recordKey: 'cooldown_track',
+      reason: 'retry_exhausted',
+      nextAttemptAfter: future,
+    });
+    await gapStore.upsertPendingGap({
+      connectorId: connectorKey,
+      connectorInstanceId: 'cin_spotify_owner',
+      stream: 'tracks',
+      recordKey: 'auth_track',
+      reason: 'auth_failure',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { body } = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      '/v1/owner/connections/cin_spotify_owner/diagnostics',
+    );
+    const { admission } = body.recovery;
+    assert.equal(admission.admitted, 0);
+    assert.equal(admission.deferred_by_reason.owner_required, 1);
+    assert.equal(admission.deferred_by_reason.cooldown, 1);
+    // Owner-sole-resolution outranks a system-resumable cooldown.
+    assert.equal(admission.why_not_now, 'owner_required');
+  });
+});
+
+test('2.6 diagnostics scopes pending-gap reads before applying the read limit', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_noisy_sibling',
+      connectorId: connectorKey,
+      displayName: 'noisy sibling connection',
+      sourceBindingKey: 'noisy@example.com',
+    });
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_targeted',
+      connectorId: connectorKey,
+      displayName: 'targeted connection',
+      sourceBindingKey: 'targeted@example.com',
+    });
+
+    const gapStore = getDefaultConnectorDetailGapStore();
+    const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    for (let i = 0; i < 120; i += 1) {
+      await gapStore.upsertPendingGap({
+        connectorId: connectorKey,
+        connectorInstanceId: 'cin_spotify_noisy_sibling',
+        stream: 'tracks',
+        recordKey: `sibling_track_${i}`,
+        reason: 'retry_exhausted',
+        now: old,
+      });
+    }
+    await gapStore.upsertPendingGap({
+      connectorId: connectorKey,
+      connectorInstanceId: 'cin_spotify_targeted',
+      stream: 'tracks',
+      recordKey: 'target_track',
+      reason: 'retry_exhausted',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      '/v1/owner/connections/cin_spotify_targeted/diagnostics',
+    );
+    assert.equal(status, 200);
+    assert.equal(body.recovery.admission.candidates, 1);
+    assert.equal(body.recovery.admission.admitted, 1);
+    assert.equal(body.recovery.admission.deferred, 0);
+  });
+});
+
+test('2.7 stall watchdog surfaces eligible work with no attempt beyond the cadence window', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadReferenceManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_stalled',
+      connectorId: connectorKey,
+      displayName: 'stalled connection',
+      sourceBindingKey: 'stalled@example.com',
+    });
+
+    // An eligible (no future floor) recovery gap whose last attempt is well
+    // beyond the cadence window — eligible work that has stopped receiving
+    // attempts. The seeded `now` sets updated_at/last-touch older than 6h.
+    const gapStore = getDefaultConnectorDetailGapStore();
+    const stale = new Date(Date.now() - RECOVERY_STALL_CADENCE_MS - 60 * 60 * 1000).toISOString();
+    const gap = await gapStore.upsertPendingGap({
+      connectorId: connectorKey,
+      connectorInstanceId: 'cin_spotify_stalled',
+      stream: 'tracks',
+      recordKey: 'stalled_track',
+      reason: 'retry_exhausted',
+      now: stale,
+    });
+    // Record an attempt at the stale instant, then revert to pending so it is
+    // eligible again but its last_attempt_at is old (the crash-reclaim shape).
+    await gapStore.markGapStatus(gap.gap_id, 'in_progress', { runId: 'run_old', now: stale });
+    await gapStore.markGapStatus(gap.gap_id, 'pending', { runId: 'run_old', now: stale });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { body } = await getDiagnostics(
+      rsUrl,
+      ownerToken,
+      '/v1/owner/connections/cin_spotify_stalled/diagnostics',
+    );
+    const { admission, stall } = body.recovery;
+    // The gap is eligible now (no future floor) — it should be admitted...
+    assert.equal(admission.admitted, 1, 'the stale-but-eligible gap is admissible');
+    assert.equal(admission.why_not_now, undefined, 'eligible work has no blocker to explain');
+    // ...yet it has received no attempt within the cadence window: a stall.
+    assert.equal(stall.eligibleCandidates, 1);
+    assert.equal(stall.stalled, true, 'eligible work with no fresh attempt is an observable stall');
+    assert.equal(stall.lastAttemptAt, stale, 'stall carries the last-attempt recency evidence');
   });
 });

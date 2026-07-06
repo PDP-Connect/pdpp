@@ -747,6 +747,35 @@ test('channel: degraded resumable stale coverage is advisory Retry now, not calm
   assert.deepEqual(action.satisfied_when, { kind: 'gap_recovered' });
 });
 
+test('channel: deferred scheduled recovery is a self-handled wait, not an owner Retry now action', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'retryable_gap', freshness: 'stale', outbox: 'idle' },
+      forward_disposition: 'resumable',
+      reason_code: 'connector_reported_failed',
+    }),
+    [stream({ stream_id: 'messages', coverage: 'unknown', gap_retryable: true })],
+    ASSISTED_REFRESH,
+    true,
+    {
+      mode: 'deferred',
+      retained_records: 136_907,
+      last_refreshed_at: '2026-07-03T03:51:30.681Z',
+      observed_at: '2026-07-06T15:33:39.630Z',
+    }
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'calm');
+  assert.equal(v.forward_statement, 'The next run is expected to fill the remaining data.');
+  assert.equal(action.kind, 'wait');
+  assert.equal(action.audience, 'none');
+  assert.equal(action.cta, 'Collecting — no action needed');
+  assert.ok(!v.required_actions.some((a) => a.kind === 'retry_gap' || a.audience === 'owner'));
+});
+
 // ─── 3.6 forward statement ────────────────────────────────────────────────────
 
 test('forward_statement: terminal never claims resumed collection (inv3)', () => {

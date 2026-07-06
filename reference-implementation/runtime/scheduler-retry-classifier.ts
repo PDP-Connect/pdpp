@@ -36,6 +36,28 @@ function isRetryableHttpStatus(status: unknown): boolean {
   return true;
 }
 
+function hasRetryableRunFailureKnownGap(gaps: readonly Record<string, unknown>[] | null | undefined): boolean {
+  for (const gap of gaps ?? []) {
+    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+      continue;
+    }
+    if (gap.kind !== "run_failed") {
+      continue;
+    }
+    const recoveryHint = gap.recovery_hint;
+    if (!recoveryHint || typeof recoveryHint !== "object" || Array.isArray(recoveryHint)) {
+      continue;
+    }
+    if (
+      (recoveryHint as { action?: unknown }).action === "retry_by_runtime" &&
+      (recoveryHint as { retryable?: unknown }).retryable === true
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const NON_RETRYABLE_FAILURE_REASONS: ReadonlySet<string> = new Set([
   "authentication_error",
   "connector_protocol_violation",
@@ -70,6 +92,9 @@ function shouldRetryRunFailure(err: RunConnectorError | null | undefined): boole
   if (err.terminal_reason && NON_RETRYABLE_TERMINAL_REASONS.has(err.terminal_reason)) {
     return false;
   }
+  if (hasRetryableRunFailureKnownGap(err.known_gaps)) {
+    return true;
+  }
   if (err.connector_error?.retryable === false) {
     return false;
   }
@@ -89,6 +114,7 @@ function isTerminalGrantFailure(reason: string | null | undefined): reason is Te
 
 export type { RunConnectorError, TerminalNonGrantReason, TerminalReason };
 export {
+  hasRetryableRunFailureKnownGap,
   isRetryableHttpStatus,
   isTerminalGrantFailure,
   NON_RETRYABLE_FAILURE_REASONS,

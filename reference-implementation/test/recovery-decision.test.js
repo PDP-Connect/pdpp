@@ -12,8 +12,10 @@ import test from 'node:test';
 
 import {
   DEFAULT_PRESSURE_EVIDENCE_WINDOW_MS,
+  RECOVERY_STALL_CADENCE_MS,
   classifyRecoveryGap,
   classifyRecoveryReason,
+  deriveRecoveryStall,
   hasEligibleNonPressureRecovery,
   hasFreshPressureEvidence,
   lastPressureAtForGap,
@@ -23,6 +25,7 @@ import {
   providerWorkDomainKey,
   resolveRecoveryAdmission,
   sameWorkDomain,
+  summarizeRecoveryAdmissionDiagnostics,
 } from '../runtime/recovery-decision.ts';
 
 // ── Row factory ──────────────────────────────────────────────────────────────
@@ -369,4 +372,178 @@ test('1.5 the evidence window is configurable and defaults to the cooldown ceili
   assert.equal(hasFreshPressureEvidence(rows, NOW_MS), true);
   // …but under a tight 1h window it is stale.
   assert.equal(hasFreshPressureEvidence(rows, NOW_MS, 60 * 60 * 1000), false);
+});
+
+// ── task 2.6: owner-only admission diagnostics ────────────────────────────────
+//
+// summarizeRecoveryAdmissionDiagnostics re-derives the same resolveRecoveryAdmission
+// decision over a connection's durable pending rows so an owner-only read can
+// answer "why didn't the most recent attempt run" without re-classifying.
+
+test('2.6 all-eligible backlog reports no why_not_now (there is eligible work)', () => {
+  const rows = [
+    gapRow({ reason: 'retry_exhausted' }),
+    gapRow({ reason: 'run_cap_deferred' }),
+  ];
+  const diag = summarizeRecoveryAdmissionDiagnostics(rows, { nowMs: NOW_MS });
+  assert.equal(diag.candidates, 2);
+  assert.equal(diag.admitted, 2);
+  assert.equal(diag.deferred, 0);
+  assert.equal(diag.deferred_by_reason, undefined);
+  assert.equal(diag.why_not_now, undefined);
+});
+
+test('2.6 empty backlog is not a blocker (no candidates, no why_not_now)', () => {
+  const diag = summarizeRecoveryAdmissionDiagnostics([], { nowMs: NOW_MS });
+  assert.deepEqual(diag, { candidates: 0, admitted: 0, deferred: 0 });
+});
+
+test('2.6 a fully-deferred cooldown backlog answers why_not_now=cooldown with next_eligible_at', () => {
+  const rows = [
+    gapRow({ reason: 'retry_exhausted', next_attempt_after: FUTURE }),
+    gapRow({ reason: 'retry_exhausted', next_attempt_after: '2999-06-01T00:00:00.000Z' }),
+  ];
+  const diag = summarizeRecoveryAdmissionDiagnostics(rows, { nowMs: NOW_MS });
+  assert.equal(diag.admitted, 0);
+  assert.equal(diag.deferred, 2);
+  assert.equal(diag.deferred_by_reason.cooldown, 2);
+  // earliest floor surfaces so diagnostics can say "next eligible ...".
+  assert.equal(diag.next_eligible_at, FUTURE);
+  assert.equal(diag.why_not_now, 'cooldown');
+});
+
+test('2.6 why_not_now prefers owner_required over cooldown when both block', () => {
+  const rows = [
+    gapRow({ reason: 'retry_exhausted', next_attempt_after: FUTURE }), // cooldown
+    gapRow({ reason: 'auth_failure' }), // owner_required
+  ];
+  const diag = summarizeRecoveryAdmissionDiagnostics(rows, { nowMs: NOW_MS });
+  assert.equal(diag.admitted, 0);
+  assert.equal(diag.deferred_by_reason.cooldown, 1);
+  assert.equal(diag.deferred_by_reason.owner_required, 1);
+  assert.equal(diag.why_not_now, 'owner_required');
+});
+
+test('2.6 connector defect / quarantine blocks as system_issue', () => {
+  const rows = [gapRow({ reason: 'quarantined' }), gapRow({ reason: 'gone' })];
+  const diag = summarizeRecoveryAdmissionDiagnostics(rows, { nowMs: NOW_MS });
+  assert.equal(diag.admitted, 0);
+  assert.equal(diag.deferred_by_reason.system_issue, 2);
+  assert.equal(diag.why_not_now, 'system_issue');
+});
+
+test('2.6 a mix with one eligible row is not blocked (why_not_now omitted)', () => {
+  const rows = [
+    gapRow({ reason: 'auth_failure' }), // owner_required
+    gapRow({ reason: 'retry_exhausted' }), // eligible now
+  ];
+  const diag = summarizeRecoveryAdmissionDiagnostics(rows, { nowMs: NOW_MS });
+  assert.equal(diag.admitted, 1);
+  assert.equal(diag.deferred, 1);
+  assert.equal(diag.why_not_now, undefined);
+});
+
+test('2.6 a fresh domain cooldown defers pressure rows but not non-pressure work', () => {
+  const rows = [
+    gapRow({ reason: 'upstream_pressure' }),
+    gapRow({ reason: 'retry_exhausted' }),
+  ];
+  const diag = summarizeRecoveryAdmissionDiagnostics(rows, {
+    nowMs: NOW_MS,
+    domainCooldownActive: true,
+    domainCooldownUntil: FUTURE,
+  });
+  // Non-pressure work stays admissible even under an active domain cooldown —
+  // the anti-starvation rule. So the connection is NOT blocked.
+  assert.equal(diag.admitted, 1);
+  assert.equal(diag.deferred_by_reason.cooldown, 1);
+  assert.equal(diag.why_not_now, undefined);
+});
+
+// ── task 2.7: stall watchdog (observe-only) ───────────────────────────────────
+
+test('2.7 stall cadence constant matches the console surface (6h)', () => {
+  assert.equal(RECOVERY_STALL_CADENCE_MS, 6 * 60 * 60 * 1000);
+});
+
+test('2.7 time-free observation never reports a stall (no now)', () => {
+  const rows = [gapRow({ reason: 'retry_exhausted', last_attempt_at: PAST })];
+  const obs = deriveRecoveryStall(rows);
+  assert.equal(obs.stalled, false);
+  assert.equal(obs.eligibleCandidates, 1);
+});
+
+test('2.7 eligible work attempted within cadence is NOT stalled', () => {
+  const recent = new Date(NOW_MS - 60 * 60 * 1000).toISOString(); // 1h ago
+  const rows = [gapRow({ reason: 'retry_exhausted', last_attempt_at: recent })];
+  const obs = deriveRecoveryStall(rows, { nowMs: NOW_MS });
+  assert.equal(obs.stalled, false);
+  assert.equal(obs.lastAttemptAt, recent);
+});
+
+test('2.7 eligible work with no attempt beyond the cadence window IS stalled', () => {
+  const stale = new Date(NOW_MS - 7 * 60 * 60 * 1000).toISOString(); // 7h ago > 6h
+  const rows = [gapRow({ reason: 'retry_exhausted', last_attempt_at: stale })];
+  const obs = deriveRecoveryStall(rows, { nowMs: NOW_MS });
+  assert.equal(obs.stalled, true);
+  assert.equal(obs.eligibleCandidates, 1);
+  assert.equal(obs.lastAttemptAt, stale);
+});
+
+test('2.7 eligible work that never recorded an attempt IS stalled', () => {
+  const rows = [gapRow({ reason: 'retry_exhausted', last_attempt_at: null, updated_at: null })];
+  const obs = deriveRecoveryStall(rows, { nowMs: NOW_MS });
+  assert.equal(obs.stalled, true);
+  assert.equal(obs.lastAttemptAt, null);
+});
+
+test('2.7 work correctly deferred by cooldown is NOT a stall (deferred, not ignored)', () => {
+  const stale = new Date(NOW_MS - 7 * 60 * 60 * 1000).toISOString();
+  // Future per-item floor → not admissible now → not counted toward stall.
+  const rows = [gapRow({ reason: 'retry_exhausted', next_attempt_after: FUTURE, last_attempt_at: stale })];
+  const obs = deriveRecoveryStall(rows, { nowMs: NOW_MS });
+  assert.equal(obs.eligibleCandidates, 0);
+  assert.equal(obs.stalled, false);
+});
+
+test('2.7 owner_required / connector defect work is NOT a stall (correctly blocked)', () => {
+  const stale = new Date(NOW_MS - 7 * 60 * 60 * 1000).toISOString();
+  const rows = [
+    gapRow({ reason: 'auth_failure', last_attempt_at: stale }),
+    gapRow({ reason: 'quarantined', last_attempt_at: stale }),
+  ];
+  const obs = deriveRecoveryStall(rows, { nowMs: NOW_MS });
+  assert.equal(obs.eligibleCandidates, 0);
+  assert.equal(obs.stalled, false);
+});
+
+test('2.7 stall uses the newest attempt across eligible rows', () => {
+  const stale = new Date(NOW_MS - 7 * 60 * 60 * 1000).toISOString();
+  const recent = new Date(NOW_MS - 30 * 60 * 1000).toISOString(); // 30m ago
+  const rows = [
+    gapRow({ reason: 'retry_exhausted', last_attempt_at: stale }),
+    gapRow({ reason: 'run_cap_deferred', last_attempt_at: recent }),
+  ];
+  const obs = deriveRecoveryStall(rows, { nowMs: NOW_MS });
+  // Newest eligible attempt is within cadence → not stalled.
+  assert.equal(obs.stalled, false);
+  assert.equal(obs.lastAttemptAt, recent);
+});
+
+test('2.7 a custom tight cadence window flags a stall the default would miss', () => {
+  const attemptedAt = new Date(NOW_MS - 2 * 60 * 60 * 1000).toISOString(); // 2h ago
+  const rows = [gapRow({ reason: 'retry_exhausted', last_attempt_at: attemptedAt })];
+  assert.equal(deriveRecoveryStall(rows, { nowMs: NOW_MS }).stalled, false);
+  assert.equal(
+    deriveRecoveryStall(rows, { nowMs: NOW_MS, cadenceWindowMs: 60 * 60 * 1000 }).stalled,
+    true
+  );
+});
+
+test('2.7 observe-only: deriveRecoveryStall does not mutate the input rows', () => {
+  const stale = new Date(NOW_MS - 7 * 60 * 60 * 1000).toISOString();
+  const row = gapRow({ reason: 'retry_exhausted', last_attempt_at: stale });
+  const snapshot = JSON.parse(JSON.stringify(row));
+  deriveRecoveryStall([row], { nowMs: NOW_MS });
+  assert.deepEqual(row, snapshot);
 });

@@ -439,6 +439,60 @@ const OwnerConnectionDiagnosticsHealthSchema = {
   required: ["state", "reason_code", "last_success_at", "next_attempt_at", "axes", "badges"],
 };
 
+// Owner-only recovery-admission diagnostics (OpenSpec
+// `add-connector-neutral-recovery-governor`, tasks 2.6/2.7). Derived from the
+// connection's durable `connector_detail_gaps` rows: `admission` re-derives the
+// connector-neutral recovery admission decision (counts/classes/timing, and a
+// top-line `why_not_now` when nothing is admissible now), and `stall` is the
+// observe-only stall watchdog. Counts/classes/timing only — never a record
+// payload, locator, or secret.
+const OwnerConnectionDiagnosticsRecoverySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    admission: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        candidates: { type: "integer" },
+        admitted: { type: "integer" },
+        deferred: { type: "integer" },
+        // Per-reason-class deferral counts; present only when deferred > 0.
+        deferred_by_reason: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            cooldown: { type: "integer" },
+            budget: { type: "integer" },
+            owner_required: { type: "integer" },
+            system_issue: { type: "integer" },
+          },
+        },
+        next_eligible_at: { type: "string" },
+        // Present only when nothing is admissible now.
+        why_not_now: {
+          type: "string",
+          enum: ["cooldown", "budget", "owner_required", "system_issue"],
+        },
+      },
+      required: ["candidates", "admitted", "deferred"],
+    },
+    stall: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        stalled: { type: "boolean" },
+        eligibleCandidates: { type: "integer" },
+        lastAttemptAt: { type: ["string", "null"] },
+      },
+      required: ["stalled", "eligibleCandidates", "lastAttemptAt"],
+    },
+    read_limit: { type: ["integer", "null"] },
+    unreadable: { type: "boolean" },
+  },
+  required: ["admission", "stall", "read_limit", "unreadable"],
+};
+
 // Owner-agent connection-scoped diagnostics read returned by
 // `GET /v1/owner/connections/{connectionId}/diagnostics`. Connection-scoped by
 // construction: every field describes exactly the one configured connection the
@@ -477,6 +531,7 @@ const OwnerConnectionDiagnosticsSchema = {
       ],
     },
     freshness: { type: "object", additionalProperties: true },
+    recovery: OwnerConnectionDiagnosticsRecoverySchema,
     rendered_verdict: { type: "object", additionalProperties: true },
   },
   required: [
@@ -491,6 +546,7 @@ const OwnerConnectionDiagnosticsSchema = {
     "last_ingest_at",
     "schedule",
     "freshness",
+    "recovery",
     "rendered_verdict",
   ],
 };

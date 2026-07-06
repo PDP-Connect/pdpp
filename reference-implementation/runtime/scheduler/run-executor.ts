@@ -751,6 +751,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         failure_reason: result.terminal_reason === "connector_protocol_violation" ? result.terminal_reason : null,
         terminal_reason: result.terminal_reason || null,
         connector_error: result.connector_error || null,
+        known_gaps: result.known_gaps || null,
       };
 
       if (result.status !== "succeeded" && attempt <= maxRetries && shouldRetryRunFailure(candidateError)) {
@@ -846,6 +847,143 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     return !(isManual || via) && isManagedConnector(connectorId);
   }
 
+  type ManagedRunNowResult = Awaited<ReturnType<RunManagedConnectorViaController>>;
+
+  type ManagedRunAttemptOutcome =
+    | { kind: "controller-error"; message: string }
+    | { kind: "not-managed" }
+    | { kind: "surface-unavailable"; status: string }
+    | { kind: "terminal"; result: Exclude<ManagedRunNowResult, null> };
+
+  function normalizeManagedMaxRetries(maxRetries: number | undefined): number {
+    return Number.isFinite(maxRetries) && maxRetries !== undefined ? Math.max(0, Math.trunc(maxRetries)) : 2;
+  }
+
+  async function tryScheduledManagedRun(
+    via: RunManagedConnectorViaController,
+    connectorId: string,
+    connectorInstanceId: string,
+    ownerToken: string,
+    recoveryOnly: boolean
+  ): Promise<ManagedRunAttemptOutcome> {
+    try {
+      const result = await via(connectorId, {
+        connectorInstanceId,
+        ownerToken,
+        priorityClass: "scheduled_refresh",
+        recoveryOnly,
+        triggerKind: "scheduled",
+        referenceBaseUrl,
+        rsUrl,
+      });
+      if (result === null) {
+        return { kind: "not-managed" };
+      }
+      if (result.status && BROWSER_SURFACE_UNAVAILABLE_STATUSES.has(result.status)) {
+        return { kind: "surface-unavailable", status: result.status };
+      }
+      return { kind: "terminal", result };
+    } catch (err) {
+      const deferReason = controllerRunNowDeferReason(err);
+      if (deferReason) {
+        return { kind: "surface-unavailable", status: deferReason };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      return { kind: "controller-error", message };
+    }
+  }
+
+  function shouldRetryManagedRunResult(
+    result: Exclude<ManagedRunNowResult, null>,
+    attempt: number,
+    maxRetries: number
+  ): boolean {
+    return (
+      result.status !== "succeeded" &&
+      attempt <= maxRetries &&
+      shouldRetryRunFailure({
+        connector_error: result.connector_error || null,
+        failure_reason: result.failure_reason || null,
+        known_gaps: result.known_gaps || null,
+        terminal_reason: result.terminal_reason || null,
+      })
+    );
+  }
+
+  function buildControllerRunNowFailureRecord(
+    connectorId: string,
+    connectorInstanceId: string,
+    message: string,
+    startedAt: string,
+    attempt: number
+  ): RunRecord {
+    return {
+      connectorId,
+      connectorInstanceId: connectorInstanceId ?? null,
+      source: buildScheduledRunSource(connectorId),
+      status: "failed",
+      recordsEmitted: 0,
+      checkpointSummary: null,
+      knownGaps: [],
+      startedAt,
+      completedAt: nowIso(),
+      error: `controller_run_now_failed: ${message}`,
+      attempt,
+    };
+  }
+
+  function buildManagedRunRecord(
+    connectorId: string,
+    connectorInstanceId: string,
+    result: Exclude<ManagedRunNowResult, null>,
+    startedAt: string,
+    attempt: number
+  ): RunRecord {
+    const status: "succeeded" | "failed" = result.status === "succeeded" ? "succeeded" : "failed";
+    return {
+      connectorId,
+      connectorInstanceId: connectorInstanceId ?? null,
+      source: buildScheduledRunSource(connectorId),
+      status,
+      recordsEmitted: 0,
+      checkpointSummary: null,
+      knownGaps: result.known_gaps || [],
+      connectorError: result.connector_error || null,
+      failureReason: result.failure_reason || null,
+      startedAt,
+      completedAt: nowIso(),
+      runId: result.run_id ?? null,
+      terminalReason: result.terminal_reason || null,
+      traceId: result.trace_id ?? null,
+      attempt,
+    };
+  }
+
+  function buildManagedRetryExhaustedRecord(
+    connectorId: string,
+    connectorInstanceId: string,
+    result: ManagedRunNowResult,
+    attempt: number
+  ): RunRecord {
+    return {
+      connectorId,
+      connectorInstanceId: connectorInstanceId ?? null,
+      source: buildScheduledRunSource(connectorId),
+      status: "failed",
+      recordsEmitted: 0,
+      checkpointSummary: null,
+      knownGaps: result?.known_gaps || [],
+      connectorError: result?.connector_error || null,
+      failureReason: result?.failure_reason || null,
+      startedAt: nowIso(),
+      completedAt: nowIso(),
+      runId: result?.run_id ?? null,
+      terminalReason: result?.terminal_reason || null,
+      traceId: result?.trace_id ?? null,
+      attempt,
+    };
+  }
+
   // Routes a scheduled managed-connector run through controller.runNow and
   // maps every outcome (contention, controller failure, surface unavailable,
   // terminal success/failure) to a RunRecord. Returns null when runNowResult
@@ -856,72 +994,135 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     connectorId: string,
     connectorInstanceId: string,
     ownerToken: string,
-    options: { recoveryOnly?: boolean } = {}
+    options: { maxRetries?: number; recoveryOnly?: boolean } = {}
   ): Promise<RunRecord | null> {
-    const startedAt = nowIso();
-    let runNowResult: Awaited<ReturnType<RunManagedConnectorViaController>>;
-    try {
-      runNowResult = await via(connectorId, {
+    const maxRetries = normalizeManagedMaxRetries(options.maxRetries);
+    let attempt = 0;
+    let lastRetryableFailure: ManagedRunNowResult = null;
+
+    while (attempt <= maxRetries) {
+      attempt++;
+      const startedAt = nowIso();
+      const outcome = await tryScheduledManagedRun(
+        via,
+        connectorId,
         connectorInstanceId,
         ownerToken,
-        priorityClass: "scheduled_refresh",
-        recoveryOnly: options.recoveryOnly === true,
-        triggerKind: "scheduled",
-        referenceBaseUrl,
-        rsUrl,
-      });
-    } catch (err) {
-      const deferReason = controllerRunNowDeferReason(err);
-      if (deferReason) {
-        return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, deferReason, connectorInstanceId));
+        options.recoveryOnly === true
+      );
+
+      if (outcome.kind === "not-managed") {
+        return null;
       }
-      const message = err instanceof Error ? err.message : String(err);
+      if (outcome.kind === "surface-unavailable") {
+        return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, outcome.status, connectorInstanceId));
+      }
+      if (outcome.kind === "controller-error") {
+        persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+        return recordAndNotify(
+          buildControllerRunNowFailureRecord(connectorId, connectorInstanceId, outcome.message, startedAt, attempt)
+        );
+      }
+
+      if (shouldRetryManagedRunResult(outcome.result, attempt, maxRetries)) {
+        lastRetryableFailure = outcome.result;
+        await sleep(backoffDelayMs(attempt));
+        continue;
+      }
+
       persistLastRunTime(connectorId, connectorInstanceId, Date.now());
-      return recordAndNotify({
-        connectorId,
-        connectorInstanceId: connectorInstanceId ?? null,
-        source: buildScheduledRunSource(connectorId),
-        status: "failed",
-        recordsEmitted: 0,
-        checkpointSummary: null,
-        knownGaps: [],
-        startedAt,
-        completedAt: nowIso(),
-        error: `controller_run_now_failed: ${message}`,
-        attempt: 1,
-      });
-    }
-
-    if (runNowResult === null) {
-      return null;
-    }
-
-    if (runNowResult.status && BROWSER_SURFACE_UNAVAILABLE_STATUSES.has(runNowResult.status)) {
-      return recordAndNotify(buildBrowserSurfaceUnavailableSkip(connectorId, runNowResult.status, connectorInstanceId));
+      if (outcome.result.status !== "succeeded" && managedRunRequiresOwnerAuthRepair(outcome.result)) {
+        markNeedsHuman(connectorId, connectorInstanceId);
+      }
+      return recordAndNotify(
+        buildManagedRunRecord(connectorId, connectorInstanceId, outcome.result, startedAt, attempt)
+      );
     }
 
     persistLastRunTime(connectorId, connectorInstanceId, Date.now());
-    const terminalStatus: "succeeded" | "failed" = runNowResult.status === "succeeded" ? "succeeded" : "failed";
-    if (terminalStatus === "failed" && managedRunRequiresOwnerAuthRepair(runNowResult)) {
-      markNeedsHuman(connectorId, connectorInstanceId);
+    return recordAndNotify(
+      buildManagedRetryExhaustedRecord(connectorId, connectorInstanceId, lastRetryableFailure, attempt)
+    );
+  }
+
+  type StaticSecretLaunchResolution =
+    | { kind: "ready"; staticSecretEnv: Record<string, string> | null }
+    | { kind: "record"; record: RunRecord };
+
+  async function resolveStaticSecretForLaunch(
+    schedule: ConnectorSchedule,
+    isManual: boolean,
+    connectorInstanceId: string
+  ): Promise<StaticSecretLaunchResolution> {
+    if (!resolveStaticSecretRunEnv) {
+      return { kind: "ready", staticSecretEnv: null };
     }
-    return recordAndNotify({
+
+    try {
+      const staticSecretEnv = await resolveStaticSecretRunEnv({
+        connectorId: schedule.connectorId,
+        connectorInstanceId,
+      });
+      return { kind: "ready", staticSecretEnv };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      persistLastRunTime(schedule.connectorId, connectorInstanceId, Date.now());
+      const ownerRepairCode = ownerRepairCredentialCode(err);
+      if (!isManual && ownerRepairCode) {
+        markNeedsHuman(schedule.connectorId, connectorInstanceId);
+        return {
+          kind: "record",
+          record: recordAndNotify(
+            buildCredentialResolutionOwnerActionSkip(
+              schedule.connectorId,
+              ownerRepairCode,
+              message,
+              connectorInstanceId
+            )
+          ),
+        };
+      }
+      return {
+        kind: "record",
+        record: recordAndNotify(buildCredentialResolutionFailure(schedule.connectorId, message, connectorInstanceId)),
+      };
+    }
+  }
+
+  type ManagedScheduledLaunchResolution = { kind: "fallthrough" } | { kind: "record"; record: RunRecord };
+
+  async function routeManagedScheduledLaunch(
+    schedule: ConnectorSchedule,
+    isManual: boolean,
+    connectorInstanceId: string,
+    ownerToken: string,
+    recoveryOnly: boolean
+  ): Promise<ManagedScheduledLaunchResolution> {
+    const { connectorId } = schedule;
+    if (scheduledManagedConnectorLacksRoutingSeam(isManual, runManagedConnectorViaController, connectorId)) {
+      return {
+        kind: "record",
+        record: recordAndNotify(
+          buildBrowserSurfaceUnavailableSkip(connectorId, "surface_routing_unavailable", connectorInstanceId)
+        ),
+      };
+    }
+    if (!(runManagedConnectorViaController && !isManual)) {
+      return { kind: "fallthrough" };
+    }
+
+    const managedOptions: { maxRetries?: number; recoveryOnly?: boolean } = { recoveryOnly };
+    if (schedule.maxRetries !== undefined) {
+      managedOptions.maxRetries = schedule.maxRetries;
+    }
+    const managed = await routeScheduledManagedRun(
+      runManagedConnectorViaController,
       connectorId,
-      connectorInstanceId: connectorInstanceId ?? null,
-      source: buildScheduledRunSource(connectorId),
-      status: terminalStatus,
-      recordsEmitted: 0,
-      checkpointSummary: null,
-      knownGaps: runNowResult.known_gaps || [],
-      connectorError: runNowResult.connector_error || null,
-      failureReason: runNowResult.failure_reason || null,
-      startedAt,
-      completedAt: nowIso(),
-      runId: runNowResult.run_id ?? null,
-      terminalReason: runNowResult.terminal_reason || null,
-      traceId: runNowResult.trace_id ?? null,
-      attempt: 1,
-    });
+      connectorInstanceId,
+      ownerToken,
+      managedOptions
+    );
+    return managed === null ? { kind: "fallthrough" } : { kind: "record", record: managed };
   }
 
   async function launchRun(
@@ -949,23 +1150,11 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     // Browser-session sources may return null when no optional stored login
     // credential exists; the connector can still reuse/repair the browser
     // session according to its automation policy.
-    let staticSecretEnv: Record<string, string> | null = null;
-    if (resolveStaticSecretRunEnv) {
-      try {
-        staticSecretEnv = await resolveStaticSecretRunEnv({ connectorId, connectorInstanceId });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        persistLastRunTime(connectorId, connectorInstanceId, Date.now());
-        const ownerRepairCode = ownerRepairCredentialCode(err);
-        if (!isManual && ownerRepairCode) {
-          markNeedsHuman(connectorId, connectorInstanceId);
-          return recordAndNotify(
-            buildCredentialResolutionOwnerActionSkip(connectorId, ownerRepairCode, message, connectorInstanceId)
-          );
-        }
-        return recordAndNotify(buildCredentialResolutionFailure(connectorId, message, connectorInstanceId));
-      }
+    const staticSecretResolution = await resolveStaticSecretForLaunch(schedule, isManual, connectorInstanceId);
+    if (staticSecretResolution.kind === "record") {
+      return staticSecretResolution.record;
     }
+    const { staticSecretEnv } = staticSecretResolution;
 
     const state = narrowState(await getState(connectorId, connectorInstanceId));
     const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
@@ -1008,12 +1197,6 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     // The next tick — once the seam is wired — routes warm. Manual runs are
     // unaffected: the owner explicitly asked to retry now and bypasses this
     // gate entirely (and the manual path has its own surface acquisition).
-    if (scheduledManagedConnectorLacksRoutingSeam(isManual, runManagedConnectorViaController, connectorId)) {
-      return recordAndNotify(
-        buildBrowserSurfaceUnavailableSkip(connectorId, "surface_routing_unavailable", connectorInstanceId)
-      );
-    }
-
     // ── Managed-connector scheduled run: route through controller.runNow ──────
     //
     // Manual runs already go through controller.runNow (the owner calls the
@@ -1040,18 +1223,15 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     // run is already in-flight for this connector. The scheduler's own
     // runtime.activeRuns.has(key) guard in executeRun prevents double-dispatch
     // from within the scheduler. Both guards stay intact.
-    if (runManagedConnectorViaController && !isManual) {
-      // Null return means connector is not managed — fall through to runWithRetries.
-      const managed = await routeScheduledManagedRun(
-        runManagedConnectorViaController,
-        connectorId,
-        connectorInstanceId,
-        ownerToken,
-        { recoveryOnly }
-      );
-      if (managed !== null) {
-        return managed;
-      }
+    const managedLaunch = await routeManagedScheduledLaunch(
+      schedule,
+      isManual,
+      connectorInstanceId,
+      ownerToken,
+      recoveryOnly
+    );
+    if (managedLaunch.kind === "record") {
+      return managedLaunch.record;
     }
 
     return await runWithRetries(schedule, {

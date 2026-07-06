@@ -614,9 +614,16 @@ function hasTransientUploadFailure(snapshot: ConnectionHealthSnapshot): boolean 
 
 function shouldOfferRetryGapAction(
   snapshot: ConnectionHealthSnapshot,
-  refresh: ConnectionRefreshEvidence | null
+  refresh: ConnectionRefreshEvidence | null,
+  progress: ProgressEvidence | null
 ): boolean {
-  return snapshot.state === "degraded" || isManualRefreshOnly(refresh);
+  if (isManualRefreshOnly(refresh)) {
+    return true;
+  }
+  if (progress?.mode === "deferred" || progress?.mode === "scheduled") {
+    return false;
+  }
+  return snapshot.state === "degraded";
 }
 
 const LOCAL_COLLECTOR_RECOVER_COMMAND =
@@ -755,7 +762,8 @@ function buildRequiredActions(
   snapshot: ConnectionHealthSnapshot,
   streams: readonly StreamRollup[],
   refresh: ConnectionRefreshEvidence | null,
-  disposition: ForwardDisposition
+  disposition: ForwardDisposition,
+  progress: ProgressEvidence | null
 ): RequiredAction[] {
   const terminal = disposition === "terminal";
   const actions: RequiredAction[] = [];
@@ -859,7 +867,7 @@ function buildRequiredActions(
   // Degraded or manual-refresh retryable gaps: the system can recover on a
   // future run, but the owner can explicitly ask for another attempt. Surface
   // that non-urgent accelerant instead of hiding degraded gaps as a calm wait.
-  if (disposition === "resumable" && actions.length === 0 && shouldOfferRetryGapAction(snapshot, refresh)) {
+  if (disposition === "resumable" && actions.length === 0 && shouldOfferRetryGapAction(snapshot, refresh, progress)) {
     const affects = resumableStreamIds(streams);
     actions.push({
       kind: "retry_gap",
@@ -1582,7 +1590,7 @@ export function synthesizeRenderedVerdict(
   const pill: VerdictPill = { tone, label: labelForPill(tone, snapshot) };
 
   // ── required actions (terminality derived from the sole oracle) ──
-  const actions = buildRequiredActions(snapshot, streams, refresh, disposition);
+  const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress);
 
   // ── channel: computed AFTER tone in the same pass; runtime fault caps at calm ──
   let channel = computeChannel(actions);
