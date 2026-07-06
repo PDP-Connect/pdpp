@@ -423,6 +423,46 @@ test('no pressure gaps — ordinary run does not throw provider_pressure_cooldow
   );
 });
 
+test('repeated owner clicks cannot bypass a provider-pressure cooldown (task 2.4)', async () => {
+  // The regression the OpenSpec change closes: repeating "Retry now"
+  // immediately must not erode the cooldown. The gate is stateless w.r.t. click
+  // count — each click re-reads the durable pressure gaps and re-decides — so
+  // five clicks in a row are all blocked, and none starts provider work.
+  const calls = [];
+  const lastRun = Date.now();
+  await withPreGateController(
+    () => fakeDetailGapStore([pressureGap({ attempt_count: 4 })], calls),
+    async (controller) => {
+      for (let click = 0; click < 5; click++) {
+        let err;
+        try {
+          await controller.runNow(TEST_CONNECTOR_ID, { manifest: buildManifest() });
+        } catch (e) {
+          err = e;
+        }
+        assert.ok(err, `click ${click + 1} should have been blocked`);
+        assert.equal(
+          err.code,
+          'provider_pressure_cooldown',
+          `click ${click + 1} must stay blocked; got ${err.code}`,
+        );
+      }
+      // Every click re-read the durable store — no first-click-consumes-the-gate
+      // shortcut that a later click could slip through.
+      assert.equal(calls.length, 5, 'each click must re-read the durable pressure gaps');
+    },
+    {
+      schedule: { interval_seconds: 60 },
+      lastRunTimes: [{
+        connector_id: TEST_CONNECTOR_ID,
+        connector_instance_id: TEST_CONNECTOR_ID,
+        last_run_time_ms: lastRun,
+        updated_at: new Date(lastRun).toISOString(),
+      }],
+    },
+  );
+});
+
 test('non-pressure gap reasons do not trigger the cooldown gate', async () => {
   await withPreGateController(
     () =>

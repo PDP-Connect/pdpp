@@ -114,12 +114,51 @@ export const AMAZON_NO_ORDERS_TEXT_PATTERN = String.raw`you have not placed any 
 
 export type AmazonDetailGapReason = "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
 
-type DetailFailureKind = "deferred_budget" | "navigation_retry_exhausted" | "parse_missing" | "redirected_non_detail";
+type DetailFailureKind =
+  | "deferred_budget"
+  | "navigation_retry_exhausted"
+  | "parse_missing"
+  | "redirected_non_detail"
+  | "session_repair_required";
 
 export type DetailFetchResult =
   | { detail: OrderDetail; status: "hydrated" }
   | { failureKind: DetailFailureKind; reason: AmazonDetailGapReason; status: "deferred" }
   | { failureKind: DetailFailureKind; reason: AmazonDetailGapReason; status: "failed" };
+
+/**
+ * Connector-neutral recovery class for one Amazon detail-attempt outcome.
+ *
+ * These are the design-D4 scheduling classes the runtime and owner UI reason
+ * about. The connector's job (design D5) is to translate its Amazon-specific
+ * failure kinds into this neutral vocabulary so the runtime never sees a local
+ * label like `navigation_retry_exhausted` and the owner never sees it as copy.
+ * The connector does NOT own the scheduling/quarantine budget that turns a
+ * repeated `connector_defect` into a durable terminal gap — that lives in the
+ * runtime terminal-gap classifier. This class is the honest signal the runtime
+ * consumes; it is emitted on the gap's `detail.class`/`last_error.class`.
+ *
+ *   - `run_cap_deferred`        — planned blast-radius stop (per-run detail cap
+ *                                 or retry budget). Resumable; NOT source
+ *                                 pressure.
+ *   - `transient_no_progress`   — a transient DOM/parse/navigation failure that
+ *                                 made no progress this attempt. Retryable, but
+ *                                 the runtime is responsible for escalating
+ *                                 repeated no-progress to a connector issue.
+ *   - `provider_pressure`       — Amazon rate-limited / throttled the request.
+ *                                 Arms the source-pressure cooldown.
+ *   - `owner_repair_required`   — the authenticated session is gone (detail
+ *                                 request redirected to sign-in/challenge/MFA).
+ *                                 The owner must reconnect; retrying is busywork.
+ *   - `connector_defect`        — a deterministic parser/navigation defect the
+ *                                 connector itself must be fixed for.
+ */
+export type AmazonRecoveryClass =
+  | "run_cap_deferred"
+  | "transient_no_progress"
+  | "provider_pressure"
+  | "owner_repair_required"
+  | "connector_defect";
 
 export function reasonForDetailFailure(kind: DetailFailureKind): AmazonDetailGapReason {
   switch (kind) {
@@ -129,14 +168,42 @@ export function reasonForDetailFailure(kind: DetailFailureKind): AmazonDetailGap
       return "retry_exhausted";
     case "parse_missing":
     case "redirected_non_detail":
+    case "session_repair_required":
       return "temporary_unavailable";
     default:
       return "temporary_unavailable";
   }
 }
 
+/**
+ * Map an Amazon detail failure kind to its connector-neutral recovery class.
+ * Pure and exhaustive so the classification can be unit-tested without driving
+ * the browser and so a newly added failure kind is a compile error until it is
+ * classified.
+ *
+ * NOTE ON `parse_missing`: a single parse-missing attempt is `transient_no_progress`,
+ * not `connector_defect`. Whether *repeated* deterministic no-progress becomes a
+ * durable connector defect is a runtime decision (per-item attempt budget +
+ * terminal-gap classifier), not a per-attempt connector call. See the recovery
+ * governor design D4/D10 and the runtime dependency noted in the change report.
+ */
+export function classifyAmazonDetailFailure(kind: DetailFailureKind): AmazonRecoveryClass {
+  switch (kind) {
+    case "deferred_budget":
+      return "run_cap_deferred";
+    case "session_repair_required":
+      return "owner_repair_required";
+    case "navigation_retry_exhausted":
+    case "parse_missing":
+    case "redirected_non_detail":
+      return "transient_no_progress";
+    default:
+      return "transient_no_progress";
+  }
+}
+
 function classForDetailFailure(kind: DetailFailureKind): string {
-  return kind === "deferred_budget" ? "run_cap_deferred" : kind;
+  return classifyAmazonDetailFailure(kind);
 }
 
 export async function readPageContentWithin(
@@ -291,10 +358,20 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
   }
 
   try {
-    if (!DETAIL_URL_RE.test(page.url())) {
+    const landedUrl = page.url();
+    if (!DETAIL_URL_RE.test(landedUrl)) {
+      // A detail request that lands on Amazon's sign-in/challenge/MFA flow is a
+      // dead authenticated session, not a transient page miss: retrying it every
+      // run is owner busywork. Route it to owner-repair so the run stops churning
+      // retryable gaps and the owner is asked to reconnect. A redirect to any
+      // OTHER non-detail URL (e.g. an Amazon Fresh order bouncing to /uff/) stays
+      // a transient no-progress gap.
+      const failureKind: DetailFailureKind = SIGNIN_URL_RE.test(landedUrl)
+        ? "session_repair_required"
+        : "redirected_non_detail";
       return {
-        failureKind: "redirected_non_detail",
-        reason: reasonForDetailFailure("redirected_non_detail"),
+        failureKind,
+        reason: reasonForDetailFailure(failureKind),
         status: "failed",
       };
     }
@@ -338,6 +415,12 @@ export interface RunFlags {
   detailAttempts: number;
   detailCaptured: boolean;
   failedDetailCaptured: boolean;
+  /** Set once a detail attempt lands on Amazon's sign-in/challenge flow. The
+   *  authenticated session is dead for the rest of this run, so remaining
+   *  detail attempts are deferred (a connector-local blast-radius stop) rather
+   *  than hammering sign-in once per order. This is NOT cross-run scheduling —
+   *  the runtime owns whether/when the next run retries. */
+  sessionRepairRequired: boolean;
   temporaryDetailFailures: number;
 }
 
@@ -472,6 +555,16 @@ function readRecoverableAmazonOrderDetailGap(
 }
 
 function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promise<DetailFetchResult> {
+  if (flags.sessionRepairRequired) {
+    // The session died earlier this run. Do not touch the browser again — the
+    // gap re-defers as owner-repair so the owner is asked to reconnect instead
+    // of the run hammering sign-in once per remaining order.
+    return Promise.resolve({
+      failureKind: "session_repair_required",
+      reason: reasonForDetailFailure("session_repair_required"),
+      status: "deferred",
+    });
+  }
   if (flags.detailAttempts >= MAX_DETAIL_ATTEMPTS_PER_RUN) {
     return Promise.resolve({
       failureKind: "deferred_budget",
@@ -488,6 +581,28 @@ function resolveOrderDetail(page: Page, flags: RunFlags, orderId: string): Promi
   }
   flags.detailAttempts++;
   return fetchOrderDetail(page, orderId);
+}
+
+/**
+ * Fold one detail-attempt outcome into the per-run flags. Kept in one place so
+ * the forward walk and the recovery loop escalate identically:
+ *   - a navigation-retry-exhausted failure ratchets the transient no-progress
+ *     count toward the per-run temporary-failure cap;
+ *   - a session-repair-required failure latches the run into owner-repair so no
+ *     further detail attempt touches the browser (blast-radius stop; the runtime
+ *     still owns the cross-run retry decision).
+ * `deferred` outcomes (already gated by flags) never re-ratchet.
+ */
+function recordDetailFailureFlags(flags: RunFlags, result: DetailFetchResult): void {
+  if (result.status === "deferred") {
+    return;
+  }
+  if (result.status === "failed" && result.failureKind === "navigation_retry_exhausted") {
+    flags.temporaryDetailFailures++;
+  }
+  if (result.status === "failed" && result.failureKind === "session_repair_required") {
+    flags.sessionRepairRequired = true;
+  }
 }
 
 async function captureFailedDetailOnce(
@@ -543,9 +658,7 @@ async function recoverPendingOrderItemDetailGapPage(
       recovered++;
       continue;
     }
-    if (result.failureKind === "navigation_retry_exhausted") {
-      flags.temporaryDetailFailures++;
-    }
+    recordDetailFailureFlags(flags, result);
     if (result.status === "failed") {
       await captureFailedDetailOnce(deps.capture, page, flags, result);
     }
@@ -868,9 +981,7 @@ export async function processListOrder(
     } else {
       detailGapReason = result.reason;
       detailFailureKind = result.failureKind;
-      if (result.failureKind === "navigation_retry_exhausted") {
-        flags.temporaryDetailFailures++;
-      }
+      recordDetailFailureFlags(flags, result);
       if (result.status === "failed") {
         await captureFailedDetailOnce(deps.capture, page, flags, result);
       }
@@ -1089,6 +1200,7 @@ if (isMainModule(import.meta.url)) {
         detailAttempts: 0,
         detailCaptured: false,
         failedDetailCaptured: false,
+        sessionRepairRequired: false,
         temporaryDetailFailures: 0,
       };
 

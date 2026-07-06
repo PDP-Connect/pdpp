@@ -33,6 +33,11 @@ import {
   primaryOwnerActionRemediation,
   primaryRequiredAction,
 } from "../../lib/source-actionability.ts";
+import {
+  buildRecoveryPanelViewModel,
+  hasRecoverableWork,
+  type RecoveryPanelViewModel,
+} from "../../lib/source-recovery-state.ts";
 
 /**
  * Server-rendered diagnostics block for the connector detail page.
@@ -92,12 +97,21 @@ export function ConnectionDiagnostics({
     localDeviceProgress,
     sourceInstances,
   });
+  // Progressive disclosure for detail-gap recovery: when durable recoverable
+  // work exists, show the typed recovery step, progress floor counts, next
+  // eligible attempt, and the blocker behind the source row (design D11). Pure
+  // view-model; no credentials, payloads, provider URLs, or selectors.
+  const recoveryPanel =
+    connectionHealth && hasRecoverableWork(connectionHealth.detail_gap_backlog)
+      ? buildRecoveryPanelViewModel(renderedVerdict, connectionHealth)
+      : null;
   return (
     <Section
       description="Evidence the dashboard derives from the reference's connection projection, scheduler, and device-exporter diagnostics. Unknown fields render explicitly, never as zeroes or green."
       title="Diagnostics"
     >
       {renderedVerdict ? <RenderedVerdictSummary verdict={renderedVerdict} /> : null}
+      {recoveryPanel ? <RecoveryPanel model={recoveryPanel} /> : null}
       {backgroundDrain ? <BackgroundLocalDeviceDrainPanel summary={backgroundDrain} /> : null}
       <details
         className="group border-border/70 border-y"
@@ -218,6 +232,41 @@ function BackgroundLocalDeviceDrainPanel({ summary }: { summary: BackgroundLocal
           </>
         ) : null}
       </p>
+    </div>
+  );
+}
+
+/**
+ * Source-detail recovery panel. Renders the typed recovery step, one product
+ * sentence, progress floor counts, the next eligible attempt, the blocker (why
+ * work is not running now), and recent non-secret evidence. A `stalled` or
+ * `system_issue` step reads as a system condition — never as a retry prompt.
+ */
+function RecoveryPanel({ model }: { model: RecoveryPanelViewModel }) {
+  const isSystemCondition = model.step === "stalled" || model.step === "system_issue";
+  const containerClass = isSystemCondition
+    ? "mb-3 flex flex-col gap-1.5 border border-destructive/40 bg-destructive/5 px-3 py-2"
+    : "mb-3 flex flex-col gap-1.5 border border-border/70 bg-muted/30 px-3 py-2";
+  return (
+    <div className={containerClass} data-recovery-step={model.step} data-testid="diagnostics-recovery-panel">
+      <p className="pdpp-caption font-medium text-foreground" data-testid="diagnostics-recovery-sentence">
+        {model.primarySentence}
+      </p>
+      {model.evidence.length > 0 ? (
+        <p className="pdpp-caption text-muted-foreground tabular-nums" data-testid="diagnostics-recovery-progress">
+          {model.evidence.join(" · ")}
+        </p>
+      ) : null}
+      {model.blocker ? (
+        <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-recovery-blocker">
+          {model.blocker}
+        </p>
+      ) : null}
+      {model.nextEligibleAt ? (
+        <p className="pdpp-caption text-muted-foreground tabular-nums" data-testid="diagnostics-recovery-next-attempt">
+          Next eligible attempt <IcTimestamp value={model.nextEligibleAt} />
+        </p>
+      ) : null}
     </div>
   );
 }

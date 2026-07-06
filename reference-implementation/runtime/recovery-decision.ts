@@ -1,0 +1,462 @@
+/**
+ * Connector-neutral recovery-decision helpers (OpenSpec
+ * `add-connector-neutral-recovery-governor`, tasks 1.1–1.5).
+ *
+ * This module is **pure**, mirroring `scheduler-source-pressure-cooldown.ts`
+ * and `scheduler-backoff.ts`: it takes durable `connector_detail_gaps` row
+ * projections + a wall-clock `now` and returns decisions. No I/O, no timers, no
+ * store access. The scheduler, controller, and console projection all feed the
+ * same row shape.
+ *
+ * Today the recovery subsystem hand-classifies gaps inline at every seam:
+ * `SOURCE_PRESSURE_GAP_REASONS.has(row.reason)` appears in the scheduler
+ * pressure probe, the non-pressure recovery probe, the controller manual-retry
+ * gate, and the cooldown governor; `next_attempt_after <= now` is applied in the
+ * store; terminal classes live in the terminal-gap classifier. That scattering
+ * is the ownership gap `design.md` D1/D2 describe. This module is the single
+ * connector-neutral place that answers, for one queued gap row:
+ *
+ *   1. which recovery class it is (design.md D4);
+ *   2. whether it is source pressure (arms the cooldown) or not;
+ *   3. which provider work domain it belongs to (isolation key, D2);
+ *   4. when it next becomes eligible (its `next_attempt_after` floor);
+ *   5. the `RecoveryAdmission` decision for it right now (D2).
+ *
+ * It deliberately does NOT re-implement the cooldown math, back-off, or
+ * per-provider profiles — those stay in their existing pure modules. It reads
+ * the SAME `SOURCE_PRESSURE_GAP_REASONS` set as the cooldown governor so the
+ * two can never disagree about what "source pressure" means.
+ */
+
+import { SOURCE_PRESSURE_GAP_REASONS } from "./scheduler-source-pressure-cooldown.ts";
+
+// ─── Recovery classes (design.md D4) ─────────────────────────────────────────
+//
+// Normalized scheduling classes. Connector-local labels (Amazon's
+// `navigation_retry_exhausted`, `deferred_budget`, …) are mapped to a
+// canonical DETAIL_GAP `reason` BEFORE they land in the row, so this classifier
+// only ever sees the neutral vocabulary. The class here is what drives
+// scheduling and owner projection; it must never be a raw connector label.
+
+export type RecoveryClass =
+  /** Planned stop (per-run/wall-clock/retry-budget cap). Keep queued; NOT source pressure. */
+  | "run_cap_deferred"
+  /** Recoverable no-progress stop; normal recovery cadence; NOT source pressure by itself. */
+  | "retry_exhausted"
+  /** Transient item/page failure; keep queued until the no-progress threshold. */
+  | "temporary_unavailable"
+  /** Provider pressure (rate limit / upstream). Arms cooldown; gates pressure retries. */
+  | "provider_pressure"
+  /** Owner is the only resolution (session/credential repair). */
+  | "owner_required"
+  /** Repeated deterministic parser/navigation failure or terminal classifier. */
+  | "connector_defect"
+  /** Informational non-gap (out of scope / disabled); not owner-drainable retry. */
+  | "informational"
+  /** Reason absent or unrecognized; treated as generic recoverable work. */
+  | "unknown";
+
+/**
+ * Canonical DETAIL_GAP reasons that mean provider pressure. This is the SAME
+ * set the cooldown governor arms on (`scheduler-source-pressure-cooldown.ts`),
+ * re-exported here so callers classify against one source of truth.
+ */
+export const PROVIDER_PRESSURE_REASONS: ReadonlySet<string> = SOURCE_PRESSURE_GAP_REASONS;
+
+/**
+ * Reasons the terminal-gap classifier stamps on a `terminal` row for a failure
+ * that requires owner re-authentication (§10-C `auth_failure`). These route to
+ * `owner_required`, never a retry.
+ */
+export const OWNER_REQUIRED_REASONS: ReadonlySet<string> = new Set(["auth_failure"]);
+
+/**
+ * Reasons the terminal-gap classifier stamps on a `terminal` row for a
+ * deterministically unfillable resource (deleted / gone / permanently
+ * forbidden). These route to `connector_defect` (system/connector issue), never
+ * an owner retry.
+ */
+export const CONNECTOR_DEFECT_REASONS: ReadonlySet<string> = new Set(["gone", "not_found", "permanent_forbidden"]);
+
+/**
+ * Informational (non-recoverable, non-defect) reasons. Mirrors
+ * `INFORMATIONAL_GAP_REASONS` in `runtime/index.js`; a gap with one of these is
+ * an out-of-scope/disabled decision, not drainable retry work.
+ */
+export const INFORMATIONAL_RECOVERY_REASONS: ReadonlySet<string> = new Set([
+  "not_available_in_mode",
+  "out_of_scope",
+  "user_disabled",
+]);
+
+/** Recovery classes that count as durable, drainable non-pressure recovery work. */
+export const NON_PRESSURE_RECOVERY_CLASSES: ReadonlySet<RecoveryClass> = new Set<RecoveryClass>([
+  "run_cap_deferred",
+  "retry_exhausted",
+  "temporary_unavailable",
+  "unknown",
+]);
+
+// ─── Row projection ──────────────────────────────────────────────────────────
+
+/**
+ * The minimal projection of a `connector_detail_gaps` row this module needs.
+ * Matches the snake_case shape `rowToGap` returns
+ * (`server/stores/connector-detail-gap-store.js`), so a durable row can be
+ * passed straight through. Only the fields that drive a recovery decision are
+ * required; the rest of the row (locators, payloads, secrets) is deliberately
+ * absent so this pure decision can never leak them.
+ */
+export interface RecoveryGapRow {
+  readonly attempt_count?: number | null;
+  readonly connector_id?: string | null;
+  readonly connector_instance_id?: string | null;
+  /** `detail.class` when present — carries the connector's blast-radius label (e.g. `run_cap_deferred`). */
+  readonly detail_class?: string | null;
+  readonly grant_id?: string | null;
+  readonly last_attempt_at?: string | null;
+  /**
+   * Actual durable row shape from `connector_detail_gaps.last_error_json`.
+   * Connectors put neutral recovery classes on `last_error.class`; there is no
+   * `detail_class` SQL column today.
+   */
+  readonly last_error?: { readonly class?: unknown } | null;
+  readonly next_attempt_after?: string | null;
+  readonly reason?: string | null;
+  readonly status?: string | null;
+  readonly stream?: string | null;
+}
+
+// ─── Provider work domain (design.md D2) ─────────────────────────────────────
+
+/**
+ * The isolation key for provider pacing/cooldown decisions. A cooldown or a
+ * pressure classification is scoped to one work domain; unrelated domains must
+ * not block each other (spec: "Provider work domains are isolated").
+ *
+ * The de-facto isolation key the cooldown/scheduler already use is
+ * `connector_id` + `connector_instance_id` (per-source). We name that pair
+ * explicitly here so callers can compare domains by value rather than
+ * re-deriving the key at each seam.
+ */
+export interface ProviderWorkDomain {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+}
+
+/**
+ * Stable string form of a work domain, for map keys / equality checks. Mirrors
+ * the `connector_instance_id || connector_id` scoping the scheduler and
+ * controller probes already apply.
+ */
+export function providerWorkDomainKey(domain: ProviderWorkDomain): string {
+  return `${domain.connectorId}::${domain.connectorInstanceId}`;
+}
+
+/**
+ * Derive the provider work domain from a gap row. `connector_instance_id`
+ * falls back to `connector_id` when absent — the same default the scheduler and
+ * controller probes use — so single-instance connectors still get a stable
+ * domain.
+ */
+export function providerWorkDomainForGap(row: RecoveryGapRow): ProviderWorkDomain | null {
+  const connectorId = nonEmpty(row?.connector_id);
+  if (!connectorId) {
+    return null;
+  }
+  const connectorInstanceId = nonEmpty(row?.connector_instance_id) ?? connectorId;
+  return { connectorId, connectorInstanceId };
+}
+
+export function sameWorkDomain(a: ProviderWorkDomain | null, b: ProviderWorkDomain | null): boolean {
+  if (!(a && b)) {
+    return false;
+  }
+  return providerWorkDomainKey(a) === providerWorkDomainKey(b);
+}
+
+// ─── Classification ──────────────────────────────────────────────────────────
+
+/**
+ * Classify a queued gap row's `reason` (and terminal status) into a normalized
+ * `RecoveryClass`. This is the single connector-neutral mapping design.md D4
+ * requires: connector-local labels are already normalized to a canonical
+ * `reason` upstream, and this maps that reason to a scheduling class.
+ *
+ * Note the two provider-pressure reasons (`rate_limited`, `upstream_pressure`)
+ * collapse to the single `provider_pressure` class — the class the cooldown
+ * governor gates on — while `retry_exhausted` / `temporary_unavailable` stay
+ * distinct non-pressure classes.
+ */
+export function classifyRecoveryReason(reason: string | null | undefined): RecoveryClass {
+  const normalized = nonEmpty(reason);
+  if (!normalized) {
+    return "unknown";
+  }
+  if (PROVIDER_PRESSURE_REASONS.has(normalized)) {
+    return "provider_pressure";
+  }
+  if (OWNER_REQUIRED_REASONS.has(normalized)) {
+    return "owner_required";
+  }
+  if (CONNECTOR_DEFECT_REASONS.has(normalized)) {
+    return "connector_defect";
+  }
+  if (INFORMATIONAL_RECOVERY_REASONS.has(normalized)) {
+    return "informational";
+  }
+  if (normalized === "run_cap_deferred") {
+    return "run_cap_deferred";
+  }
+  if (normalized === "retry_exhausted") {
+    return "retry_exhausted";
+  }
+  if (normalized === "temporary_unavailable") {
+    return "temporary_unavailable";
+  }
+  return "unknown";
+}
+
+/**
+ * Full classification of one gap row. This is the value the recovery governor
+ * carries around: the normalized class, whether it is source pressure, its
+ * work domain, its next-eligible floor, and attempt metadata. It exposes no
+ * record payload, locator, or secret.
+ */
+export interface RecoveryGapClassification {
+  readonly attemptCount: number;
+  /** The connector-supplied neutral class from `detail.class` / `last_error.class`, when present. */
+  readonly connectorClass: string | null;
+  /** True for classes that are drainable non-pressure recovery work. */
+  readonly isNonPressureRecovery: boolean;
+  readonly isSourcePressure: boolean;
+  /** ISO next-eligible floor, or null when eligible immediately. */
+  readonly nextEligibleAt: string | null;
+  readonly recoveryClass: RecoveryClass;
+  readonly stream: string | null;
+  readonly workDomain: ProviderWorkDomain | null;
+}
+
+export function classifyRecoveryGap(row: RecoveryGapRow): RecoveryGapClassification {
+  const connectorClass = nonEmpty(row?.detail_class) ?? nonEmpty(row?.last_error?.class);
+  const reasonClass = classifyRecoveryReason(row?.reason);
+  const recoveryClass = connectorRecoveryClass(connectorClass, reasonClass);
+
+  const isSourcePressure = recoveryClass === "provider_pressure";
+  return {
+    recoveryClass,
+    isSourcePressure,
+    isNonPressureRecovery: NON_PRESSURE_RECOVERY_CLASSES.has(recoveryClass),
+    workDomain: providerWorkDomainForGap(row),
+    nextEligibleAt: nonEmpty(row?.next_attempt_after),
+    attemptCount: normalizeNonNegativeInteger(row?.attempt_count, 0),
+    connectorClass: connectorClass ?? null,
+    stream: nonEmpty(row?.stream),
+  };
+}
+
+function connectorRecoveryClass(connectorClass: string | null, reasonClass: RecoveryClass): RecoveryClass {
+  switch (connectorClass) {
+    case "run_cap_deferred":
+      return reasonClass === "provider_pressure" ? "provider_pressure" : "run_cap_deferred";
+    case "owner_repair_required":
+    case "owner_required":
+      return "owner_required";
+    case "provider_pressure":
+      return "provider_pressure";
+    case "connector_defect":
+      return "connector_defect";
+    case "transient_no_progress":
+      return "temporary_unavailable";
+    default:
+      return reasonClass;
+  }
+}
+
+// ─── Admission decision (design.md D2) ───────────────────────────────────────
+
+/**
+ * The connector-neutral recovery admission decision, per design.md D2. A
+ * denial always carries a machine-readable reason and, when a timing floor is
+ * known, the next eligible time — so owner-only diagnostics can answer "why
+ * didn't it run" (task 2.6 shape).
+ */
+export type RecoveryAdmission =
+  | { readonly ok: true; readonly mode: "recover"; readonly workDomain: ProviderWorkDomain }
+  | {
+      readonly ok: false;
+      readonly reason: "cooldown" | "budget" | "owner_required" | "system_issue";
+      readonly nextEligibleAt?: string;
+    };
+
+export interface RecoveryAdmissionOptions {
+  /**
+   * Whether the work domain is under an active provider-pressure cooldown (the
+   * cooldown decision is computed by `scheduler-source-pressure-cooldown.ts`;
+   * the caller threads its `isSourcePressureCooldownDeferring` result in). A
+   * cooldown gates ONLY provider-pressure work; it never denies non-pressure
+   * recovery (spec: source-pressure cooldown SHALL NOT starve non-pressure
+   * recovery).
+   */
+  readonly domainCooldownActive?: boolean;
+  /** ISO time the domain cooldown expires, surfaced on a cooldown denial. */
+  readonly domainCooldownUntil?: string | null;
+  /** Wall-clock epoch ms used to compare against `next_attempt_after`. */
+  readonly nowMs?: number;
+}
+
+/**
+ * Decide whether one queued gap may be attempted right now. Pure: the caller
+ * supplies the domain cooldown state (from the existing cooldown governor) and
+ * `now`; this composes them with the row's class and per-item `next_attempt_after`
+ * floor into a single admission.
+ *
+ * Rules (design.md D2/D3/D4b, spec source-pressure/starvation requirements):
+ *   - `owner_required` → deny `owner_required` (only the owner can resolve it).
+ *   - `connector_defect` / `informational` → deny `system_issue` (no owner retry).
+ *   - a per-item `next_attempt_after` floor in the future → deny `cooldown`
+ *     with that floor (this is the item's own retry timing, independent of the
+ *     domain cooldown).
+ *   - a provider-pressure row while the domain cooldown is active → deny
+ *     `cooldown` (pressure retries wait for the domain to cool).
+ *   - a NON-pressure recovery row → admit even while the domain cooldown is
+ *     active (the cooldown has no claim over non-pressure work).
+ */
+export function resolveRecoveryAdmission(
+  row: RecoveryGapRow,
+  options: RecoveryAdmissionOptions = {}
+): RecoveryAdmission {
+  const classification = classifyRecoveryGap(row);
+  const { workDomain } = classification;
+  if (!workDomain) {
+    // No identifiable provider work domain — cannot safely attempt.
+    return { ok: false, reason: "system_issue" };
+  }
+
+  if (classification.recoveryClass === "owner_required") {
+    return { ok: false, reason: "owner_required" };
+  }
+  if (classification.recoveryClass === "connector_defect" || classification.recoveryClass === "informational") {
+    return { ok: false, reason: "system_issue" };
+  }
+
+  const nowMs = normalizeEpochMs(options.nowMs);
+
+  // Per-item next-attempt floor. This is the row's OWN retry timing (e.g. a
+  // Retry-After the connector learned), independent of the domain cooldown. It
+  // gates any class, including non-pressure work whose own attempt was recently
+  // made.
+  const itemFloorMs = parseIso(classification.nextEligibleAt);
+  if (itemFloorMs !== null && itemFloorMs > nowMs) {
+    return denyCooldown(classification.nextEligibleAt);
+  }
+
+  // Domain-level provider-pressure cooldown. It gates ONLY provider-pressure
+  // work. Non-pressure recovery is deliberately admitted here — this is the
+  // anti-starvation rule (spec §4.3 / the live 51-holds-942 residue): a
+  // source-pressure cooldown must never make queued non-pressure recovery
+  // ineligible.
+  if (classification.isSourcePressure && options.domainCooldownActive === true) {
+    return denyCooldown(nonEmpty(options.domainCooldownUntil));
+  }
+
+  return { ok: true, mode: "recover", workDomain };
+}
+
+/**
+ * Build a `cooldown` denial, including `nextEligibleAt` only when a real ISO
+ * time is known. `exactOptionalPropertyTypes` forbids an explicit
+ * `nextEligibleAt: undefined`, so the property is omitted rather than set to
+ * undefined.
+ */
+function denyCooldown(nextEligibleAt: string | null): RecoveryAdmission {
+  return nextEligibleAt ? { ok: false, reason: "cooldown", nextEligibleAt } : { ok: false, reason: "cooldown" };
+}
+
+// ─── Backlog partitioning (tasks 1.4/1.5 support) ────────────────────────────
+
+/**
+ * Partition a mixed queue of gap rows by provider work domain, then within each
+ * domain by pressure vs non-pressure. This is the shape the anti-starvation and
+ * domain-isolation invariants read: it makes "does this domain have eligible
+ * non-pressure work?" and "are two domains independent?" answerable without
+ * re-deriving classification per seam.
+ */
+export interface WorkDomainBacklog {
+  /** Rows that are neither drainable recovery nor pressure (owner_required/defect/informational). */
+  readonly blocked: RecoveryGapClassification[];
+  readonly domain: ProviderWorkDomain;
+  readonly nonPressure: RecoveryGapClassification[];
+  readonly pressure: RecoveryGapClassification[];
+}
+
+export function partitionRecoveryBacklog(rows: readonly RecoveryGapRow[]): Map<string, WorkDomainBacklog> {
+  const byDomain = new Map<string, WorkDomainBacklog>();
+  for (const row of rows ?? []) {
+    const classification = classifyRecoveryGap(row);
+    const { workDomain } = classification;
+    if (!workDomain) {
+      continue;
+    }
+    const key = providerWorkDomainKey(workDomain);
+    let entry = byDomain.get(key);
+    if (!entry) {
+      entry = { domain: workDomain, nonPressure: [], pressure: [], blocked: [] };
+      byDomain.set(key, entry);
+    }
+    if (classification.isSourcePressure) {
+      entry.pressure.push(classification);
+    } else if (classification.isNonPressureRecovery) {
+      entry.nonPressure.push(classification);
+    } else {
+      entry.blocked.push(classification);
+    }
+  }
+  return byDomain;
+}
+
+/**
+ * True when a work domain has queued non-pressure recovery work that is
+ * eligible now (its own `next_attempt_after` floor is absent or past). This is
+ * the predicate the scheduler eligibility seam must consult so a domain
+ * cooldown never starves non-pressure recovery (spec: "Pressure minority does
+ * not hold non-pressure majority").
+ */
+export function hasEligibleNonPressureRecovery(backlog: WorkDomainBacklog | undefined, nowMs = 0): boolean {
+  if (!backlog) {
+    return false;
+  }
+  const now = normalizeEpochMs(nowMs);
+  return backlog.nonPressure.some((c) => {
+    const floorMs = parseIso(c.nextEligibleAt);
+    return floorMs === null || floorMs <= now;
+  });
+}
+
+// ─── Local helpers (pure) ────────────────────────────────────────────────────
+
+function nonEmpty(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeNonNegativeInteger(value: number | null | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+function normalizeEpochMs(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value < 0) {
+    return 0;
+  }
+  return value;
+}
+
+function parseIso(value: string | null | undefined): number | null {
+  if (typeof value !== "string" || !value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}

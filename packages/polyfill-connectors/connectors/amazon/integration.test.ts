@@ -34,7 +34,9 @@ import type { EmittedMessage } from "../../src/connector-runtime-protocol.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   AMAZON_NO_ORDERS_TEXT_PATTERN,
+  type AmazonRecoveryClass,
   buildOrderDetailGap,
+  classifyAmazonDetailFailure,
   classifyDetailOutcome,
   classifyEmptyListPageDiagnostics,
   type EmitDeps,
@@ -333,7 +335,13 @@ const NEVER_CALLED_PAGE = new Proxy(
 ) as Page;
 
 function makeRunFlags(): RunFlags {
-  return { detailAttempts: 0, detailCaptured: false, failedDetailCaptured: false, temporaryDetailFailures: 0 };
+  return {
+    detailAttempts: 0,
+    detailCaptured: false,
+    failedDetailCaptured: false,
+    sessionRepairRequired: false,
+    temporaryDetailFailures: 0,
+  };
 }
 
 test("processListOrder: unparseable order date returns false (dropped) and emits no records", async () => {
@@ -617,6 +625,36 @@ test("reasonForDetailFailure: maps precise Amazon detail failures to redacted re
   assert.equal(reasonForDetailFailure("redirected_non_detail"), "temporary_unavailable");
   assert.equal(reasonForDetailFailure("parse_missing"), "temporary_unavailable");
   assert.equal(reasonForDetailFailure("deferred_budget"), "retry_exhausted");
+  assert.equal(reasonForDetailFailure("session_repair_required"), "temporary_unavailable");
+});
+
+test("classifyAmazonDetailFailure: maps each failure kind to its connector-neutral recovery class", () => {
+  // The planned per-run cap / retry budget is a resumable blast-radius stop,
+  // not source pressure.
+  assert.equal(classifyAmazonDetailFailure("deferred_budget"), "run_cap_deferred");
+  // A dead authenticated session is the owner's to fix; retrying is busywork.
+  assert.equal(classifyAmazonDetailFailure("session_repair_required"), "owner_repair_required");
+  // Transient DOM/navigation misses made no progress this attempt but stay
+  // retryable — the runtime, not the connector, decides when repeated
+  // no-progress becomes a durable connector defect.
+  const transient: Parameters<typeof classifyAmazonDetailFailure>[0][] = [
+    "navigation_retry_exhausted",
+    "parse_missing",
+    "redirected_non_detail",
+  ];
+  for (const kind of transient) {
+    assert.equal(classifyAmazonDetailFailure(kind), "transient_no_progress", `${kind} is transient no-progress`);
+  }
+});
+
+test("classifyAmazonDetailFailure: planned cap and owner repair are never transient", () => {
+  // Guards the design-D4 separation: a planned cap and an owner-repair signal
+  // must not collapse into the transient bucket that the runtime keeps retrying.
+  const planned: AmazonRecoveryClass = classifyAmazonDetailFailure("deferred_budget");
+  const ownerRepair: AmazonRecoveryClass = classifyAmazonDetailFailure("session_repair_required");
+  assert.notEqual(planned, "transient_no_progress");
+  assert.notEqual(ownerRepair, "transient_no_progress");
+  assert.notEqual(planned, ownerRepair);
 });
 
 test("readPageContentWithin fails bounded when the renderer stops answering", async () => {
@@ -856,6 +894,96 @@ test("processListOrder: total detail-attempt budget defers later details without
     "total detail budget uses a non-source-pressure retryable gap"
   );
   assert.equal(flags.detailAttempts, 999, "budget-deferred gaps do not touch the browser or increment attempts");
+});
+
+// ─── Owner-repair: detail redirect to sign-in ────────────────────────────────
+
+// A detail request that Amazon bounces to /ap/signin means the authenticated
+// session is dead. `SIGNIN_URL` matches SIGNIN_URL_RE and not DETAIL_URL_RE.
+const SIGNIN_REDIRECT_URL = "https://www.amazon.com/ap/signin?openid.return_to=order-details";
+
+test("processListOrder: a detail redirect to sign-in latches owner-repair and gaps stay owner-repair, not transient", async () => {
+  const coverage = newOrderItemsCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
+  const flags = makeRunFlags();
+  const page = makeDetailPageStub(NO_DETAIL_HTML, SIGNIN_REDIRECT_URL);
+
+  await processListOrder(page, deps, flags, makeListOrder({ orderId: "ord-signin-1" }));
+
+  assert.equal(flags.sessionRepairRequired, true, "a sign-in redirect latches the run into owner-repair");
+  assert.equal(
+    flags.temporaryDetailFailures,
+    0,
+    "a dead session is not a transient no-progress failure and must not ratchet that budget"
+  );
+  const gaps = findDetailGaps(protocolMessages);
+  assert.equal(gaps.length, 1, "the degraded order still carries a durable pending gap");
+  assert.equal(gaps[0]?.record_key, "ord-signin-1");
+  assert.equal(
+    gaps[0]?.last_error?.class,
+    "owner_repair_required",
+    "the gap carries the owner-repair class so the runtime/UI route it to reconnect, not endless retry"
+  );
+});
+
+test("processListOrder: once the session is dead, later orders defer without touching the browser (no retry busywork)", async () => {
+  const coverage = newOrderItemsCoverage();
+  const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
+  // Session already latched dead: the next detail attempt must not touch the
+  // page at all (NEVER_CALLED_PAGE throws on any access).
+  const flags = { ...makeRunFlags(), sessionRepairRequired: true };
+
+  await processListOrder(NEVER_CALLED_PAGE, deps, flags, makeListOrder({ orderId: "ord-after-signin" }));
+
+  assert.deepEqual(coverage.gap, ["ord-after-signin"], "the order is still recorded as a degraded gap");
+  const gaps = findDetailGaps(protocolMessages);
+  assert.deepEqual(
+    gaps.map((gap) => [gap.record_key, gap.reason, gap.last_error?.class]),
+    [["ord-after-signin", "temporary_unavailable", "owner_repair_required"]],
+    "post-session-death orders defer as owner-repair instead of hammering sign-in once per order"
+  );
+  assert.equal(flags.detailAttempts, 0, "an owner-repair deferral never touches the browser or spends the budget");
+});
+
+test("recoverPendingOrderItemDetailGaps: a sign-in redirect during recovery stops draining and re-defers as owner-repair", async () => {
+  const { deps, emitted, protocolMessages } = makeRecordingDeps();
+  const flags = makeRunFlags();
+  const firstId = "111-1234567-8901234";
+  const secondId = "111-1234567-8901235";
+  // The recovery page stub always redirects to sign-in, so the FIRST gap trips
+  // owner-repair; the SECOND gap in the same page must then defer without a
+  // second browser touch.
+  const result = await recoverPendingOrderItemDetailGaps(
+    makeDetailPageStub(NO_DETAIL_HTML, SIGNIN_REDIRECT_URL),
+    {
+      capture: null,
+      detailGaps: [firstId, secondId].map((orderId, i) => ({
+        detail_locator: { kind: "amazon.order_detail", order_date: "2026-01-05", order_id: orderId },
+        gap_id: `gap_signin_${i}`,
+        record_key: orderId,
+        reference_only: true,
+        status: "pending",
+        stream: "order_items",
+      })),
+      emit: deps.emit,
+      emitRecord: deps.emitRecord,
+    },
+    flags
+  );
+
+  assert.equal(result.recovered, 0, "a dead session recovers nothing");
+  assert.equal(result.stoppedWithPending, true, "recovery stops with the gaps still queued for the owner to unblock");
+  assert.equal(flags.sessionRepairRequired, true);
+  assert.equal(emitted.length, 0, "no order_items are emitted from a dead session");
+  const gaps = findDetailGaps(protocolMessages);
+  assert.deepEqual(
+    gaps.map((gap) => [gap.record_key, gap.last_error?.class]),
+    [
+      [firstId, "owner_repair_required"],
+      [secondId, "owner_repair_required"],
+    ],
+    "both gaps re-defer as owner-repair; the second never touched the browser"
+  );
 });
 
 test("recoverPendingOrderItemDetailGaps: hydrates future Amazon order-item gaps and marks recovered", async () => {

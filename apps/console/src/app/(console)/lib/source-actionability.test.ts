@@ -3,6 +3,7 @@ import test from "node:test";
 import type {
   RefConnectionHealthSnapshot,
   RefConnectorSummary,
+  RefDetailGapBacklog,
   RefRenderedVerdict,
   RefRequiredAction,
 } from "./ref-client.ts";
@@ -401,4 +402,149 @@ test("source actionability headline counts only needs-owner work and exposes sta
       note: "Evidence is missing and no active check is running.",
     },
   });
+});
+
+// ─── Recovery-state grouping (connector-neutral recovery governor UI tranche) ──
+
+const RECOVERY_CHECKING_RE = /checking/i;
+const RECOVERY_SYNCING_RE = /syncing details/i;
+
+function recoveryBacklog(overrides: Partial<RefDetailGapBacklog> = {}): RefDetailGapBacklog {
+  return {
+    max_attempt_count: 3,
+    next_attempt_at: null,
+    pending: 2093,
+    pending_is_floor: true,
+    pending_other: 0,
+    pending_other_is_floor: false,
+    recovered: 396,
+    terminal: null,
+    ...overrides,
+  };
+}
+
+/** A calm/deferred verdict whose only action is a self-handled `wait`. */
+function deferredRecoveryVerdict(overrides: Partial<RefRenderedVerdict> = {}): RefRenderedVerdict {
+  return verdict({
+    channel: "calm",
+    forward_statement: "The next run is expected to fill the remaining data.",
+    pill: { label: "Degraded", tone: "amber" },
+    progress: {
+      gaps_drained_last_run: null,
+      headline: "Collecting in the background.",
+      last_refreshed_at: null,
+      mode: "deferred",
+      records_committed_last_run: null,
+      retained_records: 100,
+    },
+    required_actions: [
+      action({
+        audience: "none",
+        cta: "Collecting — no action needed",
+        kind: "wait",
+        satisfied_when: { kind: "none" },
+        urgency: "verifying",
+      }),
+    ],
+    ...overrides,
+  });
+}
+
+test("recovery grouping: an inactive queued recovery row is passive progress, never Checking", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({
+      connection_health: health({
+        axes: { attention: "none", coverage: "deferred", freshness: "fresh", outbox: "idle" },
+        badges: { stale: false, syncing: false },
+        detail_gap_backlog: recoveryBacklog(),
+        state: "degraded",
+      }),
+      rendered_verdict: deferredRecoveryVerdict(),
+    }),
+  ]);
+
+  // Queued recovery is passive progress under "PDPP is working" — not the
+  // "System or connector issue" amber fallthrough, and not "Checking".
+  assert.equal(groups.working.length, 1);
+  assert.equal(groups.systemIssues.length, 0);
+  assert.equal(groups.notMeasured.length, 0);
+  const row = groups.working[0];
+  assert.ok(row);
+  assert.doesNotMatch(row.statusLabel, RECOVERY_CHECKING_RE);
+  assert.doesNotMatch(row.what, RECOVERY_CHECKING_RE);
+});
+
+test("recovery grouping: active recovery names the work like syncing order details, not Checking", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({
+      connection_health: health({
+        axes: { attention: "none", coverage: "deferred", freshness: "fresh", outbox: "idle" },
+        badges: { stale: false, syncing: true },
+        detail_gap_backlog: recoveryBacklog(),
+        state: "healthy",
+      }),
+      rendered_verdict: deferredRecoveryVerdict(),
+    }),
+  ]);
+
+  assert.equal(groups.working.length, 1);
+  const row = groups.working[0];
+  assert.ok(row);
+  // The row names the work ("is syncing details" / "Syncing details now."),
+  // never a generic "Checking" bucket.
+  assert.match(`${row.statusLabel} ${row.what}`, RECOVERY_SYNCING_RE);
+  assert.doesNotMatch(`${row.statusLabel} ${row.what}`, RECOVERY_CHECKING_RE);
+});
+
+test("recovery grouping: an unsafe cooldown retry shows a wait row and no owner retry CTA", () => {
+  const summary = connector({
+    connection_health: health({
+      axes: { attention: "none", coverage: "deferred", freshness: "fresh", outbox: "idle" },
+      badges: { stale: false, syncing: false },
+      detail_gap_backlog: recoveryBacklog({ next_attempt_at: "2026-07-06T15:40:00Z" }),
+      next_attempt_at: "2026-07-06T15:40:00Z",
+      state: "cooling_off",
+    }),
+    rendered_verdict: deferredRecoveryVerdict(),
+  });
+  const groups = sourceWorkFromConnectors([summary]);
+  const actionability = projectSourceActionability(summary);
+
+  // Cooling recovery is passive progress, not owner-runnable.
+  assert.equal(groups.working.length, 1);
+  assert.equal(groups.review.length, 0);
+  assert.equal(groups.needsOwner.length, 0);
+  // No owner-runnable CTA is offered for an unsafe (cooling) retry.
+  assert.equal(actionability.ownerActionCue, null);
+  assert.equal(actionability.work?.actionLabel, null);
+});
+
+test("recovery grouping: a connector-defect verdict with recoverable gaps stays a system issue", () => {
+  const groups = sourceWorkFromConnectors([
+    connector({
+      connection_health: health({
+        axes: { attention: "none", coverage: "terminal_gap", freshness: "fresh", outbox: "idle" },
+        badges: { stale: false, syncing: false },
+        detail_gap_backlog: recoveryBacklog(),
+        state: "degraded",
+      }),
+      rendered_verdict: deferredRecoveryVerdict({
+        channel: "advisory",
+        forward_statement: "This connector needs a code fix before it can collect again.",
+        pill: { label: "Can't collect", tone: "red" },
+        required_actions: [
+          action({
+            audience: "maintainer",
+            cta: "Connector code needs a fix",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+          }),
+        ],
+      }),
+    }),
+  ]);
+
+  assert.equal(groups.systemIssues.length, 1);
+  assert.equal(groups.working.length, 0);
 });

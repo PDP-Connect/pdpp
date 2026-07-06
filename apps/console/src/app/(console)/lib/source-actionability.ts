@@ -7,6 +7,12 @@ import type {
   RefRequiredAction,
   RefVerdictTone,
 } from "./ref-client.ts";
+import {
+  deriveRecoveryStep,
+  hasRecoverableWork,
+  type RecoveryStep,
+  recoveryStateGroup,
+} from "./source-recovery-state.ts";
 
 export type SourceWorkGroupId = "needsOwner" | "notMeasured" | "review" | "systemIssue" | "working";
 
@@ -301,6 +307,49 @@ function isNotMeasured(verdict: NonNullable<RefConnectorSummary["rendered_verdic
   return verdict.pill.tone === "grey" || verdict.pill.label === "Not measured";
 }
 
+const RECOVERY_STATUS_LABEL: Partial<Record<RecoveryStep, string>> = {
+  active: "is syncing details",
+  queued: "is catching up",
+  cooling: "is waiting to retry",
+  stalled: "recovery is stalled",
+};
+
+const RECOVERY_WHAT: Partial<Record<RecoveryStep, string>> = {
+  active: "Syncing details now.",
+  queued: "Catching up details when it is safe to retry.",
+  cooling: "Waiting until it is safe to retry details.",
+  stalled: "Recovery has stopped making progress and needs a look.",
+};
+
+/**
+ * Route durable recoverable detail work through the typed recovery step. Returns
+ * a passive-progress ("PDPP is working") item for active/queued/cooling recovery
+ * and a system-issue item for a stalled queue. Returns `null` when there is no
+ * recoverable-work evidence, when the verdict is already interrupting the owner
+ * (`attention` channel — handled by the needs-you branch), or when the step is
+ * not one of the recovery-owned passive/stalled states (owner_required/eligible/
+ * system_issue/none are covered by the surrounding branches). Never emits a
+ * "Checking" label for an inactive queue.
+ */
+function recoveryWorkItem(connector: RefConnectorSummary, verdict: RefRenderedVerdict): SourceWorkItem | null {
+  if (verdict.channel === "attention" || !hasRecoverableWork(connector.connection_health.detail_gap_backlog)) {
+    return null;
+  }
+  const step = deriveRecoveryStep(verdict, connector.connection_health);
+  const group = recoveryStateGroup(step);
+  if (group !== "working" && group !== "systemIssue") {
+    return null;
+  }
+  const statusLabel = RECOVERY_STATUS_LABEL[step];
+  if (!statusLabel) {
+    return null;
+  }
+  return itemFromConnector(connector, group === "working" ? "working" : "systemIssue", {
+    statusLabel,
+    what: RECOVERY_WHAT[step] ?? verdict.forward_statement,
+  });
+}
+
 function itemFromConnector(
   connector: RefConnectorSummary,
   group: SourceWorkGroupId,
@@ -369,6 +418,17 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
       statusLabel: ownerAction.cta,
       what: verdict.forward_statement,
     });
+  }
+
+  // Durable recoverable detail work the recovery governor owns. This is passive
+  // progress the system continues on cadence — route queued/cooling recovery to
+  // "PDPP is working" (never "is degraded" or "Checking") and a stalled queue to
+  // a system issue, BEFORE the generic amber→system-issue fallthrough below so
+  // an inactive backlog does not read as a broken connection. Needs-you and
+  // owner-runnable recovery are already handled by the branches above.
+  const recovery = recoveryWorkItem(connector, verdict);
+  if (recovery) {
+    return recovery;
   }
 
   const statusLabel = sourceIssueStatus(verdict);
