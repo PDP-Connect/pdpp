@@ -336,6 +336,7 @@ interface ConnectorRunSummary {
   readonly run_id: string | undefined;
   readonly started_at: string;
   readonly status: string;
+  readonly terminal_reason: string | null;
 }
 
 interface PendingDetailGapSummary {
@@ -929,6 +930,10 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
   }
   const runId = summary.id || summary.run_id || null;
   const terminalData = runId ? await readRunTerminalEventData(runId) : null;
+  const terminalReason =
+    terminalData && typeof terminalData.reason === "string" && terminalData.reason.length > 0
+      ? terminalData.reason
+      : null;
   const browserSurfaceFailureReason =
     summary.status === "surface_failed"
       ? summary.browser_surface_wait_reason || summary.browser_surface_status || "browser_surface_failed"
@@ -942,6 +947,7 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
     last_at: summary.last_at,
     event_count: summary.event_count,
     failure_reason: summary.failure?.reason || browserSurfaceFailureReason,
+    terminal_reason: terminalReason,
     known_gaps: readKnownGapsFromTerminalData(terminalData),
     collection_facts: readCollectionFactsFromTerminalData(terminalData),
   };
@@ -1798,7 +1804,8 @@ function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): string |
 const OWNER_CANCEL_TERMINAL_REASONS: ReadonlySet<string> = new Set(["owner_cancel_forced", "owner_cancelled"]);
 
 function isOwnerCancelledRun(run: ConnectorRunSummary | null): boolean {
-  return run?.status === "cancelled" && OWNER_CANCEL_TERMINAL_REASONS.has(run.failure_reason ?? "");
+  const reason = run?.terminal_reason ?? run?.failure_reason ?? "";
+  return run?.status === "cancelled" && OWNER_CANCEL_TERMINAL_REASONS.has(reason);
 }
 
 function healthClassifyingRun(run: ConnectorRunSummary | null): ConnectorRunSummary | null {
@@ -2339,7 +2346,7 @@ function projectCollectionReport(input: {
   readonly refreshPolicy: unknown;
 }): CollectionReportEntry[] {
   return buildCollectionReport({
-    collectionFacts: input.lastRun?.collection_facts ?? null,
+    collectionFacts: healthClassifyingRun(input.lastRun)?.collection_facts ?? null,
     manifestStreams: input.manifestStreams,
     pendingDetailGaps: input.pendingDetailGaps ?? [],
     pendingDetailGapsReadLimit: input.pendingDetailGapsReadLimit ?? null,

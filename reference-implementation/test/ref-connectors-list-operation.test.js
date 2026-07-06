@@ -542,7 +542,7 @@ test('connector summary connection health treats owner-cancelled runs as neutral
   };
   const cancelledRun = {
     event_count: 4,
-    failure_reason: 'owner_cancel_forced',
+    failure_reason: null,
     finished_at: '2026-05-19T12:00:00.000Z',
     first_at: '2026-05-19T11:59:00.000Z',
     known_gaps: [
@@ -557,6 +557,7 @@ test('connector summary connection health treats owner-cancelled runs as neutral
     run_id: 'run_owner_cancelled',
     started_at: '2026-05-19T11:59:00.000Z',
     status: 'cancelled',
+    terminal_reason: 'owner_cancel_forced',
   };
   const snapshot = projectConnectorSummaryConnectionHealth({
     freshness: { status: 'current', captured_at: '2026-05-19T11:55:00.000Z' },
