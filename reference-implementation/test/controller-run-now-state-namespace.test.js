@@ -300,7 +300,40 @@ test("runNow continues eligible recovery after a successful progress batch", asy
   assert.equal(calls[1].triggerKind, "manual");
 });
 
-test("runNow does not continue recovery when no detail gap was recovered", async (t) => {
+test("runNow continues eligible recovery after a terminalized poison item", async (t) => {
+  freshDb(t);
+
+  const calls = [];
+  const controller = makeController(calls, {
+    detailGapStore: detailGapStoreForContinuation([[pendingRecoveryGap()], []]),
+    runConnectorImpl: (opts) => {
+      calls.push(opts);
+      if (calls.length === 1) {
+        return Promise.resolve({
+          status: "succeeded",
+          records_emitted: 0,
+          detail_gaps: [{ gap_id: "gap_quarantined", reason: "quarantined", status: "terminal", stream: "order_items" }],
+        });
+      }
+      return Promise.resolve({ status: "succeeded", records_emitted: 0, detail_gaps: [] });
+    },
+  });
+
+  await controller.runNow(AMAZON, {
+    connectorInstanceId: "cin_recovery",
+    manifest: AMAZON_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_terminal_progress",
+  });
+  await drainUntilIdle(controller);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].connectorInstanceId, "cin_recovery");
+  assert.equal(calls[1].recoveryOnly, true);
+  assert.equal(calls[1].triggerKind, "manual");
+});
+
+test("runNow does not continue recovery when no detail gap made durable progress", async (t) => {
   freshDb(t);
 
   const calls = [];

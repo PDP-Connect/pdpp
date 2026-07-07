@@ -183,16 +183,17 @@ as an observable system condition rather than leaving the queue silently idle.
   connection's normal cadence
 - **AND** draining SHALL NOT depend on owner-initiated runs.
 
-#### Scenario: Owner-started recovery continues after progress
+#### Scenario: Owner-started recovery continues after durable queue progress
 
-- **WHEN** an owner-started run recovers one or more durable detail gaps
+- **WHEN** an owner-started run resolves one or more durable detail gaps by
+  recovering them or terminalizing/quarantining poison items
 - **AND** eligible non-pressure recovery work remains queued for the same
   connection
 - **THEN** the runtime SHALL start a bounded recovery-only continuation envelope
   without requiring another owner gesture
-- **AND** it SHALL stop continuation when the run makes no recovery progress or
-  the remaining work is blocked by cooldown, owner-required repair, or a system
-  issue.
+- **AND** it SHALL stop continuation when the run makes no durable queue
+  progress or the remaining work is blocked by cooldown, owner-required repair,
+  or a system issue.
 
 #### Scenario: Stalled eligibility becomes observable
 

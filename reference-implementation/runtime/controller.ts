@@ -2715,7 +2715,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       .map((row) => projectPendingPressureGap(row, row.reason as string));
   }
 
-  function countRecoveredDetailGaps(result: Awaited<ReturnType<RunConnectorFn>> | undefined): number {
+  function countResolvedDetailGaps(result: Awaited<ReturnType<RunConnectorFn>> | undefined): number {
     const detailGaps = (result as { detail_gaps?: unknown } | undefined)?.detail_gaps;
     if (!Array.isArray(detailGaps)) {
       return 0;
@@ -2724,7 +2724,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
       if (!gap || typeof gap !== "object") {
         return false;
       }
-      return (gap as { status?: unknown }).status === "recovered";
+      const status = (gap as { status?: unknown }).status;
+      return status === "recovered" || status === "terminal";
     }).length;
   }
 
@@ -2769,7 +2770,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (input.result?.status !== "succeeded") {
       return;
     }
-    if (countRecoveredDetailGaps(input.result) === 0) {
+    if (countResolvedDetailGaps(input.result) === 0) {
       return;
     }
     const depth = input.options.recoveryContinuationDepth ?? 0;
