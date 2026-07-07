@@ -205,7 +205,9 @@
           "foreign_key": "user_id",
           "cardinality": "has_many"
         }
-      ]
+      ],
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "user_stats",
@@ -310,7 +312,9 @@
             "observed_on"
           ]
         }
-      }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "repositories",
@@ -532,7 +536,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "starred",
@@ -632,7 +638,9 @@
             "starred_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "issues",
@@ -847,7 +855,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "pull_requests",
@@ -1153,7 +1163,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "gists",
@@ -1304,7 +1316,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     }
   ],
   "profiles": [

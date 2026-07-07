@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  validateConnectorManifest,
   isTopLevelSearchableStringField,
   isReferenceCompatibleCursorSchema,
   isRangeQueryableFieldSchema,
@@ -30,6 +31,20 @@ import {
   invalidConnectorManifest,
   validateBlobRefSchemaDeclaration,
 } from '../server/connector-manifest-validation.ts';
+
+function manifestWithStream(stream = {}) {
+  return {
+    connector_key: 'test-manifest',
+    streams: [
+      {
+        name: 'items',
+        primary_key: ['id'],
+        schema: { properties: { id: { type: 'string' } } },
+        ...stream,
+      },
+    ],
+  };
+}
 
 test('isTopLevelSearchableStringField accepts plain and nullable string, rejects others', () => {
   assert.equal(isTopLevelSearchableStringField({ type: 'string' }), true);
@@ -142,5 +157,32 @@ test('validateBlobRefSchemaDeclaration rejects non-object, missing props, wrong 
   assert.throws(
     () => validateBlobRefSchemaDeclaration(stream, noRequired, 'invalid_request'),
     /must require blob_id/,
+  );
+});
+
+test('validateConnectorManifest accepts valid stream evidence declarations', () => {
+  assert.doesNotThrow(() =>
+    validateConnectorManifest(
+      manifestWithStream({
+        coverage_policy: 'collect',
+        coverage_strategy: 'full_inventory',
+        freshness_strategy: 'manual_as_of',
+      }),
+    ),
+  );
+});
+
+test('validateConnectorManifest rejects invalid stream evidence declarations when present', () => {
+  assert.throws(
+    () => validateConnectorManifest(manifestWithStream({ coverage_policy: 'later' })),
+    /coverage_policy must be one of/,
+  );
+  assert.throws(
+    () => validateConnectorManifest(manifestWithStream({ coverage_strategy: 'best_effort' })),
+    /coverage_strategy must be one of/,
+  );
+  assert.throws(
+    () => validateConnectorManifest(manifestWithStream({ freshness_strategy: 'recent_enough' })),
+    /freshness_strategy must be one of/,
   );
 });

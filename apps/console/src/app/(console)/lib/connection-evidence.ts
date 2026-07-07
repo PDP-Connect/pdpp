@@ -392,7 +392,16 @@ const FORWARD_DISPOSITION_LABELS: Record<RefForwardDisposition, ForwardDispositi
     value: "checking",
     label: "checking coverage",
     ownerActionNeeded: false,
-    title: "Coverage evidence is not available yet. This is a checking state, not an owner-action prompt.",
+    title:
+      "Active work is expected to produce coverage evidence. This is a checking state, not an owner-action prompt.",
+    tone: "neutral",
+  },
+  unmeasured: {
+    value: "unmeasured",
+    label: "not measured",
+    ownerActionNeeded: false,
+    title:
+      "Coverage evidence is not available in the latest report. This is not an owner-action prompt and not an active checking state.",
     tone: "neutral",
   },
   resumable: {

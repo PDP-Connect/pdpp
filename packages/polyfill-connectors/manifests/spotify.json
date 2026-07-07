@@ -121,7 +121,9 @@
             "description"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "saved_tracks",
@@ -213,7 +215,9 @@
             "lt"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "top_artists",
@@ -272,7 +276,9 @@
             "name"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "recently_played",
@@ -354,7 +360,9 @@
             "lt"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

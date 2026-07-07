@@ -190,7 +190,9 @@
             "day"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "readiness",
@@ -264,7 +266,9 @@
             "day"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "activity",
@@ -353,7 +357,9 @@
             "day"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     }
   ]
 }

@@ -204,6 +204,21 @@ export const REFRESH_POLICY_ALLOWED_KEYS = new Set([
 export const RUNTIME_REQUIREMENT_BINDINGS = new Set(["browser", "filesystem", "interactive", "network"]);
 export const STREAM_AVAILABILITY_STATES = new Set(["supported", "unsupported_in_mode", "experimental", "deprecated"]);
 export const STREAM_AVAILABILITY_ALLOWED_KEYS = new Set(["future_modes", "mode", "reason", "state"]);
+export const STREAM_COVERAGE_POLICIES = new Set(["collect", "deferred", "inventory_only", "unavailable", "unsupported"]);
+export const STREAM_COVERAGE_STRATEGIES = new Set([
+  "checkpoint_window",
+  "full_inventory",
+  "parent_detail_accounting",
+  "snapshot_import_receipt",
+  "singleton_presence",
+]);
+export const STREAM_FRESHNESS_STRATEGIES = new Set([
+  "device_heartbeat",
+  "manual_as_of",
+  "not_trackable",
+  "scheduled_window",
+  "source_reported_as_of",
+]);
 
 export const MANIFEST_SENSITIVITY_LEVELS = new Set(["standard", "sensitive"]);
 export const DEFAULT_MANIFEST_SENSITIVITY = "standard";
@@ -751,6 +766,28 @@ export function validateStreamAvailabilityDeclaration(stream: Record<string, unk
   }
 }
 
+export function validateStreamEvidenceDeclarations(stream: Record<string, unknown>, code: string): void {
+  const streamName = stream.name as string;
+  if (stream.coverage_policy !== undefined && !STREAM_COVERAGE_POLICIES.has(stream.coverage_policy as string)) {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' coverage_policy must be one of: collect, deferred, inventory_only, unavailable, unsupported`,
+      code
+    );
+  }
+  if (stream.coverage_strategy !== undefined && !STREAM_COVERAGE_STRATEGIES.has(stream.coverage_strategy as string)) {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' coverage_strategy must be one of: checkpoint_window, full_inventory, parent_detail_accounting, snapshot_import_receipt, singleton_presence`,
+      code
+    );
+  }
+  if (stream.freshness_strategy !== undefined && !STREAM_FRESHNESS_STRATEGIES.has(stream.freshness_strategy as string)) {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' freshness_strategy must be one of: device_heartbeat, manual_as_of, not_trackable, scheduled_window, source_reported_as_of`,
+      code
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main validator
 // ---------------------------------------------------------------------------
@@ -1190,6 +1227,7 @@ function validateManifestStream({
   }
   seenStreamNames.add(streamObj.name as string);
   validateStreamAvailabilityDeclaration(streamObj, code);
+  validateStreamEvidenceDeclarations(streamObj, code);
 
   const schema = streamObj.schema as Record<string, unknown> | undefined;
   const schemaProperties = schema?.properties as Record<string, unknown> | undefined;

@@ -115,7 +115,9 @@
             "bio"
           ]
         }
-      }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "posts",
@@ -194,7 +196,9 @@
             "caption"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

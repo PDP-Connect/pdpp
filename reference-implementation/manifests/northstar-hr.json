@@ -69,7 +69,9 @@
             "currency"
           ]
         }
-      ]
+      ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "equity_grants",
@@ -137,7 +139,9 @@
             "vesting_end_date"
           ]
         }
-      ]
+      ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "benefits_enrollments",
@@ -196,7 +200,9 @@
             "currency"
           ]
         }
-      ]
+      ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

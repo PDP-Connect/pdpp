@@ -158,7 +158,9 @@
             "first_message_date"
           ]
         }
-      }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "messages",
@@ -248,7 +250,9 @@
             "sent_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "attachments",
@@ -358,7 +362,9 @@
           "foreign_key": "message_id",
           "cardinality": "has_one"
         }
-      ]
+      ],
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

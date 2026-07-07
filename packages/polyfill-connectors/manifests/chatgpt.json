@@ -193,7 +193,9 @@
             "create_time"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "messages",
@@ -322,7 +324,9 @@
             "create_time"
           ]
         }
-      }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "memories",
@@ -403,7 +407,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "custom_gpts",
@@ -550,7 +556,9 @@
             "category"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "custom_instructions",
@@ -632,7 +640,9 @@
             "updated_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "shared_conversations",
@@ -741,7 +751,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     }
   ],
   "profiles": [

@@ -210,7 +210,9 @@
             "fetched_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "channels",
@@ -464,7 +466,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "channel_stats",
@@ -541,7 +545,9 @@
             "observed_on"
           ]
         }
-      }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "channel_memberships",
@@ -596,7 +602,9 @@
           "foreign_key": "user_id",
           "cardinality": "has_one"
         }
-      ]
+      ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "users",
@@ -843,7 +851,9 @@
             "title"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "messages",
@@ -1152,7 +1162,9 @@
             "max_limit": 200
           }
         ]
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "message_attachments",
@@ -1291,7 +1303,9 @@
             "fallback"
           ]
         }
-      }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "reactions",
@@ -1350,7 +1364,9 @@
           "foreign_key": "user_id",
           "cardinality": "has_one"
         }
-      ]
+      ],
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "files",
@@ -1535,7 +1551,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "canvases",
@@ -1735,7 +1753,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "stars",
@@ -1832,7 +1852,9 @@
             "starred_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "user_groups",
@@ -1971,7 +1993,9 @@
             "lt"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "reminders",
@@ -2090,7 +2114,9 @@
             "scheduled_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "dm_read_states",
@@ -2198,7 +2224,9 @@
             "last_read"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     }
   ],
   "profiles": [

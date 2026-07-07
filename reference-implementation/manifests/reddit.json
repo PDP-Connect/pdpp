@@ -56,6 +56,8 @@
           "semantic_fields": ["title", "selftext"]
         }
       },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of",
       "incremental": true
     },
     {
@@ -97,6 +99,8 @@
           "semantic_fields": ["body"]
         }
       },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of",
       "incremental": true
     },
     {
@@ -126,6 +130,8 @@
           "fields": ["id", "kind", "title", "subreddit"]
         }
       ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of",
       "incremental": false
     }
   ],

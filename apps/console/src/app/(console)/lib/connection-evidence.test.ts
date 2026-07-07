@@ -54,6 +54,14 @@ test("formatForwardDisposition renders checking coverage as neutral, not resumab
   assert.doesNotMatch(out?.title ?? "", /retry|resum/i);
 });
 
+test("formatForwardDisposition renders unmeasured coverage as resting missing evidence, not checking", () => {
+  const out = formatForwardDisposition("unmeasured");
+  assert.equal(out?.label, "not measured");
+  assert.equal(out?.tone, "neutral");
+  assert.equal(out?.ownerActionNeeded, false);
+  assert.match(out?.title ?? "", /not an active checking state/i);
+});
+
 function backlog(overrides: Partial<RefDetailGapBacklog> = {}): RefDetailGapBacklog {
   return {
     pending: 0,

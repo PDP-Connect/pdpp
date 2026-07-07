@@ -55,6 +55,18 @@ export interface CollectionReportEntryLike {
  */
 export interface ManifestStreamLike {
   readonly coverage_policy?: "collect" | "deferred" | "inventory_only" | "unavailable" | "unsupported";
+  readonly coverage_strategy?:
+    | "checkpoint_window"
+    | "full_inventory"
+    | "parent_detail_accounting"
+    | "snapshot_import_receipt"
+    | "singleton_presence";
+  readonly freshness_strategy?:
+    | "device_heartbeat"
+    | "manual_as_of"
+    | "not_trackable"
+    | "scheduled_window"
+    | "source_reported_as_of";
   readonly name: string;
   readonly required?: boolean;
 }

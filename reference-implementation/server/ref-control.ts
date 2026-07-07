@@ -64,6 +64,10 @@ import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
 import { staticSecretCredentialCaptureFromManifest } from "./connection-setup-plan.ts";
 import {
   deriveStreamCoverageCondition,
+  readCoverageEvidenceStrategy,
+  readFreshnessEvidenceStrategy,
+  type CoverageEvidenceStrategy,
+  type FreshnessEvidenceStrategy,
   pickAcceptedCoverage,
   pickRequiredAcceptedCoverage,
 } from "./connector-coverage-policy.ts";
@@ -171,6 +175,15 @@ interface ManifestStream extends ManifestStreamLike {
    * absent) and degrades health rather than projecting green.
    */
   coverage_policy?: "collect" | "deferred" | "inventory_only" | "unavailable" | "unsupported";
+  /**
+   * Declared mechanism by which this stream establishes coverage. Unlike
+   * `coverage_policy`, this is not an accepted-absence claim; it identifies the
+   * proof shape that lets the projection classify a successful stream without
+   * inventing a numeric denominator.
+   */
+  coverage_strategy?: CoverageEvidenceStrategy;
+  /** Declared mechanism by which this stream establishes freshness/currency. */
+  freshness_strategy?: FreshnessEvidenceStrategy;
   /** Sandbox-shaped typed field declarations already used by demo streams. */
   fields?: ManifestFieldDeclaration[];
   name: string;
@@ -1775,6 +1788,8 @@ export interface CollectionReportEntry {
   readonly considered: ConsideredAxis;
   /** Derived coverage condition from the canonical {@link CoverageAxis} vocabulary. */
   readonly coverage_condition: CoverageAxis;
+  /** Manifest-declared coverage proof strategy, or `null` when not yet instrumented. */
+  readonly coverage_strategy: CoverageEvidenceStrategy | null;
   /**
    * Connector-declared `covered` count (in-boundary items accounted for: emitted +
    * suppressed-because-unchanged), or `unknown` when the connector declared none.
@@ -1784,6 +1799,8 @@ export interface CollectionReportEntry {
   readonly covered: ConsideredAxis;
   /** Derived forward disposition (what the next run is expected to do on this stream). */
   readonly forward_disposition: ForwardDisposition;
+  /** Manifest-declared freshness proof strategy, or `null` when not yet instrumented. */
+  readonly freshness_strategy: FreshnessEvidenceStrategy | null;
   /** Count of pending recoverable detail gaps for this stream (locators stay in the detail-gap backlog). */
   readonly pending_detail_gaps: number;
   readonly pending_detail_gaps_is_floor: boolean;
@@ -1887,7 +1904,9 @@ export function buildCollectionReport(input: {
       pending_detail_gaps_is_floor: pendingDetailGapsIsFloor,
       skipped: fact.skipped,
       coverage_condition: coverageCondition,
+      coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
       forward_disposition: forwardDisposition,
+      freshness_strategy: readFreshnessEvidenceStrategy(manifestStream),
     });
   }
   entries.sort((a, b) => a.stream.localeCompare(b.stream));

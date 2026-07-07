@@ -134,7 +134,9 @@
             "created_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "transcripts",
@@ -191,7 +193,9 @@
             "text"
           ]
         }
-      }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

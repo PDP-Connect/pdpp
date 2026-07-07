@@ -52,6 +52,8 @@
           "fields": ["id", "name", "full_name", "language", "stargazers_count", "forks_count", "topics", "source_created_at"]
         }
       ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of",
       "incremental": true
     },
     {
@@ -81,6 +83,8 @@
           "fields": ["id", "full_name", "description", "language"]
         }
       ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of",
       "incremental": false
     }
   ],

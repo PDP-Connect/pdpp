@@ -362,7 +362,7 @@ test('tone: unknown freshness renders Not measured rather than Healthy, Degraded
   assert.equal(v.pill.tone, 'grey');
   assert.equal(v.pill.label, 'Not measured');
   assert.equal(v.channel, 'calm');
-  assert.ok(v.annotations.some((a) => a.kind === 'freshness' && /unknown/i.test(a.text)));
+  assert.ok(v.annotations.some((a) => a.kind === 'freshness' && /not been measured/i.test(a.text)));
   assert.equal(v.forward_statement, 'Freshness has not been measured yet.');
   assert.notEqual(v.forward_statement, 'Current and collecting normally.');
 });
@@ -371,7 +371,7 @@ test('tone: unknown coverage renders Not measured and no retry action', () => {
   const snap = snapshot({
     state: 'idle',
     axes: { coverage: 'unknown', freshness: 'fresh' },
-    forward_disposition: 'checking',
+    forward_disposition: 'unmeasured',
   });
   const v = synthesizeRenderedVerdict(snap, [stream({ coverage: 'unknown' })], null, true);
   assert.equal(v.pill.tone, 'grey');
@@ -379,7 +379,7 @@ test('tone: unknown coverage renders Not measured and no retry action', () => {
   assert.equal(v.channel, 'calm');
   assert.equal(v.forward_statement, 'Coverage has not been measured yet.');
   assert.deepEqual(v.required_actions, []);
-  assert.equal(v.streams[0]?.disposition, 'checking');
+  assert.equal(v.streams[0]?.disposition, 'unmeasured');
   assert.equal(v.streams[0]?.statement, 'Coverage has not been measured yet.');
   assert.notEqual(v.forward_statement, 'The next run is expected to fill the remaining data.');
 });
@@ -875,7 +875,7 @@ test('composite: all eleven invariants hold across representative snapshots', ()
     },
     {
       name: 'unknown',
-      snap: snapshot({ state: 'unknown', axes: { freshness: 'unknown', coverage: 'unknown', outbox: 'unknown' }, forward_disposition: 'checking', unknown_reasons: ['x'] }),
+      snap: snapshot({ state: 'unknown', axes: { freshness: 'unknown', coverage: 'unknown', outbox: 'unknown' }, forward_disposition: 'unmeasured', unknown_reasons: ['x'] }),
       streams: [stream({ coverage: 'unknown' })],
       refresh: null,
       ok: true,
@@ -900,7 +900,7 @@ test('property: tone is worst-wins (never below base state) and (tone,channel) o
   const states = ['healthy', 'idle', 'degraded', 'needs_attention', 'cooling_off', 'blocked', 'unknown'];
   const freshnesses = ['fresh', 'stale', 'unknown'];
   const coverages = ['complete', 'partial', 'retryable_gap', 'terminal_gap', 'unknown'];
-  const dispositions = ['complete', 'checking', 'resumable', 'owner_refresh_due', 'awaiting_owner', 'terminal'];
+  const dispositions = ['complete', 'checking', 'resumable', 'owner_refresh_due', 'awaiting_owner', 'terminal', 'unmeasured'];
   const attentions = ['none', 'open'];
 
   const channelByTone = new Map();

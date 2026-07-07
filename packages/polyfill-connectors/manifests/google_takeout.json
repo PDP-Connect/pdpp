@@ -117,7 +117,9 @@
             "timestamp"
           ]
         }
-      }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "youtube_watch_history",
@@ -201,7 +203,9 @@
             "channel_name"
           ]
         }
-      }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "search_history",
@@ -274,7 +278,9 @@
             "query"
           ]
         }
-      }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

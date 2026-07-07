@@ -178,30 +178,30 @@ test('terminal: a terminal_gap blocked on attention awaits the owner (attention 
   );
 });
 
-// ─── unknown denominator is checking, not complete or resumable ───────────────
+// ─── unknown denominator is unmeasured, not complete or resumable ─────────────
 
-test('unknown-denominator: unknown coverage is checking, not complete or resumable (fresh)', () => {
+test('unknown-denominator: unknown coverage is unmeasured, not complete or resumable (fresh)', () => {
   // A stream whose considered denominator is unknown carries `unknown` coverage,
   // which is absence of evidence — never proof of completeness. The function must
   // not upgrade it to `complete` or fabricate a recoverable `resumable` gap.
   const disposition = deriveForwardDisposition(input({ coverage: 'unknown', freshness: 'fresh' }));
   assert.notEqual(disposition, 'complete');
   assert.notEqual(disposition, 'resumable');
-  assert.equal(disposition, 'checking');
+  assert.equal(disposition, 'unmeasured');
 });
 
-test('unknown-denominator: unknown coverage is checking even with no gap and no attention', () => {
-  assert.equal(deriveForwardDisposition(input({ coverage: 'unknown' })), 'checking');
+test('unknown-denominator: unknown coverage is unmeasured even with no gap and no attention', () => {
+  assert.equal(deriveForwardDisposition(input({ coverage: 'unknown' })), 'unmeasured');
 });
 
-test('unknown-denominator: unknown coverage that is also manual-refresh stale stays checking, not owner_refresh_due', () => {
+test('unknown-denominator: unknown coverage that is also manual-refresh stale stays unmeasured, not owner_refresh_due', () => {
   // owner_refresh_due is reserved for ESTABLISHED-complete coverage. An unknown
   // denominator has not established completeness, so staleness does not promote it
   // to a refresh-due signal or a retryable gap.
   const disposition = deriveForwardDisposition(
     input({ coverage: 'unknown', freshness: 'stale', refresh: MANUAL_REFRESH }),
   );
-  assert.equal(disposition, 'checking');
+  assert.equal(disposition, 'unmeasured');
   assert.notEqual(disposition, 'owner_refresh_due');
   assert.notEqual(disposition, 'complete');
 });

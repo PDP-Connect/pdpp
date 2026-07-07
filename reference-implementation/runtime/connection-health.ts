@@ -243,9 +243,12 @@ export type AttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
  * (`define-connector-progress-evidence-contract`).
  *
  *   - `complete`          : no outstanding gap and freshness is fresh or unknown.
- *   - `checking`          : coverage evidence is not available yet. This is
- *                           visibly unknown, but SHALL NOT claim a recoverable
- *                           gap or ask the owner to retry.
+ *   - `checking`          : active bounded work is expected to produce coverage
+ *                           evidence. This is visibly unknown, but SHALL NOT
+ *                           claim a recoverable gap or ask the owner to retry.
+ *   - `unmeasured`        : coverage evidence is not available and no active
+ *                           work is encoded in this report. This is a resting
+ *                           measurement gap, not a checking state.
  *   - `resumable`         : an outstanding gap that ordinary forward collection
  *                           or detail-gap recovery is expected to fill on a later
  *                           run without owner action.
@@ -270,7 +273,8 @@ export type ForwardDisposition =
   | "complete"
   | "owner_refresh_due"
   | "resumable"
-  | "terminal";
+  | "terminal"
+  | "unmeasured";
 
 /**
  * Outbox / work axis: durable work health for executors that buffer.
@@ -2323,8 +2327,8 @@ function hasOutstandingGap(coverage: CoverageAxis): boolean {
  *
  * `complete` is only reached when the coverage condition itself carries no
  * outstanding gap — it is never inferred from collected count. A stream whose
- * considered denominator is unknown carries a `checking` disposition instead of
- * `complete` or `resumable`.
+ * considered denominator is unknown carries an `unmeasured` disposition instead
+ * of `complete`, `checking`, or `resumable`.
  *
  * See `define-connector-progress-evidence-contract`.
  */
@@ -2358,9 +2362,10 @@ export function deriveForwardDisposition(input: ForwardDispositionInput): Forwar
   // `complete` (proven), `deferred`, and `inventory_only` (owe no further data by
   // manifest policy) qualify. An `unknown` coverage condition is absence of
   // evidence, not proof of completeness and not proof of a recoverable gap.
-  // Keep it in a checking disposition rather than fabricating `resumable`.
+  // Keep it in a resting measurement-gap disposition rather than fabricating
+  // `checking` or `resumable`.
   if (input.coverage === "unknown") {
-    return "checking";
+    return "unmeasured";
   }
 
   // Rule 4: a complete stream on a manual-refresh-only connection whose data has

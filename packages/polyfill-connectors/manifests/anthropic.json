@@ -125,7 +125,9 @@
             "create_time"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "messages",
@@ -219,7 +221,9 @@
             "create_time"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "projects",
@@ -300,7 +304,9 @@
             "create_time"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

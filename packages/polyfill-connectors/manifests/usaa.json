@@ -134,7 +134,9 @@
           ]
         },
         "range_filters": {}
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "account_stats",
@@ -224,7 +226,9 @@
             "observed_on"
           ]
         }
-      }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "transactions",
@@ -401,7 +405,9 @@
             "date"
           ]
         }
-      }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "statements",
@@ -529,7 +535,9 @@
             "date_delivered"
           ]
         }
-      }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "inbox_messages",
@@ -617,7 +625,9 @@
             "date_received"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "credit_card_billing",
@@ -709,7 +719,9 @@
             "lt"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "credit_card_billing_stats",
@@ -840,7 +852,9 @@
             "observed_on"
           ]
         }
-      }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "manual_as_of"
     }
   ],
   "profiles": [

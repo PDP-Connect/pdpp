@@ -17,10 +17,12 @@ import type { RefForwardDisposition } from "./ref-client.ts";
 
 const ALL_DISPOSITIONS: RefForwardDisposition[] = [
   "complete",
+  "checking",
   "resumable",
   "awaiting_owner",
   "owner_refresh_due",
   "terminal",
+  "unmeasured",
 ];
 
 // Regexes hoisted to module scope (lint: useTopLevelRegex).
@@ -82,6 +84,15 @@ test("resumable says collection resumes without owner action and never claims co
   // Honesty: a resumable disposition exists precisely because coverage is not
   // established/complete; the copy must not imply it is.
   assert.doesNotMatch(summary.label, CLAIMS_COMPLETE_COPY);
+});
+
+test("unmeasured says evidence is absent without claiming active checking", () => {
+  const summary = formatForwardDisposition("unmeasured");
+  assert.ok(summary);
+  assert.equal(summary.ownerActionNeeded, false);
+  assert.equal(summary.tone, "neutral");
+  assert.match(summary.label, /not measured/i);
+  assert.match(summary.title, /not an active checking state/i);
 });
 
 test("owner_refresh_due distinguishes aged data from missing data and requires an owner-initiated run", () => {

@@ -157,7 +157,9 @@
             "lt"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

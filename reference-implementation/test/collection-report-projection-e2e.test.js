@@ -160,8 +160,8 @@ test('2.2b: a two-stream run yields a two-entry collection_report on the detail 
     assert.deepEqual(Object.keys(byStream).sort(), ['items', 'other_items']);
 
     // Each entry carries a coverage condition from the canonical vocabulary plus
-    // a forward disposition. With no declared considered, the honest condition is
-    // `unknown` (the gate), NOT `complete`, and the disposition is `checking`.
+    // a forward disposition. With no declared considered, the condition is
+    // `unknown` (the gate), NOT `complete`, and the disposition is `unmeasured`.
     const VOCAB = new Set([
       'complete', 'partial', 'gaps', 'retryable_gap', 'terminal_gap',
       'unsupported', 'unavailable', 'deferred', 'inventory_only', 'unknown',
@@ -171,7 +171,7 @@ test('2.2b: a two-stream run yields a two-entry collection_report on the detail 
       assert.ok(VOCAB.has(entry.coverage_condition), `coverage condition in canonical vocabulary for ${stream}`);
       assert.equal(entry.considered, 'unknown', `${stream} has no declared considered -> unknown`);
       assert.equal(entry.coverage_condition, 'unknown', `${stream} reads unknown, never complete`);
-      assert.equal(entry.forward_disposition, 'checking', `${stream} forward disposition is checking`);
+      assert.equal(entry.forward_disposition, 'unmeasured', `${stream} forward disposition is unmeasured`);
     }
     assert.equal(byStream.items.collected, 2, 'items collected count rides through from the fact block');
     assert.equal(byStream.other_items.collected, 1, 'other_items collected count rides through');
@@ -224,7 +224,8 @@ test('2.4: a collected-records, no-gaps, no-considered run is NOT projected comp
     assert.notEqual(items.coverage_condition, 'complete');
     assert.equal(items.coverage_condition, 'unknown');
     assert.notEqual(items.forward_disposition, 'complete');
-    assert.equal(items.forward_disposition, 'checking');
+    assert.notEqual(items.forward_disposition, 'checking');
+    assert.equal(items.forward_disposition, 'unmeasured');
   } finally {
     cleanup();
     await closeServer(server);
@@ -274,7 +275,7 @@ test('2.6: a portable RECORD/STATE/DONE-only connector yields a valid report wit
     assert.ok(items, 'portable connector still produces a report entry');
     assert.equal(items.considered, 'unknown');
     assert.equal(items.coverage_condition, 'unknown');
-    assert.equal(items.forward_disposition, 'checking');
+    assert.equal(items.forward_disposition, 'unmeasured');
   } finally {
     cleanup();
     await closeServer(server);

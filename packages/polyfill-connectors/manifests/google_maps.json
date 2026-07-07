@@ -197,7 +197,9 @@
             "activity_type"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "timeline_segments",
@@ -321,7 +323,9 @@
             "segment_kind"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

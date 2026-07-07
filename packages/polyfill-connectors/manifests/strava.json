@@ -205,7 +205,9 @@
             "sport_type"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
     }
   ]
 }

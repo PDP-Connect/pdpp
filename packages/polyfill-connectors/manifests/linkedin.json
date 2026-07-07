@@ -125,7 +125,9 @@
             "summary"
           ]
         }
-      }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "experience",
@@ -237,7 +239,9 @@
             "start_date"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "education",
@@ -326,7 +330,9 @@
             "start_date"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "skills",
@@ -372,7 +378,9 @@
             "name"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

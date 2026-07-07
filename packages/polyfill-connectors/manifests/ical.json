@@ -152,7 +152,9 @@
             "status"
           ]
         }
-      }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

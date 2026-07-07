@@ -59,7 +59,7 @@ function entryFor(entries, stream) {
 
 // ─── 2.4 the honesty gate (the single most important assertion) ───────────────
 
-test('collected records, no gaps, NO considered -> unknown coverage + checking (never complete)', () => {
+test('collected records, no gaps, NO considered -> unknown coverage + unmeasured (never complete)', () => {
   const entries = report([fact({ stream: 'messages', collected: 1145, considered: null })]);
   const entry = entryFor(entries, 'messages');
   assert.equal(entry.considered, 'unknown');
@@ -67,7 +67,37 @@ test('collected records, no gaps, NO considered -> unknown coverage + checking (
   // The core dishonesty the contract removes: a clean succeeded run with no
   // considered denominator MUST NOT read `complete`.
   assert.equal(entry.coverage_condition, 'unknown');
-  assert.equal(entry.forward_disposition, 'checking');
+  assert.equal(entry.forward_disposition, 'unmeasured');
+});
+
+test('declared checkpoint-window strategy with committed checkpoint proves coverage without numeric denominator', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: { streams: [fact({ stream: 'messages', collected: 1145, considered: null, checkpoint: 'committed' })] },
+    manifestStreams: [{ name: 'messages', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'messages');
+  assert.equal(entry.considered, 'unknown');
+  assert.equal(entry.coverage_strategy, 'checkpoint_window');
+  assert.equal(entry.freshness_strategy, 'scheduled_window');
+  assert.equal(entry.coverage_condition, 'complete');
+  assert.equal(entry.forward_disposition, 'complete');
+});
+
+test('declared coverage strategy without committed boundary does not fabricate completeness', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: { streams: [fact({ stream: 'messages', collected: 1145, considered: null, checkpoint: 'not_staged' })] },
+    manifestStreams: [{ name: 'messages', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'messages');
+  assert.equal(entry.coverage_strategy, 'checkpoint_window');
+  assert.equal(entry.coverage_condition, 'unknown');
+  assert.equal(entry.forward_disposition, 'unmeasured');
 });
 
 // ─── considered known: satisfied -> complete, short -> partial ────────────────
@@ -231,7 +261,7 @@ test('current pending detail gap without a terminal fact block is visible on its
   const transactions = entryFor(entries, 'transactions');
 
   assert.equal(accounts.coverage_condition, 'unknown');
-  assert.equal(accounts.forward_disposition, 'checking');
+  assert.equal(accounts.forward_disposition, 'unmeasured');
   assert.equal(transactions.coverage_condition, 'retryable_gap');
   assert.equal(transactions.pending_detail_gaps, 1);
   assert.equal(transactions.forward_disposition, 'resumable');
@@ -326,7 +356,7 @@ test('open attention does NOT taint a stream with no gap (complete stays complet
 
 // ─── 2.6 portable RECORD/STATE/DONE-only connector ────────────────────────────
 
-test('portable RECORD/STATE/DONE-only stream (no considered, no gaps, no skip) -> unknown / checking', () => {
+test('portable RECORD/STATE/DONE-only stream (no considered, no gaps, no skip) -> unknown / unmeasured', () => {
   // The portability floor: a connector that emits only RECORD/STATE/DONE
   // declares no DETAIL_COVERAGE, no considered, and no SKIP_RESULT. Its entry
   // must be a VALID report with `unknown` axes — not an error, not `complete`.
@@ -334,7 +364,7 @@ test('portable RECORD/STATE/DONE-only stream (no considered, no gaps, no skip) -
   const entry = entryFor(entries, 'posts');
   assert.equal(entry.considered, 'unknown');
   assert.equal(entry.coverage_condition, 'unknown');
-  assert.equal(entry.forward_disposition, 'checking');
+  assert.equal(entry.forward_disposition, 'unmeasured');
   assert.equal(entry.checkpoint, 'committed');
 });
 

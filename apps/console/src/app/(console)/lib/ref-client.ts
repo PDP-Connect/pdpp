@@ -513,10 +513,26 @@ export interface RefCollectionReportEntry {
   considered: number | "unknown";
   /** Derived coverage condition, from the same vocabulary as the coverage axis. */
   coverage_condition: RefCoverageAxis;
+  /** Manifest-declared coverage proof strategy, absent on older references. */
+  coverage_strategy?:
+    | "checkpoint_window"
+    | "full_inventory"
+    | "parent_detail_accounting"
+    | "snapshot_import_receipt"
+    | "singleton_presence"
+    | null;
   /** Known accounted-for numerator, or `"unknown"` when the connector declared none. */
   covered?: number | "unknown";
   /** Derived forward disposition (what the next run is expected to do on this stream). */
   forward_disposition: RefForwardDisposition;
+  /** Manifest-declared freshness proof strategy, absent on older references. */
+  freshness_strategy?:
+    | "device_heartbeat"
+    | "manual_as_of"
+    | "not_trackable"
+    | "scheduled_window"
+    | "source_reported_as_of"
+    | null;
   /** Count of pending recoverable detail gaps for this stream. */
   pending_detail_gaps: number;
   /** True when the pending-gap count is a floor from a bounded read. */
@@ -817,7 +833,8 @@ export type RefForwardDisposition =
   | "complete"
   | "owner_refresh_due"
   | "resumable"
-  | "terminal";
+  | "terminal"
+  | "unmeasured";
 
 export type RefOutboxAxis = "active" | "idle" | "stalled" | "unknown";
 

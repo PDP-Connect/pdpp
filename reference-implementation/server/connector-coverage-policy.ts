@@ -4,10 +4,10 @@
 // rather than a gap; these helpers read that declaration off the manifest and
 // resolve the most-precise policy by a fixed precedence.
 //
-// The functions read only `coverage_policy` and `required`, so they type against
-// a minimal structural shape rather than the full control-plane `ManifestStream`
-// interface — keeping this a leaf module extracted from the `ref-control.ts`
-// god-file with no dependency on its projection types.
+// The functions type against a minimal structural manifest-stream shape rather
+// than the full control-plane `ManifestStream` interface — keeping this a leaf
+// module extracted from the `ref-control.ts` god-file with no dependency on its
+// projection types.
 //
 // The per-stream coverage-condition derivation (SKIP_RESULT reason mapping +
 // `deriveStreamCoverageCondition`) also lives here: it is the read-side coverage
@@ -20,9 +20,25 @@ import type { RuntimeCollectionFact, RuntimeCollectionFactSkip } from "./ref-con
 /** Accepted-coverage policy a manifest stream may declare for an absence. */
 export type AcceptedCoveragePolicy = "deferred" | "inventory_only" | "unavailable" | "unsupported";
 
+export type CoverageEvidenceStrategy =
+  | "checkpoint_window"
+  | "full_inventory"
+  | "parent_detail_accounting"
+  | "snapshot_import_receipt"
+  | "singleton_presence";
+
+export type FreshnessEvidenceStrategy =
+  | "device_heartbeat"
+  | "manual_as_of"
+  | "not_trackable"
+  | "scheduled_window"
+  | "source_reported_as_of";
+
 /** The minimal manifest-stream shape the coverage-policy pickers read. */
 export interface AcceptedCoverageStream {
   coverage_policy?: "collect" | "deferred" | "inventory_only" | "unavailable" | "unsupported";
+  coverage_strategy?: CoverageEvidenceStrategy;
+  freshness_strategy?: FreshnessEvidenceStrategy;
   required?: boolean;
 }
 
@@ -100,6 +116,38 @@ export function readAcceptedCoveragePolicy(stream: AcceptedCoverageStream | unde
   return null;
 }
 
+export function readCoverageEvidenceStrategy(
+  stream: AcceptedCoverageStream | undefined
+): CoverageEvidenceStrategy | null {
+  if (!stream || typeof stream !== "object") {
+    return null;
+  }
+  const value = stream.coverage_strategy;
+  return value === "checkpoint_window" ||
+    value === "full_inventory" ||
+    value === "parent_detail_accounting" ||
+    value === "snapshot_import_receipt" ||
+    value === "singleton_presence"
+    ? value
+    : null;
+}
+
+export function readFreshnessEvidenceStrategy(
+  stream: AcceptedCoverageStream | undefined
+): FreshnessEvidenceStrategy | null {
+  if (!stream || typeof stream !== "object") {
+    return null;
+  }
+  const value = stream.freshness_strategy;
+  return value === "device_heartbeat" ||
+    value === "manual_as_of" ||
+    value === "not_trackable" ||
+    value === "scheduled_window" ||
+    value === "source_reported_as_of"
+    ? value
+    : null;
+}
+
 export function isRequiredStream(stream: AcceptedCoverageStream | undefined): boolean {
   if (!stream || typeof stream !== "object") {
     return false;
@@ -107,6 +155,19 @@ export function isRequiredStream(stream: AcceptedCoverageStream | undefined): bo
   // Default to required when absent so a manifest-declared stream is
   // load-bearing unless explicitly opted out.
   return stream.required !== false;
+}
+
+function checkpointProvesCoverage(checkpoint: string | null): boolean {
+  return checkpoint === "committed" || checkpoint === "disabled";
+}
+
+function strategyCanProveCoverageWithoutDenominator(strategy: CoverageEvidenceStrategy | null): boolean {
+  return (
+    strategy === "checkpoint_window" ||
+    strategy === "full_inventory" ||
+    strategy === "snapshot_import_receipt" ||
+    strategy === "singleton_presence"
+  );
 }
 
 const RETRYABLE_SKIP_REASON_PATTERN = /(429|rate|temporar|retry|upstream_pressure|pressure)/;
@@ -146,15 +207,15 @@ export function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): Cover
 
 /**
  * Derive one stream's coverage condition from its runtime fact entry plus the
- * stream's manifest policy. Precedence (first match wins), mirroring the honesty
- * order the contract requires:
+ * stream's manifest policy. Precedence (first match wins), mirroring the
+ * evidence order the contract requires:
  *
  *   1. contradictory manifest (required AND accepted-absent)  -> the accepted axis
  *   2. SKIP_RESULT present  -> manifest accepted-coverage axis, else skip-derived axis
  *   3. pending recoverable detail gap(s)  -> `retryable_gap`
  *   4. known considered denominator  -> `partial` (covered-or-collected < considered)
  *                                        else accepted axis / `complete`
- *   5. unknown considered denominator (THE HONESTY GATE)  -> accepted axis / `unknown`
+ *   5. unknown considered denominator  -> accepted axis / strategy proof / `unknown`
  *
  * `complete` is reached ONLY when a known considered denominator is satisfied; a
  * collected-records / no-gaps / no-considered stream reads `unknown`, never
@@ -210,7 +271,16 @@ export function deriveStreamCoverageCondition(
     return accepted ?? "complete";
   }
   // 5. No considered denominator: absence of evidence, NOT proof of completeness.
-  //    A declared accepted-coverage policy is still honest (the manifest owes no
-  //    further data); otherwise the condition is `unknown` — never `complete`.
-  return accepted ?? "unknown";
+  //    A declared accepted-coverage policy is still precise (the manifest owes no
+  //    further data). A declared coverage evidence strategy can also prove a
+  //    bounded stream complete when the runtime committed that stream's boundary:
+  //    the proof is the strategy + checkpoint, not `collected === considered`.
+  if (accepted !== null) {
+    return accepted;
+  }
+  const strategy = readCoverageEvidenceStrategy(manifestStream);
+  if (strategyCanProveCoverageWithoutDenominator(strategy) && checkpointProvesCoverage(fact.checkpoint)) {
+    return "complete";
+  }
+  return "unknown";
 }

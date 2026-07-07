@@ -177,7 +177,9 @@
             "created_time"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "databases",
@@ -280,7 +282,9 @@
             "created_time"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     }
   ]
 }

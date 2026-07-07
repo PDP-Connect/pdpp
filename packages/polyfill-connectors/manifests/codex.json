@@ -228,7 +228,9 @@
             "started_at"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "messages",
@@ -324,7 +326,9 @@
             "timestamp"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "function_calls",
@@ -426,7 +430,9 @@
             "timestamp"
           ]
         }
-      }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "rules",
@@ -501,7 +507,9 @@
             "lt"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "prompts",
@@ -582,7 +590,9 @@
             "lt"
           ]
         }
-      }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "skills",
@@ -664,7 +674,9 @@
             "lt"
           ]
         }
-      }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "history",
@@ -727,7 +739,9 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "session_index",
@@ -790,7 +804,9 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "coverage_diagnostics",
@@ -833,7 +849,9 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "logs",
@@ -896,7 +914,9 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "shell_snapshots",
@@ -959,7 +979,9 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "config_inventory",
@@ -1022,7 +1044,9 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     },
     {
       "name": "cache_inventory",
@@ -1085,7 +1109,9 @@
         "fields": true,
         "resources": true
       },
-      "incremental": false
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
     }
   ],
   "profiles": [

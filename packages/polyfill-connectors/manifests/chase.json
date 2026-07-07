@@ -216,7 +216,9 @@
             "lt"
           ]
         }
-      }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "transactions",
@@ -402,7 +404,9 @@
             "date"
           ]
         }
-      }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "current_activity",
@@ -555,7 +559,9 @@
             "activity_date"
           ]
         }
-      }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "statements",
@@ -685,7 +691,9 @@
             "date_delivered"
           ]
         }
-      }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
     },
     {
       "name": "balances",
@@ -781,7 +789,9 @@
             "as_of"
           ]
         }
-      }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "manual_as_of"
     }
   ]
 }

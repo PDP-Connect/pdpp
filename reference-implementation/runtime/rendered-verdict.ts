@@ -413,6 +413,7 @@ function dispositionTone(disposition: ForwardDisposition): VerdictTone {
     case "complete":
       return "green";
     case "checking":
+    case "unmeasured":
       return "grey";
     case "resumable":
       return "amber";
@@ -1002,7 +1003,7 @@ function freshnessAnnotationText(
     return freshRecencyText(tone, progress);
   }
   if (snapshot.axes.freshness === "unknown") {
-    return "Freshness is unknown — checking.";
+    return "Freshness has not been measured yet.";
   }
   const retry = actions.find((action) => action.kind === "retry_gap");
   if (retry) {
@@ -1148,6 +1149,7 @@ function buildForwardStatement(
 
   switch (disposition) {
     case "checking":
+    case "unmeasured":
       return "Coverage has not been measured yet.";
     case "resumable":
       return "The next run is expected to fill the remaining data.";
@@ -1303,6 +1305,7 @@ function streamStatement(disposition: ForwardDisposition): string {
     case "complete":
       return "Complete.";
     case "checking":
+    case "unmeasured":
       return "Coverage has not been measured yet.";
     case "resumable":
       return "The next run is expected to fill the rest.";

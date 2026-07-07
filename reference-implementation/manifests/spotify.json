@@ -53,6 +53,8 @@
           "fields": ["id", "name", "genres", "popularity", "followers", "image_url", "source_updated_at"]
         }
       ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of",
       "incremental": true
     },
     {
@@ -122,6 +124,8 @@
           "fields": ["id", "name", "artist_ids", "artist_names", "album_name", "duration_ms", "popularity", "saved_at", "source_created_at"]
         }
       ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of",
       "incremental": true
     },
     {
@@ -152,6 +156,8 @@
           "fields": ["id", "track_name", "artist_names", "played_at"]
         }
       ],
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of",
       "incremental": false
     }
   ],
