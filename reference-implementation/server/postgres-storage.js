@@ -860,8 +860,11 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_pg_connector_detail_gaps_identity
-        ON connector_detail_gaps(connector_id, COALESCE(grant_id, ''), stream, COALESCE(parent_stream, ''), COALESCE(record_key, ''), COALESCE(detail_locator_json::text, ''));
+      -- NOTE: the UNIQUE identity index is created by
+      -- migratePostgresConnectorDetailGapInstanceColumns (always runs on init),
+      -- which reconciles pre-existing locator-drift duplicates BEFORE building
+      -- the index. Creating it here would run before that dedupe and could break
+      -- on legacy duplicate rows.
       CREATE INDEX IF NOT EXISTS idx_pg_connector_detail_gaps_pending
         ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
 
@@ -1880,16 +1883,61 @@ async function migratePostgresConnectorDetailGapInstanceColumns(client) {
     await client.query('ALTER TABLE connector_detail_gaps ALTER COLUMN connector_instance_id SET NOT NULL');
   }
 
-  await client.query('DROP INDEX IF EXISTS uniq_pg_connector_detail_gaps_identity');
-  await client.query('DROP INDEX IF EXISTS idx_pg_connector_detail_gaps_pending');
-  await client.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uniq_pg_connector_detail_gaps_identity
-      ON connector_detail_gaps(connector_instance_id, COALESCE(grant_id, ''), stream, COALESCE(parent_stream, ''), COALESCE(record_key, ''), COALESCE(detail_locator_json::text, ''))
-  `);
-  await client.query(`
-    CREATE INDEX IF NOT EXISTS idx_pg_connector_detail_gaps_pending
-      ON connector_detail_gaps(connector_instance_id, grant_id, status, stream, next_attempt_after)
-  `);
+  // Drop the identity index BEFORE reconciling duplicates so the DELETE can
+  // collapse rows that would violate the new (locator-free) identity, then
+  // recreate it. Wrapped in a transaction so the dedupe and index recreation are
+  // atomic. The new identity excludes the volatile locator when a record_key is
+  // present, so pre-existing rows differing ONLY in detail_locator_json (the
+  // locator-schema-drift orphan class) now collide.
+  await client.query('BEGIN');
+  try {
+    await client.query('DROP INDEX IF EXISTS uniq_pg_connector_detail_gaps_identity');
+    await client.query('DROP INDEX IF EXISTS idx_pg_connector_detail_gaps_pending');
+    // Reconcile pre-existing duplicate rows under the NEW identity: keep the most
+    // resolved sibling per identity group (terminal > recovered > in_progress >
+    // pending, then newest updated_at, then gap_id) and delete the rest. This
+    // closes the immortal orphan pending rows recovered/terminalized under a
+    // new-shape locator. NULL grant_id / parent_stream / record_key are
+    // COALESCE/NULLIF-normalized so NULLs are not a uniqueness loophole (Postgres
+    // treats bare NULLs as distinct in a UNIQUE index).
+    await client.query(`
+      DELETE FROM connector_detail_gaps
+      WHERE gap_id IN (
+        SELECT gap_id FROM (
+          SELECT gap_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY connector_instance_id, COALESCE(grant_id, ''), stream, COALESCE(parent_stream, ''),
+                CASE WHEN NULLIF(record_key, '') IS NOT NULL THEN 'key:' || record_key ELSE 'loc:' || COALESCE(detail_locator_json::text, '') END
+              ORDER BY
+                CASE status
+                  WHEN 'terminal' THEN 0
+                  WHEN 'recovered' THEN 1
+                  WHEN 'in_progress' THEN 2
+                  ELSE 3
+                END,
+                updated_at DESC,
+                gap_id
+            ) AS rank
+          FROM connector_detail_gaps
+        ) ranked
+        WHERE rank > 1
+      )
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_pg_connector_detail_gaps_identity
+        ON connector_detail_gaps(connector_instance_id, COALESCE(grant_id, ''), stream, COALESCE(parent_stream, ''), (CASE WHEN NULLIF(record_key, '') IS NOT NULL THEN 'key:' || record_key ELSE 'loc:' || COALESCE(detail_locator_json::text, '') END))
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_detail_gaps_pending
+        ON connector_detail_gaps(connector_instance_id, grant_id, status, stream, next_attempt_after)
+    `);
+    await client.query('COMMIT');
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    throw err;
+  }
 }
 
 async function migratePostgresSchedulerInstanceColumns(client) {

@@ -1002,9 +1002,12 @@ CREATE TABLE IF NOT EXISTS connector_detail_gaps (
   CHECK (status IN ('pending', 'in_progress', 'recovered', 'terminal'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_connector_detail_gaps_identity
-  ON connector_detail_gaps(connector_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''), ifnull(record_key, ''), ifnull(detail_locator_json, ''));
-
+-- NOTE: the UNIQUE identity index for connector_detail_gaps is created by
+-- migrateConnectorDetailGapInstanceColumns (which always runs on init), NOT
+-- here. That migration first reconciles any pre-existing locator-drift
+-- duplicate rows, then builds the index — so it can never fail a UNIQUE
+-- constraint over legacy duplicates. Creating the unique index in this
+-- bootstrap DDL would run BEFORE that dedupe and break on such rows.
 CREATE INDEX IF NOT EXISTS idx_connector_detail_gaps_pending
   ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
 
@@ -2333,11 +2336,51 @@ function migrateConnectorDetailGapInstanceColumns(raw, opts = {}) {
     }
   }
 
+  // Drop the identity index BEFORE reconciling duplicates so the DELETE below
+  // can collapse rows that would violate the new (locator-free) identity, then
+  // recreate it. The new identity excludes the volatile locator when a
+  // record_key is present, so pre-existing rows that differ ONLY in
+  // detail_locator_json (the locator-schema-drift orphan class) now collide.
+  raw.exec('DROP INDEX IF EXISTS uniq_connector_detail_gaps_identity');
+
+  // Reconcile pre-existing duplicate rows under the NEW identity. Keep the most
+  // resolved sibling per identity group (terminal > recovered > in_progress >
+  // pending, then newest updated_at, then gap_id for determinism) and delete the
+  // rest. This closes the immortal orphan pending rows: when the same record was
+  // recovered/terminalized under a new-shape locator, the stale old-shape pending
+  // row is provably redundant and removed. NULL grant_id / parent_stream /
+  // record_key are ifnull-normalized so NULLs are not a uniqueness loophole.
+  const reconciled = raw.prepare(`
+    DELETE FROM connector_detail_gaps
+    WHERE gap_id IN (
+      SELECT gap_id FROM (
+        SELECT gap_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY connector_instance_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''),
+              CASE WHEN nullif(record_key, '') IS NOT NULL THEN 'key:' || record_key ELSE 'loc:' || ifnull(detail_locator_json, '') END
+            ORDER BY
+              CASE status
+                WHEN 'terminal' THEN 0
+                WHEN 'recovered' THEN 1
+                WHEN 'in_progress' THEN 2
+                ELSE 3
+              END,
+              updated_at DESC,
+              gap_id
+          ) AS rank
+        FROM connector_detail_gaps
+      )
+      WHERE rank > 1
+    )
+  `).run();
+  if (reconciled.changes > 0 && typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_detail_gap_locator_identity_reconcile', rebuilt: false, backfilledRows: reconciled.changes });
+  }
+
   raw.exec(`
-DROP INDEX IF EXISTS uniq_connector_detail_gaps_identity;
 DROP INDEX IF EXISTS idx_connector_detail_gaps_pending;
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_connector_detail_gaps_identity
-  ON connector_detail_gaps(connector_instance_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''), ifnull(record_key, ''), ifnull(detail_locator_json, ''));
+  ON connector_detail_gaps(connector_instance_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''), CASE WHEN nullif(record_key, '') IS NOT NULL THEN 'key:' || record_key ELSE 'loc:' || ifnull(detail_locator_json, '') END);
 CREATE INDEX IF NOT EXISTS idx_connector_detail_gaps_pending
   ON connector_detail_gaps(connector_instance_id, grant_id, status, stream, next_attempt_after);
 `);

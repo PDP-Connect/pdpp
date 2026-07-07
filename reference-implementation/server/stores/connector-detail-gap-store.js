@@ -27,6 +27,34 @@ function hashIdentity(parts) {
   return `gap_${createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32)}`;
 }
 
+/**
+ * The stable natural-identity component that distinguishes one detail gap from
+ * another WITHIN a `(connector_instance_id, grant_id, stream, parent_stream)`
+ * scope.
+ *
+ * When a `record_key` is present it is the identity — the `detail_locator_json`
+ * is deliberately excluded because the locator SHAPE is volatile (connectors
+ * add fields like `order_date` over time). Hashing the whole locator into
+ * identity meant a locator-schema change minted a NEW identity for the SAME
+ * record, orphaning the old-shape pending row so it could never be closed when
+ * the record was later recovered under the new shape.
+ *
+ * When `record_key` is absent the locator text is the only disambiguator, so it
+ * is retained. BOTH branches are namespaced with a disjoint prefix (`key:` vs
+ * `loc:`) so a record_key whose literal value starts with `loc:` can never
+ * collide with a locator-only gap (and vice versa).
+ *
+ * The value is `NULLIF`-normalized so a NULL/empty `record_key` is never a
+ * uniqueness loophole. The DB identity index applies the same branch logic; for
+ * locator-only JSON, storage-backend JSON text canonicalization remains the
+ * uniqueness authority.
+ */
+export function detailGapIdentityKey(recordKey, detailLocatorText) {
+  const key = nonEmptyString(recordKey);
+  if (key) return `key:${key}`;
+  return `loc:${detailLocatorText == null ? '' : detailLocatorText}`;
+}
+
 function defaultConnectorInstanceId(connectorId) {
   return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
@@ -96,8 +124,13 @@ function deriveGapIdentity(input) {
   return { connectorId, connectorInstanceId, stream };
 }
 
-function deriveGapId(input, connectorId, connectorInstanceId, grantId, stream, parentStream, recordKey, detailLocator) {
-  return input.gapId || hashIdentity([connectorId, connectorInstanceId, grantId || '', stream, parentStream || '', recordKey || '', detailLocator || null]);
+function deriveGapId(input, connectorInstanceId, grantId, stream, parentStream, recordKey, detailLocator) {
+  // Identity intentionally EXCLUDES the volatile locator when a record_key is
+  // present (see `detailGapIdentityKey`), so a locator-schema change (e.g. a
+  // connector adding `order_date`) re-upserts the SAME identity instead of
+  // orphaning the old-shape pending row.
+  const identityKey = detailGapIdentityKey(recordKey, encodeJson(detailLocator));
+  return input.gapId || hashIdentity([connectorInstanceId, grantId || '', stream, parentStream || '', identityKey]);
 }
 
 function normalizeGapInput(input) {
@@ -113,7 +146,7 @@ function normalizeGapInput(input) {
   const recordKey = input.recordKey == null ? null : String(input.recordKey);
   const reason = nonEmptyString(input.reason) || null;
   const now = input.now || nowIso();
-  const gapId = deriveGapId(input, connectorId, connectorInstanceId, grantId, stream, parentStream, recordKey, detailLocator);
+  const gapId = deriveGapId(input, connectorInstanceId, grantId, stream, parentStream, recordKey, detailLocator);
 
   return {
     gapId,
@@ -227,8 +260,13 @@ export function createSqliteConnectorDetailGapStore() {
           last_error_json = excluded.last_error_json,
           last_run_id = excluded.last_run_id,
           updated_at = excluded.updated_at
-        ON CONFLICT(connector_instance_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''), ifnull(record_key, ''), ifnull(detail_locator_json, '')) DO UPDATE SET
+        -- Identity conflict target = the natural key, with the volatile locator
+        -- dropped when a record_key exists (see detailGapIdentityKey). This is
+        -- what closes the locator-drift orphan class: a re-discovery under a new
+        -- locator shape re-upserts the SAME row instead of inserting a duplicate.
+        ON CONFLICT(connector_instance_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''), CASE WHEN nullif(record_key, '') IS NOT NULL THEN 'key:' || record_key ELSE 'loc:' || ifnull(detail_locator_json, '') END) DO UPDATE SET
           source_json = excluded.source_json,
+          detail_locator_json = excluded.detail_locator_json,
           list_cursor_json = excluded.list_cursor_json,
           scope_json = excluded.scope_json,
           reason = excluded.reason,
@@ -262,22 +300,23 @@ export function createSqliteConnectorDetailGapStore() {
         gap.now,
       ]);
       // REVIEWED-DYNAMIC: single-row lookup for the store-owned detail-gap table.
+      // Look up by the identity expression (NOT the locator): on a locator-drift
+      // re-upsert the stored row updates to the newer locator shape, so a
+      // locator-based lookup against the old shape would miss.
       return rowToGap(firstSqliteRow(`
         SELECT * FROM connector_detail_gaps
         WHERE connector_instance_id = ?
           AND ifnull(grant_id, '') = ?
           AND stream = ?
           AND ifnull(parent_stream, '') = ?
-          AND ifnull(record_key, '') = ?
-          AND ifnull(detail_locator_json, '') = ?
+          AND CASE WHEN nullif(record_key, '') IS NOT NULL THEN 'key:' || record_key ELSE 'loc:' || ifnull(detail_locator_json, '') END = ?
         LIMIT 1
       `, [
         gap.connectorInstanceId,
         gap.grantId || '',
         gap.stream,
         gap.parentStream || '',
-        gap.recordKey || '',
-        detailLocatorJson || '',
+        detailGapIdentityKey(gap.recordKey, detailLocatorJson),
       ]));
     },
 
@@ -447,8 +486,13 @@ export function createPostgresConnectorDetailGapStore() {
           detail_locator_json, list_cursor_json, scope_json, reason, status, attempt_count,
           next_attempt_after, last_error_json, discovered_run_id, last_run_id, created_at, updated_at
         ) VALUES($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb, $12, 'pending', 0, $13, $14::jsonb, $15, $16, $17, $17)
-        ON CONFLICT (connector_instance_id, COALESCE(grant_id, ''), stream, COALESCE(parent_stream, ''), COALESCE(record_key, ''), COALESCE(detail_locator_json::text, '')) DO UPDATE SET
+        -- Identity conflict target = the natural key, with the volatile locator
+        -- dropped when a record_key exists (see detailGapIdentityKey). Closes the
+        -- locator-drift orphan class: a re-discovery under a new locator shape
+        -- re-upserts the SAME row instead of inserting a duplicate.
+        ON CONFLICT (connector_instance_id, COALESCE(grant_id, ''), stream, COALESCE(parent_stream, ''), (CASE WHEN NULLIF(record_key, '') IS NOT NULL THEN 'key:' || record_key ELSE 'loc:' || COALESCE(detail_locator_json::text, '') END)) DO UPDATE SET
           source_json = EXCLUDED.source_json,
+          detail_locator_json = EXCLUDED.detail_locator_json,
           list_cursor_json = EXCLUDED.list_cursor_json,
           scope_json = EXCLUDED.scope_json,
           reason = EXCLUDED.reason,

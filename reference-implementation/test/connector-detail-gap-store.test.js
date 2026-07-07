@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 
-import { closeDb, initDb } from '../server/db.js';
+import { closeDb, getDb, initDb } from '../server/db.js';
 import {
   closePostgresStorage,
   initPostgresStorage,
@@ -1318,6 +1318,9 @@ if (!POSTGRES_URL) {
   test('countGapsByStatusForConnector returns an exact reason-scoped recovered count (Postgres) (skipped: PDPP_TEST_POSTGRES_URL unset)', {
     skip: true,
   }, () => {});
+  test('Postgres locator drift re-upserts the same identity and recovery closes the old-shape pending (skipped: PDPP_TEST_POSTGRES_URL unset)', {
+    skip: true,
+  }, () => {});
 } else {
   test('countGapsByStatusForConnector returns an exact reason-scoped recovered count (Postgres)', async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
@@ -1338,6 +1341,58 @@ if (!POSTGRES_URL) {
           'DELETE FROM connector_detail_gaps WHERE connector_id = $1',
           [connectorId],
         );
+      } catch {}
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+  test('Postgres locator drift re-upserts the same identity and recovery closes the old-shape pending', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `amazon_pg_drift_${suffix}`;
+    const connectorInstanceId = `cin_amazon_pg_${suffix}`;
+    const grantId = `grant_pg_drift_${suffix}`;
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+      // Backend parity for the locator-drift fix: old-shape locator (no
+      // order_date) then a new-shape re-discovery must resolve to the SAME
+      // identity, and recovery must close the old-shape pending row.
+      const oldShape = await store.upsertPendingGap({
+        connectorId, connectorInstanceId, grantId,
+        stream: 'order_items', parentStream: 'orders', recordKey: 'order-A',
+        detailLocator: { kind: 'amazon.order_detail', order_id: 'order-A' },
+        reason: 'temporary_unavailable',
+      });
+      const newShape = await store.upsertPendingGap({
+        connectorId, connectorInstanceId, grantId,
+        stream: 'order_items', parentStream: 'orders', recordKey: 'order-A',
+        detailLocator: { kind: 'amazon.order_detail', order_id: 'order-A', order_date: '2024-11-18' },
+        reason: 'temporary_unavailable',
+      });
+      assert.equal(newShape.gap_id, oldShape.gap_id, 'locator drift re-upserts the same identity on Postgres');
+      assert.equal(newShape.detail_locator?.order_date, '2024-11-18', 'Postgres stores the newer locator shape on identity conflict');
+
+      const pendingBefore = await store.listPendingGaps({ connectorId, connectorInstanceId, grantId, streams: ['order_items'] });
+      assert.deepEqual(pendingBefore.map((g) => g.gap_id), [oldShape.gap_id], 'exactly one pending row survives the drift');
+
+      await store.markGapStatus(newShape.gap_id, 'recovered', { runId: 'run_recover' });
+      const pendingAfter = await store.listPendingGaps({ connectorId, connectorInstanceId, grantId, streams: ['order_items'] });
+      assert.equal(pendingAfter.length, 0, 'recovery closes the old-shape pending — no immortal orphan on Postgres');
+
+      // Locator fallback preserved: distinct locators with no record_key stay distinct.
+      const locA = await store.upsertPendingGap({
+        connectorId, connectorInstanceId, grantId, stream: 'nokey', recordKey: null, detailLocator: { page: 1 },
+      });
+      const locB = await store.upsertPendingGap({
+        connectorId, connectorInstanceId, grantId, stream: 'nokey', recordKey: null, detailLocator: { page: 2 },
+      });
+      assert.notEqual(locA.gap_id, locB.gap_id, 'without a record_key the locator still disambiguates on Postgres');
+    } finally {
+      try {
+        await postgresQuery('DELETE FROM connector_detail_gaps WHERE connector_instance_id = $1', [connectorInstanceId]);
       } catch {}
       await closePostgresStorage();
       closeDb();
@@ -1736,3 +1791,189 @@ test('chase 0-transaction retry recovers the matching served account gap and lea
     'only the unmatched account remains pending after the retry'
   );
 }));
+
+// ─── Locator-schema-drift identity tests ─────────────────────────────────────
+//
+// The durable gap identity is `(instance, grant, stream, parent, record_key)`
+// with the VOLATILE `detail_locator_json` deliberately excluded when a
+// record_key is present. This closes the "immortal orphan" class observed live
+// on Amazon: a connector changed its detail_locator shape (added `order_date`),
+// which — when the locator was part of identity — minted a NEW gap_id for the
+// SAME record, orphaning the old-shape pending row so it could never be closed
+// when the record was later recovered under the new shape.
+
+test('locator-schema drift re-upserts the SAME gap identity (no orphan) when record_key is stable', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+
+  // Old-shape locator: no `order_date` (the exact live Amazon orphan shape).
+  const oldShape = await store.upsertPendingGap({
+    connectorId: 'amazon',
+    connectorInstanceId: 'cin_amazon',
+    grantId: 'grant_1',
+    stream: 'order_items',
+    parentStream: 'orders',
+    recordKey: '113-0037140-4304201',
+    detailLocator: { kind: 'amazon.order_detail', order_id: '113-0037140-4304201' },
+    reason: 'temporary_unavailable',
+  });
+
+  // New-shape locator for the SAME record: the connector now also emits
+  // `order_date`. Under locator-in-identity this minted a second row; now it
+  // must resolve to the SAME identity and update the existing row in place.
+  const newShape = await store.upsertPendingGap({
+    connectorId: 'amazon',
+    connectorInstanceId: 'cin_amazon',
+    grantId: 'grant_1',
+    stream: 'order_items',
+    parentStream: 'orders',
+    recordKey: '113-0037140-4304201',
+    detailLocator: { kind: 'amazon.order_detail', order_id: '113-0037140-4304201', order_date: '2024-11-18' },
+    reason: 'temporary_unavailable',
+  });
+
+  assert.equal(newShape.gap_id, oldShape.gap_id, 'a locator-shape change re-upserts the same identity, not a new orphan');
+  assert.equal(newShape.detail_locator?.order_date, '2024-11-18', 'the durable row stores the newer locator shape');
+
+  // Exactly one durable row exists for the record — the orphan can never form.
+  const pending = await store.listPendingGaps({
+    connectorId: 'amazon', connectorInstanceId: 'cin_amazon', grantId: 'grant_1', streams: ['order_items'],
+  });
+  assert.deepEqual(pending.map((g) => g.gap_id), [oldShape.gap_id], 'exactly one pending row survives the locator drift');
+}));
+
+test('recovery under a new-shape locator closes the pre-existing old-shape pending gap', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+
+  // A pending gap discovered under the OLD locator shape.
+  const pendingOld = await store.upsertPendingGap({
+    connectorId: 'amazon',
+    connectorInstanceId: 'cin_amazon',
+    grantId: 'grant_1',
+    stream: 'order_items',
+    parentStream: 'orders',
+    recordKey: 'order-A',
+    detailLocator: { kind: 'amazon.order_detail', order_id: 'order-A' },
+    reason: 'temporary_unavailable',
+  });
+
+  // The next run rediscovers the record under a NEW locator shape and recovers
+  // it. Because identity ignores the locator, the recovered gap_id is the SAME
+  // row — recovery closes the very pending row that was previously immortal.
+  const rediscovered = await store.upsertPendingGap({
+    connectorId: 'amazon',
+    connectorInstanceId: 'cin_amazon',
+    grantId: 'grant_1',
+    stream: 'order_items',
+    parentStream: 'orders',
+    recordKey: 'order-A',
+    detailLocator: { kind: 'amazon.order_detail', order_id: 'order-A', order_date: '2024-11-18' },
+    reason: 'temporary_unavailable',
+  });
+  assert.equal(rediscovered.gap_id, pendingOld.gap_id);
+
+  const recovered = await store.markGapStatus(rediscovered.gap_id, 'recovered', { runId: 'run_recover' });
+  assert.equal(recovered.status, 'recovered');
+
+  const stillPending = await store.listPendingGaps({
+    connectorId: 'amazon', connectorInstanceId: 'cin_amazon', grantId: 'grant_1', streams: ['order_items'],
+  });
+  assert.equal(stillPending.length, 0, 'no immortal old-shape orphan remains after recovery');
+}));
+
+test('a record_key literally starting with "loc:" never collides with a locator-only gap', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+
+  // A real record whose key literally begins with the locator-fallback prefix.
+  const keyed = await store.upsertPendingGap({
+    connectorId: 'x',
+    connectorInstanceId: 'cin_x',
+    grantId: 'grant_1',
+    stream: 's',
+    recordKey: 'loc:hello',
+    detailLocator: { any: 'thing' },
+  });
+
+  // A DIFFERENT gap with NO record_key whose locator text could hash toward the
+  // same string if branches were not namespaced. These MUST remain distinct.
+  const locatorOnly = await store.upsertPendingGap({
+    connectorId: 'x',
+    connectorInstanceId: 'cin_x',
+    grantId: 'grant_1',
+    stream: 's',
+    recordKey: null,
+    detailLocator: 'hello',
+  });
+
+  assert.notEqual(keyed.gap_id, locatorOnly.gap_id, 'key: and loc: namespaces are disjoint — no cross-branch collision');
+  const pending = await store.listPendingGaps({ connectorId: 'x', connectorInstanceId: 'cin_x', grantId: 'grant_1', streams: ['s'] });
+  assert.equal(pending.length, 2, 'both distinct gaps persist');
+}));
+
+test('with no record_key, distinct locators still form distinct identities (locator fallback preserved)', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const first = await store.upsertPendingGap({
+    connectorId: 'x', connectorInstanceId: 'cin_x', grantId: 'grant_1', stream: 's', recordKey: null,
+    detailLocator: { page: 1 },
+  });
+  const second = await store.upsertPendingGap({
+    connectorId: 'x', connectorInstanceId: 'cin_x', grantId: 'grant_1', stream: 's', recordKey: null,
+    detailLocator: { page: 2 },
+  });
+  assert.notEqual(first.gap_id, second.gap_id, 'without a record_key the locator still disambiguates');
+  const pending = await store.listPendingGaps({ connectorId: 'x', connectorInstanceId: 'cin_x', grantId: 'grant_1', streams: ['s'] });
+  assert.equal(pending.length, 2);
+}));
+
+// Migration reconciliation: a DB carrying pre-existing duplicate rows (the live
+// state — same record, two locator shapes) is collapsed to one row on init,
+// keeping the most-resolved sibling and deleting the orphan pending row. This
+// also proves the new UNIQUE identity index can be built over previously-dup'd
+// data without a constraint violation.
+test('migration collapses pre-existing locator-drift duplicate rows, keeping the resolved sibling', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-detail-gaps-migrate-'));
+  const dbPath = join(dir, 'pdpp.sqlite');
+  try {
+    initDb(dbPath);
+    // Simulate the live pre-fix state: two rows for ONE record differing only in
+    // detail_locator_json — an old-shape pending orphan and a new-shape recovered
+    // sibling. Insert them directly with the identity index dropped so the legacy
+    // (locator-in-identity) duplicate can exist, exactly as it does in prod.
+    const raw = getDb();
+    raw.exec('DROP INDEX IF EXISTS uniq_connector_detail_gaps_identity');
+    const insert = raw.prepare(`
+      INSERT INTO connector_detail_gaps(
+        gap_id, connector_id, connector_instance_id, grant_id, source_json, stream, parent_stream, record_key,
+        detail_locator_json, reason, status, attempt_count, created_at, updated_at
+      ) VALUES (?, 'amazon', 'cin_amazon', 'grant_1', '{}', 'order_items', 'orders', 'order-A', ?, 'temporary_unavailable', ?, ?, ?, ?)
+    `);
+    // Old-shape pending orphan (high attempt count, older) …
+    insert.run('gap_old_orphan', JSON.stringify({ kind: 'amazon.order_detail', order_id: 'order-A' }), 'pending', 17, '2026-06-19T00:00:00.000Z', '2026-06-26T00:00:00.000Z');
+    // … and the new-shape recovered sibling (the record IS actually covered).
+    insert.run('gap_new_recovered', JSON.stringify({ kind: 'amazon.order_detail', order_id: 'order-A', order_date: '2024-11-18' }), 'recovered', 3, '2026-06-30T00:00:00.000Z', '2026-06-30T00:00:00.000Z');
+    closeDb();
+
+    // Re-open the SAME file: the detail-gap migration runs, reconciling the
+    // duplicates before rebuilding the unique identity index.
+    initDb(dbPath);
+    const reopened = getDb();
+    const rows = reopened.prepare("SELECT gap_id, status FROM connector_detail_gaps WHERE record_key = 'order-A' ORDER BY gap_id").all();
+    assert.deepEqual(
+      rows,
+      [{ gap_id: 'gap_new_recovered', status: 'recovered' }],
+      'migration keeps the resolved sibling and deletes the immortal old-shape pending orphan',
+    );
+
+    // The rebuilt unique identity index now rejects a re-inserted duplicate.
+    assert.throws(
+      () => reopened.prepare(`
+        INSERT INTO connector_detail_gaps(gap_id, connector_id, connector_instance_id, grant_id, source_json, stream, parent_stream, record_key, detail_locator_json, reason, status, attempt_count, created_at, updated_at)
+        VALUES ('gap_dupe_attempt', 'amazon', 'cin_amazon', 'grant_1', '{}', 'order_items', 'orders', 'order-A', ?, 'x', 'pending', 0, ?, ?)
+      `).run(JSON.stringify({ kind: 'amazon.order_detail', order_id: 'order-A', order_date: '2099-01-01' }), '2026-07-07T00:00:00.000Z', '2026-07-07T00:00:00.000Z'),
+      /UNIQUE|constraint/i,
+      'the rebuilt identity index is locator-independent: a third locator shape for the same record is a duplicate',
+    );
+  } finally {
+    closeDb();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
