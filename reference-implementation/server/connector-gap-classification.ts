@@ -59,6 +59,7 @@ export function gapClassifierText(gap: unknown): string {
 }
 
 const OWNER_RECOVERABLE_GAP_RE = /\b(otp|mfa|2fa|manual|captcha|anti bot)\b/;
+const SOURCE_UNAVAILABLE_GAP_RE = /\bsource unavailable\b/;
 
 /**
  * A gap the owner can clear by hand — an explicit `manual_action_required`
@@ -74,6 +75,17 @@ export function isOwnerRecoverableKnownGap(gap: unknown): boolean {
 /** A gap the runtime retries on its own (`retry_by_runtime` recovery hint). */
 export function isRuntimeRetryableKnownGap(gap: unknown): boolean {
   return gapRecoveryAction(gap) === "retry_by_runtime";
+}
+
+/**
+ * A source availability failure means the upstream source could not serve the
+ * login/data surface. Old runtime versions could persist this as an actionable
+ * connector failure with a stale credential-repair hint. Classify the durable
+ * evidence itself as retryable so historical rows read the same way as fixed
+ * runtime output.
+ */
+function isSourceUnavailableKnownGap(gap: unknown): boolean {
+  return SOURCE_UNAVAILABLE_GAP_RE.test(gapClassifierText(gap));
 }
 
 /**
@@ -95,6 +107,9 @@ export function isRetryableKnownGap(gap: unknown): boolean {
     return true;
   }
   if (isRuntimeRetryableKnownGap(gap)) {
+    return true;
+  }
+  if (isSourceUnavailableKnownGap(gap)) {
     return true;
   }
   const severity = (gap as { severity?: unknown }).severity;
@@ -165,6 +180,9 @@ export function hasTerminalKnownGap(
       return false;
     }
     if (isRuntimeRetryableKnownGap(gap)) {
+      return false;
+    }
+    if (isSourceUnavailableKnownGap(gap)) {
       return false;
     }
     const severity = (gap as { severity?: unknown }).severity;

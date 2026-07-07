@@ -19,6 +19,8 @@ Preserve connector retryability at the shared browser session-establishment boun
 
 Also treat `source_unavailable` as a veto for credential-reason recovery at the source-health projection boundary. This is a read-repair guard for already-persisted bad events and any future malformed generic terminal event. A generic failure can still become credential repair when the gap message is a definitive auth failure or the recovery hint is credential repair, but not when the same gap carries `source_unavailable`.
 
+Classify `source_unavailable` known-gap evidence as retryable at the shared gap-classification boundary. This is the compatibility half of the read repair: existing terminal events may still carry stale `severity=actionable` and `retryable=false` fields from the old runtime, but the durable message itself states a source outage. The owner-facing health projection should therefore read it as a retryable source condition, not as a terminal connector defect.
+
 This keeps the connector contract general: connectors still declare retryability through the existing runtime pattern, and the reference projection still requires credential-rejection evidence before telling the owner to reconnect credentials. It does not change static-secret credential capture or ChatGPT session-repair semantics.
 
 ## Alternatives Considered
@@ -32,4 +34,5 @@ This keeps the connector contract general: connectors still declare retryability
 - A browser session-establishment failure that matches a connector retryability pattern remains retryable after wrapping.
 - A generic terminal run with a known auth 401 still projects credential repair.
 - A generic terminal run with `source_unavailable` does not project credential repair, even if the gap has a `refresh_credentials` recovery hint.
+- A generic terminal run with legacy `source_unavailable` known-gap fields projects as retryable coverage, not terminal connector code-fix coverage.
 - Existing runtime, connector, connection-health, and source-projection tests pass.

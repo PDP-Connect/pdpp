@@ -6,6 +6,7 @@
 ## 2. Projection Read Repair
 
 - [x] Prevent legacy `source_unavailable` known-gap messages from being promoted to credential repair.
+- [x] Classify legacy `source_unavailable` known-gap messages as retryable source conditions rather than terminal connector-code defects.
 - [x] Preserve existing auth 401/403 credential repair behavior.
 - [x] Add a source-health regression for the USAA-shaped persisted failure.
 

@@ -1070,4 +1070,6 @@ test('§10-C control: source_unavailable login outage does NOT manufacture a cre
   const credentialCondition = snap.conditions?.find((c) => c.type === 'CredentialsValid' && c.status === 'false');
   assert.equal(credentialCondition, undefined, 'source_unavailable must NOT manufacture a credential/reconnect prompt');
   assert.notEqual(snap.next_action?.kind, 'reauth');
+  assert.equal(snap.axes.coverage, 'retryable_gap');
+  assert.equal(snap.forward_disposition, 'resumable');
 });
