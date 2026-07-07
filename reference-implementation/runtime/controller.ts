@@ -2729,6 +2729,36 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }).length;
   }
 
+  function countResolvedKnownDetailGaps(result: Awaited<ReturnType<RunConnectorFn>> | undefined): number {
+    const knownGaps = (result as { known_gaps?: unknown } | undefined)?.known_gaps;
+    if (!Array.isArray(knownGaps)) {
+      return 0;
+    }
+    return knownGaps.filter((gap) => {
+      if (!gap || typeof gap !== "object") {
+        return false;
+      }
+      const entry = gap as {
+        kind?: unknown;
+        reason?: unknown;
+        recovery_hint?: unknown;
+      };
+      const recoveryHint = entry.recovery_hint;
+      const action =
+        recoveryHint && typeof recoveryHint === "object" && !Array.isArray(recoveryHint)
+          ? (recoveryHint as { action?: unknown }).action
+          : recoveryHint;
+      return (
+        entry.kind === "detail_gap" &&
+        (entry.reason === "quarantined" || action === "not_retriable")
+      );
+    }).length;
+  }
+
+  function countDurableDetailGapProgress(result: Awaited<ReturnType<RunConnectorFn>> | undefined): number {
+    return countResolvedDetailGaps(result) + countResolvedKnownDetailGaps(result);
+  }
+
   async function listPendingGapsForContinuation(
     connectorId: string,
     connectorInstanceId: string
@@ -2770,7 +2800,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (input.result?.status !== "succeeded") {
       return;
     }
-    if (countResolvedDetailGaps(input.result) === 0) {
+    if (countDurableDetailGapProgress(input.result) === 0) {
       return;
     }
     const depth = input.options.recoveryContinuationDepth ?? 0;
