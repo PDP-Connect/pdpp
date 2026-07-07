@@ -214,6 +214,30 @@ _Recorded 2026-07-06; change implemented 2026-04-30._
 
 Earlier drafts of spec-core defined a top-level `connector_id` scalar (and the reference contract a sibling `provider_id`) as the request/grant source-identity field. These were unified into the single discriminated `source: { kind: "connector" | "provider_native", id }` object. This was a breaking change to the request and grant contract, implemented via the archived OpenSpec change `2026-04-30-unify-source-binding-vocabulary`. The former scalars survive only as the kind-keyed meanings of `source.id`, never as top-level request or grant fields; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request`. The spec-core text was aligned with the implemented contract on 2026-07-06.
 
+### Stream dependencies and binary data
+
+_Previously deferred (carried forward): concerns that affect implementation but not semantics. Retired 2026-07-06: implemented._
+
+**Finding (Codex):** Personal data is often graphs + binaries (conversations→messages→attachments, albums→photos). No stream dependency model, no blob/file transport.
+
+**Resolution:** The gap is closed. spec-core Section 7 defines `relationships` (the declared foreign-key graph), Section 8 defines `expand[]` / `expand_limit` for declaration-driven relation expansion, and Section 4 defines `blob_ref` (binary data) and `resource_ref` (cross-stream pointers). Implemented in the reference (record expansion helpers, read-route expand handling, blob read operation). The shipped design uses manifest-declared `relationships` rather than this entry's proposed `depends_on`, and binary transport is a stored reference with authorized fetch rather than a BLOB message type. Remaining open sliver: expansion depth is fixed at 1; multi-hop expansion is not defined.
+
+### Browser capability protocol
+
+_Previously deferred (carried forward): concerns that affect implementation but not semantics. Retired 2026-07-06: implemented._
+
+**Finding (Gemini):** The BROWSER JSONL protocol is too dangerous (script injection) and too small (missing most Playwright features). Suggested alternative: expose a CDP WebSocket URL in the START message and let connectors use standard CDP clients.
+
+**Finding (Codex):** `evaluate` makes portability and security worse. Either define a real browser capability layer or keep it out of the portable core spec.
+
+**Resolution:** Both asks are adopted. The manifest declares `runtime_requirements` (Collection Profile Section 2), and browser automation is the standard `browser_automation` binding carrying `{ interface: "cdp", ws_url }`: connectors drive a runtime-managed browser through standard CDP clients rather than a bespoke JSONL browser protocol. Implemented in the reference (manifest validation, runtime binding matching, CDP adapter). The JSONL `evaluate` mechanism stays out of the portable core.
+
+### Secret handling
+
+_Previously deferred (carried forward): concerns that affect implementation but not semantics. Retired 2026-07-06: adopted as normative conformance items._
+
+**Resolution:** No-secrets-in-STATE and no-credential-logging are normative conformance items in the Collection Profile (connector conformance item 5: no secrets in STATE; runtime conformance item 9: no credential logging or persistence from INTERACTION_RESPONSE) and spec-core Section 10 (credential handling). The remaining piece, STATE versioning for connector upgrades, is tracked as its own entry under Implementation TODOs.
+
 ### Historical corrections (mostly resolved)
 
 _Previously deferred (carried forward)._
@@ -239,39 +263,11 @@ _Previously deferred (carried forward): concerns that affect implementation but 
 
 **Action:** Add a "Security Considerations" section to the spec acknowledging these. No semantic changes needed.
 
-### Browser capability protocol
+### STATE versioning
 
-_Previously deferred (carried forward): concerns that affect implementation but not semantics._
+_Split out of the retired Secret handling entry (2026-07-06); originally raised as "State needs versioning for connector upgrades"._
 
-**Finding (Gemini):** The BROWSER JSONL protocol is too dangerous (script injection) and too small (missing most Playwright features). Suggested alternative: expose a CDP WebSocket URL in the START message and let connectors use standard CDP clients.
-
-**Finding (Codex):** `evaluate` makes portability and security worse. Either define a real browser capability layer or keep it out of the portable core spec.
-
-**Semantic implication:** None for the grant/selection/manifest. The browser protocol is a runtime concern. But the manifest's `capabilities.browser` declaration is semantic — it should be renamed to `runtime_requirements.browser` per Gemini's suggestion.
-
-**Action:** For v0.1 implementation, use the v1 adapter for browser connectors. Defer the v2 browser protocol. Note in the spec that browser automation is runtime-specific and will be specified separately.
-
-### Secret handling
-
-_Previously deferred (carried forward): concerns that affect implementation but not semantics._
-
-- Passwords and OTP codes in HUMAN_RESPONSE should not be logged or persisted
-- Tokens should not be stored in STATE (use a separate encrypted runtime store)
-- State needs versioning for connector upgrades
-
-**Action:** Add "Security Considerations" notes. Implementation concern, not semantic.
-
-### Stream dependencies and binary data
-
-_Previously deferred (carried forward): concerns that affect implementation but not semantics._
-
-**Finding (Codex):** Personal data is often graphs + binaries (conversations→messages→attachments, albums→photos). No stream dependency model, no blob/file transport.
-
-**Semantic implication:** This is a real gap but adding it to v0.1 would significantly increase complexity. For the demo, flat JSON streams are sufficient. When we need relationships, we can add:
-- `depends_on: "conversations"` to a stream definition
-- A `BLOB` message type for binary data with a file reference
-
-**Action:** Defer. Document as a known limitation.
+STATE has no version or migration mechanism in the Collection Profile or the reference runtime: a connector upgrade that changes its STATE shape has no defined way to detect or migrate old checkpoints. Candidate for v0.2.
 
 ### Mid-run cancellation
 
@@ -279,7 +275,7 @@ _Previously deferred (carried forward): concerns that affect implementation but 
 
 **Finding (Gemini):** No way to cancel a running collection (e.g., on grant revocation). Need a CANCEL message.
 
-**Action:** Add to v0.2. For v0.1, the runtime can kill the process.
+**Action:** The v0.1 fallback is implemented, not planned: the runtime terminates the connector process, with graceful termination escalating to SIGKILL. The open item is a protocol-level CANCEL message with acknowledgment and partial-result semantics; candidate for v0.2.
 
 ### Record-level errors
 
