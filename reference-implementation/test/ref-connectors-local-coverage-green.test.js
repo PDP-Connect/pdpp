@@ -28,6 +28,7 @@ const NOW = '2026-06-03T12:00:00.000Z';
 // A heartbeat well within the 30-minute stale window so a drained collector
 // reads as `idle`, not `stalled` (the live evidence is freshly healthy).
 const HEARTBEAT_AT = '2026-06-03T11:59:00.000Z';
+const STALE_HISTORICAL_RUN_AT = '2026-05-22T14:31:18.319Z';
 
 function withTmpDb(fn) {
   return async () => {
@@ -104,6 +105,18 @@ function seedCoverage(rows) {
   });
 }
 
+function seedHistoricalSchedulerRun({ completedAt = STALE_HISTORICAL_RUN_AT } = {}) {
+  getDb()
+    .prepare(
+      `INSERT INTO scheduler_run_history(
+         connector_instance_id, connector_id, source_json, status, records_emitted,
+         known_gaps_json, run_id, started_at, completed_at, attempt
+       )
+       VALUES (?, ?, ?, 'succeeded', 1, '[]', 'run_stale_history', ?, ?, 1)`,
+    )
+    .run(CONNECTOR_INSTANCE_ID, CONNECTOR_ID, '{}', completedAt, completedAt);
+}
+
 async function seedHealthyDrainedHeartbeat() {
   const store = getDefaultDeviceExporterStore();
   await store.createDevice({
@@ -133,6 +146,39 @@ async function seedHealthyDrainedHeartbeat() {
     recordsPending: 0,
     outboxDiagnostics: { pending: 0, dead_letter: 0, stale_leases: 0, succeeded: 12, total: 12 },
   });
+}
+
+async function seedActiveDrainingHeartbeat({ receivedAt = new Date().toISOString() } = {}) {
+  const store = getDefaultDeviceExporterStore();
+  await store.createDevice({
+    deviceId: DEVICE_ID,
+    ownerSubjectId: OWNER,
+    displayName: 'peregrine',
+    status: 'active',
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  await store.upsertSourceInstance({
+    sourceInstanceId: SOURCE_INSTANCE_ID,
+    deviceId: DEVICE_ID,
+    connectorId: CONNECTOR_ID,
+    connectorInstanceId: CONNECTOR_INSTANCE_ID,
+    localBindingId: 'peregrine',
+    displayName: 'peregrine Claude Code',
+    status: 'active',
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  // Active + making progress: pending work exists, but the collector is checking
+  // in recently and has no dead letters or stale leases.
+  await store.markSourceInstanceHeartbeat(DEVICE_ID, SOURCE_INSTANCE_ID, {
+    receivedAt,
+    lastError: null,
+    status: 'retrying',
+    recordsPending: 5,
+    outboxDiagnostics: { pending: 5, dead_letter: 0, stale_leases: 0, succeeded: 7, total: 12 },
+  });
+  return receivedAt;
 }
 
 // A blocked heartbeat carrying failed-upload records: the outbox axis derives
@@ -294,6 +340,79 @@ test(
     assert.ok(collection);
     assert.equal(collection.status, 'true');
     assert.equal(collection.origin, 'local_device');
+  }),
+);
+
+test(
+  'healthy drained local collector uses heartbeat freshness even with stale historical scheduler history',
+  withTmpDb(async () => {
+    // Mirrors live local-device connections after machine restarts: the collector
+    // has checked in and drained, but an old scheduler row remains on the
+    // connection. Push-mode freshness must use trusted local progress rather than
+    // letting stale scheduler history force a degraded headline.
+    seedConnector({ refreshPolicy: ALWAYS_FRESH_REFRESH_POLICY });
+    await seedInstance();
+    seedRecord({
+      stream: 'messages',
+      key: 'msg_1',
+      data: { id: 'msg_1', text: 'collected message' },
+      emittedAt: '2026-06-03T11:58:00.000Z',
+    });
+    seedCoverage([
+      { store: 'sessions', stream: 'sessions', status: 'collected' },
+      { store: 'cache', stream: null, status: 'inventory_only' },
+      { store: 'auth', stream: null, status: 'excluded' },
+    ]);
+    seedHistoricalSchedulerRun();
+    await seedHealthyDrainedHeartbeat();
+    await rebuildRetainedSize();
+
+    const row = await projectConnection();
+    const health = row.connection_health;
+
+    assert.equal(row.last_run?.run_id, 'run_stale_history');
+    assert.equal(row.freshness.status, 'current');
+    assert.equal(row.freshness.captured_at, HEARTBEAT_AT);
+    assert.equal(health.axes.freshness, 'fresh');
+    assert.equal(health.axes.coverage, 'complete');
+    assert.equal(health.axes.outbox, 'idle');
+    assert.equal(health.state, 'healthy');
+  }),
+);
+
+test(
+  'active local collector uses heartbeat freshness while outbox axis carries draining work',
+  withTmpDb(async () => {
+    // Mirrors post-crash recovery while a local collector is still uploading:
+    // recent heartbeat + active outbox means the owner does not need to repair
+    // the source. The outbox axis carries "still syncing"; stale historical run
+    // history must not turn that into degraded/manual repair.
+    seedConnector({ refreshPolicy: ALWAYS_FRESH_REFRESH_POLICY });
+    await seedInstance();
+    seedRecord({
+      stream: 'messages',
+      key: 'msg_1',
+      data: { id: 'msg_1', text: 'collected message' },
+      emittedAt: '2026-06-03T11:58:00.000Z',
+    });
+    seedCoverage([
+      { store: 'sessions', stream: 'sessions', status: 'collected' },
+      { store: 'cache', stream: null, status: 'inventory_only' },
+      { store: 'auth', stream: null, status: 'excluded' },
+    ]);
+    seedHistoricalSchedulerRun();
+    const activeHeartbeatAt = await seedActiveDrainingHeartbeat();
+    await rebuildRetainedSize();
+
+    const row = await projectConnection();
+    const health = row.connection_health;
+
+    assert.equal(row.local_device_progress?.records_pending, 5);
+    assert.equal(row.freshness.status, 'current');
+    assert.equal(row.freshness.captured_at, activeHeartbeatAt);
+    assert.equal(health.axes.freshness, 'fresh');
+    assert.equal(health.axes.outbox, 'active');
+    assert.equal(health.state, 'healthy');
   }),
 );
 

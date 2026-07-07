@@ -2902,26 +2902,40 @@ function buildConnectorFreshness({
   live: RecordProjection;
   refreshPolicy: unknown;
   /**
-   * For local-device (push-mode) connections there is no scheduler run
-   * to anchor freshness. A recent healthy heartbeat is evidence the
-   * collector checked in, so use it as a fallback `recordLastUpdatedAt`
-   * when no run-based timestamp is available. Omit or pass `null` for
+   * For local-device (push-mode) connections, eligible heartbeat evidence is the
+   * freshness anchor even if old scheduler rows exist. Omit or pass `null` for
    * scheduler-managed connections.
    */
   lastHeartbeatAt?: string | null;
 }): Freshness {
-  // For local-device connections with no scheduler run, prefer the
-  // heartbeat timestamp as a freshness anchor. A recent heartbeat is
-  // honest evidence the collector is alive even if no new data arrived.
-  const recordLastUpdatedAt =
-    lastRun == null && lastHeartbeatAt != null ? lastHeartbeatAt : (live.freshness.captured_at ?? null);
+  const localProgressAt = lastHeartbeatAt ?? null;
   return deriveReferenceFreshness({
     lastAttemptedAt: lastRun?.last_at ?? null,
     lastAttemptStatus: lastRun?.status ?? null,
-    lastSuccessfulRunAt: lastSuccessfulRun?.last_at ?? null,
+    lastSuccessfulRunAt: localProgressAt ?? lastSuccessfulRun?.last_at ?? null,
     maximumStalenessSeconds: getMaximumStalenessSeconds(refreshPolicy),
-    recordLastUpdatedAt,
+    recordLastUpdatedAt: localProgressAt ?? live.freshness.captured_at ?? null,
   });
+}
+
+function localDeviceFreshnessHeartbeatAt(
+  localDeviceProgress: LocalDeviceProgress | null,
+  outbox: { readonly axis: OutboxAxis }
+): string | null {
+  if (!localDeviceProgress?.last_heartbeat_at) {
+    return null;
+  }
+  if (outbox.axis === "active") {
+    return localDeviceProgress.last_heartbeat_at;
+  }
+  if (
+    outbox.axis === "idle" &&
+    localDeviceProgress.last_heartbeat_status === "healthy" &&
+    (localDeviceProgress.records_pending == null || localDeviceProgress.records_pending === 0)
+  ) {
+    return localDeviceProgress.last_heartbeat_at;
+  }
+  return null;
 }
 
 /**
@@ -3319,13 +3333,11 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   } = input;
   const localDeviceBacked = instance.sourceKind === "local_device";
   const localDeviceProgress = localDeviceBacked ? projectLocalDeviceProgress(outbox.heartbeats) : null;
-  // A heartbeat can satisfy freshness only when it represents a healthy
-  // check with no known local backlog. Active/pending outboxes still show
-  // progress via the outbox axis rather than a false "fresh" claim.
-  const canUseHeartbeatForFreshness =
-    localDeviceProgress?.last_heartbeat_status === "healthy" &&
-    (localDeviceProgress.records_pending == null || localDeviceProgress.records_pending === 0);
-  const freshnessHeartbeatAt = canUseHeartbeatForFreshness ? localDeviceProgress.last_heartbeat_at : null;
+  // Push-mode freshness is device-progress based. An idle, healthy heartbeat
+  // proves current collection; an active outbox proves the collector is checking
+  // in and draining. Stalled/unknown outboxes remain load-bearing and do not get
+  // greened by heartbeat freshness.
+  const freshnessHeartbeatAt = localDeviceFreshnessHeartbeatAt(localDeviceProgress, outbox);
   const freshness = buildConnectorFreshness({
     lastRun,
     lastSuccessfulRun,
