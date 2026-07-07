@@ -7,9 +7,9 @@ Issues identified during design and review that are intentionally out of scope f
 
 This document mixes three kinds of entries, now split into three sections:
 
-- **Open design questions** — genuinely unresolved concerns. The spec should be designed so these can be added later without breaking changes, but no v0.1 design constraint has been adopted yet.
-- **Decided (recorded for history)** — concerns that were raised during design and review and were resolved by adopting an explicit v0.1 design constraint. These are recorded here for the rationale trail, not because they are still open.
-- **Implementation TODOs (v0.2 candidates)** — concrete, scoped work items that don't require resolving a semantic design question first.
+- **Open design questions**: unresolved concerns. The spec should be designed so these can be added later without breaking changes, but no v0.1 design constraint has been adopted yet.
+- **Decided (recorded for history)**: concerns that were raised during design and review and were resolved by adopting an explicit v0.1 design constraint. These are recorded here for the rationale trail, not because they are still open.
+- **Implementation TODOs (v0.2 candidates)**: concrete, scoped work items that don't require resolving a semantic design question first.
 
 Dated batch attributions (`Newly deferred (...)`, `Finding (Codex)`, `Finding (Gemini)`, etc.) are preserved inside each entry as originally written.
 
@@ -136,7 +136,7 @@ _Newly deferred (2026-04-06)._
 
 ### Privacy-hostile defaults
 
-_Historical corrections (mostly resolved) — the main still-live issue from the March 2026 review pass._
+_Historical corrections (mostly resolved): the main still-live issue from the March 2026 review pass._
 
 Many of the March 2026 naming and semantic-precision corrections identified during early review have since been incorporated into the live v0.1 draft: URI-based `type`, `connector_id`, `access_mode`, inclusive/exclusive `time_range`, START `state` as a per-stream map, `StreamRequest`/`StreamGrant` separation for `necessity`, compound-key ordering, and field-allowlist behavior.
 
@@ -161,7 +161,7 @@ These concerns were raised during design and review and were resolved by adoptin
 
 ### Grant identity and trust
 
-_Previously deferred (carried forward) — concerns that constrain semantic choices._
+_Previously deferred (carried forward): concerns that constrain semantic choices._
 
 **Finding (Codex):** The grant has no `issuer`, `subject`, `audience`, or signature. Without these, grants can be forged, replayed, or misrouted.
 
@@ -174,7 +174,7 @@ _Previously deferred (carried forward) — concerns that constrain semantic choi
 
 ### Wildcard consent expansion (`streams: [{ "name": "*" }]`)
 
-_Previously deferred (carried forward) — concerns that constrain semantic choices._
+_Previously deferred (carried forward): concerns that constrain semantic choices._
 
 **Finding (Codex):** A wildcard consent can be misread as a live pointer that grows with future manifest changes. That would make a grant silently widen over time.
 
@@ -184,7 +184,7 @@ _Previously deferred (carried forward) — concerns that constrain semantic choi
 
 ### Purpose declarations and registry evolution
 
-_Previously deferred (carried forward) — concerns that constrain semantic choices._
+_Previously deferred (carried forward): concerns that constrain semantic choices._
 
 **Finding (Codex):** Free-form purpose text alone is not enough for localization, audit, or policy.
 
@@ -194,7 +194,7 @@ _Previously deferred (carried forward) — concerns that constrain semantic choi
 
 ### Retention semantics
 
-_Previously deferred (carried forward) — concerns that constrain semantic choices._
+_Previously deferred (carried forward): concerns that constrain semantic choices._
 
 **Finding (Gemini):** `retention` with `on_expiry: "delete"` is a policy expectation, not a DRM mechanism. There's no enforcement.
 
@@ -206,7 +206,7 @@ _Previously deferred (carried forward) — concerns that constrain semantic choi
 
 _Recorded 2026-07-06; change implemented 2026-04-30._
 
-Earlier drafts of spec-core defined a top-level `connector_id` scalar (and the reference contract a sibling `provider_id`) as the request/grant source-identity field. These were unified into the single discriminated `source: { kind: "connector" | "provider_native", id }` object — a breaking change to the request and grant contract, implemented via the archived OpenSpec change `2026-04-30-unify-source-binding-vocabulary`. The former scalars survive only as the kind-keyed meanings of `source.id`, never as top-level request or grant fields; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request`. The spec-core text was aligned with the implemented contract on 2026-07-06.
+Earlier drafts of spec-core defined a top-level `connector_id` scalar (and the reference contract a sibling `provider_id`) as the request/grant source-identity field. These were unified into the single discriminated `source: { kind: "connector" | "provider_native", id }` object. This was a breaking change to the request and grant contract, implemented via the archived OpenSpec change `2026-04-30-unify-source-binding-vocabulary`. The former scalars survive only as the kind-keyed meanings of `source.id`, never as top-level request or grant fields; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request`. The spec-core text was aligned with the implemented contract on 2026-07-06.
 
 ### Historical corrections (mostly resolved)
 
@@ -224,7 +224,7 @@ These are concrete, scoped work items. The semantic spec doesn't need to change 
 
 ### Grant signing and transport
 
-_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
+_Previously deferred (carried forward): concerns that affect implementation but not semantics._
 
 - JWS/JWT signed grants
 - PAR (Pushed Authorization Requests) for large authorization_details
@@ -235,7 +235,7 @@ _Previously deferred (carried forward) — concerns that affect implementation b
 
 ### Browser capability protocol
 
-_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
+_Previously deferred (carried forward): concerns that affect implementation but not semantics._
 
 **Finding (Gemini):** The BROWSER JSONL protocol is too dangerous (script injection) and too small (missing most Playwright features). Suggested alternative: expose a CDP WebSocket URL in the START message and let connectors use standard CDP clients.
 
@@ -247,7 +247,7 @@ _Previously deferred (carried forward) — concerns that affect implementation b
 
 ### Secret handling
 
-_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
+_Previously deferred (carried forward): concerns that affect implementation but not semantics._
 
 - Passwords and OTP codes in HUMAN_RESPONSE should not be logged or persisted
 - Tokens should not be stored in STATE (use a separate encrypted runtime store)
@@ -257,7 +257,7 @@ _Previously deferred (carried forward) — concerns that affect implementation b
 
 ### Stream dependencies and binary data
 
-_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
+_Previously deferred (carried forward): concerns that affect implementation but not semantics._
 
 **Finding (Codex):** Personal data is often graphs + binaries (conversations→messages→attachments, albums→photos). No stream dependency model, no blob/file transport.
 
@@ -269,7 +269,7 @@ _Previously deferred (carried forward) — concerns that affect implementation b
 
 ### Mid-run cancellation
 
-_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
+_Previously deferred (carried forward): concerns that affect implementation but not semantics._
 
 **Finding (Gemini):** No way to cancel a running collection (e.g., on grant revocation). Need a CANCEL message.
 
@@ -277,7 +277,7 @@ _Previously deferred (carried forward) — concerns that affect implementation b
 
 ### Record-level errors
 
-_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
+_Previously deferred (carried forward): concerns that affect implementation but not semantics._
 
 **Finding (Gemini):** No way to report partial failures (1 of 1000 records failed). Currently all-or-nothing.
 

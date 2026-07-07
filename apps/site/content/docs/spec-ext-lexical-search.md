@@ -17,13 +17,13 @@ Companion to the Personal Data Portability Protocol (PDPP) core spec. This is an
 
 ## 1. Scope
 
-This profile defines an optional lexical (full-text) search capability exposed at `GET /v1/search`: its capability advertisement, request surface, response envelope, grant-enforcement obligations, and error and recall-disclosure semantics. It defines lexical matching only — a discoverable, keyword-oriented search over stream-declared searchable text fields.
+This profile defines an optional lexical (full-text) search capability exposed at `GET /v1/search`: its capability advertisement, request surface, response envelope, grant-enforcement obligations, and error and recall-disclosure semantics. It defines lexical matching only: a discoverable, keyword-oriented search over stream-declared searchable text fields.
 
 Core's exclusion of full-text search from the v0.1 base query surface is **unchanged**. This profile is additive and optional: a resource server that does not advertise `capabilities.lexical_retrieval.supported: true` is fully Core-conformant and MAY return `404` / `not_found` for `GET /v1/search`. A grant issued under Core authorizes exactly what Core Sections 6 and 8 define; this profile does not widen that authorization. It does **not** define semantic/vector retrieval, ranking-control parameters, a portable numeric relevance score, a generic predicate DSL, or connector-specific search semantics; those are out of scope and, if requested, MUST be rejected (§5).
 
 ## 2. Capability advertisement
 
-A resource server that exposes this profile MUST publish a `capabilities.lexical_retrieval` object inside its existing resource-server metadata document (the same document used to publish OAuth-shaped metadata). The advertisement describes only global facts about the extension; it MUST NOT enumerate per-stream searchable fields and MUST NOT require a bearer token to read. Lexical search is advertised in the top-level `capabilities` object because it is a server-scoped capability — one endpoint spanning streams; stream-scoped capabilities (such as aggregation, whose available operations and fields depend on each stream's declared schema) are instead advertised in that stream's metadata under `query`.
+A resource server that exposes this profile MUST publish a `capabilities.lexical_retrieval` object inside its existing resource-server metadata document (the same document used to publish OAuth-shaped metadata). The advertisement describes only global facts about the extension; it MUST NOT enumerate per-stream searchable fields and MUST NOT require a bearer token to read. Lexical search is advertised in the top-level `capabilities` object because it is a server-scoped capability (one endpoint spanning streams); stream-scoped capabilities (such as aggregation, whose available operations and fields depend on each stream's declared schema) are instead advertised in that stream's metadata under `query`.
 
 ```json
 {
@@ -67,7 +67,7 @@ Lexical-only search over the caller's grant. The endpoint returns a list envelop
 | Parameter | Type | Requirement |
 |-----------|------|-------------|
 | `q` | string | REQUIRED. The lexical query. A request without `q` MUST be rejected with `invalid_request`. |
-| `streams[]` | string (repeatable) | OPTIONAL. Narrows the search to the named streams. When omitted, the server MUST search every stream the caller may search (across every owner-visible connector for owner-token callers). For client tokens, an entry naming a stream outside the grant MUST be rejected with `grant_stream_not_allowed`; for owner tokens, `streams[]` is a soft filter — naming a stream no owner-visible connector exposes yields zero hits, not an error. |
+| `streams[]` | string (repeatable) | OPTIONAL. Narrows the search to the named streams. When omitted, the server MUST search every stream the caller may search (across every owner-visible connector for owner-token callers). For client tokens, an entry naming a stream outside the grant MUST be rejected with `grant_stream_not_allowed`; for owner tokens, `streams[]` is a soft filter: naming a stream no owner-visible connector exposes yields zero hits, not an error. |
 | `limit` | integer | OPTIONAL. Page size. MUST NOT exceed the advertised `max_limit`; when omitted, the server applies `default_limit`. |
 | `cursor` | string (opaque) | OPTIONAL. A `next_cursor` returned by a prior page, passed back verbatim. The server MUST treat it as opaque. Search cursors MUST NOT be reused as record-list or `changes_since` cursors. |
 
