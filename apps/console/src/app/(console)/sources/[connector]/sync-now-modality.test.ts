@@ -55,7 +55,8 @@ const STATIC_SECRET_CAPTURE_RESOLVED_ONCE =
   /const staticSecretCapture = staticSecretCredentialCaptureFromManifest\(manifest\)/;
 const STATIC_SECRET_UPDATE_PRECEDES_BROWSER_SESSION =
   /if \(staticSecretCapture !== null\) \{[\s\S]{0,180}return updateCredentialHref\(connectorId, connectorInstanceId \?\? connectionId\);[\s\S]{0,180}if \(isBrowserBoundConnector\(connectorId\)\) \{/;
-const STATIC_SECRET_UPDATE_CAPABILITY_PASSED = /hasStaticSecretCredentialUpdate=\{staticSecretCapture !== null\}/;
+const STATIC_SECRET_UPDATE_CAPABILITY_PASSED =
+  /hasStaticSecretCredentialUpdate=\{staticSecretCapture !== null && !sessionBound\}/;
 const STATIC_SECRET_UPDATE_LINK_VISIBLE = /credentialUpdateHref && !revoked && hasStaticSecretCredentialUpdate/;
 const NON_SYNC_NOTICE = /return <PrimaryActionNotice action=\{primaryAction\} \/>/;
 const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;
@@ -64,6 +65,14 @@ const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;
 const SYNC_HINT_GATED_RE =
   /if \(action\.kind === "sync"\) \{\s*return `No records for this connector yet\. \$\{syncIdleLabel\}/;
 const EMPTY_STREAMS_HINT_RECEIVES_IDLE_LABEL = /emptyStreamsHint\(primaryAction, syncIdleLabel\)/;
+const SYNC_BUTTON_FILE = `${HERE}sync-now-button.tsx`;
+const SYNC_BUTTON_NO_OPTIMISTIC_RUNNING = /optimisticRunning/;
+const SYNC_BUTTON_PENDING_LABEL = /else if \(isPending\) \{\s*buttonLabel = "Starting…";\s*\}/;
+const SYNC_BUTTON_SUCCESS_TOAST =
+  /setToast\(\{\s*message: "Sync started\.",\s*runHref: res\.run_id \? `\/syncs\/\$\{encodeURIComponent\(res\.run_id\)\}` : undefined,\s*tone: "info",\s*\}\)/;
+const SYNC_BUTTON_RUN_LINK =
+  /<Link className="underline underline-offset-2" href=\{toast\.runHref\}>[\s\S]{0,80}Open sync/;
+const SYNC_BUTTON_LONGER_TOAST_TTL = /const TOAST_TTL_MS = 15_000/;
 
 test("detail page imports the shared primary-action classifier", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -145,4 +154,13 @@ test("the empty-streams hint gates Sync now copy on the owner-runnable branch", 
   // failed first attempts do not fall back to stale first-run copy.
   assert.match(src, SYNC_HINT_GATED_RE);
   assert.match(src, EMPTY_STREAMS_HINT_RECEIVES_IDLE_LABEL);
+});
+
+test("detail Sync now acknowledges accepted starts without stale optimistic running state", async () => {
+  const src = await readFile(SYNC_BUTTON_FILE, "utf8");
+  assert.doesNotMatch(src, SYNC_BUTTON_NO_OPTIMISTIC_RUNNING);
+  assert.match(src, SYNC_BUTTON_PENDING_LABEL);
+  assert.match(src, SYNC_BUTTON_SUCCESS_TOAST);
+  assert.match(src, SYNC_BUTTON_RUN_LINK);
+  assert.match(src, SYNC_BUTTON_LONGER_TOAST_TTL);
 });

@@ -1,12 +1,14 @@
 "use client";
 
 import { IcButton } from "@pdpp/brand-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { syncStartFailureLead } from "../../lib/connection-evidence.ts";
 import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
 
 const RUNNING_POLL_MS = 3000;
+const TOAST_TTL_MS = 15_000;
 
 function syncToastToneClass(tone: "info" | "error" | "warning"): string {
   if (tone === "error") {
@@ -30,6 +32,12 @@ interface Props {
   variant?: "default" | "destructive" | "outline";
 }
 
+interface SyncToast {
+  message: string;
+  runHref?: string;
+  tone: "info" | "error" | "warning";
+}
+
 // operator-ui's "outline" weight maps to Ink Carbon's "ghost".
 type IcButtonVariant = "default" | "destructive" | "ghost";
 function toIcVariant(v: "default" | "destructive" | "outline"): IcButtonVariant {
@@ -49,10 +57,15 @@ export function SyncNowButton({
 }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const [optimisticRunning, setOptimisticRunning] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
-  const [toastTone, setToastTone] = useState<"info" | "error" | "warning">("info");
-  const running = initialRunning || optimisticRunning;
+  const [toast, setToast] = useState<SyncToast | null>(null);
+  const running = initialRunning;
+  const busy = running || isPending;
+  let buttonLabel = idleLabel;
+  if (running) {
+    buttonLabel = runningLabel;
+  } else if (isPending) {
+    buttonLabel = "Starting…";
+  }
 
   // Poll while running so the detail page auto-updates when the run
   // terminates — matches the index row's behavior.
@@ -65,61 +78,68 @@ export function SyncNowButton({
   }, [running, router]);
 
   useEffect(() => {
-    if (optimisticRunning && initialRunning) {
-      setOptimisticRunning(false);
-    }
-  }, [initialRunning, optimisticRunning]);
-
-  useEffect(() => {
     if (!toast) {
       return;
     }
-    const id = setTimeout(() => setToast(null), 5000);
+    const id = setTimeout(() => setToast(null), TOAST_TTL_MS);
     return () => clearTimeout(id);
   }, [toast]);
 
   const handleClick = useCallback(() => {
     setToast(null);
-    setOptimisticRunning(true);
     startTransition(async () => {
       const res: RunNowResult = await runConnectorNowAction(connectorId, connectionId, { force });
       if (res.ok === true) {
+        setToast({
+          message: "Sync started.",
+          runHref: res.run_id ? `/syncs/${encodeURIComponent(res.run_id)}` : undefined,
+          tone: "info",
+        });
         router.refresh();
         return;
       }
-      setOptimisticRunning(false);
       if (res.reason === "already_running") {
-        setToastTone("info");
-        setToast("A sync is already in progress.");
+        setToast({
+          message: "A sync is already in progress.",
+          runHref: res.run_id ? `/syncs/${encodeURIComponent(res.run_id)}` : undefined,
+          tone: "info",
+        });
         router.refresh();
         return;
       }
       // Stay on this connection and say whether the request reached the server.
-      setToastTone(res.phase === "before_server" ? "warning" : "error");
-      setToast(`${syncStartFailureLead(res.phase)} ${res.message}`.trim());
+      setToast({
+        message: `${syncStartFailureLead(res.phase)} ${res.message}`.trim(),
+        tone: res.phase === "before_server" ? "warning" : "error",
+      });
     });
   }, [connectionId, connectorId, force, router]);
 
   return (
     <div className="flex flex-col items-end gap-1">
       <IcButton
-        aria-label={running ? `${runningLabel} for ${displayName}` : `${idleLabel} for ${displayName}`}
-        disabled={running || isPending}
+        aria-label={`${buttonLabel} for ${displayName}`}
+        disabled={busy}
         onClick={handleClick}
         size="sm"
         title={title}
         variant={toIcVariant(variant)}
       >
-        {running ? runningLabel : idleLabel}
+        {buttonLabel}
       </IcButton>
       {toast ? (
         <span
           aria-live="polite"
-          className={`pdpp-caption max-w-[18rem] text-right ${syncToastToneClass(toastTone)}`}
-          data-toast-tone={toastTone}
+          className={`pdpp-caption max-w-[18rem] text-right ${syncToastToneClass(toast.tone)}`}
+          data-toast-tone={toast.tone}
           role="status"
         >
-          {toast}
+          {toast.message}{" "}
+          {toast.runHref ? (
+            <Link className="underline underline-offset-2" href={toast.runHref}>
+              Open sync
+            </Link>
+          ) : null}
         </span>
       ) : null}
     </div>
