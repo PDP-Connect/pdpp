@@ -122,6 +122,8 @@ const CHASE_QFX_FILE_TYPE_COMBOBOX_NAME_RE = /file type/i;
 const CHASE_QFX_ACTIVITY_COMBOBOX_NAME_RE = /activity/i;
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
+export const CHASE_CURRENT_ACTIVITY_ROW_SELECTOR =
+  'tr.mds-activity-table__row[data-values], tr[id*="activity" i][data-values]';
 export const CHASE_QFX_ACTIVITY_SELECT_SELECTORS = [
   "#downloadActivityOptionId",
   "#select-downloadActivityOptionId",
@@ -149,6 +151,15 @@ interface NoActivityConfirmation {
 }
 
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
+
+interface CurrentActivitySnapshotPage {
+  content: () => Promise<string>;
+  locator: (selector: string) => {
+    first: () => {
+      waitFor: (options: { state: "attached"; timeout: number }) => Promise<unknown>;
+    };
+  };
+}
 
 async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
   // Navigate to dashboard overview — not the generic /dashboard URL which
@@ -182,6 +193,22 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
   } catch {
     return [];
   }
+}
+
+export async function snapshotDashboardHtmlForCurrentActivity(
+  page: CurrentActivitySnapshotPage
+): Promise<{ html: string; rowSurfaceReady: boolean }> {
+  const rowSurfaceReady = await page
+    .locator(CHASE_CURRENT_ACTIVITY_ROW_SELECTOR)
+    .first()
+    .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
+    .then(
+      () => true,
+      () => false
+    );
+
+  const html = await page.content().catch((): string => "");
+  return { html, rowSurfaceReady };
 }
 
 // ─── QFX download click-path ──────────────────────────────────────────────
@@ -2265,8 +2292,11 @@ if (isMainModule(import.meta.url)) {
         // the bytes here so current_activity can be parsed even when later
         // phases (downloads, statements) leave the page elsewhere.
         const dashboardHtmlForCurrentActivity = deps.wantsCurrentActivity
-          ? await page.content().catch((): string => "")
-          : "";
+          ? await snapshotDashboardHtmlForCurrentActivity(page)
+          : { html: "", rowSurfaceReady: false };
+        if (deps.wantsCurrentActivity && !dashboardHtmlForCurrentActivity.rowSurfaceReady) {
+          await progress("Chase dashboard recent-activity rows did not appear before snapshot");
+        }
 
         await progress(`Found ${accounts.length} account(s)`);
 
@@ -2289,7 +2319,7 @@ if (isMainModule(import.meta.url)) {
         }
 
         if (deps.wantsCurrentActivity) {
-          await runCurrentActivity(deps, dashboardHtmlForCurrentActivity, filteredAccounts);
+          await runCurrentActivity(deps, dashboardHtmlForCurrentActivity.html, filteredAccounts);
         }
 
         // Statements: navigate to Statements & Documents, enumerate rows,

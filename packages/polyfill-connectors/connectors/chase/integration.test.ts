@@ -49,6 +49,7 @@ import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  CHASE_CURRENT_ACTIVITY_ROW_SELECTOR,
   CHASE_QFX_ACTIVITY_SELECT_SELECTOR,
   CHASE_QFX_ACTIVITY_SELECT_SELECTORS,
   CHASE_QFX_FILE_TYPE_SELECT_SELECTOR,
@@ -65,6 +66,7 @@ import {
   isLikelyChaseQfxResponse,
   isLikelyPdfResponseBody,
   runCurrentActivity,
+  snapshotDashboardHtmlForCurrentActivity,
   statementRowOutsideTimeRange,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -670,4 +672,61 @@ test("runCurrentActivity: single account + broken-surface HTML → selectors_pen
     1,
     "diagnostics carry only non-PII account count"
   );
+});
+
+test("snapshotDashboardHtmlForCurrentActivity: waits for recent-activity rows before reading HTML", async () => {
+  let waited = false;
+  let contentReadAfterWait = false;
+  const page = {
+    locator(selector: string) {
+      assert.equal(selector, CHASE_CURRENT_ACTIVITY_ROW_SELECTOR);
+      return {
+        first() {
+          return {
+            waitFor(options: { state: string; timeout: number }) {
+              assert.equal(options.state, "attached");
+              assert.ok(options.timeout > 0);
+              waited = true;
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+    content() {
+      contentReadAfterWait = waited;
+      return Promise.resolve(readFileSync(join(FIXTURE_DIR, "current-activity-dashboard-overview-real.html"), "utf8"));
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page);
+
+  assert.equal(snapshot.rowSurfaceReady, true);
+  assert.equal(contentReadAfterWait, true, "dashboard HTML must be read only after the row-surface wait resolves");
+  assert.match(snapshot.html, /mds-activity-table__row/);
+});
+
+test("snapshotDashboardHtmlForCurrentActivity: falls through when recent-activity rows never appear", async () => {
+  const page = {
+    locator(selector: string) {
+      assert.equal(selector, CHASE_CURRENT_ACTIVITY_ROW_SELECTOR);
+      return {
+        first() {
+          return {
+            waitFor() {
+              return Promise.reject(new Error("timeout waiting for recent activity rows"));
+            },
+          };
+        },
+      };
+    },
+    content() {
+      return Promise.resolve(readFileSync(join(FIXTURE_DIR, "current-activity-download-form-no-rows.html"), "utf8"));
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page);
+
+  assert.equal(snapshot.rowSurfaceReady, false);
+  assert.match(snapshot.html, /Download account activity/);
 });
