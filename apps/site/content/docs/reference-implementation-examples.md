@@ -20,9 +20,7 @@ Two boundaries matter when reading them:
 - Client requests are staged through `POST /oauth/par`, then approved through the current consent shell at `GET /consent?request_uri=...` and `POST /consent/approve`.
 - Owner self-export is a separate OAuth device flow using `POST /oauth/device_authorization`, `POST /device/approve`, and `POST /oauth/token`.
 
-Two things remain deliberately out of scope in these examples:
-
-- a generic third-party authorization-code redirect flow
+Deliberately out of scope in these examples: a generic third-party authorization-code redirect flow.
 
 The current reference proves request staging, public-client self-registration, consent, issued grants, owner self-export, and honest native-versus-polyfill source identity.
 
@@ -54,7 +52,7 @@ Content-Type: application/json
       "purpose_code": "https://longview.example/purpose/career-move-planning",
       "purpose_description": "Compare salary, equity, benefits, and tax tradeoffs before a career move",
       "access_mode": "continuous",
-      "retention": { "duration": "P90D", "on_expiry": "delete" },
+      "retention": { "max_duration": "P90D", "on_expiry": "delete" },
       "streams": [
         { "name": "pay_statements", "necessity": "required", "view": "summary" },
         { "name": "equity_grants", "necessity": "required", "view": "summary" },
@@ -255,7 +253,7 @@ Reference response:
 Native owner reads use the provider-native source:
 
 ```bash
-pdpp owner export pay_statements --rs-url http://localhost:7762 --owner-token 1b9b...
+pdpp owner export pay_statements --rs-url http://localhost:7762 --token 1b9b...
 ```
 
 Polyfill owner reads are different:
@@ -276,14 +274,14 @@ That split is intentional. The reference implementation is proving one engine su
 - native provider access identified with `source.kind = "provider_native"`
 - polyfill access identified with `source.kind = "connector"`
 
-## Example 4: Token introspection — verify an issued token and read its grant
+## Example 4: Token introspection
 
 The AS exposes RFC 7662-style token introspection at `POST /introspect` with PDPP
 extensions. The RS uses this endpoint internally to authorize every request; third
 parties (e.g., an RS operator building a proxy layer) can call it directly.
 
 `grant_storage_binding` is the one internal field the AS redacts before returning
-the response — the public envelope never exposes storage-layer connector ids.
+the response. The public envelope never exposes storage-layer connector ids.
 
 ### Step 1: Introspect a live client token
 
@@ -337,17 +335,17 @@ PDPP extension fields in the response:
 | --- | --- |
 | `pdpp_token_kind` | `"client"` for grant-scoped tokens, `"owner"` for owner self-export tokens, `"mcp_package"` for MCP grant-package tokens |
 | `grant_id` | The grant that backs this token (client tokens only) |
-| `grant` | Full persisted grant object — source, streams, access_mode, purpose |
+| `grant` | Full persisted grant object (source, streams, access_mode, purpose) |
 | `subject_id` | The data owner who approved the grant |
 | `exp` | Unix timestamp at which the token expires (null if no expiry) |
 | `trace_id` | Audit trace id from the original consent ceremony; null if none |
 | `scenario_id` | Test/scenario tag when present; null in production flows |
 
-### Step 2: Token inactive — grant revoked
+### Step 2: Token inactive (grant revoked)
 
 When the underlying grant is revoked (or the token has expired), introspection
 returns `active: false` with a typed reason. Note that a **consumed** `single_use`
-grant does *not* flip its already-issued token to inactive — consumption blocks
+grant does *not* flip its already-issued token to inactive: consumption blocks
 new token issuance, not the existing token (see Example 6). Introspection returns
 `active: false` with a typed reason in these cases:
 
@@ -370,11 +368,12 @@ Possible `inactive_reason` values:
 | `token_revoked` | Token itself was revoked (owner tokens) |
 | `token_expired` | Owner/mcp_package token past expiry |
 | `grant_invalid` | Grant's persisted state no longer matches the registered manifest contract |
+| `package_revoked` | MCP grant package was revoked; its package tokens are inactive |
 
 ### Step 3: Introspect an MCP grant-package token
 
-MCP grant-package tokens return a different active shape — `grant_package_id`
-instead of `grant_id`, and a `package` object instead of `grant`:
+MCP grant-package tokens return a different active shape: `grant_package_id`
+instead of `grant_id`, and a `package` object instead of `grant`.
 
 ```json
 {
@@ -399,8 +398,9 @@ instead of `grant_id`, and a `package` object instead of `grant`:
 
 `resources[]` on a stream scopes a grant to specific record keys, implementing
 RFC 8707-style resource indicators at the record level. The RS enforces the list
-as a SQL `WHERE record_key IN (...)` predicate — records not in the list return
-`blob_not_found` or are simply absent from query results. This is how a client
+as a SQL `WHERE record_key IN (...)` predicate. Records outside the list are
+absent from list results and return `not_found` on direct fetch; a blob
+referenced only by an out-of-scope record returns `blob_not_found`. This is how a client
 requesting "just these three invoices" can receive a narrower grant than one
 requesting an entire stream.
 
@@ -426,7 +426,7 @@ curl -sX POST "$AS_URL/oauth/par" \
   }' | jq -r .request_uri
 ```
 
-### Step 2: Owner approves — grant has resources[] embedded
+### Step 2: Owner approval embeds resources[] in the grant
 
 ```bash
 APPROVED=$(curl -sX POST "$AS_URL/consent/approve" \
@@ -447,7 +447,7 @@ The issued grant embeds `resources` on the stream:
 }
 ```
 
-### Step 3: RS enforces the resources[] list — only those records are visible
+### Step 3: RS enforces the resources[] list: only those records are visible
 
 ```bash
 curl -s "$RS_URL/v1/streams/top_artists/records" \
@@ -507,9 +507,9 @@ APPROVED=$(curl -sX POST "$AS_URL/consent/approve" \
 TOKEN=$(echo "$APPROVED" | jq -r .token)
 ```
 
-The issued grant carries `access_mode: "single_use"` and — unlike a continuous
-grant, whose `expires_at` may be null — always a bounded `expires_at` (the
-reference default is 24h from issuance):
+The issued grant carries `access_mode: "single_use"` and (unlike a continuous
+grant, whose `expires_at` may be null) always a bounded `expires_at`; the
+reference default is 24h from issuance:
 
 ```json
 {
@@ -536,10 +536,10 @@ reference default is 24h from issuance):
 }
 ```
 
-### Step 3: The issued token still serves queries — consumption is not revocation
+### Step 3: The issued token still serves queries (consumption is not revocation)
 
 Consumption applies to **new token issuance**, not to the already-issued token.
-The token works for as many reads as the client needs until it expires —
+The token works for as many reads as the client needs until it expires:
 `single_use` bounds how many tokens a grant mints, not how many queries one token
 may perform.
 
@@ -565,8 +565,8 @@ already consumed (the `grant` object reports `access_mode: "single_use"`):
 ### Step 4: A second token issuance is refused with `grant_consumed`
 
 The grant was marked consumed atomically on the first issuance. Whichever HTTP
-re-issuance path a client reaches for next — an OAuth `refresh_token` exchange at
-`POST /oauth/token`, or a device re-exchange — bottoms out in the same internal
+re-issuance path a client reaches for next (an OAuth `refresh_token` exchange at
+`POST /oauth/token`, or a device re-exchange) bottoms out in the same internal
 `issueToken` primitive, which refuses a consumed `single_use` grant:
 
 ```text
@@ -576,7 +576,7 @@ issueToken(grant_id="grt_18146807dc63d26c", …)
 ```
 
 A `continuous` grant under the identical sequence mints a second token and keeps
-serving — that contrast is the control test in the B6 suite. Single-use grants
+serving. That contrast is the control test in the B6 suite. Single-use grants
 additionally persist **no STATE**: the runtime refuses to attach grant-scoped sync
 state to a `single_use` grant (`test/pdpp.test.js`, "grant-scoped polyfill state
 rejects single_use grants"), so a one-time run leaves no resumable cursor behind.
@@ -601,7 +601,7 @@ requester identity metadata used to identify *who is asking*, not a grant
 constraint. It is **entity-scoped** and appears at the **top level** of the
 authorization request, outside `authorization_details`. `client_claims`, by
 contrast, is **request-scoped** and lives **inside** each `authorization_details`
-entry — a client may make different commitments for different requests. Inline
+entry: a client may make different commitments for different requests. Inline
 `client_display` values are client-asserted; the AS renders identity under its
 own resolution and trust policy (local registration → trust registry → validated
 software statement → inline → `client_id` fallback).

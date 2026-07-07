@@ -49,12 +49,11 @@ metadata:
 npx -y @pdpp/cli connect <provider-url>
 ```
 
-This remains prelaunch 0.x software, but `pdpp_agent_discovery.cli.no_owner_token` is
-`true` when the reference AS token-completion path supports owner-approved
-scoped handoff without an owner bearer token. Treat the command as the
-no-owner-token connect flow while that metadata flag is true.
+The `pdpp_agent_discovery.cli.no_owner_token` flag is `true` when the reference
+AS supports owner-approved scoped handoff without an owner bearer token; while
+it is true, the command above is the no-owner-token connect flow.
 
-The reference dashboard also shows reference operator diagnostics such as
+The operator console also shows reference diagnostics such as
 `pdpp ref run timeline <run-id>`, `pdpp ref grant timeline <grant-id>`, and
 `pdpp ref trace show <trace-id>`. These use the `pdpp ref` namespace from the
 same `@pdpp/cli` package (`npx -y @pdpp/cli --help`) and inspect `_ref`
@@ -108,7 +107,7 @@ The staged request is reviewed through:
 - `POST /consent/approve`
 - `POST /consent/deny`
 
-The current reference approval surface returns the issued grant and client bearer token directly. It is a deliberate reference shortcut, not a full generic authorization-code profile.
+Approval returns the issued grant and client bearer token directly (the reference shortcut noted under Client request start).
 
 ### Owner self-export
 
@@ -123,10 +122,10 @@ That flow yields an **owner bearer token** for self-export and direct owner quer
 
 Trusted local owner agents use a separate reference onboarding path rather than
 copying raw owner bearers into chat. Start from the resource-server entrypoint
-with `pdpp owner-agent onboard <entrypoint> --credential-file ~/applications/daisy/.pi/agent/pdpp-owner-agent.json`,
-approve in the browser, and verify with `pdpp owner-agent status`. This is
-reference REST/control-plane behavior; ordinary agents should use scoped grants
-or grant-scoped MCP.
+with `pdpp owner-agent onboard <entrypoint>` (credentials are stored at
+`~/.pdpp/owner-agents/<host>.json` by default), approve in the browser, and
+verify with `pdpp owner-agent status`. This is reference control-plane
+behavior; ordinary agents should use scoped grants or grant-scoped MCP.
 
 ### Error envelopes
 
@@ -151,7 +150,7 @@ through Transformers.js. Operators can switch to `multilingual-minilm` for
 Italian or mixed-language data without adding public `model=` or `embedding=`
 request parameters.
 
-The operator surface at `/dashboard/deployment` shows the active semantic
+The operator console's `/deployment` page shows the active semantic
 backend, model, dimensions, distance metric, language bias, vector-index kind,
 index state, model-cache state, and every participating
 `(connector, stream, field)` tuple. It is the first place to check when semantic

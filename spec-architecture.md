@@ -1,179 +1,162 @@
 # System Architecture: How the Spec Components Relate
 
 Status: Informative
-Date: 2026-04-11
+Date: 2026-07-07
 
 ## Components
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
 │                         User                                  │
-│  (owns data, grants access, may revoke)                       │
+│  (owns data, approves grants, may revoke)                     │
 └──────────┬───────────────────────────────┬────────────────────┘
-           │ consents                     │ collects via CLI
-           ▼                              ▼
+           │ consents                      │ operates
+           ▼                               ▼
 ┌─────────────────────┐       ┌─────────────────────────┐
-│   App / AI Agent    │       │   Connector Runtime     │
+│  Client             │       │   Connector Runtime     │
+│  (app or AI agent)  │       │   (Collection Profile)  │
 │                     │       │                         │
-│ Requests data via   │       │ Runs connectors using   │
-│ selection request   │       │ the run protocol:       │
-│ (RFC 9396)          │       │ START → RECORD/STATE/   │
-│                     │       │ INTERACTION → DONE      │
-│ Receives data from  │       │                         │
-│ personal server     │       │ Writes records to       │
-│ filtered by grant   │       │ personal server         │
+│ Sends selection     │       │ Runs polyfill           │
+│ request (RFC 9396   │       │ connectors:             │
+│ authorization_      │       │ START → RECORD/STATE/   │
+│ details with a      │       │ INTERACTION → DONE      │
+│ source binding)     │       │                         │
+│                     │       │ Writes records to the   │
+│ Uses the access     │       │ personal server         │
+│ token bound to the  │       │ (owner-authenticated    │
+│ issued grant        │       │ ingest)                 │
 └────────┬────────────┘       └───────────┬─────────────┘
-         │                                │
-         │ presents grant                 │ RECORD messages
-         │ + selection params             │
+         │ access token                   │ RECORD messages
          ▼                                ▼
 ┌───────────────────────────────────────────────────────────────┐
-│                    Personal Server                            │
+│              Personal Server (AS + RS roles co-located)       │
 │                                                               │
 │  Stores:                                                      │
 │  - Records (flat relational streams)                          │
-│  - State (per-stream cursors for incremental sync)            │
-│  - Grants (issued, active, expired, revoked)                  │
+│  - Sync state (per-stream cursors for incremental sync)       │
+│  - Grants (issued; lifecycle tracked by the AS)               │
 │  - Connector manifests (registered connectors + versions)     │
 │                                                               │
-│  Enforces:                                                    │
-│  - Grant parameters (streams, time_range, fields, limit)      │
-│  - Grant expiry and revocation                                │
-│  - Selection validation against manifest                      │
+│  Enforces on every request:                                   │
+│  - Grant parameters (streams, fields, time_range, resources)  │
+│  - Grant expiry and revocation (via token introspection)      │
+│  - Selection validation against the manifest at issuance      │
 │                                                               │
 │  Serves:                                                      │
-│  - Records to apps, filtered by grant                         │
-│  - Records to connector runtime (state for incremental sync)  │
+│  - Records to clients, filtered by grant (access token)       │
+│  - Owner self-export via the same query endpoints             │
+│    (owner token)                                              │
 │                                                               │
 │  Accepts:                                                     │
-│  - Records from connector runtime (collection results)        │
-│  - Records from webhooks (future)                             │
-│  - Grant creation/revocation requests                         │
-└───────────────────────────────────────────────────────────────┘
-         │
-         │ collects from
-         ▼
+│  - Records from the connector runtime (Collection Profile     │
+│    ingest)                                                    │
+│  - Grant initiation and revocation requests                   │
+└──────────────────────────┬────────────────────────────────────┘
+                           │ collects from (polyfill path)
+                           ▼
 ┌───────────────────────────────────────────────────────────────┐
 │                    Data Sources                               │
 │                                                               │
-│  Spotify, ChatGPT, Instagram, Uber, Oura, GitHub, ...         │
+│  Addressed by the grant's source binding:                     │
+│  source: { kind: "connector" | "provider_native", id }        │
 │                                                               │
-│  Accessed via:                                                │
-│  - Browser automation (scraping, current connectors)          │
-│  - Official APIs (Spotify API, future DMA portability APIs)   │
-│  - Webhooks (Shopify, GitHub — future)                        │
-│  - File import (Timelinize, data exports — future)            │
+│  - kind "connector": a polyfill connector bridges a platform  │
+│    that does not speak PDPP (browser automation, official     │
+│    APIs, file import)                                         │
+│  - kind "provider_native": the platform hosts its own         │
+│    PDPP-speaking AS + RS and serves records directly; no      │
+│    connector runtime involved                                 │
 └───────────────────────────────────────────────────────────────┘
 ```
 
+The reference also exposes an MCP surface for agent hosts. Agent access through it uses grant packages with the reference-defined `mcp_package` token kind; Core defines the `owner` and `client` kinds, and unrecognized kinds are unauthorized for Core operations (spec-core Section 8).
+
 ## Flows
 
-### Flow A: App requests data (pre-collected)
+### Flow A: client requests pre-collected data
 
-Most common flow once a user is onboarded.
+The common flow once data is present.
 
-1. App sends selection request (RFC 9396 `authorization_details`)
-2. User consents → grant is created and stored in personal server
-3. App presents grant to personal server
-4. Personal server queries stored records, filtered by grant parameters
-5. App receives records
+1. Client sends a selection request (RFC 9396 `authorization_details` with a `source` binding)
+2. User consents; the grant is issued and an access token is bound to it
+3. Client queries the resource server with the access token
+4. The resource server serves stored records, filtered by the grant parameters
 
 No connector runs. Data was already collected.
 
-### Flow B: App requests data (needs fresh collection)
+### Flow B: grant-driven collection
 
-When data isn't in the personal server yet, or is stale.
+For `kind: "connector"` sources, collection is a Collection Profile concern, separate from disclosure.
 
-1. App sends selection request
-2. User consents → grant is created
-3. Personal server checks: do I have fresh enough data for this grant?
-4. No → personal server (or user's runtime) triggers a connector run
-5. Connector runtime sends START (portable collection `scope` + state + bindings) to connector
-6. Connector collects data, emits RECORD/STATE messages
-7. Runtime writes records to personal server
-8. Personal server serves records to app, filtered by grant
+1. Client sends a selection request; user consents; the grant is issued
+2. A grant-driven run derives its collection `scope` from the grant as a normalized, non-broadening projection (the connector never receives the raw grant or access token)
+3. The connector emits RECORD/STATE messages; the runtime writes records through owner-authenticated ingest
+4. The resource server serves stored records to the client, filtered by the grant
 
-### Flow C: User proactively collects (CLI / background sync)
+Whether and when a deployment runs collection for a grant is fulfillment policy, not protocol. The resource server reports what it knows through freshness metadata (see Freshness below).
 
-User decides to collect data before any app requests it.
+### Flow C: owner-initiated collection
 
-1. User runs `pdpp collect spotify` (or background scheduler triggers it)
-2. Runtime sends START to connector with an explicit collection `scope` derived from user preferences or local policy (no raw grant)
-3. Connector collects, emits RECORD/STATE
-4. Runtime writes records to personal server
-5. Data is now available for future grants
+The owner collects before any client asks.
 
-### Flow D: Webhook push (future)
+1. The owner starts a run from the operator console, or the scheduler starts one on the configured cadence
+2. The runtime sends START to the connector with a collection `scope` derived from owner configuration (no grant involved)
+3. The connector emits RECORD/STATE; the runtime writes records to the personal server
+4. The data is available to future grants
 
-1. User sets up a webhook subscription with a platform (e.g., GitHub)
-2. Platform sends events to the personal server's webhook endpoint
-3. Personal server normalizes events into records, stores them
-4. Records are available for grants, same as pre-collected data
+### Flow D: webhook push (not implemented)
+
+Event-driven ingestion (a platform pushes events to the personal server) is deferred; see the deferred-concerns register. Nothing in the current reference implements it.
 
 ## What the spec defines vs what it doesn't
 
-| Component | Defined by this spec? | Notes |
+| Component | Defined by the spec? | Notes |
 |-----------|----------------------|-------|
-| Grant object | **Yes** | The parameterized consent artifact |
-| Record model | **Yes** | Streams, schemas, keys, blob_ref, resource_ref |
-| Connector manifest | **Yes** | What a connector produces and requires |
-| Connector run protocol | **Yes** | START/RECORD/STATE/INTERACTION/DONE |
-| Selection request format | **Yes** | RFC 9396 authorization_details |
-| Personal server API (RS query interface) | **Yes** (Core §8) | How apps query records by grant; normatively defined |
+| Grant object | **Yes** | The parameterized consent artifact (Core Section 6) |
+| Record model | **Yes** | Streams, schemas, keys, blob_ref, resource_ref (Core Section 4) |
+| Source binding | **Yes** | `source: { kind, id }` on requests and grants (Core Section 5) |
+| Connector manifest | **Yes** | What a connector produces and requires (Core Section 7) |
+| Connector run protocol | **Yes** | START/RECORD/STATE/INTERACTION/DONE (Collection Profile) |
+| Selection request format | **Yes** | RFC 9396 authorization_details (Core Section 5) |
+| Resource server query interface | **Yes** | How clients query records under a grant (Core Section 8) |
 | Personal server storage | **No** | Implementation choice |
-| Webhook ingestion | **No** | Future extension |
+| Webhook ingestion | **No** | Deferred; see spec-deferred |
+| MCP agent surface | **No** | Reference implementation feature (grant packages) |
 | Consent screen visual design | **No** | Surface-specific; semantic rendering obligations remain in scope |
-| Trust verification | **No** | DTI Trust Registry |
+| Trust registry / connector certification | **No** | Deferred (Core Section 11) |
 
-For the Collection Profile, the standardized `START` message carries a portable collection `scope`: explicit stream targets plus optional `resources`, `time_range`, and `fields`. It does not carry the raw grant or access token. For grant-driven runs, the runtime derives this scope from the grant as a normalized, non-broadening projection and may narrow it further according to local fulfillment policy; for proactive runs, it derives the scope from user preferences or local policy.
+For the Collection Profile, the standardized `START` message carries a portable collection `scope`: explicit stream targets plus optional `resources`, `time_range`, and `fields`. It does not carry the raw grant or access token. For grant-driven runs, the runtime derives this scope from the grant as a normalized, non-broadening projection and may narrow it further according to local fulfillment policy; for owner-initiated runs, it derives the scope from owner configuration or local policy.
 
 ## How connector versioning works
 
-The personal server stores connector manifests. A grant references a specific connector by `connector_id` (a fully qualified URI). The manifest has a `protocol_version` and the connector itself has a version.
+The personal server stores connector manifests. A grant carries a `source` binding; for `kind: "connector"`, `source.id` is the connector identifier as defined by the deployment's connector registry (Core Section 5). The grant also pins `manifest_version`, the version of the source's manifest it was validated against.
 
-**When a connector is updated:**
+When a connector is updated:
 
-1. New manifest is published with a new version
-2. Existing grants continue to work — they reference streams by name, and the stream schemas are what the grant was validated against at consent time
-3. If the new version adds streams: existing grants don't include them (streams were frozen at consent time). New grants can include them.
-4. If the new version removes streams: the personal server still has the old data. Existing grants can still serve it. New collection runs for removed streams will fail; the runtime should handle this gracefully.
-5. If the new version changes a stream schema: this is a breaking change. The personal server may have records in the old schema and the connector now produces records in the new schema. Two approaches:
-   - **Versioned streams**: `spotify.playlists.v1` and `spotify.playlists.v2` are different streams. Grants reference the specific version.
-   - **Schema evolution**: the personal server accepts both old and new shapes, widens types as needed (Fivetran's approach).
+1. A new manifest is published with a new version
+2. Existing grants continue to work: they reference streams by name, and the stream schemas are what the grant was validated against at consent time
+3. If the new version adds streams, existing grants do not include them (streams were frozen at consent time); new grants can
+4. If the new version removes streams, the personal server still has the old data and existing grants can still serve it; new collection runs for removed streams fail, and the runtime should handle that without corrupting state
+5. If the new version changes a stream schema, that is a breaking change. Two approaches: versioned streams (`playlists_v2` as a distinct stream) or schema evolution (the server accepts both shapes and widens types)
 
-For v0.1: the grant stores the `manifest_version` it was validated against. The personal server can detect schema mismatches. The spec recommends additive-only schema changes (new fields are fine, removing or changing fields is breaking).
+The spec recommends additive-only schema changes: new fields are fine; removing or changing fields is breaking (Core Section 7, Versioning).
 
 ## How standing authorization works for AI agents
 
-A grant with `streams: [{ "name": "*" }]` is expanded at consent time into the explicit list of streams from the connector's manifest. This list is frozen in the grant.
+A request with `streams: [{ "name": "*" }]` is expanded at consent time into the explicit stream list from the manifest. This list is frozen in the grant.
 
-**Future resources within a stream:** Yes. If the user creates a new Spotify playlist after the grant is issued, it appears in the `playlists` stream. The grant authorized the stream, not specific playlists.
+**Future records within a stream:** included. If the user creates a new playlist after a `continuous` grant is issued, it appears in the granted `playlists` stream, subject to any `time_range` constraint.
 
-**Future streams:** No. If the connector adds a `listening_history` stream in a new version, existing grants don't include it. The user must create a new grant (or amend the existing one, if the personal server supports grant amendment — not specified in v0.1).
+**Future streams:** not included. If the connector adds a stream in a new version, existing grants do not cover it. Scope changes use revoke-and-reissue; grant amendment is not defined in v0.1 (Core Section 6, Grant narrowing).
 
-**Enforcement:** The personal server checks each data request against the grant's `streams` list. If the requested stream isn't in the grant, access is denied. The personal server doesn't need to know about the manifest to enforce this — the grant is self-contained.
+**Enforcement:** the resource server checks each request against the grant's `streams` list and rejects streams outside it. The grant is self-contained; enforcement does not require fetching the manifest at request time.
 
 ## Freshness
 
-When an app requests data via a grant, how does the personal server decide whether to serve from cache or trigger a fresh collection?
+When a client reads under a grant, how does it know whether the data is current?
 
-The core spec should define freshness first as response metadata, not as a grant constraint. A client needs to know whether the server's data is current, stale, or unknown even when the authorization itself is perfectly valid.
+Core Section 8 defines response-side freshness metadata: the resource server MAY attach `captured_at`, `status` (`current`, `stale`, `unknown`), and `last_attempted_at` to stream listings, stream metadata, and record-list responses. Implementations claiming Collection Profile support publish it (Core Section 9, Tier 2). Freshness reports local observation; it does not guarantee the source has not changed since `captured_at`.
 
-Current v0.1 direction:
-1. **Expose response freshness metadata.** The resource server reports `captured_at`, `status`, and optionally `last_attempted_at` on stream and record-list responses.
-2. **Let the personal server decide how to fulfill reads.** Freshness status reflects local observation and policy, not a guarantee that the source has not changed since `captured_at`.
+Fulfillment remains an implementation choice: serve from storage, collect on a schedule, or collect before serving. The reference schedules collection per connection and serves stored records with freshness metadata.
 
-Fulfillment strategies remain an implementation choice:
-1. **Always serve from cache.** App gets whatever's stored. Fast, simple.
-2. **Check age.** If the newest record in a stream is older than X, trigger collection first according to local policy.
-3. **Always collect fresh.** Every grant fulfillment triggers a connector run. Slow but guaranteed fresh.
-
-Request-side freshness requirements remain future work. One possible future shape is an optional selection-request hint:
-
-```json
-{
-  "freshness": { "max_age": "PT1H" }
-}
-```
-
-This would say "data older than 1 hour is not acceptable." Even then, the personal server may be unable to collect fresh data (connector unavailable, user offline, source throttling), which is why the response metadata comes first: it closes the honesty gap without pretending collection can always satisfy the request.
+Request-side freshness requirements (a client demanding data no older than some age) are future work; see the deferred-concerns register. Response metadata comes first because the server may be unable to collect on demand (connector unavailable, user offline, source throttling), and reporting what it knows closes the honesty gap without promising collection it cannot guarantee.
