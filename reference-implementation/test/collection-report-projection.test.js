@@ -469,6 +469,82 @@ test('empty in-scope universe -> empty report (no invented entries)', () => {
   assert.deepEqual(entries, []);
 });
 
+// ─── succeeded-run coverage: staged checkpoint proves full_inventory /
+//     singleton_presence streams (YNAB category_groups, Chase balances) ─────────
+//
+// These pin the fix for the live coverage omission: a succeeded run that emits
+// records for a `full_inventory` or `singleton_presence` stream but leaves its
+// checkpoint `not_staged` projects `unmeasured`; once the connector stages the
+// checkpoint (committed), the declared strategy proves coverage without a
+// numeric denominator and the stream reads `complete`. The strategy alone is not
+// enough — the committed boundary is the load-bearing evidence.
+
+test('YNAB category_groups (full_inventory): not_staged checkpoint -> unknown / unmeasured (the pre-fix bug)', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'category_groups', collected: 12, considered: null, checkpoint: 'not_staged' })],
+    },
+    manifestStreams: [{ name: 'category_groups', coverage_strategy: 'full_inventory', freshness_strategy: 'scheduled_window' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'category_groups');
+  assert.equal(entry.coverage_strategy, 'full_inventory');
+  assert.equal(entry.coverage_condition, 'unknown');
+  assert.equal(entry.forward_disposition, 'unmeasured');
+});
+
+test('YNAB category_groups (full_inventory): committed checkpoint -> complete after a succeeded run', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'category_groups', collected: 12, considered: null, checkpoint: 'committed' })],
+    },
+    manifestStreams: [{ name: 'category_groups', coverage_strategy: 'full_inventory', freshness_strategy: 'scheduled_window' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'category_groups');
+  assert.equal(entry.considered, 'unknown');
+  assert.equal(entry.coverage_strategy, 'full_inventory');
+  assert.equal(entry.coverage_condition, 'complete');
+  assert.equal(entry.forward_disposition, 'complete');
+});
+
+test('Chase balances (singleton_presence): not_staged checkpoint -> unknown / unmeasured (the pre-fix bug)', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'balances', collected: 3, considered: null, checkpoint: 'not_staged' })],
+    },
+    manifestStreams: [{ name: 'balances', coverage_strategy: 'singleton_presence', freshness_strategy: 'manual_as_of' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'balances');
+  assert.equal(entry.coverage_strategy, 'singleton_presence');
+  assert.equal(entry.coverage_condition, 'unknown');
+  assert.equal(entry.forward_disposition, 'unmeasured');
+});
+
+test('Chase balances (singleton_presence): committed checkpoint -> complete after a succeeded run', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'balances', collected: 3, considered: null, checkpoint: 'committed' })],
+    },
+    manifestStreams: [{ name: 'balances', coverage_strategy: 'singleton_presence', freshness_strategy: 'manual_as_of' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'balances');
+  assert.equal(entry.considered, 'unknown');
+  assert.equal(entry.coverage_strategy, 'singleton_presence');
+  assert.equal(entry.coverage_condition, 'complete');
+  assert.equal(entry.forward_disposition, 'complete');
+});
+
 // ─── entries are deterministically ordered ────────────────────────────────────
 
 test('entries are sorted by stream name (stable owner-facing order)', () => {

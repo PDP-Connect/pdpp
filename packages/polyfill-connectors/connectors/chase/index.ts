@@ -1467,6 +1467,28 @@ export async function emitTransactionsStateIfAny(deps: EmitDeps): Promise<void> 
   await deps.emit(stateMsg);
 }
 
+/**
+ * Emit the `balances` STATE presence checkpoint iff at least one balance was
+ * emitted this run. `balances` is a `singleton_presence` stream — append-only
+ * point-in-time ledger snapshots with no incremental cursor to advance — so the
+ * checkpoint is a bare `{ fetched_at }` presence marker (mirroring
+ * `current_activity`). Without staging it, a succeeded run leaves `balances` at
+ * `checkpoint:not_staged`, and the `singleton_presence` strategy cannot prove
+ * coverage, so the stream projects unmeasured despite retained records. Gated on
+ * an actual emit so an empty balances run does not stamp a hollow presence
+ * checkpoint over nothing.
+ */
+export async function emitBalancesStateIfAny(deps: EmitDeps, balanceEmitted: boolean): Promise<void> {
+  if (!(deps.wantsBalances && balanceEmitted)) {
+    return;
+  }
+  await deps.emit({
+    type: "STATE",
+    stream: "balances",
+    cursor: { fetched_at: deps.emittedAt },
+  });
+}
+
 export async function emitNoActivityProgress(
   deps: Pick<EmitDeps, "emit">,
   _account: ChaseAccount,
@@ -1535,8 +1557,8 @@ function accountProgressDiagnostic(accountProgress?: { index: number; total: num
  *     dropped.
  */
 export type AccountDetailOutcome =
-  | { kind: "hydrated"; accountId: string }
-  | { kind: "no_activity"; accountId: string }
+  | { kind: "hydrated"; accountId: string; balanceEmitted?: boolean }
+  | { kind: "no_activity"; accountId: string; balanceEmitted?: boolean }
   | { kind: "gap"; accountId: string; reason: DetailGapMessage["reason"]; errorClass: string };
 
 async function processAccountDownload(
@@ -1626,6 +1648,7 @@ async function processAccountDownload(
     );
   }
 
+  let balanceEmitted = false;
   if (deps.wantsBalances && balance) {
     await deps.emitRecord("balances", {
       id: `${account.internal_id}|${balance.as_of}`,
@@ -1635,6 +1658,7 @@ async function processAccountDownload(
       available_balance_cents: balance.available_cents,
       fetched_at: deps.emittedAt,
     });
+    balanceEmitted = true;
   }
 
   await deps.emit({
@@ -1644,7 +1668,7 @@ async function processAccountDownload(
   });
   // Reached and parsed (even a 0-transaction QFX is real coverage of this
   // account's ledger for the window).
-  return { kind: "hydrated", accountId: account.internal_id };
+  return { kind: "hydrated", accountId: account.internal_id, balanceEmitted };
 }
 
 /**
@@ -1818,6 +1842,10 @@ async function runTransactionsAndBalances(
   // Amazon/ChatGPT ordering (recovery pass → coverage).
   await recoverServedAccountGaps(deps, outcomes);
   await emitTransactionsDetailCoverage(deps, outcomes);
+  // Stage the balances presence checkpoint when any balance was emitted so a
+  // succeeded run does not leave `balances` at `checkpoint:not_staged`.
+  const balanceEmitted = outcomes.some((o) => o.kind !== "gap" && o.balanceEmitted === true);
+  await emitBalancesStateIfAny(deps, balanceEmitted);
 }
 
 /**

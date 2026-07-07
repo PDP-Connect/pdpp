@@ -735,7 +735,7 @@ async function collectAccounts(ctx: BudgetCtx): Promise<void> {
   }
 }
 
-async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
+export async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
   const { budgetId, budgetOrdinal = 0, token, state, newState, requested, emit, trackAndEmit, progress } = ctx;
   const knowledge = priorKnowledge(state, "categories", budgetId);
   await progress("Fetching YNAB categories window", {
@@ -788,6 +788,23 @@ async function collectCategoriesAndGroups(ctx: BudgetCtx): Promise<void> {
     stream: "categories",
     cursor: newState.categories,
   });
+  // `category_groups` is co-fetched from the same `/categories` response and
+  // advances on the identical `server_knowledge` delta cursor. Stage its own
+  // STATE checkpoint (when requested) so the runtime records a committed
+  // checkpoint for the stream — without it, a succeeded run leaves
+  // `category_groups` at `checkpoint:not_staged`, and the `full_inventory`
+  // coverage strategy cannot prove coverage, so the stream projects unmeasured
+  // despite retained records.
+  if (requested.has("category_groups")) {
+    const groups = (newState.category_groups as Record<string, { server_knowledge: number }> | undefined) ?? {};
+    groups[budgetId] = { server_knowledge: res.data.server_knowledge };
+    newState.category_groups = groups;
+    await emit({
+      type: "STATE",
+      stream: "category_groups",
+      cursor: newState.category_groups,
+    });
+  }
 }
 
 async function collectPayees(ctx: BudgetCtx): Promise<void> {
