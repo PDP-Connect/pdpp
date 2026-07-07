@@ -10,9 +10,9 @@
     "date": "2026-07-06"
   },
   "server/ref-control.ts": {
-    "allowed_mass": 138,
-    "reason": "Port of main's external-tool detection hardening (security fix e6e96933b) + owner-cancel/recovery surfaces from #199/#190 reconciliation; behavior required by main's test contract. Queued for decomposition in the Phase-1 drain.",
-    "date": "2026-07-06"
+    "allowed_mass": 170,
+    "reason": "Refresh stale ref-control.ts allowance to current main's measured mass under Biome 2.4.12; the stream-report rollup fix was kept mass-neutral relative to origin/main. Queued for decomposition in the Phase-1 drain.",
+    "date": "2026-07-07"
   },
   "server/stores/connector-detail-gap-store.js": {
     "allowed_mass": 33,

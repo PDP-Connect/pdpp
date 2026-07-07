@@ -340,6 +340,44 @@ test('a manual run with browser-profile + collection_facts on the spine (no sche
   assert.notEqual(siblingMessages?.collected, 1145, 'sibling must not inherit the manual run collected count');
 }));
 
+test('a succeeded run with partial stream coverage does not render the connection healthy', withTmpDb(async () => {
+  seedConnector();
+  await seedInstance({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    displayName: 'GitHub-shaped partial coverage',
+    sourceKind: 'browser_collector',
+    sourceBindingKey: 'github-partial',
+    sourceBinding: { kind: 'browser_collector', account: 'github' },
+  });
+
+  await seedManualRunWithCollectionFacts({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    runId: 'run_partial_stream_success',
+    occurredAt: '2026-05-20T12:10:00.000Z',
+    streams: [
+      { stream: 'messages', collected: 2, considered: 10, covered: null, checkpoint: 'committed', pending_detail_gaps: 0, skipped: null },
+      { stream: 'files', collected: 3, considered: 3, covered: null, checkpoint: 'committed', pending_detail_gaps: 0, skipped: null },
+    ],
+  });
+
+  const summaries = await listConnectorSummaries();
+  const summary = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === WORK_INSTANCE_ID,
+  );
+  assert.ok(summary, 'the partial-coverage connection projects a source-list summary');
+  const reportByStream = collectionReportByStream(summary.collection_report);
+  assert.equal(reportByStream.messages.coverage_condition, 'partial');
+  assert.equal(reportByStream.messages.forward_disposition, 'resumable');
+  assert.equal(summary.connection_health.axes.coverage, 'partial');
+  assert.equal(summary.connection_health.state, 'degraded');
+  assert.equal(summary.rendered_verdict.pill.label, 'Degraded');
+
+  const detail = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
+  assert.ok(detail, 'the partial-coverage connection resolves a source-detail summary');
+  assert.equal(detail.connection_health.axes.coverage, 'partial');
+  assert.equal(detail.rendered_verdict.pill.label, 'Degraded');
+}));
+
 test('reference connector summaries project concrete connection rows with instance-scoped records', withTmpDb(async () => {
   seedConnector();
   await seedInstances({ sourceKind: 'manual' });

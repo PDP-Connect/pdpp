@@ -63,13 +63,13 @@ import {
 import { mapWithConcurrency as runWithConcurrency } from "./concurrency.ts";
 import { staticSecretCredentialCaptureFromManifest } from "./connection-setup-plan.ts";
 import {
-  deriveStreamCoverageCondition,
-  readCoverageEvidenceStrategy,
-  readFreshnessEvidenceStrategy,
   type CoverageEvidenceStrategy,
+  deriveStreamCoverageCondition,
   type FreshnessEvidenceStrategy,
   pickAcceptedCoverage,
   pickRequiredAcceptedCoverage,
+  readCoverageEvidenceStrategy,
+  readFreshnessEvidenceStrategy,
 } from "./connector-coverage-policy.ts";
 import {
   firstDegradingKnownGapReason,
@@ -187,10 +187,10 @@ interface ManifestStream extends ManifestStreamLike {
    * inventing a numeric denominator.
    */
   coverage_strategy?: CoverageEvidenceStrategy;
-  /** Declared mechanism by which this stream establishes freshness/currency. */
-  freshness_strategy?: FreshnessEvidenceStrategy;
   /** Sandbox-shaped typed field declarations already used by demo streams. */
   fields?: ManifestFieldDeclaration[];
+  /** Declared mechanism by which this stream establishes freshness/currency. */
+  freshness_strategy?: FreshnessEvidenceStrategy;
   name: string;
   /**
    * Required-stream policy. Defaults to `true` when absent so that streams
@@ -1800,6 +1800,51 @@ function buildCoverageEvidence(
   return { axis: runAxis, requiredButAccepted };
 }
 
+const DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER = ["terminal_gap", "retryable_gap", "gaps", "partial"] as const;
+
+function rollupCollectionReportCoverageOverride(
+  currentAxis: CoverageAxis,
+  report: readonly CollectionReportEntry[]
+): CoverageAxis | null {
+  const currentIndex = DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.indexOf(
+    currentAxis as (typeof DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER)[number]
+  );
+  const currentRank = currentIndex === -1 ? DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.length : currentIndex;
+  const conditions = new Set(report.map((entry) => entry.coverage_condition));
+  return DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.slice(0, currentRank).find((axis) => conditions.has(axis)) ?? null;
+}
+
+function refineConnectionHealthWithCollectionReport(
+  healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0],
+  initialConnectionHealth: ConnectionHealthSnapshot,
+  collectionReport: readonly CollectionReportEntry[]
+): ConnectionHealthSnapshot {
+  const coverageOverride = rollupCollectionReportCoverageOverride(
+    initialConnectionHealth.axes.coverage,
+    collectionReport
+  );
+  if (coverageOverride === null) {
+    return initialConnectionHealth;
+  }
+  return projectConnectorSummaryConnectionHealth({
+    ...healthInput,
+    coverageOverride: { axis: coverageOverride },
+  });
+}
+
+function applyCoverageOverride(
+  resolvedCoverage: { axis: CoverageAxis; requiredButAccepted: boolean },
+  coverageOverride: { readonly axis: CoverageAxis; readonly requiredButAccepted?: boolean } | null | undefined
+): { axis: CoverageAxis; requiredButAccepted: boolean } {
+  if (coverageOverride?.axis == null) {
+    return resolvedCoverage;
+  }
+  return {
+    axis: coverageOverride.axis,
+    requiredButAccepted: coverageOverride.requiredButAccepted ?? resolvedCoverage.requiredButAccepted,
+  };
+}
+
 // ─── Per-stream Collection Report (Tranche C — derived on read) ───────────────
 //
 // `buildCollectionReport` is the control-plane projection half of the per-run
@@ -1983,7 +2028,7 @@ function projectCollectionReport(input: {
 }): CollectionReportEntry[] {
   return buildCollectionReport({
     collectionFacts: healthClassifyingRun(input.lastRun)?.collection_facts ?? null,
-    localCoverage: input.localDeviceBacked === true ? input.localCoverage ?? null : null,
+    localCoverage: input.localDeviceBacked === true ? (input.localCoverage ?? null) : null,
     manifestStreams: input.manifestStreams,
     pendingDetailGaps: input.pendingDetailGaps ?? [],
     pendingDetailGapsReadLimit: input.pendingDetailGapsReadLimit ?? null,
@@ -2770,12 +2815,17 @@ export function projectConnectorSummaryConnectionHealth(input: {
    * controller state has been observed for this connection.
    */
   readonly collectionRate?: CollectionRateSnapshot | null;
+  readonly coverageOverride?: { readonly axis: CoverageAxis; readonly requiredButAccepted?: boolean } | null;
   readonly refreshPolicy?: unknown;
   readonly unreliableSources?: readonly string[];
   readonly schedule: unknown;
 }): ConnectionHealthSnapshot {
   const schedule = asScheduleRecord(input.schedule);
-  const scheduleEvidence = projectConnectionHealthScheduleEvidence(schedule, input.lastRun, input.activeRun?.run_id ?? null);
+  const scheduleEvidence = projectConnectionHealthScheduleEvidence(
+    schedule,
+    input.lastRun,
+    input.activeRun?.run_id ?? null
+  );
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const latestRunForHealth = healthClassifyingRun(input.lastRun);
   const nowIso = input.nowIso ?? new Date().toISOString();
@@ -2785,11 +2835,9 @@ export function projectConnectorSummaryConnectionHealth(input: {
     lastErrorCode: scheduleEvidence.lastErrorCode,
     nowIso,
   });
-  const coverage = buildCoverageEvidence(
-    latestRunForHealth,
-    pendingDetailGaps,
-    input.manifestStreams ?? [],
-    input.localCoverage ?? null
+  const coverage = applyCoverageOverride(
+    buildCoverageEvidence(latestRunForHealth, pendingDetailGaps, input.manifestStreams ?? [], input.localCoverage ?? null),
+    input.coverageOverride
   );
   const outbox = input.outbox ?? { axis: "unknown" };
   const freshnessAxis = mapFreshnessAxis(input.freshness);
@@ -3345,7 +3393,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     refreshPolicy,
     lastHeartbeatAt: freshnessHeartbeatAt,
   });
-  const connectionHealth = projectConnectorSummaryConnectionHealth({
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
     attentionRecords: attention.records,
     collectionRate,
     credential,
@@ -3372,11 +3420,12 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       remoteSurface.unreliable
     ),
     schedule,
-  });
+  };
+  const initialConnectionHealth = projectConnectorSummaryConnectionHealth(healthInput);
   const connectorDisplayName = manifest.display_name || connectorId;
   const collectionReport = projectCollectionReport({
     lastRun,
-    connectionHealth,
+    connectionHealth: initialConnectionHealth,
     localCoverage,
     localDeviceBacked,
     manifestStreams: manifest.streams ?? [],
@@ -3384,6 +3433,11 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     refreshPolicy,
   });
+  const connectionHealth = refineConnectionHealthWithCollectionReport(
+    healthInput,
+    initialConnectionHealth,
+    collectionReport
+  );
   const recoveredCount = detailGaps.recovered;
   const renderedVerdict = buildRenderedVerdictForSummary({
     collectionReport,
@@ -3828,7 +3882,7 @@ export async function getConnectorDetail(
     live,
     refreshPolicy,
   });
-  const connectionHealth = projectConnectorSummaryConnectionHealth({
+  const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
     attentionRecords: attention.records,
     collectionRate,
     // No per-connection `credential` evidence here BY DESIGN: this is the
@@ -3869,15 +3923,21 @@ export async function getConnectorDetail(
       remoteSurface.unreliable
     ),
     schedule,
-  });
+  };
+  const initialConnectionHealth = projectConnectorSummaryConnectionHealth(healthInput);
   const collectionReport = projectCollectionReport({
     lastRun,
-    connectionHealth,
+    connectionHealth: initialConnectionHealth,
     manifestStreams: manifest.streams ?? [],
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     refreshPolicy,
   });
+  const connectionHealth = refineConnectionHealthWithCollectionReport(
+    healthInput,
+    initialConnectionHealth,
+    collectionReport
+  );
   const detailRecoveredCount = detailGaps.recovered;
   const detailLocalDeviceBacked = outbox.heartbeats.length > 0;
   const renderedVerdict = buildRenderedVerdictForSummary({
