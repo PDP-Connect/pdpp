@@ -161,3 +161,7 @@ An implementation claiming this profile MUST satisfy:
 9. Ranking-control, semantic/vector, connector-specific, and public `connector_id` parameters are rejected with `invalid_request` and never silently honored; a client-token `streams[]` entry outside the grant is rejected with `grant_stream_not_allowed`, while owner-token `streams[]` acts as a soft filter.
 10. Result `score` objects are emitted only when `capabilities.lexical_retrieval.score` advertises support, identify `kind` and `order`, are computed only from grant-visible fields, and are treated as implementation-relative (no cross-server comparison).
 11. When the extension is unadvertised, `GET /v1/search` MAY return `404` / `not_found`, and the server remains Core-conformant.
+
+## Reference-implementation additions
+
+The reference implementation additionally accepts deployment-specific request selectors that are not part of this profile: `connection_id` (with its deprecated `connector_instance_id` alias) to narrow a search to a single connection, and `filter[...]` accepted only together with exactly one `streams[]` value. It also emits additional result fields: `connection_id` (and its deprecated alias), `display_name`, and `evidence_excerpts` carrying a bounded field-window read recipe alongside each snippet. These are deployment extensions of the reference implementation; they are not required or defined by this profile, and portable clients SHOULD NOT depend on them. Per Core §11 Extensions, unrecognized members are ignorable.

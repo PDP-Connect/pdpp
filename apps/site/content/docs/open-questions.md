@@ -14,8 +14,8 @@ and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev
 
 2. Which adoption postures should the design optimize for: platforms implementing the
    resource server natively, platforms endorsing a connector over their existing API,
-   or community connectors covering platforms that do neither? The
-   `connector`/`provider_native` distinction currently carries little design weight.
+   or community connectors covering platforms that do neither?
+   Related: question 14 covers the provider-native declaration document.
    ([spec-core §5](https://www.pdpp.dev/docs/spec-core))
 
 3. Should Core standardize a grant-bundling primitive for agent access? Agents favor a
@@ -81,30 +81,36 @@ and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev
     `access_mode` reserves room for an `event_driven` value.
     ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant))
 
-18. Should the protocol define a signal that a connection requires user interaction
+18. What evidence strategy should each stream declare so coverage and freshness can be
+    distinguished from absence of instrumentation? A system needs to tell complete
+    coverage, accepted partial coverage, retryable gaps, stale-but-known data, and
+    missing instrumentation apart; today uninstrumented streams read as unknown.
+    ([Collection Profile](https://www.pdpp.dev/docs/spec-collection-profile))
+
+19. Should the protocol define a signal that a connection requires user interaction
     (expired source-side login, MFA), distinct from revocation?
     ([Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred))
 
-19. If source lifecycle actions such as delete-after-export are added later, should
+20. If source lifecycle actions such as delete-after-export are added later, should
     they form a separately authorized action class in the grant?
     ([spec-core §11](https://www.pdpp.dev/docs/spec-core))
 
-20. Should a client be able to require a maximum data age on a query, and is an unmet
+21. Should a client be able to require a maximum data age on a query, and is an unmet
     requirement an error or a warning? ([spec-core §8](https://www.pdpp.dev/docs/spec-core#list-records))
 
-21. After a `single_use` grant is consumed, should the spec require deletion, require
+22. After a `single_use` grant is consumed, should the spec require deletion, require
     retention as a consent record, or leave it to local policy?
     ([spec-core §6](https://www.pdpp.dev/docs/spec-core#grant))
 
-22. Should view names such as `basic` and `full` carry consistent meaning across
+23. Should view names such as `basic` and `full` carry consistent meaning across
     connectors, or remain connector-defined? ([spec-core §7](https://www.pdpp.dev/docs/spec-core))
 
-23. Should PDPP adopt Client ID Metadata Documents for client identity now, or wait for
+24. Should PDPP adopt Client ID Metadata Documents for client identity now, or wait for
     the IETF draft to stabilize? ([spec-core §3](https://www.pdpp.dev/docs/spec-core))
 
-24. Should a companion profile standardize an interoperable audit-event format? Core
+25. Should a companion profile standardize an interoperable audit-event format? Core
     defines the identifiers and state transitions that make auditing possible but no
     log format. ([spec-core §11](https://www.pdpp.dev/docs/spec-core))
 
-25. Should connector and client certification mechanics be specified, and how should
+26. Should connector and client certification mechanics be specified, and how should
     trust status appear on the consent surface? ([spec-core §11](https://www.pdpp.dev/docs/spec-core))

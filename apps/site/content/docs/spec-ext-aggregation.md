@@ -161,3 +161,7 @@ An implementation claiming this profile MUST satisfy:
 8. Every grouped response includes `other_count` (positive when truncated, `0` when all groups fit); ungrouped responses omit `other_count`.
 9. Undeclared, non-scalar, or unauthorized aggregation requests fail with a clear query error and are never silently honored.
 10. Parameter validation is strict, not lenient: `granularity` is required with `group_by_time` (from the enum `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`) and rejected without it; `time_zone` is IANA-name-only, defaults to `UTC`, and is rejected without `group_by_time`; `limit` defaults to 10, is bounded 1–100, errors (never clamps) when out of range or non-integer, and is rejected on ungrouped requests; `group_by` + `group_by_time` together are rejected. All such rejections use `invalid_request` (400, `invalid_request_error`).
+
+## Reference-implementation additions
+
+The reference implementation additionally accepts deployment-specific request selectors that are not part of this profile: `connection_id` (with its deprecated `connector_instance_id` alias), `connector_id`, and `subject_id`, which narrow an aggregation to a single connection, connector, or subject. These are deployment extensions of the reference implementation; they are not required or defined by this profile, and portable clients SHOULD NOT depend on them. Per Core §11 Extensions, unrecognized members are ignorable.
