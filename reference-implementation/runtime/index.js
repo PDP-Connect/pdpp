@@ -1869,6 +1869,7 @@ export async function runConnector(opts) {
 
   let assistanceCounter = 0;
   const openStructuredAssistance = new Map();
+  const assistanceTimeoutHandles = new Map();
   const nextAssistanceRequestId = () => `asst_${Date.now()}_${++assistanceCounter}`;
 
   // Durable structured-attention writer. Closes the production-writer
@@ -1889,12 +1890,20 @@ export async function runConnector(opts) {
     log: console,
   });
 
+  function clearAssistanceTimeout(assistanceRequestId) {
+    const timeoutHandle = assistanceTimeoutHandles.get(assistanceRequestId);
+    if (!timeoutHandle) return;
+    clearTimeout(timeoutHandle);
+    assistanceTimeoutHandles.delete(assistanceRequestId);
+  }
+
   async function closeStructuredAssistance(assistanceRequestId, status, extra = {}) {
     const activeAssistance = openStructuredAssistance.get(assistanceRequestId);
     if (!activeAssistance) {
       return false;
     }
     openStructuredAssistance.delete(assistanceRequestId);
+    clearAssistanceTimeout(assistanceRequestId);
     // Mirror the in-memory close into the durable attention store so the
     // dashboard projection stops driving `needs_attention` for this
     // prompt. Failure is logged inside the writer; the run terminal path
@@ -2465,6 +2474,7 @@ export async function runConnector(opts) {
     let queueDrainedResolve = null;
     let pendingInteractionViolationReject = null;
     let terminateTimer = null;
+    let runtimeTimeoutReason = null;
 
     function clearTerminateTimer() {
       if (!terminateTimer) return;
@@ -2494,6 +2504,37 @@ export async function runConnector(opts) {
         terminateConnectorChildGroup('SIGKILL');
       }, 250);
       terminateTimer.unref?.();
+    }
+
+    function clearAllAssistanceTimeouts() {
+      for (const assistanceRequestId of [...assistanceTimeoutHandles.keys()]) {
+        clearAssistanceTimeout(assistanceRequestId);
+      }
+    }
+
+    function scheduleAssistanceTimeout(assistanceRequestId, timeoutSeconds) {
+      if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) return;
+      const timeoutMs = Math.max(1, Math.ceil(timeoutSeconds * 1000));
+      const timeoutHandle = setTimeout(() => {
+        assistanceTimeoutHandles.delete(assistanceRequestId);
+        if (
+          terminalEventRecorded ||
+          ownerCancelRequested ||
+          runTimedOut ||
+          !openStructuredAssistance.has(assistanceRequestId)
+        ) {
+          return;
+        }
+        runTimedOut = true;
+        runtimeTimeoutReason = 'assistance_timed_out';
+        onProgress({
+          type: 'assistance_timeout',
+          assistance_request_id: assistanceRequestId,
+        });
+        terminateChild();
+      }, timeoutMs);
+      timeoutHandle.unref?.();
+      assistanceTimeoutHandles.set(assistanceRequestId, timeoutHandle);
     }
 
     // Cancellation signal wiring. Aborting `cancelSignal` requests cancellation
@@ -2540,6 +2581,7 @@ export async function runConnector(opts) {
       if (cleanedUp) return;
       cleanedUp = true;
       clearTerminateTimer();
+      clearAllAssistanceTimeouts();
       if (cancelSignal) {
         cancelSignal.removeEventListener('abort', handleCancellation);
       }
@@ -2933,6 +2975,7 @@ export async function runConnector(opts) {
           // Durable structured attention upsert. Same secret-redaction
           // and non-secret-action-target rules as the INTERACTION path.
           await attentionWriter.recordAssistanceRequest(assistanceMsg);
+          scheduleAssistanceTimeout(assistanceRequestId, assistanceMsg.timeout_seconds);
           onProgress(assistanceMsg);
           break;
         }
@@ -3408,8 +3451,13 @@ export async function runConnector(opts) {
       const stderrTailDiagnostic = buildStderrTailDiagnostic(stderrTailRaw);
 
       async function recordRunTimedOutTerminal() {
+        const terminalReason = runtimeTimeoutReason || 'run_timed_out';
+        const assistanceStatus = terminalReason === 'assistance_timed_out' ? 'timeout' : 'cancelled';
+        const failureMessage = terminalReason === 'assistance_timed_out'
+          ? 'Run exceeded a connector assistance timeout.'
+          : 'Run exceeded its scheduler wall-clock budget.';
         finalStatus = 'failed';
-        await closeOpenStructuredAssistance('cancelled', { reason: 'run_timed_out' });
+        await closeOpenStructuredAssistance(assistanceStatus, { reason: terminalReason });
         await emitSpineEvent({
           event_type: 'run.failed',
           trace_id: traceContext.trace_id,
@@ -3423,10 +3471,10 @@ export async function runConnector(opts) {
           data: buildRunTerminalData({
             recordsEmitted: totalEmitted,
             exitCode: code,
-            reason: 'run_timed_out',
+            reason: terminalReason,
             connectorError: null,
             failureOrigin: 'runtime',
-            failureMessage: 'Run exceeded its scheduler wall-clock budget.',
+            failureMessage,
           }),
         });
         onProgress({
@@ -3434,7 +3482,7 @@ export async function runConnector(opts) {
           status: 'failed',
           records_emitted: totalEmitted,
           exit_code: code,
-          reason: 'run_timed_out',
+          reason: terminalReason,
         });
       }
 
@@ -3667,7 +3715,7 @@ export async function runConnector(opts) {
         // already carries the same reason.
         const closeTerminalReason =
           runTimedOut
-            ? 'run_timed_out'
+            ? (runtimeTimeoutReason || 'run_timed_out')
             : finalStatus === 'cancelled' && ownerCancelRequested && !doneMessage
             ? (ownerCancelForced ? 'owner_cancel_forced' : 'owner_cancelled')
             : derivedTerminal.reason;

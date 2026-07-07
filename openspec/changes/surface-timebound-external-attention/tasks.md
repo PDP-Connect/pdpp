@@ -4,6 +4,8 @@
   time-bound external approval rows as health-relevant.
 - [x] 1.2 Preserve the existing quiet behavior for unbounded external progress
   notices.
+- [x] 1.3 Enforce no-response `ASSISTANCE.timeout_seconds` in the runtime so an
+  unresolved assistance window releases the active run as a terminal timeout.
 
 ## 2. Verification
 
@@ -11,7 +13,9 @@
   attention rows.
 - [x] 2.2 Add a connection-summary projection test proving a time-bound external
   approval produces structured owner action.
-- [x] 2.3 Run targeted reference-implementation tests and `openspec validate`.
+- [x] 2.3 Add a runtime regression test proving unresolved time-bound
+  no-response assistance terminals as `assistance_timed_out`.
+- [x] 2.4 Run targeted reference-implementation tests and `openspec validate`.
 
 ## 3. Live Closeout
 

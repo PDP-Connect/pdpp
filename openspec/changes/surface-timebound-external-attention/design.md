@@ -16,6 +16,11 @@ unbounded progress notices, but wrong for time-bound external actions. A current
 expiry means the owner has a live window to act, and missing that window can
 change the run outcome.
 
+The same live path exposed the runtime half of the contract: `expires_at` was
+persisted on the attention row, but no-response `ASSISTANCE` did not own a timer.
+If a connector failed to emit `ASSISTANCE_STATUS` after its declared window, the
+run stayed active indefinitely.
+
 ## Decision
 
 `isHealthRelevant` treats an attention row as owner-actionable when it is:
@@ -30,6 +35,12 @@ The predicate still suppresses unbounded
 appropriate for passive progress where the owner cannot improve the immediate
 outcome.
 
+For no-response `ASSISTANCE` rows with `timeout_seconds`, the runtime starts a
+per-assistance timer. If the connector closes the assistance first, the timer is
+cleared. If the timer fires first, the runtime terminates the connector child,
+expires the structured attention row via `run.assistance_timed_out`, and records
+the run terminal as `failed` with reason `assistance_timed_out`.
+
 ## Alternatives
 
 - **Treat all `act_elsewhere` rows as action-needed.** Rejected because it would
@@ -39,6 +50,10 @@ outcome.
   connector and do not need a PDPP-submitted response.
 - **Special-case the affected connector.** Rejected because the assistance axes
   already express the generic product concept.
+- **Rely on connector-authored timeout logic.** Rejected because the runtime
+  already accepts and persists `timeout_seconds`; once the reference exposes that
+  deadline to owners, the reference must enforce the deadline when the connector
+  does not.
 
 ## Acceptance Checks
 
@@ -47,3 +62,5 @@ outcome.
 - An unbounded external progress notice leaves an otherwise healthy connection
   healthy and creates no CTA.
 - Expired rows remain non-health-relevant.
+- A connector that emits time-bound no-response assistance and never closes it
+  terminals as `assistance_timed_out` and releases the active-run slot.

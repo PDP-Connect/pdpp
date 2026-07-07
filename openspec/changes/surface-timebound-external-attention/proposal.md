@@ -11,8 +11,10 @@ time-bound external approval.
 
 - Treat non-terminal, non-expired `act_elsewhere` attention with an expiry as
   health-relevant owner action.
+- Enforce `ASSISTANCE.timeout_seconds` for no-response assistance so a connector
+  that never emits `ASSISTANCE_STATUS` cannot hold an active run forever.
 - Preserve the quiet path for unbounded `act_elsewhere` progress notices.
-- Add pure model and summary-projection tests for both cases.
+- Add pure model, summary-projection, and runtime timeout tests.
 
 ## Capabilities
 
@@ -21,7 +23,7 @@ Modified:
 
 ## Impact
 
-- Connector-neutral owner-facing health projection changes for structured
-  attention rows.
+- Connector-neutral owner-facing health projection and runtime timeout behavior
+  changes for structured attention rows.
 - No new connector manifest semantics, storage tables, or dashboard-specific
   routing branches.

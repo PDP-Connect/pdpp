@@ -4849,6 +4849,75 @@ rl.on('line', (line) => {
     }
   });
 
+  await t.test('runtime terminates timed-out nonblocking ASSISTANCE that never resolves', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-test-assistance-timeout-'));
+    const connectorPath = join(tmpDir, 'connector.mjs');
+    writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+process.on('SIGTERM', () => process.exit(0));
+const keepalive = setInterval(() => {}, 1000);
+const rl = createInterface({ input: process.stdin });
+let started = false;
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START' && !started) {
+    started = true;
+    process.stdout.write(JSON.stringify({
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_timeout_1',
+      progress_posture: 'running',
+      owner_action: 'act_elsewhere',
+      response_contract: 'none',
+      sensitivity: 'non_secret',
+      message: 'Approve externally.',
+      timeout_seconds: 0.05
+    }) + '\\n');
+  }
+});
+process.on('exit', () => clearInterval(keepalive));
+`, 'utf-8');
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => {
+          throw new Error('nonblocking assistance must not call onInteraction');
+        },
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.terminal_reason, 'assistance_timed_out');
+      assert.equal(result.records_emitted, 0);
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const assistanceTimedOut = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_timed_out');
+      assert.ok(assistanceTimedOut, 'expected run.assistance_timed_out event');
+      assert.equal(assistanceTimedOut.data.assistance_request_id, 'asst_timeout_1');
+      assert.equal(assistanceTimedOut.data.status, 'timeout');
+      assert.equal(assistanceTimedOut.data.reason, 'assistance_timed_out');
+
+      const failed = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
+      assert.ok(failed, 'expected run.failed event');
+      assert.equal(failed.data.reason, 'assistance_timed_out');
+      assert.equal(failed.data.failure_origin, 'runtime');
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      await closeServer(server);
+    }
+  });
+
   await t.test('runtime rejects response-required ASSISTANCE without compatibility path', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;
