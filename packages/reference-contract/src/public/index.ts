@@ -968,7 +968,11 @@ const IntrospectionResponseSchema = {
   properties: {
     active: { type: "boolean" },
     inactive_reason: NonEmptyStringSchema,
-    pdpp_token_kind: { type: "string", enum: ["owner", "client"] },
+    pdpp_token_kind: {
+      type: "string",
+      description:
+        'Core defines "owner" and "client". Deployments MAY introduce additional token kinds in companion profiles (the reference emits "mcp_package"). A resource server that receives a pdpp_token_kind value it does not recognize MUST treat the token as unauthorized for all operations defined in Core.',
+    },
     subject_id: { type: "string" },
     exp: { type: ["integer", "null"] },
     grant_id: NonEmptyStringSchema,
