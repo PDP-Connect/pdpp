@@ -16,6 +16,12 @@ The reference implementation SHALL render source health from current durable evi
 **THEN** the rendered verdict SHALL represent active work or active owner attention
 **AND** SHALL NOT classify the source as resting idle solely because the latest terminal collection report lacks coverage measurements.
 
+#### Scenario: Session assistance timed out
+
+**WHEN** a browser/session-assisted source fails because the owner assistance window timed out
+**THEN** the rendered verdict SHALL classify the gap as owner/session-recoverable
+**AND** SHALL NOT present the source as a terminal maintainer code-fix issue.
+
 #### Scenario: Source-pressure cooldown
 
 **WHEN** a source is paused by the provider-pressure governor with a retry floor

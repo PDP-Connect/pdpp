@@ -59,6 +59,8 @@ export function gapClassifierText(gap: unknown): string {
 }
 
 const OWNER_RECOVERABLE_GAP_RE = /\b(otp|mfa|2fa|manual|captcha|anti bot)\b/;
+const OWNER_ASSISTANCE_TIMEOUT_GAP_RE =
+  /\b(assistance timed out|assistance timeout|assistance_timed_out|owner assistance timed out|finish login|streaming companion)\b/;
 const SOURCE_UNAVAILABLE_GAP_RE = /\bsource unavailable\b/;
 
 /**
@@ -69,7 +71,8 @@ export function isOwnerRecoverableKnownGap(gap: unknown): boolean {
   if (gapRecoveryAction(gap) === "manual_action_required") {
     return true;
   }
-  return OWNER_RECOVERABLE_GAP_RE.test(gapClassifierText(gap));
+  const text = gapClassifierText(gap);
+  return OWNER_RECOVERABLE_GAP_RE.test(text) || OWNER_ASSISTANCE_TIMEOUT_GAP_RE.test(text);
 }
 
 /** A gap the runtime retries on its own (`retry_by_runtime` recovery hint). */
