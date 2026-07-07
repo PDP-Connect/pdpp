@@ -67,6 +67,10 @@ coverage. The implementation SHALL NOT project a local-device connection as
 coverage-complete while every stream row remains unmeasured when stream-scoped
 coverage diagnostics are present.
 
+When a local-device stream declares `state_stream`, stream-row coverage SHALL
+inherit the parent stream's local `coverage_diagnostics` state unless a runtime
+fact or pending detail gap exists for the child stream.
+
 #### Scenario: policy-unavailable stream has a concrete state
 
 **WHEN** a stream's coverage policy is `unavailable` or `unsupported`
@@ -81,6 +85,16 @@ records that map stores to streams and safe statuses
 **THEN** stream rows SHALL derive concrete coverage states from those diagnostics
 **AND** owner surfaces SHALL NOT leave those rows in generic coverage unknown
 solely because the local collector has no scheduler run facts.
+
+#### Scenario: local co-emitted streams inherit parent coverage
+
+**WHEN** a local-device-backed connection has durable `coverage_diagnostics` for
+a parent stream
+**AND** a child stream declares that parent as `state_stream`
+**THEN** the child stream row SHALL derive its concrete coverage state from the
+parent's diagnostics
+**AND** owner surfaces SHALL NOT leave the child stream unmeasured solely because
+the collector emitted no separate child-stream diagnostic row.
 
 #### Scenario: source detail exposes supporting facts
 

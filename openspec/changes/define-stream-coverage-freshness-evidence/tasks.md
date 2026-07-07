@@ -19,6 +19,7 @@
 - [x] 3.3 Update source detail stream rows to render concrete coverage/freshness status from the shared collection report.
 - [x] 3.4 Add dashboard, Sources, Syncs, and source-detail tests proving unknown-by-default is gone for instrumented streams.
 - [x] 3.5 Thread local-device `coverage_diagnostics` into per-stream collection reports so local collector stream rows do not remain unmeasured after connection-level coverage is proven complete.
+- [x] 3.6 Apply `state_stream` inheritance to local-device stream rows so co-emitted child streams do not remain unmeasured when the parent store scan is covered.
 
 ## 4. Connector Backfill
 

@@ -1854,7 +1854,6 @@ export function buildCollectionReport(input: {
   }
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const pendingGapCountByStream = pendingDetailGapCountsByStream(pendingDetailGaps);
-  const localCoverageConditionByStream = localCoverageConditionsByStream(input.localCoverage);
   const pendingReadLimit =
     typeof input.pendingDetailGapsReadLimit === "number" &&
     Number.isFinite(input.pendingDetailGapsReadLimit) &&
@@ -1868,6 +1867,7 @@ export function buildCollectionReport(input: {
       manifestByStream.set(stream.name, stream);
     }
   }
+  const localCoverageConditionByStream = localCoverageConditionsByStream(input.localCoverage, manifestByStream);
   // In-scope universe: manifest streams ∪ fact-block streams. A zero-record or
   // unreported stream is an honest entry, never silently dropped (dropping reads
   // as "not owed" when it is "unknown").
@@ -1991,10 +1991,12 @@ function localCoverageConditionForStatus(status: unknown): CoverageAxis | null {
 }
 
 function localCoverageConditionsByStream(
-  localCoverage: LocalCoverageDiagnosticAxis | null | undefined
+  localCoverage: LocalCoverageDiagnosticAxis | null | undefined,
+  manifestByStream: ReadonlyMap<string, ManifestStream>
 ): ReadonlyMap<string, CoverageAxis> {
   const conditions = new Map<string, CoverageAxis>();
-  for (const row of localCoverage?.rows ?? []) {
+  const rows = localCoverage?.rows ?? [];
+  for (const row of rows) {
     const stream = typeof row.stream === "string" && row.stream ? row.stream : null;
     if (!stream || conditions.has(stream)) {
       continue;
@@ -2004,7 +2006,39 @@ function localCoverageConditionsByStream(
       conditions.set(stream, condition);
     }
   }
+  if (rows.length > 0 && manifestByStream.has("coverage_diagnostics") && !conditions.has("coverage_diagnostics")) {
+    conditions.set("coverage_diagnostics", "complete");
+  }
+  for (let pass = 0; pass < manifestByStream.size; pass += 1) {
+    let changed = false;
+    for (const [stream, manifestStream] of manifestByStream) {
+      if (conditions.has(stream)) {
+        continue;
+      }
+      const parentStream = localCoverageParentStream(manifestStream);
+      if (!parentStream) {
+        continue;
+      }
+      const parentCondition = conditions.get(parentStream);
+      if (!parentCondition) {
+        continue;
+      }
+      conditions.set(stream, parentCondition);
+      changed = true;
+    }
+    if (!changed) {
+      break;
+    }
+  }
   return conditions;
+}
+
+function localCoverageParentStream(stream: ManifestStream | undefined): string | null {
+  if (!stream || typeof stream !== "object") {
+    return null;
+  }
+  const parent = stream.state_stream;
+  return typeof parent === "string" && parent ? parent : null;
 }
 
 /** Safe per-store coverage triple read from `coverage_diagnostics` records. */

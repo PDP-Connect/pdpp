@@ -135,6 +135,13 @@ same diagnostics. Otherwise the connection can honestly project
 `coverage: complete` while every stream row still says coverage is unmeasured,
 which is an owner-facing contradiction.
 
+Some local-device streams are co-emitted children of a parent store scan. For
+example, a session/project scan can emit session records plus message/event
+records, while the safe diagnostic row names only the parent stream. The stream
+report therefore uses the manifest's existing `state_stream` declaration to let
+child streams inherit the parent's local coverage state; runtime facts and
+pending detail gaps still take precedence.
+
 ## Implementation Sequence
 
 1. Add shared types and manifest/report validation for coverage and freshness

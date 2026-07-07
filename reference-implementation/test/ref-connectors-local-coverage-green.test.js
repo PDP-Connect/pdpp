@@ -54,8 +54,10 @@ function seedConnector({ refreshPolicy = null } = {}) {
     display_name: 'Local Coverage Collector',
     capabilities,
     streams: [
-      { name: 'messages', primary_key: ['id'] },
-      { name: 'sessions', primary_key: ['id'] },
+      { name: 'sessions', primary_key: ['id'], coverage_strategy: 'checkpoint_window' },
+      { name: 'messages', primary_key: ['id'], coverage_strategy: 'checkpoint_window', state_stream: 'sessions' },
+      { name: 'attachments', primary_key: ['id'], coverage_strategy: 'checkpoint_window', state_stream: 'sessions' },
+      { name: 'coverage_diagnostics', primary_key: ['id'], coverage_strategy: 'snapshot_import_receipt' },
     ],
   };
   getDb()
@@ -184,9 +186,10 @@ test(
       emittedAt: '2026-06-03T11:58:00.000Z',
     });
     // Every known store is accounted for (collected / inventory-only / excluded).
+    // The real local collectors emit one diagnostic for the parent project/session
+    // store; co-emitted child streams inherit that coverage through `state_stream`.
     seedCoverage([
       { store: 'sessions', stream: 'sessions', status: 'collected' },
-      { store: 'messages', stream: 'messages', status: 'collected' },
       { store: 'cache', stream: null, status: 'inventory_only' },
       { store: 'auth', stream: null, status: 'excluded' },
     ]);
@@ -206,7 +209,17 @@ test(
     assert.equal(
       reportByStream.messages?.coverage_condition,
       'complete',
-      'local coverage diagnostics should prove per-stream coverage for collected local streams',
+      'local coverage diagnostics should prove child-stream coverage through the state_stream parent',
+    );
+    assert.equal(
+      reportByStream.attachments?.coverage_condition,
+      'complete',
+      'co-emitted local child streams inherit coverage from their declared parent stream',
+    );
+    assert.equal(
+      reportByStream.coverage_diagnostics?.coverage_condition,
+      'complete',
+      'coverage_diagnostics proves itself complete once durable diagnostic rows exist',
     );
     assert.equal(
       reportByStream.sessions?.coverage_condition,
@@ -234,8 +247,8 @@ test(
     assert.equal(retainedByStream.messages, 1, 'retained per-stream counts ride on the connector summary');
     assert.equal(
       retainedByStream.coverage_diagnostics,
-      4,
-      'retained streams outside the manifest remain visible instead of collapsing into the source total',
+      3,
+      'retained support streams remain visible instead of collapsing into the source total',
     );
   }),
 );
@@ -263,7 +276,6 @@ test(
     });
     seedCoverage([
       { store: 'sessions', stream: 'sessions', status: 'collected' },
-      { store: 'messages', stream: 'messages', status: 'collected' },
       { store: 'cache', stream: null, status: 'inventory_only' },
       { store: 'auth', stream: null, status: 'excluded' },
     ]);

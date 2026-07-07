@@ -281,6 +281,7 @@
         }
       },
       "coverage_strategy": "checkpoint_window",
+      "state_stream": "sessions",
       "freshness_strategy": "device_heartbeat"
     },
     {
@@ -400,7 +401,8 @@
           ]
         }
       },
-      "coverage_strategy": "snapshot_import_receipt",
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "sessions",
       "freshness_strategy": "device_heartbeat"
     },
     {
@@ -598,7 +600,8 @@
           ]
         }
       },
-      "coverage_strategy": "snapshot_import_receipt",
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "sessions",
       "freshness_strategy": "device_heartbeat"
     },
     {
