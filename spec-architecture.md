@@ -1,6 +1,6 @@
 # System Architecture: How the Spec Components Relate
 
-Status: Informational (non-normative)
+Status: Informative
 Date: 2026-04-11
 
 ## Components

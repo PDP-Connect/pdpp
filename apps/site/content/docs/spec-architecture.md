@@ -4,9 +4,11 @@ description: "How the current PDPP reference components relate — native provid
 ---
 
 <Callout type="info" title="Spec status">
-  Status: **Informational (non-normative)**
+  Status: **Informative**
 
   Date: 2026-04-11
+
+  Scope: Component map of a PDPP deployment and how the protocol roles relate.
 </Callout>
 
 ## Components

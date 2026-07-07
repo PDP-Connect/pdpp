@@ -3,6 +3,14 @@ title: "Reference Implementation Notes"
 description: "Current implementation behavior for the forkable PDPP reference stack. Not normative protocol documentation."
 ---
 
+<Callout type="info" title="Page status">
+  Status: **Informative**
+
+  Date: 2026-07-07
+
+  Scope: Implementation notes for the `reference-implementation/` package; describes current behavior, not protocol requirements.
+</Callout>
+
 These are implementation notes for the current `reference-implementation/` package. The public explainer and run/deploy entrypoint is [/reference](/reference). For protocol semantics, use the protocol docs under [/docs](/docs).
 
 The `reference-implementation/` package is the forkable PDPP reference substrate in this repo. It is where the current authorization server, resource server, runtime, CLI, and black-box tests exercise the protocol.

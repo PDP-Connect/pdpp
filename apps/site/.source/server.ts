@@ -1,8 +1,7 @@
 // @ts-nocheck
-import * as __fd_glob_17 from "../content/docs/spec-semantic-retrieval-extension.md?collection=docs"
-import * as __fd_glob_16 from "../content/docs/spec-ext-lexical-search.md?collection=docs"
-import * as __fd_glob_15 from "../content/docs/spec-ext-aggregation.md?collection=docs"
-import * as __fd_glob_14 from "../content/docs/spec-dti-alignment.md?collection=docs"
+import * as __fd_glob_16 from "../content/docs/spec-semantic-retrieval-extension.md?collection=docs"
+import * as __fd_glob_15 from "../content/docs/spec-ext-lexical-search.md?collection=docs"
+import * as __fd_glob_14 from "../content/docs/spec-ext-aggregation.md?collection=docs"
 import * as __fd_glob_13 from "../content/docs/spec-deferred.md?collection=docs"
 import * as __fd_glob_12 from "../content/docs/spec-data-query-api.md?collection=docs"
 import * as __fd_glob_11 from "../content/docs/spec-core.md?collection=docs"
@@ -25,4 +24,4 @@ const create = server<typeof Config, import("fumadocs-mdx/runtime/types").Intern
   }
 }>({"doc":{"passthroughs":["extractedReferences"]}});
 
-export const docs = await create.docs("docs", "content/docs", {"meta.json": __fd_glob_0, }, {"README.md": __fd_glob_1, "index.mdx": __fd_glob_2, "open-questions.md": __fd_glob_3, "reference-implementation-examples.md": __fd_glob_4, "reference-implementation.md": __fd_glob_5, "spec-architecture.md": __fd_glob_6, "spec-auth-design.md": __fd_glob_7, "spec-change-tracking.md": __fd_glob_8, "spec-collection-profile.md": __fd_glob_9, "spec-connector-ecosystem.md": __fd_glob_10, "spec-core.md": __fd_glob_11, "spec-data-query-api.md": __fd_glob_12, "spec-deferred.md": __fd_glob_13, "spec-dti-alignment.md": __fd_glob_14, "spec-ext-aggregation.md": __fd_glob_15, "spec-ext-lexical-search.md": __fd_glob_16, "spec-semantic-retrieval-extension.md": __fd_glob_17, });
+export const docs = await create.docs("docs", "content/docs", {"meta.json": __fd_glob_0, }, {"README.md": __fd_glob_1, "index.mdx": __fd_glob_2, "open-questions.md": __fd_glob_3, "reference-implementation-examples.md": __fd_glob_4, "reference-implementation.md": __fd_glob_5, "spec-architecture.md": __fd_glob_6, "spec-auth-design.md": __fd_glob_7, "spec-change-tracking.md": __fd_glob_8, "spec-collection-profile.md": __fd_glob_9, "spec-connector-ecosystem.md": __fd_glob_10, "spec-core.md": __fd_glob_11, "spec-data-query-api.md": __fd_glob_12, "spec-deferred.md": __fd_glob_13, "spec-ext-aggregation.md": __fd_glob_14, "spec-ext-lexical-search.md": __fd_glob_15, "spec-semantic-retrieval-extension.md": __fd_glob_16, });

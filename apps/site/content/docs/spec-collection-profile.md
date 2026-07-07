@@ -4,9 +4,11 @@ description: "Companion to the Personal Data Portability Protocol (PDPP) core sp
 ---
 
 <Callout type="info" title="Spec status">
-  Status: **Draft**
+  Status: **Companion profile draft**
 
   Date: 2026-04-11
+
+  Scope: How data is collected into a PDPP resource server: connector runtime, JSONL protocol, bindings, and sync state.
 </Callout>
 
 Companion to the Personal Data Portability Protocol (PDPP) core spec.

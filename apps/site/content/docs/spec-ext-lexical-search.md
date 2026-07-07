@@ -6,9 +6,9 @@ description: "Optional companion profile to the Personal Data Portability Protoc
 <Callout type="info" title="Spec status">
   Status: **Draft extension profile**
 
-  Optional; not required for PDPP Core conformance. Implementations advertise support via declared capabilities (per Core §11 Extensions).
-
   Date: 2026-07-06
+
+  Scope: Optional lexical (full-text) search capability at `GET /v1/search`; not required for Core conformance; support advertised via declared capabilities (Core §11 Extensions).
 </Callout>
 
 Companion to the Personal Data Portability Protocol (PDPP) core spec. This is an optional extension profile: it defines an additive capability and does not alter Core semantics.

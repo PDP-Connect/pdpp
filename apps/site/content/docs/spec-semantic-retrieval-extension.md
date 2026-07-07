@@ -3,7 +3,13 @@ title: "Semantic Retrieval Extension (Experimental)"
 description: "Experimental optional PDPP extension defining a semantic retrieval surface at GET /v1/search/semantic. Unstable."
 ---
 
-<Callout type="warn" title="Experimental / unstable">
+<Callout type="warn" title="Spec status">
+  Status: **Draft extension profile (experimental)**
+
+  Date: 2026-04-24
+
+  Scope: Optional semantic (meaning-based) retrieval at `GET /v1/search/semantic`; experimental and revisable; not required for Core conformance.
+
   This extension is publicly named and discoverable, but explicitly marked `stability: "experimental"`. Breaking revisions are acceptable. Clients that rely on it MUST accept that the contract may change, and SHOULD fall back to the stable [lexical retrieval extension](./spec-ext-lexical-search) where it matters. Servers that advertise it carry a machine-readable `stability: "experimental"` marker that does not disappear silently. See [Stability](#stability).
 </Callout>
 
@@ -264,5 +270,5 @@ Explicit non-goals for this tranche:
 ## See also
 
 - [Extension Profile: Lexical Search](./spec-ext-lexical-search): the stable public retrieval floor.
-- [Data Query API](./spec-data-query-api) — core record-listing contract.
+- [Resource Server Interface (Core Section 8)](/docs/spec-core#resource-server-interface) — core record-listing contract.
 - The canonical approved spec at `openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md`.

@@ -3,6 +3,14 @@ title: "Reference Implementation Examples"
 description: "Current end-to-end examples from the live PDPP reference implementation. Not normative protocol documentation."
 ---
 
+<Callout type="info" title="Page status">
+  Status: **Informative**
+
+  Date: 2026-07-07
+
+  Scope: Worked end-to-end examples against the current reference implementation; describes current behavior, not protocol requirements.
+</Callout>
+
 These examples document the **current reference implementation**, not a hypothetical future deployment. They show the real surfaces exposed by `reference-implementation/server`, `reference-implementation/runtime`, and `reference-implementation/cli` today.
 
 If you want the public explainer and run/deploy posture first, start with [/reference](/reference). If you want the detailed implementation notes, continue to [/docs/reference-implementation](/docs/reference-implementation).

@@ -1,6 +1,6 @@
 # Authentication Design
 
-Status: Informational (non-normative design rationale)
+Status: Informative
 Date: 2026-03-30
 
 ## Decision: Bearer tokens at both boundaries, mechanism out of scope
@@ -17,8 +17,8 @@ Authorization: Bearer <owner_token>
 
 - Owner tokens bypass grant enforcement — the owner has full access to their own data
 - How the owner obtains this token is out of scope: device code flow, wallet signature, API key, env var for CI
-- The existing Vana CLI implements this: `~/.vana/auth.json` contains `personal_server.session_token` from device code flow
-- Env var override: `VANA_PS_TOKEN` or `PDPP_OWNER_TOKEN`
+- The reference CLI implements this: it stores the owner token obtained from the device code flow
+- Env var override: `PDPP_OWNER_TOKEN`
 
 ### App operations (query records filtered by grant)
 
@@ -52,13 +52,13 @@ Out of scope for the wire protocol. The authorization server handles user authen
 - Token lifetime and refresh mechanics
 - Whether wallet-based auth is supported (optional, never required)
 
-## How existing Vana stack maps
+## How an existing deployment maps
 
 | Existing mechanism | PDPP boundary | Notes |
 |---|---|---|
-| `personal_server.session_token` from `~/.vana/auth.json` | Owner token | Already a bearer token from device code flow |
-| `VANA_PS_TOKEN` env var | Owner token (CI/automation) | Already supported in CLI auth.ts |
-| `Web3Signed` header with builder private key + grantId | App token | Vana-specific profile; PDPP standardizes as bearer |
+| Reference CLI owner session token (device code flow) | Owner token | Already a bearer token |
+| `PDPP_OWNER_TOKEN` env var | Owner token (CI/automation) | Supported by the reference CLI |
+| Deployment-specific signed-header schemes | App token | Deployment-specific profiles; PDPP standardizes as bearer |
 | Session relay → grant approval → GrantPayload | User consent | Maps to OAuth authorization code flow |
 
 ## Industry patterns
@@ -76,5 +76,3 @@ All major platforms use the same pattern: owner/admin uses privileged credential
 
 - RFC 6749 §3.1: owner authentication explicitly out of scope
 - RFC 6750: defines bearer token presentation, not issuance
-- Codex gpt-5.4 analysis (2026-03-30)
-- Gemini 3.1 Pro Preview analysis (2026-03-30)

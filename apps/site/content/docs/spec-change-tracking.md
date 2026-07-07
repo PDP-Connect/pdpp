@@ -4,9 +4,11 @@ description: "Grant-relative incremental sync via `changes_since` cursors — no
 ---
 
 <Callout type="info" title="Spec status">
-  Status: **Informational (non-normative design rationale)**
+  Status: **Informative**
 
   Date: 2026-04-06 (revised from 2026-03-29)
+
+  Scope: Design rationale for grant-relative incremental sync over canonical changelog streams.
 </Callout>
 
 ## Decision

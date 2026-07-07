@@ -1,6 +1,6 @@
 # PDPP Collection Profile v0.1.0
 
-Status: Draft
+Status: Companion profile draft
 Date: 2026-04-11
 
 Companion to the Personal Data Portability Protocol (PDPP) core spec.

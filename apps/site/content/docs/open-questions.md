@@ -5,7 +5,9 @@ description: "Open design questions for PDPP, ordered by importance. Consolidate
 
 # PDPP Open Questions
 
-Consolidated June 2026, ordered by importance. Each item is undecided. Decided items
+Status: Informative · consolidated June 2026 · ordered by importance.
+
+Each item is undecided. Decided items
 and implementation TODOs are tracked in [Deferred Concerns](https://www.pdpp.dev/docs/spec-deferred).
 
 1. When a selection request omits a selector, should the default be all available data

@@ -1,13 +1,10 @@
----
-title: "DTI Alignment"
-description: "How PDPP relates to the Data Transfer Initiative and fits into the broader data portability landscape."
----
+# DTI alignment notes
 
-<Callout type="info" title="Spec status">
-  Status: **Informational (non-normative research)**
+Moved from the public site (apps/site/content/docs/spec-dti-alignment.md) on 2026-07-07: internal research memo, not protocol documentation.
 
-  Date: 2026-03-28
-</Callout>
+
+Status: Informational (non-normative research)
+Date: 2026-03-28
 
 ## DTI's receptiveness to external proposals
 

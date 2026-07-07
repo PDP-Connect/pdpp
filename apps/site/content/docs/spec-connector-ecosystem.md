@@ -4,9 +4,11 @@ description: "Reference runtime notes for connectors — browser abstraction dec
 ---
 
 <Callout type="info" title="Spec status">
-  Status: **Informational (non-normative)**
+  Status: **Informative**
 
   Date: 2026-03-30
+
+  Scope: Survey of connector types and the browser-abstraction decision behind the Collection Profile.
 </Callout>
 ## Browser abstraction decision
 
@@ -19,11 +21,11 @@ Two models for how connectors interact with browsers:
 
 ### Decision: Model A, with JSONL for everything else
 
-**Codex gpt-5.4 recommendation (2026-03-30):** Do not build a custom BROWSER JSONL protocol. Connectors need real browser power (Cloudflare challenges, SPA navigation, network interception, cookie extraction). A message protocol either reimplements Playwright or falls back to `evaluate` for everything hard.
+**Recommendation:** Do not build a custom BROWSER JSONL protocol. Connectors need real browser power (Cloudflare challenges, SPA navigation, network interception, cookie extraction). A message protocol either reimplements Playwright or falls back to `evaluate` for everything hard.
 
 The protocol is JSONL for RECORD/STATE/INTERACTION/DONE. Browser automation is a runtime capability, not a protocol concern. When process isolation or language independence is needed, expose a CDP WebSocket URL rather than inventing a custom browser protocol.
 
-**Phased approach (from model-b-runtime-provided-browser.md):**
+**Phased approach:**
 1. Phase 1 (now): Formalize BrowserCapability interface — refactor, not behavior change
 2. Phase 2 (when needed): Message protocol OR CDP endpoint for out-of-process connectors
 3. Phase 3 (defer): Full process isolation with container support
@@ -67,7 +69,7 @@ How connectors get data from sources:
 
 | Service | Data domain | Sources covered | Auth | Wrap difficulty |
 |---|---|---|---|---|
-| **Plaid** | Financial (transactions, accounts, balances, investments) | 12,000+ US/EU financial institutions | Plaid Link OAuth flow → access_token | Easy — structured JSON API |
+| **Plaid** | Financial (transactions, accounts, balances, investments) | US/EU financial institutions via Plaid's aggregation coverage | Plaid Link OAuth flow → access_token | Easy — structured JSON API |
 | **Terra API** | Health/fitness (workouts, sleep, heart rate, steps) | Fitbit, Oura, Garmin, Apple Health, Whoop, Peloton, etc. | Terra OAuth → API calls | Easy — structured JSON API |
 | **CommonHealth** | Health records (Android) | 400+ data sources | On-device consent | Medium — Android-specific |
 
@@ -117,15 +119,12 @@ A runtime host either can or can't provide what the connector needs. If it can't
 
 1. **The JSONL protocol is correct.** Every connector type (Go binary, Python script, Node.js + Playwright, aggregator wrapper) can write JSONL to stdout.
 2. **Browser is a runtime capability, not a protocol concern.** Connectors that need a browser get one from the runtime. The protocol doesn't define how.
-3. **Aggregator connectors (Plaid, Terra) are high leverage.** One Plaid connector = 12,000+ financial institutions. One Terra connector = dozens of health/fitness platforms.
+3. **Aggregator connectors (Plaid, Terra) cover many sources at once.** One Plaid connector reaches the financial institutions Plaid aggregates; one Terra connector reaches the health/fitness platforms Terra supports.
 4. **Archive parsers need file system access.** The manifest may need a `runtime_requirements.filesystem` capability in the future.
 5. **Go/Python/C# connectors work today** via the JSONL protocol. No Node.js required. The runtime just spawns a process.
 
 ## Sources
 
-- Gemini 3.1 Pro Preview research with Google Search (2026-03-30)
-- Codex gpt-5.4 analysis (2026-03-30): browser abstraction recommendation
-- model-b-runtime-provided-browser.md: phased approach to browser abstraction
 - slackdump: https://github.com/rusq/slackdump
 - DiscordChatExporter: https://github.com/Tyrrrz/DiscordChatExporter
 - tg-archive: https://github.com/knadh/tg-archive
