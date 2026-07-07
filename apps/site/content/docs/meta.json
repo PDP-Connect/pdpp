@@ -8,6 +8,7 @@
     "spec-auth-design",
     "spec-change-tracking",
     "spec-deferred",
+    "open-questions",
     "---Extensions---",
     "spec-ext-lexical-search",
     "spec-ext-aggregation",
