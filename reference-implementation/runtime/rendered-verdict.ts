@@ -813,7 +813,7 @@ function buildRequiredActions(
       audience: "owner",
       urgency: "now",
       affects: [],
-      cta: "Finish the prompt to keep collecting",
+      cta: "Complete the requested action",
       terminal,
       satisfied_when: { kind: "attention_resolved" },
     });
@@ -1141,7 +1141,7 @@ function buildForwardStatement(
         if (primary.remediation?.kind === "local_collector_recovery") {
           return primary.remediation.summary;
         }
-        return "Finish the prompt and collection resumes.";
+        return "Complete the requested action and collection resumes.";
       case "refresh_now":
         return "Run a refresh to bring this up to date.";
       case "retry_gap":

@@ -126,7 +126,7 @@
     "server/routes/owner-connector-templates.ts": 8,
     "server/routes/ref-admin.ts": 57,
     "server/routes/ref-browser-enrollment-shell.ts": 13,
-    "server/routes/ref-connectors.ts": 28,
+    "server/routes/ref-connectors.ts": 24,
     "server/routes/ref-dataset.ts": 43,
     "server/routes/ref-device-exporter-sanitize.ts": 10,
     "server/routes/ref-device-exporters.ts": 143,
@@ -178,7 +178,7 @@
     "server/streaming/cdp-adapter.js": 78,
     "server/streaming/cdp-companion.ts": 18,
     "server/streaming/cdp-method-allowlist.test.js": 2,
-    "server/streaming/companion-factory.ts": 9,
+    "server/streaming/companion-factory.ts": 8,
     "server/streaming/input-telemetry.ts": 1,
     "server/streaming/neko-adapter.js": 112,
     "server/streaming/neko-adapter.test.js": 10,
@@ -190,5 +190,5 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.js": 9
   },
-  "total": 8928
+  "total": 8923
 }

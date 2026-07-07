@@ -68,11 +68,19 @@ interface ResolvedCompanionOptions {
   WebSocketCtor: any;
 }
 
-export type StreamingCompanionFactory = (input: {
-  run_id: unknown;
-  interaction_id: unknown;
+interface StreamingCompanionFactoryInput {
   browser_session_id: unknown;
-}) => StreamingCompanion | null;
+  interaction_id: unknown;
+  run_id: unknown;
+  target?: unknown;
+}
+
+type ResolvedStreamingCompanionInput = StreamingCompanionFactoryInput & {
+  interaction_id: string;
+  run_id: string;
+};
+
+export type StreamingCompanionFactory = (input: StreamingCompanionFactoryInput) => StreamingCompanion | null;
 
 interface FactoryOptions {
   commandTimeoutMs?: number | undefined;
@@ -94,6 +102,17 @@ function createMissingTargetError(backend = "streaming"): CodedError {
 
 function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function hasCompanionIds(input: StreamingCompanionFactoryInput): input is ResolvedStreamingCompanionInput {
+  return optionalString(input.run_id) !== null && optionalString(input.interaction_id) !== null;
+}
+
+function resolveStreamingTarget(target: unknown, fallback: ResolveTargetForInteraction): ResolveTargetForInteraction {
+  if (target == null) {
+    return fallback;
+  }
+  return () => target;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: `target` is untyped JSON returned by the injected resolver; shape is validated at runtime.
@@ -355,18 +374,15 @@ export function createDefaultStreamingCompanionFactory({
     throw new Error("createDefaultStreamingCompanionFactory: no WebSocket constructor available");
   }
 
-  return ({ run_id, interaction_id, browser_session_id }) => {
-    if (typeof run_id !== "string" || run_id.length === 0) {
-      return null;
-    }
-    if (typeof interaction_id !== "string" || interaction_id.length === 0) {
+  return (input) => {
+    if (!hasCompanionIds(input)) {
       return null;
     }
     return createResolvedCompanion({
-      run_id,
-      interaction_id,
-      browser_session_id,
-      resolveTargetForInteraction,
+      run_id: input.run_id,
+      interaction_id: input.interaction_id,
+      browser_session_id: input.browser_session_id,
+      resolveTargetForInteraction: resolveStreamingTarget(input.target, resolveTargetForInteraction),
       WebSocketCtor,
       fetchImpl,
       logger,

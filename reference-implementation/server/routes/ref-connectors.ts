@@ -174,6 +174,7 @@ export interface MountRefConnectorsContext {
   now?(): string;
   onScheduleMutation?(): Promise<unknown> | unknown;
   pdppError: PdppErrorFn;
+  reconcileDirtyConnectorSummaryEvidence(): Promise<unknown> | unknown;
   requireOwnerSession: MiddlewareHandler;
   resolveOwnerConnectorNamespace(
     req: unknown,
@@ -320,6 +321,7 @@ export function mountRefConnectorsList(app: AppLike, ctx: MountRefConnectorsCont
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
+        await ctx.reconcileDirtyConnectorSummaryEvidence();
         // Optional connection selector. When present, the route projects only
         // the resolved connection (records subpages resolve one connection and
         // must not hydrate every connector); when absent it lists every
@@ -363,6 +365,7 @@ export function mountRefConnectorDetail(app: AppLike, ctx: MountRefConnectorsCon
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
+        await ctx.reconcileDirtyConnectorSummaryEvidence();
         const connectorId = decodeURIComponent(req.params.connectorId as string);
         const envelope = await executeRefConnectorDetail(
           { connectorId },
@@ -614,7 +617,17 @@ function isSafeResourceStreamName(stream: string): boolean {
   return stream.length > 0 && stream !== "__proto__" && stream !== "constructor" && stream !== "prototype";
 }
 
-function readRunResources(req: RouteRequest): Readonly<Record<string, readonly string[]>> | undefined {
+function invalidRunResources(message: string): never {
+  const err = new Error(message) as Error & { code: string };
+  err.code = "invalid_request";
+  throw err;
+}
+
+function isStringArray(values: unknown): values is string[] {
+  return Array.isArray(values) && values.every((value) => typeof value === "string");
+}
+
+function readRunResourcesObject(req: RouteRequest): Record<string, unknown> | undefined {
   const body = req.body;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
     return;
@@ -624,37 +637,38 @@ function readRunResources(req: RouteRequest): Readonly<Record<string, readonly s
     return;
   }
   if (!(typeof raw === "object" && !Array.isArray(raw))) {
-    const err = new Error("run resources must be an object keyed by stream") as Error & { code: string };
-    err.code = "invalid_request";
-    throw err;
+    invalidRunResources("run resources must be an object keyed by stream");
+  }
+  return raw as Record<string, unknown>;
+}
+
+function assertRunResourceEntry(stream: string, values: unknown): asserts values is string[] {
+  if (!(isSafeResourceStreamName(stream) && isStringArray(values))) {
+    invalidRunResources("run resources must map stream names to string arrays");
+  }
+}
+
+function normalizeRunResourceEntry(stream: string, values: unknown): readonly [string, string[]] {
+  assertRunResourceEntry(stream, values);
+  const cleaned = [...new Set(values.filter((value) => value.length > 0))];
+  if (cleaned.length === 0) {
+    invalidRunResources("run resources must include at least one resource id per stream");
+  }
+  return [stream, cleaned];
+}
+
+function readRunResources(req: RouteRequest): Readonly<Record<string, readonly string[]>> | undefined {
+  const raw = readRunResourcesObject(req);
+  if (raw == null) {
+    return;
   }
   const resources: Record<string, string[]> = {};
   for (const [stream, values] of Object.entries(raw)) {
-    if (
-      typeof stream !== "string" ||
-      !isSafeResourceStreamName(stream) ||
-      !Array.isArray(values) ||
-      values.some((value) => typeof value !== "string")
-    ) {
-      const err = new Error("run resources must map stream names to string arrays") as Error & { code: string };
-      err.code = "invalid_request";
-      throw err;
-    }
-    const stringValues = values as string[];
-    const cleaned = [...new Set(stringValues.filter((value) => value.length > 0))];
-    if (cleaned.length === 0) {
-      const err = new Error("run resources must include at least one resource id per stream") as Error & {
-        code: string;
-      };
-      err.code = "invalid_request";
-      throw err;
-    }
+    const [, cleaned] = normalizeRunResourceEntry(stream, values);
     resources[stream] = cleaned;
   }
   if (Object.keys(resources).length === 0) {
-    const err = new Error("run resources must include at least one stream") as Error & { code: string };
-    err.code = "invalid_request";
-    throw err;
+    invalidRunResources("run resources must include at least one stream");
   }
   return resources;
 }

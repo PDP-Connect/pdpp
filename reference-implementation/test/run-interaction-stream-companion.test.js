@@ -154,3 +154,31 @@ test('resolved companion can resolve n.eko backend before start', async () => {
   assert.equal(await companion.resolveBackend(), 'neko');
   assert.equal(companion.backend, 'neko');
 });
+
+test('resolved companion prefers route-resolved target over legacy registry resolver', async () => {
+  const factory = createDefaultStreamingCompanionFactory({
+    resolveTargetForInteraction: () => {
+      throw new Error('legacy resolver must not run when route supplied a target');
+    },
+    WebSocketCtor: function FakeWebSocket() {},
+    fetchImpl: async () => {
+      throw new Error('resolveBackend must not perform network I/O');
+    },
+  });
+  const companion = factory({
+    browser_session_id: 'bs_route_target',
+    interaction_id: 'asst_route_target',
+    run_id: 'run_route_target',
+    target: {
+      backend: 'neko',
+      base_url: 'http://neko:8080/neko',
+      interaction_id: 'asst_route_target',
+      lease_id: 'lease_route_target',
+      profile_key: 'chatgpt:cin_route_target',
+      surface_id: 'surface_route_target',
+    },
+  });
+
+  assert.equal(await companion.resolveBackend(), 'neko');
+  assert.equal(companion.backend, 'neko');
+});

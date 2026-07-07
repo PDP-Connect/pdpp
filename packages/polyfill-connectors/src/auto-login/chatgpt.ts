@@ -85,9 +85,9 @@ export const CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE = CHATGPT_PUSH_APPROVAL_ASSI
 export const CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE =
   "ChatGPT sent an app approval notification, but the session did not continue automatically. Approve it in the ChatGPT app if you have not already, then click Continue here.";
 export const CHATGPT_BROWSER_LOGIN_ASSISTANCE_MESSAGE =
-  "Finish ChatGPT login in the streaming companion. PDPP will continue automatically after ChatGPT confirms the session.";
+  "Open the browser session and finish ChatGPT login. PDPP will continue automatically after ChatGPT confirms the session.";
 export const CHATGPT_BROWSER_LOGIN_FALLBACK_MESSAGE =
-  "ChatGPT login still is not active. Finish login in the streaming companion, then click Continue here.";
+  "ChatGPT login still is not active. Finish login in the browser session, then click Continue here.";
 export const CHATGPT_SESSION_REQUIRED_NON_INTERACTIVE_MESSAGE =
   "chatgpt_session_required: ChatGPT session is not active; start an owner-attended manual refresh to repair authentication.";
 export const CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE =

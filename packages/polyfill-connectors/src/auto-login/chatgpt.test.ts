@@ -460,7 +460,7 @@ test("ChatGPT manual auth repair can use the secure browser without storing a pa
 
       assert.equal(ok, true);
       assert.deepEqual(assistanceMessages, [
-        "Finish ChatGPT login in the streaming companion. PDPP will continue automatically after ChatGPT confirms the session.",
+        "Open the browser session and finish ChatGPT login. PDPP will continue automatically after ChatGPT confirms the session.",
       ]);
 
       const inactivePage = {

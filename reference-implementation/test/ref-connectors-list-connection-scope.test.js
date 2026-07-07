@@ -52,7 +52,11 @@ function summaryItem(connectorId, connectionId = connectorId) {
 // The owner-session middleware is a no-op here; auth posture is covered
 // elsewhere. The ctx spies record which projection dependency the route used.
 function buildHarness({ allConnections, summaryForRoute }) {
-  const calls = { listConnectorSummaries: 0, getConnectorSummaryForRoute: [] };
+  const calls = {
+    getConnectorSummaryForRoute: [],
+    listConnectorSummaries: 0,
+    reconcileDirtyConnectorSummaryEvidence: 0,
+  };
   const ctx = {
     requireOwnerSession: (_req, _res, next) => (typeof next === 'function' ? next() : undefined),
     // Mirror the production helper: take the first string value, ignore arrays
@@ -68,6 +72,9 @@ function buildHarness({ allConnections, summaryForRoute }) {
     getConnectorSummaryForRoute(routeId) {
       calls.getConnectorSummaryForRoute.push(routeId);
       return summaryForRoute(routeId);
+    },
+    reconcileDirtyConnectorSummaryEvidence() {
+      calls.reconcileDirtyConnectorSummaryEvidence += 1;
     },
     handleError(_res, err) {
       throw err;
@@ -111,6 +118,7 @@ test('scoped request projects only the resolved connection and skips the all-con
   // The whole point: the records-subpage hot path resolved ONE connection and
   // never ran the all-connector fan-out.
   assert.equal(harness.calls.listConnectorSummaries, 0, 'scoped request must NOT call the all-connector summarizer');
+  assert.equal(harness.calls.reconcileDirtyConnectorSummaryEvidence, 1);
   assert.deepEqual(harness.calls.getConnectorSummaryForRoute, ['conn-work']);
 
   assert.equal(envelope.object, 'list');
@@ -128,6 +136,7 @@ test('scoped request that resolves nothing returns an empty list, not the full l
   const envelope = await harness.invoke({ connection: 'does-not-exist' });
 
   assert.equal(harness.calls.listConnectorSummaries, 0, 'an empty resolution must not fall back to the full list');
+  assert.equal(harness.calls.reconcileDirtyConnectorSummaryEvidence, 1);
   assert.deepEqual(envelope, { object: 'list', data: [] });
 });
 
@@ -141,6 +150,7 @@ test('unscoped request lists every connection exactly as before', async () => {
   const envelope = await harness.invoke({});
 
   assert.equal(harness.calls.listConnectorSummaries, 1, 'unscoped request uses the all-connector summarizer');
+  assert.equal(harness.calls.reconcileDirtyConnectorSummaryEvidence, 1);
   assert.equal(harness.calls.getConnectorSummaryForRoute.length, 0);
   assert.equal(envelope.object, 'list');
   assert.deepEqual(
@@ -159,6 +169,7 @@ test('empty/blank selector is treated as absent (full list), never as a connecto
   const envelope = await harness.invoke({ connection: '' });
 
   assert.equal(harness.calls.listConnectorSummaries, 1, 'blank selector falls through to the full list');
+  assert.equal(harness.calls.reconcileDirtyConnectorSummaryEvidence, 1);
   assert.equal(harness.calls.getConnectorSummaryForRoute.length, 0);
   assert.equal(envelope.data.length, 1);
 });

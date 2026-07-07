@@ -240,7 +240,10 @@ import {
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
-import { markConnectorSummaryEvidenceDirty } from './connector-summary-read-model.ts';
+import {
+  markConnectorSummaryEvidenceDirty,
+  reconcileDirtyConnectorSummaryEvidence,
+} from './connector-summary-read-model.ts';
 import { isHealthRelevant as isAttentionHealthRelevant } from '../runtime/attention.ts';
 import { getDefaultConnectorAttentionStore } from './stores/connector-attention-store.ts';
 import {
@@ -3572,6 +3575,7 @@ function buildAsApp(opts = {}) {
           },
     invalidateConnectorSummariesCache,
     markConnectorSummaryEvidenceDirty,
+    reconcileDirtyConnectorSummaryEvidence,
     resolveRegisteredConnectorManifest,
     listSchedules: async () => (controller ? await controller.listSchedules() : []),
     getSchedule: async (connectorId, options) =>

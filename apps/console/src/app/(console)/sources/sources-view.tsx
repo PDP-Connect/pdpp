@@ -896,7 +896,7 @@ function StreamRecordCount({ stream }: { stream: SourceInstanceView["streams"][n
   if (collection) {
     return (
       <span className="rr-s-stream-fact is-muted" title={collection.countsTitle}>
-        Collection count unavailable
+        Record count not available yet
       </span>
     );
   }
