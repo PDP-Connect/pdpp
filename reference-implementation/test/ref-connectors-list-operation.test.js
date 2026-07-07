@@ -1254,11 +1254,46 @@ test('summary connection health: structured attention beats schedule.human_atten
   assert.equal(snapshot.reason_code, 'manual_verification');
 });
 
+test('summary connection health: time-bound act_elsewhere attention drives needs_attention', () => {
+  // The owner acts outside PDPP and the connector observes completion, so no
+  // submitted response is required. The expiry still makes this action current:
+  // if the owner misses the window, the run can fail.
+  const externalApproval = createAttention({
+    id: 'att_push',
+    dedupe_key: 'chatgpt:app_push',
+    connection_id: 'chatgpt',
+    run_id: 'run_1',
+    reason_code: 'app_push_approval',
+    progress_posture: 'running',
+    owner_action: 'act_elsewhere',
+    response_contract: 'none',
+    sensitivity: 'non_secret',
+    action_target: 'external_app',
+    expires_at: '2026-05-19T12:05:00.000Z',
+    now: '2026-05-19T11:50:00.000Z',
+  });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [externalApproval],
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: failedRun(),
+    lastSuccessfulRun: null,
+    nowIso: '2026-05-19T12:00:00.000Z',
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'needs_attention');
+  assert.equal(snapshot.reason_code, 'app_push_approval');
+  assert.equal(snapshot.next_action?.source, 'structured');
+  assert.equal(snapshot.next_action?.attention_id, 'att_push');
+  assert.equal(snapshot.next_action?.action_target, 'external_app');
+  assert.equal(snapshot.next_action?.owner_action, 'act_elsewhere');
+  assert.equal(snapshot.next_action?.response_contract, 'none');
+});
+
 test('summary connection health: nonblocking act_elsewhere attention is filtered by isHealthRelevant', () => {
   // A nonblocking `act_elsewhere` running notice with no
-  // response_contract is informational — `isHealthRelevant` rejects it,
-  // so the projection must NOT flip the headline pill and must NOT
-  // synthesize a CTA. (Spec scenario: "A non-actionable retry occurs".)
+  // response_contract and no expiry is informational — `isHealthRelevant`
+  // rejects it, so the projection must NOT flip the headline pill and must
+  // NOT synthesize a CTA. (Spec scenario: "A non-actionable retry occurs".)
   const informational = createAttention({
     id: 'att_info',
     dedupe_key: 'codex:auto_in_progress',

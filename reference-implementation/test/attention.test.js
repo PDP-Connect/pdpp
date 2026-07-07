@@ -74,6 +74,34 @@ test('createAttention accepts nonblocking external approval (act_elsewhere)', ()
   assert.equal(rec.owner_action, 'act_elsewhere');
 });
 
+test('isHealthRelevant surfaces time-bound external approval', () => {
+  const rec = createAttention(
+    input({
+      reason_code: 'app_push_approval',
+      progress_posture: 'running',
+      owner_action: 'act_elsewhere',
+      response_contract: 'none',
+      sensitivity: 'non_secret',
+      expires_at: '2026-05-19T12:05:00.000Z',
+    }),
+  );
+  assert.equal(isHealthRelevant(rec, NOW), true);
+  assert.equal(isHealthRelevant(rec, '2026-05-19T12:06:00.000Z'), false);
+});
+
+test('isHealthRelevant keeps unbounded external progress quiet', () => {
+  const rec = createAttention(
+    input({
+      reason_code: 'app_push_pending_auto',
+      progress_posture: 'running',
+      owner_action: 'act_elsewhere',
+      response_contract: 'none',
+      sensitivity: 'non_secret',
+    }),
+  );
+  assert.equal(isHealthRelevant(rec, NOW), false);
+});
+
 test('lifecycle transitions are validated', () => {
   const rec = createAttention(input());
   assert.equal(canTransition('open', 'in_progress'), true);

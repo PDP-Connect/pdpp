@@ -512,8 +512,9 @@ function stripTrailingSlash(s: string): string {
 /**
  * Decide whether a record is *health-relevant* — i.e. whether the
  * connection-health projection should treat it as a `needs_attention`
- * input.  Nonblocking running notices that are merely informational
- * (no response required, no expiry close) should not toggle the pill.
+ * input.  Nonblocking running notices that are merely informational should not
+ * toggle the pill, but time-bound external actions do: without owner action
+ * before the deadline, the run can still fail.
  */
 export function isHealthRelevant(record: AttentionRecord, now: string): boolean {
   if (isTerminal(record.lifecycle)) {
@@ -526,6 +527,9 @@ export function isHealthRelevant(record: AttentionRecord, now: string): boolean 
     return true;
   }
   if (record.progress_posture === "blocked") {
+    return true;
+  }
+  if (record.owner_action === "act_elsewhere" && record.expires_at != null) {
     return true;
   }
   if (record.owner_action !== "none" && record.owner_action !== "act_elsewhere") {
