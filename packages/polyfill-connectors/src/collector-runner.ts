@@ -82,6 +82,8 @@ const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
 const SCAN_BATCH_LIMIT_DETAIL_RE =
   /enqueued\s+\d+\s+batches\s+>=\s+(?:run batch limit|(?:maxEnqueuedBatchesPerRun|\[REDACTED\]))\s+(\d+)/;
 const CONNECTOR_PROTOCOL_DEBUG_DIR_ENV = "PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR";
+const TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE =
+  /^(?:local device request failed: (?:408|429|5\d\d)(?:\b|$)|local device request timed out after\b|fetch failed\b|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)/i;
 
 /**
  * Default policy bounds for durable outbox drains. These are intentionally
@@ -261,6 +263,16 @@ export function autoPruneSucceededOutbox(input: {
     sourceInstanceId: input.sourceInstanceId,
   });
   return { enabled: true, matched: result.matched, pruned: result.pruned };
+}
+
+function requeueTransientLocalDeviceDeadLetters(input: {
+  outbox: LocalDeviceOutbox;
+  sourceInstanceId: string;
+}): number {
+  return input.outbox.requeueDeadLetters({
+    errorClassPattern: TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE,
+    sourceInstanceId: input.sourceInstanceId,
+  }).requeued;
 }
 
 export interface CollectorAutoPruneResult {
@@ -554,6 +566,11 @@ export interface CollectorCompletenessSummary {
 
 export interface CollectorRunResult {
   /**
+   * Transient local-device request dead letters requeued before the pre-scan
+   * drain. Terminal dead letters stay dead-lettered and are not counted here.
+   */
+  autoRecoveredTransientDeadLetters: number;
+  /**
    * Local-completeness summary from this run's `coverage_diagnostics`
    * RECORDs, distinct from {@link CollectorRunResult.done} (declared-stream
    * success). `null` when no coverage diagnostic was observed this pass.
@@ -659,6 +676,10 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
   // overwritten by an outbox-derived one.
   let startingHeartbeatSent = false;
   try {
+    const autoRecoveredTransientDeadLetters = requeueTransientLocalDeviceDeadLetters({
+      outbox,
+      sourceInstanceId: config.sourceInstanceId,
+    });
     const recoveredLeases = outbox.recoverExpiredLeases({ sourceInstanceId: config.sourceInstanceId });
     const preScanDrain = await drainCollectorOutbox({
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
@@ -680,6 +701,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       postDrainSummary,
       preScanDrain,
       recoveredLeases,
+      autoRecoveredTransientDeadLetters,
       satisfiedBindings,
     });
     if (skipResult) {
@@ -796,6 +818,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       prunedSent,
       recordsQueued: enqueueResult.recordsQueued,
       recoveredLeases,
+      autoRecoveredTransientDeadLetters,
       satisfiedBindings,
       sentBatches: (preScanDrain.sentByKind.record_batch ?? 0) + (recordDrain.sentByKind.record_batch ?? 0),
       skippedScanForBacklog: false,
@@ -851,6 +874,7 @@ async function emitCorrectiveHeartbeatFromOutbox(input: {
 
 interface MaybeSkipScanInput {
   autoPrunePolicy: CollectorAutoPrunePolicy;
+  autoRecoveredTransientDeadLetters: number;
   client: Pick<LocalDeviceClient, "heartbeat">;
   config: CollectorRunConfig;
   outbox: LocalDeviceOutbox;
@@ -918,6 +942,7 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     prunedSent,
     recordsQueued: 0,
     recoveredLeases: input.recoveredLeases,
+    autoRecoveredTransientDeadLetters: input.autoRecoveredTransientDeadLetters,
     satisfiedBindings: input.satisfiedBindings,
     sentBatches: input.preScanDrain.sentByKind.record_batch ?? 0,
     skippedScanForBacklog: true,

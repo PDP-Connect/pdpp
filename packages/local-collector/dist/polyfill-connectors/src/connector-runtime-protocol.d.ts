@@ -205,6 +205,7 @@ export type EmittedMessage = {
     status: "succeeded" | "failed";
     records_emitted: number;
     error?: {
+        code?: string;
         message: string;
         retryable: boolean;
     };

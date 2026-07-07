@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const DEFAULT_CAPTURE_ROOT = join(PACKAGE_ROOT, "fixtures");
 const ARIA_SNAPSHOT_TIMEOUT_MS = 2000;
 const LOCATOR_PROBE_TIMEOUT_MS = 1000;
 const LOCATOR_PROBE_ARIA_DEPTH = 2;
@@ -145,7 +146,9 @@ export function createCaptureSession(connectorName) {
     }
     const keepOnSuccess = alwaysRetain;
     const runId = new Date().toISOString().replace(/[:.]/g, "-");
-    const baseDir = join(PACKAGE_ROOT, "fixtures", connectorName, "raw", runId);
+    const configuredRoot = process.env.PDPP_CAPTURE_ROOT_DIR?.trim();
+    const captureRoot = configuredRoot && configuredRoot.length > 0 ? configuredRoot : DEFAULT_CAPTURE_ROOT;
+    const baseDir = join(captureRoot, connectorName, "raw", runId);
     try {
         mkdirSync(join(baseDir, "records"), { recursive: true });
         mkdirSync(join(baseDir, "aria"), { recursive: true });

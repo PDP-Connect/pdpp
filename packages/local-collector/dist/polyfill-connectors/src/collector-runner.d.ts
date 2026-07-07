@@ -59,6 +59,7 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
     readonly command: string;
     readonly connector_id: string;
     readonly env?: NodeJS.ProcessEnv;
+    readonly resources?: Readonly<Record<string, readonly string[]>>;
     readonly streams: readonly string[];
     readonly streamsToBackfill?: readonly string[];
 }
@@ -88,6 +89,7 @@ export interface CollectorCompletenessSummary {
     unaccountedStores: readonly string[];
 }
 export interface CollectorRunResult {
+    autoRecoveredTransientDeadLetters: number;
     completeness: CollectorCompletenessSummary | null;
     done: Extract<EmittedMessage, {
         type: "DONE";
@@ -111,7 +113,7 @@ export declare class CollectorStateReadError extends Error {
 }
 export declare function runCollectorConnector(config: CollectorRunConfig): Promise<CollectorRunResult>;
 export declare function summarizeCollectorCompleteness(coverageByStore: Map<string, CollectorCoverageStatus> | null): CollectorCompletenessSummary | null;
-export declare function buildCollectorStartMessage(streams: readonly string[], streamsToBackfill?: readonly string[], priorState?: Readonly<Record<string, unknown>> | null): StartMessage;
+export declare function buildCollectorStartMessage(streams: readonly string[], streamsToBackfill?: readonly string[], priorState?: Readonly<Record<string, unknown>> | null, resources?: Readonly<Record<string, readonly string[]>>): StartMessage;
 export declare function transformRecordsToCollectorEnvelopes(input: {
     batchId: string;
     batchSeq: number;

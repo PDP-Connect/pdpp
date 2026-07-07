@@ -154,15 +154,33 @@ publishability review.
 
 See: openspec/changes/publish-pdpp-local-collector/design.md.
 `;
+function installStdoutPipeGuard() {
+    process.stdout.on("error", (error) => {
+        if (isErrnoLike(error) && error.code === "EPIPE") {
+            process.exit(0);
+        }
+        throw error;
+    });
+}
+function isErrnoLike(error) {
+    return typeof error === "object" && error !== null && "code" in error;
+}
+function writeStdout(value) {
+    process.stdout.write(value);
+}
+function writeJson(value) {
+    writeStdout(`${JSON.stringify(value, null, 2)}\n`);
+}
 async function main() {
+    installStdoutPipeGuard();
     const options = parseArgs(process.argv.slice(2));
     if (options.command === "advertise") {
-        process.stdout.write(`${JSON.stringify({
+        writeJson({
             runtime: COLLECTOR_RUNTIME_CAPABILITIES.id,
             bindings: [...COLLECTOR_RUNTIME_CAPABILITIES.bindings],
             collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
             bundled_connectors: BUNDLED_CONNECTOR_IDS,
-        }, null, 2)}\n`);
+        });
         return;
     }
     if (options.command === "status" || options.command === "doctor") {
@@ -170,30 +188,30 @@ async function main() {
         const status = inspectLocalOutboxStatus(inspectOptions);
         if (options.command === "doctor") {
             const errorSummary = readLocalOutboxDeadLetterErrorSummary(inspectOptions);
-            process.stdout.write(`${JSON.stringify(buildLocalOutboxDoctor(status, errorSummary), null, 2)}\n`);
+            writeJson(buildLocalOutboxDoctor(status, errorSummary));
             return;
         }
-        process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+        writeJson(status);
         return;
     }
     if (options.command === "retry-dead-letters") {
         const result = retryLocalOutboxDeadLetters(options);
-        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        writeJson(result);
         return;
     }
     if (options.command === "recover") {
         const result = await recoverLocalCollector(options);
-        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        writeJson(result);
         return;
     }
     if (options.command === "prune-sent") {
         const result = pruneSentOutboxRows(options);
-        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        writeJson(result);
         return;
     }
     if (options.command === "compact") {
         const result = compactOutbox(options);
-        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        writeJson(result);
         if (result.refused) {
             process.exitCode = 1;
         }
@@ -208,11 +226,11 @@ async function main() {
             code: options.code,
             ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
         });
-        process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
+        writeJson(response);
         return;
     }
     const result = await runCollectorOnce(options);
-    process.stdout.write(`${JSON.stringify(summarizeRunResultForCli(result), null, 2)}\n`);
+    writeJson(summarizeRunResultForCli(result));
 }
 async function runCollectorOnce(options) {
     if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
@@ -266,8 +284,9 @@ function runDrainNote(result, summary, drained) {
         return "Outbox fully drained — no ready, retrying, leased, or dead-letter work remains.";
     }
     const parts = [];
-    if (summary.ready > 0) {
-        parts.push(`${summary.ready} ready (drains on the next scheduled run)`);
+    const claimableReady = Math.max(0, summary.ready - summary.retrying);
+    if (claimableReady > 0) {
+        parts.push(`${claimableReady} ready (drains on the next scheduled run)`);
     }
     if (summary.retrying > 0) {
         parts.push(`${summary.retrying} retrying (waiting on backoff)`);
@@ -284,7 +303,7 @@ function runDrainNote(result, summary, drained) {
     return `Run succeeded on the source but the outbox is NOT fully drained: ${parts.join(", ")}.${scanNote}`;
 }
 function pendingOpenWork(summary) {
-    return summary.ready + summary.retrying + summary.leased + summary.deadLetter;
+    return summary.ready + summary.leased + summary.deadLetter;
 }
 function summarizeCollectorState(state) {
     if (!state || Object.keys(state).length === 0) {
@@ -709,7 +728,7 @@ function recoverDryRunNote(status) {
 }
 function outboxOpenWork(status) {
     const counts = status.outbox.counts;
-    return counts.dead_letter + counts.leased + counts.pending + counts.retrying;
+    return counts.dead_letter + counts.leased + counts.pending;
 }
 function recoverAppliedNote(input) {
     const { attempts, maxPasses, retry, statusAfter, statusBefore, stoppedReason } = input;
@@ -1032,7 +1051,7 @@ export function buildConnectorSpec(options) {
 export function parseArgs(args) {
     const [command, ...rest] = args;
     if (command === "--help" || command === "-h" || command === "help" || !command) {
-        process.stdout.write(HELP_TEXT);
+        writeStdout(HELP_TEXT);
         process.exit(0);
     }
     if (command !== "enroll" &&

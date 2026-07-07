@@ -97,7 +97,7 @@ export function runConnector(config) {
     if (typeof config.collect !== "function") {
         throw new Error("runConnector: config.collect required");
     }
-    const { name, validateRecord, collect, browser, retryablePattern = DEFAULT_RETRYABLE_PATTERN, timeRangeField = "date", isTombstone, auth, } = config;
+    const { name, validateRecord, collect, browser, normalizeTerminalError = (error) => error, retryablePattern = DEFAULT_RETRYABLE_PATTERN, timeRangeField = "date", isTombstone, auth, } = config;
     const ensureSession = browser ? config.ensureSession : undefined;
     const probeSession = browser ? config.probeSession : undefined;
     const timeRangeFieldFor = typeof timeRangeField === "function" ? timeRangeField : () => timeRangeField;
@@ -120,11 +120,12 @@ export function runConnector(config) {
     };
     let observedCounters = null;
     const emitFailed = (message, retryable = false, records_emitted = observedCounters?.totalEmitted ?? 0) => {
+        const terminalError = normalizeTerminalError({ message, retryable });
         emit({
             type: "DONE",
             status: "failed",
             records_emitted,
-            error: { message, retryable },
+            error: terminalError,
         }).catch(() => undefined);
         flushAndExit(1);
     };
@@ -162,14 +163,41 @@ export function runConnector(config) {
         });
     };
     const readStart = () => new Promise((resolve, reject) => {
-        rl.once("line", (line) => {
-            try {
-                resolve(JSON.parse(line));
+        let settled = false;
+        const cleanup = () => {
+            rl.off("line", onLine);
+            rl.off("close", onClose);
+            process.stdin.off("end", onClose);
+            process.stdin.off("error", onError);
+        };
+        const settle = (fn) => {
+            if (settled) {
+                return;
             }
-            catch (err) {
-                reject(err instanceof Error ? err : new Error(String(err)));
-            }
-        });
+            settled = true;
+            cleanup();
+            fn();
+        };
+        const onLine = (line) => {
+            settle(() => {
+                try {
+                    resolve(JSON.parse(line));
+                }
+                catch (err) {
+                    reject(err instanceof Error ? err : new Error(String(err)));
+                }
+            });
+        };
+        const onClose = () => {
+            settle(() => reject(new Error("Missing START message before stdin closed")));
+        };
+        const onError = (err) => {
+            settle(() => reject(new Error(`Missing START message before stdin error: ${err.message}`)));
+        };
+        rl.once("line", onLine);
+        rl.once("close", onClose);
+        process.stdin.once("end", onClose);
+        process.stdin.once("error", onError);
     });
     const requestDetailGapPage = (req = {}) => {
         const request_id = nextDetailGapPageRequestId();
@@ -311,12 +339,12 @@ function makeEmitRecord(deps) {
     for (const [streamName, scope] of requested) {
         resFilters.set(streamName, resourceSet(scope));
     }
-    const emitRecord = (stream, data) => {
+    const emitRecord = (stream, data, options = {}) => {
         if (data.id == null) {
             return Promise.resolve();
         }
         const rs = resFilters.get(stream);
-        if (rs && !rs.has(String(data.id))) {
+        if (!options.skipResourceFilter && rs && !rs.has(String(data.id))) {
             return Promise.resolve();
         }
         if (isTombstone?.(stream, data)) {
@@ -372,8 +400,9 @@ async function runInBrowser(args) {
     await tracer.start();
     baseCtx.capture?.setTraceCheckpointHook?.((label) => tracer.checkpoint(label));
     let page = null;
+    let runSucceeded = false;
     try {
-        page = await ctx.newPage();
+        page = await selectBrowserPageForRun(ctx, browser);
         const browserSendInteraction = makeBrowserInteractionKeepalive({
             context: ctx,
             diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
@@ -391,7 +420,7 @@ async function runInBrowser(args) {
                 return sendInteraction({ ...decorated, request_id: interactionId });
             },
         });
-        await captureBrowserPage(baseCtx.capture, page, "runtime-new-page");
+        await captureBrowserPage(baseCtx.capture, page, "runtime-run-page");
         await closeBrowserContextPagesExcept(ctx, page);
         const watchdog = makeSessionEstablishWatchdog({
             capture: baseCtx.capture,
@@ -399,10 +428,10 @@ async function runInBrowser(args) {
             page,
         });
         await watchdog.run(() => establishSession({ ensureSession, probeSession }, {
-            assist,
+            assist: watchdog.wrapAssist(assist),
             capture: baseCtx.capture,
             checkpoint: watchdog.checkpoint,
-            completeAssistance,
+            completeAssistance: watchdog.wrapCompleteAssistance(completeAssistance),
             context: ctx,
             page: page,
             name,
@@ -415,6 +444,7 @@ async function runInBrowser(args) {
         await captureBrowserPage(baseCtx.capture, page, "runtime-collect-complete");
         tracer.markSucceeded();
         baseCtx.capture?.markSucceeded?.();
+        runSucceeded = true;
     }
     catch (err) {
         if (page) {
@@ -424,7 +454,9 @@ async function runInBrowser(args) {
     }
     finally {
         await finalizeDiagnostics();
-        await closeBrowserPage(page);
+        if (shouldCloseBrowserPageAfterRun(browser, runSucceeded)) {
+            await closeBrowserPage(page);
+        }
         await release().catch(() => undefined);
         disposeShutdownHook();
         baseCtx.capture?.finalize?.();
@@ -432,6 +464,32 @@ async function runInBrowser(args) {
 }
 const CAPTURE_DOM_DEADLINE_MS = 10_000;
 const PAGE_CLOSE_DEADLINE_MS = 10_000;
+export function isReusableBrowserRunPage(page) {
+    if (page.isClosed()) {
+        return false;
+    }
+    const url = page.url();
+    return Boolean(url) && url !== "about:blank" && !url.startsWith("data:");
+}
+export async function selectBrowserPageForRun(context, browser) {
+    if (browser.preservePageOnSuccess || browser.preservePageOnFailure) {
+        for (const page of context.pages()) {
+            if (isReusableBrowserRunPage(page)) {
+                return page;
+            }
+        }
+    }
+    return await context.newPage();
+}
+export function shouldCloseBrowserPageAfterRun(browser, runSucceeded) {
+    if (runSucceeded && browser.preservePageOnSuccess) {
+        return false;
+    }
+    if (!runSucceeded && browser.preservePageOnFailure) {
+        return false;
+    }
+    return true;
+}
 export async function captureBrowserPage(capture, page, label, deadlineMs = CAPTURE_DOM_DEADLINE_MS) {
     if (!capture) {
         return;
@@ -767,6 +825,7 @@ async function acquireBrowser(browser, name) {
         return await acquireBrowserForConnector({
             profileName,
             headless,
+            ...(browser.preservePageOnSuccess || browser.preservePageOnFailure ? { preserveRemotePagesOnAcquire: true } : {}),
             ...(streamingEnabled ? { streamingEnabled: true } : {}),
             ...(remoteCdpUrl ? { remoteCdpUrl } : {}),
         });
@@ -798,6 +857,7 @@ export function makeSessionEstablishWatchdog(args) {
     const pollIntervalMs = args.pollIntervalMs ?? Math.max(1, Math.min(1000, Math.floor(deadlineMs / 4)));
     let lastProgressAt = now();
     let lastLabel = null;
+    const openAssistance = new Map();
     let openInteractions = 0;
     let tripped = false;
     const markProgress = (label) => {
@@ -814,6 +874,43 @@ export function makeSessionEstablishWatchdog(args) {
         catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             process.stderr.write(`[session-watchdog] checkpoint capture failed for ${label}: ${message}\n`);
+        }
+    };
+    const assistancePausesWatchdog = (req) => req.progress_posture === "running" && req.response_contract === "none";
+    const pruneExpiredAssistance = () => {
+        const current = now();
+        let pruned = false;
+        for (const [id, expiresAt] of openAssistance) {
+            if (expiresAt > current) {
+                continue;
+            }
+            openAssistance.delete(id);
+            pruned = true;
+        }
+        if (pruned) {
+            markProgress(null);
+        }
+    };
+    const wrapAssist = (assist) => async (req) => {
+        markProgress(null);
+        const assistanceRequestId = await assist(req);
+        if (assistancePausesWatchdog(req)) {
+            const timeoutMs = typeof req.timeout_seconds === "number" && Number.isFinite(req.timeout_seconds) && req.timeout_seconds > 0
+                ? req.timeout_seconds * 1000
+                : deadlineMs;
+            openAssistance.set(assistanceRequestId, now() + timeoutMs + deadlineMs);
+            markProgress(null);
+        }
+        return assistanceRequestId;
+    };
+    const wrapCompleteAssistance = (completeAssistance) => async (assistanceRequestId, status, extra = {}) => {
+        try {
+            await completeAssistance(assistanceRequestId, status, extra);
+        }
+        finally {
+            if (openAssistance.delete(assistanceRequestId)) {
+                markProgress(null);
+            }
         }
     };
     const wrapSendInteraction = (send) => async (req) => {
@@ -833,7 +930,8 @@ export function makeSessionEstablishWatchdog(args) {
         const TRIP = Symbol("session-establish-trip");
         const tripPromise = new Promise((resolve) => {
             const onTick = () => {
-                if (tripped || openInteractions > 0) {
+                pruneExpiredAssistance();
+                if (tripped || openInteractions > 0 || openAssistance.size > 0) {
                     return;
                 }
                 const sinceMs = now() - lastProgressAt;
@@ -868,7 +966,7 @@ export function makeSessionEstablishWatchdog(args) {
             }
         }
     };
-    return { checkpoint, wrapSendInteraction, run };
+    return { checkpoint, wrapAssist, wrapCompleteAssistance, wrapSendInteraction, run };
 }
 async function establishSession(hooks, args) {
     const { ensureSession, probeSession } = hooks;

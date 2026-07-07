@@ -293,6 +293,60 @@ test("LocalDeviceOutbox requeues dead letters by source, kind, and limit", async
   }
 });
 
+test("LocalDeviceOutbox requeues dead letters by redacted error class", async () => {
+  const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
+  const sourceInstanceId = "src-1";
+  try {
+    for (const [id, error] of [
+      ["src-1:record_batch:502", "local device request failed: 502"],
+      ["src-1:record_batch:timeout", "local device request timed out after 30000ms"],
+      ["src-1:record_batch:400", "local device request failed: 400 invalid_request"],
+    ] as const) {
+      outbox.enqueue({
+        id,
+        kind: "record_batch",
+        payload: { id },
+        sourceInstanceId,
+      });
+      const [claim] = outbox.claimReady({ holder: "worker-a", leaseMs: 60_000, sourceInstanceId });
+      assert.ok(claim);
+      outbox.deadLetter({
+        error,
+        holder: "worker-a",
+        id: claim.id,
+        leaseEpoch: claim.lease_epoch,
+      });
+    }
+
+    const transientClassPattern =
+      /^(?:local device request failed: (?:408|429|5\d\d)(?:\b|$)|local device request timed out after\b)/i;
+
+    assert.deepEqual(
+      outbox.requeueDeadLetters({
+        dryRun: true,
+        errorClassPattern: transientClassPattern,
+        sourceInstanceId,
+      }),
+      { matched: 2, requeued: 0 }
+    );
+
+    assert.deepEqual(
+      outbox.requeueDeadLetters({
+        errorClassPattern: transientClassPattern,
+        sourceInstanceId,
+      }),
+      { matched: 2, requeued: 2 }
+    );
+
+    assert.equal(outbox.get("src-1:record_batch:502")?.status, "ready");
+    assert.equal(outbox.get("src-1:record_batch:timeout")?.status, "ready");
+    assert.equal(outbox.get("src-1:record_batch:400")?.status, "dead_letter");
+    assert.equal(outbox.summary({ sourceInstanceId }).deadLetter, 1);
+  } finally {
+    outbox.close();
+  }
+});
+
 test("LocalDeviceOutbox deletes only succeeded rows by id", async () => {
   const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
   try {

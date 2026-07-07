@@ -343,22 +343,38 @@ publishability review.
 See: openspec/changes/publish-pdpp-local-collector/design.md.
 `;
 
+function installStdoutPipeGuard(): void {
+  process.stdout.on("error", (error: unknown) => {
+    if (isErrnoLike(error) && error.code === "EPIPE") {
+      process.exit(0);
+    }
+    throw error;
+  });
+}
+
+function isErrnoLike(error: unknown): error is { code?: unknown } {
+  return typeof error === "object" && error !== null && "code" in error;
+}
+
+function writeStdout(value: string): void {
+  process.stdout.write(value);
+}
+
+function writeJson(value: unknown): void {
+  writeStdout(`${JSON.stringify(value, null, 2)}\n`);
+}
+
 async function main(): Promise<void> {
+  installStdoutPipeGuard();
   const options = parseArgs(process.argv.slice(2));
 
   if (options.command === "advertise") {
-    process.stdout.write(
-      `${JSON.stringify(
-        {
-          runtime: COLLECTOR_RUNTIME_CAPABILITIES.id,
-          bindings: [...COLLECTOR_RUNTIME_CAPABILITIES.bindings],
-          collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
-          bundled_connectors: BUNDLED_CONNECTOR_IDS,
-        },
-        null,
-        2
-      )}\n`
-    );
+    writeJson({
+      runtime: COLLECTOR_RUNTIME_CAPABILITIES.id,
+      bindings: [...COLLECTOR_RUNTIME_CAPABILITIES.bindings],
+      collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
+      bundled_connectors: BUNDLED_CONNECTOR_IDS,
+    });
     return;
   }
 
@@ -367,34 +383,34 @@ async function main(): Promise<void> {
     const status = inspectLocalOutboxStatus(inspectOptions);
     if (options.command === "doctor") {
       const errorSummary = readLocalOutboxDeadLetterErrorSummary(inspectOptions);
-      process.stdout.write(`${JSON.stringify(buildLocalOutboxDoctor(status, errorSummary), null, 2)}\n`);
+      writeJson(buildLocalOutboxDoctor(status, errorSummary));
       return;
     }
-    process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+    writeJson(status);
     return;
   }
 
   if (options.command === "retry-dead-letters") {
     const result = retryLocalOutboxDeadLetters(options);
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    writeJson(result);
     return;
   }
 
   if (options.command === "recover") {
     const result = await recoverLocalCollector(options);
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    writeJson(result);
     return;
   }
 
   if (options.command === "prune-sent") {
     const result = pruneSentOutboxRows(options);
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    writeJson(result);
     return;
   }
 
   if (options.command === "compact") {
     const result = compactOutbox(options);
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    writeJson(result);
     // A refused apply is an operator error (unsent work present); exit non-zero
     // so a supervising script does not mistake the refusal for a successful
     // reclaim. Dry-run and successful apply exit 0.
@@ -413,12 +429,12 @@ async function main(): Promise<void> {
       code: options.code,
       ...(options.deviceLabel ? { deviceLabel: options.deviceLabel } : {}),
     });
-    process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
+    writeJson(response);
     return;
   }
 
   const result = await runCollectorOnce(options);
-  process.stdout.write(`${JSON.stringify(summarizeRunResultForCli(result), null, 2)}\n`);
+  writeJson(summarizeRunResultForCli(result));
 }
 
 type CollectorRunResult = Awaited<ReturnType<typeof runCollectorConnector>>;
@@ -545,8 +561,9 @@ function runDrainNote(result: CollectorRunResult, summary: LocalDeviceOutboxSumm
     return "Outbox fully drained — no ready, retrying, leased, or dead-letter work remains.";
   }
   const parts: string[] = [];
-  if (summary.ready > 0) {
-    parts.push(`${summary.ready} ready (drains on the next scheduled run)`);
+  const claimableReady = Math.max(0, summary.ready - summary.retrying);
+  if (claimableReady > 0) {
+    parts.push(`${claimableReady} ready (drains on the next scheduled run)`);
   }
   if (summary.retrying > 0) {
     parts.push(`${summary.retrying} retrying (waiting on backoff)`);
@@ -564,7 +581,7 @@ function runDrainNote(result: CollectorRunResult, summary: LocalDeviceOutboxSumm
 }
 
 function pendingOpenWork(summary: LocalDeviceOutboxSummary): number {
-  return summary.ready + summary.retrying + summary.leased + summary.deadLetter;
+  return summary.ready + summary.leased + summary.deadLetter;
 }
 
 function summarizeCollectorState(state: Record<string, unknown> | null): LocalCollectorStateSummary | null {
@@ -1285,7 +1302,7 @@ function recoverDryRunNote(status: LocalOutboxStatusOutput): string {
 
 function outboxOpenWork(status: LocalOutboxStatusOutput): number {
   const counts = status.outbox.counts;
-  return counts.dead_letter + counts.leased + counts.pending + counts.retrying;
+  return counts.dead_letter + counts.leased + counts.pending;
 }
 
 function recoverAppliedNote(input: {
@@ -1754,7 +1771,7 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
 export function parseArgs(args: string[]): CliOptions {
   const [command, ...rest] = args;
   if (command === "--help" || command === "-h" || command === "help" || !command) {
-    process.stdout.write(HELP_TEXT);
+    writeStdout(HELP_TEXT);
     process.exit(0);
   }
   if (

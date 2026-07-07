@@ -17,6 +17,7 @@ const OTP_RE = /\b\d{6}\b/g;
 const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
 const SCAN_BATCH_LIMIT_DETAIL_RE = /enqueued\s+\d+\s+batches\s+>=\s+(?:run batch limit|(?:maxEnqueuedBatchesPerRun|\[REDACTED\]))\s+(\d+)/;
 const CONNECTOR_PROTOCOL_DEBUG_DIR_ENV = "PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR";
+const TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE = /^(?:local device request failed: (?:408|429|5\d\d)(?:\b|$)|local device request timed out after\b|fetch failed\b|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)/i;
 export const DEFAULT_COLLECTOR_OUTBOX_POLICY = Object.freeze({
     drainBatchSize: 4,
     leaseMs: 300_000,
@@ -61,6 +62,12 @@ export function autoPruneSucceededOutbox(input) {
         sourceInstanceId: input.sourceInstanceId,
     });
     return { enabled: true, matched: result.matched, pruned: result.pruned };
+}
+function requeueTransientLocalDeviceDeadLetters(input) {
+    return input.outbox.requeueDeadLetters({
+        errorClassPattern: TRANSIENT_LOCAL_DEVICE_DEAD_LETTER_CLASS_RE,
+        sourceInstanceId: input.sourceInstanceId,
+    }).requeued;
 }
 export const DEFAULT_COLLECTOR_AUTO_COMPACT_POLICY = Object.freeze({
     enabled: true,
@@ -132,6 +139,10 @@ export async function runCollectorConnector(config) {
     });
     let startingHeartbeatSent = false;
     try {
+        const autoRecoveredTransientDeadLetters = requeueTransientLocalDeviceDeadLetters({
+            outbox,
+            sourceInstanceId: config.sourceInstanceId,
+        });
         const recoveredLeases = outbox.recoverExpiredLeases({ sourceInstanceId: config.sourceInstanceId });
         const preScanDrain = await drainCollectorOutbox({
             ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
@@ -152,6 +163,7 @@ export async function runCollectorConnector(config) {
             postDrainSummary,
             preScanDrain,
             recoveredLeases,
+            autoRecoveredTransientDeadLetters,
             satisfiedBindings,
         });
         if (skipResult) {
@@ -244,6 +256,7 @@ export async function runCollectorConnector(config) {
             prunedSent,
             recordsQueued: enqueueResult.recordsQueued,
             recoveredLeases,
+            autoRecoveredTransientDeadLetters,
             satisfiedBindings,
             sentBatches: (preScanDrain.sentByKind.record_batch ?? 0) + (recordDrain.sentByKind.record_batch ?? 0),
             skippedScanForBacklog: false,
@@ -319,6 +332,7 @@ async function maybeSkipScanForBacklog(input) {
         prunedSent,
         recordsQueued: 0,
         recoveredLeases: input.recoveredLeases,
+        autoRecoveredTransientDeadLetters: input.autoRecoveredTransientDeadLetters,
         satisfiedBindings: input.satisfiedBindings,
         sentBatches: input.preScanDrain.sentByKind.record_batch ?? 0,
         skippedScanForBacklog: true,
@@ -533,7 +547,7 @@ async function streamConnectorIntoOutbox(input) {
     child.stdin.on("error", () => {
     });
     child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.stdin.end(`${JSON.stringify(buildCollectorStartMessage(input.config.connector.streams, input.config.connector.streamsToBackfill, input.priorState))}\n`);
+    child.stdin.end(`${JSON.stringify(buildCollectorStartMessage(input.config.connector.streams, input.config.connector.streamsToBackfill, input.priorState, input.config.connector.resources))}\n`);
     let exitCode;
     try {
         [exitCode] = await Promise.all([exitPromise, outputPromise]);
@@ -748,9 +762,14 @@ async function safeHeartbeat(client, request) {
     catch {
     }
 }
-export function buildCollectorStartMessage(streams, streamsToBackfill = [], priorState) {
+export function buildCollectorStartMessage(streams, streamsToBackfill = [], priorState, resources = {}) {
     const start = {
-        scope: { streams: streams.map((name) => ({ name })) },
+        scope: {
+            streams: streams.map((name) => {
+                const streamResources = resources[name]?.filter((value) => typeof value === "string" && value.length > 0);
+                return streamResources && streamResources.length > 0 ? { name, resources: streamResources } : { name };
+            }),
+        },
         type: "START",
     };
     if (streamsToBackfill.length > 0) {

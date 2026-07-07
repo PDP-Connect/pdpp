@@ -1,4 +1,22 @@
 function freezeStaticSecretDescriptor(descriptor) {
+    const freezeMapping = (mapping) => {
+        if (mapping.secretEnvVars) {
+            Object.freeze(mapping.secretEnvVars);
+        }
+        if (mapping.secretFieldEnvVars) {
+            for (const value of Object.values(mapping.secretFieldEnvVars)) {
+                Object.freeze(value);
+            }
+            Object.freeze(mapping.secretFieldEnvVars);
+        }
+        if (mapping.setupFieldEnvVars) {
+            for (const value of Object.values(mapping.setupFieldEnvVars)) {
+                Object.freeze(value);
+            }
+            Object.freeze(mapping.setupFieldEnvVars);
+        }
+        return Object.freeze(mapping);
+    };
     if (descriptor.secretEnvVars) {
         Object.freeze(descriptor.secretEnvVars);
     }
@@ -14,9 +32,29 @@ function freezeStaticSecretDescriptor(descriptor) {
         }
         Object.freeze(descriptor.setupFieldEnvVars);
     }
+    if (descriptor.acceptedCredentialVariants) {
+        for (const variant of descriptor.acceptedCredentialVariants) {
+            freezeMapping(variant);
+        }
+        Object.freeze(descriptor.acceptedCredentialVariants);
+    }
     return Object.freeze(descriptor);
 }
 export const STATIC_SECRET_CONNECTOR_REGISTRY = Object.freeze({
+    amazon: freezeStaticSecretDescriptor({
+        credentialKind: "username_password",
+        secretFieldEnvVars: {
+            password: ["AMAZON_PASSWORD"],
+            username: ["AMAZON_USERNAME"],
+        },
+    }),
+    chatgpt: freezeStaticSecretDescriptor({
+        credentialKind: "username_password",
+        secretFieldEnvVars: {
+            password: ["CHATGPT_PASSWORD"],
+            username: ["CHATGPT_USERNAME"],
+        },
+    }),
     gmail: freezeStaticSecretDescriptor({
         credentialKind: "app_password",
         secretEnvVars: ["GOOGLE_APP_PASSWORD_PDPP", "GMAIL_APP_PASSWORD"],
@@ -49,12 +87,33 @@ export const STATIC_SECRET_CONNECTOR_REGISTRY = Object.freeze({
         secretEnvVars: ["NOTION_API_TOKEN"],
     }),
     reddit: freezeStaticSecretDescriptor({
-        credentialKind: "secret_bundle",
+        credentialKind: "username_password",
+        acceptedCredentialVariants: [
+            {
+                credentialKind: "secret_bundle",
+                secretFieldEnvVars: {
+                    reddit_password: ["REDDIT_PASSWORD"],
+                    reddit_username: ["REDDIT_USERNAME"],
+                },
+            },
+        ],
         secretFieldEnvVars: {
-            reddit_username: ["REDDIT_USERNAME"],
-            reddit_password: ["REDDIT_PASSWORD"],
-            reddit_client_id: ["REDDIT_CLIENT_ID"],
-            reddit_client_secret: ["REDDIT_CLIENT_SECRET"],
+            password: ["REDDIT_PASSWORD"],
+            username: ["REDDIT_USERNAME"],
+        },
+    }),
+    chase: freezeStaticSecretDescriptor({
+        credentialKind: "username_password",
+        secretFieldEnvVars: {
+            password: ["CHASE_PASSWORD"],
+            username: ["CHASE_USERNAME"],
+        },
+    }),
+    usaa: freezeStaticSecretDescriptor({
+        credentialKind: "username_password",
+        secretFieldEnvVars: {
+            password: ["USAA_PASSWORD"],
+            username: ["USAA_USERNAME"],
         },
     }),
 });
@@ -104,14 +163,26 @@ function secretBundleFields(connectorId, secret) {
     }
     return fields;
 }
-function assertRecoveredSecretMatches(connectorId, descriptor, recovered) {
+function injectionMappingForRecoveredSecret(connectorId, descriptor, recovered) {
     if (!recovered || typeof recovered.secret !== "string" || recovered.secret.length === 0) {
         throw new StaticSecretInjectionError("recovered_secret_invalid", `Cannot inject an empty credential for connector '${connectorId}'.`);
     }
-    if (recovered.credentialKind !== descriptor.credentialKind) {
-        throw new StaticSecretInjectionError("credential_kind_mismatch", `Connector '${connectorId}' expects credential kind '${descriptor.credentialKind}', ` +
+    if (recovered.credentialKind === descriptor.credentialKind) {
+        return descriptor;
+    }
+    const variant = descriptor.acceptedCredentialVariants?.find((candidate) => candidate.credentialKind === recovered.credentialKind);
+    if (variant) {
+        return variant;
+    }
+    const expectedKinds = [
+        descriptor.credentialKind,
+        ...(descriptor.acceptedCredentialVariants ?? []).map((v) => v.credentialKind),
+    ];
+    if (!expectedKinds.includes(recovered.credentialKind)) {
+        throw new StaticSecretInjectionError("credential_kind_mismatch", `Connector '${connectorId}' expects credential kind '${expectedKinds.join("' or '")}', ` +
             `but the recovered credential is '${recovered.credentialKind}'.`);
     }
+    return descriptor;
 }
 function injectSingleSecret(fragment, envVars, secret) {
     for (const envVar of envVars ?? []) {
@@ -150,10 +221,10 @@ export function buildConnectionScopedSecretEnv(connectorId, recovered, sourceBin
     if (!descriptor) {
         throw new StaticSecretInjectionError("not_a_static_secret_connector", `Connector '${connectorId}' is not a known static-secret connector; refusing to invent secret env vars for it.`);
     }
-    assertRecoveredSecretMatches(connectorId, descriptor, recovered);
+    const mapping = injectionMappingForRecoveredSecret(connectorId, descriptor, recovered);
     const fragment = {};
-    injectSingleSecret(fragment, descriptor.secretEnvVars, recovered.secret);
-    injectSecretBundle(fragment, connectorId, recovered.secret, descriptor.secretFieldEnvVars);
-    injectSetupFields(fragment, descriptor.setupFieldEnvVars, sourceBinding);
+    injectSingleSecret(fragment, mapping.secretEnvVars, recovered.secret);
+    injectSecretBundle(fragment, connectorId, recovered.secret, mapping.secretFieldEnvVars);
+    injectSetupFields(fragment, mapping.setupFieldEnvVars, sourceBinding);
     return fragment;
 }

@@ -133,6 +133,7 @@ export interface LocalDeviceOutboxRenewInput extends LocalDeviceOutboxLeaseInput
 
 export interface LocalDeviceOutboxRequeueDeadLettersInput {
   dryRun?: boolean;
+  errorClassPattern?: RegExp;
   kind?: LocalDeviceOutboxKind;
   limit?: number;
   sourceInstanceId?: string;
@@ -526,27 +527,19 @@ export class LocalDeviceOutbox {
   requeueDeadLetters(input: LocalDeviceOutboxRequeueDeadLettersInput = {}): LocalDeviceOutboxRequeueDeadLettersResult {
     const limit = normalizeLimit(input.limit);
     const { clauses, params } = deadLetterWhere(input);
-    const matched = this.#countWhere(clauses, params, limit);
+    const selected = this.#selectDeadLetterIds({
+      clauses,
+      ...(input.errorClassPattern ? { errorClassPattern: input.errorClassPattern } : {}),
+      limit,
+      params,
+    });
+    const matched = selected.length;
     if (input.dryRun || matched === 0) {
       return { matched, requeued: 0 };
     }
 
     const now = this.#now();
-    const limitSql = limit == null ? "" : " LIMIT ?";
-    const selected = this.#db
-      .prepare(
-        `SELECT id
-           FROM local_device_outbox
-          WHERE ${clauses.join(" AND ")}
-          ORDER BY rowid${limitSql}`
-      )
-      .all(...(limit == null ? params : [...params, limit]));
-    const ids = selected.map((row) => {
-      if (!isRecord(row) || typeof row.id !== "string") {
-        throw new Error("local outbox dead-letter id query returned an invalid row");
-      }
-      return row.id;
-    });
+    const ids = selected;
     if (ids.length === 0) {
       return { matched, requeued: 0 };
     }
@@ -580,6 +573,41 @@ export class LocalDeviceOutbox {
       this.#db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  #selectDeadLetterIds(input: {
+    clauses: readonly string[];
+    errorClassPattern?: RegExp;
+    limit: number | null;
+    params: readonly string[];
+  }): string[] {
+    const limitSql = input.limit == null || input.errorClassPattern ? "" : " LIMIT ?";
+    const rows = this.#db
+      .prepare(
+        `SELECT id, last_error
+           FROM local_device_outbox
+          WHERE ${input.clauses.join(" AND ")}
+          ORDER BY rowid${limitSql}`
+      )
+      .all(...(input.limit == null || input.errorClassPattern ? input.params : [...input.params, input.limit]));
+    const ids: string[] = [];
+    for (const row of rows) {
+      if (!isRecord(row) || typeof row.id !== "string") {
+        throw new Error("local outbox dead-letter id query returned an invalid row");
+      }
+      if (input.errorClassPattern) {
+        const raw = typeof row.last_error === "string" ? row.last_error : "";
+        input.errorClassPattern.lastIndex = 0;
+        if (!input.errorClassPattern.test(classifyDeadLetterError(raw))) {
+          continue;
+        }
+      }
+      ids.push(row.id);
+      if (input.limit !== null && input.errorClassPattern && ids.length >= input.limit) {
+        break;
+      }
+    }
+    return ids;
   }
 
   /**
@@ -1168,28 +1196,6 @@ export class LocalDeviceOutbox {
       null_error_count: nullErrorCount,
       top_classes,
     };
-  }
-
-  #countWhere(clauses: readonly string[], params: readonly string[], limit: number | null): number {
-    if (limit == null) {
-      const row = this.#db
-        .prepare(`SELECT COUNT(*) AS total FROM local_device_outbox WHERE ${clauses.join(" AND ")}`)
-        .get(...params);
-      return isRecord(row) ? numberFrom(row.total) : 0;
-    }
-    const row = this.#db
-      .prepare(
-        `SELECT COUNT(*) AS total
-           FROM (
-             SELECT 1
-               FROM local_device_outbox
-              WHERE ${clauses.join(" AND ")}
-              ORDER BY rowid
-              LIMIT ?
-           )`
-      )
-      .get(...params, limit);
-    return isRecord(row) ? numberFrom(row.total) : 0;
   }
 
   #initialize(): void {

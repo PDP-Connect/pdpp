@@ -68,6 +68,7 @@ export interface LocalDeviceOutboxRenewInput extends LocalDeviceOutboxLeaseInput
 }
 export interface LocalDeviceOutboxRequeueDeadLettersInput {
     dryRun?: boolean;
+    errorClassPattern?: RegExp;
     kind?: LocalDeviceOutboxKind;
     limit?: number;
     sourceInstanceId?: string;

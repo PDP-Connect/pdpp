@@ -867,7 +867,7 @@ test('local collector recover apply keeps draining while the backlog shrinks', a
         dead_letter: 0,
         leased: 0,
         pending,
-        retrying: 0,
+        retrying: pending,
         sent: 10,
         total: 10 + pending,
       },
@@ -969,7 +969,7 @@ test('local collector recover apply stops honestly when a drain pass makes no pr
     ]),
     {
       inspectStatus: () => statuses.shift() ?? status(24),
-      runOnce: async () => drainOnlyRunResult({ ready: 24, succeeded: 10, total: 34 }),
+      runOnce: async () => drainOnlyRunResult({ ready: 24, retrying: 24, succeeded: 10, total: 34 }),
     }
   );
 
@@ -977,6 +977,8 @@ test('local collector recover apply stops honestly when a drain pass makes no pr
   assert.equal(result.drain_stopped_reason, 'no_progress');
   assert.equal(result.fully_drained, false);
   assert.match(result.note, /did not reduce the backlog/);
+  assert.match(result.note, /24 queued row/);
+  assert.doesNotMatch(result.note, /48 queued row/);
 });
 
 test('local collector recover apply keeps draining after a fresh scan queues new work', async () => {
@@ -1134,6 +1136,7 @@ test('local collector run output summarizes state cursors without dumping payloa
     },
     recordsQueued: 1,
     recoveredLeases: 0,
+    autoRecoveredTransientDeadLetters: 0,
     satisfiedBindings: ['filesystem'],
     sentBatches: 1,
     skippedScanForBacklog: false,
@@ -1188,6 +1191,7 @@ function baseRunResult(outboxSummary) {
     priorState: {},
     recordsQueued: 1,
     recoveredLeases: 0,
+    autoRecoveredTransientDeadLetters: 0,
     satisfiedBindings: ['filesystem'],
     scanBudgetExceeded: false,
     sentBatches: 1,
@@ -1239,7 +1243,20 @@ test('run summary surfaces a retry backlog distinctly from a ready backlog', () 
   assert.equal(output.drained, false);
   assert.equal(output.lifecycle_state, 'retryable_backlog');
   assert.equal(output.residual_backlog.retrying, 4);
+  assert.equal(output.residual_backlog.total_open, 4);
   assert.match(output.drain_note, /retrying/);
+  assert.doesNotMatch(output.drain_note, /ready/);
+});
+
+test('run summary does not double-count retrying rows when some ready rows are claimable', () => {
+  const output = summarizeRunResultForCli(
+    baseRunResult({ ready: 6, retrying: 4, succeeded: 10, total: 16 })
+  );
+  assert.equal(output.drained, false);
+  assert.equal(output.residual_backlog.total_open, 6);
+  assert.match(output.drain_note, /2 ready/);
+  assert.match(output.drain_note, /4 retrying/);
+  assert.doesNotMatch(output.drain_note, /6 ready/);
 });
 
 test('run summary surfaces a dead-letter backlog with a recovery pointer', () => {

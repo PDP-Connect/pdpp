@@ -689,6 +689,64 @@ async function tempQueuePath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "pdpp-collector-runner-")), "queue.json");
 }
 
+function seedDeadLetteredRecordBatch(input: {
+  connectorId: string;
+  deviceId?: string;
+  error: string;
+  queuePath: string;
+  sourceInstanceId: string;
+}): string {
+  const batchId = `${input.sourceInstanceId}:seeded-batch`;
+  const records = transformRecordsToCollectorEnvelopes({
+    batchId,
+    batchSeq: 1,
+    connectorId: input.connectorId,
+    deviceId: input.deviceId ?? "device-1",
+    messages: [
+      {
+        data: { id: `${input.sourceInstanceId}:m-1` },
+        emitted_at: "2026-05-19T12:00:00.000Z",
+        key: `${input.sourceInstanceId}:m-1`,
+        stream: "messages",
+        type: "RECORD",
+      },
+    ],
+    sourceInstanceId: input.sourceInstanceId,
+  });
+  const rowId = buildLocalDeviceOutboxId({
+    kind: "record_batch",
+    parts: [batchId],
+    sourceInstanceId: input.sourceInstanceId,
+  });
+  const outbox = new LocalDeviceOutbox({ path: input.queuePath });
+  try {
+    outbox.enqueue({
+      id: rowId,
+      kind: "record_batch",
+      payload: {
+        batchId,
+        batchSeq: 1,
+        connectorId: input.connectorId,
+        deviceId: input.deviceId ?? "device-1",
+        records,
+        sourceInstanceId: input.sourceInstanceId,
+      },
+      sourceInstanceId: input.sourceInstanceId,
+    });
+    const [claim] = outbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId: input.sourceInstanceId });
+    assert.ok(claim, "seeded batch must be claimable");
+    outbox.deadLetter({
+      error: input.error,
+      holder: "seed",
+      id: claim.id,
+      leaseEpoch: claim.lease_epoch,
+    });
+  } finally {
+    outbox.close();
+  }
+  return rowId;
+}
+
 test("runCollectorConnector replays prior STATE into the connector's START.state and flushes emitted STATE after records drain", async () => {
   const harness = await startCollectorHarness({
     priorState: { messages: { cursor: "m-prior" } },
@@ -2693,6 +2751,112 @@ test("runCollectorConnector recovers a stale-leased record batch and drains it w
       const recovered = items.find((item) => item.id === staleBatchId);
       assert.equal(recovered?.status, "succeeded", "the recovered batch must be marked succeeded");
       assert.equal(items.filter((item) => item.kind === "checkpoint").length, 0);
+    } finally {
+      after.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector auto-recovers transient local-device dead letters before scanning", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const seededId = seedDeadLetteredRecordBatch({
+      connectorId: "fixture-transient-dead-letter",
+      error: "local device request failed: 502",
+      queuePath,
+      sourceInstanceId: "src-transient-dead-letter",
+    });
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 0,
+        }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-transient-dead-letter",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-transient-dead-letter",
+    });
+
+    assert.equal(result.autoRecoveredTransientDeadLetters, 1);
+    assert.equal(result.sentBatches, 1, "the auto-recovered batch must drain through ingest");
+    assert.equal(result.skippedScanForBacklog, false, "transient recovery should unblock a normal scan");
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.outboxSummary.deadLetter, 0);
+    assert.equal(harness.ingestedBatches.length, 1);
+    const after = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      assert.equal(after.get(seededId)?.status, "succeeded");
+    } finally {
+      after.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector preserves terminal local-device dead letters", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const seededId = seedDeadLetteredRecordBatch({
+      connectorId: "fixture-terminal-dead-letter",
+      error: "local device request failed: 400 invalid_request",
+      queuePath,
+      sourceInstanceId: "src-terminal-dead-letter",
+    });
+    const fixture = await writeFixtureConnector({
+      script: `
+        throw new Error("terminal dead-letter test connector should not spawn");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-terminal-dead-letter",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-terminal-dead-letter",
+    });
+
+    assert.equal(result.autoRecoveredTransientDeadLetters, 0);
+    assert.equal(result.skippedScanForBacklog, true);
+    assert.equal(result.done, null);
+    assert.equal(result.sentBatches, 0);
+    assert.equal(result.outboxSummary.deadLetter, 1);
+    const after = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const terminal = after.get(seededId);
+      assert.equal(terminal?.status, "dead_letter");
+      assert.equal(terminal?.last_error, "local device request failed: 400 invalid_request");
     } finally {
       after.close();
     }
