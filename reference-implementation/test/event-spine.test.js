@@ -148,10 +148,11 @@ async function withNativeHarness(fn) {
   }
 }
 
-async function seedSpotify(rsUrl, manifest, ownerToken) {
+async function seedSpotify(rsUrl, manifest, ownerToken, options = {}) {
   return runConnector({
     connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
     connectorId: manifest.connector_id,
+    ...(options.connectorInstanceId ? { connectorInstanceId: options.connectorInstanceId } : {}),
     ownerToken,
     manifest,
     state: null,
@@ -1505,6 +1506,51 @@ test('event spine', async (t) => {
       assert.equal(completedEvent.data.checkpoint_mode, 'checkpointed_streaming');
       assert.equal(completedEvent.data.checkpoint_commit_status, 'committed');
       assert.equal(completedEvent.data.buffered_records_dropped, 0);
+    });
+  });
+
+  await t.test('captures connection identity on runtime-authored run events', async () => {
+    await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+      const ownerToken = await issueOwnerToken(asUrl, 'u1');
+      const dir = mkdtempSync(join(tmpdir(), 'pdpp-runtime-connection-id-'));
+      const connectorPath = join(dir, 'connector.mjs');
+      writeFileSync(connectorPath, `
+import { createInterface } from 'node:readline';
+const rl = createInterface({ input: process.stdin, terminal: false });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START') {
+    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+  }
+});
+`, 'utf8');
+      try {
+        const connectionId = 'cin_spotify_runtime_identity';
+        const result = await runConnector({
+          connectorPath,
+          connectorId: spotifyManifest.connector_id,
+          connectorInstanceId: connectionId,
+          ownerToken,
+          manifest: spotifyManifest,
+          state: null,
+          collectionMode: 'incremental',
+          persistState: false,
+          rsUrl,
+        });
+
+        const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+        const runEvents = (runTimeline.data || []).filter((event) => String(event.event_type || '').startsWith('run.'));
+        assert.ok(runEvents.some((event) => event.event_type === 'run.started'), 'expected run.started');
+        assert.ok(runEvents.some((event) => event.event_type === 'run.completed'), 'expected run.completed');
+        for (const event of runEvents) {
+          assert.equal(event.data?.source?.kind, 'connector');
+          assert.equal(event.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
+          assert.equal(event.data?.connection_id, connectionId);
+          assert.equal(event.data?.connector_instance_id, connectionId);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

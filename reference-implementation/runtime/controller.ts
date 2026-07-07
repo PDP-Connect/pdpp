@@ -733,6 +733,18 @@ function buildRunSource(connectorId: string): { kind: "connector"; id: string } 
   return { kind: "connector", id: connectorId };
 }
 
+function buildRunConnectionIdentity(connectorInstanceId: string | null | undefined): {
+  connection_id?: string;
+  connector_instance_id?: string;
+} {
+  return connectorInstanceId
+    ? {
+        connection_id: connectorInstanceId,
+        connector_instance_id: connectorInstanceId,
+      }
+    : {};
+}
+
 function runtimeKey(connectorId: string, connectorInstanceId?: string | null): string {
   return connectorInstanceId || connectorId;
 }
@@ -2064,6 +2076,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             run_id: row.run_id,
             data: {
               source: buildRunSource(row.connector_id),
+              ...buildRunConnectionIdentity(row.connector_instance_id),
               reason: ABANDONED_CONTROLLER_RUN_REASON,
               failure_reason: ABANDONED_CONTROLLER_RUN_REASON,
               message: "Reference server restarted while a controller-managed run was still active.",
@@ -2805,6 +2818,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
               run_id: runId,
               data: {
                 source: buildRunSource(connectorId),
+                ...buildRunConnectionIdentity(connectorInstanceId),
                 reason: "run_timed_out",
                 failure_reason: "run_timed_out",
                 records_emitted: 0,
@@ -3069,6 +3083,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
               run_id: runId,
               data: {
                 source: buildRunSource(connectorId),
+                ...buildRunConnectionIdentity(connectorInstanceId),
                 reason: LAUNCH_FAILED_RUN_REASON,
                 failure_reason: LAUNCH_FAILED_RUN_REASON,
                 records_emitted: 0,

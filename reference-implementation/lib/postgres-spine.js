@@ -203,6 +203,30 @@ function connectionIdFromBrowserSurfaceProfileKey(projection) {
   return suffix?.startsWith('cin_') ? suffix : null;
 }
 
+function connectionIdFromEventData(event) {
+  const data = event?.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : null;
+  if (!data) {
+    return null;
+  }
+  if (typeof data.connection_id === 'string' && data.connection_id.length > 0) {
+    return data.connection_id;
+  }
+  if (typeof data.connector_instance_id === 'string' && data.connector_instance_id.length > 0) {
+    return data.connector_instance_id;
+  }
+  return null;
+}
+
+function findFirstConnectionId(events) {
+  for (const event of events) {
+    const connectionId = connectionIdFromEventData(event);
+    if (connectionId) {
+      return connectionId;
+    }
+  }
+  return null;
+}
+
 function encodeEventCursor(eventSeq) {
   return eventSeq == null ? null : Buffer.from(JSON.stringify({ event_seq: Number(eventSeq) })).toString('base64url');
 }
@@ -295,9 +319,9 @@ function selectSummarySourceProjection(events) {
 
 function pickSummaryBrowserSurfaceProjection(events) {
   const browserSurface = findLatestBrowserSurfaceProjection(events);
-  const browserSurfaceConnectionId = connectionIdFromBrowserSurfaceProfileKey(browserSurface);
+  const connectionId = findFirstConnectionId(events) ?? connectionIdFromBrowserSurfaceProfileKey(browserSurface);
   return {
-    browserSurfaceConnectionId,
+    connectionId,
     browserSurfaceFields: pickBrowserSurfaceFields(browserSurface),
   };
 }
@@ -345,14 +369,14 @@ async function projectSummaryStatus(id, events) {
 function assembleSummaryObject(id, aggregate, events, eventFields, sourceProjection, browserSurfaceProjection, status) {
   const { failureEvent, first, hasRunStarted, kinds, last, needsInput } = eventFields;
   const { connector, source } = sourceProjection;
-  const { browserSurfaceConnectionId, browserSurfaceFields } = browserSurfaceProjection;
+  const { connectionId, browserSurfaceFields } = browserSurfaceProjection;
   return {
     id,
     actor_id: last.actor_id || null,
     actor_type: last.actor_type || null,
     client_id: last.client_id || null,
-    ...(browserSurfaceConnectionId
-      ? { connection_id: browserSurfaceConnectionId, connector_instance_id: browserSurfaceConnectionId }
+    ...(connectionId
+      ? { connection_id: connectionId, connector_instance_id: connectionId }
       : {}),
     connector_id: connector?.id || null,
     event_count: Number(aggregate.event_count) || events.length,

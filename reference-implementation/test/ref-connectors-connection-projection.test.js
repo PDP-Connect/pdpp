@@ -257,6 +257,52 @@ async function seedManualRunWithCollectionFacts({ connectorInstanceId, runId, oc
   });
 }
 
+async function seedConnectionRunWithCollectionFacts({ connectorInstanceId, runId, occurredAt, streams }) {
+  // API/static/manual connectors may have no browser-surface profile key. They
+  // still need exact connection identity so a run for one account does not
+  // disappear when a sibling connection of the same connector exists.
+  const baseData = {
+    source: { kind: 'connector', id: CONNECTOR_ID },
+    connection_id: connectorInstanceId,
+    connector_instance_id: connectorInstanceId,
+  };
+  await emitSpineEvent({
+    actor_type: 'runtime',
+    actor_id: CONNECTOR_ID,
+    event_type: 'run.started',
+    object_type: 'run',
+    object_id: runId,
+    occurred_at: occurredAt,
+    run_id: runId,
+    source_kind: 'connector',
+    source_id: CONNECTOR_ID,
+    status: 'started',
+    trace_id: `trc_${runId}`,
+    data: {
+      ...baseData,
+      boot_epoch: '00000000-0000-4000-8000-000000000004',
+      seq: 1,
+    },
+  });
+  await emitSpineEvent({
+    actor_type: 'runtime',
+    actor_id: CONNECTOR_ID,
+    event_type: 'run.completed',
+    object_type: 'run',
+    object_id: runId,
+    occurred_at: occurredAt,
+    run_id: runId,
+    source_kind: 'connector',
+    source_id: CONNECTOR_ID,
+    status: 'succeeded',
+    trace_id: `trc_${runId}`,
+    data: {
+      ...baseData,
+      collection_facts: { streams },
+    },
+  });
+}
+
 function collectionReportByStream(report) {
   return Object.fromEntries((report ?? []).map((entry) => [entry.stream, entry]));
 }
@@ -338,6 +384,35 @@ test('a manual run with browser-profile + collection_facts on the spine (no sche
   const siblingByStream = collectionReportByStream(sibling.collection_report);
   const siblingMessages = siblingByStream.messages;
   assert.notEqual(siblingMessages?.collected, 1145, 'sibling must not inherit the manual run collected count');
+}));
+
+test('a connection-id run without browser profile feeds only the addressed account summary', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+
+  await seedConnectionRunWithCollectionFacts({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    runId: 'run_api_direct_work',
+    occurredAt: '2026-05-20T12:08:00.000Z',
+    streams: [
+      { stream: 'messages', collected: 7, considered: 7, covered: 7, checkpoint: 'committed', pending_detail_gaps: 0, skipped: null },
+      { stream: 'files', collected: 0, considered: 0, covered: 0, checkpoint: 'committed', pending_detail_gaps: 0, skipped: null },
+    ],
+  });
+
+  const summaries = await listConnectorSummaries();
+  const work = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === WORK_INSTANCE_ID,
+  );
+  const personal = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === PERSONAL_INSTANCE_ID,
+  );
+  assert.ok(work);
+  assert.ok(personal);
+  assert.equal(work.last_run?.run_id, 'run_api_direct_work');
+  assert.equal(work.last_run?.status, 'succeeded');
+  assert.equal(collectionReportByStream(work.collection_report).messages.coverage_condition, 'complete');
+  assert.equal(personal.last_run, null, 'sibling connection must not borrow the connection-id run');
 }));
 
 test('a succeeded run with partial stream coverage does not render the connection healthy', withTmpDb(async () => {

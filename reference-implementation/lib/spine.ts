@@ -1021,6 +1021,31 @@ function connectionIdFromBrowserSurfaceProfileKey(projection: Record<string, unk
   return suffix?.startsWith("cin_") ? suffix : null;
 }
 
+function connectionIdFromEventData(event: SpineEventRecord): string | null {
+  const data = event.data && typeof event.data === "object" && !Array.isArray(event.data) ? event.data : null;
+  if (!data) {
+    return null;
+  }
+  const record = data as Record<string, unknown>;
+  if (typeof record.connection_id === "string" && record.connection_id.length > 0) {
+    return record.connection_id;
+  }
+  if (typeof record.connector_instance_id === "string" && record.connector_instance_id.length > 0) {
+    return record.connector_instance_id;
+  }
+  return null;
+}
+
+function findFirstConnectionId(events: readonly SpineEventRecord[]): string | null {
+  for (const event of events) {
+    const connectionId = connectionIdFromEventData(event);
+    if (connectionId) {
+      return connectionId;
+    }
+  }
+  return null;
+}
+
 function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | null {
   if (events.length === 0) {
     return null;
@@ -1039,7 +1064,7 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
       : null;
   const source = findFirstSource(events);
   const browserSurface = findLatestBrowserSurfaceProjection(events);
-  const browserSurfaceConnectionId = connectionIdFromBrowserSurfaceProfileKey(browserSurface);
+  const connectionId = findFirstConnectionId(events) ?? connectionIdFromBrowserSurfaceProfileKey(browserSurface);
 
   return {
     first_at: first.occurred_at,
@@ -1057,8 +1082,8 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
     source_kind: source?.kind ?? null,
     source_id: source?.id ?? null,
     connector_id: findFirstConnectorId(events),
-    ...(browserSurfaceConnectionId
-      ? { connection_id: browserSurfaceConnectionId, connector_instance_id: browserSurfaceConnectionId }
+    ...(connectionId
+      ? { connection_id: connectionId, connector_instance_id: connectionId }
       : {}),
     actor_type: first.actor_type,
     actor_id: first.actor_id,

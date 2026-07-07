@@ -119,6 +119,15 @@ function buildRunSourceDescriptor(connectorId) {
   return { kind: 'connector', id: connectorId };
 }
 
+function buildRunConnectionIdentity(connectorInstanceId) {
+  return connectorInstanceId
+    ? {
+        connection_id: connectorInstanceId,
+        connector_instance_id: connectorInstanceId,
+      }
+    : {};
+}
+
 function appendUniqueFields(fields, extraFields) {
   const normalized = [...fields];
   const seen = new Set(fields);
@@ -1701,6 +1710,7 @@ export async function runConnector(opts) {
   const traceContext = opts.traceContext || createTraceContext({ scenarioId: opts.scenarioId });
   const runId = spawnRunId;
   const runSource = buildRunSourceDescriptor(connectorId);
+  const runConnectionIdentity = buildRunConnectionIdentity(normalizedConnectorInstanceId);
 
   // We do NOT use readline.createInterface here. Node 24+ readline treats
   // U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) as line
@@ -1859,8 +1869,28 @@ export async function runConnector(opts) {
   // anchor: "the violation happened immediately after this event."
   // Declared before the first emitSpineEventTracked call to avoid TDZ.
   let lastValidSpineEvent = null;
+  function addRunConnectionIdentity(input) {
+    if (!input?.event_type?.startsWith?.('run.') || !normalizedConnectorInstanceId) {
+      return input;
+    }
+    const data = input.data && typeof input.data === 'object' && !Array.isArray(input.data)
+      ? input.data
+      : {};
+    return {
+      ...input,
+      data: {
+        ...data,
+        ...runConnectionIdentity,
+      },
+    };
+  }
+
+  async function emitRunSpineEvent(input) {
+    return emitSpineEvent(addRunConnectionIdentity(input));
+  }
+
   async function emitSpineEventTracked(input) {
-    const record = await emitSpineEvent(input);
+    const record = await emitRunSpineEvent(input);
     if (record?.event_id) {
       lastValidSpineEvent = { event_id: record.event_id, event_type: record.event_type };
     }
@@ -2442,7 +2472,7 @@ export async function runConnector(opts) {
         },
       });
     } catch (err) {
-      await emitSpineEvent({
+      await emitRunSpineEvent({
         event_type: 'run.state_commit_failed',
         trace_id: traceContext.trace_id,
         scenario_id: traceContext.scenario_id,
@@ -2648,7 +2678,7 @@ export async function runConnector(opts) {
         if (!terminalEventRecorded) {
           try {
             await closeOpenStructuredAssistance('cancelled', { reason: failureReason });
-            await emitSpineEvent({
+            await emitRunSpineEvent({
               event_type: 'run.failed',
               trace_id: traceContext.trace_id,
               scenario_id: traceContext.scenario_id,
@@ -3458,7 +3488,7 @@ export async function runConnector(opts) {
           : 'Run exceeded its scheduler wall-clock budget.';
         finalStatus = 'failed';
         await closeOpenStructuredAssistance(assistanceStatus, { reason: terminalReason });
-        await emitSpineEvent({
+        await emitRunSpineEvent({
           event_type: 'run.failed',
           trace_id: traceContext.trace_id,
           scenario_id: traceContext.scenario_id,
@@ -3507,7 +3537,7 @@ export async function runConnector(opts) {
               exitCodeMismatch.reported_records_emitted = doneMessage.records_emitted;
 
               await closeOpenStructuredAssistance('cancelled', { reason: failureReason });
-              await emitSpineEvent({
+              await emitRunSpineEvent({
                 event_type: 'run.failed',
                 trace_id: traceContext.trace_id,
                 scenario_id: traceContext.scenario_id,
@@ -3552,7 +3582,7 @@ export async function runConnector(opts) {
               recordsEmittedMismatch.reported_records_emitted = doneMessage.records_emitted;
 
               await closeOpenStructuredAssistance('cancelled', { reason: failureReason });
-              await emitSpineEvent({
+              await emitRunSpineEvent({
                 event_type: 'run.failed',
                 trace_id: traceContext.trace_id,
                 scenario_id: traceContext.scenario_id,
@@ -3593,7 +3623,7 @@ export async function runConnector(opts) {
             await closeOpenStructuredAssistance(doneMessage.status === 'succeeded' ? 'resolved' : 'cancelled', {
               reason: doneMessage.status === 'succeeded' ? 'run_completed' : 'connector_reported_failed',
             });
-            await emitSpineEvent({
+            await emitRunSpineEvent({
               event_type: doneMessage.status === 'succeeded' ? 'run.completed' : 'run.failed',
               trace_id: traceContext.trace_id,
               scenario_id: traceContext.scenario_id,
@@ -3623,7 +3653,7 @@ export async function runConnector(opts) {
             finalStatus = 'cancelled';
             const cancelReason = ownerCancelForced ? 'owner_cancel_forced' : 'owner_cancelled';
             await closeOpenStructuredAssistance('cancelled', { reason: cancelReason });
-            await emitSpineEvent({
+            await emitRunSpineEvent({
               event_type: 'run.cancelled',
               trace_id: traceContext.trace_id,
               scenario_id: traceContext.scenario_id,
@@ -3668,7 +3698,7 @@ export async function runConnector(opts) {
               ? { stderr_tail: stderrTailDiagnostic }
               : null;
             await closeOpenStructuredAssistance('cancelled', { reason: closeFailureReason });
-            await emitSpineEvent({
+            await emitRunSpineEvent({
               event_type: 'run.failed',
               trace_id: traceContext.trace_id,
               scenario_id: traceContext.scenario_id,
@@ -3785,7 +3815,7 @@ export async function runConnector(opts) {
         if (!terminalEventRecorded) {
           try {
             await closeOpenStructuredAssistance('cancelled', { reason: failureReason });
-            await emitSpineEvent({
+            await emitRunSpineEvent({
               event_type: 'run.failed',
               trace_id: traceContext.trace_id,
               scenario_id: traceContext.scenario_id,

@@ -204,3 +204,56 @@ test('browser-surface profile key gives run summary exact connection identity', 
     assert.equal(summary.browser_surface_profile_key, 'chase:cin_expired_setup');
   });
 });
+
+test('runtime event connection identity gives run summary exact connection identity', async () => {
+  await withSpine(async () => {
+    const runId = 'run_connection_identity';
+
+    await emitSpineEvent({
+      event_type: 'run.started',
+      run_id: runId,
+      status: 'started',
+      object_type: 'run',
+      object_id: runId,
+      actor_type: 'runtime',
+      actor_id: 'github',
+      source_kind: 'connector',
+      source_id: 'github',
+      occurred_at: '2026-04-01T00:00:01Z',
+      data: {
+        source: { kind: 'connector', id: 'github' },
+        connection_id: 'cin_github_personal',
+        connector_instance_id: 'cin_github_personal',
+        boot_epoch: '00000000-0000-4000-8000-000000000003',
+        seq: 1,
+      },
+    });
+    await emitSpineEvent({
+      event_type: 'run.completed',
+      run_id: runId,
+      status: 'succeeded',
+      object_type: 'run',
+      object_id: runId,
+      actor_type: 'runtime',
+      actor_id: 'github',
+      source_kind: 'connector',
+      source_id: 'github',
+      occurred_at: '2026-04-01T00:00:02Z',
+      data: {
+        source: { kind: 'connector', id: 'github' },
+        connection_id: 'cin_github_personal',
+        connector_instance_id: 'cin_github_personal',
+        records_emitted: 0,
+      },
+    });
+
+    const page = await listSpineCorrelations('run', { limit: 50 });
+    const summary = page.summaries.find((s) => s.run_id === runId || s.id === runId);
+    assert.ok(summary, 'expected a summary for the connection-scoped run');
+    assert.equal(summary.status, 'succeeded');
+    assert.equal(summary.connector_id, 'github');
+    assert.deepEqual(summary.source, { kind: 'connector', id: 'github' });
+    assert.equal(summary.connection_id, 'cin_github_personal');
+    assert.equal(summary.connector_instance_id, 'cin_github_personal');
+  });
+});

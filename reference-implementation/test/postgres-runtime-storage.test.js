@@ -649,9 +649,14 @@ if (!POSTGRES_URL) {
   test('postgres run summaries include terminal events beyond the prefix sample', async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `pg_large_run_${suffix}`;
+    const connectionId = `cin_pg_large_run_${suffix}`;
     const runId = `run_pg_large_${suffix}`;
     const traceId = `trc_pg_large_${suffix}`;
-    const sourceData = { source: { kind: 'connector', id: connectorId } };
+    const sourceData = {
+      source: { kind: 'connector', id: connectorId },
+      connection_id: connectionId,
+      connector_instance_id: connectionId,
+    };
 
     initDb(':memory:');
     await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
@@ -734,6 +739,8 @@ if (!POSTGRES_URL) {
 
       assert.ok(summary, 'expected a summary for the large Postgres run');
       assert.equal(summary.status, 'failed');
+      assert.equal(summary.connection_id, connectionId);
+      assert.equal(summary.connector_instance_id, connectionId);
       assert.equal(summary.event_count, 5103);
       assert.equal(summary.last_at, '2026-06-02T00:00:03.000Z');
       assert.equal(summary.failure?.reason, 'connector_exit_without_done');
@@ -742,6 +749,8 @@ if (!POSTGRES_URL) {
       const searchSummary = search.runs.find((row) => row.run_id === runId || row.id === runId);
       assert.ok(searchSummary, 'expected search to return the large run summary');
       assert.equal(searchSummary.status, 'failed');
+      assert.equal(searchSummary.connection_id, connectionId);
+      assert.equal(searchSummary.connector_instance_id, connectionId);
       assert.equal(searchSummary.event_count, 5103);
     } finally {
       await postgresQuery('DELETE FROM spine_events WHERE run_id = $1', [runId]);
