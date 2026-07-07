@@ -208,6 +208,55 @@ async function emitSyntheticRun({
   });
 }
 
+async function emitSyntheticStartedRun({
+  connectorId: rawConnectorId,
+  connectorInstanceId = SPOTIFY_INSTANCE_ID,
+  runId,
+  occurredAt,
+  source: rawSource = null,
+}) {
+  const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
+  const source = rawSource ?? { kind: 'connector', id: connectorId };
+  const trace = createTraceContext({ scenarioId: `scn_${runId}` });
+  const { getCurrentBootEpoch } = await import('../lib/spine.ts');
+  const _epoch = getCurrentBootEpoch();
+  if (!_epoch) {
+    throw new Error('emitSyntheticStartedRun: no boot epoch — harness/startServer must run first');
+  }
+  getDb().prepare(`
+    INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
+    VALUES(?, ?, ?, ?, ?, ?)
+  `).run(connectorInstanceId, connectorId, runId, trace.trace_id, trace.scenario_id, occurredAt);
+  await emitSpineEvent({
+    event_type: 'run.started',
+    occurred_at: occurredAt,
+    trace_id: trace.trace_id,
+    scenario_id: trace.scenario_id,
+    actor_type: 'runtime',
+    actor_id: connectorId,
+    object_type: 'run',
+    object_id: runId,
+    status: 'started',
+    run_id: runId,
+    source_kind: source.kind,
+    source_id: source.id,
+    data: {
+      source,
+      connector_instance_id: connectorInstanceId,
+      connection_id: connectorInstanceId,
+      collection_mode: 'incremental',
+      persist_state: true,
+      state_commit_intent: 'commit_on_success',
+      bindings: { network: {}, filesystem: {}, interactive: {} },
+      scope: { streams: [{ name: 'top_artists' }] },
+      scope_streams: ['top_artists'],
+      boot_epoch: _epoch.boot_epoch,
+      seq: _epoch.seq,
+      controller_id: _epoch.controller_id,
+    },
+  });
+}
+
 test('GET /_ref/connectors lists configured connections with stream names and freshness', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     await seedSpotifyConnection(spotifyManifest.connector_id);
@@ -225,6 +274,26 @@ test('GET /_ref/connectors lists configured connections with stream names and fr
     assert.equal(entry.schedule, null);
     assert.equal(entry.last_run, null);
     assert.equal(entry.last_successful_run, null);
+  });
+});
+
+test('GET /_ref/connectors keeps active run finished_at null', async () => {
+  await withHarness(async ({ asUrl, spotifyManifest }) => {
+    const connectorId = spotifyManifest.connector_id;
+    await seedSpotifyConnection(connectorId);
+    await emitSyntheticStartedRun({
+      connectorId,
+      runId: 'run_spotify_active',
+      occurredAt: '2026-04-24T10:00:00.000Z',
+    });
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
+    assert.equal(status, 200);
+    const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
+    assert.ok(entry, 'spotify connection should be listed');
+    assert.equal(entry.last_run?.run_id, 'run_spotify_active');
+    assert.match(entry.last_run?.status ?? '', /^(started|in_progress)$/);
+    assert.equal(entry.last_run?.finished_at, null);
   });
 });
 

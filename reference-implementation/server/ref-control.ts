@@ -870,7 +870,7 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
     run_id: runId || undefined,
     status: summary.status,
     started_at: summary.first_at,
-    finished_at: summary.status === "pending" ? null : summary.last_at,
+    finished_at: isActiveRunSummaryStatus(summary.status) ? null : summary.last_at,
     first_at: summary.first_at,
     last_at: summary.last_at,
     event_count: summary.event_count,
@@ -879,6 +879,10 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
     known_gaps: readKnownGapsFromTerminalData(terminalData),
     collection_facts: readCollectionFactsFromTerminalData(terminalData),
   };
+}
+
+function isActiveRunSummaryStatus(status: string): boolean {
+  return status === "pending" || status === "started" || status === "in_progress";
 }
 
 function runSummaryMatchesConnection(
