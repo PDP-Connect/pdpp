@@ -571,7 +571,7 @@ test('connector summary connection health treats owner-cancelled runs as neutral
   const collection = snapshot.conditions.find((condition) => condition.type === 'CollectionSucceeded');
 
   assert.equal(collection?.status, 'unknown');
-  assert.equal(snapshot.axes.coverage, 'unknown');
+  assert.equal(snapshot.axes.coverage, 'complete');
   assert.notEqual(snapshot.forward_disposition, 'terminal');
   assert.equal(snapshot.reason_code, null);
 });

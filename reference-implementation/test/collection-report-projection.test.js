@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildCollectionReport } from '../server/ref-control.ts';
+import { buildCollectionReport, projectCollectionReport } from '../server/ref-control.ts';
 
 // Pure unit tests for the Tranche C control-plane projection
 // (`define-connector-progress-evidence-contract`, task 2.2b / 2.4 / 2.6).
@@ -98,6 +98,47 @@ test('declared coverage strategy without committed boundary does not fabricate c
   assert.equal(entry.coverage_strategy, 'checkpoint_window');
   assert.equal(entry.coverage_condition, 'unknown');
   assert.equal(entry.forward_disposition, 'unmeasured');
+});
+
+test('owner-cancelled latest run reuses prior successful facts for stream coverage', () => {
+  const cancelledRun = {
+    event_count: 2,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:10:00.000Z',
+    first_at: '2026-05-19T12:09:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:10:00.000Z',
+    run_id: 'run_owner_cancelled',
+    started_at: '2026-05-19T12:09:00.000Z',
+    status: 'cancelled',
+    terminal_reason: 'owner_cancelled',
+  };
+  const successfulRun = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_success',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+    collection_facts: {
+      streams: [fact({ stream: 'messages', collected: 0, considered: 1125, covered: 1125 })],
+    },
+  };
+  const entries = projectCollectionReport({
+    lastRun: cancelledRun,
+    lastSuccessfulRun: successfulRun,
+    connectionHealth: { axes: { attention: 'none', freshness: 'fresh' } },
+    manifestStreams: [{ name: 'messages', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' }],
+    refreshPolicy: null,
+  });
+  const entry = entryFor(entries, 'messages');
+
+  assert.equal(entry.coverage_condition, 'complete');
+  assert.equal(entry.considered, 1125);
+  assert.equal(entry.covered, 1125);
 });
 
 // ─── considered known: satisfied -> complete, short -> partial ────────────────

@@ -1635,6 +1635,14 @@ function healthClassifyingRun(run: ConnectorRunSummary | null): ConnectorRunSumm
   return isOwnerCancelledRun(run) ? null : run;
 }
 
+function coverageClassifyingRun(
+  lastRun: ConnectorRunSummary | null,
+  lastSuccessfulRun: ConnectorRunSummary | null
+): ConnectorRunSummary | null {
+  const latest = healthClassifyingRun(lastRun);
+  return latest ?? (isOwnerCancelledRun(lastRun) ? lastSuccessfulRun : null);
+}
+
 // Generic terminal reasons that carry NO specific cause — a connector that
 // flattens any terminal failure into one of these hides the real signal. When
 // the run reason is one of these, a credential-bearing known-gap should win
@@ -2036,8 +2044,9 @@ export function buildCollectionReport(input: {
  * `forward_disposition` or the `needs_attention` pill. The refresh evidence is
  * the same `buildRefreshEvidence(refreshPolicy)` the snapshot used.
  */
-function projectCollectionReport(input: {
+export function projectCollectionReport(input: {
   readonly lastRun: ConnectorRunSummary | null;
+  readonly lastSuccessfulRun?: ConnectorRunSummary | null;
   readonly connectionHealth: ConnectionHealthSnapshot;
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
   readonly localDeviceBacked?: boolean;
@@ -2047,7 +2056,7 @@ function projectCollectionReport(input: {
   readonly refreshPolicy: unknown;
 }): CollectionReportEntry[] {
   return buildCollectionReport({
-    collectionFacts: healthClassifyingRun(input.lastRun)?.collection_facts ?? null,
+    collectionFacts: coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null)?.collection_facts ?? null,
     localCoverage: input.localDeviceBacked === true ? (input.localCoverage ?? null) : null,
     manifestStreams: input.manifestStreams,
     pendingDetailGaps: input.pendingDetailGaps ?? [],
@@ -2848,6 +2857,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   );
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const latestRunForHealth = healthClassifyingRun(input.lastRun);
+  const coverageRunForHealth = coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun);
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
@@ -2857,7 +2867,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   });
   const coverage = applyCoverageOverride(
     buildCoverageEvidence(
-      latestRunForHealth,
+      coverageRunForHealth,
       pendingDetailGaps,
       input.manifestStreams ?? [],
       input.localCoverage ?? null
@@ -3460,6 +3470,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const connectorDisplayName = manifest.display_name || connectorId;
   const collectionReport = projectCollectionReport({
     lastRun,
+    lastSuccessfulRun,
     connectionHealth: initialConnectionHealth,
     localCoverage,
     localDeviceBacked,
@@ -3962,6 +3973,7 @@ export async function getConnectorDetail(
   const initialConnectionHealth = projectConnectorSummaryConnectionHealth(healthInput);
   const collectionReport = projectCollectionReport({
     lastRun,
+    lastSuccessfulRun,
     connectionHealth: initialConnectionHealth,
     manifestStreams: manifest.streams ?? [],
     pendingDetailGaps: detailGaps.gaps,
