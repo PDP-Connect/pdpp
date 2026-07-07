@@ -8,7 +8,8 @@ const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 const SITE_DOCS = join(REPO_ROOT, "apps/site/content/docs");
 
 const SITE_ONLY_EXTENSIONS = new Set([
-  "spec-lexical-retrieval-extension.md",
+  "spec-ext-aggregation.md",
+  "spec-ext-lexical-search.md",
   "spec-semantic-retrieval-extension.md",
 ]);
 

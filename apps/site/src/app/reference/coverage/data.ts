@@ -147,7 +147,7 @@ export const coverageRows = [
     demonstrated: "partial",
     status: "implemented",
     evidence: [
-      docs("spec-lexical-retrieval-extension", "Lexical retrieval extension"),
+      docs("spec-ext-lexical-search", "Lexical search extension profile"),
       referenceTest("lexical-retrieval.test.js", "Lexical retrieval tests"),
       webRoute("/sandbox/search", "apps/site/src/app/sandbox/search/page.tsx", "Mock search diagnostics"),
     ],

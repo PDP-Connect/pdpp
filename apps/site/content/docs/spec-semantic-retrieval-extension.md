@@ -3,13 +3,15 @@ title: "Semantic Retrieval Extension (Experimental)"
 description: "Experimental optional PDPP extension defining a semantic retrieval surface at GET /v1/search/semantic. Unstable."
 ---
 
-> **⚠️ EXPERIMENTAL / UNSTABLE.** This extension is publicly named and discoverable, but explicitly marked `stability: "experimental"`. Breaking revisions are acceptable. Clients that rely on it MUST accept that the contract may change, and SHOULD fall back to the stable [lexical retrieval extension](./spec-lexical-retrieval-extension) where it matters. Servers that advertise it carry a machine-readable `stability: "experimental"` marker that does not disappear silently — see [Stability](#stability).
+<Callout type="warn" title="Experimental / unstable">
+  This extension is publicly named and discoverable, but explicitly marked `stability: "experimental"`. Breaking revisions are acceptable. Clients that rely on it MUST accept that the contract may change, and SHOULD fall back to the stable [lexical retrieval extension](./spec-ext-lexical-search) where it matters. Servers that advertise it carry a machine-readable `stability: "experimental"` marker that does not disappear silently — see [Stability](#stability).
+</Callout>
 
 ## Overview
 
 The **semantic retrieval experimental extension** defines a dedicated, optional, grant-safe public surface that lets applications and agents search records by *meaning* across the streams a caller is authorized to read. It is built to close the paraphrase / synonymy / conceptual-similarity gap that lexical retrieval does not: queries like "my bank fees" can match records containing "overdraft charges" when the configured embedding model places them nearby.
 
-It is **not part of core PDPP** and it is **not a replacement for [lexical retrieval](./spec-lexical-retrieval-extension)**. Lexical retrieval remains the stable public retrieval floor; semantic retrieval is additive and revisable. Implementations MAY expose it, and clients MUST NOT assume it exists unless the resource server explicitly advertises it (see [Discovery](#discovery)).
+It is **not part of core PDPP** and it is **not a replacement for [lexical retrieval](./spec-ext-lexical-search)**. Lexical retrieval remains the stable public retrieval floor; semantic retrieval is additive and revisable. Implementations MAY expose it, and clients MUST NOT assume it exists unless the resource server explicitly advertises it (see [Discovery](#discovery)).
 
 The extension is intentionally **text-query only** in v1. It does not expose raw vector queries, client-supplied embeddings, model-selector parameters, ranking knobs, body-DSL `POST /v1/search/semantic`, portable relevance calibration, or connector-specific search semantics — those are explicit non-goals. See [Non-goals](#non-goals).
 
@@ -261,6 +263,6 @@ Explicit non-goals for this tranche:
 
 ## See also
 
-- [Lexical Retrieval Extension](./spec-lexical-retrieval-extension) — the stable public retrieval floor.
+- [Extension Profile: Lexical Search](./spec-ext-lexical-search) — the stable public retrieval floor.
 - [Data Query API](./spec-data-query-api) — core record-listing contract.
 - The canonical approved spec at `openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md`.

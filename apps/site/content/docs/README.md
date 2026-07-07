@@ -30,7 +30,8 @@ before committing spec-doc changes.
 
 The only web-only spec pages currently allowed are:
 
-- `spec-lexical-retrieval-extension.md`
+- `spec-ext-lexical-search.md`
+- `spec-ext-aggregation.md`
 - `spec-semantic-retrieval-extension.md`
 
 Any additional web-only spec needs an OpenSpec change before the file is added.
