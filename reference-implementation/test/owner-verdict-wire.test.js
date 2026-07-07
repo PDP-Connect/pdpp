@@ -163,6 +163,35 @@ test('owner-wire: outbox unknown does not downgrade an otherwise complete non-ou
   assert.equal(verdict.channel, 'calm');
 });
 
+test('owner-wire: active local-device outbox renders Syncing without owner action', () => {
+  const snapshot = {
+    ...freshHealthySnapshot(),
+    state: 'idle',
+    axes: {
+      ...freshHealthySnapshot().axes,
+      outbox: 'active',
+    },
+  };
+  const verdict = synthesizeConnectorVerdict({
+    snapshot,
+    report: collectionReport(),
+    manifestStreams: manifestStreams(),
+    refresh: null,
+    progress: {
+      mode: 'local_device',
+      retained_records: 100,
+      last_refreshed_at: '2026-07-07T09:00:00.000Z',
+      observed_at: '2026-07-07T10:00:00.000Z',
+    },
+  });
+
+  assert.equal(verdict.pill.tone, 'green');
+  assert.equal(verdict.pill.label, 'Syncing');
+  assert.equal(verdict.channel, 'calm');
+  assert.equal(verdict.forward_statement, 'The local collector is uploading saved records.');
+  assert.equal(verdict.required_actions.length, 0);
+});
+
 test('owner-wire: denominator-only unknown stream rows do not override connection-level complete coverage', () => {
   const verdict = synthesizeConnectorVerdict({
     snapshot: freshHealthySnapshot(),

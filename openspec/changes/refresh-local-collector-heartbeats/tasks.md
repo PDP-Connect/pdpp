@@ -6,6 +6,7 @@
 ## 2. Projection
 
 - [x] Verify recent local-device pending work projects as active/draining rather than owner repair.
+- [x] Render active local-device pending work as in-progress work rather than fully current/idle.
 - [x] Preserve stalled/dead-letter/state-read-blocked remediation semantics.
 
 ## 3. Tests

@@ -197,7 +197,12 @@ function assertAllInvariants(verdict, snap, runtimeOk) {
   );
   // (6) label follows tone plus active-work evidence. Grey is only "Checking"
   // when current activity evidence proves the system is actively checking.
-  const expectedLabel = verdict.pill.tone === 'grey' && snap.badges.syncing ? 'Checking' : TONE_TO_LABEL[verdict.pill.tone];
+  const expectedLabel =
+    verdict.pill.tone === 'grey' && snap.badges.syncing
+      ? 'Checking'
+      : verdict.pill.tone === 'green' && snap.axes.outbox === 'active'
+        ? 'Syncing'
+        : TONE_TO_LABEL[verdict.pill.tone];
   assert.equal(verdict.pill.label, expectedLabel, 'inv6: label matches tone plus active-work evidence');
   // (7) no contradictory chip pair
   for (const row of verdict.streams) {
@@ -395,6 +400,41 @@ test('tone: active unknown coverage renders Checking because work is active', ()
   assert.equal(v.pill.tone, 'grey');
   assert.equal(v.pill.label, 'Checking');
   assert.equal(v.forward_statement, 'Coverage has not been measured yet.');
+});
+
+test('tone: active local-device outbox renders Syncing without owner action', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { coverage: 'complete', freshness: 'fresh', outbox: 'active' },
+    forward_disposition: 'complete',
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream()], null, true, {
+    mode: 'local_device',
+    retained_records: 100,
+    last_refreshed_at: '2026-07-07T09:00:00.000Z',
+    observed_at: '2026-07-07T10:00:00.000Z',
+  });
+  assert.equal(v.pill.tone, 'green');
+  assert.equal(v.pill.label, 'Syncing');
+  assert.equal(v.channel, 'calm');
+  assert.equal(v.required_actions.length, 0);
+  assert.equal(v.forward_statement, 'The local collector is uploading saved records.');
+});
+
+test('tone: degraded evidence wins over active local-device outbox label', () => {
+  const snap = snapshot({
+    state: 'degraded',
+    axes: { coverage: 'retryable_gap', freshness: 'fresh', outbox: 'active' },
+    forward_disposition: 'resumable',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: 'retryable_gap', gap_retryable: true })],
+    null,
+    true
+  );
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
 });
 
 test('tone: worst axis (degrading coverage) wins over a healthy state', () => {

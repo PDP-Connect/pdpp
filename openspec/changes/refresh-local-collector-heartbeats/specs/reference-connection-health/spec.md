@@ -13,6 +13,7 @@ The reference implementation SHALL keep source coverage, local-device backlog, d
 
 **WHEN** a local collector reports pending outbox records on a recent source-instance heartbeat
 **THEN** the connection projection SHALL expose the condition as active local-device work without labeling the connection as a scheduler failure or owner-repair task.
+**AND** the rendered owner verdict SHALL present the connection as in-progress local-device work rather than as fully current and idle.
 
 #### Scenario: Local exporter pending work stops reporting
 

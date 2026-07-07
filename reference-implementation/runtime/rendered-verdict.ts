@@ -57,7 +57,7 @@ export type VerdictTone = "amber" | "green" | "grey" | "red";
  * "Checking" requires active work; otherwise missing evidence reads "Not
  * measured".
  */
-export type VerdictLabel = "Can't collect" | "Checking" | "Degraded" | "Healthy" | "Not measured";
+export type VerdictLabel = "Can't collect" | "Checking" | "Degraded" | "Healthy" | "Not measured" | "Syncing";
 
 export interface VerdictPill {
   readonly label: VerdictLabel;
@@ -337,6 +337,9 @@ const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
 function labelForPill(tone: VerdictTone, snapshot: ConnectionHealthSnapshot): VerdictLabel {
   if (tone === "grey" && snapshot.badges.syncing) {
     return "Checking";
+  }
+  if (tone === "green" && snapshot.axes.outbox === "active") {
+    return "Syncing";
   }
   return TONE_TO_LABEL[tone];
 }
@@ -1164,6 +1167,9 @@ function buildForwardStatement(
     case "awaiting_owner":
       return "Waiting on you before the next run can make progress.";
     default:
+      if (snapshot.axes.outbox === "active") {
+        return "The local collector is uploading saved records.";
+      }
       if (snapshot.axes.freshness === "unknown") {
         return "Freshness has not been measured yet.";
       }
