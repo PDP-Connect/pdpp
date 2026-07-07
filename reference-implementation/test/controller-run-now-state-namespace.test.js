@@ -67,18 +67,58 @@ function freshDb(t) {
   });
 }
 
-function makeController(calls) {
+function makeController(calls, overrides = {}) {
   // No browserSurfaceLeaseManager: amazon runs without acquiring a managed
   // surface, so the stubbed runConnectorImpl is reached directly.
   return createController({
     connectorPathResolver: () => "/tmp/connector.ts",
+    detailGapStore: overrides.detailGapStore,
     logger: { error: () => {}, warn: () => {} },
     ownerSubjectId: "owner_1",
-    runConnectorImpl: (opts) => {
-      calls.push(opts);
-      return Promise.resolve({ status: "succeeded", records_emitted: 0 });
-    },
+    runConnectorImpl:
+      overrides.runConnectorImpl ||
+      ((opts) => {
+        calls.push(opts);
+        return Promise.resolve({ status: "succeeded", records_emitted: 0 });
+      }),
   });
+}
+
+async function drainUntilIdle(controller, limit = 5) {
+  for (let i = 0; i < limit; i += 1) {
+    const summary = await controller.drainActiveRuns(1000);
+    if (summary.drained === 0 && summary.timedOut === 0) {
+      return;
+    }
+  }
+  throw new Error("controller did not become idle");
+}
+
+function pendingRecoveryGap(overrides = {}) {
+  return {
+    attempt_count: 1,
+    connector_id: AMAZON,
+    connector_instance_id: "cin_recovery",
+    last_error: { class: "run_cap_deferred" },
+    next_attempt_after: null,
+    reason: "retry_exhausted",
+    status: "pending",
+    stream: "order_items",
+    updated_at: "2026-07-07T21:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function detailGapStoreForContinuation(rowsByCall) {
+  let instanceReadCount = 0;
+  return {
+    listPendingGapsForConnector: () => [],
+    listPendingGapsForConnectorInstance: () => {
+      const rows = rowsByCall[Math.min(instanceReadCount, rowsByCall.length - 1)] || [];
+      instanceReadCount += 1;
+      return rows;
+    },
+  };
 }
 
 test("explicit connection state is handed to the connector run and yields incremental mode", async (t) => {
@@ -224,4 +264,99 @@ test("runNow forwards recoveryOnly to the runtime", async (t) => {
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].recoveryOnly, true);
+});
+
+test("runNow continues eligible recovery after a successful progress batch", async (t) => {
+  freshDb(t);
+
+  const calls = [];
+  const controller = makeController(calls, {
+    detailGapStore: detailGapStoreForContinuation([[pendingRecoveryGap()], []]),
+    runConnectorImpl: (opts) => {
+      calls.push(opts);
+      if (calls.length === 1) {
+        return Promise.resolve({
+          status: "succeeded",
+          records_emitted: 1,
+          detail_gaps: [{ gap_id: "gap_recovered", status: "recovered", stream: "order_items" }],
+        });
+      }
+      return Promise.resolve({ status: "succeeded", records_emitted: 0, detail_gaps: [] });
+    },
+  });
+
+  await controller.runNow(AMAZON, {
+    connectorInstanceId: "cin_recovery",
+    manifest: AMAZON_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_root",
+  });
+  await drainUntilIdle(controller);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].recoveryOnly, false);
+  assert.equal(calls[1].connectorInstanceId, "cin_recovery");
+  assert.equal(calls[1].recoveryOnly, true);
+  assert.equal(calls[1].triggerKind, "manual");
+});
+
+test("runNow does not continue recovery when no detail gap was recovered", async (t) => {
+  freshDb(t);
+
+  const calls = [];
+  const controller = makeController(calls, {
+    detailGapStore: detailGapStoreForContinuation([[pendingRecoveryGap()]]),
+    runConnectorImpl: (opts) => {
+      calls.push(opts);
+      return Promise.resolve({
+        status: "succeeded",
+        records_emitted: 0,
+        detail_gaps: [{ gap_id: "gap_still_pending", status: "pending", stream: "order_items" }],
+      });
+    },
+  });
+
+  await controller.runNow(AMAZON, {
+    connectorInstanceId: "cin_recovery",
+    manifest: AMAZON_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_no_progress",
+  });
+  await drainUntilIdle(controller);
+
+  assert.equal(calls.length, 1);
+});
+
+test("runNow does not continue recovery for owner-required pending work", async (t) => {
+  freshDb(t);
+
+  const calls = [];
+  const controller = makeController(calls, {
+    detailGapStore: detailGapStoreForContinuation([
+      [
+        pendingRecoveryGap({
+          last_error: { class: "owner_required" },
+          reason: "auth_failure",
+        }),
+      ],
+    ]),
+    runConnectorImpl: (opts) => {
+      calls.push(opts);
+      return Promise.resolve({
+        status: "succeeded",
+        records_emitted: 1,
+        detail_gaps: [{ gap_id: "gap_recovered", status: "recovered", stream: "order_items" }],
+      });
+    },
+  });
+
+  await controller.runNow(AMAZON, {
+    connectorInstanceId: "cin_recovery",
+    manifest: AMAZON_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_owner_required",
+  });
+  await drainUntilIdle(controller);
+
+  assert.equal(calls.length, 1);
 });

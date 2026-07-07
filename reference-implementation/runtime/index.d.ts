@@ -147,6 +147,7 @@ export interface RuntimeRunConnectorResult {
   checkpoint_summary?: Record<string, unknown> | null;
   connector_diagnostics?: ConnectorRunDiagnostics;
   connector_error?: { message?: string; code?: string; retryable?: boolean | null } | null;
+  detail_gaps?: Array<{ gap_id?: string | null; status?: string | null; stream?: string | null }>;
   failure_message?: string;
   failure_origin?: RuntimeFailureOrigin;
   known_gaps?: Record<string, unknown>[] | null;

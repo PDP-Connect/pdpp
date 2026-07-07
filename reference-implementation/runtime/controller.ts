@@ -48,7 +48,12 @@ import {
 } from "../server/stores/scheduler-store.ts";
 import { type BrowserSurfaceReadinessProbe, createBrowserSurfaceManager } from "./browser-surface/index.ts";
 import { runConnector } from "./index.js";
-import { filterFreshPressureRows, type RecoveryAdmissionDenialReason } from "./recovery-decision.ts";
+import {
+  classifyRecoveryGap,
+  filterFreshPressureRows,
+  resolveRecoveryAdmission,
+  type RecoveryAdmissionDenialReason,
+} from "./recovery-decision.ts";
 import type { RequiredAction } from "./rendered-verdict.ts";
 import {
   automaticIneligibilityReason,
@@ -218,6 +223,7 @@ export interface RunNowOptions {
   manifest?: ConnectorManifest;
   ownerToken?: string;
   priorityClass?: "owner_interactive" | "scheduled_refresh";
+  recoveryContinuationDepth?: number;
   recoveryOnly?: boolean;
   resources?: Readonly<Record<string, readonly string[]>>;
   rsUrl?: string;
@@ -711,6 +717,8 @@ let referenceFixtureFingerprints: Map<string, ManifestFingerprint> | null = null
 let polyfillManifestFingerprints: Map<string, ManifestFingerprint> | null = null;
 let polyfillConnectorPaths: Map<string, string> | null = null;
 const ABANDONED_CONTROLLER_RUN_REASON = "controller_restarted";
+const MAX_RECOVERY_CONTINUATION_ENVELOPES = 12;
+const RECOVERY_CONTINUATION_PENDING_READ_LIMIT = 100;
 
 // Typed terminal reason for a run whose launch path threw before the
 // runtime recorded any terminal event (e.g. env/spawn prep failed before
@@ -1090,10 +1098,14 @@ export function __resetControllerPathResolverCachesForTests(): void {
  */
 interface PendingDetailGapRow {
   readonly attempt_count?: number | null;
+  readonly connector_id?: string | null;
   readonly connector_instance_id?: string | null;
+  readonly detail_class?: string | null;
+  readonly last_error?: { readonly class?: unknown } | null;
   readonly last_attempt_at?: string | null;
   readonly next_attempt_after?: string | null;
   readonly reason?: string | null;
+  readonly status?: string | null;
   readonly stream?: string | null;
   readonly updated_at?: string | null;
 }
@@ -1105,6 +1117,11 @@ interface PendingDetailGapRow {
 interface ConnectorDetailGapReadStore {
   listPendingGapsForConnector(
     connectorId: string,
+    options?: { limit?: number }
+  ): Promise<readonly PendingDetailGapRow[]> | readonly PendingDetailGapRow[];
+  listPendingGapsForConnectorInstance?(
+    connectorId: string,
+    connectorInstanceId: string,
     options?: { limit?: number }
   ): Promise<readonly PendingDetailGapRow[]> | readonly PendingDetailGapRow[];
 }
@@ -2698,6 +2715,99 @@ export function createController(opts: ControllerOptions = {}): Controller {
       .map((row) => projectPendingPressureGap(row, row.reason as string));
   }
 
+  function countRecoveredDetailGaps(result: Awaited<ReturnType<RunConnectorFn>> | undefined): number {
+    const detailGaps = (result as { detail_gaps?: unknown } | undefined)?.detail_gaps;
+    if (!Array.isArray(detailGaps)) {
+      return 0;
+    }
+    return detailGaps.filter((gap) => {
+      if (!gap || typeof gap !== "object") {
+        return false;
+      }
+      return (gap as { status?: unknown }).status === "recovered";
+    }).length;
+  }
+
+  async function listPendingGapsForContinuation(
+    connectorId: string,
+    connectorInstanceId: string
+  ): Promise<readonly PendingDetailGapRow[]> {
+    if (detailGapStore.listPendingGapsForConnectorInstance) {
+      return await Promise.resolve(
+        detailGapStore.listPendingGapsForConnectorInstance(connectorId, connectorInstanceId, {
+          limit: RECOVERY_CONTINUATION_PENDING_READ_LIMIT,
+        })
+      );
+    }
+    const rows = await Promise.resolve(
+      detailGapStore.listPendingGapsForConnector(connectorId, { limit: RECOVERY_CONTINUATION_PENDING_READ_LIMIT })
+    );
+    return rows.filter((row) => (row.connector_instance_id || connectorId) === connectorInstanceId);
+  }
+
+  async function hasEligibleNonPressureRecoveryWork(
+    connectorId: string,
+    connectorInstanceId: string
+  ): Promise<boolean> {
+    const rows = await listPendingGapsForContinuation(connectorId, connectorInstanceId);
+    const nowMs = Date.now();
+    return rows.some((row) => {
+      const classification = classifyRecoveryGap(row);
+      return classification.isNonPressureRecovery && resolveRecoveryAdmission(row, { nowMs }).ok;
+    });
+  }
+
+  async function maybeContinueRecoveryAfterProgress(input: {
+    readonly connectorId: string;
+    readonly connectorInstanceId: string;
+    readonly manifest: ConnectorManifest;
+    readonly options: RunNowOptions;
+    readonly ownerToken: string;
+    readonly result: Awaited<ReturnType<RunConnectorFn>> | undefined;
+    readonly rsUrl?: string;
+  }): Promise<void> {
+    if (input.result?.status !== "succeeded") {
+      return;
+    }
+    if (countRecoveredDetailGaps(input.result) === 0) {
+      return;
+    }
+    const depth = input.options.recoveryContinuationDepth ?? 0;
+    if (depth >= MAX_RECOVERY_CONTINUATION_ENVELOPES) {
+      log.warn?.(
+        `[controller] recovery continuation cap reached for ${input.connectorId} ` +
+          `(connection=${input.connectorInstanceId}, depth=${depth})`
+      );
+      return;
+    }
+    if (!(await hasEligibleNonPressureRecoveryWork(input.connectorId, input.connectorInstanceId))) {
+      return;
+    }
+    try {
+      const continuationOptions: RunNowOptions = {
+        connectorInstanceId: input.connectorInstanceId,
+        manifest: input.manifest,
+        ownerToken: input.ownerToken,
+        recoveryContinuationDepth: depth + 1,
+        recoveryOnly: true,
+        triggerKind: "manual",
+        ...(input.options.priorityClass ? { priorityClass: input.options.priorityClass } : {}),
+        ...(input.rsUrl ? { rsUrl: input.rsUrl } : {}),
+      };
+      await runNow(input.connectorId, continuationOptions);
+    } catch (err) {
+      const code = controllerErrorCode(err);
+      if (code === "run_already_active") {
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(
+        `[controller] recovery continuation failed to start for ${input.connectorId} ` +
+          `(connection=${input.connectorInstanceId}): ${message}`
+      );
+    }
+  }
+
   // Provider-pressure cooldown gate. Ordinary manual runs respect the same
   // cross-run cooldown the scheduler uses; throws `provider_pressure_cooldown`
   // when the connector is still cooling off. An explicit `force: true` skips the
@@ -2990,6 +3100,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // children before the parent process exits — critical for Chromium
     // release() to complete and prevent stale singleton-lock files (see
     // polyfill-connectors/src/profile-lock.ts).
+    let runResult: Awaited<ReturnType<RunConnectorFn>> | undefined;
     const runPromise = Promise.resolve()
       .then(() =>
         runConnectorImpl({
@@ -3020,6 +3131,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         })
       )
       .then(async (result) => {
+        runResult = result;
         if (
           usedStaticSecret &&
           result?.connector_error?.code === "credential_rejected" &&
@@ -3096,16 +3208,34 @@ export function createController(opts: ControllerOptions = {}): Controller {
           log.warn?.(`[controller] failed to emit launch-failure terminal event for ${runId}: ${emitMessage}`);
         }
       })
-      .finally(() =>
-        finalizeRunCleanup({
+      .finally(async () => {
+        await finalizeRunCleanup({
           browserSurfaceLease,
           connectorId,
           connectorInstanceId,
           key,
           runId,
           traceContext,
-        })
-      );
+        });
+        const continuationInput: {
+          connectorId: string;
+          connectorInstanceId: string;
+          manifest: ConnectorManifest;
+          options: RunNowOptions;
+          ownerToken: string;
+          result: Awaited<ReturnType<RunConnectorFn>> | undefined;
+          rsUrl?: string;
+        } = {
+          connectorId,
+          connectorInstanceId,
+          manifest,
+          options,
+          ownerToken,
+          result: runResult,
+          ...(options.rsUrl ? { rsUrl: options.rsUrl } : {}),
+        };
+        await maybeContinueRecoveryAfterProgress(continuationInput);
+      });
     activeRunPromises.set(runId, runPromise);
     // Arm the wall-clock watchdog. If runConnectorImpl hangs (never resolves
     // or rejects), the .finally() above never fires, leaving a phantom entry

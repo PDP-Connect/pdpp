@@ -150,6 +150,15 @@ eligible is a detectable system condition (stall watchdog), never a permanent
 "catching up" label. Recovery and forward collection get bounded shares of
 successive envelopes so neither starves the other.
 
+Manual-only connections need the same liveness property once the owner has
+started a safe recovery envelope. A successful envelope that makes recovery
+progress and leaves immediately eligible, non-pressure recovery work queued
+starts a bounded recovery-only continuation envelope. This preserves the
+connector-local per-run cap as a blast-radius limit without turning it into
+owner busywork. Continuation stops when no detail gap was recovered, when the
+remaining work is provider-pressure, owner-required, or a connector/system
+issue, or when the continuation cap is reached.
+
 ### D9. Idempotent items, crash-honest accounting
 
 The replayable unit must tolerate replay: recovered records deduplicate on
