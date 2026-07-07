@@ -1258,44 +1258,7 @@ test("runCollectorConnector skips source scan when pre-existing durable work can
   });
   try {
     const queuePath = await tempQueuePath();
-    const outbox = new LocalDeviceOutbox({ path: queuePath });
-    try {
-      const records = transformRecordsToCollectorEnvelopes({
-        batchId: "existing-batch",
-        batchSeq: 1,
-        connectorId: "fixture-backlog-skip",
-        deviceId: "device-1",
-        messages: [
-          {
-            data: { id: "m-existing" },
-            emitted_at: "2026-05-19T12:00:00.000Z",
-            key: "m-existing",
-            stream: "messages",
-            type: "RECORD",
-          },
-        ],
-        sourceInstanceId: "src-1",
-      });
-      outbox.enqueue({
-        id: buildLocalDeviceOutboxId({
-          kind: "record_batch",
-          parts: ["existing-batch"],
-          sourceInstanceId: "src-1",
-        }),
-        kind: "record_batch",
-        payload: {
-          batchId: "existing-batch",
-          batchSeq: 1,
-          connectorId: "fixture-backlog-skip",
-          deviceId: "device-1",
-          records,
-          sourceInstanceId: "src-1",
-        },
-        sourceInstanceId: "src-1",
-      });
-    } finally {
-      outbox.close();
-    }
+    seedBacklogRecordBatch({ connectorId: "fixture-backlog-skip", queuePath });
 
     const fixture = await writeFixtureConnector({
       script: `
@@ -1333,6 +1296,91 @@ test("runCollectorConnector skips source scan when pre-existing durable work can
     await harness.close();
   }
 });
+
+test("runCollectorConnector fails backlog-skip pass when terminal heartbeat is rejected", async () => {
+  const harness = await startCollectorHarness({
+    heartbeatStatus: 503,
+    ingestFailureMode: "always-503",
+    priorState: {},
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    seedBacklogRecordBatch({ connectorId: "fixture-backlog-heartbeat-fail", queuePath });
+
+    const fixture = await writeFixtureConnector({
+      script: `
+        process.stderr.write("fixture should not spawn while backlog is pending\\n");
+        process.exit(13);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-backlog-heartbeat-fail",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          outboxPolicy: { retryBackoffMs: 60_000 },
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      /local device request failed: 503/
+    );
+    assert.equal(harness.heartbeats.at(-1)?.status, "retrying");
+    assert.equal(harness.heartbeats.at(-1)?.records_pending, 1);
+  } finally {
+    await harness.close();
+  }
+});
+
+function seedBacklogRecordBatch(input: { connectorId: string; queuePath: string; sourceInstanceId?: string }): void {
+  const sourceInstanceId = input.sourceInstanceId ?? "src-1";
+  const outbox = new LocalDeviceOutbox({ path: input.queuePath });
+  try {
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "existing-batch",
+      batchSeq: 1,
+      connectorId: input.connectorId,
+      deviceId: "device-1",
+      messages: [
+        {
+          data: { id: "m-existing" },
+          emitted_at: "2026-05-19T12:00:00.000Z",
+          key: "m-existing",
+          stream: "messages",
+          type: "RECORD",
+        },
+      ],
+      sourceInstanceId,
+    });
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({
+        kind: "record_batch",
+        parts: ["existing-batch"],
+        sourceInstanceId,
+      }),
+      kind: "record_batch",
+      payload: {
+        batchId: "existing-batch",
+        batchSeq: 1,
+        connectorId: input.connectorId,
+        deviceId: "device-1",
+        records,
+        sourceInstanceId,
+      },
+      sourceInstanceId,
+    });
+  } finally {
+    outbox.close();
+  }
+}
 
 test("a backlog-open second pass re-enqueues nothing: the durable rows are byte-identical before and after", async () => {
   // Target: a scheduled run must not rescan/re-enqueue the same tranche while
@@ -1479,6 +1527,8 @@ test("runCollectorConnector surfaces state-read failure as a blocked heartbeat a
 });
 
 interface CollectorHarnessOptions {
+  /** When set, the heartbeat endpoint returns this status instead of 200. */
+  heartbeatStatus?: number;
   ingestFailureMode?: "always-503";
   priorState?: Record<string, unknown> | null;
   /** When set, the GET state endpoint returns this status instead of 200. */
@@ -1574,6 +1624,11 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
     }
     if (url.includes("/heartbeat")) {
       heartbeats.push(parsed as { status: string });
+      if (options.heartbeatStatus && options.heartbeatStatus >= 400) {
+        res.writeHead(options.heartbeatStatus, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "synthetic_heartbeat_failure" } }));
+        return;
+      }
       sendJson(res, 200, { object: "device_exporter_heartbeat", status: "accepted" });
       return;
     }

@@ -922,7 +922,8 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
   });
   const summaryAfterGap = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
   const recordsPendingAfterGap = pendingOutboxWorkCount(summaryAfterGap);
-  await safeHeartbeat(input.client, {
+  await input.client.heartbeat({
+    agent_version: COLLECTOR_AGENT_VERSION,
     connector_id: input.config.connector.connector_id,
     outbox: buildHeartbeatOutboxDiagnostics(summaryAfterGap, {
       backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
