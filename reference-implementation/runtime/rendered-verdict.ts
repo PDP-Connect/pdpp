@@ -621,6 +621,12 @@ function shouldOfferRetryGapAction(
   if (isManualRefreshOnly(refresh)) {
     return true;
   }
+  if (snapshot.badges.syncing || snapshot.reason_code === "source_pressure") {
+    return false;
+  }
+  if (snapshot.state === "degraded" && progress?.mode === "deferred") {
+    return true;
+  }
   if (progress?.mode === "deferred" || progress?.mode === "scheduled") {
     return false;
   }
@@ -1211,6 +1217,11 @@ function progressHeadline(
 ): string {
   if (disposition === "terminal") {
     return terminalProgressHeadline(retained, actions);
+  }
+  if (actions.some((action) => action.kind === "retry_gap" && action.audience === "owner")) {
+    return retained === null
+      ? "Retry to continue collection."
+      : `Holding ${retained.toLocaleString()} records; retry to continue.`;
   }
   switch (mode) {
     case "deferred":

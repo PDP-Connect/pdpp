@@ -521,6 +521,25 @@ test('acceptance 7.2: active scheduled run surfaces a syncing badge without repl
   assert.notEqual(snap.state, 'syncing', 'syncing is never a headline state');
 });
 
+test('acceptance 7.2: durable active-run row surfaces syncing when schedule metadata is absent', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    activeRun: {
+      connector_id: 'chase',
+      connector_instance_id: 'cin_chase',
+      run_generation: 1,
+      run_id: 'run_inflight',
+      scenario_id: 'default',
+    },
+    freshness: UNKNOWN_FRESHNESS,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    outbox: { axis: 'idle' },
+    schedule: null,
+  });
+  assertHeadline(snap, 'idle');
+  assert.equal(snap.badges.syncing, true, 'controller_active_runs should light up the syncing badge');
+});
+
 test('acceptance 7.2: active scheduled run does not promote a degraded headline back to healthy', () => {
   const snap = projectConnectorSummaryConnectionHealth({
     freshness: FRESH,

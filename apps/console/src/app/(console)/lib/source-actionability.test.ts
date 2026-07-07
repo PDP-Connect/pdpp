@@ -9,6 +9,7 @@ import type {
 } from "./ref-client.ts";
 import {
   hasPrimaryOwnerLocalDeviceRemediation,
+  primaryRequiredAction,
   primaryOwnerActionRemediation,
   projectSourceActionability,
   SOURCE_WORK_GROUP_COPY,
@@ -473,6 +474,23 @@ test("recovery grouping: an inactive queued recovery row is passive progress, ne
   assert.ok(row);
   assert.doesNotMatch(row.statusLabel, RECOVERY_CHECKING_RE);
   assert.doesNotMatch(row.what, RECOVERY_CHECKING_RE);
+});
+
+test("passive wait is status, not the primary source action", () => {
+  const passive = deferredRecoveryVerdict();
+  assert.equal(primaryRequiredAction(passive), null);
+  const actionability = projectSourceActionability(
+    connector({
+      connection_health: health({
+        axes: { attention: "none", coverage: "deferred", freshness: "fresh", outbox: "idle" },
+        detail_gap_backlog: recoveryBacklog(),
+        state: "degraded",
+      }),
+      rendered_verdict: passive,
+    })
+  );
+  assert.equal(actionability.primaryAction, null);
+  assert.equal(actionability.work?.group, "working");
 });
 
 test("recovery grouping: active recovery names the work like syncing order details, not Checking", () => {

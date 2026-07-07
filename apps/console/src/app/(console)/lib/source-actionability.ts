@@ -169,7 +169,11 @@ export function isOwnerSatisfiableAction(action: RefRequiredAction | null | unde
 }
 
 export function primaryRequiredAction(verdict: RefRenderedVerdict | null | undefined): RefRequiredAction | null {
-  return verdict?.required_actions[0] ?? null;
+  const action = verdict?.required_actions[0] ?? null;
+  if (action?.kind === "wait" && action.audience === "none" && action.satisfied_when.kind === "none") {
+    return null;
+  }
+  return action;
 }
 
 export function primaryOwnerSatisfiableAction(

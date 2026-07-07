@@ -747,13 +747,43 @@ test('channel: degraded resumable stale coverage is advisory Retry now, not calm
   assert.deepEqual(action.satisfied_when, { kind: 'gap_recovered' });
 });
 
-test('channel: deferred scheduled recovery is a self-handled wait, not an owner Retry now action', () => {
+test('channel: failed deferred history is retryable, not a passive collecting wait', () => {
   const v = synthesizeRenderedVerdict(
     snapshot({
       state: 'degraded',
       axes: { coverage: 'retryable_gap', freshness: 'stale', outbox: 'idle' },
       forward_disposition: 'resumable',
       reason_code: 'connector_reported_failed',
+    }),
+    [stream({ stream_id: 'messages', coverage: 'unknown', gap_retryable: true })],
+    ASSISTED_REFRESH,
+    true,
+    {
+      mode: 'deferred',
+      retained_records: 136_907,
+      last_refreshed_at: '2026-07-03T03:51:30.681Z',
+      observed_at: '2026-07-06T15:33:39.630Z',
+    }
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'advisory');
+  assert.equal(v.forward_statement, 'Retry now to give the recoverable gap another run.');
+  assert.equal(v.progress.headline, 'Holding 136,907 records; retry to continue.');
+  assert.equal(action.kind, 'retry_gap');
+  assert.equal(action.audience, 'owner');
+  assert.equal(action.cta, 'Retry now');
+  assert.ok(!v.required_actions.some((a) => a.kind === 'wait' && a.cta === 'Collecting — no action needed'));
+});
+
+test('channel: source-pressure deferred recovery is a self-handled wait, not an owner Retry now action', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'retryable_gap', freshness: 'stale', outbox: 'idle' },
+      forward_disposition: 'resumable',
+      reason_code: 'source_pressure',
     }),
     [stream({ stream_id: 'messages', coverage: 'unknown', gap_retryable: true })],
     ASSISTED_REFRESH,

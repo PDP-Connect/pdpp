@@ -120,6 +120,7 @@ import {
   createSqliteConnectorInstanceStore,
 } from "./stores/connector-instance-store.js";
 import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.ts";
+import { getDefaultSchedulerStore, type ActiveRunRecord } from "./stores/scheduler-store.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -2490,19 +2491,20 @@ interface ConnectionHealthScheduleEvidence {
 
 function projectConnectionHealthScheduleEvidence(
   schedule: Record<string, unknown> | null,
-  lastRun: ConnectorRunSummary | null
+  lastRun: ConnectorRunSummary | null,
+  activeRunId: string | null
 ): ConnectionHealthScheduleEvidence {
   const schedulerBackoff = asBackoffRecord(schedule);
   const staleSchedulerBackoff = succeededRunSupersedesSchedulerBackoff(lastRun, schedule);
   const effectiveSchedulerBackoff = staleSchedulerBackoff ? null : schedulerBackoff;
-  const activeRunId =
+  const scheduleActiveRunId =
     typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
   const nextDueAt = !staleSchedulerBackoff && typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
   const lastErrorCode =
     !staleSchedulerBackoff && typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
   const lastSuccessfulAt = typeof schedule?.last_successful_at === "string" ? schedule.last_successful_at : null;
   return {
-    activeRunId,
+    activeRunId: activeRunId ?? scheduleActiveRunId,
     backoffEvidence: projectSchedulerBackoffEvidence({
       effectiveSchedulerBackoff,
       lastErrorCode,
@@ -2533,6 +2535,7 @@ function buildLocalDeviceCollectionEvidence(input: {
 }
 
 export function projectConnectorSummaryConnectionHealth(input: {
+  readonly activeRun?: ActiveRunRecord | null;
   /**
    * Durable structured attention records the caller has already filtered
    * to this connection. The projection picks the most urgent
@@ -2647,7 +2650,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly schedule: unknown;
 }): ConnectionHealthSnapshot {
   const schedule = asScheduleRecord(input.schedule);
-  const scheduleEvidence = projectConnectionHealthScheduleEvidence(schedule, input.lastRun);
+  const scheduleEvidence = projectConnectionHealthScheduleEvidence(schedule, input.lastRun, input.activeRun?.run_id ?? null);
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const latestRunForHealth = healthClassifyingRun(input.lastRun);
   const nowIso = input.nowIso ?? new Date().toISOString();
@@ -2962,6 +2965,7 @@ function refreshConnectorSummariesCache(
 // projection and the all-connection list on the exact same per-connection code
 // path, so the two cannot drift.
 interface ConnectorSummaryProjectionDeps {
+  readonly activeRunsByInstanceId: ReadonlyMap<string, ActiveRunRecord>;
   readonly controller?: ControllerLike | null | undefined;
   readonly includeRunSummaries: ConnectorRunSummaryInclusion;
   readonly listRunSummariesForConnector: (
@@ -3132,6 +3136,7 @@ function buildRenderedVerdictForSummary(input: {
 
 interface ConnectorSummarySynthesisInput {
   readonly acquisitionCoverage: Awaited<ReturnType<typeof getAcquisitionCoverageSummary>>;
+  readonly activeRun: ActiveRunRecord | null;
   readonly attention: Awaited<ReturnType<typeof getConnectorAttentionProjection>>;
   readonly collectionRate: Awaited<ReturnType<typeof readLatestCollectionRateForRun>>;
   readonly connectorId: string;
@@ -3163,6 +3168,7 @@ interface ConnectorSummarySynthesisInput {
 function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): ConnectorSummary {
   const {
     acquisitionCoverage,
+    activeRun,
     attention,
     collectionRate,
     connectorId,
@@ -3205,6 +3211,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     freshness,
     lastRun,
     lastSuccessfulRun,
+    activeRun,
     localCoverage,
     localDeviceBacked,
     manifestStreams: manifest.streams ?? [],
@@ -3387,7 +3394,13 @@ async function projectConnectorSummaryForInstance(
   deps: ConnectorSummaryProjectionDeps,
   options: { readonly activeVisibleConnectionCount?: number } = {}
 ): Promise<ConnectorSummary | null> {
-  const { controller, listRunSummariesForConnector, manifestsByConnectorId, sharedBrowserSurfaceReader } = deps;
+  const {
+    activeRunsByInstanceId,
+    controller,
+    listRunSummariesForConnector,
+    manifestsByConnectorId,
+    sharedBrowserSurfaceReader,
+  } = deps;
   const connectorId = instance.connectorId;
   const connectorInstanceId = instance.connectorInstanceId;
   const manifest = manifestsByConnectorId.get(connectorId);
@@ -3490,6 +3503,7 @@ async function projectConnectorSummaryForInstance(
     : null;
   return synthesizeConnectorSummary({
     acquisitionCoverage,
+    activeRun: activeRunsByInstanceId.get(connectorInstanceId) ?? null,
     attention,
     collectionRate,
     connectorId,
@@ -3518,10 +3532,19 @@ async function loadConnectorSummaryProjectionDeps(
     readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
   } = {}
 ): Promise<ConnectorSummaryProjectionDeps> {
-  const [connectorRows, retainedSizeSnapshot] = await Promise.all([
+  const [connectorRows, retainedSizeSnapshot, activeRuns] = await Promise.all([
     listRegisteredConnectorRows(),
     options.includeRetainedSizeSnapshot ? loadRetainedSizeProjectionSnapshot() : Promise.resolve(undefined),
+    Promise.resolve()
+      .then(() => getDefaultSchedulerStore().listActiveRuns())
+      .catch(() => []),
   ]);
+  const activeRunsByInstanceId = new Map<string, ActiveRunRecord>();
+  for (const activeRun of activeRuns) {
+    if (activeRun.connector_instance_id) {
+      activeRunsByInstanceId.set(activeRun.connector_instance_id, activeRun);
+    }
+  }
   const manifestsByConnectorId = new Map(
     connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)])
   );
@@ -3533,6 +3556,7 @@ async function loadConnectorSummaryProjectionDeps(
   // poll cadence.
   const sharedBrowserSurfaceReader = await loadSharedBrowserSurfaceReader();
   return {
+    activeRunsByInstanceId,
     controller,
     listRunSummariesForConnector: createConnectorRunSummariesReader(),
     includeRunSummaries: options.includeRunSummaries ?? true,
