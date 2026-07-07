@@ -28,6 +28,7 @@ position surfaces belong in OpenSpec change proposals, not here.
 - [Why grants are durable](why-grants-are-durable.md) — continuous access is primary; regulatory/audit secondary; sharing-as-credential is not the reason.
 - [Persistence and self-sovereignty](persistence-and-self-sovereignty.md) — v0.1 is server-anchored; signed grants are the path to user-held; revocation is the residual live dependency.
 - [Why a horizontal consent layer, why now](why-a-horizontal-consent-layer-why-now.md) — solved in regulated verticals; the gap is incentive/coordination, not technical; the agent-era bet.
+- [The read surface](the-read-surface.md) — PDPP is a queryable substrate, not only a consent layer; the normative §8 capability inventory and what not to overclaim.
 
 ## Related
 

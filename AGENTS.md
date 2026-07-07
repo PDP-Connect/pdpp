@@ -106,7 +106,7 @@ Use these only when they materially reduce repeated exploration or browser work:
 
 ## Positioning
 
-`docs/positioning/` holds the settled answers to the recurring "where does PDPP sit / why not just X" questions (OAuth, DTI/DTP, durable grants, persistence/self-sovereignty, why-now). When answering a reviewer, investor, or standards body on one of these, draw from here rather than re-deriving — and update the relevant position if the analysis advances. Each position cites evidence in `docs/research/` and follows the format in `docs/positioning/README.md` (asked-as / short answer / why it's true / what we do NOT claim / status). Spec *gaps* a position surfaces belong in an OpenSpec change, not in the position file.
+`docs/positioning/` holds the settled answers to the recurring "where does PDPP sit / why not just X" questions (OAuth, DTI/DTP, durable grants, persistence/self-sovereignty, the read surface, why-now). When answering a reviewer, investor, or standards body on one of these, draw from here rather than re-deriving — and update the relevant position if the analysis advances. Each position cites evidence in `docs/research/` and follows the format in `docs/positioning/README.md` (asked-as / short answer / why it's true / what we do NOT claim / status). Spec *gaps* a position surfaces belong in an OpenSpec change, not in the position file.
 
 ## Design notes
 
