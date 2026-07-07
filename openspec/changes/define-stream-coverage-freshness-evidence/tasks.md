@@ -32,4 +32,4 @@
 - [x] 5.2 Shared contract/schema tests pass.
 - [x] 5.3 Runtime collection-report tests pass.
 - [x] 5.4 Reference connection-health and owner-surface tests pass.
-- [ ] 5.5 Live owner-instance audit shows no resting stream row whose next step is generic "checking" solely because evidence is missing.
+- [x] 5.5 Live owner-instance audit shows no resting stream row whose next step is generic "checking" solely because evidence is missing.
