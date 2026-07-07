@@ -13,6 +13,7 @@ import { createSqliteConnectorInstanceStore } from '../server/stores/connector-i
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
 import { CREDENTIAL_ENCRYPTION_KEY_ENV } from '../server/stores/credential-encryption.js';
 import { createSqliteConnectorInstanceCredentialStore } from '../server/stores/connector-instance-credential-store.js';
+import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
 
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/connection-first-records';
 const STATIC_SECRET_CONNECTOR_ID = 'https://test.pdpp.dev/connectors/connection-first-static-secret';
@@ -177,6 +178,37 @@ async function seedBrowserSurfaceRun({ connectorInstanceId, runId, status, occur
       },
     },
   });
+}
+
+async function seedSchedulerRunHistory({
+  connectorInstanceId,
+  runId,
+  status = 'succeeded',
+  startedAt,
+  completedAt,
+}) {
+  const store = createSqliteSchedulerStore();
+  await Promise.resolve(
+    store.appendRunHistory({
+      connectorId: CONNECTOR_ID,
+      connectorInstanceId,
+      source: { kind: 'connector', id: CONNECTOR_ID },
+      status,
+      recordsEmitted: 1,
+      reportedRecordsEmitted: 1,
+      checkpointSummary: { streams: 1 },
+      knownGaps: [],
+      connectorError: null,
+      runId,
+      traceId: `trc_${runId}`,
+      failureReason: null,
+      terminalReason: null,
+      startedAt,
+      completedAt,
+      attempt: 1,
+    }),
+  );
+  await Promise.resolve(store.upsertLastRunTime(connectorInstanceId, Date.parse(completedAt), completedAt, CONNECTOR_ID));
 }
 
 test('reference connector summaries project concrete connection rows with instance-scoped records', withTmpDb(async () => {
@@ -401,6 +433,42 @@ test('singleton-active overview hydrates only unambiguous active source run hist
     'run_work_surface_failed',
     'duplicate active sources keep exact scoped run history without borrowing connector-wide runs',
   );
+}));
+
+test('multi-account overview hydrates exact scheduler run history per connection', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+  await seedSchedulerRunHistory({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    runId: 'run_work_scheduler_history',
+    startedAt: '2026-05-20T12:01:00.000Z',
+    completedAt: '2026-05-20T12:02:00.000Z',
+  });
+  await seedSchedulerRunHistory({
+    connectorInstanceId: PERSONAL_INSTANCE_ID,
+    runId: 'run_personal_scheduler_history',
+    startedAt: '2026-05-20T12:03:00.000Z',
+    completedAt: '2026-05-20T12:04:00.000Z',
+  });
+
+  const summaries = await listConnectorSummaries(null, { includeRunSummaries: 'singleton-active' });
+  const work = summaries.find((row) => row.connector_instance_id === WORK_INSTANCE_ID);
+  const personal = summaries.find((row) => row.connector_instance_id === PERSONAL_INSTANCE_ID);
+
+  assert.ok(work);
+  assert.ok(personal);
+  assert.equal(
+    work.last_run?.run_id,
+    'run_work_scheduler_history',
+    'duplicate active sources use exact scheduler history instead of rendering unknown',
+  );
+  assert.equal(work.last_successful_run?.run_id, 'run_work_scheduler_history');
+  assert.equal(
+    personal.last_run?.run_id,
+    'run_personal_scheduler_history',
+    'sibling source keeps its own latest scheduler evidence',
+  );
+  assert.equal(personal.last_successful_run?.run_id, 'run_personal_scheduler_history');
 }));
 
 test('reference connector summaries keep revoked connections visible for owner manageability', withTmpDb(async () => {

@@ -71,6 +71,7 @@ test('SchedulerStore exposes only semantic schedule lifecycle methods', () => {
     'updateSchedule',
     'deleteActiveRun',
     'listActiveRuns',
+    'getLatestRunHistoryForConnection',
     'listLastRunTimes',
     'listRunHistory',
     'upsertLastRunTime',
@@ -198,6 +199,12 @@ test('scheduler run history and last-run time round-trip through semantic method
       completedAt,
       attempt: 1,
     });
+    assert.equal(store.getLatestRunHistoryForConnection(SEMANTIC_CONNECTOR)?.runId, 'run_semantic_history');
+    assert.equal(
+      store.getLatestRunHistoryForConnection(SEMANTIC_CONNECTOR, 'succeeded')?.runId,
+      'run_semantic_history',
+    );
+    assert.equal(store.getLatestRunHistoryForConnection(SEMANTIC_CONNECTOR, 'failed'), null);
 
     assert.deepEqual(store.listLastRunTimes(), [
       {
@@ -346,6 +353,10 @@ test('scheduler storage migration backfills legacy rows to deterministic default
     assert.equal(store.listActiveRuns()[0]?.connector_instance_id, defaultAccountInstanceId);
     assert.equal(store.listLastRunTimes()[0]?.connector_instance_id, defaultAccountInstanceId);
     assert.equal(store.listRunHistory(10)[0]?.connectorInstanceId, defaultAccountInstanceId);
+    assert.equal(
+      store.getLatestRunHistoryForConnection(defaultAccountInstanceId)?.connectorInstanceId,
+      defaultAccountInstanceId,
+    );
   } finally {
     closeDb();
     await rm(dir, { recursive: true, force: true });

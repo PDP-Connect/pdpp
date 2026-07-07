@@ -120,7 +120,11 @@ import {
   createSqliteConnectorInstanceStore,
 } from "./stores/connector-instance-store.js";
 import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.ts";
-import { getDefaultSchedulerStore, type ActiveRunRecord } from "./stores/scheduler-store.ts";
+import {
+  type ActiveRunRecord,
+  getDefaultSchedulerStore,
+  type SchedulerRunHistoryRecord,
+} from "./stores/scheduler-store.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -881,6 +885,34 @@ async function toConnectorRunSummary(summary: SpineSummary | null): Promise<Conn
   };
 }
 
+async function schedulerRunHistoryToConnectorRunSummary(
+  history: SchedulerRunHistoryRecord | null
+): Promise<ConnectorRunSummary | null> {
+  if (!history) {
+    return null;
+  }
+  const runId = history.runId || null;
+  const terminalData = runId ? await readRunTerminalEventData(runId) : null;
+  const terminalReason =
+    terminalData && typeof terminalData.reason === "string" && terminalData.reason.length > 0
+      ? terminalData.reason
+      : (history.terminalReason ?? null);
+  const terminalKnownGaps = readKnownGapsFromTerminalData(terminalData);
+  return {
+    run_id: runId || undefined,
+    status: history.status,
+    started_at: history.startedAt,
+    finished_at: history.completedAt,
+    first_at: history.startedAt,
+    last_at: history.completedAt,
+    event_count: 0,
+    failure_reason: history.failureReason ?? history.error ?? null,
+    terminal_reason: terminalReason,
+    known_gaps: terminalKnownGaps.length > 0 ? terminalKnownGaps : [...history.knownGaps],
+    collection_facts: readCollectionFactsFromTerminalData(terminalData),
+  };
+}
+
 function isActiveRunSummaryStatus(status: string): boolean {
   return status === "pending" || status === "started" || status === "in_progress";
 }
@@ -939,6 +971,7 @@ async function getLatestRunSummaryForConnection({
   browserSurfaceProfileKey,
   connectorId,
   connectorInstanceId,
+  getLatestRunHistoryForConnection,
   listRunSummariesForConnector,
   status = null,
 }: {
@@ -946,6 +979,7 @@ async function getLatestRunSummaryForConnection({
   readonly browserSurfaceProfileKey: string | null;
   readonly connectorId: string;
   readonly connectorInstanceId: string;
+  readonly getLatestRunHistoryForConnection: ConnectorSummaryProjectionDeps["getLatestRunHistoryForConnection"];
   readonly listRunSummariesForConnector: ConnectorSummaryProjectionDeps["listRunSummariesForConnector"];
   readonly status?: string | null;
 }): Promise<ConnectorRunSummary | null> {
@@ -953,8 +987,14 @@ async function getLatestRunSummaryForConnection({
   const match = summaries.find((summary) =>
     runSummaryMatchesConnection(summary, connectorInstanceId, browserSurfaceProfileKey)
   );
+  if (match) {
+    return toConnectorRunSummary(match);
+  }
+  const schedulerHistory = await getLatestRunHistoryForConnection(connectorInstanceId, status);
+  if (schedulerHistory) {
+    return schedulerRunHistoryToConnectorRunSummary(schedulerHistory);
+  }
   const fallback =
-    match ??
     summaries.find((summary) =>
       canUseConnectorWideRunSummaryFallback({
         activeVisibleConnectionCount,
@@ -962,8 +1002,7 @@ async function getLatestRunSummaryForConnection({
         connectorInstanceId,
         summary,
       })
-    ) ??
-    null;
+    ) ?? null;
   return toConnectorRunSummary(fallback);
 }
 
@@ -3053,6 +3092,10 @@ function refreshConnectorSummariesCache(
 interface ConnectorSummaryProjectionDeps {
   readonly activeRunsByInstanceId: ReadonlyMap<string, ActiveRunRecord>;
   readonly controller?: ControllerLike | null | undefined;
+  readonly getLatestRunHistoryForConnection: (
+    connectorInstanceId: string,
+    status?: string | null
+  ) => Promise<SchedulerRunHistoryRecord | null>;
   readonly includeRunSummaries: ConnectorRunSummaryInclusion;
   readonly listRunSummariesForConnector: (
     connectorId: string,
@@ -3485,6 +3528,7 @@ async function projectConnectorSummaryForInstance(
   const {
     activeRunsByInstanceId,
     controller,
+    getLatestRunHistoryForConnection,
     listRunSummariesForConnector,
     manifestsByConnectorId,
     sharedBrowserSurfaceReader,
@@ -3539,6 +3583,7 @@ async function projectConnectorSummaryForInstance(
           browserSurfaceProfileKey,
           connectorId,
           connectorInstanceId,
+          getLatestRunHistoryForConnection,
           listRunSummariesForConnector,
         })
       : Promise.resolve(null),
@@ -3548,6 +3593,7 @@ async function projectConnectorSummaryForInstance(
           browserSurfaceProfileKey,
           connectorId,
           connectorInstanceId,
+          getLatestRunHistoryForConnection,
           listRunSummariesForConnector,
           status: "succeeded",
         })
@@ -3620,11 +3666,12 @@ async function loadConnectorSummaryProjectionDeps(
     readonly includeRunSummaries?: ConnectorRunSummaryInclusion;
   } = {}
 ): Promise<ConnectorSummaryProjectionDeps> {
+  const schedulerStore = getDefaultSchedulerStore();
   const [connectorRows, retainedSizeSnapshot, activeRuns] = await Promise.all([
     listRegisteredConnectorRows(),
     options.includeRetainedSizeSnapshot ? loadRetainedSizeProjectionSnapshot() : Promise.resolve(undefined),
     Promise.resolve()
-      .then(() => getDefaultSchedulerStore().listActiveRuns())
+      .then(() => schedulerStore.listActiveRuns())
       .catch(() => []),
   ]);
   const activeRunsByInstanceId = new Map<string, ActiveRunRecord>();
@@ -3646,6 +3693,8 @@ async function loadConnectorSummaryProjectionDeps(
   return {
     activeRunsByInstanceId,
     controller,
+    getLatestRunHistoryForConnection: (connectorInstanceId, status = null) =>
+      Promise.resolve(schedulerStore.getLatestRunHistoryForConnection(connectorInstanceId, status)).catch(() => null),
     listRunSummariesForConnector: createConnectorRunSummariesReader(),
     includeRunSummaries: options.includeRunSummaries ?? true,
     manifestsByConnectorId,

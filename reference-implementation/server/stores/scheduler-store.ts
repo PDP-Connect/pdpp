@@ -101,6 +101,10 @@ export interface SchedulerStore {
   // Active-run registry — semantic lifecycle verbs.
   deleteActiveRun(connectorInstanceId: string, runId: string): Promise<void> | void;
   deleteSchedule(connectorInstanceId: string): Promise<void> | void;
+  getLatestRunHistoryForConnection(
+    connectorInstanceId: string,
+    status?: string | null
+  ): Promise<SchedulerRunHistoryRecord | null> | SchedulerRunHistoryRecord | null;
   getSchedule(connectorInstanceId: string): Promise<ScheduleRecord | null> | ScheduleRecord | null;
   listActiveRuns(): Promise<readonly ActiveRunRecord[]> | readonly ActiveRunRecord[];
   listLastRunTimes(): Promise<readonly SchedulerLastRunTimeRecord[]> | readonly SchedulerLastRunTimeRecord[];
@@ -144,7 +148,7 @@ interface SchedulerRunHistoryRow extends Record<string, unknown> {
   readonly run_id: string | null;
   readonly source_json: unknown;
   readonly started_at: string;
-  readonly status: "failed" | "skipped" | "succeeded";
+  readonly status: "cancelled" | "failed" | "skipped" | "succeeded";
   readonly terminal_reason: string | null;
   readonly trace_id: string | null;
 }
@@ -242,6 +246,15 @@ export function createSqliteSchedulerStore(): SchedulerStore {
       return getMany<SchedulerRunHistoryRow>(referenceQueries.controllerListSchedulerRunHistory, [], {
         limit,
       }).rows.map(rowToRunHistoryRecord);
+    },
+
+    getLatestRunHistoryForConnection(connectorInstanceId, status = null) {
+      const row = getOne<SchedulerRunHistoryRow>(referenceQueries.controllerGetLatestSchedulerRunHistoryForConnection, [
+        connectorInstanceId,
+        status,
+        status,
+      ]);
+      return row ? rowToRunHistoryRecord(row) : null;
     },
 
     listLastRunTimes() {
@@ -407,6 +420,37 @@ export function createPostgresSchedulerStore(): SchedulerStore {
         [boundedLimit]
       );
       return (result.rows as SchedulerRunHistoryRow[]).map(rowToRunHistoryRecord);
+    },
+
+    async getLatestRunHistoryForConnection(connectorInstanceId, status = null) {
+      const result = await postgresQuery(
+        `SELECT
+           id,
+           connector_instance_id,
+           connector_id,
+           source_json,
+           status,
+           records_emitted,
+           reported_records_emitted,
+           checkpoint_summary_json,
+           known_gaps_json,
+           connector_error_json,
+           run_id,
+           trace_id,
+           failure_reason,
+           terminal_reason,
+           started_at,
+           completed_at,
+           error,
+           attempt
+         FROM scheduler_run_history
+         WHERE connector_instance_id = $1
+           AND ($2::text IS NULL OR status = $2)
+         ORDER BY completed_at DESC, id DESC
+         LIMIT 1`,
+        [connectorInstanceId, status]
+      );
+      return result.rows[0] ? rowToRunHistoryRecord(result.rows[0] as SchedulerRunHistoryRow) : null;
     },
 
     async listLastRunTimes() {

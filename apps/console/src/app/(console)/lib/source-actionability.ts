@@ -252,7 +252,7 @@ export function formatPrimaryVerdictAction(
   if (!verdict) {
     return null;
   }
-  const action = primaryRequiredAction(verdict);
+  const action = verdict.required_actions[0] ?? null;
   if (!action) {
     return null;
   }

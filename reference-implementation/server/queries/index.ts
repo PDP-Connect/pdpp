@@ -245,6 +245,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
   readonly controllerDeleteSchedule: MutationQuery;
+  readonly controllerGetLatestSchedulerRunHistoryForConnection: ReadOneQuery;
   readonly controllerGetScheduleByConnector: ReadOneQuery;
   readonly controllerInsertSchedule: MutationQuery;
   // Controller — schedule + active-run persistence for runtime/controller.
@@ -780,6 +781,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerListActiveRuns",
     "controllerUpsertActiveRun",
     "controllerDeleteActiveRun",
+    "controllerGetLatestSchedulerRunHistoryForConnection",
     "controllerGetScheduleByConnector",
     "controllerListSchedules",
     "controllerInsertSchedule",

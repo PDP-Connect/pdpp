@@ -105,17 +105,17 @@ export const SHARED_SHELL_FILE = "packages/pdpp-brand-react/src/shell-frame.tsx"
 export const DASHBOARD_ROUTE_ROOT = "apps/console/src/app/(console)";
 
 export const SHELL_NAV_REQUIRED_ITEMS = [
-  { label: "Overview", href: "/dashboard" },
-  { label: "Explore", href: "/dashboard/explore" },
-  { label: "Sources", href: "/dashboard/records" },
-  { label: "Syncs", href: "/dashboard/runs" },
-  { label: "Schedules", href: "/dashboard/schedules" },
-  { label: "Connect AI apps", href: "/dashboard/connect" },
-  { label: "Grants", href: "/dashboard/grants" },
-  { label: "Audit", href: "/dashboard/traces" },
-  { label: "Deployment", href: "/dashboard/deployment" },
-  { label: "Device exporters", href: "/dashboard/device-exporters" },
-  { label: "Event subscriptions", href: "/dashboard/event-subscriptions" },
+  { label: "Overview", href: "/" },
+  { label: "Explore", href: "/explore" },
+  { label: "Sources", href: "/sources" },
+  { label: "Syncs", href: "/syncs" },
+  { label: "Schedules", href: "/schedules" },
+  { label: "Connect AI apps", href: "/connect" },
+  { label: "Grants", href: "/grants" },
+  { label: "Audit", href: "/audit" },
+  { label: "Deployment", href: "/deployment" },
+  { label: "Device exporters", href: "/device-exporters" },
+  { label: "Event subscriptions", href: "/event-subscriptions" },
 ];
 
 export const FULL_SCREEN_DASHBOARD_ROUTE_EXCEPTIONS = [
