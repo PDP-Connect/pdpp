@@ -779,6 +779,7 @@ export function runConnector(config: RunConnectorConfig): void {
         probeSession,
         collect,
         baseCtx,
+        retryablePattern,
       });
     } else {
       await collect(baseCtx);
@@ -910,6 +911,7 @@ async function runInBrowser(args: {
   probeSession: BrowserConnectorConfig["probeSession"];
   collect: BrowserConnectorConfig["collect"];
   baseCtx: BaseCollectContext;
+  retryablePattern: RegExp;
 }): Promise<void> {
   const {
     browser,
@@ -922,6 +924,7 @@ async function runInBrowser(args: {
     probeSession,
     collect,
     baseCtx,
+    retryablePattern,
   } = args;
   const { context: ctx, release } = await acquireBrowser(browser, name);
   const visibility = resolveBrowserRuntimeVisibility(browser, name);
@@ -994,6 +997,7 @@ async function runInBrowser(args: {
           page: page as Page,
           name,
           progress,
+          retryablePattern,
           sendInteraction: watchdog.wrapSendInteraction(browserSendInteraction),
         }
       )
@@ -1781,7 +1785,28 @@ interface SessionEstablishArgs {
   name: string;
   page: Page;
   progress: BaseCollectContext["progress"];
+  retryablePattern: RegExp;
   sendInteraction: BaseCollectContext["sendInteraction"];
+}
+
+function retryablePatternMatches(pattern: RegExp, value: string): boolean {
+  pattern.lastIndex = 0;
+  const matched = pattern.test(value);
+  pattern.lastIndex = 0;
+  return matched;
+}
+
+export function buildSessionEstablishTerminalError(
+  name: string,
+  message: string,
+  retryablePattern: RegExp = DEFAULT_RETRYABLE_PATTERN
+): TerminalErrorDetails {
+  const terminalMessage = `${name}_session_failed: ${message}`;
+  return {
+    message: terminalMessage,
+    retryable:
+      retryablePatternMatches(retryablePattern, message) || retryablePatternMatches(retryablePattern, terminalMessage),
+  };
 }
 
 /**
@@ -1803,7 +1828,18 @@ async function establishSession(
   args: SessionEstablishArgs
 ): Promise<void> {
   const { ensureSession, probeSession } = hooks;
-  const { assist, capture, checkpoint, completeAssistance, context, page, name, sendInteraction, progress } = args;
+  const {
+    assist,
+    capture,
+    checkpoint,
+    completeAssistance,
+    context,
+    page,
+    name,
+    retryablePattern,
+    sendInteraction,
+    progress,
+  } = args;
 
   await checkpoint("session-establish:begin");
 
@@ -1822,7 +1858,8 @@ async function establishSession(
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new TerminalError(`${name}_session_failed: ${message}`, false);
+      const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern);
+      throw new TerminalError(terminalError.message, terminalError.retryable);
     }
   }
 

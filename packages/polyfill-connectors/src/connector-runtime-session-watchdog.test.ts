@@ -21,6 +21,7 @@ import type { Page } from "playwright";
 import {
   type AssistanceCompletionStatus,
   type AssistanceRequest,
+  buildSessionEstablishTerminalError,
   captureBrowserPage,
   type InteractionRequest,
   type InteractionResponse,
@@ -356,6 +357,20 @@ test("watchdog propagates a real establishment failure unchanged (not a timeout)
     }),
     /amazon_login_unexpected_ui/
   );
+});
+
+test("session-establishment terminal errors preserve connector retryable patterns", () => {
+  const terminal = buildSessionEstablishTerminalError(
+    "usaa",
+    "source_unavailable: USAA reported its login system is currently unavailable after Next click.",
+    /ECONN|ETIMEDOUT|timeout|source_unavailable/i
+  );
+
+  assert.equal(
+    terminal.message,
+    "usaa_session_failed: source_unavailable: USAA reported its login system is currently unavailable after Next click."
+  );
+  assert.equal(terminal.retryable, true);
 });
 
 // ─── bounded capture during teardown ────────────────────────────────────────

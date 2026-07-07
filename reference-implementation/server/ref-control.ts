@@ -1669,6 +1669,9 @@ function credentialReasonFromGenericFailure(run: ConnectorRunSummary | null): st
     }
     const recoveryAction = (gap as { recovery_hint?: { action?: unknown } }).recovery_hint?.action;
     const message = (gap as { message?: unknown }).message;
+    if (isSourceUnavailableMessage(message)) {
+      continue;
+    }
     if (recoveryAction === "refresh_credentials" || isAuthFailureMessage(message)) {
       return "credentials_required";
     }
@@ -1696,6 +1699,14 @@ function isAuthFailureMessage(message: unknown): boolean {
     text.includes("reauth") ||
     text.includes("invalid_token")
   );
+}
+
+function isSourceUnavailableMessage(message: unknown): boolean {
+  if (typeof message !== "string" || message.length === 0) {
+    return false;
+  }
+  const text = message.toLowerCase();
+  return text.includes("source_unavailable");
 }
 
 /**
@@ -2836,7 +2847,12 @@ export function projectConnectorSummaryConnectionHealth(input: {
     nowIso,
   });
   const coverage = applyCoverageOverride(
-    buildCoverageEvidence(latestRunForHealth, pendingDetailGaps, input.manifestStreams ?? [], input.localCoverage ?? null),
+    buildCoverageEvidence(
+      latestRunForHealth,
+      pendingDetailGaps,
+      input.manifestStreams ?? [],
+      input.localCoverage ?? null
+    ),
     input.coverageOverride
   );
   const outbox = input.outbox ?? { axis: "unknown" };

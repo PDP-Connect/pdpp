@@ -1040,3 +1040,34 @@ test('§10-C control: a non-auth generic failure does NOT manufacture a credenti
   const credentialCondition = snap.conditions?.find((c) => c.type === 'CredentialsValid' && c.status === 'false');
   assert.equal(credentialCondition, undefined, 'a non-auth failure must NOT manufacture a credential/reconnect prompt');
 });
+
+test('§10-C control: source_unavailable login outage does NOT manufacture a credential prompt', () => {
+  // Live USAA shape: the connector has a stored credential, but the provider
+  // login system reported source_unavailable after the username step. The
+  // runtime gap may still carry the generic refresh_credentials action because
+  // the message is login-shaped; the projection must not turn that source
+  // outage into an owner "reconnect credentials" prompt.
+  const run = failedRun({
+    failure_reason: 'connector_reported_failed',
+    known_gaps: [
+      {
+        kind: 'run_failed',
+        reason: 'connector_reported_failed',
+        stream: null,
+        severity: 'actionable',
+        message:
+          'usaa_session_failed: source_unavailable: USAA reported its login system is currently unavailable after Next click.',
+        recovery_hint: { action: 'refresh_credentials', retryable: false },
+      },
+    ],
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: null,
+    schedule: { enabled: true },
+  });
+  const credentialCondition = snap.conditions?.find((c) => c.type === 'CredentialsValid' && c.status === 'false');
+  assert.equal(credentialCondition, undefined, 'source_unavailable must NOT manufacture a credential/reconnect prompt');
+  assert.notEqual(snap.next_action?.kind, 'reauth');
+});
