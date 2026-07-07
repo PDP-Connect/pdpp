@@ -9,8 +9,8 @@ import type {
 } from "./ref-client.ts";
 import {
   hasPrimaryOwnerLocalDeviceRemediation,
-  primaryRequiredAction,
   primaryOwnerActionRemediation,
+  primaryRequiredAction,
   projectSourceActionability,
   SOURCE_WORK_GROUP_COPY,
   sourceAttentionHeadline,

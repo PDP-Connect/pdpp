@@ -32,6 +32,8 @@ const NO_OWNER_ACTION_COPY = /no owner action/i;
 const CLAIMS_COMPLETE_COPY = /complete|nothing owed/i;
 const AGED_NOT_MISSING_COPY = /aged data, not missing data/i;
 const MENTIONS_RUN_COPY = /run/i;
+const NOT_MEASURED_COPY = /not measured/i;
+const NOT_ACTIVE_CHECKING_COPY = /not an active checking state/i;
 const OWNER_ATTENTION_COPY = /owner attention|you act/i;
 const RECORDS_STAY_VALID_COPY = /stay valid/i;
 const UNRECOGNIZED_COPY = /does not recognize/i;
@@ -91,8 +93,8 @@ test("unmeasured says evidence is absent without claiming active checking", () =
   assert.ok(summary);
   assert.equal(summary.ownerActionNeeded, false);
   assert.equal(summary.tone, "neutral");
-  assert.match(summary.label, /not measured/i);
-  assert.match(summary.title, /not an active checking state/i);
+  assert.match(summary.label, NOT_MEASURED_COPY);
+  assert.match(summary.title, NOT_ACTIVE_CHECKING_COPY);
 });
 
 test("owner_refresh_due distinguishes aged data from missing data and requires an owner-initiated run", () => {

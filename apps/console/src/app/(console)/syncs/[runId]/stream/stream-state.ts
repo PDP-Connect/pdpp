@@ -1,5 +1,7 @@
 import type { RunHandleStatus, TimelineEnvelope } from "../../../lib/ref-client.ts";
 
+export type NoAssistanceEndedStatus = "failed" | "cancelled" | "abandoned" | "deferred";
+
 export type NoAssistanceStreamState = "ended" | "resolved" | "running";
 
 export function selectNoAssistanceStreamState({
@@ -38,7 +40,7 @@ export function resolveNoAssistanceEndedTerminalStatus({
 }: {
   runHandleStatus?: RunHandleStatus | null;
   terminalStatus: TimelineEnvelope["terminal_status"];
-}): TimelineEnvelope["terminal_status"] {
+}): NoAssistanceEndedStatus {
   if (terminalStatus === "cancelled" || terminalStatus === "abandoned" || terminalStatus === "failed") {
     return terminalStatus;
   }
@@ -47,6 +49,9 @@ export function resolveNoAssistanceEndedTerminalStatus({
   }
   if (runHandleStatus === "abandoned") {
     return "abandoned";
+  }
+  if (runHandleStatus === "deferred") {
+    return "deferred";
   }
   return "failed";
 }

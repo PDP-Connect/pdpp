@@ -819,6 +819,9 @@ function getRunStateTone({
   if (terminalStatus === "succeeded_with_gaps") {
     return "human";
   }
+  if (terminalStatus === "deferred") {
+    return "protocol";
+  }
   return terminalStatus === "failed" ? "danger" : "success";
 }
 
@@ -881,6 +884,12 @@ function summarizeInteractions(events: SpineEvent[]): [string, string][] {
 
 function summarizeFailure(failure: SpineEvent | undefined, runStatus: RunStatusEnvelope | null): [string, string][] {
   if (!failure) {
+    if (runStatus?.status === "deferred") {
+      return [
+        ["status", "browser deferred"],
+        ["reason", runStatus.terminal_reason ?? "browser slot unavailable"],
+      ];
+    }
     if (runStatus?.failure) {
       return [
         ["reason", runStatus.failure.reason ?? runStatus.terminal_reason ?? "—"],

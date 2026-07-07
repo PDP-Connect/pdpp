@@ -182,6 +182,7 @@ export interface SyncsViewModel {
 
 const HEALTHY_RUN_STATUSES = new Set(["succeeded", "success", "completed", "succeeded_with_gaps"]);
 const FAILED_RUN_STATUSES = new Set(["failed", "rejected", "cancelled", "error"]);
+const NEUTRAL_TERMINAL_RUN_STATUSES = new Set(["deferred"]);
 const DUPLICATE_SYNC_GROUP_MIN_UNNAMED = 3;
 const RECENT_RUN_LIMIT = 7;
 
@@ -199,7 +200,13 @@ function runTick(status: string): SyncRhythmTick {
 }
 
 function isTerminalRunStatus(status: string): boolean {
-  return HEALTHY_RUN_STATUSES.has(status) || status === "failed" || status === "rejected" || status === "cancelled";
+  return (
+    HEALTHY_RUN_STATUSES.has(status) ||
+    NEUTRAL_TERMINAL_RUN_STATUSES.has(status) ||
+    status === "failed" ||
+    status === "rejected" ||
+    status === "cancelled"
+  );
 }
 
 /** Stable connector key for a run, used to bucket runs under a connection. */

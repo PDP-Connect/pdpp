@@ -27,6 +27,9 @@ const RESUME_NORMALLY_RE = /resume normally/i;
 const THROTTLING_RE = /throttling/i;
 const ACTIONABILITY_RENDERED_STATUS_RE = /actionability\.renderedStatus/;
 const RAW_VERDICT_TONE_RE = /rendered_verdict\.pill\.tone|verdict\.pill\.tone/;
+const SYNCS_PAGE_SOURCE = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
+const DEFERRED_RUN_NOT_LIVE_RE =
+  /return !\["cancelled", "completed", "deferred", "failed", "rejected", "succeeded"\]\.includes\(run\.status\);/;
 
 const SYNC_MODEL_SOURCE = readFileSync(new URL("./syncs-model.ts", import.meta.url), "utf8");
 
@@ -376,6 +379,14 @@ test("deriveConnectionRhythm maps terminal runs oldest-first, skipping non-termi
 
 test("succeeded_with_gaps counts as an ok tick, not a failure", () => {
   assert.deepEqual(deriveConnectionRhythm([run({ status: "succeeded_with_gaps" })]), ["ok"]);
+});
+
+test("browser-capacity deferrals are terminal but not sync failures", () => {
+  assert.deepEqual(deriveConnectionRhythm([run({ status: "deferred" })]), ["ok"]);
+});
+
+test("syncs overview does not treat browser-capacity deferrals as live runs", () => {
+  assert.match(SYNCS_PAGE_SOURCE, DEFERRED_RUN_NOT_LIVE_RE);
 });
 
 test("describeCadence humanizes the schedule interval", () => {

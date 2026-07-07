@@ -18,7 +18,11 @@ import {
   requiresBrowserSurfaceAssistance,
 } from "../../../lib/run-assistance.ts";
 import { NoAssistanceRunPoller } from "./no-assistance-run-poller.tsx";
-import { resolveNoAssistanceEndedTerminalStatus, selectNoAssistanceStreamState } from "./stream-state.ts";
+import {
+  type NoAssistanceEndedStatus,
+  resolveNoAssistanceEndedTerminalStatus,
+  selectNoAssistanceStreamState,
+} from "./stream-state.ts";
 import { ResolvedSurface, StreamSurface } from "./stream-viewer.tsx";
 
 export const dynamic = "force-dynamic";
@@ -225,24 +229,30 @@ function RunEndedSurface({
 }: {
   connector: ConnectorContext | null;
   runId: string;
-  terminalStatus: TimelineEnvelope["terminal_status"];
+  terminalStatus: NoAssistanceEndedStatus;
 }) {
   const subject = connector?.displayName ?? "This run";
   let statusLabel = "failed";
+  let title = `${subject} needs a look.`;
+  let description =
+    "The browser step is no longer waiting, but the run did not complete successfully. Open the run timeline for the exact failure and next action.";
+  let sectionClass = "rounded-3xl border border-destructive/30 bg-destructive/5 p-6 shadow-2xl shadow-black/10";
   if (terminalStatus === "cancelled") {
     statusLabel = "cancelled";
   } else if (terminalStatus === "abandoned") {
     statusLabel = "stopped";
+  } else if (terminalStatus === "deferred") {
+    statusLabel = "browser deferred";
+    title = "Secure browser slot unavailable.";
+    description = `${subject} waited for a secure browser slot, but capacity stayed full. No connector work started. Retry when a browser slot is available.`;
+    sectionClass = "rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10";
   }
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
-      <section className="rounded-3xl border border-destructive/30 bg-destructive/5 p-6 shadow-2xl shadow-black/10">
+      <section className={sectionClass}>
         <p className="pdpp-eyebrow text-muted-foreground">run {statusLabel}</p>
-        <h1 className="pdpp-heading mt-3 text-balance text-foreground">{subject} needs a look.</h1>
-        <p className="mt-3 text-muted-foreground text-sm leading-6">
-          The browser step is no longer waiting, but the run did not complete successfully. Open the run timeline for
-          the exact failure and next action.
-        </p>
+        <h1 className="pdpp-heading mt-3 text-balance text-foreground">{title}</h1>
+        <p className="mt-3 text-muted-foreground text-sm leading-6">{description}</p>
         <a
           className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"
           href={`/syncs/${encodeURIComponent(runId)}`}

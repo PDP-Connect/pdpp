@@ -53,6 +53,11 @@ test("run-status handle treats browser-surface failed setup as terminal, not can
   assert.equal(isRunHandleActive("leased"), true);
 });
 
+test("run-status handle treats browser-capacity deferral as terminal but not failed", () => {
+  assert.equal(isRunHandleActive("deferred"), false);
+  assert.equal(mapRunHandleStatusToDisplay("deferred"), "deferred");
+});
+
 test("terminal_status drives a terminal decision even when the events page has NO terminal event", () => {
   // The defining scenario: the run is terminal per the envelope, but the
   // fetched page window contains no terminal event (in-page scan returns null).

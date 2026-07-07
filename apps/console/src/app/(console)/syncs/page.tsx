@@ -43,7 +43,7 @@ interface Params {
 }
 
 function isLiveRun(run: RunSummary): boolean {
-  return !["cancelled", "failed", "rejected", "succeeded"].includes(run.status);
+  return !["cancelled", "completed", "deferred", "failed", "rejected", "succeeded"].includes(run.status);
 }
 
 export default async function RunsPage({ searchParams }: { searchParams: Promise<Params> }) {

@@ -11,7 +11,7 @@
 
 import type { RunHandleStatus, TimelineEnvelope } from "../../lib/ref-client.ts";
 
-export type TerminalRunStatus = "succeeded" | "succeeded_with_gaps" | "failed" | "cancelled" | null;
+export type TerminalRunStatus = "succeeded" | "succeeded_with_gaps" | "failed" | "cancelled" | "deferred" | null;
 
 export type EnvelopeTerminalStatus = NonNullable<TimelineEnvelope["terminal_status"]>;
 
@@ -67,8 +67,9 @@ export function mapRunHandleStatusToDisplay(status: RunHandleStatus | null): Ter
       return "succeeded";
     case "cancelled":
       return "cancelled";
-    case "abandoned":
     case "deferred":
+      return "deferred";
+    case "abandoned":
     case "expired":
     case "failed":
     case "released":

@@ -30,6 +30,8 @@ const BROWSER_ASSISTANCE_STREAM_KIND_RE =
   /interactionKind="manual_action"[\s\S]{0,180}interactionMessage=\{streamableAssistance\.message\}/;
 const BROWSER_ASSISTANCE_RESPONSE_CONTRACT_RE =
   /interactionRequiresResponse=\{streamableAssistance\.responseContract === "response_required"\}/;
+const DEFERRED_BROWSER_SLOT_COPY_RE = /Secure browser slot unavailable\./;
+const DEFERRED_BROWSER_SLOT_NOT_DANGER_RE = /terminalStatus === "deferred"[\s\S]{0,600}border border-border bg-card/;
 
 test("no-assistance stream state distinguishes success, terminal failure, and active runs", () => {
   assert.equal(selectNoAssistanceStreamState({ terminalStatus: "completed" }), "resolved");
@@ -39,6 +41,7 @@ test("no-assistance stream state distinguishes success, terminal failure, and ac
   assert.equal(selectNoAssistanceStreamState({ terminalStatus: null }), "running");
   assert.equal(selectNoAssistanceStreamState({ terminalStatus: undefined }), "running");
   assert.equal(selectNoAssistanceStreamState({ runHandleStatus: "failed", terminalStatus: null }), "ended");
+  assert.equal(selectNoAssistanceStreamState({ runHandleStatus: "deferred", terminalStatus: null }), "ended");
   assert.equal(selectNoAssistanceStreamState({ runHandleStatus: "surface_failed", terminalStatus: null }), "ended");
   assert.equal(selectNoAssistanceStreamState({ runHandleStatus: "active", terminalStatus: null }), "running");
 });
@@ -55,6 +58,10 @@ test("ended fallback status preserves specific terminal labels when timeline sta
   assert.equal(
     resolveNoAssistanceEndedTerminalStatus({ runHandleStatus: "surface_failed", terminalStatus: null }),
     "failed"
+  );
+  assert.equal(
+    resolveNoAssistanceEndedTerminalStatus({ runHandleStatus: "deferred", terminalStatus: null }),
+    "deferred"
   );
 });
 
@@ -78,6 +85,11 @@ test("stream page labels multi-account runs by connection instance before connec
 test("stream page opens browser-surface assistance without assuming a response is required", () => {
   assert.match(pageSource, BROWSER_ASSISTANCE_STREAM_KIND_RE);
   assert.match(pageSource, BROWSER_ASSISTANCE_RESPONSE_CONTRACT_RE);
+});
+
+test("ended browser stream labels browser-capacity deferrals without danger styling", () => {
+  assert.match(pageSource, DEFERRED_BROWSER_SLOT_COPY_RE);
+  assert.match(pageSource, DEFERRED_BROWSER_SLOT_NOT_DANGER_RE);
 });
 
 test("no-assistance poller explicitly transitions into current browser assistance", () => {
