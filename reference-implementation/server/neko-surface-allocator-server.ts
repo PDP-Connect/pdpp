@@ -119,6 +119,11 @@ interface ResourceNames {
   readonly profileSlug: string;
 }
 
+interface HostPortOccupancy {
+  readonly reclaimable: Map<number, Set<string>>;
+  readonly used: Set<number>;
+}
+
 interface SurfaceRequest extends EnsureBrowserSurfaceRequest {
   readonly accountKey?: string;
   readonly surfaceSubjectId?: string;
@@ -577,21 +582,13 @@ export class NekoSurfaceAllocatorService {
 
   async #allocateHostPort(skippedPorts: ReadonlySet<number> = new Set()): Promise<number> {
     const containers = await this.#listOwnedContainers();
-    const used = new Set<number>();
-    for (const container of containers) {
-      const labelPort = parsePositiveInteger(container.Labels?.[`${this.#options.labelNamespace}.webrtc_host_port`]);
-      if (labelPort !== null) {
-        used.add(labelPort);
-      }
-      for (const port of container.Ports ?? []) {
-        if (port.PublicPort !== undefined) {
-          used.add(port.PublicPort);
-        }
-      }
-    }
+    const occupancy = collectHostPortOccupancy(containers, this.#options.labelNamespace);
     for (let port = this.#options.webrtcHostPortStart; port <= this.#options.webrtcHostPortEnd; port += 1) {
-      if (used.has(port) || skippedPorts.has(port)) {
+      if (occupancy.used.has(port) || skippedPorts.has(port)) {
         continue;
+      }
+      for (const containerId of occupancy.reclaimable.get(port) ?? []) {
+        await this.#removeContainer(containerId);
       }
       return port;
     }
@@ -1000,6 +997,51 @@ function isDockerPortBindError(value: unknown): boolean {
 
 function isInspectRunning(inspect: DockerContainerInspect): boolean {
   return inspect.State?.Running === true || inspect.State?.Status === "running";
+}
+
+function isSummaryReclaimable(container: DockerContainerSummary): boolean {
+  return container.State === "exited" || container.State === "dead";
+}
+
+function collectHostPortOccupancy(
+  containers: readonly DockerContainerSummary[],
+  labelNamespace: string
+): HostPortOccupancy {
+  const used = new Set<number>();
+  const reclaimable = new Map<number, Set<string>>();
+  for (const container of containers) {
+    const ports = summaryHostPorts(container, labelNamespace);
+    if (isSummaryReclaimable(container)) {
+      for (const port of ports) {
+        addReclaimableContainer(reclaimable, port, container.Id);
+      }
+      continue;
+    }
+    for (const port of ports) {
+      used.add(port);
+    }
+  }
+  return { reclaimable, used };
+}
+
+function summaryHostPorts(container: DockerContainerSummary, labelNamespace: string): Set<number> {
+  const ports = new Set<number>();
+  const labelPort = parsePositiveInteger(container.Labels?.[`${labelNamespace}.webrtc_host_port`]);
+  if (labelPort !== null) {
+    ports.add(labelPort);
+  }
+  for (const port of container.Ports ?? []) {
+    if (port.PublicPort !== undefined) {
+      ports.add(port.PublicPort);
+    }
+  }
+  return ports;
+}
+
+function addReclaimableContainer(reclaimable: Map<number, Set<string>>, port: number, containerId: string): void {
+  const containers = reclaimable.get(port) ?? new Set<string>();
+  containers.add(containerId);
+  reclaimable.set(port, containers);
 }
 
 function parsePositiveInteger(value: unknown): number | null {

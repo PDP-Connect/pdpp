@@ -383,6 +383,72 @@ test("does not create beyond the configured host port range", async () => {
   );
 });
 
+test("reclaims stopped containers when the dynamic host port range is otherwise full", async () => {
+  const docker = new FakeDocker();
+  const service = new NekoSurfaceAllocatorService({
+    ...BASE_OPTIONS,
+    docker,
+    fetchImpl: readyFetch(),
+    webrtcHostPortStart: 59000,
+    webrtcHostPortEnd: 59001,
+  });
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+  await service.ensureSurface({ surfaceId: "surface_2", connectorId: "reddit", profileKey: "profile_2" });
+  await service.stopSurface({ surfaceId: "surface_1", reason: "idle_ttl" });
+  await service.stopSurface({ surfaceId: "surface_2", reason: "idle_ttl" });
+  const stoppedContainerIds = [...docker.containers.keys()];
+  docker.calls.length = 0;
+
+  const surface = await service.ensureSurface({
+    surfaceId: "surface_3",
+    connectorId: "amazon",
+    profileKey: "profile_3",
+  });
+
+  assert.equal(surface.health, "ready");
+  assert.equal(surface.allocator_metadata.host_port, "59000");
+  assert.equal(docker.containers.has(stoppedContainerIds[0]), false);
+  assert.equal(docker.containers.has(stoppedContainerIds[1]), true);
+  assert.ok(
+    docker.calls.some((call) => call.path === `/containers/${stoppedContainerIds[0]}` && call.init.method === "DELETE"),
+    "the stopped container occupying the selected port must be removed before creating the new surface",
+  );
+});
+
+test("reclaims every stopped container sharing the selected labeled host port", async () => {
+  const docker = new FakeDocker();
+  docker.addStoppedOwnedContainerWithoutPublishedPorts("stopped_a", {
+    [`${LABEL}.owner`]: "pdpp-reference",
+    [`${LABEL}.surface_id`]: "old_surface_a",
+    [`${LABEL}.webrtc_host_port`]: "59000",
+  });
+  docker.addStoppedOwnedContainerWithoutPublishedPorts("stopped_b", {
+    [`${LABEL}.owner`]: "pdpp-reference",
+    [`${LABEL}.surface_id`]: "old_surface_b",
+    [`${LABEL}.webrtc_host_port`]: "59000",
+  });
+  const service = new NekoSurfaceAllocatorService({
+    ...BASE_OPTIONS,
+    docker,
+    fetchImpl: readyFetch(),
+    webrtcHostPortStart: 59000,
+    webrtcHostPortEnd: 59000,
+  });
+
+  const surface = await service.ensureSurface({
+    surfaceId: "surface_1",
+    connectorId: "chatgpt",
+    profileKey: "profile_1",
+  });
+
+  assert.equal(surface.health, "ready");
+  assert.equal(surface.allocator_metadata.host_port, "59000");
+  assert.equal(docker.containers.has("stopped_a"), false);
+  assert.equal(docker.containers.has("stopped_b"), false);
+  assert.ok(docker.calls.some((call) => call.path === "/containers/stopped_a" && call.init.method === "DELETE"));
+  assert.ok(docker.calls.some((call) => call.path === "/containers/stopped_b" && call.init.method === "DELETE"));
+});
+
 test("retries the next host port when Docker reports a start-time port collision", async () => {
   const docker = new FakeDocker();
   docker.failStartForHostPort(59000);
@@ -628,7 +694,7 @@ class FakeDocker {
         .map((container) => ({
           Id: container.id,
           Labels: container.labels,
-          State: container.running ? "running" : "exited",
+          State: container.state ?? (container.running ? "running" : "exited"),
           Ports:
             container.hostPort === undefined
               ? []
@@ -734,6 +800,20 @@ class FakeDocker {
       hostPort: undefined,
       network: BASE_OPTIONS.network,
       listAsOwned: true,
+      state: "created",
+    });
+  }
+
+  addStoppedOwnedContainerWithoutPublishedPorts(id, labels) {
+    this.containers.set(id, {
+      id,
+      labels,
+      name: "stopped-without-published-ports",
+      running: false,
+      hostPort: undefined,
+      network: BASE_OPTIONS.network,
+      listAsOwned: true,
+      state: "exited",
     });
   }
 
