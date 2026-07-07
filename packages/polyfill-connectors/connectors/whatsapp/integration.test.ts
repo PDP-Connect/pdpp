@@ -75,6 +75,12 @@ function progressMessages(messages: readonly EmittedMessage[]): Extract<EmittedM
   );
 }
 
+function detailCoverage(messages: readonly EmittedMessage[]): Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }>[] {
+  return messages.filter(
+    (message): message is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => message.type === "DETAIL_COVERAGE"
+  );
+}
+
 async function writeMediaZip(importRoot: string): Promise<void> {
   const stagedDir = join(importRoot, "artifact_123");
   await mkdir(stagedDir, { recursive: true });
@@ -205,6 +211,30 @@ test("WhatsApp connector emits privacy-safe structured progress for manual impor
 
     const progressText = progress.map((message) => message.message).join("\n");
     assert.doesNotMatch(progressText, /Alice export|WhatsApp Chat - Alice|IMG-20240605-WA0001\.jpg/);
+  } finally {
+    await rm(importRoot, { force: true, recursive: true });
+  }
+});
+
+test("WhatsApp connector declares attachment coverage from parsed media inventory", async () => {
+  const importRoot = await mkdtemp(join(tmpdir(), "pdpp-whatsapp-coverage-"));
+  try {
+    await writeMediaZip(importRoot);
+    const { messages } = await runWhatsAppImport(importRoot);
+    const coverage = detailCoverage(messages).find((message) => message.stream === "attachments");
+
+    assert.ok(coverage, "expected attachments DETAIL_COVERAGE");
+    assert.equal(coverage.state_stream, "attachments");
+    assert.equal(coverage.considered, 1);
+    assert.equal(coverage.covered, 1);
+    assert.deepEqual(coverage.required_keys, []);
+    assert.deepEqual(coverage.hydrated_keys, []);
+
+    const coverageIdx = messages.findIndex(
+      (message) => message.type === "DETAIL_COVERAGE" && message.stream === "attachments"
+    );
+    const firstStateIdx = messages.findIndex((message) => message.type === "STATE");
+    assert.ok(firstStateIdx > coverageIdx, "DETAIL_COVERAGE must emit before attachment STATE");
   } finally {
     await rm(importRoot, { force: true, recursive: true });
   }

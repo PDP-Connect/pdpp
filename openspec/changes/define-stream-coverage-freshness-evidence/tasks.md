@@ -28,6 +28,7 @@
 - [x] 4.2 Backfill list/detail commerce and finance connectors: Amazon, Chase, USAA, YNAB, and Reddit.
 - [x] 4.3 Backfill remaining connectors or mark streams with explicit unavailable/deferred/not-trackable strategies.
 - [x] 4.4 Add a generated inventory report showing every declared stream has a coverage and freshness posture.
+- [x] 4.5 Emit WhatsApp attachment `DETAIL_COVERAGE` from parsed media inventory so parent-detail stream rows do not remain unmeasured.
 
 ## 5. Acceptance Checks
 

@@ -17,7 +17,12 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { type EmittedMessage, type ProgressExtra, runConnector } from "../../src/connector-runtime.ts";
+import {
+  buildDetailCoverageMessage,
+  type EmittedMessage,
+  type ProgressExtra,
+  runConnector,
+} from "../../src/connector-runtime.ts";
 import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import {
   makeReferenceBlobUploader,
@@ -485,6 +490,19 @@ runConnector({
       totalAttachments += summary.attachments;
       totalMessages += summary.messages;
       totalRecords += summary.records;
+    }
+
+    if (requested.has("attachments")) {
+      await emit(
+        buildDetailCoverageMessage({
+          stream: "attachments",
+          stateStream: "attachments",
+          requiredKeys: [],
+          hydratedKeys: [],
+          considered: totalAttachments,
+          covered: totalAttachments,
+        })
+      );
     }
 
     // Drop fingerprints for chats/messages that disappeared from the export
