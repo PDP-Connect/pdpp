@@ -164,18 +164,41 @@ setTimeout(() => process.exit(0), 100);
 
 test("slack manifest unsupported-in-mode streams match connector safety-net skips", async () => {
   const manifest = JSON.parse(await readFile(SLACK_MANIFEST, "utf8")) as {
-    streams?: Array<{ name?: string; availability?: { state?: string; mode?: string } }>;
+    streams?: Array<{
+      availability?: { state?: string; mode?: string };
+      coverage_policy?: string;
+      freshness_strategy?: string;
+      name?: string;
+      required?: boolean;
+    }>;
   };
-  const manifestUnavailable = (manifest.streams || [])
-    .filter((stream) => stream.availability?.state === "unsupported_in_mode")
+  const manifestUnavailable = (manifest.streams || []).filter(
+    (stream) => stream.availability?.state === "unsupported_in_mode"
+  );
+  const manifestUnavailableKeys = manifestUnavailable
     .map((stream) => `${stream.name}:${stream.availability?.mode}`)
     .sort();
-  const connectorUnavailable = UNAVAILABLE_STREAMS.map((stream) => `${stream.name}:slackdump_archive`).sort();
+  const connectorUnavailableKeys = UNAVAILABLE_STREAMS.map((stream) => `${stream.name}:slackdump_archive`).sort();
 
   assert.deepEqual(
-    manifestUnavailable,
-    connectorUnavailable,
+    manifestUnavailableKeys,
+    connectorUnavailableKeys,
     "Slack manifest unsupported-in-mode declarations must stay aligned with emitted SKIP_RESULT safety-net streams"
+  );
+  assert.deepEqual(
+    manifestUnavailable.map((stream) => ({
+      name: stream.name,
+      coverage_policy: stream.coverage_policy,
+      freshness_strategy: stream.freshness_strategy,
+      required: stream.required,
+    })),
+    UNAVAILABLE_STREAMS.map((stream) => ({
+      name: stream.name,
+      coverage_policy: "deferred",
+      freshness_strategy: "not_trackable",
+      required: false,
+    })),
+    "Slack unsupported-in-mode streams must be accepted-absent, not load-bearing unknown coverage"
   );
 });
 

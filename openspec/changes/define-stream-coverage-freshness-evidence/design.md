@@ -96,6 +96,14 @@ coverage evidence strategy. The accepted absence policies remain:
 Existing `DETAIL_COVERAGE` becomes one producer of `parent_detail_accounting`
 evidence. It should not remain the only required coverage mechanism.
 
+Manifest `availability.state: unsupported_in_mode` is not enough by itself.
+When a declared stream is intentionally present for future/mode completeness but
+the current connector mode cannot collect it, the stream must also opt out of
+load-bearing coverage with `required: false`, an accepted `coverage_policy`, and
+a compatible freshness posture such as `not_trackable`. Otherwise historical or
+partial run facts that carry no `SKIP_RESULT` reproject as resting unknown
+coverage even though the connector already declared the mode limitation.
+
 ## Missing Instrumentation
 
 Missing evidence is a real state:
@@ -141,6 +149,15 @@ records, while the safe diagnostic row names only the parent stream. The stream
 report therefore uses the manifest's existing `state_stream` declaration to let
 child streams inherit the parent's local coverage state; runtime facts and
 pending detail gaps still take precedence.
+
+The same `state_stream` relationship applies to historical scheduler-run facts.
+Current runtimes should stamp the child stream's inherited checkpoint when they
+build terminal facts, but live instances can already hold older fact blocks where
+the child is marked `not_staged` while the parent committed. The projection uses
+the parent committed checkpoint at read time only when the child has a runtime
+fact, no skip, no pending detail gap, and no committed checkpoint of its own.
+This repairs old evidence without fabricating coverage for an unreported child
+stream or an uncommitted parent.
 
 ## Implementation Sequence
 

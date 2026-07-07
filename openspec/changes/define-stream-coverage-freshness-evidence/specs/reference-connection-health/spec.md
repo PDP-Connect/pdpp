@@ -71,6 +71,14 @@ When a local-device stream declares `state_stream`, stream-row coverage SHALL
 inherit the parent stream's local `coverage_diagnostics` state unless a runtime
 fact or pending detail gap exists for the child stream.
 
+When a scheduler-run collection fact exists for a child stream that declares
+`state_stream`, and the child fact has no skip, pending detail gap, or committed
+checkpoint of its own, stream-row coverage SHALL use the parent stream's
+committed checkpoint when the parent fact is present in the same collection fact
+block. This read-side inheritance SHALL preserve historical run reports that
+predate runtime-side state-stream checkpoint stamping, and SHALL NOT fabricate
+coverage when the parent fact is missing or uncommitted.
+
 #### Scenario: policy-unavailable stream has a concrete state
 
 **WHEN** a stream's coverage policy is `unavailable` or `unsupported`
@@ -95,6 +103,16 @@ a parent stream
 parent's diagnostics
 **AND** owner surfaces SHALL NOT leave the child stream unmeasured solely because
 the collector emitted no separate child-stream diagnostic row.
+
+#### Scenario: historical run facts inherit parent checkpoint for co-emitted streams
+
+**WHEN** a scheduler-run collection fact block includes a committed parent stream
+**AND** a co-emitted child stream declares that parent as `state_stream`
+**AND** the child fact has an uncommitted checkpoint with no skip or pending gap
+**THEN** stream-row coverage SHALL use the parent committed checkpoint for the
+child stream
+**AND** owner surfaces SHALL NOT leave the child stream unmeasured solely because
+the historical child fact predates runtime-side checkpoint inheritance.
 
 #### Scenario: source detail exposes supporting facts
 

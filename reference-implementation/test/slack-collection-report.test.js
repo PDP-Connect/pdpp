@@ -117,6 +117,31 @@ test('slack unsupported streams: SKIP_RESULT(reason: "not_available") -> unavail
   }
 });
 
+test('slack unsupported-in-mode streams: manifest accepted-absence prevents resting unknown coverage', () => {
+  // Live regression: the latest successful Slack run predated skip/fact emission
+  // for the slackdump-unavailable Layer-2 streams, so these rows had no
+  // SKIP_RESULT and projected as unknown forever. The manifest already declares
+  // unsupported_in_mode; coverage_policy=deferred + required=false makes that
+  // accepted-absence explicit even when old run facts have no skip.
+  const unsupported = ['stars', 'user_groups', 'reminders', 'dm_read_states'];
+  const manifestStreams = unsupported.map((stream) => ({
+    name: stream,
+    coverage_policy: 'deferred',
+    coverage_strategy: stream === 'stars' || stream === 'user_groups' ? 'full_inventory' : 'checkpoint_window',
+    freshness_strategy: 'not_trackable',
+    required: false,
+  }));
+  const entries = report(
+    unsupported.map((stream) => fact({ stream, collected: 0, considered: null, checkpoint: 'unknown' })),
+    { manifestStreams },
+  );
+  for (const stream of unsupported) {
+    const entry = entryFor(entries, stream);
+    assert.equal(entry.coverage_condition, 'deferred', `${stream} is accepted-absent, not unknown`);
+    assert.equal(entry.forward_disposition, 'complete', `${stream} owes no ordinary collection in slackdump mode`);
+  }
+});
+
 test('slack co-emitted detail streams: checkpoint_window + committed parent checkpoint -> complete', () => {
   // reactions / message_attachments ride the `messages` cursor and are committed
   // by the parent `messages` STATE. They carry no `considered` denominator, so
@@ -141,10 +166,28 @@ test('slack co-emitted detail streams: checkpoint_window + committed parent chec
   }
 });
 
-test('slack co-emitted detail streams: checkpoint_window but not_staged -> stays unknown (the pre-fix symptom)', () => {
-  // Guards the regression: before the runtime state_stream mapping, a co-emitted
-  // stream's checkpoint read `not_staged` even on a succeeded run, which — under
-  // the same manifest strategy — projects to `unknown` instead of `complete`.
+test('slack co-emitted detail streams: historical child not_staged inherits committed parent checkpoint', () => {
+  // Live repair: historical terminal fact blocks may have stamped a co-emitted
+  // child stream as `not_staged` even though the parent `messages` cursor
+  // committed. The manifest state_stream declaration is the durable read-side
+  // evidence that lets old reports project the same way current runtime facts do.
+  const manifestStreams = [
+    { name: 'reactions', coverage_strategy: 'checkpoint_window', state_stream: 'messages' },
+  ];
+  const entries = report(
+    [
+      fact({ stream: 'messages', collected: 1903, considered: null, checkpoint: 'committed' }),
+      fact({ stream: 'reactions', collected: 42, considered: null, checkpoint: 'not_staged' }),
+    ],
+    { manifestStreams },
+  );
+  const entry = entryFor(entries, 'reactions');
+  assert.equal(entry.checkpoint, 'committed', 'child stream inherits the parent committed checkpoint');
+  assert.equal(entry.coverage_condition, 'complete', 'parent checkpoint proves child checkpoint_window coverage');
+  assert.equal(entry.forward_disposition, 'complete');
+});
+
+test('slack co-emitted detail streams: child not_staged without parent proof stays unknown', () => {
   const manifestStreams = [
     { name: 'reactions', coverage_strategy: 'checkpoint_window', state_stream: 'messages' },
   ];
@@ -153,7 +196,7 @@ test('slack co-emitted detail streams: checkpoint_window but not_staged -> stays
     { manifestStreams },
   );
   const entry = entryFor(entries, 'reactions');
-  assert.equal(entry.coverage_condition, 'unknown', 'not_staged does not prove checkpoint_window coverage');
+  assert.equal(entry.coverage_condition, 'unknown', 'not_staged alone does not prove checkpoint_window coverage');
   assert.equal(entry.forward_disposition, 'unmeasured');
 });
 

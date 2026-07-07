@@ -22,6 +22,7 @@
 - [x] 3.6 Apply `state_stream` inheritance to local-device stream rows so co-emitted child streams do not remain unmeasured when the parent store scan is covered.
 - [x] 3.7 Treat committed checkpoint-window, full-inventory, snapshot, and singleton strategies as coverage-complete even when the run emitted only changed records.
 - [x] 3.8 Treat successful manual-only no-staleness runs as measured current-as-of instead of leaving source freshness unmeasured.
+- [x] 3.9 Apply `state_stream` checkpoint inheritance to historical scheduler-run facts when the child fact exists, the parent checkpoint committed, and no child skip/gap is present.
 
 ## 4. Connector Backfill
 
@@ -30,6 +31,7 @@
 - [x] 4.3 Backfill remaining connectors or mark streams with explicit unavailable/deferred/not-trackable strategies.
 - [x] 4.4 Add a generated inventory report showing every declared stream has a coverage and freshness posture.
 - [x] 4.5 Emit WhatsApp attachment `DETAIL_COVERAGE` from parsed media inventory so parent-detail stream rows do not remain unmeasured.
+- [x] 4.6 Mark Slack `unsupported_in_mode` streams as non-required accepted-absent streams so historical no-skip facts do not project as resting unknown coverage.
 
 ## 5. Acceptance Checks
 

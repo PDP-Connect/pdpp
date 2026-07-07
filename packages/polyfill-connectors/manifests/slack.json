@@ -1855,8 +1855,10 @@
           ]
         }
       },
+      "required": false,
+      "coverage_policy": "deferred",
       "coverage_strategy": "full_inventory",
-      "freshness_strategy": "scheduled_window"
+      "freshness_strategy": "not_trackable"
     },
     {
       "name": "user_groups",
@@ -1996,8 +1998,10 @@
           ]
         }
       },
+      "required": false,
+      "coverage_policy": "deferred",
       "coverage_strategy": "full_inventory",
-      "freshness_strategy": "scheduled_window"
+      "freshness_strategy": "not_trackable"
     },
     {
       "name": "reminders",
@@ -2117,8 +2121,10 @@
           ]
         }
       },
+      "required": false,
+      "coverage_policy": "deferred",
       "coverage_strategy": "checkpoint_window",
-      "freshness_strategy": "scheduled_window"
+      "freshness_strategy": "not_trackable"
     },
     {
       "name": "dm_read_states",
@@ -2227,8 +2233,10 @@
           ]
         }
       },
+      "required": false,
+      "coverage_policy": "deferred",
       "coverage_strategy": "checkpoint_window",
-      "freshness_strategy": "scheduled_window"
+      "freshness_strategy": "not_trackable"
     }
   ],
   "profiles": [

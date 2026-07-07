@@ -1990,49 +1990,113 @@ export function buildCollectionReport(input: {
   ]);
   const entries: CollectionReportEntry[] = [];
   for (const stream of inScope) {
-    const hasRuntimeFact = factByStream.has(stream);
-    const baseFact: RuntimeCollectionFact = factByStream.get(stream) ?? {
-      stream,
-      collected: 0,
-      considered: null,
-      covered: null,
-      checkpoint: null,
-      pending_detail_gaps: 0,
-      skipped: null,
-    };
-    const fact: RuntimeCollectionFact = {
-      ...baseFact,
-      pending_detail_gaps: Math.max(baseFact.pending_detail_gaps, pendingGapCountByStream.get(stream) ?? 0),
-    };
-    const pendingDetailGapsIsFloor = fact.pending_detail_gaps > 0 && pendingGapReadHitLimit;
-    const manifestStream = manifestByStream.get(stream);
-    const localCoverageCondition =
-      !hasRuntimeFact && fact.pending_detail_gaps === 0 ? localCoverageConditionByStream.get(stream) : null;
-    const coverageCondition = localCoverageCondition ?? deriveStreamCoverageCondition(fact, manifestStream);
-    const forwardDisposition = deriveForwardDisposition({
-      coverage: coverageCondition,
-      gapRetryable: coverageCondition === "retryable_gap",
-      attentionOpen: input.attentionOpen,
-      freshness: input.freshness,
-      refresh: input.refresh,
-    });
-    entries.push({
-      stream,
-      collected: fact.collected,
-      considered: fact.considered === null ? "unknown" : fact.considered,
-      covered: fact.covered === null ? "unknown" : fact.covered,
-      checkpoint: fact.checkpoint ?? "unknown",
-      pending_detail_gaps: fact.pending_detail_gaps,
-      pending_detail_gaps_is_floor: pendingDetailGapsIsFloor,
-      skipped: fact.skipped,
-      coverage_condition: coverageCondition,
-      coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
-      forward_disposition: forwardDisposition,
-      freshness_strategy: readFreshnessEvidenceStrategy(manifestStream),
-    });
+    entries.push(
+      buildCollectionReportEntry({
+        stream,
+        factByStream,
+        pendingGapCountByStream,
+        pendingGapReadHitLimit,
+        manifestByStream,
+        localCoverageConditionByStream,
+        freshness: input.freshness,
+        attentionOpen: input.attentionOpen,
+        refresh: input.refresh,
+      })
+    );
   }
   entries.sort((a, b) => a.stream.localeCompare(b.stream));
   return entries;
+}
+
+function buildCollectionReportEntry(input: {
+  readonly stream: string;
+  readonly factByStream: ReadonlyMap<string, RuntimeCollectionFact>;
+  readonly pendingGapCountByStream: ReadonlyMap<string, number>;
+  readonly pendingGapReadHitLimit: boolean;
+  readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
+  readonly localCoverageConditionByStream: ReadonlyMap<string, CoverageAxis>;
+  readonly freshness: FreshnessAxis;
+  readonly attentionOpen: boolean;
+  readonly refresh: ConnectionRefreshEvidence | null;
+}): CollectionReportEntry {
+  const hasRuntimeFact = input.factByStream.has(input.stream);
+  const baseFact: RuntimeCollectionFact = input.factByStream.get(input.stream) ?? {
+    stream: input.stream,
+    collected: 0,
+    considered: null,
+    covered: null,
+    checkpoint: null,
+    pending_detail_gaps: 0,
+    skipped: null,
+  };
+  const fact: RuntimeCollectionFact = {
+    ...baseFact,
+    pending_detail_gaps: Math.max(baseFact.pending_detail_gaps, input.pendingGapCountByStream.get(input.stream) ?? 0),
+  };
+  const manifestStream = input.manifestByStream.get(input.stream);
+  const effectiveFact = applyStateStreamCheckpointInheritance({
+    fact,
+    manifestStream,
+    parentFacts: input.factByStream,
+    hasRuntimeFact,
+  });
+  const localCoverageCondition =
+    !hasRuntimeFact && effectiveFact.pending_detail_gaps === 0
+      ? input.localCoverageConditionByStream.get(input.stream)
+      : null;
+  const coverageCondition = localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream);
+  const forwardDisposition = deriveForwardDisposition({
+    coverage: coverageCondition,
+    gapRetryable: coverageCondition === "retryable_gap",
+    attentionOpen: input.attentionOpen,
+    freshness: input.freshness,
+    refresh: input.refresh,
+  });
+  return {
+    stream: input.stream,
+    collected: effectiveFact.collected,
+    considered: effectiveFact.considered === null ? "unknown" : effectiveFact.considered,
+    covered: effectiveFact.covered === null ? "unknown" : effectiveFact.covered,
+    checkpoint: effectiveFact.checkpoint ?? "unknown",
+    pending_detail_gaps: effectiveFact.pending_detail_gaps,
+    pending_detail_gaps_is_floor: effectiveFact.pending_detail_gaps > 0 && input.pendingGapReadHitLimit,
+    skipped: effectiveFact.skipped,
+    coverage_condition: coverageCondition,
+    coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
+    forward_disposition: forwardDisposition,
+    freshness_strategy: readFreshnessEvidenceStrategy(manifestStream),
+  };
+}
+
+function applyStateStreamCheckpointInheritance(input: {
+  readonly fact: RuntimeCollectionFact;
+  readonly manifestStream: ManifestStream | undefined;
+  readonly parentFacts: ReadonlyMap<string, RuntimeCollectionFact>;
+  readonly hasRuntimeFact: boolean;
+}): RuntimeCollectionFact {
+  const { fact, hasRuntimeFact, manifestStream, parentFacts } = input;
+  if (
+    !hasRuntimeFact ||
+    fact.skipped ||
+    fact.pending_detail_gaps > 0 ||
+    readCoverageEvidenceStrategy(manifestStream) !== "checkpoint_window" ||
+    checkpointProvesStreamCoverage(fact.checkpoint)
+  ) {
+    return fact;
+  }
+  const parentStream = localCoverageParentStream(manifestStream);
+  if (!parentStream) {
+    return fact;
+  }
+  const parentFact = parentFacts.get(parentStream);
+  if (!(parentFact && checkpointProvesStreamCoverage(parentFact.checkpoint))) {
+    return fact;
+  }
+  return { ...fact, checkpoint: parentFact.checkpoint };
+}
+
+function checkpointProvesStreamCoverage(checkpoint: string | null): boolean {
+  return checkpoint === "committed" || checkpoint === "disabled";
 }
 
 /**
@@ -2109,6 +2173,16 @@ function localCoverageConditionsByStream(
 ): ReadonlyMap<string, CoverageAxis> {
   const conditions = new Map<string, CoverageAxis>();
   const rows = localCoverage?.rows ?? [];
+  seedLocalCoverageConditions(conditions, rows);
+  addCoverageDiagnosticsCondition(conditions, rows, manifestByStream);
+  inheritLocalCoverageParentConditions(conditions, manifestByStream);
+  return conditions;
+}
+
+function seedLocalCoverageConditions(
+  conditions: Map<string, CoverageAxis>,
+  rows: readonly LocalCoverageDiagnosticRow[]
+): void {
   for (const row of rows) {
     const stream = typeof row.stream === "string" && row.stream ? row.stream : null;
     if (!stream || conditions.has(stream)) {
@@ -2119,9 +2193,22 @@ function localCoverageConditionsByStream(
       conditions.set(stream, condition);
     }
   }
+}
+
+function addCoverageDiagnosticsCondition(
+  conditions: Map<string, CoverageAxis>,
+  rows: readonly LocalCoverageDiagnosticRow[],
+  manifestByStream: ReadonlyMap<string, ManifestStream>
+): void {
   if (rows.length > 0 && manifestByStream.has("coverage_diagnostics") && !conditions.has("coverage_diagnostics")) {
     conditions.set("coverage_diagnostics", "complete");
   }
+}
+
+function inheritLocalCoverageParentConditions(
+  conditions: Map<string, CoverageAxis>,
+  manifestByStream: ReadonlyMap<string, ManifestStream>
+): void {
   for (let pass = 0; pass < manifestByStream.size; pass += 1) {
     let changed = false;
     for (const [stream, manifestStream] of manifestByStream) {
@@ -2143,7 +2230,6 @@ function localCoverageConditionsByStream(
       break;
     }
   }
-  return conditions;
 }
 
 function localCoverageParentStream(stream: ManifestStream | undefined): string | null {
