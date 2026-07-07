@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
@@ -26,6 +27,7 @@ import {
   classifyLocalCollectorDeploymentPosture,
   compactOutbox,
   inspectLocalOutboxStatus,
+  inspectLocalReferenceRoute,
   findLocalCollectorProfiles,
   parseArgs,
   parseCollectorProfileEnv,
@@ -383,6 +385,67 @@ test('local collector doctor omits remediation when the outbox is healthy', asyn
   } finally {
     outbox.close();
   }
+});
+
+test('local collector doctor reports configured reference route health without secrets', async () => {
+  const okServer = await startReferenceRouteServer({ status: 200 });
+  try {
+    const route = await inspectLocalReferenceRoute({
+      baseUrl: okServer.url,
+      command: 'doctor',
+      deviceId: 'device-1',
+      deviceToken: 'device-token-secret',
+      queuePath: join(await tempDir(), 'missing.sqlite'),
+      sourceInstanceId: 'src-1',
+    });
+    assert.equal(route.status, 'ok');
+    assert.equal(route.check, 'device_source_state');
+    assert.doesNotMatch(JSON.stringify(route), /device-token-secret/);
+  } finally {
+    await okServer.close();
+  }
+
+  const failServer = await startReferenceRouteServer({ body: '<html>bad gateway</html>', status: 502 });
+  try {
+    const status = inspectLocalOutboxStatus(
+      {
+        baseUrl: failServer.url,
+        command: 'doctor',
+        deviceId: 'device-1',
+        deviceToken: 'device-token-secret',
+        queuePath: join(await tempDir(), 'missing.sqlite'),
+        sourceInstanceId: 'src-1',
+      },
+      { deploymentPosture: PUBLISHED_POSTURE }
+    );
+    const route = await inspectLocalReferenceRoute({
+      baseUrl: failServer.url,
+      command: 'doctor',
+      deviceId: 'device-1',
+      deviceToken: 'device-token-secret',
+      queuePath: status.db.path,
+      sourceInstanceId: 'src-1',
+    });
+    const doctor = buildLocalOutboxDoctor(status, null, route);
+
+    assert.equal(route.status, 'fail');
+    assert.equal(route.http_status, 502);
+    assert.equal(route.error_class, 'http_502');
+    assert.equal(doctor.checks.reference_route, 'fail');
+    assert.equal(doctor.status, 'critical');
+    assert.match(doctor.remediation.join('\n'), /PDPP_REFERENCE_BASE_URL/);
+    assert.doesNotMatch(JSON.stringify(doctor), /device-token-secret|bad gateway/);
+  } finally {
+    await failServer.close();
+  }
+
+  const unknown = await inspectLocalReferenceRoute({
+    baseUrl: 'http://127.0.0.1:7662',
+    command: 'doctor',
+    queuePath: join(await tempDir(), 'missing.sqlite'),
+  });
+  assert.equal(unknown.status, 'unknown');
+  assert.deepEqual(unknown.missing, ['device_id', 'device_token', 'source_instance_id']);
 });
 
 // --- Deployment posture (published-vs-dev runtime classification). Make the
@@ -2236,6 +2299,37 @@ test('stalled/dead-letter still surfaces as a problem even with a large sent bac
   assert.ok(Array.isArray(doctor.remediation));
   assert.ok(doctor.remediation.some((line) => /recover --source-instance-id <id>/.test(line)));
 });
+
+async function startReferenceRouteServer({ body = '{"ok":true}', status }) {
+  const server = createServer((req, res) => {
+    if (req.url?.endsWith('/state') && req.method === 'GET') {
+      res.writeHead(status, { 'content-type': 'application/json' });
+      if (status >= 400) {
+        res.end(body);
+        return;
+      }
+      res.end(
+        JSON.stringify({
+          device_id: 'device-1',
+          object: 'device_source_instance_state',
+          source_instance_id: 'src-1',
+          state: {},
+          updated_at: null,
+        })
+      );
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { code: 'not_found' } }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  return {
+    close: () => new Promise((resolve) => server.close(resolve)),
+    url: `http://127.0.0.1:${address.port}`,
+  };
+}
 
 async function tempOutboxPath() {
   return join(await tempDir(), 'outbox.sqlite');

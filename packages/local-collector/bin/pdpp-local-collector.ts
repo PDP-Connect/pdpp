@@ -41,6 +41,8 @@ import {
   deriveLocalCollectorLifecycleState,
   LocalDeviceOutbox,
   type LocalCollectorLifecycleState,
+  LocalDeviceClient,
+  LocalDeviceHttpError,
   type LocalDeviceOutboxCompactResult,
   type LocalDeviceOutboxDeadLetterErrorSummary,
   type LocalDeviceOutboxKind,
@@ -48,6 +50,7 @@ import {
   type LocalDeviceOutboxPruneSentInput,
   type LocalDeviceOutboxPruneSentResult,
   type LocalDeviceOutboxSummary,
+  LocalDeviceRequestTimeoutError,
   enrollCollector,
   getBundledConnector,
   isMainModule,
@@ -71,6 +74,7 @@ const DEFAULT_QUEUE_PATH = join(
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
 const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
 const LOCAL_COLLECTOR_PROFILE_DIR_ENV = "PDPP_LOCAL_COLLECTOR_PROFILE_DIR";
+const REFERENCE_ROUTE_DOCTOR_TIMEOUT_MS = 10_000;
 const RECOVER_DEFAULT_MAX_DRAIN_PASSES = 20;
 /**
  * Placeholder version published to the `latest` dist-tag and carried by the
@@ -383,7 +387,8 @@ async function main(): Promise<void> {
     const status = inspectLocalOutboxStatus(inspectOptions);
     if (options.command === "doctor") {
       const errorSummary = readLocalOutboxDeadLetterErrorSummary(inspectOptions);
-      writeJson(buildLocalOutboxDoctor(status, errorSummary));
+      const referenceRoute = await inspectLocalReferenceRoute(inspectOptions);
+      writeJson(buildLocalOutboxDoctor(status, errorSummary, referenceRoute));
       return;
     }
     writeJson(status);
@@ -692,6 +697,15 @@ export interface LocalOutboxStatusOutput {
   };
 }
 
+export interface LocalCollectorReferenceRouteCheck {
+  base_url: string;
+  check: "device_source_state";
+  error_class?: string;
+  http_status?: number;
+  missing?: Array<"device_id" | "device_token" | "source_instance_id">;
+  status: "ok" | "fail" | "unknown";
+}
+
 export interface LocalOutboxDoctorOutput extends LocalOutboxStatusOutput {
   checks: {
     /**
@@ -711,6 +725,7 @@ export interface LocalOutboxDoctorOutput extends LocalOutboxStatusOutput {
     expired_leases: "ok" | "warn";
     outbox_db: "ok" | "missing";
     outbox_failures: "ok" | "fail";
+    reference_route?: "ok" | "fail" | "unknown";
   };
   /**
    * Top redacted dead-letter error classes, present only when there are
@@ -719,6 +734,7 @@ export interface LocalOutboxDoctorOutput extends LocalOutboxStatusOutput {
    * classes with counts (paths/tokens/ids scrubbed). Omitted on a clean run.
    */
   dead_letter_error_summary?: LocalDeviceOutboxDeadLetterErrorSummary;
+  reference_route?: LocalCollectorReferenceRouteCheck;
   /**
    * Operator-actionable hints, present only when a check is non-`ok`. The
    * field is omitted when everything is healthy so a clean doctor run stays
@@ -827,9 +843,112 @@ export function inspectLocalOutboxStatus(
   };
 }
 
+export interface InspectLocalReferenceRouteDeps {
+  client?: Pick<LocalDeviceClient, "getSourceInstanceState">;
+}
+
+export async function inspectLocalReferenceRoute(
+  options: CliOptions,
+  deps: InspectLocalReferenceRouteDeps = {}
+): Promise<LocalCollectorReferenceRouteCheck> {
+  const deviceId = options.deviceId;
+  const deviceToken = options.deviceToken;
+  const sourceInstanceId = options.sourceInstanceId;
+  const missing: LocalCollectorReferenceRouteCheck["missing"] = [];
+  if (!deviceId) {
+    missing.push("device_id");
+  }
+  if (!deviceToken) {
+    missing.push("device_token");
+  }
+  if (!sourceInstanceId) {
+    missing.push("source_instance_id");
+  }
+  const baseUrl = redactReferenceBaseUrl(options.baseUrl);
+  if (missing.length > 0) {
+    return {
+      base_url: baseUrl,
+      check: "device_source_state",
+      missing,
+      status: "unknown",
+    };
+  }
+  if (!deviceId || !deviceToken || !sourceInstanceId) {
+    throw new Error("reference route config narrowing failed");
+  }
+
+  try {
+    const client =
+      deps.client ??
+      new LocalDeviceClient({
+        baseUrl: options.baseUrl,
+        deviceId,
+        deviceToken,
+        requestTimeoutMs: REFERENCE_ROUTE_DOCTOR_TIMEOUT_MS,
+      });
+    await client.getSourceInstanceState({ sourceInstanceId });
+    return {
+      base_url: baseUrl,
+      check: "device_source_state",
+      status: "ok",
+    };
+  } catch (error) {
+    return {
+      base_url: baseUrl,
+      check: "device_source_state",
+      ...referenceRouteErrorFields(error),
+      status: "fail",
+    };
+  }
+}
+
+function referenceRouteErrorFields(error: unknown): Pick<
+  LocalCollectorReferenceRouteCheck,
+  "error_class" | "http_status"
+> {
+  if (error instanceof LocalDeviceHttpError) {
+    return {
+      error_class: error.code ? `http_${error.status}_${error.code}` : `http_${error.status}`,
+      http_status: error.status,
+    };
+  }
+  if (error instanceof LocalDeviceRequestTimeoutError) {
+    return { error_class: "timeout" };
+  }
+  if (error instanceof TypeError) {
+    return { error_class: "network_error" };
+  }
+  if (error instanceof Error) {
+    return { error_class: sanitizeErrorClass(error.name || "error") };
+  }
+  return { error_class: "unknown_error" };
+}
+
+function sanitizeErrorClass(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "error";
+}
+
+function redactReferenceBaseUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "invalid_url";
+  }
+}
+
 export function buildLocalOutboxDoctor(
   status: LocalOutboxStatusOutput,
-  errorSummary?: LocalDeviceOutboxDeadLetterErrorSummary | null
+  errorSummary?: LocalDeviceOutboxDeadLetterErrorSummary | null,
+  referenceRoute?: LocalCollectorReferenceRouteCheck | null
 ): LocalOutboxDoctorOutput {
   const posture = status.deployment_posture;
   const postureDisqualifiesEvidence =
@@ -840,6 +959,7 @@ export function buildLocalOutboxDoctor(
     expired_leases: status.outbox.expired_leases > 0 ? "warn" : "ok",
     outbox_db: status.db.exists ? "ok" : "missing",
     outbox_failures: status.outbox.counts.dead_letter > 0 ? "fail" : "ok",
+    ...(referenceRoute ? { reference_route: referenceRoute.status } : {}),
   };
   const remediation: string[] = [];
   if (checks.outbox_failures === "fail") {
@@ -875,14 +995,27 @@ export function buildLocalOutboxDoctor(
   if (checks.deployment_posture === "warn") {
     remediation.push(deploymentPostureRemediation(posture));
   }
+  if (checks.reference_route === "fail" && referenceRoute) {
+    remediation.push(referenceRouteRemediation(referenceRoute));
+  }
   const includeSummary = Boolean(errorSummary) && status.outbox.counts.dead_letter > 0;
   return {
     ...status,
     checks,
     ...(includeSummary && errorSummary ? { dead_letter_error_summary: errorSummary } : {}),
+    ...(referenceRoute ? { reference_route: referenceRoute } : {}),
     ...(remediation.length > 0 ? { remediation } : {}),
     status: doctorSeverityForChecks(checks),
   };
+}
+
+function referenceRouteRemediation(route: LocalCollectorReferenceRouteCheck): string {
+  const detail = route.http_status ? `HTTP ${route.http_status}` : route.error_class ?? "route failure";
+  return (
+    `The configured reference route (${route.base_url}) did not accept the device source-state check (${detail}). ` +
+    "Check `PDPP_REFERENCE_BASE_URL`, network/VPN/reverse-proxy routing, and the enrolled device token before re-running. " +
+    "Do not edit or recover the local outbox for this condition; saved work should remain queued until the route is fixed."
+  );
 }
 
 /**
@@ -920,16 +1053,17 @@ function deploymentPostureRemediation(posture: LocalCollectorDeploymentPosture):
 
 /**
  * Roll the per-check verdicts into the coarse doctor severity. Dead-letter
- * rows are the only `critical` condition (they need operator recovery);
- * expired leases, a missing DB, a coverage gap, and a dev/placeholder
- * deployment posture are `warning` (each self-heals, is informational, or is a
- * supported dev path that merely disqualifies operator-host evidence);
+ * rows and a failed configured reference route are `critical` conditions
+ * (they prevent delivery or need operator recovery); expired leases, a missing
+ * DB, a coverage gap, and a dev/placeholder deployment posture are `warning`
+ * (each self-heals, is informational, or is a supported dev path that merely
+ * disqualifies operator-host evidence);
  * everything else is `ok`. A `retryable_backlog`/`draining` lane stays `ok`
  * because it drains itself on the next scheduled run — surfaced via
  * `lifecycle_state`, not as a warning.
  */
 function doctorSeverityForChecks(checks: LocalOutboxDoctorOutput["checks"]): "ok" | "warning" | "critical" {
-  if (checks.outbox_failures === "fail") {
+  if (checks.outbox_failures === "fail" || checks.reference_route === "fail") {
     return "critical";
   }
   if (

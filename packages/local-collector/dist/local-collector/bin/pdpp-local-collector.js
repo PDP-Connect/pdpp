@@ -4,12 +4,13 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError, } from "../src/errors.js";
-import { BUNDLED_CONNECTOR_IDS, COLLECTOR_PROTOCOL_VERSION, COLLECTOR_RUNTIME_CAPABILITIES, deriveLocalCollectorLifecycleState, LocalDeviceOutbox, enrollCollector, getBundledConnector, isMainModule, runCollectorConnector, } from "../src/runner.js";
+import { BUNDLED_CONNECTOR_IDS, COLLECTOR_PROTOCOL_VERSION, COLLECTOR_RUNTIME_CAPABILITIES, deriveLocalCollectorLifecycleState, LocalDeviceOutbox, LocalDeviceClient, LocalDeviceHttpError, LocalDeviceRequestTimeoutError, enrollCollector, getBundledConnector, isMainModule, runCollectorConnector, } from "../src/runner.js";
 const COVERAGE_DIAGNOSTICS_STREAM = "coverage_diagnostics";
 const DEFAULT_QUEUE_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", ".pdpp-data", "collector-runner-queue.json");
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
 const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
 const LOCAL_COLLECTOR_PROFILE_DIR_ENV = "PDPP_LOCAL_COLLECTOR_PROFILE_DIR";
+const REFERENCE_ROUTE_DOCTOR_TIMEOUT_MS = 10_000;
 const RECOVER_DEFAULT_MAX_DRAIN_PASSES = 20;
 const LOCAL_COLLECTOR_PLACEHOLDER_VERSION = "0.0.0";
 const REPO_ONLY_PACKAGE_SIBLINGS = ["src", "bin", "test", "scripts", "tsconfig.build.json"];
@@ -188,7 +189,8 @@ async function main() {
         const status = inspectLocalOutboxStatus(inspectOptions);
         if (options.command === "doctor") {
             const errorSummary = readLocalOutboxDeadLetterErrorSummary(inspectOptions);
-            writeJson(buildLocalOutboxDoctor(status, errorSummary));
+            const referenceRoute = await inspectLocalReferenceRoute(inspectOptions);
+            writeJson(buildLocalOutboxDoctor(status, errorSummary, referenceRoute));
             return;
         }
         writeJson(status);
@@ -389,7 +391,95 @@ export function inspectLocalOutboxStatus(options, deps = {}) {
         },
     };
 }
-export function buildLocalOutboxDoctor(status, errorSummary) {
+export async function inspectLocalReferenceRoute(options, deps = {}) {
+    const deviceId = options.deviceId;
+    const deviceToken = options.deviceToken;
+    const sourceInstanceId = options.sourceInstanceId;
+    const missing = [];
+    if (!deviceId) {
+        missing.push("device_id");
+    }
+    if (!deviceToken) {
+        missing.push("device_token");
+    }
+    if (!sourceInstanceId) {
+        missing.push("source_instance_id");
+    }
+    const baseUrl = redactReferenceBaseUrl(options.baseUrl);
+    if (missing.length > 0) {
+        return {
+            base_url: baseUrl,
+            check: "device_source_state",
+            missing,
+            status: "unknown",
+        };
+    }
+    if (!deviceId || !deviceToken || !sourceInstanceId) {
+        throw new Error("reference route config narrowing failed");
+    }
+    try {
+        const client = deps.client ??
+            new LocalDeviceClient({
+                baseUrl: options.baseUrl,
+                deviceId,
+                deviceToken,
+                requestTimeoutMs: REFERENCE_ROUTE_DOCTOR_TIMEOUT_MS,
+            });
+        await client.getSourceInstanceState({ sourceInstanceId });
+        return {
+            base_url: baseUrl,
+            check: "device_source_state",
+            status: "ok",
+        };
+    }
+    catch (error) {
+        return {
+            base_url: baseUrl,
+            check: "device_source_state",
+            ...referenceRouteErrorFields(error),
+            status: "fail",
+        };
+    }
+}
+function referenceRouteErrorFields(error) {
+    if (error instanceof LocalDeviceHttpError) {
+        return {
+            error_class: error.code ? `http_${error.status}_${error.code}` : `http_${error.status}`,
+            http_status: error.status,
+        };
+    }
+    if (error instanceof LocalDeviceRequestTimeoutError) {
+        return { error_class: "timeout" };
+    }
+    if (error instanceof TypeError) {
+        return { error_class: "network_error" };
+    }
+    if (error instanceof Error) {
+        return { error_class: sanitizeErrorClass(error.name || "error") };
+    }
+    return { error_class: "unknown_error" };
+}
+function sanitizeErrorClass(value) {
+    const normalized = value
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    return normalized || "error";
+}
+function redactReferenceBaseUrl(raw) {
+    try {
+        const url = new URL(raw);
+        url.username = "";
+        url.password = "";
+        url.search = "";
+        url.hash = "";
+        return url.toString();
+    }
+    catch {
+        return "invalid_url";
+    }
+}
+export function buildLocalOutboxDoctor(status, errorSummary, referenceRoute) {
     const posture = status.deployment_posture;
     const postureDisqualifiesEvidence = posture.kind === "repo_dist_override" || posture.is_placeholder_version;
     const checks = {
@@ -398,6 +488,7 @@ export function buildLocalOutboxDoctor(status, errorSummary) {
         expired_leases: status.outbox.expired_leases > 0 ? "warn" : "ok",
         outbox_db: status.db.exists ? "ok" : "missing",
         outbox_failures: status.outbox.counts.dead_letter > 0 ? "fail" : "ok",
+        ...(referenceRoute ? { reference_route: referenceRoute.status } : {}),
     };
     const remediation = [];
     if (checks.outbox_failures === "fail") {
@@ -427,14 +518,24 @@ export function buildLocalOutboxDoctor(status, errorSummary) {
     if (checks.deployment_posture === "warn") {
         remediation.push(deploymentPostureRemediation(posture));
     }
+    if (checks.reference_route === "fail" && referenceRoute) {
+        remediation.push(referenceRouteRemediation(referenceRoute));
+    }
     const includeSummary = Boolean(errorSummary) && status.outbox.counts.dead_letter > 0;
     return {
         ...status,
         checks,
         ...(includeSummary && errorSummary ? { dead_letter_error_summary: errorSummary } : {}),
+        ...(referenceRoute ? { reference_route: referenceRoute } : {}),
         ...(remediation.length > 0 ? { remediation } : {}),
         status: doctorSeverityForChecks(checks),
     };
+}
+function referenceRouteRemediation(route) {
+    const detail = route.http_status ? `HTTP ${route.http_status}` : route.error_class ?? "route failure";
+    return (`The configured reference route (${route.base_url}) did not accept the device source-state check (${detail}). ` +
+        "Check `PDPP_REFERENCE_BASE_URL`, network/VPN/reverse-proxy routing, and the enrolled device token before re-running. " +
+        "Do not edit or recover the local outbox for this condition; saved work should remain queued until the route is fixed.");
 }
 function deploymentPostureRemediation(posture) {
     const parts = [];
@@ -457,7 +558,7 @@ function deploymentPostureRemediation(posture) {
     return parts.join(" ");
 }
 function doctorSeverityForChecks(checks) {
-    if (checks.outbox_failures === "fail") {
+    if (checks.outbox_failures === "fail" || checks.reference_route === "fail") {
         return "critical";
     }
     if (checks.expired_leases === "warn" ||

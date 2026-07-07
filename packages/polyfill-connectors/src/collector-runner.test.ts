@@ -16,7 +16,7 @@ import {
   runCollectorConnector,
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
-import type { IngestBatchRequest, LocalDeviceClient } from "./local-device-client.ts";
+import { LocalDeviceHttpError, type IngestBatchRequest, type LocalDeviceClient } from "./local-device-client.ts";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";
@@ -1251,6 +1251,64 @@ test("runCollectorConnector drains durable checkpoint work before reading prior 
   }
 });
 
+test("runCollectorConnector validates the reference route before mutating durable outbox work", async () => {
+  const harness = await startCollectorHarness({
+    heartbeatStatus: 502,
+    priorState: {},
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    seedBacklogRecordBatch({ connectorId: "fixture-route-preflight", queuePath });
+
+    const fixture = await writeFixtureConnector({
+      script: `
+        process.stderr.write("fixture must not spawn when reference route fails\\n");
+        process.exit(13);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-route-preflight",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof LocalDeviceHttpError);
+        if (error instanceof LocalDeviceHttpError) {
+          assert.equal(error.status, 502);
+        }
+        return true;
+      }
+    );
+
+    assert.equal(harness.ingestedBatches.length, 0, "preflight failure must not drain pending batches");
+    assert.equal(harness.stateOps.length, 0, "preflight failure must not read or write source state");
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const summary = outbox.summary({ sourceInstanceId: "src-1" });
+      assert.equal(summary.ready, 1, "pending work must remain ready");
+      assert.equal(summary.leased, 0, "pending work must not be leased");
+      assert.equal(summary.retrying, 0, "pending work must not be marked retryable");
+      assert.equal(summary.deadLetter, 0, "pending work must not be dead-lettered");
+    } finally {
+      outbox.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector skips source scan when pre-existing durable work cannot drain", async () => {
   const harness = await startCollectorHarness({
     ingestFailureMode: "always-503",
@@ -1299,7 +1357,7 @@ test("runCollectorConnector skips source scan when pre-existing durable work can
 
 test("runCollectorConnector fails backlog-skip pass when terminal heartbeat is rejected", async () => {
   const harness = await startCollectorHarness({
-    heartbeatStatus: 503,
+    heartbeatStatuses: [200, 503],
     ingestFailureMode: "always-503",
     priorState: {},
   });
@@ -1529,6 +1587,8 @@ test("runCollectorConnector surfaces state-read failure as a blocked heartbeat a
 interface CollectorHarnessOptions {
   /** When set, the heartbeat endpoint returns this status instead of 200. */
   heartbeatStatus?: number;
+  /** Per-heartbeat status overrides. Entries are consumed in request order. */
+  heartbeatStatuses?: number[];
   ingestFailureMode?: "always-503";
   priorState?: Record<string, unknown> | null;
   /** When set, the GET state endpoint returns this status instead of 200. */
@@ -1584,6 +1644,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
   const gapAcks: CollectorHarness["gapAcks"] = [];
   const gapRecoveries: CollectorHarness["gapRecoveries"] = [];
   let persistedState: Record<string, unknown> = options.priorState ? { ...options.priorState } : {};
+  let heartbeatIndex = 0;
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "";
@@ -1624,8 +1685,9 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
     }
     if (url.includes("/heartbeat")) {
       heartbeats.push(parsed as { status: string });
-      if (options.heartbeatStatus && options.heartbeatStatus >= 400) {
-        res.writeHead(options.heartbeatStatus, { "content-type": "application/json" });
+      const heartbeatStatus = options.heartbeatStatuses?.[heartbeatIndex++] ?? options.heartbeatStatus;
+      if (heartbeatStatus && heartbeatStatus >= 400) {
+        res.writeHead(heartbeatStatus, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { code: "synthetic_heartbeat_failure" } }));
         return;
       }
@@ -2340,8 +2402,9 @@ test("runCollectorConnector persists complete-scan checkpoint across undrained b
     assert.deepEqual(pass2.priorState, { messages: "m-30" });
     assert.equal(harness.ingestedBatches.at(-1)?.records?.[0]?.data?.observed_prior, "m-30");
     const pass2Events = harness.events.slice(eventsBeforePass2).map((event) => event.label);
+    const pass2DataEvents = pass2Events.filter((event) => event !== "heartbeat");
     assert.deepEqual(
-      pass2Events.slice(0, 5),
+      pass2DataEvents.slice(0, 5),
       ["ingest:ok", "ingest:ok", "ingest:ok", "state:PUT", "state:GET"],
       `expected pass 2 to drain records, then checkpoint, then read state; saw ${pass2Events.join(",")}`
     );
@@ -3036,8 +3099,9 @@ test("runCollectorConnector drains a prior pass's enqueued backlog before scanni
     // runner reads prior state for the new spawn. Equivalent: the first
     // state GET of pass 2 must come after the backlog ingest calls.
     const pass2Events = harness.events.slice(eventsBeforePass2).map((event) => event.label);
+    const pass2DataEvents = pass2Events.filter((event) => event !== "heartbeat");
     assert.deepEqual(
-      pass2Events.slice(0, 5),
+      pass2DataEvents.slice(0, 5),
       ["ingest:ok", "ingest:ok", "ingest:ok", "state:PUT", "state:GET"],
       `expected pass 2 to drain backlog and checkpoint before state read; saw ${pass2Events.join(",")}`
     );

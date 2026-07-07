@@ -40,6 +40,7 @@ export {
   isMainModule,
   LocalDeviceClient,
   LocalDeviceHttpError,
+  LocalDeviceRequestTimeoutError,
   LocalDeviceOutbox,
   LocalDeviceQueue,
   PROVIDER_RUNTIME_CAPABILITIES,

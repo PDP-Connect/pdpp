@@ -676,6 +676,19 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
   // overwritten by an outbox-derived one.
   let startingHeartbeatSent = false;
   try {
+    const initialSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    await client.heartbeat({
+      agent_version: COLLECTOR_AGENT_VERSION,
+      connector_id: config.connector.connector_id,
+      outbox: buildHeartbeatOutboxDiagnostics(initialSummary, {
+        backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
+      }),
+      records_pending: pendingOutboxWorkCount(initialSummary),
+      source_instance_id: config.sourceInstanceId,
+      status: "starting",
+    });
+    startingHeartbeatSent = true;
+
     const autoRecoveredTransientDeadLetters = requeueTransientLocalDeviceDeadLetters({
       outbox,
       sourceInstanceId: config.sourceInstanceId,
