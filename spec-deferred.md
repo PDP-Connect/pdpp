@@ -5,11 +5,21 @@ Date: 2026-04-06 (revised)
 
 Issues identified during design and review that are intentionally out of scope for v0.1. Each item is named precisely so it can be referenced from the core spec and tracked for future versions.
 
+This document mixes three kinds of entries, now split into three sections:
+
+- **Open design questions** — genuinely unresolved concerns. The spec should be designed so these can be added later without breaking changes, but no v0.1 design constraint has been adopted yet.
+- **Decided (recorded for history)** — concerns that were raised during design and review and were resolved by adopting an explicit v0.1 design constraint. These are recorded here for the rationale trail, not because they are still open.
+- **Implementation TODOs (v0.2 candidates)** — concrete, scoped work items that don't require resolving a semantic design question first.
+
+Dated batch attributions (`Newly deferred (...)`, `Finding (Codex)`, `Finding (Gemini)`, etc.) are preserved inside each entry as originally written.
+
 ---
 
-## Newly deferred (2026-04-07)
+## Open design questions
 
 ### Predicate-Based Grant Scoping (Subset Templates)
+
+_Newly deferred (2026-04-07)._
 
 **Description:** A mechanism for expressing semantically bounded consent narrower than a whole stream without using specific resource IDs. Example: "only messages from sender amazon.com," "only transactions from merchant X," "only Spotify history tagged as rock." In v0.1, grants can narrow access only by stream name, named view/field projection, time range, and explicit resource IDs. Arbitrary semantic predicates over stream contents are not supported as grant parameters.
 
@@ -48,11 +58,9 @@ The grant carries the template ID and bound parameter values, not the predicate.
 
 **Design constraint:** The subset template approach must not become a backdoor for arbitrary predicate-in-grant. Per-request or per-user subset-stream synthesis (where the client or user supplies the predicate at runtime) is not the goal. The manifest is the trusted, versioned artifact; the grant binds typed parameters against a connector-defined template.
 
----
-
-## Newly deferred (2026-04-11)
-
 ### Active Erasure Signal
+
+_Newly deferred (2026-04-11)._
 
 **Description:** A standardized signal from the personal server or authorization server to the recipient indicating that revocation has been paired with a deletion request. This is distinct from revocation itself: revocation stops future access, while erasure asks the recipient to delete already received data.
 
@@ -62,6 +70,8 @@ The grant carries the template ID and bound parameter values, not the predicate.
 
 ### Re-Interaction / Session Refresh
 
+_Newly deferred (2026-04-11)._
+
 **Description:** A standardized way for a runtime or personal server to signal that a `continuous` collection path needs fresh user interaction: login renewal, MFA, consent refresh, or other source-side reauthentication.
 
 **Why deferred:** This is not just a runtime message. It crosses the connector runtime, the user's notification surface, the authorization server, and potentially the app that depends on the grant. It needs asynchronous interaction semantics rather than the current foreground `INTERACTION` request/response pattern.
@@ -70,17 +80,17 @@ The grant carries the template ID and bound parameter values, not the predicate.
 
 ### Request-Side Freshness Requirements
 
+_Newly deferred (2026-04-11)._
+
 **Description:** A client-specified freshness requirement such as maximum acceptable age for data returned under a grant or query.
 
 **Why deferred:** Request-side freshness creates a new promise surface. A personal server may know that data is stale, but still be unable to refresh it because the connector is unavailable, the user is offline, or the source throttles access. Before standardizing a request field, the protocol must decide whether unmet freshness is a hard error, a best-effort hint, or a negotiation mechanism.
 
 **v0.1 posture:** Prefer response-side freshness metadata first. Let the server report what it knows (`captured_at`, `status`, `last_attempted_at`) before asking it to promise collection behavior it may not be able to deliver.
 
----
-
-## Newly deferred (2026-04-06)
-
 ### Source Lifecycle Actions
+
+_Newly deferred (2026-04-06)._
 
 **Description:** The ability for a connector to perform write operations on a source platform after collection. Examples: deleting exported videos from a hosting platform to free up quota, archiving records at the source, or triggering source-side cleanup.
 
@@ -90,6 +100,8 @@ The grant carries the template ID and bound parameter values, not the predicate.
 
 ### Event-Driven Collection Triggers
 
+_Newly deferred (2026-04-06)._
+
 **Description:** Triggering connector collection runs in response to push notifications or webhooks from source platforms (e.g., "run the connector when the platform notifies us of new data").
 
 **Why deferred:** Event-driven triggers are architecturally distinct from the pull-based Collection Profile. They require a separate subsystem: subscription lifecycle management, callback delivery, replay, retry, ordering guarantees, and expiry/renewal. This is not a minor extension to the current model.
@@ -97,6 +109,8 @@ The grant carries the template ID and bound parameter values, not the predicate.
 **Design constraint for future version:** Event-driven triggers should be specified as a separate profile. The grant's `access_mode` field is designed to accommodate this without breaking changes (a future `event_driven` value alongside `single_use` and `continuous`).
 
 ### Canonical View Naming Vocabulary
+
+_Newly deferred (2026-04-06)._
 
 **Description:** A standardized set of view names (e.g., `basic`, `standard`, `full`) with consistent semantics across connectors, enabling portable consent UX.
 
@@ -106,25 +120,48 @@ The grant carries the template ID and bound parameter values, not the predicate.
 
 ### Authorization Server Interface
 
+_Newly deferred (2026-04-06)._
+
 **Description:** A normative specification of the authorization server's HTTP interface: endpoints for grant issuance, revocation, status queries, and token introspection.
 
-**Why deferred:** Authorization flows are deployment-specific in v0.1. The personal server deployment uses the session relay flow (see spec-v2-session-relay-profile.md). Standardizing the authorization server interface requires more implementation experience.
+**Why deferred:** Authorization flows are deployment-specific in v0.1. The reference implementation uses standard OAuth flows: the authorization code flow with RFC 9396 authorization_details for client grants, and OAuth device authorization for owner tokens. Standardizing the authorization server interface requires more implementation experience.
 
 ### Point-in-Time Reconstruction
+
+_Newly deferred (2026-04-06)._
 
 **Description:** Reconstructing the full state of a `mutable_state` stream at a past timestamp (e.g., "what did the profile look like on March 1?").
 
 **Why deferred:** Requires the resource server to materialize historical state from version history. Expensive to implement and not required for the core incremental sync use case.
 
+### Privacy-hostile defaults
+
+_Historical corrections (mostly resolved) — the main still-live issue from the March 2026 review pass._
+
+Many of the March 2026 naming and semantic-precision corrections identified during early review have since been incorporated into the live v0.1 draft: URI-based `type`, `connector_id`, `access_mode`, inclusive/exclusive `time_range`, START `state` as a per-stream map, `StreamRequest`/`StreamGrant` separation for `necessity`, compound-key ordering, and field-allowlist behavior.
+
+The main still-live issue from that pass is not terminology but default posture: whether v0.1 remains too permissive when selectors are omitted.
+
+**Finding (Codex):** Omitting selectors means "all available data", `necessity` defaults to `required`, `"name": "*"` means all streams. These defaults favor maximum data collection.
+
+**Semantic question:** Should the spec default to maximum or minimum data? Open Banking defaults to minimum (you must explicitly list permissions). OAuth defaults to maximum (scopes grant broad access). For personal data portability, the Open Banking approach (explicit, minimal) is more defensible.
+
+**Options:**
+1. Keep current defaults (maximum) but require explicit opt-in for wildcards — already somewhat true since `"*"` must be specified
+2. Change defaults to minimum — no streams means no data, every stream must be listed
+3. Keep as-is but document the rationale
+
+This is a design philosophy question, not just a technical one.
+
 ---
 
-## Previously deferred (carried forward)
+## Decided (recorded for history)
 
-## Concerns that constrain semantic choices
-
-These aren't just "add later" — they affect how we define the grant object and protocol messages today. The semantic spec should be designed so these can be added without breaking changes.
+These concerns were raised during design and review and were resolved by adopting an explicit v0.1 design constraint. They are not open questions; they are recorded here for the rationale trail.
 
 ### Grant identity and trust
+
+_Previously deferred (carried forward) — concerns that constrain semantic choices._
 
 **Finding (Codex):** The grant has no `issuer`, `subject`, `audience`, or signature. Without these, grants can be forged, replayed, or misrouted.
 
@@ -137,6 +174,8 @@ These aren't just "add later" — they affect how we define the grant object and
 
 ### Wildcard consent expansion (`streams: [{ "name": "*" }]`)
 
+_Previously deferred (carried forward) — concerns that constrain semantic choices._
+
 **Finding (Codex):** A wildcard consent can be misread as a live pointer that grows with future manifest changes. That would make a grant silently widen over time.
 
 **Semantic implication:** A grant should represent a fixed set of consented access, not a pointer that grows. The only defensible v0.1 behavior is expansion at consent time into an explicit list of stream names. New streams introduced by later manifest versions require re-consent.
@@ -144,6 +183,8 @@ These aren't just "add later" — they affect how we define the grant object and
 **Design constraint for v0.1:** Wildcard stream requests expand at consent time and are frozen in the issued grant. Future stream types are not silently included.
 
 ### Purpose declarations and registry evolution
+
+_Previously deferred (carried forward) — concerns that constrain semantic choices._
 
 **Finding (Codex):** Free-form purpose text alone is not enough for localization, audit, or policy.
 
@@ -153,17 +194,37 @@ These aren't just "add later" — they affect how we define the grant object and
 
 ### Retention semantics
 
+_Previously deferred (carried forward) — concerns that constrain semantic choices._
+
 **Finding (Gemini):** `retention` with `on_expiry: "delete"` is a policy expectation, not a DRM mechanism. There's no enforcement.
 
 **Semantic implication:** The spec should be honest about what `retention` means: it is a structured policy declaration and policy commitment the recipient agrees to as part of the grant, enforceable through legal/contractual means and potentially through trust-registry verification, but not technically enforced by the protocol.
 
 **Design constraint for v0.1:** Keep `retention` in the spec but document it as a structured policy field, not a technical control. This is consistent with how Open Banking handles it.
 
-## Concerns that affect implementation but not semantics
+### Source-binding unification (`connector_id`/`provider_id` → `source: { kind, id }`)
 
-These can be fully deferred. The semantic spec doesn't need to change for these.
+_Recorded 2026-07-06; change implemented 2026-04-30._
+
+Earlier drafts of spec-core defined a top-level `connector_id` scalar (and the reference contract a sibling `provider_id`) as the request/grant source-identity field. These were unified into the single discriminated `source: { kind: "connector" | "provider_native", id }` object — a breaking change to the request and grant contract, implemented via the archived OpenSpec change `2026-04-30-unify-source-binding-vocabulary`. The former scalars survive only as the kind-keyed meanings of `source.id`, never as top-level request or grant fields; a request carrying a top-level `connector_id` or `provider_id` is rejected with 400 `invalid_request`. The spec-core text was aligned with the implemented contract on 2026-07-06.
+
+### Historical corrections (mostly resolved)
+
+_Previously deferred (carried forward)._
+
+Many of the March 2026 naming and semantic-precision corrections identified during early review have since been incorporated into the live v0.1 draft: URI-based `type`, `connector_id`, `access_mode`, inclusive/exclusive `time_range`, START `state` as a per-stream map, `StreamRequest`/`StreamGrant` separation for `necessity`, compound-key ordering, and field-allowlist behavior.
+
+The main still-live issue from that pass is not terminology but default posture: whether v0.1 remains too permissive when selectors are omitted. See "Privacy-hostile defaults" under Open design questions above.
+
+---
+
+## Implementation TODOs (v0.2 candidates)
+
+These are concrete, scoped work items. The semantic spec doesn't need to change for these.
 
 ### Grant signing and transport
+
+_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
 
 - JWS/JWT signed grants
 - PAR (Pushed Authorization Requests) for large authorization_details
@@ -173,6 +234,8 @@ These can be fully deferred. The semantic spec doesn't need to change for these.
 **Action:** Add a "Security Considerations" section to the spec acknowledging these. No semantic changes needed.
 
 ### Browser capability protocol
+
+_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
 
 **Finding (Gemini):** The BROWSER JSONL protocol is too dangerous (script injection) and too small (missing most Playwright features). Suggested alternative: expose a CDP WebSocket URL in the START message and let connectors use standard CDP clients.
 
@@ -184,6 +247,8 @@ These can be fully deferred. The semantic spec doesn't need to change for these.
 
 ### Secret handling
 
+_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
+
 - Passwords and OTP codes in HUMAN_RESPONSE should not be logged or persisted
 - Tokens should not be stored in STATE (use a separate encrypted runtime store)
 - State needs versioning for connector upgrades
@@ -191,6 +256,8 @@ These can be fully deferred. The semantic spec doesn't need to change for these.
 **Action:** Add "Security Considerations" notes. Implementation concern, not semantic.
 
 ### Stream dependencies and binary data
+
+_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
 
 **Finding (Codex):** Personal data is often graphs + binaries (conversations→messages→attachments, albums→photos). No stream dependency model, no blob/file transport.
 
@@ -202,30 +269,16 @@ These can be fully deferred. The semantic spec doesn't need to change for these.
 
 ### Mid-run cancellation
 
+_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
+
 **Finding (Gemini):** No way to cancel a running collection (e.g., on grant revocation). Need a CANCEL message.
 
 **Action:** Add to v0.2. For v0.1, the runtime can kill the process.
 
 ### Record-level errors
 
+_Previously deferred (carried forward) — concerns that affect implementation but not semantics._
+
 **Finding (Gemini):** No way to report partial failures (1 of 1000 records failed). Currently all-or-nothing.
 
 **Action:** Add RECORD_ERROR or error field on RECORD in v0.2.
-
-## Historical corrections (mostly resolved)
-
-Many of the March 2026 naming and semantic-precision corrections identified during early review have since been incorporated into the live v0.1 draft: URI-based `type`, `connector_id`, `access_mode`, inclusive/exclusive `time_range`, START `state` as a per-stream map, `StreamRequest`/`StreamGrant` separation for `necessity`, compound-key ordering, and field-allowlist behavior.
-
-The main still-live issue from that pass is not terminology but default posture: whether v0.1 remains too permissive when selectors are omitted.
-
-### Privacy-hostile defaults
-**Finding (Codex):** Omitting selectors means "all available data", `necessity` defaults to `required`, `"name": "*"` means all streams. These defaults favor maximum data collection.
-
-**Semantic question:** Should the spec default to maximum or minimum data? Open Banking defaults to minimum (you must explicitly list permissions). OAuth defaults to maximum (scopes grant broad access). For personal data portability, the Open Banking approach (explicit, minimal) is more defensible.
-
-**Options:**
-1. Keep current defaults (maximum) but require explicit opt-in for wildcards — already somewhat true since `"*"` must be specified
-2. Change defaults to minimum — no streams means no data, every stream must be listed
-3. Keep as-is but document the rationale
-
-This is a design philosophy question, not just a technical one.
