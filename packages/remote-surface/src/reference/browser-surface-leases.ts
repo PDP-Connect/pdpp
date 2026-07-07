@@ -1257,7 +1257,17 @@ export class BrowserSurfaceLeaseManager {
   }
 
   #activeSurfaceCount(): number {
-    return [...this.#surfaces.values()].filter((surface) => surface.backend === "neko" && surface.health !== "stopping").length;
+    return [...this.#surfaces.values()].filter((surface) => this.#surfaceConsumesCapacity(surface)).length;
+  }
+
+  #surfaceConsumesCapacity(surface: BrowserSurface): boolean {
+    if (surface.backend !== "neko" || surface.health === "stopping") {
+      return false;
+    }
+    if (this.#config.surfaceMode === "dynamic" && surface.health === "unhealthy") {
+      return false;
+    }
+    return true;
   }
 
   #findNonTerminalRunLease(runId: string, surfaceSubjectId?: string, requireSubjectMatch = false): BrowserSurfaceLease | undefined {

@@ -493,7 +493,7 @@ test("dynamic capacity starts a surface before it becomes leased", async () => {
   assert.equal(ready.surface?.cdp_url, `http://${acquired.lease.surface_id}:9222`);
 });
 
-test("starting dynamic surfaces count against cap until ready or unhealthy", async () => {
+test("unhealthy dynamic surfaces do not consume cap after startup failure", async () => {
   const { leases } = manager({ config: { surfaceCap: 2 } });
   const allocator = new FakeBrowserSurfaceAllocator();
 
@@ -512,8 +512,12 @@ test("starting dynamic surfaces count against cap until ready or unhealthy", asy
   const failed = await leases.ensureStartingSurfaceReady({ leaseId: first.lease.lease_id, allocator });
   assert.equal(failed.lease.status, "surface_failed");
 
-  assert.equal(leases.pumpQueuedLeases().length, 0);
-  assert.equal(leases.getLease(third.lease.lease_id)?.status, "waiting_for_browser_surface");
+  const promoted = leases.pumpQueuedLeases();
+  assert.equal(promoted.length, 1);
+  assert.equal(promoted[0]?.lease_id, third.lease.lease_id);
+  assert.equal(promoted[0]?.status, "starting_surface");
+  assert.notEqual(promoted[0]?.surface_id, failed.lease.surface_id);
+  assert.equal(leases.getLease(third.lease.lease_id)?.status, "starting_surface");
 });
 
 test("allocator startup failure marks the lease as surface_failed", async () => {

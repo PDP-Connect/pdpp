@@ -839,7 +839,16 @@ export class BrowserSurfaceLeaseManager {
         return detachedSurface;
     }
     #activeSurfaceCount() {
-        return [...this.#surfaces.values()].filter((surface) => surface.backend === "neko" && surface.health !== "stopping").length;
+        return [...this.#surfaces.values()].filter((surface) => this.#surfaceConsumesCapacity(surface)).length;
+    }
+    #surfaceConsumesCapacity(surface) {
+        if (surface.backend !== "neko" || surface.health === "stopping") {
+            return false;
+        }
+        if (this.#config.surfaceMode === "dynamic" && surface.health === "unhealthy") {
+            return false;
+        }
+        return true;
     }
     #findNonTerminalRunLease(runId, surfaceSubjectId, requireSubjectMatch = false) {
         return [...this.#leases.values()].find((lease) => lease.run_id === runId &&
