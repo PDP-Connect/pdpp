@@ -9,4 +9,4 @@
 - [x] 2.1 Add regression coverage for accepted-start feedback.
 - [x] 2.2 Run source-detail/source-list tests.
 - [x] 2.3 Run console TypeScript/check validation.
-- [ ] 2.4 Deploy and verify the live connection no longer appears inert.
+- [x] 2.4 Deploy and verify the live bundle contains the accepted-start feedback path.
