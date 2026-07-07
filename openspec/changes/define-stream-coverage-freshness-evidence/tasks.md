@@ -20,6 +20,7 @@
 - [x] 3.4 Add dashboard, Sources, Syncs, and source-detail tests proving unknown-by-default is gone for instrumented streams.
 - [x] 3.5 Thread local-device `coverage_diagnostics` into per-stream collection reports so local collector stream rows do not remain unmeasured after connection-level coverage is proven complete.
 - [x] 3.6 Apply `state_stream` inheritance to local-device stream rows so co-emitted child streams do not remain unmeasured when the parent store scan is covered.
+- [x] 3.7 Treat committed checkpoint-window, full-inventory, snapshot, and singleton strategies as coverage-complete even when the run emitted only changed records.
 
 ## 4. Connector Backfill
 

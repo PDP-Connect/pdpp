@@ -213,12 +213,15 @@ export function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): Cover
  *   1. contradictory manifest (required AND accepted-absent)  -> the accepted axis
  *   2. SKIP_RESULT present  -> manifest accepted-coverage axis, else skip-derived axis
  *   3. pending recoverable detail gap(s)  -> `retryable_gap`
- *   4. known considered denominator  -> `partial` (covered-or-collected < considered)
+ *   4. known considered denominator + checkpoint strategy proof
+ *                                     -> accepted axis / `complete`
+ *   5. known considered denominator  -> `partial` (covered-or-collected < considered)
  *                                        else accepted axis / `complete`
- *   5. unknown considered denominator  -> accepted axis / strategy proof / `unknown`
+ *   6. unknown considered denominator  -> accepted axis / strategy proof / `unknown`
  *
- * `complete` is reached ONLY when a known considered denominator is satisfied; a
- * collected-records / no-gaps / no-considered stream reads `unknown`, never
+ * `complete` is reached only when either a known denominator is satisfied OR a
+ * declared strategy proves the stream boundary with a committed checkpoint. A
+ * collected-records / no-gaps stream with neither proof reads `unknown`, never
  * `complete`. Staleness is NEVER encoded here — it is a freshness axis the
  * disposition speaks to, not a coverage condition.
  */
@@ -251,7 +254,22 @@ export function deriveStreamCoverageCondition(
   if (fact.pending_detail_gaps > 0) {
     return "retryable_gap";
   }
-  // 4. A known considered denominator distinguishes `partial` from covered. The
+  // 4. Some stream strategies establish coverage by committing a bounded source
+  //    window/inventory/snapshot/singleton boundary. For those streams,
+  //    `collected` remains only the number of records emitted this run
+  //    (typically changed records), not a coverage numerator. A committed
+  //    checkpoint with no skip/gaps proves the stream boundary was covered even
+  //    when unchanged records were suppressed and `collected < considered`.
+  const strategy = readCoverageEvidenceStrategy(manifestStream);
+  if (
+    fact.considered !== null &&
+    strategyCanProveCoverageWithoutDenominator(strategy) &&
+    checkpointProvesCoverage(fact.checkpoint)
+  ) {
+    return accepted ?? "complete";
+  }
+
+  // 5. A known considered denominator distinguishes `partial` from covered. The
   //    satisfying numerator is the connector-declared `covered` count when present
   //    (the in-boundary items the run accounted for: emitted +
   //    suppressed-because-unchanged), otherwise the raw `collected` count. The
@@ -270,7 +288,7 @@ export function deriveStreamCoverageCondition(
     // precise honest claim than a bare `complete`.
     return accepted ?? "complete";
   }
-  // 5. No considered denominator: absence of evidence, NOT proof of completeness.
+  // 6. No considered denominator: absence of evidence, NOT proof of completeness.
   //    A declared accepted-coverage policy is still precise (the manifest owes no
   //    further data). A declared coverage evidence strategy can also prove a
   //    bounded stream complete when the runtime committed that stream's boundary:
@@ -278,7 +296,6 @@ export function deriveStreamCoverageCondition(
   if (accepted !== null) {
     return accepted;
   }
-  const strategy = readCoverageEvidenceStrategy(manifestStream);
   if (strategyCanProveCoverageWithoutDenominator(strategy) && checkpointProvesCoverage(fact.checkpoint)) {
     return "complete";
   }
