@@ -558,6 +558,26 @@ test('local-device verdict: absent verdict (no run) is not healthy — the verdi
   assert.equal(findCondition(snap, 'CollectionSucceeded')?.status, 'unknown');
 });
 
+test('local-device progress: active outbox with fresh complete evidence is syncing idle, not unknown', () => {
+  // Active local-device progress is current work-in-progress evidence. It must
+  // not become healthy without the local-device succeeded verdict, but it also
+  // must not be grey/unknown while the collector is visibly draining.
+  const snap = computeConnectionHealth(
+    input({
+      run: null,
+      localDeviceCollection: null,
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'active' },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.notEqual(snap.state, 'healthy');
+  assert.equal(findCondition(snap, 'CollectionSucceeded')?.status, 'unknown');
+  assert.equal(findCondition(snap, 'LocalExporterAvailable')?.status, 'true');
+  assert.equal(findCondition(snap, 'BacklogClear')?.reason, CONNECTION_CONDITION_REASONS.OUTBOX_ACTIVE);
+});
+
 test('local-device verdict: no refresh policy (freshness unknown) without verdict stays idle, not unknown', () => {
   // This mirrors the live drained-collector-without-policy case: the caller
   // does NOT establish the verdict when freshness is unknown, so the no-run

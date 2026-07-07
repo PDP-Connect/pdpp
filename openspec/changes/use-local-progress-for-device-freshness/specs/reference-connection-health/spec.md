@@ -16,6 +16,12 @@ For local-device-backed connections, trusted local-device progress SHALL be elig
 **WHEN** a local collector reports pending outbox records
 **THEN** the connection projection SHALL expose pending device work without labeling the connection as a scheduler failure.
 
+#### Scenario: Local exporter is actively checking or draining
+
+**WHEN** a local-device-backed connection has fresh retained data, complete coverage, and trusted active local-device outbox evidence
+**THEN** the connection projection SHALL expose local-device work-in-progress
+**AND** SHALL NOT classify the connection as unknown solely because there is no scheduler-run verdict.
+
 #### Scenario: Owner action blocks progress
 
 **WHEN** a connector is waiting for current owner input

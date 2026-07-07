@@ -1294,7 +1294,8 @@ function classifyCurrentEvidenceWithoutVerdict(ctx: ClassificationContext): Retu
   if (
     !(
       ctx.conditionSet.get("CollectionSucceeded")?.status === "unknown" &&
-      hasFreshEvidenceWithoutCollectionVerdict(ctx.conditionSet)
+      hasFreshEvidenceWithoutCollectionVerdict(ctx.conditionSet) &&
+      !hasActiveLocalDeviceProgressWithoutCollectionVerdict(ctx.conditionSet)
     )
   ) {
     return null;
@@ -1412,6 +1413,18 @@ function hasFreshEvidenceWithoutCollectionVerdict(
   conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>
 ): boolean {
   return conditionIsTrue(conditions, "Fresh");
+}
+
+function hasActiveLocalDeviceProgressWithoutCollectionVerdict(
+  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>
+): boolean {
+  const outbox = conditions.get("BacklogClear");
+  return (
+    conditionIsTrue(conditions, "LocalExporterAvailable") &&
+    outbox?.status === "false" &&
+    outbox.reason === CONDITION_REASON.OUTBOX_ACTIVE &&
+    outbox.severity === "info"
+  );
 }
 
 // ─── Axis projection ──────────────────────────────────────────────────────
