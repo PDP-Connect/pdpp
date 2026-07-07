@@ -128,6 +128,13 @@ The source detail view can expose the supporting strategy and counts for
 inspection. The summary row should use product copy and one primary action at
 most.
 
+Local-device collectors are a special projection shape: they do not write
+scheduler run facts, so their connection-level coverage can be established by
+durable `coverage_diagnostics` records. The per-stream report must consume the
+same diagnostics. Otherwise the connection can honestly project
+`coverage: complete` while every stream row still says coverage is unmeasured,
+which is an owner-facing contradiction.
+
 ## Implementation Sequence
 
 1. Add shared types and manifest/report validation for coverage and freshness

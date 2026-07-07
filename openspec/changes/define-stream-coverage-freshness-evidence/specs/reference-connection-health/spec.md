@@ -61,12 +61,26 @@ stream evidence. The summary copy SHALL avoid exposing raw evidence-strategy
 names as primary user language. The detail view MAY expose the strategy, counts,
 and reason codes as supporting inspection details.
 
+For local-device-backed connections, stream-row coverage SHALL consume the same
+durable `coverage_diagnostics` evidence that can establish connection-level
+coverage. The implementation SHALL NOT project a local-device connection as
+coverage-complete while every stream row remains unmeasured when stream-scoped
+coverage diagnostics are present.
+
 #### Scenario: policy-unavailable stream has a concrete state
 
 **WHEN** a stream's coverage policy is `unavailable` or `unsupported`
 **THEN** owner surfaces SHALL render that the stream's coverage is unavailable or
 unsupported for a stated reason
 **AND** they SHALL NOT render generic coverage unknown or checking copy.
+
+#### Scenario: local coverage diagnostics establish stream coverage
+
+**WHEN** a local-device-backed connection has durable `coverage_diagnostics`
+records that map stores to streams and safe statuses
+**THEN** stream rows SHALL derive concrete coverage states from those diagnostics
+**AND** owner surfaces SHALL NOT leave those rows in generic coverage unknown
+solely because the local collector has no scheduler run facts.
 
 #### Scenario: source detail exposes supporting facts
 

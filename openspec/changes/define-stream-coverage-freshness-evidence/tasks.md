@@ -18,6 +18,7 @@
 - [x] 3.2 Ensure "checking" requires active bounded work evidence: active run, active probe, or active projection rebuild.
 - [x] 3.3 Update source detail stream rows to render concrete coverage/freshness status from the shared collection report.
 - [x] 3.4 Add dashboard, Sources, Syncs, and source-detail tests proving unknown-by-default is gone for instrumented streams.
+- [x] 3.5 Thread local-device `coverage_diagnostics` into per-stream collection reports so local collector stream rows do not remain unmeasured after connection-level coverage is proven complete.
 
 ## 4. Connector Backfill
 

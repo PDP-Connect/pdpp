@@ -202,6 +202,20 @@ test(
     assert.equal(health.axes.coverage, 'complete');
     assert.equal(health.axes.outbox, 'idle');
 
+    const reportByStream = Object.fromEntries(row.collection_report.map((entry) => [entry.stream, entry]));
+    assert.equal(
+      reportByStream.messages?.coverage_condition,
+      'complete',
+      'local coverage diagnostics should prove per-stream coverage for collected local streams',
+    );
+    assert.equal(
+      reportByStream.sessions?.coverage_condition,
+      'complete',
+      'local coverage diagnostics should prove per-stream coverage even when the stream emitted no retained records',
+    );
+    assert.notEqual(reportByStream.messages?.forward_disposition, 'unmeasured');
+    assert.notEqual(reportByStream.sessions?.forward_disposition, 'unmeasured');
+
     const coverageCondition = health.conditions.find((c) => c.type === 'SourceCoverageComplete');
     assert.ok(coverageCondition);
     assert.equal(coverageCondition.status, 'true');

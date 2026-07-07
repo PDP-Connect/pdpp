@@ -1832,6 +1832,7 @@ export interface CollectionReportEntry {
  */
 export function buildCollectionReport(input: {
   readonly collectionFacts: RuntimeCollectionFacts | null;
+  readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
   readonly manifestStreams: readonly ManifestStream[];
   /**
    * Current durable pending DETAIL_GAP rows read from the gap store. Runtime
@@ -1853,6 +1854,7 @@ export function buildCollectionReport(input: {
   }
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const pendingGapCountByStream = pendingDetailGapCountsByStream(pendingDetailGaps);
+  const localCoverageConditionByStream = localCoverageConditionsByStream(input.localCoverage);
   const pendingReadLimit =
     typeof input.pendingDetailGapsReadLimit === "number" &&
     Number.isFinite(input.pendingDetailGapsReadLimit) &&
@@ -1876,6 +1878,7 @@ export function buildCollectionReport(input: {
   ]);
   const entries: CollectionReportEntry[] = [];
   for (const stream of inScope) {
+    const hasRuntimeFact = factByStream.has(stream);
     const baseFact: RuntimeCollectionFact = factByStream.get(stream) ?? {
       stream,
       collected: 0,
@@ -1891,7 +1894,9 @@ export function buildCollectionReport(input: {
     };
     const pendingDetailGapsIsFloor = fact.pending_detail_gaps > 0 && pendingGapReadHitLimit;
     const manifestStream = manifestByStream.get(stream);
-    const coverageCondition = deriveStreamCoverageCondition(fact, manifestStream);
+    const localCoverageCondition =
+      !hasRuntimeFact && fact.pending_detail_gaps === 0 ? localCoverageConditionByStream.get(stream) : null;
+    const coverageCondition = localCoverageCondition ?? deriveStreamCoverageCondition(fact, manifestStream);
     const forwardDisposition = deriveForwardDisposition({
       coverage: coverageCondition,
       gapRetryable: coverageCondition === "retryable_gap",
@@ -1930,6 +1935,8 @@ export function buildCollectionReport(input: {
 function projectCollectionReport(input: {
   readonly lastRun: ConnectorRunSummary | null;
   readonly connectionHealth: ConnectionHealthSnapshot;
+  readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
+  readonly localDeviceBacked?: boolean;
   readonly manifestStreams: readonly ManifestStream[];
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly pendingDetailGapsReadLimit?: number | null;
@@ -1937,6 +1944,7 @@ function projectCollectionReport(input: {
 }): CollectionReportEntry[] {
   return buildCollectionReport({
     collectionFacts: healthClassifyingRun(input.lastRun)?.collection_facts ?? null,
+    localCoverage: input.localDeviceBacked === true ? input.localCoverage ?? null : null,
     manifestStreams: input.manifestStreams,
     pendingDetailGaps: input.pendingDetailGaps ?? [],
     pendingDetailGapsReadLimit: input.pendingDetailGapsReadLimit ?? null,
@@ -1961,6 +1969,44 @@ function pendingDetailGapCountsByStream(gaps: readonly PendingDetailGapSummary[]
   return counts;
 }
 
+function localCoverageConditionForStatus(status: unknown): CoverageAxis | null {
+  switch (status) {
+    case "collected":
+    case "excluded":
+    case "missing":
+      return "complete";
+    case "inventory_only":
+      return "inventory_only";
+    case "deferred":
+      return "deferred";
+    case "unsupported":
+      return "unsupported";
+    case "unavailable":
+      return "unavailable";
+    case "unaccounted":
+      return "gaps";
+    default:
+      return null;
+  }
+}
+
+function localCoverageConditionsByStream(
+  localCoverage: LocalCoverageDiagnosticAxis | null | undefined
+): ReadonlyMap<string, CoverageAxis> {
+  const conditions = new Map<string, CoverageAxis>();
+  for (const row of localCoverage?.rows ?? []) {
+    const stream = typeof row.stream === "string" && row.stream ? row.stream : null;
+    if (!stream || conditions.has(stream)) {
+      continue;
+    }
+    const condition = localCoverageConditionForStatus(row.status);
+    if (condition) {
+      conditions.set(stream, condition);
+    }
+  }
+  return conditions;
+}
+
 /** Safe per-store coverage triple read from `coverage_diagnostics` records. */
 interface LocalCoverageDiagnosticRow {
   readonly status?: unknown;
@@ -1970,6 +2016,8 @@ interface LocalCoverageDiagnosticRow {
 
 interface LocalCoverageDiagnosticAxis {
   readonly axis: CoverageAxis;
+  /** Safe per-store triples from `coverage_diagnostics`, used to project stream rows. */
+  readonly rows?: readonly LocalCoverageDiagnosticRow[];
   /** Stores the collector discovered but could not account for. */
   readonly unaccountedStores: readonly string[];
 }
@@ -2003,7 +2051,7 @@ const LOCAL_COVERAGE_ACCOUNTED_STATUSES = new Set([
  */
 function deriveLocalCoverageAxis(rows: readonly LocalCoverageDiagnosticRow[]): LocalCoverageDiagnosticAxis {
   if (rows.length === 0) {
-    return { axis: "unknown", unaccountedStores: [] };
+    return { axis: "unknown", rows, unaccountedStores: [] };
   }
   const unaccountedStores: string[] = [];
   for (const row of rows) {
@@ -2015,9 +2063,9 @@ function deriveLocalCoverageAxis(rows: readonly LocalCoverageDiagnosticRow[]): L
     }
   }
   if (unaccountedStores.length > 0) {
-    return { axis: "gaps", unaccountedStores: unaccountedStores.sort() };
+    return { axis: "gaps", rows, unaccountedStores: unaccountedStores.sort() };
   }
-  return { axis: "complete", unaccountedStores: [] };
+  return { axis: "complete", rows, unaccountedStores: [] };
 }
 
 /**
@@ -3240,6 +3288,8 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const collectionReport = projectCollectionReport({
     lastRun,
     connectionHealth,
+    localCoverage,
+    localDeviceBacked,
     manifestStreams: manifest.streams ?? [],
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
