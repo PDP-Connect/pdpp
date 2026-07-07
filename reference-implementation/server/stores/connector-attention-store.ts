@@ -43,6 +43,14 @@ const ALLOWED_TRANSITIONS: Record<AttentionLifecycle, Set<string>> = {
 const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
 const EXPIRE_DUE_LIMIT = 200;
+const TERMINAL_RUN_ATTENTION_RECONCILE_LIMIT = MAX_LIST_LIMIT;
+const TERMINAL_RUN_EVENT_TYPES = [
+  "run.completed",
+  "run.failed",
+  "run.browser_surface_failed",
+  "run.cancelled",
+  "run.abandoned",
+];
 
 /** Row projection for the transition/notification single-row lookups. */
 interface AttentionLifecycleRow {
@@ -106,7 +114,13 @@ interface NotificationOutcomeInput {
   reason?: string | null;
 }
 
+interface ReconcileTerminalRunsInput {
+  limit?: number | null;
+  now?: string | null;
+}
+
 export interface ConnectorAttentionStore {
+  cancelOpenAttentionForTerminalRuns(input?: ReconcileTerminalRunsInput): Promise<AttentionRecord[]>;
   expireDueAttentionForConnection(input?: ExpireDueInput): Promise<AttentionRecord[]>;
   listOpenAttentionForConnection(input?: ListInput): Promise<(AttentionRecord | null)[]>;
   recordNotificationOutcomeById(input: NotificationOutcomeInput): Promise<AttentionRecord | null>;
@@ -219,6 +233,14 @@ function expiredRecord(record: AttentionRecord | null, now: string): AttentionRe
   };
 }
 
+function cancelledRecord(record: AttentionRecord | null, now: string): AttentionRecord {
+  return {
+    ...(record as AttentionRecord),
+    lifecycle: "cancelled",
+    updated_at: now,
+  };
+}
+
 const VALID_NOTIFICATION_STATES = new Set(["acknowledged", "failed", "pending", "sent", "suppressed"]);
 
 function applyNotificationOutcomeToRecord(
@@ -313,6 +335,45 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
         ),
       ];
       return rows.map(rowToRecord);
+    },
+
+    // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
+    async cancelOpenAttentionForTerminalRuns({
+      now,
+      limit,
+    }: ReconcileTerminalRunsInput = {}): Promise<AttentionRecord[]> {
+      const updatedAt = nonEmptyString(now) || nowIso();
+      const bounded = clampLimit(limit ?? TERMINAL_RUN_ATTENTION_RECONCILE_LIMIT);
+      const rows = [
+        ...iterateDynamicSqlAcknowledged<AttentionListRow>(
+          `SELECT attention_id, record_json
+             FROM connector_attention_records AS attention
+            WHERE attention.lifecycle IN (${OPEN_LIFECYCLES.map(() => "?").join(", ")})
+              AND attention.run_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM spine_events AS terminal
+                 WHERE terminal.run_id = attention.run_id
+                   AND terminal.event_type IN (${TERMINAL_RUN_EVENT_TYPES.map(() => "?").join(", ")})
+                 LIMIT 1
+              )
+            ORDER BY attention.updated_at DESC
+            LIMIT ?`,
+          [...OPEN_LIFECYCLES, ...TERMINAL_RUN_EVENT_TYPES, bounded]
+        ),
+      ];
+      const cancelled: AttentionRecord[] = [];
+      for (const row of rows) {
+        const next = cancelledRecord(rowToRecord(row), updatedAt);
+        execDynamicSqlAcknowledged(
+          `UPDATE connector_attention_records
+              SET lifecycle = ?, updated_at = ?, record_json = ?
+            WHERE attention_id = ?`,
+          ["cancelled", updatedAt, JSON.stringify(next), row.attention_id]
+        );
+        cancelled.push(next);
+      }
+      return cancelled;
     },
 
     // biome-ignore lint/suspicious/useAwait: sync sqlite driver; async satisfies the shared ConnectorAttentionStore contract.
@@ -514,6 +575,42 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
         [id, instance, OPEN_LIFECYCLES, nowIso(), bounded]
       );
       return (result.rows as AttentionListRow[]).map(rowToRecord);
+    },
+
+    async cancelOpenAttentionForTerminalRuns({
+      now,
+      limit,
+    }: ReconcileTerminalRunsInput = {}): Promise<AttentionRecord[]> {
+      const updatedAt = nonEmptyString(now) || nowIso();
+      const bounded = clampLimit(limit ?? TERMINAL_RUN_ATTENTION_RECONCILE_LIMIT);
+      const result = await postgresQuery(
+        `SELECT attention.attention_id, attention.record_json
+           FROM connector_attention_records AS attention
+          WHERE attention.lifecycle = ANY($1::text[])
+            AND attention.run_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+                FROM spine_events AS terminal
+               WHERE terminal.run_id = attention.run_id
+                 AND terminal.event_type = ANY($2::text[])
+               LIMIT 1
+            )
+          ORDER BY attention.updated_at DESC
+          LIMIT $3`,
+        [OPEN_LIFECYCLES, TERMINAL_RUN_EVENT_TYPES, bounded]
+      );
+      const cancelled: AttentionRecord[] = [];
+      for (const row of result.rows as AttentionListRow[]) {
+        const next = cancelledRecord(rowToRecord(row), updatedAt);
+        await postgresQuery(
+          `UPDATE connector_attention_records
+              SET lifecycle = $1, updated_at = $2, record_json = $3::jsonb
+            WHERE attention_id = $4`,
+          ["cancelled", updatedAt, JSON.stringify(next), row.attention_id]
+        );
+        cancelled.push(next);
+      }
+      return cancelled;
     },
 
     async expireDueAttentionForConnection({

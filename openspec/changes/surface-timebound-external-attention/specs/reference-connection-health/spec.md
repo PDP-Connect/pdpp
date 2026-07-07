@@ -21,6 +21,11 @@ assistance before the deadline with `ASSISTANCE_STATUS`, the runtime SHALL close
 the attention as timed out, emit a timeout assistance event, terminate the
 connector run, and release the active-run slot with a terminal run result.
 
+The reference implementation SHALL reconcile open attention rows whose `run_id`
+already has a terminal spine event. A terminal run cannot observe an owner
+action, so its attention row SHALL transition to a terminal lifecycle and SHALL
+NOT continue driving owner-action projections.
+
 #### Scenario: Time-bound external approval is current owner action
 
 **WHEN** a connector opens a non-terminal, non-expired attention row with
@@ -48,3 +53,12 @@ resolved, expired, canceled, or superseded.
 **AND** the run SHALL reach a terminal failed state with reason
 `assistance_timed_out`
 **AND** the active-run slot SHALL be released.
+
+#### Scenario: Terminal runs close stale attention
+
+**WHEN** an open attention row references a run that already has a terminal
+spine event
+**THEN** startup reconciliation SHALL transition that attention row to a
+terminal lifecycle
+**AND** owner surfaces SHALL NOT continue presenting that row as a current owner
+action.

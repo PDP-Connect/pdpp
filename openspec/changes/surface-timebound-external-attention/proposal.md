@@ -13,6 +13,8 @@ time-bound external approval.
   health-relevant owner action.
 - Enforce `ASSISTANCE.timeout_seconds` for no-response assistance so a connector
   that never emits `ASSISTANCE_STATUS` cannot hold an active run forever.
+- Reconcile open attention for runs that have already reached a terminal spine
+  event so restart cleanup cannot leave stale owner-action CTAs.
 - Preserve the quiet path for unbounded `act_elsewhere` progress notices.
 - Add pure model, summary-projection, and runtime timeout tests.
 

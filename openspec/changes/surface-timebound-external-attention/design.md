@@ -41,6 +41,13 @@ cleared. If the timer fires first, the runtime terminates the connector child,
 expires the structured attention row via `run.assistance_timed_out`, and records
 the run terminal as `failed` with reason `assistance_timed_out`.
 
+Startup reconciliation also closes any open attention row whose `run_id` already
+has a terminal spine event. This covers both the normal restart path, where the
+controller emits `run.failed` for an abandoned active run, and the self-healing
+path where a stale attention row survived after its active-run row was already
+cleared. The terminal spine event is the authority; the dashboard must not keep
+an owner-action CTA alive after the run can no longer observe the action.
+
 ## Alternatives
 
 - **Treat all `act_elsewhere` rows as action-needed.** Rejected because it would
@@ -64,3 +71,6 @@ the run terminal as `failed` with reason `assistance_timed_out`.
 - Expired rows remain non-health-relevant.
 - A connector that emits time-bound no-response assistance and never closes it
   terminals as `assistance_timed_out` and releases the active-run slot.
+- An open attention row for a terminal run is transitioned to a terminal
+  lifecycle during startup reconciliation and disappears from owner-action
+  projections.

@@ -36,6 +36,7 @@ import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../ser
 import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.js";
 import { getSyncState } from "../server/records.js";
 import type { BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
+import { getDefaultConnectorAttentionStore } from "../server/stores/connector-attention-store.ts";
 import { getDefaultConnectorDetailGapStore } from "../server/stores/connector-detail-gap-store.js";
 import {
   type ActiveRunRecord,
@@ -2081,10 +2082,31 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
-  const startupControllerRunReconciliation = reconcileAbandonedControllerRuns().catch((err) => {
-    const message = err instanceof Error ? err.message : String(err);
-    log.warn?.(`[controller] failed to reconcile abandoned controller-managed runs: ${message}`);
-  });
+  async function reconcileOpenAttentionForTerminalRuns(): Promise<void> {
+    const reconciled = await getDefaultConnectorAttentionStore().cancelOpenAttentionForTerminalRuns();
+    if (reconciled.length > 0) {
+      log.warn?.(
+        `[controller] cancelled ${reconciled.length} open attention row(s) whose run already reached a terminal state`
+      );
+    }
+  }
+
+  async function reconcileStartupRunState(): Promise<void> {
+    try {
+      await reconcileAbandonedControllerRuns();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] failed to reconcile abandoned controller-managed runs: ${message}`);
+    }
+    try {
+      await reconcileOpenAttentionForTerminalRuns();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] failed to reconcile open attention for terminal runs: ${message}`);
+    }
+  }
+
+  const startupControllerRunReconciliation = reconcileStartupRunState();
 
   function getScheduleRecord(connectorId: string): Promise<Schedule | null> {
     return Promise.resolve(schedulerStore.getSchedule(connectorId));

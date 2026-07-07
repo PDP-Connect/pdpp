@@ -20,11 +20,13 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { closeDb, getDb, initDb } from '../server/db.js';
+import { createAttention } from '../runtime/attention.ts';
 import { resolveDefaultConnectorPath } from '../runtime/controller.ts';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
 import { canonicalConnectorKey } from '../server/connector-key.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -100,6 +102,20 @@ async function waitForRunTerminal(asUrl, runId, timeoutMs = 5000) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Timed out waiting for run ${runId} to finish`);
+}
+
+async function waitForAttentionLifecycle(attentionId, lifecycle, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const row = getDb()
+      .prepare('SELECT lifecycle, record_json FROM connector_attention_records WHERE attention_id = ? LIMIT 1')
+      .get(attentionId);
+    if (row?.lifecycle === lifecycle) {
+      return row;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for attention ${attentionId} to become ${lifecycle}`);
 }
 
 async function registerConnector(asUrl, manifest) {
@@ -730,6 +746,24 @@ test('controller startup reconciles abandoned controller-managed runs after rest
         timeout_seconds: 1800,
       },
     }, db);
+    await getDefaultConnectorAttentionStore().upsertAttention({
+      connectorId,
+      connectorInstanceId: connectorId,
+      record: createAttention({
+        id: 'att_restart_orphan',
+        dedupe_key: `${connectorId}:${runId}:manual_action`,
+        connection_id: connectorId,
+        run_id: runId,
+        reason_code: 'manual_action_required',
+        progress_posture: 'blocked',
+        owner_action: 'operate_attachment',
+        response_contract: 'response_required',
+        sensitivity: 'non_secret',
+        action_target: 'remote_surface',
+        expires_at: '2026-04-24T09:30:00.000Z',
+        now: startedAt,
+      }),
+    });
     closeDb();
 
     server = await startServer({
@@ -744,6 +778,13 @@ test('controller startup reconciles abandoned controller-managed runs after rest
     const failed = timeline.data.find((event) => event.event_type === 'run.failed');
     assert.ok(failed, 'startup reconciliation should append run.failed');
     assert.equal(failed.data?.reason, 'controller_restarted');
+
+    const attentionRow = await waitForAttentionLifecycle('att_restart_orphan', 'cancelled');
+    assert.equal(
+      JSON.parse(attentionRow.record_json).lifecycle,
+      'cancelled',
+      'startup reconciliation should close open attention for terminal runs',
+    );
 
     const { body: connectors } = await fetchJson(`${asUrl}/_ref/connectors`);
     const entry = connectors.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);

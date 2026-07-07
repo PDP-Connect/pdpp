@@ -6,6 +6,8 @@
   notices.
 - [x] 1.3 Enforce no-response `ASSISTANCE.timeout_seconds` in the runtime so an
   unresolved assistance window releases the active run as a terminal timeout.
+- [x] 1.4 Reconcile open attention rows whose runs have already reached a
+  terminal spine event.
 
 ## 2. Verification
 
@@ -15,7 +17,9 @@
   approval produces structured owner action.
 - [x] 2.3 Add a runtime regression test proving unresolved time-bound
   no-response assistance terminals as `assistance_timed_out`.
-- [x] 2.4 Run targeted reference-implementation tests and `openspec validate`.
+- [x] 2.4 Add store/startup regression tests proving terminal runs close stale
+  owner-action attention rows.
+- [x] 2.5 Run targeted reference-implementation tests and `openspec validate`.
 
 ## 3. Live Closeout
 

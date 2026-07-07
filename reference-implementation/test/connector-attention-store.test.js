@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
+import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import {
   getConnectorAttentionProjection,
   projectConnectorSummaryConnectionHealth,
@@ -229,6 +230,69 @@ test('attention store expires due open rows in columns and record_json', withTem
   assert.equal(persisted.updated_at, '2026-05-19T12:00:01.000Z');
   assert.equal(JSON.parse(persisted.record_json).lifecycle, 'expired');
   assert.equal(JSON.parse(persisted.record_json).updated_at, '2026-05-19T12:00:01.000Z');
+
+  const open = await store.listOpenAttentionForConnection({
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_a',
+  });
+  assert.deepEqual(open, []);
+}));
+
+test('attention store cancels open rows for runs that already reached terminal', withTempDb(async () => {
+  const store = createSqliteConnectorAttentionStore();
+  const trace = createTraceContext({ scenarioId: 'scn_attention_terminal_reconcile' });
+  await store.upsertAttention({
+    record: createAttention({
+      id: 'att_terminal_run',
+      dedupe_key: 'chatgpt:cin_chatgpt_a:interaction:manual_action:conversations',
+      connection_id: 'chatgpt',
+      run_id: 'run_terminal_attention',
+      reason_code: 'manual_action_required',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+      action_target: 'remote_surface',
+      expires_at: '2099-05-19T12:00:00.000Z',
+      now: '2026-05-19T11:50:00.000Z',
+    }),
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_a',
+  });
+  await emitSpineEvent(
+    {
+      event_type: 'run.failed',
+      trace_id: trace.trace_id,
+      scenario_id: trace.scenario_id,
+      actor_type: 'runtime',
+      actor_id: 'chatgpt',
+      object_type: 'run',
+      object_id: 'run_terminal_attention',
+      status: 'failed',
+      run_id: 'run_terminal_attention',
+      source_kind: 'connector',
+      source_id: 'chatgpt',
+      data: {
+        source: { kind: 'connector', id: 'chatgpt' },
+        reason: 'controller_restarted',
+      },
+    },
+    getDb(),
+  );
+
+  const cancelled = await store.cancelOpenAttentionForTerminalRuns({
+    now: '2026-05-19T12:00:01.000Z',
+  });
+  assert.equal(cancelled.length, 1);
+  assert.equal(cancelled[0].id, 'att_terminal_run');
+  assert.equal(cancelled[0].lifecycle, 'cancelled');
+
+  const persisted = getDb()
+    .prepare('SELECT lifecycle, updated_at, record_json FROM connector_attention_records WHERE attention_id = ?')
+    .get('att_terminal_run');
+  assert.equal(persisted.lifecycle, 'cancelled');
+  assert.equal(persisted.updated_at, '2026-05-19T12:00:01.000Z');
+  assert.equal(JSON.parse(persisted.record_json).lifecycle, 'cancelled');
 
   const open = await store.listOpenAttentionForConnection({
     connectorId: 'chatgpt',
