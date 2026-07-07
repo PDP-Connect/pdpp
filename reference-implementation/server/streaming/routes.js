@@ -556,7 +556,10 @@ export function registerStreamingRoutes({
           `Streaming is not supported for interaction kind ${pending.kind}`,
         );
       }
-      return { kind: pending.kind, target: null };
+      return {
+        kind: pending.kind,
+        target: buildBrowserSurfaceAssistanceTarget(runId, pending.interaction_id),
+      };
     }
 
     if (await isCurrentNoResponseBrowserAssistance(runId, interactionId)) {

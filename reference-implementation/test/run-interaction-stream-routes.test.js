@@ -478,6 +478,53 @@ test('mint accepts current no-response browser-surface assistance backed by a le
   );
 });
 
+test('mint accepts pending browser interaction backed by a managed browser surface', async () => {
+  const connectorId = 'https://registry.pdpp.org/connectors/spotify';
+  const leaseManager = makeLeaseManager({ connectorId });
+  await withHarness(
+    {
+      browserSurfaceLeaseManager: leaseManager,
+    },
+    async ({ asUrl, spotifyManifest, companions }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      try {
+        const acquired = leaseManager.acquire({
+          connectorId,
+          runId: started.run_id,
+          profileKey: 'profile_dynamic_1',
+        });
+        assert.equal(acquired.lease.status, 'leased');
+
+        const pending = await waitForPendingInteraction(asUrl, started.run_id);
+        assert.equal(pending.interaction_id, 'int_stream_1');
+
+        const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            interaction_id: pending.interaction_id,
+            viewport: { width: 800, height: 600 },
+          }),
+        });
+        assert.equal(mint.status, 201, JSON.stringify(mint.body));
+        assert.equal(mint.body.object, 'run_interaction_stream_session');
+        assert.equal(mint.body.interaction_id, pending.interaction_id);
+        assertNoRawBackendAuthority(mint.body);
+
+        const tracked = companions.find((c) => c.run_id === started.run_id);
+        assert.ok(tracked, 'companion factory captured the pending stream');
+        assert.equal(tracked.interaction_id, pending.interaction_id);
+        assert.equal(tracked.target.backend, 'neko');
+        assert.equal(tracked.target.lease_id, acquired.lease.lease_id);
+        assert.equal(tracked.target.surface_id, acquired.lease.surface_id);
+        assert.equal(tracked.target.interaction_id, pending.interaction_id);
+      } finally {
+        await cancelRun(asUrl, started.run_id, 'int_stream_1');
+      }
+    },
+  );
+});
+
 test('mint refuses a stale no-response browser-surface assistance id', async () => {
   const connectorId = 'https://registry.pdpp.org/connectors/spotify';
   const leaseManager = makeLeaseManager({ connectorId });
