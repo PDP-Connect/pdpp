@@ -6,6 +6,9 @@
 - [x] 1.4 Ensure active-run evidence participates in source health even when schedule metadata is stale or absent.
 - [x] 1.5 Classify `assistance_timed_out` run gaps as owner/session-recoverable,
       not terminal maintainer code-fix gaps.
+- [x] 1.6 Emit an owner retry action for idle sources with retryable coverage
+      gaps unless active progress, source-pressure, scheduled retry, or
+      cooldown evidence proves the system is already handling the work.
 
 ## 2. Console Actionability
 
@@ -18,4 +21,6 @@
 - [x] 3.2 Add regression tests for Chase-like active-run visibility.
 - [x] 3.3 Run targeted reference and console health/actionability tests.
 - [x] 3.4 Add a classifier regression for assistance-timeout gaps.
-- [ ] 3.5 Live audit the named source states after deploy.
+- [x] 3.5 Add a rendered-verdict regression for idle retryable assisted gaps
+      so they cannot fall through to passive "Collecting" copy.
+- [ ] 3.6 Live audit the named source states after deploy.

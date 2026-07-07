@@ -22,6 +22,12 @@ The reference implementation SHALL render source health from current durable evi
 **THEN** the rendered verdict SHALL classify the gap as owner/session-recoverable
 **AND** SHALL NOT present the source as a terminal maintainer code-fix issue.
 
+#### Scenario: Idle source has retryable coverage gaps
+
+**WHEN** a source is not actively syncing but current durable coverage evidence contains retryable gaps
+**THEN** the rendered verdict SHALL offer an owner retry action
+**AND** SHALL NOT describe the source as passively collecting unless active progress, scheduled retry, cooldown, or provider-pressure evidence proves the system is already handling the work.
+
 #### Scenario: Source-pressure cooldown
 
 **WHEN** a source is paused by the provider-pressure governor with a retry floor

@@ -817,6 +817,29 @@ test('channel: failed deferred history is retryable, not a passive collecting wa
   assert.ok(!v.required_actions.some((a) => a.kind === 'wait' && a.cta === 'Collecting — no action needed'));
 });
 
+test('channel: idle assisted retryable gap offers retry instead of passive collecting wait', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'idle',
+      axes: { coverage: 'retryable_gap', freshness: 'stale', outbox: 'unknown' },
+      forward_disposition: 'resumable',
+    }),
+    [stream({ stream_id: 'messages', coverage: 'retryable_gap', gap_retryable: true })],
+    ASSISTED_REFRESH,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'advisory');
+  assert.equal(v.forward_statement, 'Retry now to give the recoverable gap another run.');
+  assert.equal(action.kind, 'retry_gap');
+  assert.equal(action.audience, 'owner');
+  assert.equal(action.cta, 'Retry now');
+  assert.deepEqual(action.affects, ['messages']);
+  assert.ok(!v.required_actions.some((a) => a.kind === 'wait' && a.cta === 'Collecting — no action needed'));
+});
+
 test('channel: source-pressure deferred recovery is a self-handled wait, not an owner Retry now action', () => {
   const v = synthesizeRenderedVerdict(
     snapshot({
