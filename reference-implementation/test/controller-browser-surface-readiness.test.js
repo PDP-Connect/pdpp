@@ -101,7 +101,75 @@ function createManagerWithReadySurface() {
   });
 }
 
-function setup(t, { probe, leaseManager } = {}) {
+function createDynamicManagerWithReadySurface() {
+  let leaseSeq = 0;
+  let surfaceSeq = 0;
+  let tokenSeq = 0;
+  return new BrowserSurfaceLeaseManager({
+    config: {
+      managedConnectors: new Set(["managed"]),
+      surfaceCap: 1,
+      leaseWaitTimeoutMs: 60_000,
+      idleTtlMs: 600_000,
+      defaultPriorityClass: "scheduled_refresh",
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceMode: "dynamic",
+    },
+    now: () => new Date("2026-05-12T12:00:00.000Z"),
+    makeLeaseId: () => `lease_${++leaseSeq}`,
+    makeSurfaceId: () => `surface_dynamic_${++surfaceSeq}`,
+    nextFencingToken: () => ++tokenSeq,
+    initialSurfaces: [
+      {
+        surface_id: "surface_stale",
+        backend: "neko",
+        profile_key: "managed-profile",
+        connector_id: "managed",
+        cdp_url: "http://stale:9223",
+        stream_base_url: "http://stale:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+}
+
+function createReadyDynamicAllocator() {
+  const surfaces = new Map();
+  const stopRequests = [];
+  return {
+    allocator: {
+      ensureSurface: async (request) => {
+        const surface = {
+          surface_id: request.surfaceId,
+          backend: "neko",
+          profile_key: request.profileKey,
+          connector_id: request.connectorId,
+          cdp_url: `http://${request.surfaceId}:9223`,
+          stream_base_url: `http://${request.surfaceId}:8080`,
+          health: "ready",
+          created_at: "2026-05-12T12:00:01.000Z",
+          last_used_at: "2026-05-12T12:00:01.000Z",
+          ...(request.surfaceSubjectId ? { surface_subject_id: request.surfaceSubjectId } : {}),
+        };
+        surfaces.set(request.surfaceId, surface);
+        return surface;
+      },
+      getSurfaceStatus: async (surfaceId) => surfaces.get(surfaceId) ?? null,
+      stopSurface: async (request) => {
+        stopRequests.push(request);
+        const surface = surfaces.get(request.surfaceId) ?? null;
+        surfaces.delete(request.surfaceId);
+        return surface ? { ...surface, health: "stopping" } : null;
+      },
+      listSurfaces: async () => [...surfaces.values()],
+    },
+    stopRequests,
+  };
+}
+
+function setup(t, { browserSurfaceAllocator, probe, leaseManager } = {}) {
   closeDb();
   initDb(tempDbPath());
   __resetControllerInteractionStateForTests();
@@ -112,6 +180,7 @@ function setup(t, { probe, leaseManager } = {}) {
 
   const runConnectorCalls = [];
   const controller = createController({
+    ...(browserSurfaceAllocator ? { browserSurfaceAllocator } : {}),
     browserSurfaceLeaseManager: leaseManager || createManagerWithReadySurface(),
     browserSurfaceReadinessProbe: probe,
     connectorPathResolver: () => "/tmp/connector.js",
@@ -386,6 +455,56 @@ test("readiness probe failure calls allocator.stopSurface(reason: surface_failed
     "surface_failed",
     "stop reason must be 'surface_failed' so the allocator removes the dead container",
   );
+});
+
+test("readiness probe failure on a stale dynamic surface reacquires once and launches on the fresh surface", async (t) => {
+  const probeCalls = [];
+  const probe = {
+    probe: async (surface) => {
+      probeCalls.push(surface);
+      if (surface.surface_id === "surface_stale") {
+        return {
+          ok: false,
+          code: "browser_surface_cdp_unreachable",
+          detail: "GET http://stale:9223/json/version failed: fetch failed",
+        };
+      }
+      return { ok: true, pageTargetCount: 1, browserVersion: "Chrome/124.0" };
+    },
+  };
+  const leaseManager = createDynamicManagerWithReadySurface();
+  const { allocator, stopRequests } = createReadyDynamicAllocator();
+  const { controller, runConnectorCalls } = setup(t, {
+    browserSurfaceAllocator: allocator,
+    leaseManager,
+    probe,
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_dynamic_reacquire",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started");
+  assert.equal(probeCalls.length, 2);
+  assert.equal(probeCalls[0].surface_id, "surface_stale");
+  assert.equal(probeCalls[1].surface_id, "surface_dynamic_1");
+  assert.equal(stopRequests.length, 1);
+  assert.equal(stopRequests[0]?.surfaceId, "surface_stale");
+  assert.equal(stopRequests[0]?.reason, "surface_failed");
+  assert.equal(runConnectorCalls.length, 1);
+  assert.equal(
+    runConnectorCalls[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL,
+    "http://surface_dynamic_1:9223",
+  );
+
+  const events = listRunEvents("run_dynamic_reacquire").map((e) => e.event_type);
+  assert.equal(events.filter((event) => event === "run.browser_surface_requested").length, 2);
+  assert.equal(events.filter((event) => event === "run.browser_surface_leased").length, 2);
+  assert.equal(events.filter((event) => event === "run.browser_surface_probe_failed").length, 1);
+  assert.equal(events.filter((event) => event === "run.browser_surface_ready").length, 1);
 });
 
 test("probe disabled (null) preserves legacy behavior: connector spawned, no probe events", async (t) => {

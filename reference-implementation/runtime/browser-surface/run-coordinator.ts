@@ -930,21 +930,32 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     });
   }
 
+  function shouldRetryReadinessFailure(): boolean {
+    return Boolean(browserSurfaceAllocator && browserSurfaceLeaseManager?.config.surfaceMode === "dynamic");
+  }
+
+  function requireBrowserSurfaceLeaseManager(): BrowserSurfaceLeaseManager {
+    if (!browserSurfaceLeaseManager) {
+      throw new Error("browser surface lease manager required");
+    }
+    return browserSurfaceLeaseManager;
+  }
+
   // ─── Public API implementation ────────────────────────────────────────────
 
-  async function acquireManagedBrowserSurfaceForRun(ctx: ManagedSurfaceContext): Promise<ManagedSurfaceAcquireResult> {
-    if (!browserSurfaceLeaseManager) {
-      return { kind: "ready", lease: null, env: null };
-    }
-    await expireBrowserSurfaceWaitsWithoutPromotion();
-    const priorityClass = ctx.options.priorityClass ?? "owner_interactive";
+  async function acquireManagedBrowserSurfaceAttempt(
+    ctx: ManagedSurfaceContext,
+    priorityClass: NonNullable<RunNowOptions["priorityClass"]>,
+    options: { readonly allowReadinessRetry: boolean }
+  ): Promise<ManagedSurfaceAcquireResult> {
+    const leaseManager = requireBrowserSurfaceLeaseManager();
     const leaseResult = await acquireInitialBrowserSurfaceLease(ctx, priorityClass);
     const reclaim = await reclaimWaitingLeaseIfNeeded(ctx, leaseResult.lease);
     if (reclaim.earlyReturn) {
       return reclaim.earlyReturn;
     }
 
-    const refreshedLease = browserSurfaceLeaseManager.getLease(reclaim.lease.lease_id) ?? reclaim.lease;
+    const refreshedLease = leaseManager.getLease(reclaim.lease.lease_id) ?? reclaim.lease;
     if (refreshedLease.status === "waiting_for_browser_surface") {
       queueWaitingBrowserSurfaceLaunch(ctx, priorityClass);
       await emitBrowserSurfaceLeaseEvent(
@@ -970,13 +981,35 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     // the CDP target is alive RIGHT NOW. Probe before we hand env to the
     // connector and ask the human for an OTP. On failure, emit a typed event,
     // release the lease, and return surface_failed.
-    if (dispatchResult.lease && dispatchResult.env) {
-      const failureResult = await runBrowserSurfaceReadinessGateForLease(ctx, dispatchResult.lease);
-      if (failureResult) {
-        return { kind: "early_return", result: failureResult };
-      }
+    return await resolveBrowserSurfaceReadinessForDispatch(ctx, priorityClass, dispatchResult, options);
+  }
+
+  async function resolveBrowserSurfaceReadinessForDispatch(
+    ctx: ManagedSurfaceContext,
+    priorityClass: NonNullable<RunNowOptions["priorityClass"]>,
+    dispatchResult: ManagedSurfaceReady,
+    options: { readonly allowReadinessRetry: boolean }
+  ): Promise<ManagedSurfaceAcquireResult> {
+    if (!(dispatchResult.lease && dispatchResult.env)) {
+      return dispatchResult;
     }
-    return dispatchResult;
+    const failureResult = await runBrowserSurfaceReadinessGateForLease(ctx, dispatchResult.lease);
+    if (!failureResult) {
+      return dispatchResult;
+    }
+    if (options.allowReadinessRetry && shouldRetryReadinessFailure()) {
+      return await acquireManagedBrowserSurfaceAttempt(ctx, priorityClass, { allowReadinessRetry: false });
+    }
+    return { kind: "early_return", result: failureResult };
+  }
+
+  async function acquireManagedBrowserSurfaceForRun(ctx: ManagedSurfaceContext): Promise<ManagedSurfaceAcquireResult> {
+    if (!browserSurfaceLeaseManager) {
+      return { kind: "ready", lease: null, env: null };
+    }
+    await expireBrowserSurfaceWaitsWithoutPromotion();
+    const priorityClass = ctx.options.priorityClass ?? "owner_interactive";
+    return await acquireManagedBrowserSurfaceAttempt(ctx, priorityClass, { allowReadinessRetry: true });
   }
 
   async function cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null> {

@@ -9,7 +9,7 @@
     "runtime/browser-surface-leases.ts": 4,
     "runtime/browser-surface-readiness.ts": 26,
     "runtime/browser-surface/profile-key.ts": 4,
-    "runtime/browser-surface/run-coordinator.ts": 109,
+    "runtime/browser-surface/run-coordinator.ts": 103,
     "runtime/classify-runtime-failure.js": 3,
     "runtime/connection-health.ts": 92,
     "runtime/connector-gap-bounding.ts": 80,
@@ -190,5 +190,5 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.js": 9
   },
-  "total": 8923
+  "total": 8917
 }
