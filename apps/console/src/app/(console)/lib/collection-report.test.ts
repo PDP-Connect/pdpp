@@ -45,6 +45,7 @@ const COVERED_EXCEEDED_DENOMINATOR_COPY =
   /accounted for 3 of 4 considered records.*more than the considered denominator/i;
 const RAW_COLLECTED_3_COPY = /\b3\b/;
 const COLLECTED_5_COPY = /collected 5/;
+const STRATEGY_NUMERATOR_COPY = /not the coverage numerator/i;
 
 function entry(overrides: Partial<RefCollectionReportEntry>): RefCollectionReportEntry {
   return {
@@ -144,6 +145,59 @@ test("a known considered denominator renders collected / considered", () => {
   );
   assert.equal(facts.countsLabel, "7 / 10 collected");
   assert.equal(facts.coverage.value, "partial");
+});
+
+test("strategy-backed complete streams do not render collected / considered as a partial-looking fraction", () => {
+  const facts = formatStreamCollectionFacts(
+    entry({
+      stream: "pull_requests",
+      checkpoint: "committed",
+      collected: 9,
+      considered: 52,
+      coverage_condition: "complete",
+      coverage_strategy: "checkpoint_window",
+      forward_disposition: "complete",
+    })
+  );
+  assert.equal(facts.countsLabel, "checkpoint covered · 9 collected");
+  assert.doesNotMatch(facts.countsLabel ?? "", /9 ?\/ ?52/);
+  assert.match(facts.countsTitle, /considered 52 records/);
+  assert.match(facts.countsTitle, STRATEGY_NUMERATOR_COPY);
+  assert.equal(facts.coverage.value, "complete");
+});
+
+test("full-inventory complete streams name the inventory proof instead of implying missing records", () => {
+  const facts = formatStreamCollectionFacts(
+    entry({
+      stream: "repositories",
+      checkpoint: "committed",
+      collected: 5,
+      considered: 100,
+      coverage_condition: "complete",
+      coverage_strategy: "full_inventory",
+      forward_disposition: "complete",
+    })
+  );
+  assert.equal(facts.countsLabel, "inventory covered · 5 collected");
+  assert.doesNotMatch(facts.countsLabel ?? "", /5 ?\/ ?100/);
+  assert.match(facts.countsTitle, /considered 100 records/);
+  assert.match(facts.countsTitle, STRATEGY_NUMERATOR_COPY);
+});
+
+test("zero-emission singleton proofs still show the proof instead of collection count unavailable", () => {
+  const facts = formatStreamCollectionFacts(
+    entry({
+      stream: "user",
+      checkpoint: "committed",
+      collected: 0,
+      considered: "unknown",
+      coverage_condition: "complete",
+      coverage_strategy: "singleton_presence",
+      forward_disposition: "complete",
+    })
+  );
+  assert.equal(facts.countsLabel, "presence checked");
+  assert.match(facts.countsTitle, STRATEGY_NUMERATOR_COPY);
 });
 
 test("THE CLAMP: collected > considered never renders an impossible fraction (phase 2 lie fix)", () => {

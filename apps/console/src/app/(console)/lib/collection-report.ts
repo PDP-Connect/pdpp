@@ -77,6 +77,27 @@ export function formatPendingDetailGapsLabel(count: number, isFloor = false): st
   return `${isFloor ? "at least " : ""}${safeCount.toLocaleString()} ${noun}`;
 }
 
+function proofLabelForStrategy(strategy: RefCollectionReportEntry["coverage_strategy"]): string | null {
+  switch (strategy) {
+    case "checkpoint_window":
+      return "checkpoint covered";
+    case "full_inventory":
+      return "inventory covered";
+    case "parent_detail_accounting":
+      return "details accounted";
+    case "snapshot_import_receipt":
+      return "snapshot imported";
+    case "singleton_presence":
+      return "presence checked";
+    default:
+      return null;
+  }
+}
+
+function checkpointProvesBoundary(checkpoint: string | null | undefined): boolean {
+  return checkpoint === "committed" || checkpoint === "disabled";
+}
+
 /**
  * Index a Collection Report by stream name so the detail page can join it to
  * the resource-server stream list (which is keyed by name) in O(1). The
@@ -136,6 +157,22 @@ export function runStatusWithCollectionReportGaps(
 function buildCountsLine(entry: RefCollectionReportEntry): { label: string | null; title: string } {
   const collected = Number.isFinite(entry.collected) ? entry.collected : 0;
   const collectedText = collected.toLocaleString();
+  const proofLabel =
+    entry.coverage_condition === "complete" && checkpointProvesBoundary(entry.checkpoint)
+      ? proofLabelForStrategy(entry.coverage_strategy)
+      : null;
+  if (proofLabel) {
+    const considered =
+      typeof entry.considered === "number" && Number.isFinite(entry.considered)
+        ? entry.considered.toLocaleString()
+        : null;
+    return {
+      label: collected > 0 ? `${proofLabel} · ${collectedText} collected` : proofLabel,
+      title: considered
+        ? `This stream uses the ${entry.coverage_strategy} coverage strategy. The committed checkpoint proves the stream boundary; the run considered ${considered} records and collected ${collectedText}. Collected is the number emitted this run, not the coverage numerator for strategy-backed streams.`
+        : `This stream uses the ${entry.coverage_strategy} coverage strategy. The committed checkpoint proves the stream boundary; the run collected ${collectedText}. Collected is the number emitted this run, not the coverage numerator for strategy-backed streams.`,
+    };
+  }
   if (typeof entry.considered === "number" && Number.isFinite(entry.considered)) {
     const considered = entry.considered.toLocaleString();
     // Honesty clamp: the rendered fraction numerator can never exceed its
