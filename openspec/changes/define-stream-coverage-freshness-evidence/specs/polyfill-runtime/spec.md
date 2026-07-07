@@ -92,6 +92,43 @@ strategy such as `full_inventory`, `checkpoint_window`, or
 
 ## ADDED Requirements
 
+### Requirement: A co-emitted stream SHALL declare its checkpoint parent via state_stream
+
+A co-emitted stream SHALL declare its parent list stream as its `state_stream`
+in the manifest and use coverage strategy `checkpoint_window`. A co-emitted
+stream is one emitted alongside a parent list stream within the same pass, that
+rides the parent's cursor and commits no checkpoint of its own (for example Slack
+`reactions` / `message_attachments`, Gmail `message_bodies`). It is not a
+list+detail hydration lane and SHALL NOT be required to emit `DETAIL_COVERAGE`.
+
+The runtime SHALL read the declared `state_stream` when building the terminal
+collection-fact block so the co-emitted stream's checkpoint reflects the parent
+stream's committed cursor. A `DETAIL_COVERAGE` message, when present for the same
+stream, SHALL take precedence over the manifest declaration.
+
+The `state_stream` value SHALL name another declared stream, SHALL differ from
+the stream declaring it, and SHALL only be declared with coverage strategy
+`checkpoint_window`; developer validation SHALL reject a manifest that violates
+these constraints.
+
+#### Scenario: co-emitted stream inherits the parent committed checkpoint
+
+**WHEN** a run commits the parent list stream's checkpoint and a co-emitted child
+stream declares that parent as its `state_stream`
+**THEN** the child stream's collection-fact `checkpoint` SHALL read `committed`
+rather than `not_staged`
+**AND** with coverage strategy `checkpoint_window` the projection SHALL classify
+the child's coverage as `complete`, not `unknown`.
+
+#### Scenario: invalid state_stream fails developer validation
+
+**WHEN** a manifest stream declares a `state_stream` that names no other declared
+stream, names itself, or is paired with a non-`checkpoint_window` coverage
+strategy
+**THEN** developer validation SHALL fail
+**AND** the validation message SHALL name the stream and the invalid
+`state_stream` declaration.
+
 ### Requirement: Stream freshness posture SHALL be declared or emitted per stream
 
 Every declared stream SHALL have a freshness posture separate from coverage. A

@@ -186,3 +186,65 @@ test('validateConnectorManifest rejects invalid stream evidence declarations whe
     /freshness_strategy must be one of/,
   );
 });
+
+// A parent list stream `items` plus a co-emitted child declaring its checkpoint
+// parent via `state_stream: 'items'` — the Slack reactions / Gmail message_bodies
+// shape. `state_stream` is a checkpoint-parent declaration valid only with the
+// `checkpoint_window` coverage strategy.
+function manifestWithChildStateStream(child = {}) {
+  return {
+    connector_key: 'test-manifest',
+    streams: [
+      { name: 'items', primary_key: ['id'], schema: { properties: { id: { type: 'string' } } } },
+      {
+        name: 'child',
+        primary_key: ['id'],
+        schema: { properties: { id: { type: 'string' } } },
+        coverage_strategy: 'checkpoint_window',
+        state_stream: 'items',
+        ...child,
+      },
+    ],
+  };
+}
+
+test('validateConnectorManifest accepts a checkpoint_window child declaring an existing state_stream parent', () => {
+  assert.doesNotThrow(() => validateConnectorManifest(manifestWithChildStateStream()));
+});
+
+test('validateConnectorManifest rejects a state_stream that names no declared stream', () => {
+  assert.throws(
+    () => validateConnectorManifest(manifestWithChildStateStream({ state_stream: 'ghost' })),
+    /state_stream 'ghost' must name another declared stream/,
+  );
+});
+
+test('validateConnectorManifest rejects a state_stream pointing at the stream itself', () => {
+  assert.throws(
+    () => validateConnectorManifest(manifestWithChildStateStream({ state_stream: 'child' })),
+    /state_stream must name a different parent stream, not itself/,
+  );
+});
+
+test('validateConnectorManifest rejects a non-string state_stream', () => {
+  assert.throws(
+    () => validateConnectorManifest(manifestWithChildStateStream({ state_stream: 42 })),
+    /state_stream must be a non-empty string/,
+  );
+});
+
+test('validateConnectorManifest rejects state_stream with a non-checkpoint_window strategy', () => {
+  assert.throws(
+    () => validateConnectorManifest(manifestWithChildStateStream({ coverage_strategy: 'full_inventory' })),
+    /state_stream, which is only valid with coverage_strategy "checkpoint_window"/,
+  );
+});
+
+test('validateConnectorManifest rejects state_stream without an explicit checkpoint_window strategy', () => {
+  const manifest = manifestWithChildStateStream();
+  delete manifest.streams[1].coverage_strategy;
+  assert.throws(
+    () => validateConnectorManifest(manifest),
+    /state_stream, which is only valid with coverage_strategy "checkpoint_window"/,
+  );
+});

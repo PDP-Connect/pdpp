@@ -323,6 +323,38 @@ function buildMultiStreamManifest(connectorId = 'test-multi-stream') {
   };
 }
 
+// A list stream (`items`) plus a co-emitted child (`co_items`) that rides the
+// parent's cursor and emits no STATE of its own. `co_items` declares its
+// checkpoint parent via `state_stream: 'items'` — the shape Slack reactions /
+// message_attachments and Gmail message_bodies use. The runtime must read that
+// declaration so `co_items.checkpoint` follows the parent's committed cursor
+// instead of a spurious `not_staged`.
+function buildCoEmittedStreamManifest(connectorId = 'test-co-emitted-stream') {
+  return {
+    ...MINIMAL_MANIFEST,
+    connector_id: connectorId,
+    streams: [
+      ...MINIMAL_MANIFEST.streams,
+      {
+        name: 'co_items',
+        semantics: 'append_only',
+        schema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            value: { type: 'string' },
+          },
+          required: ['id'],
+        },
+        primary_key: ['id'],
+        coverage_strategy: 'checkpoint_window',
+        state_stream: 'items',
+        freshness_strategy: 'scheduled_window',
+      },
+    ],
+  };
+}
+
 test('Collection Profile conformance', async (t) => {
   // ── 1. RECORD processing ──
 
@@ -3023,6 +3055,64 @@ rl.on('line', (line) => {
 
       assert.equal(byStream.other_items.collected, 1, 'other_items collected count is per-stream');
       assert.equal(byStream.other_items.checkpoint, 'committed');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('2.2a: a co-emitted child stream (manifest state_stream) inherits its parent committed checkpoint, not not_staged', async () => {
+    // Regression: Slack reactions / message_attachments and Gmail message_bodies
+    // are co-emitted alongside their parent `messages` list stream, ride its
+    // cursor, and emit NO STATE of their own. Before the fix the fact block
+    // mapped such a child to itself, read no staged STATE for it, and reported
+    // `checkpoint: not_staged` on a fully-succeeded run — which projects to an
+    // `unknown` coverage instead of `complete` for a checkpoint_window stream.
+    // With the manifest `state_stream` declaration the child inherits the
+    // parent's committed checkpoint.
+    const manifest = buildCoEmittedStreamManifest('facts-co-emitted-checkpoint');
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
+    const asUrl = `http://localhost:${asPort}`;
+
+    // The child emits records but NO STATE; only the parent `items` commits STATE.
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'RECORD', stream: 'items', key: 'i1', data: { id: 'i1', value: 'a' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'co_items', key: 'c1', data: { id: 'c1', value: 'x' }, emitted_at: new Date().toISOString() },
+      { type: 'RECORD', stream: 'co_items', key: 'c2', data: { id: 'c2', value: 'y' }, emitted_at: new Date().toISOString() },
+      { type: 'STATE', stream: 'items', cursor: { last: 'i1' } },
+      { type: 'DONE', status: 'succeeded', records_emitted: 3 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest,
+        scope: { streams: [{ name: 'items' }, { name: 'co_items' }] },
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      const facts = completedEvent.data.collection_facts;
+      assert.ok(facts, 'facts block present');
+      const byStream = Object.fromEntries(facts.streams.map((entry) => [entry.stream, entry]));
+
+      assert.equal(byStream.items.checkpoint, 'committed', 'parent items committed its STATE');
+      assert.equal(byStream.co_items.collected, 2, 'co-emitted child collected its records');
+      assert.equal(
+        byStream.co_items.checkpoint,
+        'committed',
+        'co-emitted child inherits the parent committed checkpoint via manifest state_stream, not not_staged'
+      );
     } finally {
       cleanup();
       await closeServer(server);

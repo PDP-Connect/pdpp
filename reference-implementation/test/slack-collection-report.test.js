@@ -117,6 +117,46 @@ test('slack unsupported streams: SKIP_RESULT(reason: "not_available") -> unavail
   }
 });
 
+test('slack co-emitted detail streams: checkpoint_window + committed parent checkpoint -> complete', () => {
+  // reactions / message_attachments ride the `messages` cursor and are committed
+  // by the parent `messages` STATE. They carry no `considered` denominator, so
+  // the ONLY coverage proof is the committed checkpoint under the
+  // `checkpoint_window` strategy. A succeeded run whose parent committed must
+  // read `complete`, not `unknown`.
+  const manifestStreams = [
+    { name: 'reactions', coverage_strategy: 'checkpoint_window', state_stream: 'messages' },
+    { name: 'message_attachments', coverage_strategy: 'checkpoint_window', state_stream: 'messages' },
+  ];
+  const entries = report(
+    [
+      fact({ stream: 'reactions', collected: 42, considered: null, checkpoint: 'committed' }),
+      fact({ stream: 'message_attachments', collected: 7, considered: null, checkpoint: 'committed' }),
+    ],
+    { manifestStreams },
+  );
+  for (const stream of ['reactions', 'message_attachments']) {
+    const entry = entryFor(entries, stream);
+    assert.equal(entry.coverage_condition, 'complete', `${stream} committed checkpoint proves coverage`);
+    assert.equal(entry.forward_disposition, 'complete', `${stream} is complete, not unmeasured`);
+  }
+});
+
+test('slack co-emitted detail streams: checkpoint_window but not_staged -> stays unknown (the pre-fix symptom)', () => {
+  // Guards the regression: before the runtime state_stream mapping, a co-emitted
+  // stream's checkpoint read `not_staged` even on a succeeded run, which — under
+  // the same manifest strategy — projects to `unknown` instead of `complete`.
+  const manifestStreams = [
+    { name: 'reactions', coverage_strategy: 'checkpoint_window', state_stream: 'messages' },
+  ];
+  const entries = report(
+    [fact({ stream: 'reactions', collected: 42, considered: null, checkpoint: 'not_staged' })],
+    { manifestStreams },
+  );
+  const entry = entryFor(entries, 'reactions');
+  assert.equal(entry.coverage_condition, 'unknown', 'not_staged does not prove checkpoint_window coverage');
+  assert.equal(entry.forward_disposition, 'unmeasured');
+});
+
 test('slack mixed report: canvases complete alongside unknown messages and a terminal unsupported stream', () => {
   // The whole-connection shape an owner sees after a clean Slack run: canvases
   // carries a real complete, messages stays honestly unknown, and an

@@ -31,7 +31,12 @@ import {
   type MailboxObject,
 } from "imapflow";
 import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
-import { buildDetailCoverageMessage, buildDetailGap, type DetailGapMessage } from "../../src/connector-runtime.ts";
+import {
+  buildDetailCoverageMessage,
+  buildDetailGap,
+  type DetailCoverageMessage,
+  type DetailGapMessage,
+} from "../../src/connector-runtime.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
@@ -388,31 +393,39 @@ export function recordAttachmentCoverage(coverage: AttachmentDetailCoverage, rec
 }
 
 /**
- * Emit the per-run attachments DETAIL_COVERAGE after the detail lane settles,
- * if (and only if) the run considered at least one attachment. A run that
- * considered zero attachments has no real `considered` axis to report, so it
- * emits nothing rather than a trivially-`0/0` report — absence is honest; a
- * fabricated empty denominator is not. The list cursor that anchors this detail
- * pass lives on `messages`, so that is the `state_stream`. Reference-only: this
- * reuses DETAIL_COVERAGE without promoting it to portable protocol.
+ * Build the per-run attachments DETAIL_COVERAGE after the detail lane settles.
+ * A requested attachments pass that scans the parent `messages` boundary and
+ * finds zero attachment parts has a real empty denominator: `required_keys: []`
+ * means "nothing owed", not "unknown". The list cursor that anchors this
+ * detail pass lives on `messages`, so that is the `state_stream`.
+ * Reference-only: this reuses DETAIL_COVERAGE without promoting it to portable
+ * protocol.
+ *
+ * Extracted from `emitAttachmentDetailCoverage` so the zero-attachment case is
+ * testable without capturing process stdout.
+ */
+export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailCoverage): DetailCoverageMessage {
+  return buildDetailCoverageMessage({
+    stream: "attachments",
+    stateStream: "messages",
+    requiredKeys: coverage.requiredKeys,
+    hydratedKeys: coverage.hydratedKeys,
+    gapKeys: coverage.gapKeys,
+    optionalSkipKeys: coverage.optionalSkipKeys,
+  });
+}
+
+/**
+ * Emit the per-run attachments DETAIL_COVERAGE after the detail lane settles.
  *
  * Extracted from `runAllMailPasses` to keep that orchestrator under the
  * cognitive-complexity ceiling (authoring guide §"Rules the tooling enforces").
  */
 async function emitAttachmentDetailCoverage(coverage: AttachmentDetailCoverage | undefined): Promise<void> {
-  if (!coverage || coverage.requiredKeys.length === 0) {
+  if (!coverage) {
     return;
   }
-  await emit(
-    buildDetailCoverageMessage({
-      stream: "attachments",
-      stateStream: "messages",
-      requiredKeys: coverage.requiredKeys,
-      hydratedKeys: coverage.hydratedKeys,
-      gapKeys: coverage.gapKeys,
-      optionalSkipKeys: coverage.optionalSkipKeys,
-    })
-  );
+  await emit(buildAttachmentDetailCoverageMessage(coverage));
 }
 
 /**

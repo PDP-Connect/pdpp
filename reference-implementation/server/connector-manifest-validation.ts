@@ -204,7 +204,13 @@ export const REFRESH_POLICY_ALLOWED_KEYS = new Set([
 export const RUNTIME_REQUIREMENT_BINDINGS = new Set(["browser", "filesystem", "interactive", "network"]);
 export const STREAM_AVAILABILITY_STATES = new Set(["supported", "unsupported_in_mode", "experimental", "deprecated"]);
 export const STREAM_AVAILABILITY_ALLOWED_KEYS = new Set(["future_modes", "mode", "reason", "state"]);
-export const STREAM_COVERAGE_POLICIES = new Set(["collect", "deferred", "inventory_only", "unavailable", "unsupported"]);
+export const STREAM_COVERAGE_POLICIES = new Set([
+  "collect",
+  "deferred",
+  "inventory_only",
+  "unavailable",
+  "unsupported",
+]);
 export const STREAM_COVERAGE_STRATEGIES = new Set([
   "checkpoint_window",
   "full_inventory",
@@ -265,66 +271,16 @@ function validateRuntimeBindings(req: Record<string, unknown>, code: string): bo
   return true;
 }
 
-// Validates one `external_tools[index].detect` sub-object (order-preserving).
-function validateExternalToolDetect(
-  detectValue: unknown,
-  index: number,
-  code: string,
-  options: { allowLegacyCommand: boolean }
-): void {
-  if (detectValue === undefined) {
-    return;
-  }
-  if (!detectValue || typeof detectValue !== "object" || Array.isArray(detectValue)) {
-    throw invalidConnectorManifest(`runtime_requirements.external_tools[${index}].detect must be an object`, code);
-  }
-  const detect = detectValue as Record<string, unknown>;
-  if (options.allowLegacyCommand) {
-    if (detect.exit_code !== undefined && (!Number.isInteger(detect.exit_code) || (detect.exit_code as number) < 0)) {
-      throw invalidConnectorManifest(
-        `runtime_requirements.external_tools[${index}].detect.exit_code must be a non-negative integer`,
-        code
-      );
-    }
-    const legacyDetectKeys = new Set(["args", "command", "executable", "exit_code"]);
-    const unknownLegacyKeys = Object.keys(detect).filter((key) => !legacyDetectKeys.has(key));
-    if (unknownLegacyKeys.length) {
-      throw invalidConnectorManifest(
-        `runtime_requirements.external_tools[${index}].detect has unsupported keys: ${unknownLegacyKeys.join(", ")}`,
-        code
-      );
-    }
-    if (!isNonEmptyString(detect.executable) && !isNonEmptyString(detect.command)) {
-      throw invalidConnectorManifest(
-        `runtime_requirements.external_tools[${index}].detect.command must be a non-empty string`,
-        code
-      );
-    }
-  } else {
-    const unknownDetectKeys = Object.keys(detect).filter((key) => !EXTERNAL_TOOL_DETECT_ALLOWED_KEYS.has(key));
-    if (unknownDetectKeys.length) {
-      throw invalidConnectorManifest(
-        `runtime_requirements.external_tools[${index}].detect has unsupported keys: ${unknownDetectKeys.join(", ")}`,
-        code
-      );
-    }
-    if (!isNonEmptyString(detect.executable)) {
-      throw invalidConnectorManifest(
-        `runtime_requirements.external_tools[${index}].detect.executable must be a non-empty string`,
-        code
-      );
-    }
-  }
-  if (
-    !options.allowLegacyCommand &&
-    detect.exit_code !== undefined &&
-    (!Number.isInteger(detect.exit_code) || (detect.exit_code as number) < 0)
-  ) {
+function validateExternalToolDetectExitCode(detect: Record<string, unknown>, index: number, code: string): void {
+  if (detect.exit_code !== undefined && (!Number.isInteger(detect.exit_code) || (detect.exit_code as number) < 0)) {
     throw invalidConnectorManifest(
       `runtime_requirements.external_tools[${index}].detect.exit_code must be a non-negative integer`,
       code
     );
   }
+}
+
+function validateExternalToolDetectArgs(detect: Record<string, unknown>, index: number, code: string): void {
   if (
     detect.args !== undefined &&
     (!Array.isArray(detect.args) || (detect.args as unknown[]).some((arg) => typeof arg !== "string"))
@@ -334,6 +290,70 @@ function validateExternalToolDetect(
       code
     );
   }
+}
+
+function validateLegacyExternalToolDetect(detect: Record<string, unknown>, index: number, code: string): void {
+  validateExternalToolDetectExitCode(detect, index, code);
+  const legacyDetectKeys = new Set(["args", "command", "executable", "exit_code"]);
+  const unknownLegacyKeys = Object.keys(detect).filter((key) => !legacyDetectKeys.has(key));
+  if (unknownLegacyKeys.length) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.external_tools[${index}].detect has unsupported keys: ${unknownLegacyKeys.join(", ")}`,
+      code
+    );
+  }
+  if (!(isNonEmptyString(detect.executable) || isNonEmptyString(detect.command))) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.external_tools[${index}].detect.command must be a non-empty string`,
+      code
+    );
+  }
+}
+
+function validateStrictExternalToolDetect(detect: Record<string, unknown>, index: number, code: string): void {
+  const unknownDetectKeys = Object.keys(detect).filter((key) => !EXTERNAL_TOOL_DETECT_ALLOWED_KEYS.has(key));
+  if (unknownDetectKeys.length) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.external_tools[${index}].detect has unsupported keys: ${unknownDetectKeys.join(", ")}`,
+      code
+    );
+  }
+  if (!isNonEmptyString(detect.executable)) {
+    throw invalidConnectorManifest(
+      `runtime_requirements.external_tools[${index}].detect.executable must be a non-empty string`,
+      code
+    );
+  }
+  validateExternalToolDetectExitCode(detect, index, code);
+}
+
+function readExternalToolDetect(detectValue: unknown, index: number, code: string): Record<string, unknown> | null {
+  if (detectValue === undefined) {
+    return null;
+  }
+  if (!detectValue || typeof detectValue !== "object" || Array.isArray(detectValue)) {
+    throw invalidConnectorManifest(`runtime_requirements.external_tools[${index}].detect must be an object`, code);
+  }
+  return detectValue as Record<string, unknown>;
+}
+
+// Validates one `external_tools[index].detect` sub-object (order-preserving).
+function validateExternalToolDetect(
+  detectValue: unknown,
+  index: number,
+  code: string,
+  options: { allowLegacyCommand: boolean }
+): void {
+  const detect = readExternalToolDetect(detectValue, index, code);
+  if (!detect) {
+    return;
+  }
+  if (options.allowLegacyCommand) {
+    validateLegacyExternalToolDetect(detect, index, code);
+  } else {
+    validateStrictExternalToolDetect(detect, index, code);
+  }
+  validateExternalToolDetectArgs(detect, index, code);
 }
 
 // Validates one `external_tools[index]` entry (order-preserving); tracks
@@ -766,7 +786,50 @@ export function validateStreamAvailabilityDeclaration(stream: Record<string, unk
   }
 }
 
-export function validateStreamEvidenceDeclarations(stream: Record<string, unknown>, code: string): void {
+// `state_stream` declares the parent list stream whose committed checkpoint
+// covers this co-emitted stream (e.g. Slack reactions -> messages). It is a
+// checkpoint-parent declaration for `checkpoint_window` streams that ride a
+// parent cursor and emit no DETAIL_COVERAGE; the runtime reads it to project the
+// co-emitted stream's checkpoint from the parent's cursor. Split out of
+// validateStreamEvidenceDeclarations to keep that validator under the
+// cognitive-complexity ceiling; throw order and messages are unchanged.
+function validateStreamStateStreamDeclaration(
+  stream: Record<string, unknown>,
+  code: string,
+  declaredStreamNames?: Set<string>
+): void {
+  if (stream.state_stream === undefined) {
+    return;
+  }
+  const streamName = stream.name as string;
+  if (!isNonEmptyString(stream.state_stream)) {
+    throw invalidConnectorManifest(`Stream '${streamName}' state_stream must be a non-empty string`, code);
+  }
+  if (stream.state_stream === streamName) {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' state_stream must name a different parent stream, not itself`,
+      code
+    );
+  }
+  if (declaredStreamNames && !declaredStreamNames.has(stream.state_stream as string)) {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' state_stream '${stream.state_stream as string}' must name another declared stream`,
+      code
+    );
+  }
+  if (stream.coverage_strategy !== "checkpoint_window") {
+    throw invalidConnectorManifest(
+      `Stream '${streamName}' declares state_stream, which is only valid with coverage_strategy "checkpoint_window" (got "${stream.coverage_strategy as string}")`,
+      code
+    );
+  }
+}
+
+export function validateStreamEvidenceDeclarations(
+  stream: Record<string, unknown>,
+  code: string,
+  declaredStreamNames?: Set<string>
+): void {
   const streamName = stream.name as string;
   if (stream.coverage_policy !== undefined && !STREAM_COVERAGE_POLICIES.has(stream.coverage_policy as string)) {
     throw invalidConnectorManifest(
@@ -780,12 +843,16 @@ export function validateStreamEvidenceDeclarations(stream: Record<string, unknow
       code
     );
   }
-  if (stream.freshness_strategy !== undefined && !STREAM_FRESHNESS_STRATEGIES.has(stream.freshness_strategy as string)) {
+  if (
+    stream.freshness_strategy !== undefined &&
+    !STREAM_FRESHNESS_STRATEGIES.has(stream.freshness_strategy as string)
+  ) {
     throw invalidConnectorManifest(
       `Stream '${streamName}' freshness_strategy must be one of: device_heartbeat, manual_as_of, not_trackable, scheduled_window, source_reported_as_of`,
       code
     );
   }
+  validateStreamStateStreamDeclaration(stream, code, declaredStreamNames);
 }
 
 // ---------------------------------------------------------------------------
@@ -1227,7 +1294,7 @@ function validateManifestStream({
   }
   seenStreamNames.add(streamObj.name as string);
   validateStreamAvailabilityDeclaration(streamObj, code);
-  validateStreamEvidenceDeclarations(streamObj, code);
+  validateStreamEvidenceDeclarations(streamObj, code, new Set(manifestStreamsByName.keys()));
 
   const schema = streamObj.schema as Record<string, unknown> | undefined;
   const schemaProperties = schema?.properties as Record<string, unknown> | undefined;

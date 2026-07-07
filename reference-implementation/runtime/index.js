@@ -497,6 +497,7 @@ function buildCollectionFacts({
   knownGaps,
   durableDetailGaps,
   detailCoverageByStateStream,
+  manifestStateStreamByStream,
   newState,
   committedStateStreams,
   persistState,
@@ -505,16 +506,28 @@ function buildCollectionFacts({
   if (!inScopeStreams.length) return null;
 
   // Map each data `stream` to the `state_stream` whose checkpoint covers it.
-  // Default: a stream checkpoints itself (state_stream === stream). For
-  // list-plus-detail connectors the detail `stream` (e.g. other_items) is
-  // covered by the list `state_stream` (e.g. items); DETAIL_COVERAGE entries
-  // carry both, so we learn the mapping from them.
+  // Default: a stream checkpoints itself (state_stream === stream). Two ways a
+  // stream can be covered by a different state_stream:
+  //   - list-plus-detail hydration lanes: the detail `stream` (e.g. other_items)
+  //     is covered by the list `state_stream` (e.g. items); DETAIL_COVERAGE
+  //     entries carry both, so we learn the mapping from them (authoritative
+  //     runtime evidence);
+  //   - co-emitted streams with no hydration lane (e.g. Slack reactions /
+  //     message_attachments, Gmail message_bodies) that ride the parent list
+  //     stream's cursor: they emit no DETAIL_COVERAGE, so the mapping is declared
+  //     in the manifest via `state_stream` and threaded in here. DETAIL_COVERAGE
+  //     wins when both are present.
   const streamToStateStream = new Map();
   for (const [stateStream, entries] of detailCoverageByStateStream) {
     for (const entry of entries) {
       if (entry?.stream && !streamToStateStream.has(entry.stream)) {
         streamToStateStream.set(entry.stream, stateStream);
       }
+    }
+  }
+  for (const [stream, stateStream] of manifestStateStreamByStream || []) {
+    if (!streamToStateStream.has(stream)) {
+      streamToStateStream.set(stream, stateStream);
     }
   }
 
@@ -1490,6 +1503,21 @@ export async function runConnector(opts) {
   const startRecoveryOnly = recoveryOnly === true;
   const scopeByStream = new Map((startScope.streams || []).map((streamScope) => [streamScope.name, streamScope]));
   const manifestByStream = new Map((manifest?.streams || []).map((stream) => [stream.name, stream]));
+  // Manifest-declared checkpoint parent: a co-emitted stream (e.g. Slack
+  // reactions / message_attachments, Gmail message_bodies) rides the parent
+  // list stream's cursor and is committed by the parent's STATE, not its own.
+  // It emits no DETAIL_COVERAGE (it is not a list+detail hydration lane), so the
+  // fact-block's stream->state_stream mapping cannot be learned from coverage
+  // messages the way a hydration lane's is. The manifest declares it via
+  // `state_stream`, and the terminal collection-fact block reads it so the
+  // co-emitted stream's `checkpoint` reflects the parent's committed cursor
+  // instead of a spurious `not_staged`.
+  const manifestStateStreamByStream = new Map();
+  for (const stream of manifest?.streams || []) {
+    if (stream && typeof stream.state_stream === 'string' && stream.state_stream && stream.state_stream !== stream.name) {
+      manifestStateStreamByStream.set(stream.name, stream.state_stream);
+    }
+  }
   const detailGapStore = opts.detailGapStore || getDefaultConnectorDetailGapStore();
 
   // Compute runId before spawn so it can be threaded into the child env
@@ -2106,6 +2134,7 @@ export async function runConnector(opts) {
       knownGaps,
       durableDetailGaps,
       detailCoverageByStateStream,
+      manifestStateStreamByStream,
       newState,
       committedStateStreams,
       persistState,

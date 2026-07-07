@@ -1304,7 +1304,8 @@
           ]
         }
       },
-      "coverage_strategy": "parent_detail_accounting",
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "messages",
       "freshness_strategy": "scheduled_window"
     },
     {
@@ -1365,7 +1366,8 @@
           "cardinality": "has_one"
         }
       ],
-      "coverage_strategy": "parent_detail_accounting",
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "messages",
       "freshness_strategy": "scheduled_window"
     },
     {

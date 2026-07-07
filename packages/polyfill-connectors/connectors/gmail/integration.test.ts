@@ -38,6 +38,7 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   type AttachmentDetailCoverage,
   addAttachmentBackfillRecordToSummary,
+  buildAttachmentDetailCoverageMessage,
   buildAttachmentDetailGap,
   createAttachmentBackfillSummary,
   DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
@@ -1183,6 +1184,19 @@ test("recordAttachmentCoverage: routes each hydration status into the honest buc
     coverage.failedRecords.map((r) => r.id),
     ["b:1"]
   );
+});
+
+test("buildAttachmentDetailCoverageMessage: emits complete zero-attachment coverage", () => {
+  const coverage = makeAttachmentDetailCoverage();
+
+  assert.deepEqual(buildAttachmentDetailCoverageMessage(coverage), {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    stream: "attachments",
+    state_stream: "messages",
+    required_keys: [],
+    hydrated_keys: [],
+  });
 });
 
 test("buildAttachmentDetailGap: bounded, non-secret gap whose record_key matches the coverage key", () => {
