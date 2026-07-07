@@ -211,6 +211,135 @@ async function seedSchedulerRunHistory({
   await Promise.resolve(store.upsertLastRunTime(connectorInstanceId, Date.parse(completedAt), completedAt, CONNECTOR_ID));
 }
 
+async function seedManualRunWithCollectionFacts({ connectorInstanceId, runId, occurredAt, streams }) {
+  const profileKey = `${CONNECTOR_ID}:${connectorInstanceId}`;
+  // Manual/direct runs bind to a connection through spine lifecycle facts, not
+  // scheduler_run_history. This mirrors controller.runNow.
+  await emitSpineEvent({
+    actor_type: 'runtime',
+    actor_id: CONNECTOR_ID,
+    event_type: 'run.browser_surface_released',
+    object_type: 'run',
+    object_id: runId,
+    occurred_at: occurredAt,
+    run_id: runId,
+    source_kind: 'connector',
+    source_id: CONNECTOR_ID,
+    status: 'succeeded',
+    trace_id: `trc_${runId}`,
+    data: {
+      connector_id: CONNECTOR_ID,
+      source: { kind: 'connector', id: CONNECTOR_ID },
+      browser_surface: {
+        browser_surface_status: 'released',
+        browser_surface_lease_id: `lease_${runId}`,
+        browser_surface_profile_key: profileKey,
+      },
+    },
+  });
+  await emitSpineEvent({
+    actor_type: 'runtime',
+    actor_id: CONNECTOR_ID,
+    event_type: 'run.completed',
+    object_type: 'run',
+    object_id: runId,
+    occurred_at: occurredAt,
+    run_id: runId,
+    source_kind: 'connector',
+    source_id: CONNECTOR_ID,
+    status: 'succeeded',
+    trace_id: `trc_${runId}`,
+    data: {
+      connector_id: CONNECTOR_ID,
+      source: { kind: 'connector', id: CONNECTOR_ID },
+      collection_facts: { streams },
+    },
+  });
+}
+
+function collectionReportByStream(report) {
+  return Object.fromEntries((report ?? []).map((entry) => [entry.stream, entry]));
+}
+
+test('a manual run with browser-profile + collection_facts on the spine (no scheduler_run_history) feeds collection_report on list and detail', withTmpDb(async () => {
+  seedConnector();
+  await seedInstance({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    displayName: 'Chase (manual run)',
+    sourceKind: 'browser_collector',
+    sourceBindingKey: 'chase-manual',
+    sourceBinding: { kind: 'browser_collector', account: 'chase' },
+  });
+  // A sibling connection proves the run binds to the exact profile key instead
+  // of borrowing connector-wide history.
+  await seedInstance({
+    connectorInstanceId: PERSONAL_INSTANCE_ID,
+    displayName: 'Chase (sibling, no run)',
+    sourceKind: 'browser_collector',
+    sourceBindingKey: 'chase-sibling',
+    sourceBinding: { kind: 'browser_collector', account: 'chase-personal' },
+  });
+
+  await seedManualRunWithCollectionFacts({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    runId: 'run_chase_manual_direct',
+    occurredAt: '2026-05-20T12:05:00.000Z',
+    streams: [
+      { stream: 'messages', collected: 1145, considered: null, covered: null, checkpoint: 'committed', pending_detail_gaps: 0, skipped: null },
+      { stream: 'files', collected: 3, considered: null, covered: null, checkpoint: 'committed', pending_detail_gaps: 0, skipped: null },
+    ],
+  });
+
+  // Guard the premise: the projection below must derive collection_report purely
+  // from spine facts.
+  const historyRows = getDb()
+    .prepare('SELECT COUNT(*) AS n FROM scheduler_run_history WHERE connector_id = ?')
+    .get(CONNECTOR_ID);
+  assert.equal(historyRows.n, 0, 'premise: the manual run left no scheduler_run_history row');
+
+  const summaries = await listConnectorSummaries();
+  const listWork = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === WORK_INSTANCE_ID,
+  );
+  assert.ok(listWork, 'the manual-run connection projects a source-list summary');
+  assert.equal(listWork.last_run?.run_id, 'run_chase_manual_direct');
+  assert.equal(listWork.last_run?.status, 'succeeded');
+  assert.ok(listWork.last_run?.collection_facts, 'last_run carries the terminal collection_facts block');
+
+  const listByStream = collectionReportByStream(listWork.collection_report);
+  assert.deepEqual(
+    Object.keys(listByStream).sort(),
+    ['files', 'messages'],
+    'collection_report has one entry per stream from the manual run fact block',
+  );
+  assert.equal(listByStream.messages.collected, 1145, 'collected count rides through from spine terminal facts');
+  assert.equal(listByStream.files.collected, 3, 'second stream collected count rides through');
+  assert.equal(listByStream.messages.considered, 'unknown');
+  assert.equal(listByStream.messages.coverage_condition, 'unknown');
+  assert.notEqual(listByStream.messages.coverage_condition, 'complete');
+
+  const detail = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
+  assert.ok(detail, 'the manual-run connection resolves a source-detail summary');
+  assert.equal(detail.last_run?.run_id, 'run_chase_manual_direct');
+  const detailByStream = collectionReportByStream(detail.collection_report);
+  assert.equal(detailByStream.messages.collected, 1145, 'detail surface derives the same collected count from the spine');
+  assert.equal(detailByStream.messages.coverage_condition, 'unknown');
+  assert.deepEqual(
+    detailByStream.messages,
+    listByStream.messages,
+    'detail and list derive an identical collection_report entry from the spine terminal facts',
+  );
+
+  const sibling = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === PERSONAL_INSTANCE_ID,
+  );
+  assert.ok(sibling, 'the sibling connection projects a summary');
+  assert.equal(sibling.last_run, null, 'the sibling has no run of its own to borrow');
+  const siblingByStream = collectionReportByStream(sibling.collection_report);
+  const siblingMessages = siblingByStream.messages;
+  assert.notEqual(siblingMessages?.collected, 1145, 'sibling must not inherit the manual run collected count');
+}));
+
 test('reference connector summaries project concrete connection rows with instance-scoped records', withTmpDb(async () => {
   seedConnector();
   await seedInstances({ sourceKind: 'manual' });
