@@ -19,6 +19,7 @@ import {
   projectLocalDeviceProgress,
 } from '../server/connector-outbox-axis.ts';
 import {
+  buildConnectorFreshness,
   canUseConnectorWideRunSummaryFallback,
   connectorSummariesCacheKey,
   decideConnectorSummariesCacheRead,
@@ -696,6 +697,82 @@ test('connector summary connection health refuses healthy when freshness is unkn
     schedule: null,
   });
   assert.equal(snapshot.state, 'unknown');
+});
+
+test('buildConnectorFreshness treats successful manual no-policy runs as measured current-as-of', () => {
+  const run = {
+    event_count: 1,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_manual_success',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const freshness = buildConnectorFreshness({
+    lastRun: run,
+    lastSuccessfulRun: run,
+    live: { freshness: { status: 'unknown' } },
+    refreshPolicy: { recommended_mode: 'manual', background_safe: false },
+  });
+  assert.deepEqual(freshness, {
+    status: 'current',
+    captured_at: '2026-05-19T12:00:00.000Z',
+    last_attempted_at: '2026-05-19T12:00:00.000Z',
+  });
+});
+
+test('buildConnectorFreshness keeps automatic no-policy successful runs unmeasured', () => {
+  const run = {
+    event_count: 1,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_automatic_success',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const freshness = buildConnectorFreshness({
+    lastRun: run,
+    lastSuccessfulRun: run,
+    live: { freshness: { status: 'unknown' } },
+    refreshPolicy: { recommended_mode: 'automatic', background_safe: true },
+  });
+  assert.equal(freshness.status, 'unknown');
+});
+
+test('buildConnectorFreshness does not let manual no-policy hide a latest failed attempt', () => {
+  const freshness = buildConnectorFreshness({
+    lastRun: {
+      event_count: 1,
+      failure_reason: 'source_unavailable',
+      finished_at: '2026-05-19T12:30:00.000Z',
+      first_at: '2026-05-19T12:29:00.000Z',
+      known_gaps: [],
+      last_at: '2026-05-19T12:30:00.000Z',
+      run_id: 'run_manual_failed',
+      started_at: '2026-05-19T12:29:00.000Z',
+      status: 'failed',
+    },
+    lastSuccessfulRun: {
+      event_count: 1,
+      failure_reason: null,
+      finished_at: '2026-05-19T12:00:00.000Z',
+      first_at: '2026-05-19T11:59:00.000Z',
+      known_gaps: [],
+      last_at: '2026-05-19T12:00:00.000Z',
+      run_id: 'run_manual_success',
+      started_at: '2026-05-19T11:59:00.000Z',
+      status: 'succeeded',
+    },
+    live: { freshness: { status: 'unknown' } },
+    refreshPolicy: { recommended_mode: 'manual', background_safe: false },
+  });
+  assert.equal(freshness.status, 'stale');
 });
 
 test('connector summary connection health projects durable scheduler backoff as cooling off', () => {

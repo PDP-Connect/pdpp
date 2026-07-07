@@ -1558,6 +1558,15 @@ function getMaximumStalenessSeconds(refreshPolicy: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
+function isManualRefreshPolicy(refreshPolicy: unknown): boolean {
+  return (
+    !!refreshPolicy &&
+    typeof refreshPolicy === "object" &&
+    !Array.isArray(refreshPolicy) &&
+    (refreshPolicy as { recommended_mode?: unknown }).recommended_mode === "manual"
+  );
+}
+
 /**
  * Project the manifest `refresh_policy` into the `background_safe` /
  * `recommended_mode` / `interaction_posture` evidence the connection-health
@@ -2954,7 +2963,7 @@ function projectSchedulerBackoffEvidence(input: {
   };
 }
 
-function buildConnectorFreshness({
+export function buildConnectorFreshness({
   lastRun,
   lastSuccessfulRun,
   live,
@@ -2973,13 +2982,23 @@ function buildConnectorFreshness({
   lastHeartbeatAt?: string | null;
 }): Freshness {
   const localProgressAt = lastHeartbeatAt ?? null;
-  return deriveReferenceFreshness({
+  const maximumStalenessSeconds = getMaximumStalenessSeconds(refreshPolicy);
+  const freshness = deriveReferenceFreshness({
     lastAttemptedAt: lastRun?.last_at ?? null,
     lastAttemptStatus: lastRun?.status ?? null,
     lastSuccessfulRunAt: localProgressAt ?? lastSuccessfulRun?.last_at ?? null,
-    maximumStalenessSeconds: getMaximumStalenessSeconds(refreshPolicy),
+    maximumStalenessSeconds,
     recordLastUpdatedAt: localProgressAt ?? live.freshness.captured_at ?? null,
   });
+  if (
+    freshness.status === "unknown" &&
+    freshness.captured_at &&
+    maximumStalenessSeconds === null &&
+    isManualRefreshPolicy(refreshPolicy)
+  ) {
+    return { ...freshness, status: "current" };
+  }
+  return freshness;
 }
 
 function localDeviceFreshnessHeartbeatAt(

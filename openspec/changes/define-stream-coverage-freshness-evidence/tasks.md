@@ -21,6 +21,7 @@
 - [x] 3.5 Thread local-device `coverage_diagnostics` into per-stream collection reports so local collector stream rows do not remain unmeasured after connection-level coverage is proven complete.
 - [x] 3.6 Apply `state_stream` inheritance to local-device stream rows so co-emitted child streams do not remain unmeasured when the parent store scan is covered.
 - [x] 3.7 Treat committed checkpoint-window, full-inventory, snapshot, and singleton strategies as coverage-complete even when the run emitted only changed records.
+- [x] 3.8 Treat successful manual-only no-staleness runs as measured current-as-of instead of leaving source freshness unmeasured.
 
 ## 4. Connector Backfill
 
