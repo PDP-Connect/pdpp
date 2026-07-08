@@ -54,10 +54,10 @@ const MANUAL_UPLOAD_RUNNING_LABEL = /runningLabel="Import running"/;
 const STATIC_SECRET_CAPTURE_RESOLVED_ONCE =
   /const staticSecretCapture = staticSecretCredentialCaptureFromManifest\(manifest\)/;
 const STATIC_SECRET_UPDATE_PRECEDES_BROWSER_SESSION =
-  /if \(staticSecretCapture !== null\) \{[\s\S]{0,180}return updateCredentialHref\(connectorId, connectorInstanceId \?\? connectionId\);[\s\S]{0,180}if \(isBrowserBoundConnector\(connectorId\)\) \{/;
+  /if \(storedCredentialUpdateHref !== null\) \{[\s\S]{0,180}return storedCredentialUpdateHref;[\s\S]{0,180}if \(browserSessionRepairHref !== null\) \{/;
 const STATIC_SECRET_UPDATE_CAPABILITY_PASSED =
-  /hasStaticSecretCredentialUpdate=\{staticSecretCapture !== null && !sessionBound\}/;
-const STATIC_SECRET_UPDATE_LINK_VISIBLE = /credentialUpdateHref && !revoked && hasStaticSecretCredentialUpdate/;
+  /hasStaticSecretCredentialUpdate=\{\s*storedCredentialUpdateHref !== null && !sessionBound && primaryActionSurface !== "stored_credential"\s*\}/;
+const STATIC_SECRET_UPDATE_LINK_VISIBLE = /storedCredentialUpdateHref && !revoked && hasStaticSecretCredentialUpdate/;
 const NON_SYNC_NOTICE = /return <PrimaryActionNotice action=\{primaryAction\} \/>/;
 const DEVICE_WAIT_NOTICE_TESTID = /data-testid="detail-action-device-wait"/;
 // The "Click Sync now" copy must be gated behind the owner-syncable branch of

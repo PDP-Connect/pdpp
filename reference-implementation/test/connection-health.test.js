@@ -286,6 +286,92 @@ test('credential: absent credential evidence preserves prior run-reason-derived 
   assert.equal(credentials?.message, 'The source rejected the configured credentials.');
 });
 
+// ─── Owner-action surface (complete-connection-repair-action-surfaces) ───────
+
+test('surface: no usable stored credential projects the stored_credential surface', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'auth_expired' }),
+      credential: { capable: true, present: false },
+    })
+  );
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.reason, CONNECTION_CONDITION_REASONS.CREDENTIAL_REQUIRED);
+  assert.equal(credentials?.remediation?.surface?.kind, 'stored_credential');
+});
+
+test('surface: a rejected stored credential projects the stored_credential surface', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'auth_expired' }),
+      credential: { capable: true, present: true, rejected: true },
+    })
+  );
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.message, 'The source rejected the configured credentials.');
+  assert.equal(credentials?.remediation?.surface?.kind, 'stored_credential');
+});
+
+test('surface: session_required on a managed browser surface projects the browser_session surface', () => {
+  // ChatGPT-shape: a static-secret-capable mixed connector whose run failed with a
+  // session-required reason, backed by a managed browser surface, and no stronger
+  // evidence that the stored credential itself was rejected. The repair route is
+  // browser/session, NOT static-secret capture.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'session_required' }),
+      remoteSurface: {
+        axis: 'idle',
+        leaseId: null,
+        leaseStatus: null,
+        profileKey: 'chatgpt',
+        surfaceHealth: null,
+        surfaceId: null,
+        waitReason: null,
+      },
+    })
+  );
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.remediation?.surface?.kind, 'browser_session');
+  // Honesty: a session-required failure does not assert the stored credential was rejected.
+  assert.doesNotMatch(credentials?.message ?? '', /rejected/i);
+});
+
+test('surface: session_required yields to stored_credential when durable evidence says the credential was rejected', () => {
+  // Even with a managed browser surface and a session-required reason, a durable
+  // stored_credential_rejected verdict is stronger evidence: route to capture.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'session_required' }),
+      credential: { capable: true, present: true, rejected: true },
+      remoteSurface: {
+        axis: 'idle',
+        leaseId: null,
+        leaseStatus: null,
+        profileKey: 'chatgpt',
+        surfaceHealth: null,
+        surfaceId: null,
+        waitReason: null,
+      },
+    })
+  );
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.remediation?.surface?.kind, 'stored_credential');
+});
+
+test('surface: session_required with no managed browser surface preserves stored_credential routing', () => {
+  // Without managed-browser-surface evidence there is no session to repair, so the
+  // prior static-secret behavior is preserved (rejected credential capture).
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null, reasonCode: 'session_required' }),
+    })
+  );
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.remediation?.surface?.kind, 'stored_credential');
+});
+
 test('conditions: credential diagnostics redact token-shaped source details', () => {
   const secret = 'ghp_abcdefghijklmnopqrstuvwxyz123456';
   const snap = computeConnectionHealth(

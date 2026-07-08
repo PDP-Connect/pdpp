@@ -39,6 +39,7 @@ import {
   type ForwardDisposition,
   isAssistedRefresh,
   isManualRefreshOnly,
+  type OwnerActionSurface,
 } from "./connection-health.ts";
 
 // ─── Public verdict types ──────────────────────────────────────────────────
@@ -180,6 +181,8 @@ export interface RequiredAction {
   readonly remediation?: ActionRemediation;
   /** The single unified satisfaction contract for this action. */
   readonly satisfied_when: SatisfactionContract;
+  /** Bounded product surface this owner action opens. */
+  readonly surface?: OwnerActionSurface;
   /**
    * DERIVED from the forward disposition — `terminal === (forward_disposition ===
    * "terminal")`. Never an independent value (design D2 / invariant 4).
@@ -794,6 +797,7 @@ function buildRequiredActions(
       urgency: "soon",
       affects: terminalStreamIds(streams),
       cta: terminalCoverageCta(snapshot, disposition),
+      surface: { kind: "maintainer" },
       terminal: true,
       satisfied_when: { kind: "none" },
     });
@@ -807,6 +811,7 @@ function buildRequiredActions(
       urgency: "now",
       affects: [],
       cta: "Reconnect this account",
+      surface: credentialRepairSurface(snapshot),
       terminal,
       satisfied_when: { kind: "credential_present_and_unrejected" },
     });
@@ -820,6 +825,7 @@ function buildRequiredActions(
       urgency: "now",
       affects: [],
       cta: "Complete the requested action",
+      surface: { kind: "provider_interaction" },
       terminal,
       satisfied_when: { kind: "attention_resolved" },
     });
@@ -842,6 +848,7 @@ function buildRequiredActions(
       affects: [],
       cta: "Retrying local uploads — no action needed",
       remediation,
+      surface: { kind: "local_device" },
       terminal: false,
       satisfied_when: { kind: "none" },
     });
@@ -861,6 +868,7 @@ function buildRequiredActions(
       affects: [],
       cta: remediation.label,
       remediation,
+      surface: { kind: "local_device" },
       terminal: false,
       satisfied_when: { kind: "attention_resolved" },
     });
@@ -875,6 +883,7 @@ function buildRequiredActions(
       urgency: "soon",
       affects: [],
       cta: "Refresh now",
+      surface: { kind: "runtime_retry" },
       terminal: false,
       satisfied_when: { kind: "confirming_run_succeeded" },
     });
@@ -891,6 +900,7 @@ function buildRequiredActions(
       urgency: "verifying",
       affects,
       cta: "Retry now",
+      surface: { kind: "runtime_retry" },
       terminal: false,
       satisfied_when: { kind: "gap_recovered" },
     });
@@ -906,6 +916,7 @@ function buildRequiredActions(
       urgency: "verifying",
       affects: resumableStreamIds(streams),
       cta: "Collecting — no action needed",
+      surface: { kind: "none" },
       terminal: false,
       satisfied_when: { kind: "none" },
     });
@@ -913,6 +924,13 @@ function buildRequiredActions(
 
   actions.sort((a, b) => URGENCY_RANK[a.urgency] - URGENCY_RANK[b.urgency]);
   return actions;
+}
+
+function credentialRepairSurface(snapshot: ConnectionHealthSnapshot): OwnerActionSurface {
+  const condition = snapshot.conditions.find(
+    (item) => item.type === "CredentialsValid" && item.status === "false" && item.current
+  );
+  return condition?.remediation?.surface ?? { kind: "stored_credential" };
 }
 
 function terminalStreamIds(streams: readonly StreamRollup[]): string[] {

@@ -147,6 +147,20 @@ export type SharedConnectionConditionReason =
 
 const CONDITION_REASON = CONNECTION_CONDITION_REASONS;
 
+export type OwnerActionSurfaceKind =
+  | "browser_session"
+  | "local_device"
+  | "maintainer"
+  | "none"
+  | "provider_interaction"
+  | "runtime_retry"
+  | "schedule"
+  | "stored_credential";
+
+export interface OwnerActionSurface {
+  readonly kind: OwnerActionSurfaceKind;
+}
+
 export interface ConnectionConditionRemediation {
   readonly action:
     | "check_runtime"
@@ -158,6 +172,7 @@ export interface ConnectionConditionRemediation {
     | "wait";
   readonly label: string;
   readonly retryable: boolean;
+  readonly surface?: OwnerActionSurface;
   readonly target: string | null;
 }
 
@@ -1791,6 +1806,7 @@ function credentialRequiredCondition(): ConnectionHealthCondition {
       action: "refresh_credentials",
       label: "Reconnect this account",
       retryable: false,
+      surface: { kind: "stored_credential" },
       target: "credentials",
     },
   });
@@ -1816,7 +1832,27 @@ function credentialRejectedCondition(reason: string | null): ConnectionHealthCon
       action: "refresh_credentials",
       label: "Reconnect this account",
       retryable: false,
+      surface: { kind: "stored_credential" },
       target: "credentials",
+    },
+  });
+}
+
+function browserSessionRequiredCondition(reason: string | null): ConnectionHealthCondition {
+  return condition({
+    type: "CredentialsValid",
+    status: "false",
+    severity: "blocked",
+    reason: normalizeConditionReason(reason, "session_required"),
+    message: "The authenticated browser session is not active.",
+    origin: "readiness",
+    sensitivity: "secret_redacted",
+    remediation: {
+      action: "refresh_credentials",
+      label: "Reconnect this account",
+      retryable: false,
+      surface: { kind: "browser_session" },
+      target: "browser_session",
     },
   });
 }
@@ -1831,6 +1867,14 @@ function credentialsValidCondition(input: ComputeConnectionHealthInput): Connect
   // "credential required" (capture one); otherwise -> rejected (prior behavior,
   // and the default when no credential evidence is supplied).
   if (reason && isCredentialReason(reason)) {
+    if (
+      isBrowserSessionRepairReason(reason) &&
+      hasManagedBrowserSurfaceEvidence(input.remoteSurface ?? null) &&
+      credentialRejectedDurably !== true &&
+      !isDefinitiveStoredCredentialRejectionReason(reason)
+    ) {
+      return browserSessionRequiredCondition(reason);
+    }
     if (credentialAbsent && !credentialRejectedDurably) {
       return credentialRequiredCondition();
     }
@@ -2524,12 +2568,38 @@ function isCredentialReason(reason: string): boolean {
     normalized.includes("login") ||
     normalized.includes("reauth") ||
     normalized.includes("session_expired") ||
+    normalized.includes("session_required") ||
+    normalized.includes("session_failed") ||
     normalized.includes("token") ||
     normalized.includes("bad_credentials") ||
     normalized.includes("invalid_grant") ||
     normalized.includes("invalid_client") ||
     normalized.includes("invalid_token") ||
     normalized.includes("401")
+  );
+}
+
+function isBrowserSessionRepairReason(reason: string): boolean {
+  const normalized = conditionClassifierText(reason);
+  return (
+    normalized.includes("session_required") ||
+    normalized.includes("session_failed") ||
+    normalized.includes("session_expired")
+  );
+}
+
+function hasManagedBrowserSurfaceEvidence(remoteSurface: ConnectionRemoteSurfaceEvidence | null): boolean {
+  return remoteSurface !== null && remoteSurface.axis !== "none";
+}
+
+function isDefinitiveStoredCredentialRejectionReason(reason: string): boolean {
+  const normalized = conditionClassifierText(reason);
+  return (
+    normalized.includes("stored_credential_rejected") ||
+    normalized.includes("bad_credentials") ||
+    normalized.includes("credential_rejected") ||
+    normalized.includes("invalid_password") ||
+    normalized.includes("wrong_password")
   );
 }
 

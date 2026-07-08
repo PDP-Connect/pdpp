@@ -497,18 +497,26 @@ function ConnectorPageView({
   // and `isBrowserBoundConnector` facts.
   const sessionBound = isBrowserSessionBoundConnection(sourceBindingKind);
   const staticSecretCapture = staticSecretCredentialCaptureFromManifest(manifest);
+  const repairConnectionId = connectorInstanceId ?? connectionId;
+  const storedCredentialUpdateHref =
+    staticSecretCapture === null ? null : updateCredentialHref(connectorId, repairConnectionId);
+  const browserSessionRepairHref =
+    sessionBound || isBrowserBoundConnector(connectorId)
+      ? browserSessionReconnectHref(connectorId, repairConnectionId)
+      : null;
   const credentialUpdateHref = (() => {
     if (sessionBound) {
-      return browserSessionReconnectHref(connectorId, connectorInstanceId ?? connectionId);
+      return browserSessionRepairHref;
     }
-    if (staticSecretCapture !== null) {
-      return updateCredentialHref(connectorId, connectorInstanceId ?? connectionId);
+    if (storedCredentialUpdateHref !== null) {
+      return storedCredentialUpdateHref;
     }
-    if (isBrowserBoundConnector(connectorId)) {
-      return browserSessionReconnectHref(connectorId, connectorInstanceId ?? connectionId);
+    if (browserSessionRepairHref !== null) {
+      return browserSessionRepairHref;
     }
     return null;
   })();
+  const primaryActionSurface = connectionPrimaryAction?.surface?.kind ?? null;
   // The detail-page primary action is modality-aware for the same reason the
   // records row is (`derivePrimaryRowAction`): existing owner-runnable
   // connections get Sync now, while push-mode local-collector connections render
@@ -528,12 +536,15 @@ function ConnectorPageView({
       <PageHeader
         actions={
           <ConnectorHeaderActions
+            browserSessionRepairHref={browserSessionRepairHref}
             connectionId={connectorInstanceId}
             connectionLabelSeed={connectionLabelSeed}
             connectorId={connectorId}
             credentialUpdateHref={credentialUpdateHref}
             displayName={displayName}
-            hasStaticSecretCredentialUpdate={staticSecretCapture !== null && !sessionBound}
+            hasStaticSecretCredentialUpdate={
+              storedCredentialUpdateHref !== null && !sessionBound && primaryActionSurface !== "stored_credential"
+            }
             manualUploadHref={manualUploadHref}
             overview={overview}
             primaryAction={primaryAction}
@@ -541,6 +552,7 @@ function ConnectorPageView({
             renderedAction={connectionPrimaryAction}
             revoked={revoked}
             running={running}
+            storedCredentialUpdateHref={storedCredentialUpdateHref}
             syncIdleLabel={syncIdleLabel}
           />
         }
@@ -638,6 +650,7 @@ function ConnectorPageView({
 }
 
 function ConnectorHeaderActions({
+  browserSessionRepairHref,
   connectionId,
   connectionLabelSeed,
   connectorId,
@@ -651,8 +664,10 @@ function ConnectorHeaderActions({
   renderedAction,
   revoked,
   running,
+  storedCredentialUpdateHref,
   syncIdleLabel,
 }: {
+  browserSessionRepairHref: string | null;
   connectionId: string | null;
   connectionLabelSeed: string;
   connectorId: string;
@@ -666,6 +681,7 @@ function ConnectorHeaderActions({
   renderedAction: RefRequiredAction | null;
   revoked: boolean;
   running: boolean;
+  storedCredentialUpdateHref: string | null;
   syncIdleLabel: string;
 }) {
   return (
@@ -685,16 +701,17 @@ function ConnectorHeaderActions({
           rotate credentials without breaking the connection. Browser-session
           reconnect remains available only when no stored-credential surface is
           declared for the connector. */}
-      {credentialUpdateHref && !revoked && hasStaticSecretCredentialUpdate ? (
+      {storedCredentialUpdateHref && !revoked && hasStaticSecretCredentialUpdate ? (
         <Link
           className={buttonVariants({ variant: "ghost", size: "sm" })}
-          href={credentialUpdateHref}
+          href={storedCredentialUpdateHref}
           title="Replace the stored credential for this connection. Records, history, and schedule are preserved."
         >
           Update credential
         </Link>
       ) : null}
       <ConnectorPrimaryHeaderAction
+        browserSessionRepairHref={browserSessionRepairHref}
         connectionId={connectionId}
         connectorId={connectorId}
         credentialUpdateHref={credentialUpdateHref}
@@ -704,6 +721,7 @@ function ConnectorHeaderActions({
         renderedAction={renderedAction}
         revoked={revoked}
         running={running}
+        storedCredentialUpdateHref={storedCredentialUpdateHref}
         syncIdleLabel={syncIdleLabel}
       />
       <RenameConnection
@@ -716,6 +734,7 @@ function ConnectorHeaderActions({
 }
 
 function ConnectorPrimaryHeaderAction({
+  browserSessionRepairHref,
   connectionId,
   connectorId,
   credentialUpdateHref,
@@ -725,8 +744,10 @@ function ConnectorPrimaryHeaderAction({
   renderedAction,
   revoked,
   running,
+  storedCredentialUpdateHref,
   syncIdleLabel,
 }: {
+  browserSessionRepairHref: string | null;
   connectionId: string | null;
   connectorId: string;
   credentialUpdateHref: string | null;
@@ -736,6 +757,7 @@ function ConnectorPrimaryHeaderAction({
   renderedAction: RefRequiredAction | null;
   revoked: boolean;
   running: boolean;
+  storedCredentialUpdateHref: string | null;
   syncIdleLabel: string;
 }) {
   if (revoked) {
@@ -753,11 +775,13 @@ function ConnectorPrimaryHeaderAction({
     return (
       <RenderedVerdictHeaderAction
         action={renderedAction}
+        browserSessionRepairHref={browserSessionRepairHref}
         connectionId={connectionId}
         connectorId={connectorId}
         credentialUpdateHref={credentialUpdateHref}
         displayName={displayName}
         running={running}
+        storedCredentialUpdateHref={storedCredentialUpdateHref}
       />
     );
   }
@@ -809,20 +833,60 @@ function ConnectorPrimaryHeaderAction({
   return <PrimaryActionNotice action={primaryAction} />;
 }
 
+function reauthActionPresentation({
+  action,
+  browserSessionRepairHref,
+  connectorId,
+  credentialUpdateHref,
+  storedCredentialUpdateHref,
+}: {
+  action: RefRequiredAction;
+  browserSessionRepairHref: string | null;
+  connectorId: string;
+  credentialUpdateHref: string | null;
+  storedCredentialUpdateHref: string | null;
+}): { href: string; label: string; title: string } {
+  const fallbackHref = credentialUpdateHref ?? addSourceHrefForConnector(connectorId);
+  switch (action.surface?.kind) {
+    case "stored_credential":
+      return {
+        href: storedCredentialUpdateHref ?? fallbackHref,
+        label: "Update credential",
+        title: "Replace the stored credential for this connection. Records, history, and schedule are preserved.",
+      };
+    case "browser_session":
+      return {
+        href: browserSessionRepairHref ?? fallbackHref,
+        label: "Reconnect account",
+        title: "Open the secure browser session for this connection. Records, history, and schedule are preserved.",
+      };
+    default:
+      return {
+        href: fallbackHref,
+        label: action.cta,
+        title: "Repair this source while preserving its existing records, history, and schedule when supported.",
+      };
+  }
+}
+
 function RenderedVerdictHeaderAction({
   action,
+  browserSessionRepairHref,
   connectionId,
   connectorId,
   credentialUpdateHref,
   displayName,
   running,
+  storedCredentialUpdateHref,
 }: {
   action: RefRequiredAction;
+  browserSessionRepairHref: string | null;
   connectionId: string | null;
   connectorId: string;
   credentialUpdateHref: string | null;
   displayName: string;
   running: boolean;
+  storedCredentialUpdateHref: string | null;
 }) {
   if (action.audience !== "owner" || action.satisfied_when.kind === "none") {
     return (
@@ -838,14 +902,21 @@ function RenderedVerdictHeaderAction({
     );
   }
   if (action.kind === "reauth") {
+    const repair = reauthActionPresentation({
+      action,
+      browserSessionRepairHref,
+      connectorId,
+      credentialUpdateHref,
+      storedCredentialUpdateHref,
+    });
     return (
       <Link
         className={buttonVariants({ variant: "default", size: "sm" })}
         data-testid="detail-action-rendered-verdict"
-        href={credentialUpdateHref ?? addSourceHrefForConnector(connectorId)}
-        title="Reconnect this source while preserving its existing records, history, and schedule when supported."
+        href={repair.href}
+        title={repair.title}
       >
-        {action.cta}
+        {repair.label}
       </Link>
     );
   }

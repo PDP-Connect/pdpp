@@ -704,6 +704,20 @@ export interface RefActionRemediation {
   target: RefActionRemediationTarget;
 }
 
+export type RefOwnerActionSurfaceKind =
+  | "browser_session"
+  | "local_device"
+  | "maintainer"
+  | "none"
+  | "provider_interaction"
+  | "runtime_retry"
+  | "schedule"
+  | "stored_credential";
+
+export interface RefOwnerActionSurface {
+  kind: RefOwnerActionSurfaceKind;
+}
+
 export interface RefSatisfactionContract {
   kind:
     | "attention_resolved"
@@ -722,6 +736,7 @@ export interface RefRequiredAction {
   kind: RefRequiredActionKind;
   remediation?: RefActionRemediation;
   satisfied_when: RefSatisfactionContract;
+  surface?: RefOwnerActionSurface;
   terminal: boolean;
   urgency: RefActionUrgency;
 }
@@ -913,6 +928,7 @@ export interface RefConnectionConditionRemediation {
   action: string;
   label: string;
   retryable: boolean;
+  surface?: RefOwnerActionSurface;
   target: string | null;
 }
 

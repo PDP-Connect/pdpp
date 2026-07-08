@@ -567,6 +567,73 @@ test('channel: missing credentials are owner-repairable reauth, not maintainer c
   assert.ok(!JSON.stringify(v).includes('restore missing coverage'));
 });
 
+// ─── Owner-action surface on reauth (complete-connection-repair-action-surfaces) ───
+
+function credentialConditionWithSurface(surfaceKind) {
+  return condition({
+    type: 'CredentialsValid',
+    id: `CredentialsValid:${surfaceKind}`,
+    reason: surfaceKind === 'browser_session' ? 'session_required' : 'credential_rejected',
+    status: 'false',
+    severity: 'blocked',
+    origin: 'readiness',
+    remediation: {
+      action: 'refresh_credentials',
+      label: 'Reconnect this account',
+      retryable: false,
+      surface: { kind: surfaceKind },
+      target: surfaceKind === 'browser_session' ? 'browser_session' : 'credentials',
+    },
+  });
+}
+
+test('surface: reauth carries the stored_credential surface from the credential condition', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'blocked',
+      axes: { attention: 'none' },
+      conditions: [credentialConditionWithSurface('stored_credential')],
+    }),
+    [stream()],
+    null,
+    true
+  );
+  const reauth = v.required_actions.find((a) => a.kind === 'reauth');
+  assert.equal(reauth?.surface?.kind, 'stored_credential');
+});
+
+test('surface: reauth carries the browser_session surface for a session-required failure', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'blocked',
+      axes: { attention: 'none' },
+      conditions: [credentialConditionWithSurface('browser_session')],
+    }),
+    [stream()],
+    null,
+    true
+  );
+  const reauth = v.required_actions.find((a) => a.kind === 'reauth');
+  assert.equal(reauth?.surface?.kind, 'browser_session');
+});
+
+test('surface: reauth falls back to stored_credential when the condition carries no surface', () => {
+  // Compatibility: an older projection condition without a remediation surface
+  // still yields a reauth action, defaulted to stored_credential capture.
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'blocked',
+      axes: { attention: 'none' },
+      conditions: [credentialRejectedCondition()],
+    }),
+    [stream()],
+    null,
+    true
+  );
+  const reauth = v.required_actions.find((a) => a.kind === 'reauth');
+  assert.equal(reauth?.surface?.kind, 'stored_credential');
+});
+
 test('channel: stalled outbox state-read block asks for re-run, not dead-letter retry', () => {
   const v = synthesizeRenderedVerdict(
     snapshot({
