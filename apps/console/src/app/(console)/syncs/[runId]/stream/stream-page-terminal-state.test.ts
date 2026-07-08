@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { resolveNoAssistanceEndedTerminalStatus, selectNoAssistanceStreamState } from "./stream-state.ts";
 
 const pageSource = readFileSync(fileURLToPath(new URL("./page.tsx", import.meta.url)), "utf8");
+const streamViewerSource = readFileSync(fileURLToPath(new URL("./stream-viewer.tsx", import.meta.url)), "utf8");
 const TERMINAL_STATUS_SELECTOR_RE =
   /selectNoAssistanceStreamState\(\{\s*runHandleStatus:\s*runStatus\?\.status \?\? null,\s*terminalStatus:\s*envelope\.terminal_status,\s*\}\)/;
 const RUN_STATUS_FETCH_RE =
@@ -34,6 +35,8 @@ const BROWSER_ASSISTANCE_RESPONSE_CONTRACT_RE =
   /interactionRequiresResponse=\{streamableAssistance\.responseContract === "response_required"\}/;
 const DEFERRED_BROWSER_SLOT_COPY_RE = /Secure browser slot unavailable\./;
 const DEFERRED_BROWSER_SLOT_NOT_DANGER_RE = /terminalStatus === "deferred"[\s\S]{0,600}border border-border bg-card/;
+const RESOLVED_SURFACE_ACCEPTS_RUN_ID_RE = /export function ResolvedSurface\(\{ connector, runId \}/;
+const RESOLVED_SURFACE_RUN_LINK_RE = /href=\{`\/syncs\/\$\{encodeURIComponent\(runId\)\}`\}/;
 
 test("no-assistance stream state distinguishes success, terminal failure, and active runs", () => {
   assert.equal(selectNoAssistanceStreamState({ terminalStatus: "completed" }), "resolved");
@@ -101,4 +104,11 @@ test("no-assistance poller explicitly transitions into current browser assistanc
   assert.match(pollerSource, POLLER_STREAM_READY_RE);
   assert.match(pollerSource, POLLER_HARD_RELOAD_RE);
   assert.match(pageSource, UNAVAILABLE_STREAM_POLLER_RE);
+});
+
+test("resolved browser stream offers reliable navigation instead of blocked tab close", () => {
+  assert.match(streamViewerSource, RESOLVED_SURFACE_ACCEPTS_RUN_ID_RE);
+  assert.match(streamViewerSource, RESOLVED_SURFACE_RUN_LINK_RE);
+  assert.doesNotMatch(streamViewerSource, /window\.close\(\)/);
+  assert.doesNotMatch(streamViewerSource, />\s*Close this tab\s*</);
 });

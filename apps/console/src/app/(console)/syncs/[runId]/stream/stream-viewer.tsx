@@ -68,6 +68,7 @@ import {
   parseUrlChangedMessage,
 } from "@opendatalabs/remote-surface/protocol";
 import {
+  buttonVariants,
   IcButton,
   IcDialog,
   IcDialogBackdrop,
@@ -5158,27 +5159,11 @@ function PopupToast({ message }: { message: string }) {
 
 /**
  * Shown when the run timeline reports the pending interaction has been
- * satisfied. Quiet, declarative, ephemeral. Attempts `window.close()` for
- * popup-opened tabs; the explicit button covers the rest.
+ * satisfied. Quiet and declarative; never promises browser-controlled tab
+ * closing because browsers block scripted tab closing for normal navigations.
  */
-export function ResolvedSurface({ connector }: { connector: ConnectorContext | null }) {
+export function ResolvedSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
   const subject = connector?.displayName ?? "The connector";
-
-  useEffect(() => {
-    const id = window.setTimeout(() => {
-      if (typeof window === "undefined") {
-        return;
-      }
-      try {
-        if (window.opener || window.history.length <= 1) {
-          window.close();
-        }
-      } catch {
-        /* close blocked; the explicit button stays available */
-      }
-    }, 6000);
-    return () => window.clearTimeout(id);
-  }, []);
 
   return (
     <main className="relative min-h-dvh">
@@ -5192,21 +5177,15 @@ export function ResolvedSurface({ connector }: { connector: ConnectorContext | n
           <p className="pdpp-body-lg text-foreground" id="stream-resolved-title">
             {subject} is back on it.
           </p>
-          <p className="pdpp-body text-foreground">You can close this tab.</p>
-          <IcButton
-            className="h-12 w-full"
-            onClick={() => {
-              try {
-                window.close();
-              } catch {
-                /* the tab may not be closeable */
-              }
-            }}
-            size="lg"
-            type="button"
+          <p className="pdpp-body text-foreground">
+            The browser step is complete. You can close this tab with your browser controls, or open the run timeline.
+          </p>
+          <Link
+            className={buttonVariants({ variant: "default", size: "lg", className: "h-12 w-full justify-center" })}
+            href={`/syncs/${encodeURIComponent(runId)}`}
           >
-            Close this tab
-          </IcButton>
+            Open run timeline
+          </Link>
         </section>
       </div>
     </main>

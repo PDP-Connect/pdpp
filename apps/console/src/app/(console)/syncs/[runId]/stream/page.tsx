@@ -133,7 +133,7 @@ function renderNoAssistanceSurface({
     terminalStatus: envelope.terminal_status,
   });
   if (noAssistanceState === "resolved") {
-    return <ResolvedSurface connector={connector} />;
+    return <ResolvedSurface connector={connector} runId={runId} />;
   }
   if (noAssistanceState === "ended") {
     return (
@@ -175,7 +175,7 @@ export default async function RunInteractionStreamPage({
       displayName: "Strava",
     };
     if (sp._state === "resolved") {
-      return <ResolvedSurface connector={previewConnector} />;
+      return <ResolvedSurface connector={previewConnector} runId={runId} />;
     }
     return (
       <StreamSurface
