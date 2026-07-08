@@ -19,6 +19,7 @@ import {
   resolveWebPushConfig,
   createWebPushSubscriptionStore,
 } from './web-push-notifications.js';
+import { unresolvedOwnerActionEvidenceFromSummary } from './owner-action-gate.js';
 import { getSyncState, putSyncState } from './records.js';
 import { getDefaultConnectorAttentionStore } from './stores/connector-attention-store.ts';
 import { getConnectorAttentionProjection, getConnectorSummaryForRoute } from './ref-control.ts';
@@ -270,6 +271,19 @@ export function createReferenceSchedulerManager({
         for (const record of projection.records) {
           if (!isAttentionHealthRelevant(record, nowIso)) continue;
           return { key: record.dedupe_key || record.id, reason: record.reason_code };
+        }
+        try {
+          const routeId = connectorInstanceId || connectorId;
+          const summary = await getConnectorSummaryForRoute(routeId, controller);
+          const ownerAction = unresolvedOwnerActionEvidenceFromSummary(summary, routeId);
+          if (ownerAction) {
+            return ownerAction;
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger?.warn?.(
+            `[scheduler] owner-action projection failed for ${connectorId}/${connectorInstanceId || connectorId}: ${message}`,
+          );
         }
         return null;
       },

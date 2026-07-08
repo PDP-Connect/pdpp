@@ -240,6 +240,7 @@ import {
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
+import { unresolvedOwnerActionEvidenceFromSummary } from './owner-action-gate.js';
 import {
   markConnectorSummaryEvidenceDirty,
   reconcileDirtyConnectorSummaryEvidence,
@@ -5651,6 +5652,19 @@ function createReferenceSchedulerManager({
         for (const record of projection.records) {
           if (!isAttentionHealthRelevant(record, nowIso)) continue;
           return { key: record.dedupe_key || record.id, reason: record.reason_code };
+        }
+        try {
+          const routeId = connectorInstanceId || connectorId;
+          const summary = await getConnectorSummaryForRoute(routeId, controller);
+          const ownerAction = unresolvedOwnerActionEvidenceFromSummary(summary, routeId);
+          if (ownerAction) {
+            return ownerAction;
+          }
+        } catch (err) {
+          logger.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            `[scheduler] owner-action projection failed for ${connectorId}/${connectorInstanceId || connectorId}`,
+          );
         }
         return null;
       },

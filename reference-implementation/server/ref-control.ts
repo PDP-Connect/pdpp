@@ -1657,9 +1657,10 @@ const GENERIC_TERMINAL_FAILURE_REASONS: ReadonlySet<string> = new Set([
  * §10-C: recover a credential-specific reason from a run whose top-level
  * `failure_reason` is a GENERIC placeholder (e.g. `connector_reported_failed`)
  * but whose degrading known-gaps signal an auth failure (a 401/403 message or a
- * `refresh_credentials` recovery hint). Returns `credentials_required` so the
- * downstream `isCredentialReason` gate projects `needs_attention` + a Reconnect
- * CTA (and the §10-F escalation push) instead of a silent generic failure.
+ * `refresh_credentials` recovery hint). Returns the most specific auth reason
+ * the gap proves so the downstream `isCredentialReason` gate can preserve the
+ * repair surface (browser session vs stored credential) instead of collapsing a
+ * session repair into a credential update.
  * Returns `null` when the failure_reason is already specific (left untouched) or
  * no known-gap signals credentials.
  */
@@ -1690,7 +1691,7 @@ function credentialReasonFromGenericFailure(run: ConnectorRunSummary | null): st
       continue;
     }
     if (recoveryAction === "refresh_credentials" || isAuthFailureMessage(message)) {
-      return "credentials_required";
+      return browserSessionReasonFromAuthMessage(message) ?? "credentials_required";
     }
   }
   return null;
@@ -1710,12 +1711,30 @@ function isAuthFailureMessage(message: unknown): boolean {
   return (
     text.includes("401") ||
     text.includes("403") ||
-    text.includes("auth") ||
+    text.includes("auth_missing") ||
+    text.includes("authentication_error") ||
     text.includes("credential") ||
     text.includes("session_expired") ||
+    text.includes("session_required") ||
     text.includes("reauth") ||
+    text.includes("unauthorized") ||
+    text.includes("forbidden") ||
     text.includes("invalid_token")
   );
+}
+
+function browserSessionReasonFromAuthMessage(message: unknown): string | null {
+  if (typeof message !== "string" || message.length === 0) {
+    return null;
+  }
+  const text = message.toLowerCase();
+  if (text.includes("session_required")) {
+    return "session_required";
+  }
+  if (text.includes("session_expired")) {
+    return "session_expired";
+  }
+  return null;
 }
 
 function isSourceUnavailableMessage(message: unknown): boolean {

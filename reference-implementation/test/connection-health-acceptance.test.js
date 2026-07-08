@@ -27,7 +27,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createAttention } from '../runtime/attention.ts';
+import { createAttention, transition } from '../runtime/attention.ts';
 import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connection-health-policy.ts';
 import { projectConnectorSummaryConnectionHealth } from '../server/ref-control.ts';
 
@@ -77,6 +77,35 @@ function failedRun(overrides = {}) {
   };
 }
 
+function chatGptSessionRequiredRun() {
+  return failedRun({
+    failure_reason: 'connector_reported_failed',
+    known_gaps: [
+      {
+        kind: 'run_failed',
+        reason: 'connector_reported_failed',
+        stream: null,
+        severity: 'actionable',
+        message:
+          'chatgpt_preprogress_failure: refresh_credentials: chatgpt_session_failed: chatgpt_session_required: ChatGPT session is not active.',
+        recovery_hint: { action: 'refresh_credentials', retryable: false },
+      },
+    ],
+  });
+}
+
+function readyBrowserSurface() {
+  return {
+    axis: 'idle',
+    leaseId: null,
+    leaseStatus: null,
+    profileKey: 'chatgpt:cin_test',
+    surfaceHealth: 'ready',
+    surfaceId: 'surface_chatgpt',
+    waitReason: null,
+  };
+}
+
 function backoffSchedule({ failures = 3, reasonClass = 'failure:rate_limited', backoffApplied = true } = {}) {
   return {
     enabled: true,
@@ -104,6 +133,10 @@ function openOtpAttention() {
     action_target: 'dashboard',
     now: '2026-05-19T11:50:00.000Z',
   });
+}
+
+function terminalOtpAttention(lifecycle) {
+  return transition(openOtpAttention(), { to: lifecycle, now: NOW });
 }
 
 function assertAxesPresent(snap) {
@@ -354,6 +387,43 @@ test('acceptance 7.1: structured open attention drives needs_attention with stru
   assert.equal(snap.next_action?.attention_id, 'att_otp');
   assert.equal(snap.next_action?.action_target, 'dashboard');
   assert.equal(snap.axes.attention, 'open');
+});
+
+test('acceptance 7.1: terminal attention rows are history, not current owner action', () => {
+  for (const lifecycle of ['resolved', 'expired', 'cancelled']) {
+    const run = succeededRun();
+    const snap = projectConnectorSummaryConnectionHealth({
+      attentionRecords: [terminalOtpAttention(lifecycle)],
+      freshness: FRESH,
+      lastRun: run,
+      lastSuccessfulRun: run,
+      nowIso: NOW,
+      outbox: { axis: 'idle' },
+      schedule: { enabled: true },
+    });
+
+    assertHeadline(snap, 'healthy');
+    assert.equal(snap.reason_code, null, `${lifecycle} attention should not supply the current reason`);
+    assert.equal(snap.next_action, null, `${lifecycle} attention should not supply a current CTA`);
+    assert.equal(snap.axes.attention, 'none', `${lifecycle} attention should not count as open attention`);
+  }
+});
+
+test('acceptance 7.1: expired prompt does not heal unresolved session-readiness evidence', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [terminalOtpAttention('expired')],
+    freshness: FRESH,
+    lastRun: chatGptSessionRequiredRun(),
+    lastSuccessfulRun: null,
+    nowIso: NOW,
+    remoteSurface: readyBrowserSurface(),
+    schedule: { enabled: true },
+  });
+
+  assertHeadline(snap, 'blocked');
+  assert.equal(snap.reason_code, 'session_required');
+  assert.equal(snap.axes.attention, 'none');
+  assert.equal(snap.conditions?.find((c) => c.type === 'CredentialsValid')?.remediation?.surface?.kind, 'browser_session');
 });
 
 test('acceptance 7.1: cooling_off when scheduler backoff is delaying a retry below the give-up threshold', () => {
@@ -1013,6 +1083,24 @@ test('§10-C: a failed run whose known_gap is an auth 401 (flattened to a generi
     `expected a CredentialsValid:false condition (reconnect prompt), got conditions: ${JSON.stringify(snap.conditions?.map((c) => `${c.type}:${c.status}`))}`,
   );
   assert.equal(credentialCondition.remediation?.action, 'refresh_credentials');
+});
+
+test('§10-C: a flattened ChatGPT session-required gap preserves browser-session repair', () => {
+  const run = chatGptSessionRequiredRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: null,
+    remoteSurface: readyBrowserSurface(),
+    schedule: { enabled: true },
+  });
+
+  const credentialCondition = snap.conditions?.find((c) => c.type === 'CredentialsValid' && c.status === 'false');
+  assert.ok(credentialCondition, 'session-required gap should produce a reconnect condition');
+  assert.equal(credentialCondition.reason, 'session_required');
+  assert.equal(credentialCondition.remediation?.action, 'refresh_credentials');
+  assert.equal(credentialCondition.remediation?.surface?.kind, 'browser_session');
+  assert.equal(credentialCondition.remediation?.target, 'browser_session');
 });
 
 test('§10-C control: a non-auth generic failure does NOT manufacture a credential prompt', () => {

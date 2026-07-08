@@ -241,6 +241,89 @@ test('attention suppression does not bleed across connections', async () => {
   }
 });
 
+test('attention suppression is scoped by connector instance for duplicate connector types', async () => {
+  // Two schedules for the same connector type mirror two ChatGPT accounts.
+  // The rendered owner action for one connection must not suppress the peer
+  // just because both schedules share connectorId.
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-attn-same-connector-'));
+  const blockedConnector = writeUnusedConnector(tmpDir, 'chatgpt-blocked.mjs');
+  const peerConnector = writeUnusedConnector(tmpDir, 'chatgpt-peer.mjs');
+  const completedRuns = [];
+
+  const scheduler = createScheduler({
+    connectors: [
+      {
+        connectorId: 'chatgpt',
+        connectorInstanceId: 'cin_chatgpt_blocked',
+        connectorPath: blockedConnector.connectorPath,
+        manifest: POLICY_BLOCKED_MANIFEST,
+        intervalMs: 25,
+        maxRetries: 0,
+        ownerToken: 'owner-token',
+      },
+      {
+        connectorId: 'chatgpt',
+        connectorInstanceId: 'cin_chatgpt_peer',
+        connectorPath: peerConnector.connectorPath,
+        manifest: POLICY_BLOCKED_MANIFEST,
+        intervalMs: 25,
+        maxRetries: 0,
+        ownerToken: 'owner-token',
+      },
+    ],
+    rsUrl: 'http://localhost.invalid',
+    onInteraction: cancelledInteractionResponse,
+    onRunComplete: (record) => completedRuns.push(record),
+    hasUnresolvedAttention: (_connectorId, connectorInstanceId) =>
+      connectorInstanceId === 'cin_chatgpt_blocked'
+        ? {
+            key: 'owner_action:cin_chatgpt_blocked:reauth:browser_session:session_required',
+            reason: 'session_required',
+          }
+        : null,
+  });
+
+  try {
+    scheduler.start();
+    await waitFor(
+      () =>
+        completedRuns.some(
+          (r) =>
+            r.connectorInstanceId === 'cin_chatgpt_blocked' &&
+            /attention_unresolved/.test(r.error || ''),
+        ) &&
+        completedRuns.some(
+          (r) =>
+            r.connectorInstanceId === 'cin_chatgpt_peer' &&
+            /automation_policy_blocked/.test(r.error || ''),
+        ),
+      5000,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    scheduler.stop();
+
+    const blockedAttention = completedRuns.filter(
+      (r) => r.connectorInstanceId === 'cin_chatgpt_blocked' && /attention_unresolved/.test(r.error || ''),
+    );
+    assert.equal(blockedAttention.length, 1, 'blocked ChatGPT connection gets one deduped attention skip');
+
+    const peerAttention = completedRuns.filter(
+      (r) => r.connectorInstanceId === 'cin_chatgpt_peer' && /attention_unresolved/.test(r.error || ''),
+    );
+    assert.equal(peerAttention.length, 0, 'peer ChatGPT connection must not inherit the blocked repair action');
+
+    const peerPolicy = completedRuns.filter(
+      (r) => r.connectorInstanceId === 'cin_chatgpt_peer' && /automation_policy_blocked/.test(r.error || ''),
+    );
+    assert.ok(peerPolicy.length >= 1, 'peer ChatGPT connection remains independently eligible');
+    assert.equal(readAttempts(blockedConnector.attemptsPath).length, 0);
+    assert.equal(readAttempts(peerConnector.attemptsPath).length, 0);
+  } finally {
+    scheduler.stop();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('resolved attention does not replay missed ticks — latest-only catch-up', async () => {
   // Toggle: attention is unresolved for several scheduler ticks, then
   // resolves. The latest-only catch-up rule says the scheduler must not

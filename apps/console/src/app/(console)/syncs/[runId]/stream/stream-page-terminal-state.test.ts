@@ -14,6 +14,8 @@ const ENDED_SURFACE_GATE_RE =
   /noAssistanceState === "ended"[\s\S]{0,360}<RunEndedSurface[\s\S]{0,360}resolveNoAssistanceEndedTerminalStatus/;
 const CONTINUING_SURFACE_RE = /<RunContinuingSurface/;
 const CONTINUING_POLLER_RE = /<NoAssistanceRunPoller runId=\{runId\} \/>/;
+const UNAVAILABLE_STREAM_POLLER_RE =
+  /function UnavailableStreamSurface[\s\S]{0,520}<NoAssistanceRunPoller runId=\{runId\} \/>/;
 const PREPARING_BROWSER_SURFACE_GATE_RE =
   /hasActiveBrowserSurface\(envelope\.events\)[\s\S]{0,120}<PreparingBrowserSurface/;
 const PREPARING_BROWSER_SURFACE_COPY_RE = /Preparing the secure browser\./;
@@ -98,4 +100,5 @@ test("no-assistance poller explicitly transitions into current browser assistanc
   assert.match(pollerSource, POLLER_TIMELINE_PROBE_RE);
   assert.match(pollerSource, POLLER_STREAM_READY_RE);
   assert.match(pollerSource, POLLER_HARD_RELOAD_RE);
+  assert.match(pageSource, UNAVAILABLE_STREAM_POLLER_RE);
 });
