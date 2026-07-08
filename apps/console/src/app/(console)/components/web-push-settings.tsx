@@ -1,5 +1,6 @@
 "use client";
 
+import { buttonVariants } from "@pdpp/brand-react";
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import { useEffect, useReducer, useState } from "react";
 import type { WebPushConfig, WebPushSubscriptionSummary } from "../lib/ref-client.ts";
@@ -787,7 +788,7 @@ export function WebPushSettings({
           <div className="flex shrink-0 items-center gap-2">
             {enabled || unavailable ? null : (
               <button
-                className="rounded-md bg-foreground px-3 py-1.5 text-background text-sm disabled:opacity-50"
+                className={buttonVariants({ variant: "default", size: "sm" })}
                 disabled={busy}
                 onClick={enable}
                 type="button"
@@ -884,7 +885,7 @@ function WebPushSetupDetails({
       <p className="pdpp-caption mt-1 max-w-3xl text-muted-foreground">{caveat}</p>
       <div className="mt-3 flex flex-wrap gap-2">
         <button
-          className="rounded-md bg-foreground px-3 py-1.5 text-background text-sm disabled:opacity-50"
+          className={buttonVariants({ variant: "default", size: "sm" })}
           disabled={busy || Boolean(unavailable)}
           onClick={onEnable}
           type="button"

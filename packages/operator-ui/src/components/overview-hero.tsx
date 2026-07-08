@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { formatConnectorKeyForDisplay } from "../lib/connector-display.ts";
 import type { DatasetSummary } from "../lib/ref-client.ts";
+import { buttonVariants } from "../ui/button.tsx";
 import { Timestamp } from "../ui/timestamp.tsx";
 
 /**
@@ -334,10 +335,7 @@ function EmptyHero({
       </p>
       {addSourceHref ? (
         <p className="mt-4">
-          <Link
-            className="pdpp-caption inline-flex rounded-md border border-border/80 bg-foreground px-3 py-1.5 font-medium text-background transition-colors hover:bg-foreground/90"
-            href={addSourceHref}
-          >
+          <Link className={buttonVariants({ variant: "default", size: "sm" })} href={addSourceHref}>
             Add a data source →
           </Link>
         </p>

@@ -155,7 +155,7 @@ export default async function BrowserSessionConnectPage({
               <input name="connection_id" type="hidden" value={pageParams.connectionId} />
             ) : null}
             <button
-              className="w-full rounded-full bg-foreground px-6 py-3 font-medium text-background text-sm transition-opacity hover:opacity-90 active:opacity-75"
+              className={buttonVariants({ variant: "default", size: "lg", className: "w-full justify-center" })}
               type="submit"
             >
               Reconnect {displayName}

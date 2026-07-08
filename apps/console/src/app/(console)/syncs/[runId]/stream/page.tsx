@@ -1,3 +1,4 @@
+import { buttonVariants } from "@pdpp/brand-react";
 import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type { Viewport } from "next";
 import { notFound } from "next/navigation";
@@ -36,6 +37,14 @@ export const viewport: Viewport = {
 interface ConnectorContext {
   connectorId: string;
   displayName: string;
+}
+
+function RunDetailLink({ children, runId }: { children: string; runId: string }) {
+  return (
+    <a className={buttonVariants({ variant: "default", size: "sm", className: "mt-5" })} href={`/syncs/${encodeURIComponent(runId)}`}>
+      {children}
+    </a>
+  );
 }
 
 function getConnectorIdFromTimeline(events: SpineEvent[]): string | null {
@@ -253,12 +262,7 @@ function RunEndedSurface({
         <p className="pdpp-eyebrow text-muted-foreground">run {statusLabel}</p>
         <h1 className="pdpp-heading mt-3 text-balance text-foreground">{title}</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">{description}</p>
-        <a
-          className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"
-          href={`/syncs/${encodeURIComponent(runId)}`}
-        >
-          Open run timeline
-        </a>
+        <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
       </section>
     </main>
   );
@@ -275,12 +279,7 @@ function RunContinuingSurface({ connector, runId }: { connector: ConnectorContex
         <p className="mt-3 text-muted-foreground text-sm leading-6">
           {subject} is still being checked. Open the run timeline to follow the latest status.
         </p>
-        <a
-          className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"
-          href={`/syncs/${encodeURIComponent(runId)}`}
-        >
-          Open run timeline
-        </a>
+        <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
       </section>
     </main>
   );
@@ -298,12 +297,7 @@ function PreparingBrowserSurface({ connector, runId }: { connector: ConnectorCon
           {subject} has started a browser-session repair. This page will open the browser controls as soon as the run
           asks for your input.
         </p>
-        <a
-          className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"
-          href={`/syncs/${encodeURIComponent(runId)}`}
-        >
-          Open run timeline
-        </a>
+        <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
       </section>
     </main>
   );
@@ -321,12 +315,7 @@ function UnavailableStreamSurface({ connector, runId }: { connector: ConnectorCo
           no current stream target is registered for this assistance request. Keep the run open while the runtime
           registers a browser surface, then return to the run detail page.
         </p>
-        <a
-          className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"
-          href={`/syncs/${encodeURIComponent(runId)}`}
-        >
-          Back to run detail
-        </a>
+        <RunDetailLink runId={runId}>Back to run detail</RunDetailLink>
       </section>
     </main>
   );
