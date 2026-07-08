@@ -10,6 +10,7 @@ import {
   CdpSurfaceAdapter,
   type CdpSurfaceClientApi,
   type CdpSurfaceFrame,
+  type CdpInputPayload,
 } from "./cdp-surface-adapter.ts";
 
 class FakeElement {
@@ -172,6 +173,31 @@ function makeAdapter(overrides: Partial<CdpSurfaceClientApi> = {}) {
 }
 
 describe("CdpSurfaceAdapter", () => {
+  it("supports legacy stream clients that accept HTTP input commands without direct CDP", async () => {
+    const node = new FakeElement();
+    const inputs: CdpInputPayload[] = [];
+    const client: CdpSurfaceClientApi = {
+      getViewportInfo: () => ({ height: 50, width: 100 }),
+      sendInput(payload) {
+        inputs.push(payload);
+      },
+    };
+    const adapter = new CdpSurfaceAdapter({ client, config: { kind: "cdp" } });
+
+    await adapter.mount(node as unknown as HTMLElement);
+    await adapter.sendText("hello");
+    assert.equal(await adapter.pasteText("clip"), true);
+    await adapter.sendPointer({ pointerId: 1, pointerType: "mouse", type: "pointerdown", x: 7, y: 8 });
+    await adapter.unmount();
+
+    assert.deepEqual(inputs, [
+      { text: "hello", type: "paste" },
+      { text: "clip", type: "paste" },
+      { action: "mousedown", button: 0, type: "mouse", x: 7, y: 8 },
+    ]);
+    assert.equal(adapter.getLifecycleState(), "idle");
+  });
+
   it("starts and stops CDP screencast without leaking frame listeners", async () => {
     const node = new FakeElement();
     const { adapter, cdp, frames } = makeAdapter();

@@ -5,6 +5,34 @@ import type { RemoteSurfaceLogger } from "./neko-surface-adapter.ts";
 export type CdpSurfaceConfig = Extract<RemoteSurfaceConfig, {
     kind: "cdp";
 }>;
+export type CdpInputPayload = {
+    type: "mouse";
+    action: "mousemove" | "mousedown" | "mouseup";
+    x: number;
+    y: number;
+    button?: number;
+} | {
+    type: "touch";
+    action: "touchstart" | "touchmove" | "touchend";
+    x: number;
+    y: number;
+    id?: number;
+} | {
+    type: "keyboard";
+    action: "keydown" | "keyup";
+    key: string;
+    code: string;
+    modifiers: number;
+} | {
+    type: "scroll";
+    x: number;
+    y: number;
+    deltaX: number;
+    deltaY: number;
+} | {
+    type: "paste";
+    text: string;
+};
 export interface CdpSurfaceViewportInfo {
     deviceScaleFactor?: number;
     height: number;
@@ -49,7 +77,7 @@ export interface CdpSurfaceRemoteFocusTarget {
 export interface CdpSurfaceClipboardSink {
     writeText(text: string): Promise<void> | void;
 }
-export interface CdpSurfaceClientApi {
+export interface DirectCdpSurfaceClientApi {
     cdp: CdpCommandTransport;
     getViewportInfo(): CdpSurfaceViewportInfo | null;
     mediaSink: CdpSurfaceMediaSink;
@@ -64,6 +92,19 @@ export interface CdpSurfaceClientApi {
     } | null;
     onInputDebug?(event: string, payload?: Record<string, unknown>): void;
 }
+export interface LegacyCdpSurfaceClientApi {
+    sendInput(payload: CdpInputPayload): Promise<void> | void;
+    getViewportInfo(): CdpSurfaceViewportInfo | null;
+    getFrameElement?(): {
+        getBoundingClientRect(): CdpSurfaceRect;
+    } | null;
+    getClipboardPolicy?(): CdpSurfaceClipboardPolicy;
+    getSoftKeyboardElement?(): {
+        focus(): void;
+    } | null;
+    onInputDebug?(event: string, payload?: Record<string, unknown>): void;
+}
+export type CdpSurfaceClientApi = DirectCdpSurfaceClientApi | LegacyCdpSurfaceClientApi;
 export interface CdpSurfaceAdapterDeps {
     client: CdpSurfaceClientApi;
     config: CdpSurfaceConfig;
@@ -104,13 +145,16 @@ export declare class CdpSurfaceAdapter implements RemoteSurface {
     private blurRemoteActiveElement;
     private sendKeyboardEvent;
     private sendPasteEvent;
+    private attachLegacyDomListeners;
     private attachDomListeners;
     private localCoords;
+    private firstChangedTouch;
     private isCoarsePointer;
     private clearMotionThrottle;
     private debug;
     private reportAsync;
     private reportError;
+    private directClient;
     private ensureMounted;
 }
 //# sourceMappingURL=cdp-surface-adapter.d.ts.map
