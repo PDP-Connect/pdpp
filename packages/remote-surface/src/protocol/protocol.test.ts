@@ -7,6 +7,7 @@ import {
   parseRemoteSurfaceClipboardPayload,
   parseRemoteSurfaceDiagnosticsPayload,
   parseRemoteSurfaceEventPayload,
+  parseRemoteSurfaceFormFieldSnapshot,
   parseRemoteSurfaceInputPayload,
   parseRemoteSurfaceTargetDescriptor,
   parseRemoteSurfaceViewportPayload,
@@ -18,6 +19,7 @@ import {
   REMOTE_SURFACE_CLIPBOARD_FIXTURES,
   REMOTE_SURFACE_DIAGNOSTICS_FIXTURE,
   REMOTE_SURFACE_EVENT_FIXTURES,
+  REMOTE_SURFACE_FORM_FIELD_SNAPSHOT_FIXTURE,
   REMOTE_SURFACE_INPUT_FIXTURES,
   REMOTE_SURFACE_TARGET_FIXTURES,
   REMOTE_SURFACE_VIEWPORT_FIXTURES,
@@ -141,9 +143,22 @@ describe("protocol fixtures", () => {
     );
   });
 
+  it("parses representative form field snapshots", () => {
+    assert.deepEqual(
+      parseRemoteSurfaceFormFieldSnapshot(REMOTE_SURFACE_FORM_FIELD_SNAPSHOT_FIXTURE),
+      REMOTE_SURFACE_FORM_FIELD_SNAPSHOT_FIXTURE,
+    );
+  });
+
   it("rejects invalid payload values", () => {
     assert.throws(() => parseRemoteSurfaceInputPayload({ type: "pointer", action: "tap", x: 1, y: 1 }));
     assert.throws(() => parseRemoteSurfaceViewportPayload({ type: "viewport", width: 0, height: 844 }));
     assert.throws(() => parseRemoteSurfaceClipboardPayload({ type: "clipboard", action: "local_to_remote" }));
+    assert.throws(() =>
+      parseRemoteSurfaceFormFieldSnapshot({
+        type: "form_fields",
+        fields: [{ tag: "input", inputType: "text", x: 0, y: 0, width: 0, height: 1 }],
+      }),
+    );
   });
 });

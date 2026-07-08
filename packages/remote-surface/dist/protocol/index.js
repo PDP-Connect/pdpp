@@ -176,12 +176,40 @@ export function parseRemoteSurfaceDiagnosticsPayload(value) {
         events,
     };
 }
+export function parseRemoteSurfaceFormFieldSnapshot(value) {
+    const payload = requireRecord(value);
+    requireOneOf(payload.type, ["form_fields"], "$.type");
+    return {
+        type: "form_fields",
+        fields: requireArray(payload.fields, "$.fields").map((field, index) => parseRemoteSurfaceFormFieldRect(field, `$.fields[${index}]`)),
+        ...(payload.timestamp === undefined ? {} : { timestamp: requireFiniteNumber(payload.timestamp, "$.timestamp") }),
+    };
+}
+export function parseRemoteSurfaceFormFieldRect(value, path = "$") {
+    const field = requireRecord(value, path);
+    return {
+        ...(field.fieldId === undefined ? {} : { fieldId: requireString(field.fieldId, `${path}.fieldId`) }),
+        tag: requireOneOf(field.tag, ["input", "textarea", "select", "contenteditable"], `${path}.tag`),
+        inputType: requireStringAllowEmpty(field.inputType, `${path}.inputType`),
+        placeholder: requireStringAllowEmpty(field.placeholder, `${path}.placeholder`),
+        name: requireStringAllowEmpty(field.name, `${path}.name`),
+        id: requireStringAllowEmpty(field.id, `${path}.id`),
+        x: requireFiniteNumber(field.x, `${path}.x`),
+        y: requireFiniteNumber(field.y, `${path}.y`),
+        width: requirePositiveNumber(field.width, `${path}.width`),
+        height: requirePositiveNumber(field.height, `${path}.height`),
+        value: requireStringAllowEmpty(field.value, `${path}.value`),
+        focused: requireBoolean(field.focused, `${path}.focused`),
+        ...(field.disabled === undefined ? {} : { disabled: requireBoolean(field.disabled, `${path}.disabled`) }),
+        ...(field.readonly === undefined ? {} : { readonly: requireBoolean(field.readonly, `${path}.readonly`) }),
+    };
+}
 /**
  * @deprecated Reference-shaped wire payload helpers moved to
  *   `@opendatalabs/remote-surface/reference`. See the type re-export
  *   block above for the deprecation horizon.
  */
-export { buildReferenceWireAttachedPayload, buildReferenceWireBackendReadyPayload, buildReferenceWireCompanionEventPayload, buildReferenceWireFramePayload, normalizeReferenceWireViewportPayload, parseReferenceWireInputPayload, parseReferenceWireInputTelemetryCursor, parseReferenceWireInputTelemetryRecord, } from "../reference/protocol-wire.js";
+export { buildReferenceWireAttachedPayload, buildReferenceWireBackendReadyPayload, buildReferenceWireCompanionEventPayload, buildReferenceWireFramePayload, normalizeReferenceWireViewportPayload, parseReferenceWireInputPayload, parseReferenceWireInputTelemetryCursor, parseReferenceWireInputTelemetryRecord, } from "../compat/pdpp-reference/protocol-wire.js";
 export function parseSafeRemoteSurfaceBackendDescriptor(value) {
     const descriptor = requireRecord(value);
     assertNoUnsafeDescriptor(descriptor);
@@ -361,6 +389,12 @@ function requireArray(value, path) {
 function requireString(value, path) {
     if (typeof value !== "string" || value.length === 0) {
         throw new RemoteSurfaceProtocolError("expected non-empty string", path);
+    }
+    return value;
+}
+function requireStringAllowEmpty(value, path) {
+    if (typeof value !== "string") {
+        throw new RemoteSurfaceProtocolError("expected string", path);
     }
     return value;
 }

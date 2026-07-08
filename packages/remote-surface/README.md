@@ -2,9 +2,8 @@
 
 Generic remote-surface substrate for browser interactions. It owns host-neutral
 protocol shapes, viewer/controller interfaces, backend adapter contracts,
-diagnostics helpers, browser-surface lease primitives, and an additive
-`SurfaceSessionStore` wrapper for hosts that want session/action terminology
-instead of reference-runtime field names.
+diagnostics helpers, surface lease primitives, and an in-memory token session
+store for hosts that want session/action terminology.
 
 This is the architectural shape recommended in:
 
@@ -20,7 +19,7 @@ clipboard channels, backend capabilities, and redacted diagnostics.
 
 The PDPP reference implementation still owns PDPP-specific behavior:
 
-- `_ref` route names, request/response envelopes, and route middleware.
+- Reference route names, request/response envelopes, and route middleware.
 - Owner auth, device-exporter auth, stream mint authorization, and run nonces.
 - Run timelines and spine events such as stream requested/opened/resolved.
 - Connector registration and browser handoff clients.
@@ -44,11 +43,16 @@ This package must not import `reference-implementation`, `apps/site`, `apps/cons
   channels, diagnostics, and `createSurfaceSessionStore` for host-neutral
   session/action persistence.
 - `@opendatalabs/remote-surface/client` — viewer lifecycle, input dispatch,
-  clipboard policy, viewport reporting, telemetry, and lifecycle interfaces.
+  container-fit DOM primitives, clipboard policy, viewport reporting,
+  telemetry, and lifecycle interfaces.
+- `@opendatalabs/remote-surface/compat/pdpp-reference` — explicit PDPP
+  reference-compatibility parsers, builders, and fixtures for hosts preserving
+  the reference wire shape.
 - `@opendatalabs/remote-surface/backends/neko` — n.eko backend contracts and safe
   same-origin client descriptor shapes.
-- `@opendatalabs/remote-surface/backends/cdp` — CDP fallback contracts that keep raw
-  CDP HTTP/WebSocket authority server-side.
+- `@opendatalabs/remote-surface/backends/cdp` — concrete CDP backend lifecycle,
+  typed CDP transport contracts, and safe descriptors that keep raw CDP HTTP/
+  WebSocket authority server-side.
 - `@opendatalabs/remote-surface/backends/types` — generic backend
   adapter/lifecycle contracts plus future-backend seams for VNC/Kasm-like
   adapters. The package names those kinds but does not implement them in this
@@ -58,7 +62,7 @@ This package must not import `reference-implementation`, `apps/site`, `apps/cons
 - `@opendatalabs/remote-surface/diagnostics` — redacted diagnostics event helpers and
   bounded in-memory buffers.
 - `@opendatalabs/remote-surface/ime` — mobile text-input and keysym helpers.
-- `@opendatalabs/remote-surface/leases` — browser-surface lease substrate.
+- `@opendatalabs/remote-surface/leases` — host-neutral surface lease substrate.
 - `@opendatalabs/remote-surface/testing` — fake broker and deterministic test
   capabilities for package/host conformance tests.
 
@@ -72,7 +76,7 @@ a complete hosted streaming service.
 | Session lifecycle | Token hashing, TTL, idempotent minting, attach/authorize/revoke semantics, and host-neutral `SurfaceSessionStore` APIs. | Auth checks, route names, persistence durability, process lifecycle, and event emission. |
 | Protocol | JSON-safe event, input, viewport, clipboard, diagnostics, target, capability, and safe backend descriptors. | HTTP/SSE/WebSocket envelopes and any product-specific wire compatibility. |
 | Client/viewer | DOM controllers, viewport/control policies, IME helpers, clipboard policy, media settle, visual-quality, and telemetry interfaces. | React components, URL construction, copy, styling, owner affordances, and dashboard actions. |
-| Backends | n.eko/CDP capability contracts and safe client descriptor validation that prevents raw automation endpoints from reaching the browser. | Browser processes, CDP/n.eko upstream authority, Docker/sidecar allocation, profiles, and credentials. |
+| Backends | n.eko/CDP capability contracts, concrete CDP frame/input lifecycle, and safe client descriptor validation that prevents raw automation endpoints from reaching the browser. | Browser processes, CDP/n.eko upstream authority, Docker/sidecar allocation, profiles, and credentials. |
 | Diagnostics | Redacted event helpers and bounded buffers. | Log sinks, timelines, retention, correlation IDs, and operator dashboards. |
 
 This means a host can build its own remote-surface route adapter around the
@@ -121,7 +125,37 @@ const descriptor = buildNekoSafeClientDescriptor({
 The package intentionally does not create these HTTP routes. Your host maps the
 token/session/action to its own authorization model and backend process.
 
-Acquire browser-surface capacity through the host-neutral lease facade:
+Run CDP through a host-owned server-side transport:
+
+```ts
+import { createCdpRemoteSurfaceBackendAdapter } from "@opendatalabs/remote-surface/backends/cdp";
+
+const backend = createCdpRemoteSurfaceBackendAdapter({
+  targetId: "surface-session-123",
+  transport: {
+    send: (method, params) => cdpSession.send(method, params),
+    on: (eventName, handler) => {
+      cdpSession.on(eventName, handler);
+      return { unsubscribe: () => cdpSession.off(eventName, handler) };
+    },
+  },
+});
+
+const lifecycle = await backend.start({
+  type: "viewport",
+  width: 1280,
+  height: 720,
+});
+```
+
+The CDP backend emits package `frame` events from `Page.screencastFrame`,
+acknowledges each frame, translates package input payloads into `Input.*`
+methods, and applies viewport changes with `Emulation.setDeviceMetricsOverride`.
+The host still owns Chrome/Patchright launch, profile trust, networking,
+authorization, route envelopes, and the policy decision about whether CDP is
+allowed for the current interaction mode.
+
+Acquire remote-surface capacity through the host-neutral lease facade:
 
 ```ts
 import { DEFAULT_NEKO_PRIORITY_RANKS, createSurfaceLeaseManager } from "@opendatalabs/remote-surface/leases";
@@ -176,6 +210,64 @@ if (!root) {
 await adapter.mount(root);
 ```
 
+Fit a stream surface to an arbitrary container and map pointer coordinates back
+into the stream viewport:
+
+```ts
+import { createContainerFitStreamViewerSurface } from "@opendatalabs/remote-surface/client";
+
+const surface = createContainerFitStreamViewerSurface(document.querySelector("#stream-shell")!, {
+  width: 1280,
+  height: 720,
+});
+
+surface.subscribe((geometry) => {
+  console.log(geometry.displayRect, geometry.letterboxBars, geometry.isOneToOne);
+});
+
+const remotePoint = surface.mapClientPointToStream(pointerEvent.clientX, pointerEvent.clientY);
+surface.setViewport({ width: 390, height: 844, mobile: true, hasTouch: true });
+```
+
+Close the loop between the fitted container and a backend-provided viewport
+resize effect:
+
+```ts
+import {
+  createContainerFitStreamViewerSurface,
+  createViewportMatchController,
+} from "@opendatalabs/remote-surface/client";
+
+const surface = createContainerFitStreamViewerSurface(container, {
+  width: 390,
+  height: 844,
+  mobile: true,
+  hasTouch: true,
+});
+
+const controller = createViewportMatchController({
+  surface,
+  applyViewport: async (viewport) => {
+    await backend.setViewport(viewport);
+  },
+  options: {
+    debounceMs: 180,
+    snapViewport: (viewport) => viewport,
+  },
+});
+
+controller.subscribe((telemetry) => {
+  console.log(telemetry.targetViewport, telemetry.actualViewport, telemetry.letterboxBars, telemetry.matched);
+});
+```
+
+The controller reuses the package viewport classifier, so keyboard occlusion,
+browser-chrome movement, zoom, and stable churn are held while real layout and
+orientation changes are posted after debounce. CDP hosts can pass
+`Emulation.setDeviceMetricsOverride` through `applyViewport`; n.eko hosts should
+use the exported n.eko apply-viewport seam to add aligned modeline snapping,
+window-bounds application, and gutter/crop reporting behind the same controller.
+
 The package lifecycle is intentionally small: host code creates a session,
 leases or starts backend capacity, exposes host-owned HTTP/SSE/WebRTC routes,
 mounts a client adapter with token-scoped descriptors, reports viewport/input/
@@ -187,12 +279,15 @@ persistence, process supervision, and backend network access.
 
 ### Reference Compatibility
 
-The legacy `StreamingSessionStore` and `BrowserSurfaceLeaseManager` exports
-remain available for the PDPP reference adapter and existing internal callers.
+PDPP reference wire compatibility lives under
+`@opendatalabs/remote-surface/compat/pdpp-reference`. The legacy
+`@opendatalabs/remote-surface/reference` subpath remains available as a
+deprecated alias for the current release cycle so existing internal callers keep
+compiling.
+
 New host integrations should prefer `SurfaceSessionStore` and
-`SurfaceLeaseManager`, which map reference-oriented fields to host-neutral
-session/action/surface terminology without requiring hosts to implement PDPP
-routes or timeline storage.
+`SurfaceLeaseManager`. They use host-neutral session/action/surface terminology
+and do not require hosts to implement PDPP routes or timeline storage.
 
 ## Package validation
 
@@ -209,10 +304,10 @@ workspace/private dependency leakage, verifies declarations for every exported
 entrypoint, and installs/imports/typechecks the packed artifact from a clean
 consumer fixture.
 
-The packed-artifact scan treats `_ref`, `run_id`, and `interaction_id` as
+The packed-artifact scan treats PDPP reference route and record identifiers as
 host-coupled terms. Any remaining matches must be pattern-allowlisted in
-`scripts/validate-package.mjs` with a compatibility rationale, such as
-reference wire fixtures or transitional adapters that sit behind the
+`scripts/validate-package.mjs` with a compatibility rationale, such as explicit
+PDPP reference wire fixtures or transitional adapters that sit behind the
 host-neutral `SurfaceSessionStore` API.
 
 Release preparation is still responsible for the final `private: false` switch,
@@ -223,8 +318,12 @@ registry metadata, polished cookbook examples, and the actual publish command.
 - **`NekoSurfaceAdapter`** — **preferred** for stealth flows. It depends on a
   small package-owned `NekoClientApi` adapter interface rather than exposing
   concrete n.eko client package details as product architecture.
-- **`CdpSurfaceAdapter`** — fallback / legacy / debug path. Wraps the
-  existing CDP-backed `BrowserSurface` for sessions that cannot use n.eko.
+- **CDP backend lifecycle** — first-class server-side backend for hosts that
+  attach to Chrome/Patchright over CDP. It relays screencast frames, dispatches
+  pointer/keyboard/text/clipboard input, applies viewport changes, and returns
+  only safe browser-visible descriptors.
+- **`CdpSurfaceAdapter`** — legacy/debug browser-side adapter for hosts that
+  still wrap an existing CDP-backed remote-surface client.
 - **Future backends** — VNC/Kasm-like backends may satisfy the generic
   `RemoteSurfaceBackendAdapter` and safe descriptor contracts later. This
   package currently provides only the seam, not concrete VNC or Kasm clients.
@@ -266,11 +365,12 @@ is licensed under [CC-BY-4.0](../../LICENSE-docs).
 
 ## Status
 
-The package contains a working browser-surface lease substrate, early
-n.eko/client controller pieces, host-neutral API/type destinations for the
-streaming extraction, pure diagnostics/protocol/testing helpers, and the
-default in-memory session lifecycle consumed by the reference route adapter.
-The reference server still owns `_ref` routes, auth, run timelines, connector
-handoff, and dynamic Docker-backed n.eko allocation. That split is intentional:
-the package is closer to OSS publication because reusable remote-surface
-contracts are isolated, but it is not a standalone product server.
+The package contains a working surface lease substrate, n.eko/client
+controller pieces, a first-class CDP backend lifecycle, host-neutral API/type
+destinations for the streaming extraction, pure diagnostics/protocol/testing
+helpers, and the default in-memory session lifecycle consumed by the reference
+route adapter.
+The reference server still owns auth, run timelines, connector handoff, and
+dynamic Docker-backed n.eko allocation. That split is intentional: the package
+is closer to OSS publication because reusable remote-surface contracts are
+isolated, but it is not a standalone product server.

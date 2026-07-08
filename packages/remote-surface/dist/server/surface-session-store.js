@@ -1,4 +1,4 @@
-import { createStreamingSessionStore, } from "../reference/streaming-session-store.js";
+import { createStreamingSessionStore, } from "../sessions/token-session-store.js";
 function toSurfaceSessionRecord(session) {
     return {
         surfaceSessionId: session.run_id,

@@ -228,6 +228,31 @@ export interface RemoteSurfaceDiagnosticsPayload {
   events: readonly JsonObject[];
 }
 
+export type RemoteSurfaceFormFieldTag = "input" | "textarea" | "select" | "contenteditable";
+
+export interface RemoteSurfaceFormFieldRect {
+  fieldId?: string;
+  tag: RemoteSurfaceFormFieldTag;
+  inputType: string;
+  placeholder: string;
+  name: string;
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  value: string;
+  focused: boolean;
+  disabled?: boolean;
+  readonly?: boolean;
+}
+
+export interface RemoteSurfaceFormFieldSnapshot {
+  type: "form_fields";
+  fields: readonly RemoteSurfaceFormFieldRect[];
+  timestamp?: number;
+}
+
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export type JsonObject = { readonly [key: string]: JsonValue };
 
@@ -248,7 +273,7 @@ export type {
   ReferenceWireInputTelemetryRecord,
   ReferenceWireNamedSseEvent,
   ReferenceWireViewportPayload,
-} from "../reference/protocol-wire.ts";
+} from "../compat/pdpp-reference/protocol-wire.ts";
 
 export { RemoteSurfaceProtocolError } from "./errors.ts";
 import { RemoteSurfaceProtocolError } from "./errors.ts";
@@ -444,6 +469,38 @@ export function parseRemoteSurfaceDiagnosticsPayload(value: unknown): RemoteSurf
   };
 }
 
+export function parseRemoteSurfaceFormFieldSnapshot(value: unknown): RemoteSurfaceFormFieldSnapshot {
+  const payload = requireRecord(value);
+  requireOneOf(payload.type, ["form_fields"], "$.type");
+  return {
+    type: "form_fields",
+    fields: requireArray(payload.fields, "$.fields").map((field, index) =>
+      parseRemoteSurfaceFormFieldRect(field, `$.fields[${index}]`),
+    ),
+    ...(payload.timestamp === undefined ? {} : { timestamp: requireFiniteNumber(payload.timestamp, "$.timestamp") }),
+  };
+}
+
+export function parseRemoteSurfaceFormFieldRect(value: unknown, path = "$"): RemoteSurfaceFormFieldRect {
+  const field = requireRecord(value, path);
+  return {
+    ...(field.fieldId === undefined ? {} : { fieldId: requireString(field.fieldId, `${path}.fieldId`) }),
+    tag: requireOneOf(field.tag, ["input", "textarea", "select", "contenteditable"], `${path}.tag`),
+    inputType: requireStringAllowEmpty(field.inputType, `${path}.inputType`),
+    placeholder: requireStringAllowEmpty(field.placeholder, `${path}.placeholder`),
+    name: requireStringAllowEmpty(field.name, `${path}.name`),
+    id: requireStringAllowEmpty(field.id, `${path}.id`),
+    x: requireFiniteNumber(field.x, `${path}.x`),
+    y: requireFiniteNumber(field.y, `${path}.y`),
+    width: requirePositiveNumber(field.width, `${path}.width`),
+    height: requirePositiveNumber(field.height, `${path}.height`),
+    value: requireStringAllowEmpty(field.value, `${path}.value`),
+    focused: requireBoolean(field.focused, `${path}.focused`),
+    ...(field.disabled === undefined ? {} : { disabled: requireBoolean(field.disabled, `${path}.disabled`) }),
+    ...(field.readonly === undefined ? {} : { readonly: requireBoolean(field.readonly, `${path}.readonly`) }),
+  };
+}
+
 /**
  * @deprecated Reference-shaped wire payload helpers moved to
  *   `@opendatalabs/remote-surface/reference`. See the type re-export
@@ -458,7 +515,7 @@ export {
   parseReferenceWireInputPayload,
   parseReferenceWireInputTelemetryCursor,
   parseReferenceWireInputTelemetryRecord,
-} from "../reference/protocol-wire.ts";
+} from "../compat/pdpp-reference/protocol-wire.ts";
 
 export function parseSafeRemoteSurfaceBackendDescriptor(value: unknown): SafeRemoteSurfaceBackendDescriptor {
   const descriptor = requireRecord(value);
@@ -670,6 +727,13 @@ function requireArray(value: unknown, path: string): readonly unknown[] {
 function requireString(value: unknown, path: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new RemoteSurfaceProtocolError("expected non-empty string", path);
+  }
+  return value;
+}
+
+function requireStringAllowEmpty(value: unknown, path: string): string {
+  if (typeof value !== "string") {
+    throw new RemoteSurfaceProtocolError("expected string", path);
   }
   return value;
 }

@@ -52,8 +52,11 @@ export type RemoteSurfaceLogger = (
  *
  * Required fields mirror the in-tree helpers (see neko-client.ts):
  *   - `start`         → `startNeko(container, config)`          (line ~2352)
- *   - `stop`          → no current export; dashboard may pass a wrapper
- *                       around the underlying `nekoInstance.$destroy?.()`.
+ *   - `stop`          → idempotent cleanup wrapper around the underlying
+ *                       n.eko instance teardown (`$destroy?.()` plus any
+ *                       host-side stream teardown). Called before start and
+ *                       during unmount so remounts cannot strand an old
+ *                       instance.
  *   - `focusKeyboard` → `focusNekoKeyboard()`                   (line ~1095)
  *   - `sendText`      → wraps `nekoInstance.control.paste(text)` (line ~1088)
  *
@@ -63,7 +66,7 @@ export type RemoteSurfaceLogger = (
  */
 export interface NekoClientApi {
   start(container: HTMLElement, config: unknown): Promise<void>;
-  stop?(): Promise<void> | void;
+  stop(): Promise<void> | void;
   focusKeyboard?(): void;
   blurKeyboard?(): void;
   setRemoteInputFocused?(focused: boolean): void;
@@ -154,6 +157,7 @@ export class NekoSurfaceAdapter implements RemoteSurface {
     this.lifecycleState = "mounting";
     this.container = el;
     try {
+      await this.stopClient("before-start");
       // The dashboard is responsible for translating `this.config` (the
       // RemoteSurfaceConfig "neko" variant) into the concrete
       // NekoClientConfig that `startNeko` expects. Passing through as
@@ -164,6 +168,7 @@ export class NekoSurfaceAdapter implements RemoteSurface {
       this.ensureTextInputController();
       this.log("info", "neko-surface-adapter.mounted");
     } catch (err) {
+      await this.cleanupAfterFailedMount(err);
       this.lifecycleState = "error";
       this.log("error", "neko-surface-adapter.mount-failed", {
         error: err instanceof Error ? err.message : String(err),
@@ -182,23 +187,8 @@ export class NekoSurfaceAdapter implements RemoteSurface {
     }
     this.lifecycleState = "unmounting";
     try {
-      if (this.client.stop) {
-        await this.client.stop();
-      } else {
-        // TODO(step-3): neko-client.ts does not currently expose a stop
-        // helper. The dashboard wiring step should add one (wrapping
-        // `nekoInstance?.$destroy?.()` plus the cleanup currently inlined
-        // in stream-viewer's effect teardown) and pass it via
-        // `NekoClientApi.stop`. Without it, repeated mount/unmount cycles
-        // will leak the underlying neko instance.
-        this.log("warn", "neko-surface-adapter.no-stop-helper");
-      }
-      this.pointerController?.dispose();
-      this.pointerController = null;
-      this.pointerControllerControl = null;
-      this.textInputController?.dispose();
-      this.textInputController = null;
-      this.textInputControllerTextarea = null;
+      await this.stopClient("unmount");
+      this.disposeLocalControllers();
       this.container = null;
       this.lifecycleState = "idle";
       this.log("info", "neko-surface-adapter.unmounted");
@@ -209,6 +199,36 @@ export class NekoSurfaceAdapter implements RemoteSurface {
       });
       throw err;
     }
+  }
+
+  private async stopClient(reason: "before-start" | "mount-failed" | "unmount"): Promise<void> {
+    if (typeof this.client.stop !== "function") {
+      throw new Error(`NekoSurfaceAdapter requires client.stop for ${reason} cleanup`);
+    }
+    this.log("debug", "neko-surface-adapter.stop-client", { reason });
+    await this.client.stop();
+  }
+
+  private async cleanupAfterFailedMount(cause: unknown): Promise<void> {
+    this.disposeLocalControllers();
+    this.container = null;
+    try {
+      await this.stopClient("mount-failed");
+    } catch (cleanupError) {
+      this.log("error", "neko-surface-adapter.mount-cleanup-failed", {
+        cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        cause: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  }
+
+  private disposeLocalControllers(): void {
+    this.pointerController?.dispose();
+    this.pointerController = null;
+    this.pointerControllerControl = null;
+    this.textInputController?.dispose();
+    this.textInputController = null;
+    this.textInputControllerTextarea = null;
   }
 
   focusTextInput(opts?: FocusTextInputOptions): void {

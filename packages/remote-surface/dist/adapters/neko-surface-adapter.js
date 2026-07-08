@@ -62,6 +62,7 @@ export class NekoSurfaceAdapter {
         this.lifecycleState = "mounting";
         this.container = el;
         try {
+            await this.stopClient("before-start");
             // The dashboard is responsible for translating `this.config` (the
             // RemoteSurfaceConfig "neko" variant) into the concrete
             // NekoClientConfig that `startNeko` expects. Passing through as
@@ -73,6 +74,7 @@ export class NekoSurfaceAdapter {
             this.log("info", "neko-surface-adapter.mounted");
         }
         catch (err) {
+            await this.cleanupAfterFailedMount(err);
             this.lifecycleState = "error";
             this.log("error", "neko-surface-adapter.mount-failed", {
                 error: err instanceof Error ? err.message : String(err),
@@ -90,24 +92,8 @@ export class NekoSurfaceAdapter {
         }
         this.lifecycleState = "unmounting";
         try {
-            if (this.client.stop) {
-                await this.client.stop();
-            }
-            else {
-                // TODO(step-3): neko-client.ts does not currently expose a stop
-                // helper. The dashboard wiring step should add one (wrapping
-                // `nekoInstance?.$destroy?.()` plus the cleanup currently inlined
-                // in stream-viewer's effect teardown) and pass it via
-                // `NekoClientApi.stop`. Without it, repeated mount/unmount cycles
-                // will leak the underlying neko instance.
-                this.log("warn", "neko-surface-adapter.no-stop-helper");
-            }
-            this.pointerController?.dispose();
-            this.pointerController = null;
-            this.pointerControllerControl = null;
-            this.textInputController?.dispose();
-            this.textInputController = null;
-            this.textInputControllerTextarea = null;
+            await this.stopClient("unmount");
+            this.disposeLocalControllers();
             this.container = null;
             this.lifecycleState = "idle";
             this.log("info", "neko-surface-adapter.unmounted");
@@ -119,6 +105,34 @@ export class NekoSurfaceAdapter {
             });
             throw err;
         }
+    }
+    async stopClient(reason) {
+        if (typeof this.client.stop !== "function") {
+            throw new Error(`NekoSurfaceAdapter requires client.stop for ${reason} cleanup`);
+        }
+        this.log("debug", "neko-surface-adapter.stop-client", { reason });
+        await this.client.stop();
+    }
+    async cleanupAfterFailedMount(cause) {
+        this.disposeLocalControllers();
+        this.container = null;
+        try {
+            await this.stopClient("mount-failed");
+        }
+        catch (cleanupError) {
+            this.log("error", "neko-surface-adapter.mount-cleanup-failed", {
+                cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+                cause: cause instanceof Error ? cause.message : String(cause),
+            });
+        }
+    }
+    disposeLocalControllers() {
+        this.pointerController?.dispose();
+        this.pointerController = null;
+        this.pointerControllerControl = null;
+        this.textInputController?.dispose();
+        this.textInputController = null;
+        this.textInputControllerTextarea = null;
     }
     focusTextInput(opts) {
         this.ensureMounted("focusTextInput");

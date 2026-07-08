@@ -13,6 +13,7 @@ This change captures that decision as durable spec deltas, sequencing constraint
 - Rename the published package identity from `@pdpp/remote-surface` to `@opendatalabs/remote-surface`, declared in `package.json`, README, `exports`, validator scripts, internal imports, and tarball validators.
 - Treat the existing `@pdpp/remote-surface` name as an internal workspace alias only; it MUST NOT survive into the published tarball under that name.
 - Default `exports` (`.`, `./adapters`, `./backends/*`, `./client`, `./controllers`, `./diagnostics`, `./ime`, `./leases`, `./protocol`, `./server`, `./testing`) SHALL be free of PDPP/reference-only concepts (`_ref`, `run_id`, `interaction_id`); reference-compatibility surfaces SHALL move under a dedicated `./reference` subpath.
+- Follow-on standalone cleanup SHALL move generic session and lease cores out of `src/reference/`, move PDPP wire parsers/builders/fixtures under `src/compat/pdpp-reference/`, and keep `./reference` as a deprecated compatibility alias for one release.
 - Update `scripts/validate-package.mjs` to limit the reference-token allowlist to `dist/reference/**`, not the cross-cutting `server/`, `protocol/`, `leases/`, `testing/` allowance in force today.
 - Declare license posture: `LICENSE` files (Apache-2.0) for package code and for the reference implementation, `LICENSE-docs` (CC-BY-4.0) for documentation; Community-Spec-1.0 is RESERVED for future formal-spec artifacts and is out of scope for this change.
 - Capture publish-readiness metadata gates (`repository`, `bugs`, `homepage`, `keywords`, `publishConfig.access`, `engines.node`, optional `publishConfig.provenance`) and record the owner-confirmed values: public repo `https://github.com/vana-com/remote-surface`, security contact `security@vana.org`, and supported runtime `engines.node: ">=24"` (the 2026 Active LTS line for this new package).
@@ -33,6 +34,7 @@ None.
 ## Impact
 
 - Affects `packages/remote-surface/package.json`, `packages/remote-surface/README.md`, `packages/remote-surface/src/**`, `packages/remote-surface/scripts/validate-package.mjs`, and any in-repo importers of `@pdpp/remote-surface`.
+- This follow-on tranche is strictly behavior-preserving: it moves source ownership and export presentation only, with existing `./reference` imports preserved by re-export aliases.
 - Affects `scripts/check-package-release-policy.mjs` (must accept the renamed package).
 - Co-sequenced with `make-remote-surface-oss-publishable` (which assumed the `@pdpp/remote-surface` name) and with `standardize-pdpp-package-publishing` (release-policy gates).
 - Does not change runtime semantics, wire format, or protocol; consumers inside the monorepo see only a name and subpath shift.

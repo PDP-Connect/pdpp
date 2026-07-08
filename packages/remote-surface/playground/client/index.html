@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Remote surface acceptance playground</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Remote surface acceptance</h1>
+        <p id="connection-status">Connecting</p>
+      </div>
+      <div class="toolbar" aria-label="Stream controls">
+        <label class="field">
+          Quality
+          <input id="quality" type="range" min="30" max="100" value="78" />
+        </label>
+        <label class="field">
+          Intrinsic size
+          <select id="intrinsic-size">
+            <option value="android">Android 390x844</option>
+            <option value="desktop">Desktop 1280x720</option>
+          </select>
+        </label>
+        <label class="field">
+          Container mode
+          <select id="container-mode">
+            <option value="inline">Inline</option>
+            <option value="modal">Modal</option>
+            <option value="odd">Odd shape</option>
+          </select>
+        </label>
+        <label class="field toggle-field">
+          <input id="form-overlay-toggle" type="checkbox" />
+          Form overlay
+        </label>
+        <button id="clear-probe" type="button">Reset</button>
+      </div>
+    </header>
+
+    <main id="workspace" class="workspace">
+      <section class="viewer-column" aria-label="Stream viewer">
+        <div id="viewer-shell" class="viewer-shell">
+          <div class="viewer-header">
+            <div>
+              <h2>Viewer</h2>
+              <p id="viewer-mode-label">Inline container</p>
+            </div>
+            <button id="container-close" type="button" hidden>Close modal</button>
+          </div>
+          <div class="viewer-frame">
+            <div id="stage-frame" class="stage-frame">
+              <div id="stage" class="stage" tabindex="0">
+              <canvas id="stream" class="stream"></canvas>
+              <canvas id="overlay" class="overlay"></canvas>
+              <div id="form-overlay-layer" class="form-overlay-layer" data-testid="form-overlay-layer"></div>
+              <textarea id="keyboard-proxy" autocapitalize="none" autocomplete="off" inputmode="text" spellcheck="false"></textarea>
+              <div id="empty-state" class="empty-state">Waiting for frames</div>
+              </div>
+            </div>
+            <div class="action-strip" aria-label="Probe actions">
+              <button type="button" data-action="tap-email">Tap email</button>
+              <button type="button" data-action="type-email">Email</button>
+              <button type="button" data-action="type-password">Password</button>
+              <button type="button" data-action="type-otp">2FA</button>
+              <button type="button" data-action="backspace-enter">Backspace + enter</button>
+              <button type="button" data-action="keyboard-inset">Keyboard inset</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="panels" aria-label="Acceptance telemetry">
+        <section class="panel">
+          <h2>Android checklist</h2>
+          <ol id="checklist" class="checklist"></ol>
+        </section>
+
+        <section class="panel">
+          <h2>Input path</h2>
+          <div id="input-log" class="log" data-testid="input-log"></div>
+        </section>
+
+        <section class="panel split">
+          <div>
+            <h2>Pointer</h2>
+            <dl id="pointer-metrics" class="metrics"></dl>
+          </div>
+          <div>
+            <h2>Geometry</h2>
+            <dl id="geometry-metrics" class="metrics"></dl>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Viewport match</h2>
+          <dl id="viewport-match-metrics" class="metrics" data-testid="viewport-match-metrics"></dl>
+        </section>
+      </aside>
+    </main>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

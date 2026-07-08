@@ -6,10 +6,14 @@ export {
   type RemoteSurfaceLogger,
 } from "./neko-surface-adapter.ts";
 export {
-  type CdpInputPayload,
   type CdpSurfaceAdapterDeps,
+  type CdpSurfaceClipboardPolicy,
+  type CdpSurfaceClipboardSink,
   type CdpSurfaceClientApi,
   type CdpSurfaceConfig,
+  type CdpSurfaceFrame,
+  type CdpSurfaceMediaSink,
+  type CdpSurfaceRemoteFocusTarget,
   type CdpSurfaceViewportInfo,
   CdpSurfaceAdapter,
 } from "./cdp-surface-adapter.ts";

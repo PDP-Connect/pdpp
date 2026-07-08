@@ -1,0 +1,355 @@
+export declare const BROWSER_SURFACE_BACKEND_NEKO: "neko";
+export declare const BROWSER_SURFACE_LEASE_STATUSES: readonly ["waiting_for_browser_surface", "starting_surface", "leased", "released", "expired", "deferred", "cancelled", "surface_failed"];
+export declare const BROWSER_SURFACE_WAIT_REASONS: readonly ["capacity_full", "surface_starting", "surface_unhealthy", "surface_start_failed", "surface_readiness_timeout", "incompatible_static_profile", "launch_precondition_failed", "lease_wait_timeout"];
+export declare const BROWSER_SURFACE_PRIORITY_CLASSES: readonly ["owner_interactive", "scheduled_refresh"];
+export declare const TERMINAL_BROWSER_SURFACE_LEASE_STATUSES: readonly ["released", "expired", "deferred", "cancelled", "surface_failed"];
+export declare const DEFAULT_NEKO_LEASE_WAIT_TIMEOUT_MS: number;
+export declare const DEFAULT_NEKO_IDLE_TTL_MS: number;
+export declare const DEFAULT_NEKO_PRIORITY_CLASS: BrowserSurfacePriorityClass;
+export declare const DEFAULT_NEKO_PRIORITY_RANKS: Readonly<Record<BrowserSurfacePriorityClass, number>>;
+export type BrowserSurfaceBackend = typeof BROWSER_SURFACE_BACKEND_NEKO;
+export type BrowserSurfaceLeaseStatus = (typeof BROWSER_SURFACE_LEASE_STATUSES)[number];
+export type BrowserSurfaceWaitReason = (typeof BROWSER_SURFACE_WAIT_REASONS)[number];
+export type BrowserSurfacePriorityClass = (typeof BROWSER_SURFACE_PRIORITY_CLASSES)[number];
+export type BrowserSurfaceHealth = "starting" | "ready" | "unhealthy" | "stopping";
+export type BrowserSurfaceMode = "static" | "dynamic";
+export interface BrowserSurface {
+    readonly surface_id: string;
+    readonly backend: BrowserSurfaceBackend;
+    readonly profile_key: string;
+    readonly connector_id: string;
+    readonly cdp_url: string;
+    readonly stream_base_url: string;
+    readonly health: BrowserSurfaceHealth;
+    readonly created_at: string;
+    readonly last_used_at: string;
+    readonly account_key?: string;
+    readonly surface_subject_id?: string;
+    readonly active_lease_id?: string;
+    readonly container_id?: string;
+    readonly allocator_metadata?: Readonly<Record<string, string>>;
+}
+export interface BrowserSurfaceLease {
+    readonly lease_id: string;
+    readonly connector_id: string;
+    readonly profile_key: string;
+    readonly run_id: string;
+    readonly status: BrowserSurfaceLeaseStatus;
+    readonly priority_class: BrowserSurfacePriorityClass;
+    readonly requested_at: string;
+    readonly expires_at: string;
+    readonly fencing_token: number;
+    readonly account_key?: string;
+    readonly surface_subject_id?: string;
+    readonly leased_at?: string;
+    readonly released_at?: string;
+    readonly surface_id?: string;
+    readonly wait_reason?: BrowserSurfaceWaitReason;
+}
+export interface BrowserSurfaceProjection {
+    readonly pending_run_id: string;
+    readonly browser_surface_status: BrowserSurfaceLeaseStatus;
+    readonly browser_surface_lease_id: string;
+    readonly browser_surface_profile_key: string;
+    readonly browser_surface_wait_reason?: BrowserSurfaceWaitReason;
+}
+export interface BrowserSurfaceLeaseConfig {
+    readonly managedConnectors: ReadonlySet<string>;
+    readonly surfaceCap: number;
+    readonly staticProfileKey?: string;
+    readonly staticCdpHttpUrl?: string;
+    readonly staticStreamBaseUrl?: string;
+    readonly leaseWaitTimeoutMs: number;
+    readonly idleTtlMs: number;
+    readonly defaultPriorityClass: BrowserSurfacePriorityClass;
+    readonly priorityRanks: Readonly<Record<BrowserSurfacePriorityClass, number>>;
+    readonly surfaceMode: BrowserSurfaceMode;
+}
+export interface BrowserSurfaceLeaseManagerOptions {
+    readonly config: BrowserSurfaceLeaseConfig;
+    readonly now?: () => Date;
+    readonly makeLeaseId?: () => string;
+    readonly makeSurfaceId?: () => string;
+    readonly nextFencingToken?: () => number;
+    readonly initialSurfaces?: readonly BrowserSurface[];
+    readonly initialLeases?: readonly BrowserSurfaceLease[];
+    readonly releasePromotesNext?: boolean;
+}
+export interface AcquireBrowserSurfaceLeaseRequest {
+    readonly connectorId: string;
+    readonly runId: string;
+    readonly profileKey?: string;
+    readonly accountKey?: string;
+    readonly surfaceSubjectId?: string;
+    readonly priorityClass?: BrowserSurfacePriorityClass;
+}
+export interface AcquireSurfaceLeaseRequest {
+    readonly sessionId: string;
+    readonly surfaceKind: string;
+    readonly profileKey?: string;
+    readonly accountKey?: string;
+    readonly sessionSubjectId?: string;
+    readonly priorityClass?: BrowserSurfacePriorityClass;
+}
+export interface AcquireBrowserSurfaceSessionLeaseRequest extends Omit<AcquireSurfaceLeaseRequest, "surfaceKind"> {
+    readonly surfaceKind?: string;
+    /** @deprecated Use surfaceKind for host-neutral integrations. */
+    readonly connectorId?: string;
+}
+export interface SurfaceLeaseManagerConfig {
+    readonly managedSurfaceKinds: ReadonlySet<string>;
+    readonly surfaceCap: number;
+    readonly staticProfileKey?: string;
+    readonly staticCdpHttpUrl?: string;
+    readonly staticStreamBaseUrl?: string;
+    readonly leaseWaitTimeoutMs: number;
+    readonly idleTtlMs: number;
+    readonly defaultPriorityClass: BrowserSurfacePriorityClass;
+    readonly priorityRanks: Readonly<Record<BrowserSurfacePriorityClass, number>>;
+    readonly surfaceMode: BrowserSurfaceMode;
+}
+export interface SurfaceLeaseManagerOptions {
+    readonly config: SurfaceLeaseManagerConfig;
+    readonly now?: () => Date;
+    readonly makeLeaseId?: () => string;
+    readonly makeSurfaceId?: () => string;
+    readonly nextFencingToken?: () => number;
+    readonly initialSurfaces?: readonly BrowserSurface[];
+    readonly initialLeases?: readonly BrowserSurfaceLease[];
+    readonly releasePromotesNext?: boolean;
+}
+export interface SurfaceLease {
+    readonly leaseId: string;
+    readonly surfaceKind: string;
+    readonly profileKey: string;
+    readonly sessionId: string;
+    readonly status: BrowserSurfaceLeaseStatus;
+    readonly priorityClass: BrowserSurfacePriorityClass;
+    readonly requestedAt: string;
+    readonly expiresAt: string;
+    readonly fencingToken: number;
+    readonly accountKey?: string;
+    readonly sessionSubjectId?: string;
+    readonly leasedAt?: string;
+    readonly releasedAt?: string;
+    readonly surfaceId?: string;
+    readonly waitReason?: BrowserSurfaceWaitReason;
+}
+export interface SurfaceLeaseResult {
+    readonly lease: SurfaceLease;
+    readonly surface?: BrowserSurface;
+    readonly duplicateOf?: SurfaceLease;
+}
+export interface ReleaseSurfaceLeaseRequest {
+    readonly leaseId: string;
+    readonly fencingToken: number;
+}
+export interface ReleaseSurfaceLeaseResult {
+    readonly released: boolean;
+    readonly stale: boolean;
+    readonly lease?: SurfaceLease;
+    readonly promoted?: SurfaceLease;
+    readonly surface?: BrowserSurface;
+}
+export interface RenewBrowserSurfaceLeaseRequest {
+    readonly leaseId: string;
+    readonly fencingToken?: number;
+    readonly ttlMs?: number;
+}
+export interface RenewBrowserSurfaceLeaseResult {
+    readonly renewed: boolean;
+    readonly stale: boolean;
+    readonly lease?: BrowserSurfaceLease;
+}
+export interface RenewSurfaceLeaseRequest {
+    readonly leaseId: string;
+    readonly fencingToken?: number;
+    readonly ttlMs?: number;
+}
+export interface RenewSurfaceLeaseResult {
+    readonly renewed: boolean;
+    readonly stale: boolean;
+    readonly lease?: SurfaceLease;
+}
+export interface TerminalSurfaceLeaseResult {
+    readonly stale: boolean;
+    readonly lease?: SurfaceLease;
+    readonly promoted?: SurfaceLease;
+    readonly surface?: BrowserSurface;
+}
+export interface BrowserSurfaceLeaseResult {
+    readonly lease: BrowserSurfaceLease;
+    readonly surface?: BrowserSurface;
+    readonly duplicateOf?: BrowserSurfaceLease;
+}
+export interface ReleaseBrowserSurfaceLeaseRequest {
+    readonly leaseId: string;
+    readonly fencingToken: number;
+}
+export interface ReleaseBrowserSurfaceLeaseResult {
+    readonly released: boolean;
+    readonly stale: boolean;
+    readonly lease?: BrowserSurfaceLease;
+    readonly promoted?: BrowserSurfaceLease;
+    readonly surface?: BrowserSurface;
+}
+export interface TerminalBrowserSurfaceLeaseResult {
+    readonly stale: boolean;
+    readonly lease?: BrowserSurfaceLease;
+    readonly promoted?: BrowserSurfaceLease;
+    readonly surface?: BrowserSurface;
+}
+export interface ReconcileBrowserSurfaceLeasesAfterRestartRequest {
+    readonly activeRunIds?: ReadonlySet<string>;
+    readonly promoteQueued?: boolean;
+}
+export interface ReconcileSurfaceLeasesAfterRestartRequest {
+    readonly activeSessionIds?: ReadonlySet<string>;
+    readonly promoteQueued?: boolean;
+}
+export interface ReconcileBrowserSurfaceLeasesAfterRestartResult {
+    readonly released: BrowserSurfaceLease[];
+    readonly expired: BrowserSurfaceLease[];
+    readonly deferred: BrowserSurfaceLease[];
+    readonly surfaceFailed: BrowserSurfaceLease[];
+    readonly queued: BrowserSurfaceLease[];
+    readonly activeLeased: BrowserSurfaceLease[];
+    readonly promoted: BrowserSurfaceLease[];
+}
+export interface ReconcileSurfaceLeasesAfterRestartResult {
+    readonly released: SurfaceLease[];
+    readonly expired: SurfaceLease[];
+    readonly deferred: SurfaceLease[];
+    readonly surfaceFailed: SurfaceLease[];
+    readonly queued: SurfaceLease[];
+    readonly activeLeased: SurfaceLease[];
+    readonly promoted: SurfaceLease[];
+}
+export interface CleanupIdleBrowserSurfacesResult {
+    readonly stopped: BrowserSurface[];
+    readonly promoted: BrowserSurfaceLease[];
+}
+export interface CompleteBrowserSurfaceCapacityReclaimResult {
+    readonly stopped?: BrowserSurface;
+    readonly promoted?: BrowserSurfaceLease;
+}
+export interface EnsureBrowserSurfaceRequest {
+    readonly surfaceId: string;
+    readonly connectorId: string;
+    readonly profileKey: string;
+    readonly accountKey?: string;
+    readonly surfaceSubjectId?: string;
+}
+export interface StopBrowserSurfaceRequest {
+    readonly surfaceId: string;
+    readonly reason: "capacity_pressure" | "idle_ttl" | "operator" | "reconcile" | "surface_failed";
+}
+export interface BrowserSurfaceAllocator {
+    ensureSurface(request: EnsureBrowserSurfaceRequest): Promise<BrowserSurface>;
+    getSurfaceStatus(surfaceId: string): Promise<BrowserSurface | null>;
+    stopSurface(request: StopBrowserSurfaceRequest): Promise<BrowserSurface | null>;
+    listSurfaces(): Promise<BrowserSurface[]>;
+}
+export interface EnsureStartingBrowserSurfaceRequest {
+    readonly leaseId: string;
+    readonly allocator: BrowserSurfaceAllocator;
+    readonly readinessTimeoutMs?: number;
+}
+export declare function isTerminalBrowserSurfaceLeaseStatus(status: BrowserSurfaceLeaseStatus): boolean;
+export declare function projectBrowserSurfaceLease(lease: BrowserSurfaceLease): BrowserSurfaceProjection;
+export interface SurfaceLeaseProjection {
+    readonly surface_session_id: string;
+    readonly surface_lease_status: BrowserSurfaceLeaseStatus;
+    readonly surface_lease_id: string;
+    readonly surface_profile_key: string;
+    readonly surface_wait_reason?: BrowserSurfaceWaitReason;
+}
+export declare function projectSurfaceLease(lease: BrowserSurfaceLease): SurfaceLeaseProjection;
+export declare function toSurfaceLease(lease: BrowserSurfaceLease): SurfaceLease;
+export declare class SurfaceLeaseManager {
+    #private;
+    constructor(options: SurfaceLeaseManagerOptions);
+    listLeases(): SurfaceLease[];
+    listSurfaces(): BrowserSurface[];
+    getLease(leaseId: string): SurfaceLease | undefined;
+    getSurface(surfaceId: string): BrowserSurface | undefined;
+    isManagedSurfaceKind(surfaceKind: string): boolean;
+    acquire(request: AcquireSurfaceLeaseRequest): SurfaceLeaseResult;
+    release(request: ReleaseSurfaceLeaseRequest): ReleaseSurfaceLeaseResult;
+    renewLease(request: RenewSurfaceLeaseRequest): RenewSurfaceLeaseResult;
+    cancelSession(sessionId: string): SurfaceLease | undefined;
+    cancelSessionAndPump(sessionId: string): TerminalSurfaceLeaseResult;
+    reconcileAfterRestart(request?: ReconcileSurfaceLeasesAfterRestartRequest): ReconcileSurfaceLeasesAfterRestartResult;
+}
+export declare function createSurfaceLeaseManager(options: SurfaceLeaseManagerOptions): SurfaceLeaseManager;
+export declare class BrowserSurfaceLeaseManager {
+    #private;
+    constructor(options: BrowserSurfaceLeaseManagerOptions);
+    get config(): BrowserSurfaceLeaseConfig;
+    listLeases(): BrowserSurfaceLease[];
+    listSurfaces(): BrowserSurface[];
+    getLease(leaseId: string): BrowserSurfaceLease | undefined;
+    getSurface(surfaceId: string): BrowserSurface | undefined;
+    isManagedConnector(connectorId: string): boolean;
+    acquire(request: AcquireBrowserSurfaceLeaseRequest): BrowserSurfaceLeaseResult;
+    acquireSurfaceLease(request: AcquireBrowserSurfaceSessionLeaseRequest): BrowserSurfaceLeaseResult;
+    cancel(runId: string): BrowserSurfaceLease | undefined;
+    cancelAndPump(runId: string): TerminalBrowserSurfaceLeaseResult;
+    cancelSurfaceSession(sessionId: string): BrowserSurfaceLease | undefined;
+    cancelSurfaceSessionAndPump(sessionId: string): TerminalBrowserSurfaceLeaseResult;
+    expireWaitingLeases(): BrowserSurfaceLease[];
+    release(request: ReleaseBrowserSurfaceLeaseRequest): ReleaseBrowserSurfaceLeaseResult;
+    renew(request: RenewBrowserSurfaceLeaseRequest): RenewBrowserSurfaceLeaseResult;
+    ensureStartingSurfaceReady(request: EnsureStartingBrowserSurfaceRequest): Promise<BrowserSurfaceLeaseResult>;
+    deferTimedOutLease(leaseId: string): BrowserSurfaceLease | undefined;
+    deferLeasedRun(request: ReleaseBrowserSurfaceLeaseRequest, waitReason?: BrowserSurfaceWaitReason): TerminalBrowserSurfaceLeaseResult;
+    reconcileAfterRestart(request?: ReconcileBrowserSurfaceLeasesAfterRestartRequest): ReconcileBrowserSurfaceLeasesAfterRestartResult;
+    reconcileSurfaceSessionsAfterRestart(request?: ReconcileSurfaceLeasesAfterRestartRequest): ReconcileBrowserSurfaceLeasesAfterRestartResult;
+    pumpQueuedLeases(): BrowserSurfaceLease[];
+    /**
+     * Mark an in-memory surface as no longer leaseable. This is the construction
+     * boundary used when a readiness probe (or any caller with direct evidence
+     * that a surface's CDP target is dead) discovers an in-memory surface entry
+     * whose backing allocator container is gone, exited, or otherwise unable to
+     * serve. Without this, a previously-leased surface stays in the in-memory
+     * map with `health: "ready"` after release, and the next acquire reuses
+     * the dead surface in a tight loop.
+     *
+     * The method evicts the surface from the in-memory map so #findReadyIdleSurface
+     * cannot return it. If `releaseLease` is true and the surface still references
+     * an active lease, that lease is marked surface_failed.
+     */
+    invalidateSurface(surfaceId: string, options?: {
+        reason?: BrowserSurfaceWaitReason;
+        releaseLease?: boolean;
+    }): {
+        surface?: BrowserSurface;
+        lease?: BrowserSurfaceLease;
+    };
+    /**
+     * Reconcile in-memory surfaces against the allocator's live view. Called at
+     * boot after the lease store has been rehydrated. Without this step the
+     * lease manager will happily lease a surface whose underlying container was
+     * destroyed across a reference restart, and the controller will only learn
+     * the surface is dead after the readiness probe runs.
+     *
+     * - `allocator.getSurfaceStatus(surfaceId)` returning `null` means the
+     *   allocator does not know about the surface anymore. Evict it.
+     * - The allocator returning a surface whose `health !== "ready"` means it is
+     *   still booting / unhealthy. Downgrade the in-memory entry so it cannot be
+     *   leased until the next allocator round-trip via ensureStartingSurfaceReady
+     *   confirms readiness.
+     *
+     * Returns the surfaces that were evicted or downgraded so the caller can
+     * persist the changes.
+     */
+    reconcileSurfacesWithAllocator(allocator: BrowserSurfaceAllocator): Promise<{
+        evicted: BrowserSurface[];
+        downgraded: BrowserSurface[];
+    }>;
+    cleanupIdleSurfaces(allocator: BrowserSurfaceAllocator): Promise<CleanupIdleBrowserSurfacesResult>;
+    planCapacityPressureReclaim(leaseId: string): BrowserSurface | undefined;
+    completeCapacityPressureReclaim(surfaceId: string): CompleteBrowserSurfaceCapacityReclaimResult;
+    private expireWaitingLeasesWithoutPump;
+}
+//# sourceMappingURL=surface-lease-manager.d.ts.map

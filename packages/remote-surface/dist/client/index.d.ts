@@ -2,10 +2,13 @@ import type { RemoteSurfaceClipboardPayload, RemoteSurfaceEventPayload, RemoteSu
 export { type CdpSurfaceConfig, CdpSurfaceAdapter, type NekoClientApi, type NekoSurfaceAdapterDeps, type NekoSurfaceConfig, NekoSurfaceAdapter, type RemoteSurfaceLogger, } from "../adapters/index.ts";
 export { type NekoPointerControl } from "../controllers/index.ts";
 export * from "./clipboard-policy.ts";
+export * from "./form-overlay/index.ts";
 export * from "./geometry.ts";
+export * from "./stream-viewer-surface.ts";
 export * from "./stream-viewer-control.ts";
 export * from "./stream-viewer-media.ts";
 export * from "./viewport-classifier.ts";
+export * from "./viewport-match-controller.ts";
 export type RemoteSurfaceViewerState = "idle" | "mounting" | "mounted" | "ready" | "closing" | "closed" | "error";
 export interface RemoteSurfaceViewerMountConfig {
     backend: "neko" | "cdp" | "vnc" | "kasm" | "custom";

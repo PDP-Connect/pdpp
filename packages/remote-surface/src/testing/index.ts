@@ -213,4 +213,4 @@ export {
   REFERENCE_WIRE_VIEWPORT_ACK_FIXTURE,
   REFERENCE_WIRE_VIEWPORT_PAYLOAD_FIXTURE,
   type ReferenceWireFixture,
-} from "../reference/reference-wire-fixtures.ts";
+} from "../compat/pdpp-reference/reference-wire-fixtures.ts";

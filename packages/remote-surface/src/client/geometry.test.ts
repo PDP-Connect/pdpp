@@ -7,6 +7,7 @@ import {
   createMobileKeyboardResizeState,
   isMobileKeyboardViewportResize,
   pointToStreamViewport,
+  streamViewportRectToClientBox,
   viewportPayloadsAreEquivalent,
   viewportsAreEquivalent,
 } from "./geometry.ts";
@@ -187,6 +188,42 @@ test("pointToStreamViewport maps clicks through horizontal letterboxing", () => 
       {
         containerBox: { left: 0, top: 0, width: 1000, height: 500 },
         imageBox: { left: 0, top: 0, width: 1000, height: 500 },
+        viewport: { width: 400, height: 800 },
+      }
+    ),
+    null
+  );
+});
+
+test("streamViewportRectToClientBox maps remote rects through horizontal letterboxing", () => {
+  assert.deepEqual(
+    streamViewportRectToClientBox(
+      { x: 100, y: 200, width: 80, height: 40 },
+      {
+        imageBox: { left: 0, top: 0, width: 1000, height: 500 },
+        viewport: { width: 400, height: 800 },
+      }
+    ),
+    { left: 437.5, top: 125, width: 50, height: 25 }
+  );
+});
+
+test("streamViewportRectToClientBox clips fields scrolled outside the viewport", () => {
+  assert.deepEqual(
+    streamViewportRectToClientBox(
+      { x: -10, y: 100, width: 20, height: 50 },
+      {
+        imageBox: { left: 0, top: 0, width: 400, height: 800 },
+        viewport: { width: 400, height: 800 },
+      }
+    ),
+    { left: 0, top: 100, width: 10, height: 50 }
+  );
+  assert.equal(
+    streamViewportRectToClientBox(
+      { x: 401, y: 100, width: 20, height: 50 },
+      {
+        imageBox: { left: 0, top: 0, width: 400, height: 800 },
         viewport: { width: 400, height: 800 },
       }
     ),

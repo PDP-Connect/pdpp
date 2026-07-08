@@ -14,8 +14,8 @@ export interface FrameMessage {
  *   (planned removal: first post-publish minor). Import from the
  *   `./reference` subpath instead.
  */
-export { parseAttachedMessage } from "../reference/stream-viewer-protocol.ts";
-export type { AttachedMessage } from "../reference/stream-viewer-protocol.ts";
+export { parseAttachedMessage } from "../compat/pdpp-reference/stream-viewer-protocol.ts";
+export type { AttachedMessage } from "../compat/pdpp-reference/stream-viewer-protocol.ts";
 export interface BackendReadyMessage {
     backend: "cdp" | "neko" | string;
     browser_owner_mode?: string | null | undefined;

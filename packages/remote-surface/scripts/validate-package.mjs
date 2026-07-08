@@ -50,9 +50,24 @@ const hostNeutralCompatibilityAllowlist = [
     patterns: new Set(["_ref", "run_id", "interaction_id"]),
   },
   {
-    name: "reference-only subpath is the canonical home for PDPP-shaped wire and store fields",
+    name: "deprecated reference subpath remains a compatibility alias for PDPP-shaped wire and store fields",
     files: /^dist\/reference\/.+\.(d\.ts|js|js\.map)$/,
     patterns: new Set(["_ref", "run_id", "interaction_id"]),
+  },
+  {
+    name: "explicit PDPP reference compatibility subpath owns PDPP-shaped wire fixtures and parsers",
+    files: /^dist\/compat\/pdpp-reference\/.+\.(d\.ts|js|js\.map)$/,
+    patterns: new Set(["_ref", "run_id", "interaction_id"]),
+  },
+  {
+    name: "behavior-preserving internal token store move keeps legacy field names until the API cleanup tranche",
+    files: /^dist\/sessions\/token-session-store\.(d\.ts|js|js\.map)$/,
+    patterns: new Set(["run_id", "interaction_id"]),
+  },
+  {
+    name: "behavior-preserving internal lease manager move keeps legacy run identifiers until the API cleanup tranche",
+    files: /^dist\/leases\/surface-lease-manager\.(d\.ts|js|js\.map)$/,
+    patterns: new Set(["run_id"]),
   },
   {
     name: "host-neutral SurfaceSessionStore adapter must rename camelCase requests to the reference store's snake_case API at the call boundary; declarations stay host-neutral",
@@ -264,6 +279,7 @@ async function validateCleanConsumer(tarballPath) {
         'import "@opendatalabs/remote-surface/backends/neko";',
         'import "@opendatalabs/remote-surface/backends/types";',
         'import "@opendatalabs/remote-surface/client";',
+        'import "@opendatalabs/remote-surface/compat/pdpp-reference";',
         'import "@opendatalabs/remote-surface/controllers";',
         'import "@opendatalabs/remote-surface/diagnostics";',
         'import "@opendatalabs/remote-surface/ime";',
@@ -299,6 +315,7 @@ async function validateCleanConsumer(tarballPath) {
           'await import("@opendatalabs/remote-surface/backends/neko");',
           'await import("@opendatalabs/remote-surface/backends/types");',
           'await import("@opendatalabs/remote-surface/client");',
+          'await import("@opendatalabs/remote-surface/compat/pdpp-reference");',
           'await import("@opendatalabs/remote-surface/controllers");',
           'await import("@opendatalabs/remote-surface/diagnostics");',
           'await import("@opendatalabs/remote-surface/ime");',

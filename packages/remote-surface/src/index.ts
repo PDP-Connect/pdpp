@@ -23,12 +23,17 @@ export {
 export {
   buildCdpSafeClientDescriptor,
   CDP_BACKEND_CAPABILITIES,
+  CdpBackendError,
+  CdpRemoteSurfaceBackendAdapter,
+  createCdpRemoteSurfaceBackendAdapter,
+  createCdpRemoteSurfaceBackendAdapterFactory,
   parseCdpSafeClientDescriptor,
 } from "./backends/cdp/index.ts";
 export {
   createDiagnosticsBuffer,
   redactDiagnosticsEvent,
 } from "./diagnostics/index.ts";
+export { createViewportMatchController } from "./client/index.ts";
 export type {
   RedactDiagnosticsOptions,
   RemoteSurfaceDiagnosticsBuffer,

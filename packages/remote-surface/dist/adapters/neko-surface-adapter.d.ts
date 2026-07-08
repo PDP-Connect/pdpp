@@ -12,8 +12,11 @@ export type RemoteSurfaceLogger = (level: "debug" | "info" | "warn" | "error", m
  *
  * Required fields mirror the in-tree helpers (see neko-client.ts):
  *   - `start`         → `startNeko(container, config)`          (line ~2352)
- *   - `stop`          → no current export; dashboard may pass a wrapper
- *                       around the underlying `nekoInstance.$destroy?.()`.
+ *   - `stop`          → idempotent cleanup wrapper around the underlying
+ *                       n.eko instance teardown (`$destroy?.()` plus any
+ *                       host-side stream teardown). Called before start and
+ *                       during unmount so remounts cannot strand an old
+ *                       instance.
  *   - `focusKeyboard` → `focusNekoKeyboard()`                   (line ~1095)
  *   - `sendText`      → wraps `nekoInstance.control.paste(text)` (line ~1088)
  *
@@ -23,7 +26,7 @@ export type RemoteSurfaceLogger = (level: "debug" | "info" | "warn" | "error", m
  */
 export interface NekoClientApi {
     start(container: HTMLElement, config: unknown): Promise<void>;
-    stop?(): Promise<void> | void;
+    stop(): Promise<void> | void;
     focusKeyboard?(): void;
     blurKeyboard?(): void;
     setRemoteInputFocused?(focused: boolean): void;
@@ -86,6 +89,9 @@ export declare class NekoSurfaceAdapter implements RemoteSurface {
     getContainer(): HTMLElement | null;
     mount(el: HTMLElement): Promise<void>;
     unmount(): Promise<void>;
+    private stopClient;
+    private cleanupAfterFailedMount;
+    private disposeLocalControllers;
     focusTextInput(opts?: FocusTextInputOptions): void;
     blurTextInput(): void;
     setRemoteInputFocused(focused: boolean): void;

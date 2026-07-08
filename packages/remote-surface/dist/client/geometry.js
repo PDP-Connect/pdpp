@@ -1,4 +1,4 @@
-import { applyToPoint, inverse, scale, transform, translate } from "transformation-matrix";
+import { applyToPoint, inverse, scale, transform, translate } from "./matrix.js";
 const DEFAULT_VIEWPORT_TOLERANCE_PX = 2;
 const MOBILE_KEYBOARD_MIN_HEIGHT_DELTA_PX = 96;
 const MOBILE_KEYBOARD_MIN_HEIGHT_DELTA_RATIO = 0.2;
@@ -146,6 +146,31 @@ export function containedStreamRect(imageBox, viewport) {
 }
 function streamViewportToClientMatrix(rect, viewport) {
     return transform(translate(rect.left, rect.top), scale(rect.width / viewport.width, rect.height / viewport.height));
+}
+export function streamViewportRectToClientBox(fieldRect, { imageBox, viewport, }) {
+    const rect = containedStreamRect(imageBox, viewport);
+    if (rect.width <= 0 || rect.height <= 0 || viewport.width <= 0 || viewport.height <= 0) {
+        return null;
+    }
+    if (fieldRect.width <= 0 || fieldRect.height <= 0) {
+        return null;
+    }
+    const clippedLeft = Math.max(0, fieldRect.x);
+    const clippedTop = Math.max(0, fieldRect.y);
+    const clippedRight = Math.min(viewport.width, fieldRect.x + fieldRect.width);
+    const clippedBottom = Math.min(viewport.height, fieldRect.y + fieldRect.height);
+    if (clippedRight <= clippedLeft || clippedBottom <= clippedTop) {
+        return null;
+    }
+    const matrix = streamViewportToClientMatrix(rect, viewport);
+    const topLeft = applyToPoint(matrix, { x: clippedLeft, y: clippedTop });
+    const bottomRight = applyToPoint(matrix, { x: clippedRight, y: clippedBottom });
+    return {
+        left: topLeft.x,
+        top: topLeft.y,
+        width: bottomRight.x - topLeft.x,
+        height: bottomRight.y - topLeft.y,
+    };
 }
 export function pointToStreamViewport(point, { containerBox, imageBox, viewport, }) {
     const rect = imageBox && viewport ? containedStreamRect(imageBox, viewport) : containerBox;

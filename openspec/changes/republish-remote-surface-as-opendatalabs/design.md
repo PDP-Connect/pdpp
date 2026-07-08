@@ -34,6 +34,19 @@ The current `dist/server/`, `dist/protocol/`, `dist/leases/`, and `dist/testing/
 - `validate-package.mjs` reference-token allowlist shrinks to `dist/reference/**`. A token appearing anywhere else is a build error.
 - During the transition (one internal cycle), the `./server` entrypoint MAY re-export from `./reference` with `/** @deprecated use @opendatalabs/remote-surface/reference */` jsdoc. The owner decides the deprecation horizon (see Owner Decisions Still Needed).
 
+### Standalone cleanup follow-on
+
+The 2026-07-06 standalone audit found that the first subpath split still left generic cores physically under `src/reference/`. This tranche completes only the first two audit migration steps, without changing runtime behavior:
+
+- Move the generic token session store implementation to `src/sessions/token-session-store.ts`. `src/reference/streaming-session-store.ts` remains as a re-export alias for the PDPP-shaped API names used by existing callers.
+- Move the generic lease manager implementation to `src/leases/surface-lease-manager.ts`. `src/reference/browser-surface-leases.ts` remains as a re-export alias for compatibility.
+- Move PDPP/reference wire parsers, viewer protocol parser, and fixtures to `src/compat/pdpp-reference/`.
+- Add `./compat/pdpp-reference` as the explicit package subpath for new compatibility imports.
+- Keep `./reference` as a deprecated compatibility alias for one release. It re-exports from the new core and compatibility modules so old imports continue to compile.
+- Update README examples and export descriptions away from `BrowserSurface*`, `StreamingSession*`, `_ref`, `run_id`, and `interaction_id` as recommended entrypoints. Compatibility details may be documented only in the reference-compatibility section.
+
+This is intentionally a relocation and presentation change, not an API cleanup. Public symbol renames and removal of deprecated exports stay out of scope until behavior parity is proven and release timing is decided.
+
 ### License posture
 
 - `packages/remote-surface/LICENSE` is added with the Apache-2.0 text. `package.json#license` flips from `ISC` to `Apache-2.0`. `package.json#files` and the validator's `allowedPackageFilePatterns` both include `LICENSE`.
@@ -79,10 +92,11 @@ In scope:
 
 - Spec deltas to `reference-implementation-architecture` capturing the OpenDataLabs identity, reference-subpath isolation rule, license posture, and metadata gates.
 - Co-sequencing notes against `make-remote-surface-oss-publishable` and `standardize-pdpp-package-publishing`.
+- Behavior-preserving source moves for the audit's migration plan steps 1 and 2: generic session/lease cores out of `src/reference/`, PDPP wire compatibility into `src/compat/pdpp-reference/`, and README examples aimed at host-neutral names.
 
 Out of scope:
 
-- Actually renaming files, editing `package.json`, moving source under `src/reference/`, or updating importers (worker lanes).
+- Removing deprecated aliases, changing runtime semantics, extracting the n.eko web client, extracting the headless viewer controller, moving server companions, moving Docker allocation, adding adopter cookbooks, or publishing the package.
 - Choosing the public OpenDataLabs repo URL, the security disclosure contact, the supported Node majors, or the deprecation horizon for legacy server-path reference re-exports (owner decisions).
 - Publishing the package.
 - Switching `private` from `true` to `false`.

@@ -6,7 +6,7 @@
  *   (planned removal: first post-publish minor). Import from the
  *   `./reference` subpath instead.
  */
-export { parseAttachedMessage } from "../reference/stream-viewer-protocol.js";
+export { parseAttachedMessage } from "../compat/pdpp-reference/stream-viewer-protocol.js";
 function ok(value) {
     return { ok: true, value };
 }

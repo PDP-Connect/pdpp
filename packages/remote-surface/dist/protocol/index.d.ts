@@ -172,6 +172,28 @@ export interface RemoteSurfaceDiagnosticsPayload {
     cursor?: string;
     events: readonly JsonObject[];
 }
+export type RemoteSurfaceFormFieldTag = "input" | "textarea" | "select" | "contenteditable";
+export interface RemoteSurfaceFormFieldRect {
+    fieldId?: string;
+    tag: RemoteSurfaceFormFieldTag;
+    inputType: string;
+    placeholder: string;
+    name: string;
+    id: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    value: string;
+    focused: boolean;
+    disabled?: boolean;
+    readonly?: boolean;
+}
+export interface RemoteSurfaceFormFieldSnapshot {
+    type: "form_fields";
+    fields: readonly RemoteSurfaceFormFieldRect[];
+    timestamp?: number;
+}
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export type JsonObject = {
     readonly [key: string]: JsonValue;
@@ -184,19 +206,21 @@ export type JsonObject = {
  *   (planned removal: first post-publish minor). Import from the
  *   `./reference` subpath instead.
  */
-export type { ReferenceWireAttachedPayload, ReferenceWireBackendReadyPayload, ReferenceWireFramePayload, ReferenceWireInputPayload, ReferenceWireInputTelemetryCursor, ReferenceWireInputTelemetryRecord, ReferenceWireNamedSseEvent, ReferenceWireViewportPayload, } from "../reference/protocol-wire.ts";
+export type { ReferenceWireAttachedPayload, ReferenceWireBackendReadyPayload, ReferenceWireFramePayload, ReferenceWireInputPayload, ReferenceWireInputTelemetryCursor, ReferenceWireInputTelemetryRecord, ReferenceWireNamedSseEvent, ReferenceWireViewportPayload, } from "../compat/pdpp-reference/protocol-wire.ts";
 export { RemoteSurfaceProtocolError } from "./errors.ts";
 export declare function parseRemoteSurfaceEventPayload(value: unknown): RemoteSurfaceEventPayload;
 export declare function parseRemoteSurfaceInputPayload(value: unknown): RemoteSurfaceInputPayload;
 export declare function parseRemoteSurfaceViewportPayload(value: unknown): RemoteSurfaceViewportPayload;
 export declare function parseRemoteSurfaceClipboardPayload(value: unknown): RemoteSurfaceClipboardPayload;
 export declare function parseRemoteSurfaceDiagnosticsPayload(value: unknown): RemoteSurfaceDiagnosticsPayload;
+export declare function parseRemoteSurfaceFormFieldSnapshot(value: unknown): RemoteSurfaceFormFieldSnapshot;
+export declare function parseRemoteSurfaceFormFieldRect(value: unknown, path?: string): RemoteSurfaceFormFieldRect;
 /**
  * @deprecated Reference-shaped wire payload helpers moved to
  *   `@opendatalabs/remote-surface/reference`. See the type re-export
  *   block above for the deprecation horizon.
  */
-export { buildReferenceWireAttachedPayload, buildReferenceWireBackendReadyPayload, buildReferenceWireCompanionEventPayload, buildReferenceWireFramePayload, normalizeReferenceWireViewportPayload, parseReferenceWireInputPayload, parseReferenceWireInputTelemetryCursor, parseReferenceWireInputTelemetryRecord, } from "../reference/protocol-wire.ts";
+export { buildReferenceWireAttachedPayload, buildReferenceWireBackendReadyPayload, buildReferenceWireCompanionEventPayload, buildReferenceWireFramePayload, normalizeReferenceWireViewportPayload, parseReferenceWireInputPayload, parseReferenceWireInputTelemetryCursor, parseReferenceWireInputTelemetryRecord, } from "../compat/pdpp-reference/protocol-wire.ts";
 export declare function parseSafeRemoteSurfaceBackendDescriptor(value: unknown): SafeRemoteSurfaceBackendDescriptor;
 export declare function parseRemoteSurfaceTargetDescriptor(value: unknown): RemoteSurfaceTargetDescriptor;
 export declare function isSafeRemoteSurfaceBackendDescriptor(descriptor: SafeRemoteSurfaceBackendDescriptor): boolean;

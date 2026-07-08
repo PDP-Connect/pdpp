@@ -1,28 +1,27 @@
-// CdpSurfaceAdapter — fallback / legacy / debug RemoteSurface implementation.
-//
-// TODO(remote-surface): wrap the existing BrowserSurface + cdp-adapter path
-// used by the current dashboard streaming viewer. Keep this adapter behind a
-// feature flag once NekoSurfaceAdapter is the default; CDP remains useful
-// for debugging Playwright captures where n.eko isn't available.
-// Reference: §54-62 of docs/5-12-26-chatgpt-remote-surface-brief-response.txt.
 import { pointToStreamViewport } from "../client/geometry.js";
+import { applyCdpViewport, dispatchCdpKeyboardInput, dispatchCdpPointerInput, insertCdpText, keysymToCdpKey, } from "../backends/cdp/index.js";
 const noopLogger = () => {
     /* no-op */
 };
 const MOTION_THROTTLE_MS = 33;
+const SYNTHETIC_MOUSE_SUPPRESSION_MS = 1000;
+const TOUCH_DRAG_THRESHOLD_PX = 8;
 export class CdpSurfaceAdapter {
     container = null;
     lifecycleState = "idle";
     client;
     config;
     log;
+    frameSequence = 0;
+    screencastStarted = false;
+    screencastSubscription = null;
     disposeDomListeners = null;
     motionThrottle = {
         mousePendingCoords: null,
         mouseTimeoutId: null,
-        touchPendingTouch: null,
-        touchTimeoutId: null,
     };
+    activeTouchGesture = null;
+    suppressMouseUntil = 0;
     constructor(deps) {
         this.client = deps.client;
         this.config = deps.config;
@@ -35,13 +34,54 @@ export class CdpSurfaceAdapter {
     }
     async mount(el) {
         if (this.lifecycleState !== "idle") {
+            if (this.lifecycleState === "mounted") {
+                return;
+            }
             throw new Error(`CdpSurfaceAdapter.mount: invalid state ${this.lifecycleState}; expected idle`);
         }
         this.lifecycleState = "mounting";
         this.container = el;
-        this.attachDomListeners(el);
-        this.lifecycleState = "mounted";
-        this.log("info", "cdp-surface-adapter.mounted");
+        try {
+            this.screencastSubscription = this.client.cdp.on("Page.screencastFrame", (params) => {
+                void this.handleScreencastFrame(params);
+            });
+            const viewport = this.client.getViewportInfo();
+            if (viewport) {
+                await this.setViewport(viewport);
+            }
+            await this.client.cdp.send("Page.enable");
+            await this.client.cdp.send("Page.startScreencast", {
+                everyNthFrame: 1,
+                format: "jpeg",
+                quality: 80,
+            });
+            this.screencastStarted = true;
+            this.attachDomListeners(el);
+            this.lifecycleState = "mounted";
+            this.log("info", "cdp-surface-adapter.mounted");
+        }
+        catch (error) {
+            if (this.screencastStarted) {
+                try {
+                    await this.client.cdp.send("Page.stopScreencast");
+                    this.screencastStarted = false;
+                }
+                catch (stopError) {
+                    await this.reportError(stopError);
+                }
+            }
+            this.screencastSubscription?.unsubscribe();
+            this.screencastSubscription = null;
+            this.disposeDomListeners?.();
+            this.disposeDomListeners = null;
+            this.clearMotionThrottle();
+            this.container = null;
+            this.lifecycleState = "error";
+            this.log("error", "cdp-surface-adapter.mount-failed", {
+                error: error instanceof Error ? error.message : String(error),
+            });
+            throw error;
+        }
     }
     async unmount() {
         if (this.lifecycleState === "idle") {
@@ -53,20 +93,29 @@ export class CdpSurfaceAdapter {
         this.lifecycleState = "unmounting";
         this.disposeDomListeners?.();
         this.disposeDomListeners = null;
+        this.screencastSubscription?.unsubscribe();
+        this.screencastSubscription = null;
         this.clearMotionThrottle();
+        if (this.screencastStarted) {
+            await this.client.cdp.send("Page.stopScreencast");
+            this.screencastStarted = false;
+        }
         this.container = null;
+        this.frameSequence = 0;
         this.lifecycleState = "idle";
         this.log("info", "cdp-surface-adapter.unmounted");
     }
-    focusTextInput(_opts) {
+    focusTextInput(opts) {
         this.ensureMounted("focusTextInput");
-        if (!this.isCoarsePointer()) {
-            this.debug("surface.cdp-frame.soft_keyboard.skip", { reason: "fine-pointer" });
-            return;
+        if (this.isCoarsePointer()) {
+            const input = this.client.getSoftKeyboardElement?.() ?? null;
+            input?.focus();
+            this.debug("surface.cdp-frame.soft_keyboard.focus", { active: true });
         }
-        const input = this.client.getSoftKeyboardElement?.() ?? null;
-        input?.focus();
-        this.debug("surface.cdp-frame.soft_keyboard.focus", { active: true });
+        else {
+            this.debug("surface.cdp-frame.soft_keyboard.skip", { reason: "fine-pointer" });
+        }
+        this.reportAsync(this.focusRemoteTextInput(opts));
     }
     blurTextInput() {
         this.ensureMounted("blurTextInput");
@@ -76,60 +125,197 @@ export class CdpSurfaceAdapter {
     }
     async sendPointer(event) {
         this.ensureMounted("sendPointer");
-        if (event.type === "pointermove") {
-            await this.client.sendInput({ type: "mouse", action: "mousemove", x: event.x, y: event.y });
-            return;
-        }
-        if (event.type === "pointerdown") {
-            await this.client.sendInput({
-                type: "mouse",
-                action: "mousedown",
-                x: event.x,
-                y: event.y,
-                button: event.button ?? 0,
-            });
-            return;
-        }
-        if (event.type === "pointerup" || event.type === "pointercancel") {
-            await this.client.sendInput({
-                type: "mouse",
-                action: "mouseup",
-                x: event.x,
-                y: event.y,
-                button: event.button ?? 0,
-            });
-        }
+        await dispatchCdpPointerInput(this.client.cdp, {
+            action: event.type,
+            pointerId: event.pointerId,
+            pointerType: event.pointerType,
+            type: "pointer",
+            x: event.x,
+            y: event.y,
+            ...(event.button === undefined ? {} : { button: event.button }),
+        });
+    }
+    async setViewport(viewport) {
+        await applyCdpViewport(this.client.cdp, toViewportPayload(viewport));
     }
     async sendKeysym(event) {
         this.ensureMounted("sendKeysym");
-        await this.client.sendInput({
-            type: "keyboard",
+        const key = keysymToCdpKey(event.keysym);
+        await dispatchCdpKeyboardInput(this.client.cdp, {
             action: event.type,
-            key: String(event.keysym),
-            code: "",
-            modifiers: 0,
+            code: key.code,
+            key: key.key,
+            keysym: event.keysym,
+            type: "keyboard",
         });
     }
     async sendText(text) {
         this.ensureMounted("sendText");
-        if (text.length > 0) {
-            await this.client.sendInput({ type: "paste", text });
-        }
+        await insertCdpText(this.client.cdp, text);
     }
     async pasteText(text) {
         this.ensureMounted("pasteText");
         if (text.length === 0) {
             return false;
         }
-        await this.client.sendInput({ type: "paste", text });
+        await insertCdpText(this.client.cdp, text);
         return true;
     }
-    copyRemoteSelection() {
+    async copyRemoteSelection() {
         this.ensureMounted("copyRemoteSelection");
-        return Promise.resolve(false);
+        const policy = this.client.getClipboardPolicy?.();
+        if (policy?.canReadRemoteSelection === false || !this.client.clipboardSink) {
+            return false;
+        }
+        const result = await this.client.cdp.send("Runtime.evaluate", {
+            awaitPromise: true,
+            expression: "String(globalThis.getSelection?.() ?? '')",
+            returnByValue: true,
+        });
+        const text = typeof result.result?.value === "string" ? result.result.value : "";
+        if (text.length === 0) {
+            return false;
+        }
+        await this.client.clipboardSink.writeText(text);
+        return true;
+    }
+    async handleScreencastFrame(params) {
+        try {
+            const frame = parseScreencastFrame(params);
+            await this.client.cdp.send("Page.screencastFrameAck", { sessionId: frame.sessionId });
+            this.frameSequence += 1;
+            await this.client.mediaSink.onFrame({
+                contentType: "image/jpeg",
+                data: frame.data,
+                ...(frame.metadata ? { metadata: frame.metadata } : {}),
+                sequence: this.frameSequence,
+                sessionId: frame.sessionId,
+                timestamp: Date.now(),
+            });
+        }
+        catch (error) {
+            const normalized = error instanceof Error ? error : new Error("CDP screencast frame handling failed");
+            await this.client.mediaSink.onError?.(normalized);
+        }
+    }
+    async focusRemoteTextInput(opts) {
+        const target = this.client.getRemoteFocusTarget?.(opts) ?? null;
+        if (!target) {
+            return;
+        }
+        const expression = target.expression ??
+            `(() => {
+        const element = document.querySelector(${JSON.stringify(target.selector ?? "")});
+        if (element instanceof HTMLElement) {
+          element.focus({ preventScroll: true });
+          return true;
+        }
+        return false;
+      })()`;
+        await this.client.cdp.send("Runtime.evaluate", {
+            awaitPromise: true,
+            expression,
+            returnByValue: true,
+        });
+    }
+    async sendPointerFromLocal(action, event, pointerType, pointerId = 0) {
+        const coords = this.localCoords(event);
+        if (!coords) {
+            return;
+        }
+        await dispatchCdpPointerInput(this.client.cdp, {
+            action,
+            pointerId,
+            pointerType,
+            type: "pointer",
+            x: coords.x,
+            y: coords.y,
+            ...(event.button === undefined ? {} : { button: event.button }),
+        });
+    }
+    async sendWheelFromLocal(event) {
+        const coords = this.localCoords(event);
+        if (!coords) {
+            return;
+        }
+        await dispatchCdpPointerInput(this.client.cdp, {
+            action: "wheel",
+            deltaX: event.deltaX,
+            deltaY: event.deltaY,
+            pointerType: "mouse",
+            type: "pointer",
+            x: coords.x,
+            y: coords.y,
+        });
+    }
+    async sendMouseFromLocal(action, event, opts = {}) {
+        const coords = this.localCoords(event);
+        if (!coords) {
+            return;
+        }
+        await dispatchCdpPointerInput(this.client.cdp, {
+            action,
+            button: 0,
+            pointerType: "mouse",
+            type: "pointer",
+            x: coords.x,
+            y: coords.y,
+            ...(opts.buttons === undefined ? {} : { buttons: opts.buttons }),
+        });
+    }
+    async blurRemoteActiveElement() {
+        await this.client.cdp.send("Runtime.evaluate", {
+            awaitPromise: true,
+            expression: `(() => {
+        const active = document.activeElement;
+        if (active instanceof HTMLElement && active !== document.body) {
+          active.blur();
+          return true;
+        }
+        return false;
+      })()`,
+            returnByValue: true,
+        });
+    }
+    async sendKeyboardEvent(event) {
+        await dispatchCdpKeyboardInput(this.client.cdp, {
+            action: event.type === "keyup" ? "keyup" : "keydown",
+            code: event.code,
+            key: event.key,
+            modifiers: keyboardModifiers(event),
+            type: "keyboard",
+        });
+    }
+    async sendPasteEvent(event) {
+        if (!this.client.getClipboardPolicy?.().canForwardNativePasteEvent) {
+            this.debug("surface.cdp-frame.clipboard.paste", { phase: "skipped", reason: "policy-denied" });
+            return;
+        }
+        const text = event.clipboardData?.getData("text") ?? "";
+        this.debug("surface.cdp-frame.clipboard.paste", { length: text.length, phase: "native-paste" });
+        await insertCdpText(this.client.cdp, text);
     }
     attachDomListeners(node) {
+        const markTouchActivity = () => {
+            this.suppressMouseUntil = Date.now() + SYNTHETIC_MOUSE_SUPPRESSION_MS;
+        };
+        const isMouseSuppressed = () => Date.now() < this.suppressMouseUntil;
+        const changedTouchForActiveGesture = (event) => {
+            const active = this.activeTouchGesture;
+            if (!active) {
+                return event.changedTouches[0] ?? null;
+            }
+            for (const touch of Array.from(event.changedTouches)) {
+                if (touch.identifier === active.identifier) {
+                    return touch;
+                }
+            }
+            return event.changedTouches[0] ?? null;
+        };
         const onMouseMove = (event) => {
+            if (isMouseSuppressed()) {
+                return;
+            }
             const coords = this.localCoords(event);
             if (!coords) {
                 return;
@@ -139,7 +325,13 @@ export class CdpSurfaceAdapter {
             if (state.mouseTimeoutId) {
                 return;
             }
-            void this.client.sendInput({ type: "mouse", action: "mousemove", x: coords.x, y: coords.y });
+            this.reportAsync(dispatchCdpPointerInput(this.client.cdp, {
+                action: "pointermove",
+                pointerType: "mouse",
+                type: "pointer",
+                x: coords.x,
+                y: coords.y,
+            }));
             state.mouseTimeoutId = setTimeout(() => {
                 state.mouseTimeoutId = null;
                 if (!state.mousePendingCoords) {
@@ -147,73 +339,102 @@ export class CdpSurfaceAdapter {
                 }
                 const pending = state.mousePendingCoords;
                 state.mousePendingCoords = null;
-                void this.client.sendInput({ type: "mouse", action: "mousemove", x: pending.x, y: pending.y });
+                this.reportAsync(dispatchCdpPointerInput(this.client.cdp, {
+                    action: "pointermove",
+                    pointerType: "mouse",
+                    type: "pointer",
+                    x: pending.x,
+                    y: pending.y,
+                }));
             }, MOTION_THROTTLE_MS);
         };
         const onMouseDown = (event) => {
-            const coords = this.localCoords(event);
-            if (coords) {
-                void this.client.sendInput({
-                    type: "mouse",
-                    action: "mousedown",
-                    x: coords.x,
-                    y: coords.y,
-                    button: event.button ?? 0,
-                });
+            if (isMouseSuppressed()) {
+                return;
             }
+            this.reportAsync(this.sendPointerFromLocal("pointerdown", event, "mouse"));
         };
         const onMouseUp = (event) => {
-            const coords = this.localCoords(event);
-            if (coords) {
-                void this.client.sendInput({
-                    type: "mouse",
-                    action: "mouseup",
-                    x: coords.x,
-                    y: coords.y,
-                    button: event.button ?? 0,
-                });
+            if (isMouseSuppressed()) {
+                return;
             }
+            this.reportAsync(this.sendPointerFromLocal("pointerup", event, "mouse"));
         };
         const onTouchStart = (event) => {
-            this.focusTextInput();
-            const touch = this.firstChangedTouch(event);
-            if (touch) {
-                void this.client.sendInput({ type: "touch", action: "touchstart", x: touch.x, y: touch.y, id: touch.id });
+            event.preventDefault();
+            markTouchActivity();
+            const touch = event.changedTouches[0] ?? event.touches[0] ?? null;
+            if (!touch) {
+                return;
             }
+            this.reportAsync(this.blurRemoteActiveElement());
+            node.focus({ preventScroll: true });
+            this.activeTouchGesture = {
+                dragging: false,
+                identifier: touch.identifier,
+                lastClientX: touch.clientX,
+                lastClientY: touch.clientY,
+                pressed: false,
+                startClientX: touch.clientX,
+                startClientY: touch.clientY,
+            };
         };
         const onTouchMove = (event) => {
-            const touch = this.firstChangedTouch(event);
-            if (!touch) {
+            event.preventDefault();
+            markTouchActivity();
+            const active = this.activeTouchGesture;
+            if (!active) {
                 return;
             }
-            const state = this.motionThrottle;
-            state.touchPendingTouch = touch;
-            if (state.touchTimeoutId) {
+            const changed = changedTouchForActiveGesture(event);
+            if (!changed) {
                 return;
             }
-            void this.client.sendInput({ type: "touch", action: "touchmove", x: touch.x, y: touch.y, id: touch.id });
-            state.touchTimeoutId = setTimeout(() => {
-                state.touchTimeoutId = null;
-                if (!state.touchPendingTouch) {
-                    return;
-                }
-                const pending = state.touchPendingTouch;
-                state.touchPendingTouch = null;
-                void this.client.sendInput({ type: "touch", action: "touchmove", x: pending.x, y: pending.y, id: pending.id });
-            }, MOTION_THROTTLE_MS);
+            active.lastClientX = changed.clientX;
+            active.lastClientY = changed.clientY;
+            const distance = Math.hypot(changed.clientX - active.startClientX, changed.clientY - active.startClientY);
+            if (!active.dragging && distance < TOUCH_DRAG_THRESHOLD_PX) {
+                return;
+            }
+            if (!active.pressed) {
+                this.reportAsync(this.sendMouseFromLocal("pointerdown", {
+                    clientX: active.startClientX,
+                    clientY: active.startClientY,
+                }));
+                active.pressed = true;
+            }
+            active.dragging = true;
+            this.reportAsync(this.sendMouseFromLocal("pointermove", changed, { buttons: 1 }));
         };
         const onTouchEnd = (event) => {
-            if (this.motionThrottle.touchTimeoutId) {
-                clearTimeout(this.motionThrottle.touchTimeoutId);
-                this.motionThrottle.touchTimeoutId = null;
-            }
-            this.motionThrottle.touchPendingTouch = null;
-            const touch = this.firstChangedTouch(event);
-            if (!touch) {
-                void this.client.sendInput({ type: "touch", action: "touchend", x: 0, y: 0 });
+            event.preventDefault();
+            markTouchActivity();
+            const active = this.activeTouchGesture;
+            if (!active) {
                 return;
             }
-            void this.client.sendInput({ type: "touch", action: "touchend", x: touch.x, y: touch.y, id: touch.id });
+            const changed = changedTouchForActiveGesture(event);
+            this.activeTouchGesture = null;
+            const endPoint = {
+                clientX: changed?.clientX ?? active.lastClientX,
+                clientY: changed?.clientY ?? active.lastClientY,
+            };
+            if (event.type === "touchcancel") {
+                if (active.pressed) {
+                    this.reportAsync(this.sendMouseFromLocal("pointercancel", endPoint));
+                }
+                return;
+            }
+            if (active.dragging) {
+                if (active.pressed) {
+                    this.reportAsync(this.sendMouseFromLocal("pointerup", endPoint));
+                }
+                return;
+            }
+            this.reportAsync((async () => {
+                await this.sendMouseFromLocal("pointerdown", endPoint);
+                await this.sendMouseFromLocal("pointerup", endPoint);
+            })());
         };
         const onKey = (event) => {
             if (event.key === "Escape") {
@@ -226,13 +447,7 @@ export class CdpSurfaceAdapter {
                 code: event.code,
                 key: event.key,
             });
-            void this.client.sendInput({
-                type: "keyboard",
-                action,
-                key: event.key,
-                code: event.code,
-                modifiers: (event.altKey ? 1 : 0) + (event.ctrlKey ? 2 : 0) + (event.metaKey ? 4 : 0) + (event.shiftKey ? 8 : 0),
-            });
+            this.reportAsync(this.sendKeyboardEvent(event));
         };
         const onWheel = (event) => {
             event.preventDefault();
@@ -240,25 +455,11 @@ export class CdpSurfaceAdapter {
             if (!coords) {
                 return;
             }
-            void this.client.sendInput({
-                type: "scroll",
-                x: coords.x,
-                y: coords.y,
-                deltaX: event.deltaX,
-                deltaY: event.deltaY,
-            });
+            this.reportAsync(this.sendWheelFromLocal(event));
         };
         const onPaste = (event) => {
             event.preventDefault();
-            if (!this.client.getClipboardPolicy?.().canForwardNativePasteEvent) {
-                this.debug("surface.cdp-frame.clipboard.paste", { phase: "skipped", reason: "policy-denied" });
-                return;
-            }
-            const text = event.clipboardData?.getData("text") ?? "";
-            this.debug("surface.cdp-frame.clipboard.paste", { length: text.length, phase: "native-paste" });
-            if (text.length > 0) {
-                void this.client.sendInput({ type: "paste", text });
-            }
+            this.reportAsync(this.sendPasteEvent(event));
         };
         node.addEventListener("mousemove", onMouseMove);
         node.addEventListener("mousedown", onMouseDown);
@@ -297,14 +498,6 @@ export class CdpSurfaceAdapter {
             viewport,
         });
     }
-    firstChangedTouch(event) {
-        const touch = event.changedTouches[0];
-        if (!touch) {
-            return null;
-        }
-        const coords = this.localCoords({ clientX: touch.clientX, clientY: touch.clientY });
-        return coords ? { ...coords, id: touch.identifier } : null;
-    }
     isCoarsePointer() {
         if (typeof window === "undefined") {
             return false;
@@ -321,23 +514,79 @@ export class CdpSurfaceAdapter {
         if (this.motionThrottle.mouseTimeoutId) {
             clearTimeout(this.motionThrottle.mouseTimeoutId);
         }
-        if (this.motionThrottle.touchTimeoutId) {
-            clearTimeout(this.motionThrottle.touchTimeoutId);
-        }
         this.motionThrottle = {
             mousePendingCoords: null,
             mouseTimeoutId: null,
-            touchPendingTouch: null,
-            touchTimeoutId: null,
         };
+        this.activeTouchGesture = null;
     }
     debug(event, payload) {
         this.client.onInputDebug?.(event, payload);
+    }
+    reportAsync(work) {
+        void work.catch((error) => {
+            void this.reportError(error);
+        });
+    }
+    async reportError(error) {
+        const normalized = error instanceof Error ? error : new Error("CDP asynchronous command failed");
+        await Promise.resolve(this.client.mediaSink.onError?.(normalized)).catch(() => {
+            /* swallow secondary reporting failure */
+        });
     }
     ensureMounted(method) {
         if (this.lifecycleState !== "mounted") {
             throw new Error(`CdpSurfaceAdapter.${method}: invalid state ${this.lifecycleState}; expected mounted`);
         }
     }
+}
+function toViewportPayload(viewport) {
+    if ("type" in viewport) {
+        return viewport;
+    }
+    return {
+        type: "viewport",
+        width: viewport.width,
+        height: viewport.height,
+        ...(viewport.deviceScaleFactor === undefined ? {} : { deviceScaleFactor: viewport.deviceScaleFactor }),
+        ...(viewport.screenWidth === undefined ? {} : { screenWidth: viewport.screenWidth }),
+        ...(viewport.screenHeight === undefined ? {} : { screenHeight: viewport.screenHeight }),
+        ...(viewport.hasTouch === undefined ? {} : { hasTouch: viewport.hasTouch }),
+        ...(viewport.mobile === undefined ? {} : { mobile: viewport.mobile }),
+        ...(viewport.orientation === undefined ? {} : { orientation: viewport.orientation }),
+    };
+}
+function keyboardModifiers(event) {
+    const modifiers = [];
+    if (event.altKey) {
+        modifiers.push("Alt");
+    }
+    if (event.ctrlKey) {
+        modifiers.push("Control");
+    }
+    if (event.metaKey) {
+        modifiers.push("Meta");
+    }
+    if (event.shiftKey) {
+        modifiers.push("Shift");
+    }
+    return modifiers;
+}
+function parseScreencastFrame(params) {
+    if (typeof params !== "object" || params === null || Array.isArray(params)) {
+        throw new Error("Page.screencastFrame payload must be an object");
+    }
+    const record = params;
+    if (typeof record.data !== "string" || typeof record.sessionId !== "number") {
+        throw new Error("Page.screencastFrame payload missing data or sessionId");
+    }
+    return {
+        data: record.data,
+        ...(isRecord(record.metadata) ? { metadata: record.metadata } : {}),
+        sessionId: record.sessionId,
+    };
+}
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 //# sourceMappingURL=cdp-surface-adapter.js.map

@@ -20,6 +20,12 @@ export interface ClientPoint {
     clientX: number;
     clientY: number;
 }
+export interface StreamViewportRect {
+    height: number;
+    width: number;
+    x: number;
+    y: number;
+}
 type MobileViewportSample = Pick<ViewportPayload, "height" | "mobile" | "width">;
 export interface LocalViewportSample {
     height: number;
@@ -64,6 +70,10 @@ export declare function assessMobileKeyboardViewportResize({ hasLocalTextInputFo
     suppress: boolean;
 };
 export declare function containedStreamRect(imageBox: CssBox, viewport: StreamViewport): CssBox;
+export declare function streamViewportRectToClientBox(fieldRect: StreamViewportRect, { imageBox, viewport, }: {
+    imageBox: CssBox;
+    viewport: StreamViewport;
+}): CssBox | null;
 export declare function pointToStreamViewport(point: ClientPoint, { containerBox, imageBox, viewport, }: {
     containerBox: CssBox;
     imageBox?: CssBox | null;

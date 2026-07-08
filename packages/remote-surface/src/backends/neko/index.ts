@@ -13,6 +13,7 @@ export * from "./media-settle.ts";
 export * from "./layout.ts";
 export * from "./pointer-diagnostics.ts";
 export * from "./touch-scroll.ts";
+export * from "./viewport-apply.ts";
 export {
   NekoSurfaceAllocatorClient,
   NekoSurfaceAllocatorError,

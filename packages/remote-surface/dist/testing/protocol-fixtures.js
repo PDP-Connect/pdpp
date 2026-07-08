@@ -206,4 +206,38 @@ export const REMOTE_SURFACE_DIAGNOSTICS_FIXTURE = {
         },
     ],
 };
+export const REMOTE_SURFACE_FORM_FIELD_SNAPSHOT_FIXTURE = {
+    type: "form_fields",
+    timestamp: 1_765_600_000_050,
+    fields: [
+        {
+            tag: "input",
+            inputType: "password",
+            placeholder: "Password",
+            name: "password",
+            id: "password",
+            x: 24,
+            y: 112,
+            width: 280,
+            height: 44,
+            value: "",
+            focused: true,
+            disabled: false,
+            readonly: false,
+        },
+        {
+            tag: "contenteditable",
+            inputType: "",
+            placeholder: "",
+            name: "",
+            id: "editor",
+            x: 12,
+            y: 180,
+            width: 320,
+            height: 120,
+            value: "draft",
+            focused: false,
+        },
+    ],
+};
 //# sourceMappingURL=protocol-fixtures.js.map

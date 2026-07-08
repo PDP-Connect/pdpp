@@ -1,4 +1,4 @@
-import { type StreamingSessionStoreOptions } from "../reference/streaming-session-store.ts";
+import { type StreamingSessionStoreOptions } from "../sessions/token-session-store.ts";
 export interface SurfaceSessionRecord {
     surfaceSessionId: string;
     actionId: string;

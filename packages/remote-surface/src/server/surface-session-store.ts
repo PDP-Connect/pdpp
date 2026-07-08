@@ -2,7 +2,7 @@ import {
   createStreamingSessionStore,
   type StreamingSessionRecord,
   type StreamingSessionStoreOptions,
-} from "../reference/streaming-session-store.ts";
+} from "../sessions/token-session-store.ts";
 
 export interface SurfaceSessionRecord {
   surfaceSessionId: string;

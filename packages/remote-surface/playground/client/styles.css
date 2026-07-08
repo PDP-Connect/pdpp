@@ -1,0 +1,493 @@
+:root {
+  color-scheme: light;
+  --surface: oklch(0.985 0.006 218);
+  --surface-raised: oklch(0.998 0.004 218);
+  --ink: oklch(0.21 0.018 232);
+  --muted: oklch(0.47 0.022 232);
+  --line: oklch(0.84 0.018 228);
+  --blue: oklch(0.52 0.14 238);
+  --blue-soft: oklch(0.93 0.04 238);
+  --copper: oklch(0.58 0.12 54);
+  --green: oklch(0.57 0.12 156);
+  --red: oklch(0.56 0.16 28);
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-x: hidden;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button,
+select {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+button {
+  padding: 0 var(--space-md);
+  cursor: pointer;
+  font-weight: 650;
+}
+
+button:hover {
+  border-color: oklch(0.7 0.06 238);
+}
+
+.topbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-xl);
+  padding: var(--space-xl) var(--space-2xl) var(--space-lg);
+  border-bottom: 1px solid var(--line);
+  background: oklch(0.995 0.004 218);
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 22px;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+h2 {
+  font-size: 13px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.topbar p {
+  margin-top: var(--space-xs);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: end;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.field {
+  display: grid;
+  gap: var(--space-xs);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.toggle-field {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  min-height: 36px;
+  color: var(--ink);
+}
+
+.toggle-field input {
+  width: 16px;
+  height: 16px;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  gap: var(--space-xl);
+  padding: var(--space-xl) var(--space-2xl) var(--space-2xl);
+  align-items: start;
+}
+
+.viewer-column {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-md);
+}
+
+.viewer-shell {
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+  position: relative;
+}
+
+.viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.viewer-header p {
+  margin-top: var(--space-xs);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.viewer-frame {
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+  position: relative;
+}
+
+.stage-frame {
+  position: relative;
+  min-height: min(74vh, 820px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background:
+    linear-gradient(45deg, oklch(0.92 0.008 232) 25%, transparent 25%),
+    linear-gradient(-45deg, oklch(0.92 0.008 232) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, oklch(0.92 0.008 232) 75%),
+    linear-gradient(-45deg, transparent 75%, oklch(0.92 0.008 232) 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+  touch-action: none;
+}
+
+.stage-frame.keyboard-inset {
+  min-height: min(48vh, 520px);
+}
+
+.stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+  touch-action: none;
+}
+
+.viewer-shell button {
+  min-height: 32px;
+}
+
+/* Modal mode adds no chrome to the shell — only the stage-frame is promoted to
+ * a full-viewport overlay (see the .workspace[...="modal"] .stage-frame rule).
+ * The shell/header/action-strip stay in their normal inline layout, behind the
+ * overlay and out of view. */
+
+.viewer-shell[data-container-mode="odd"] .viewer-frame {
+  align-items: start;
+}
+
+.viewer-shell[data-container-mode="odd"] .stage-frame {
+  width: min(100%, 32rem);
+  aspect-ratio: 9 / 16;
+  justify-self: center;
+  clip-path: polygon(0 0, 92% 0, 100% 12%, 100% 88%, 86% 100%, 0 100%, 7% 50%);
+}
+
+.viewer-shell[data-container-mode="odd"] .action-strip {
+  width: min(100%, 32rem);
+}
+
+.stream,
+.overlay,
+.form-overlay-layer {
+  position: absolute;
+  inset: auto;
+}
+
+.stream {
+  background: oklch(0.14 0.014 232);
+}
+
+.overlay {
+  pointer-events: none;
+}
+
+.form-overlay-layer {
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.form-overlay-field {
+  position: absolute;
+  min-width: 1px;
+  min-height: 1px;
+  margin: 0;
+  border: 0;
+  padding: 0 2px;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  opacity: 0.03;
+  outline: 0;
+  pointer-events: auto;
+}
+
+.form-overlay-field:focus {
+  outline: 1px solid oklch(0.52 0.14 238 / 0.3);
+  outline-offset: -1px;
+}
+
+.form-overlay-disabled .form-overlay-field {
+  pointer-events: none;
+  display: none;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.empty-state[hidden] {
+  display: none;
+}
+
+#keyboard-proxy {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 2px;
+  height: 2px;
+  opacity: 0.01;
+  border: 0;
+  padding: 0;
+  resize: none;
+}
+
+.action-strip {
+  display: flex;
+  gap: var(--space-sm);
+  overflow-x: auto;
+  padding-bottom: var(--space-xs);
+  min-width: 0;
+}
+
+.panels {
+  display: grid;
+  align-content: start;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.panel {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+
+.panel.split {
+  grid-template-columns: 1fr 1fr;
+}
+
+.checklist {
+  display: grid;
+  gap: var(--space-sm);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.check {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: var(--space-sm);
+  align-items: start;
+  min-height: 28px;
+  font-size: 13px;
+}
+
+.check::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: oklch(0.72 0.012 232);
+}
+
+.check[data-state="pass"]::before {
+  background: var(--green);
+}
+
+.check[data-state="fail"]::before {
+  background: var(--red);
+}
+
+.check span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.log {
+  display: grid;
+  gap: var(--space-sm);
+  max-height: 260px;
+  overflow: auto;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.log-entry {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-sm);
+  border: 1px solid oklch(0.9 0.012 228);
+  border-radius: 6px;
+  background: oklch(0.985 0.005 228);
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-xs) var(--space-sm);
+  margin: 0;
+  font-size: 12px;
+}
+
+.metrics dt {
+  color: var(--muted);
+}
+
+.metrics dd {
+  margin: 0;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+/*
+ * Modal mode = the stream as a chrome-free component filling a full-page
+ * container. ONLY the stage-frame (the element the container-fit surface mounts
+ * into) is promoted to a fixed, edge-to-edge overlay. Everything else — topbar,
+ * action strip, telemetry panels — stays behind it, out of view. This is the
+ * proof that the viewer carries no chrome of its own: drop it in a full-page
+ * box and you see only video. "Fullscreen" is just this container being the
+ * whole viewport; there is no separate fullscreen control.
+ */
+.workspace[data-container-mode="modal"] .stage-frame {
+  position: fixed;
+  inset: 0;
+  width: 100dvw;
+  height: 100dvh;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  z-index: 50;
+  background: var(--stage-bg, oklch(0.14 0.014 232));
+}
+
+/* The keyboard-inset probe shrinks the live container so the fit math is
+ * exercised under an on-screen keyboard, even in the bare overlay. */
+.workspace[data-container-mode="modal"] .stage-frame.keyboard-inset {
+  height: 60dvh;
+}
+
+/* A single minimal exit affordance floats over the bare stream. */
+.workspace[data-container-mode="modal"] #container-close {
+  position: fixed;
+  top: max(var(--space-sm), env(safe-area-inset-top));
+  right: max(var(--space-sm), env(safe-area-inset-right));
+  z-index: 60;
+}
+
+@media (max-width: 960px) {
+  .topbar {
+    align-items: start;
+    padding: var(--space-lg);
+    flex-direction: column;
+  }
+
+  .toolbar {
+    width: 100%;
+    justify-content: start;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+    padding: var(--space-lg);
+  }
+
+  .stage-frame {
+    min-height: 58vh;
+  }
+
+  .panels {
+    grid-auto-rows: min-content;
+  }
+
+  .workspace[data-container-mode="modal"] {
+    padding: var(--space-md);
+  }
+
+  .viewer-shell[data-container-mode="odd"] .stage-frame {
+    width: 100%;
+    aspect-ratio: 9 / 16;
+  }
+
+  .workspace[data-container-mode="modal"] .panels {
+    max-height: min(68dvh, 580px);
+  }
+}
+
+@media (max-width: 520px) {
+  .panel.split {
+    grid-template-columns: 1fr;
+  }
+
+  .action-strip button {
+    min-width: 112px;
+  }
+
+  .workspace[data-container-mode="modal"] {
+    padding: var(--space-sm);
+  }
+
+  .viewer-shell[data-container-mode="modal"] {
+    inset: var(--space-sm);
+    padding: var(--space-sm);
+  }
+
+  .viewer-shell[data-container-mode="modal"] .viewer-frame {
+    min-height: 0;
+  }
+
+  .workspace[data-container-mode="modal"] .panels {
+    max-height: min(68dvh, 580px);
+  }
+}

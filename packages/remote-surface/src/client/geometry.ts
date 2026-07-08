@@ -1,4 +1,4 @@
-import { applyToPoint, inverse, scale, transform, translate } from "transformation-matrix";
+import { applyToPoint, inverse, scale, transform, translate } from "./matrix.ts";
 
 export interface StreamViewport {
   height: number;
@@ -24,6 +24,13 @@ export interface CssBox {
 export interface ClientPoint {
   clientX: number;
   clientY: number;
+}
+
+export interface StreamViewportRect {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
 }
 
 const DEFAULT_VIEWPORT_TOLERANCE_PX = 2;
@@ -270,6 +277,43 @@ export function containedStreamRect(imageBox: CssBox, viewport: StreamViewport):
 
 function streamViewportToClientMatrix(rect: CssBox, viewport: StreamViewport) {
   return transform(translate(rect.left, rect.top), scale(rect.width / viewport.width, rect.height / viewport.height));
+}
+
+export function streamViewportRectToClientBox(
+  fieldRect: StreamViewportRect,
+  {
+    imageBox,
+    viewport,
+  }: {
+    imageBox: CssBox;
+    viewport: StreamViewport;
+  }
+): CssBox | null {
+  const rect = containedStreamRect(imageBox, viewport);
+  if (rect.width <= 0 || rect.height <= 0 || viewport.width <= 0 || viewport.height <= 0) {
+    return null;
+  }
+  if (fieldRect.width <= 0 || fieldRect.height <= 0) {
+    return null;
+  }
+
+  const clippedLeft = Math.max(0, fieldRect.x);
+  const clippedTop = Math.max(0, fieldRect.y);
+  const clippedRight = Math.min(viewport.width, fieldRect.x + fieldRect.width);
+  const clippedBottom = Math.min(viewport.height, fieldRect.y + fieldRect.height);
+  if (clippedRight <= clippedLeft || clippedBottom <= clippedTop) {
+    return null;
+  }
+
+  const matrix = streamViewportToClientMatrix(rect, viewport);
+  const topLeft = applyToPoint(matrix, { x: clippedLeft, y: clippedTop });
+  const bottomRight = applyToPoint(matrix, { x: clippedRight, y: clippedBottom });
+  return {
+    left: topLeft.x,
+    top: topLeft.y,
+    width: bottomRight.x - topLeft.x,
+    height: bottomRight.y - topLeft.y,
+  };
 }
 
 export function pointToStreamViewport(

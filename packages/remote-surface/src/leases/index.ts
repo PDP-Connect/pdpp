@@ -17,7 +17,7 @@ export {
   createSurfaceLeaseManager,
   isTerminalBrowserSurfaceLeaseStatus,
   projectSurfaceLease,
-} from "../reference/browser-surface-leases.ts";
+} from "./surface-lease-manager.ts";
 export type {
   AcquireBrowserSurfaceSessionLeaseRequest,
   AcquireSurfaceLeaseRequest,
@@ -44,7 +44,7 @@ export type {
   SurfaceLeaseProjection,
   SurfaceLeaseResult,
   TerminalSurfaceLeaseResult,
-} from "../reference/browser-surface-leases.ts";
+} from "./surface-lease-manager.ts";
 
 /**
  * @deprecated Reference-shaped browser-surface lease APIs (with snake_case
@@ -59,7 +59,7 @@ export type {
 export {
   BrowserSurfaceLeaseManager,
   projectBrowserSurfaceLease,
-} from "../reference/browser-surface-leases.ts";
+} from "./surface-lease-manager.ts";
 /**
  * @deprecated Reference-shaped lease types moved to
  *   `@opendatalabs/remote-surface/reference`. See the export block above
@@ -81,4 +81,4 @@ export type {
   RenewBrowserSurfaceLeaseRequest,
   RenewBrowserSurfaceLeaseResult,
   TerminalBrowserSurfaceLeaseResult,
-} from "../reference/browser-surface-leases.ts";
+} from "./surface-lease-manager.ts";

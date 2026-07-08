@@ -54,7 +54,7 @@
 - [x] 6.1 `openspec validate republish-remote-surface-as-opendatalabs --strict` passes.
 - [x] 6.2 `openspec validate --all --strict` passes (no collateral damage to sibling changes).
 - [x] 6.3 After §1, repo grep for `@pdpp/remote-surface` returns zero matches outside this change's artifacts and the archived prior changes.
-- [x] 6.4 After §2, `dist/server/**`, `dist/protocol/**`, `dist/leases/**`, `dist/testing/**` are scanned for `_ref`, `run_id`, `interaction_id`; the only residual matches are (a) `dist/server/surface-session-store.js{,.map}` translating camelCase to the reference store's snake_case API at the call boundary and (b) `@deprecated` jsdoc blocks in the migration-notice re-export index files. Both are explicitly allowlisted in `scripts/validate-package.mjs` with a documented host-neutral compatibility rationale; everything else lives only under `dist/reference/**`.
+- [x] 6.4 After §2, `dist/server/**`, `dist/protocol/**`, `dist/leases/**`, `dist/testing/**` are scanned for `_ref`, `run_id`, `interaction_id`; the only residual matches are explicitly documented transitional allowances in `scripts/validate-package.mjs`. Follow-on §9 moves the implementation homes without renaming legacy record fields; `dist/sessions/token-session-store.*` and `dist/leases/surface-lease-manager.*` are therefore allowlisted until the API cleanup tranche.
 - [x] 6.5 After §3, `npm pack` output for the package contains `LICENSE`.
 - [x] 6.6 After §4, `package.json` round-trips through validator with `repository`, `bugs`, `homepage`, `keywords`, and `engines.node` set to concrete values. (`publishConfig.access` is deferred along with §4.3 until §5.1 wires `@opendatalabs/remote-surface` into the checker; while `private: true`, the release policy forbids `publishConfig`.)
 
@@ -83,6 +83,17 @@
 - [ ] 8.2 **(7.4) Owner sets the deprecation horizon.** Replace the placeholder "removed in the first post-publish minor" in the `@deprecated` jsdoc of `src/(server|leases|testing|protocol)/index.ts` (+ `protocol/stream-viewer.ts`) with a concrete release. Acceptance: rebuild, `pnpm --filter @opendatalabs/remote-surface check:dist` stays green, no placeholder horizon string remains in `dist/**`.
 - [ ] 8.3 **(5.1 + 4.3) Owner approves public publication, then wires the policy.** After approval: add `@opendatalabs/remote-surface` to the publishable allowlist in `scripts/check-package-release-policy.mjs` **and**, in the same commit, add `publishConfig.access: "public"` to the manifest (the checker requires the two to move together so the manifest never carries `publishConfig` while still excluded). Acceptance: `pnpm release:policy-check` passes with the package listed; manifest carries `publishConfig.access: "public"`.
 - [ ] 8.4 **Flip `private: false`** (release prep, out of scope for this change). Only after 8.1–8.3. Acceptance: `pnpm --filter @opendatalabs/remote-surface verify` passes end-to-end (the clean-consumer `minimumReleaseAge` 404 resolves once the package exists on npm, or is waived per the publish runbook).
+
+## 9. Standalone Audit Migration Steps 1-2 (worker lane, behavior-preserving only)
+
+- [x] 9.1 Move the token session store implementation to `packages/remote-surface/src/sessions/token-session-store.ts`; keep `src/reference/streaming-session-store.ts` as a re-export alias so existing imports and tests retain behavior.
+- [x] 9.2 Move the lease manager implementation to `packages/remote-surface/src/leases/surface-lease-manager.ts`; keep `src/reference/browser-surface-leases.ts` as a re-export alias and update `src/leases/index.ts` to import from the new core file.
+- [x] 9.3 Add `packages/remote-surface/src/compat/pdpp-reference/` and move reference wire parsers/builders, stream-viewer attached-message parser, and reference wire fixtures there.
+- [x] 9.4 Add `./compat/pdpp-reference` to `package.json#exports`; keep `./reference` as a deprecated alias for one release.
+- [x] 9.5 Update README export descriptions and examples so new adopters see host-neutral `SurfaceSessionStore`, `SurfaceLeaseManager`, and non-`_ref` route examples first; keep compatibility details isolated to the reference compatibility section.
+- [x] 9.6 Run `openspec validate republish-remote-surface-as-opendatalabs --strict`.
+- [x] 9.7 Run `pnpm --filter @opendatalabs/remote-surface typecheck`, `pnpm --filter @opendatalabs/remote-surface test`, and `pnpm --filter @opendatalabs/remote-surface validate:package`. Validator allowlists for moved internal implementation files SHALL include explicit behavior-preserving rationales and SHALL NOT bless new default public examples that use PDPP-shaped names.
+- [x] 9.8 Grep affected package files for old implementation-location imports (`../reference/streaming-session-store`, `../reference/browser-surface-leases`, `../reference/protocol-wire`, `../reference/stream-viewer-protocol`, `../reference/reference-wire-fixtures`) and verify remaining hits are only compatibility aliases or tests intentionally exercising old import paths.
 
 ## Acceptance checks
 

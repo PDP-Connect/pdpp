@@ -3,6 +3,7 @@ export * from "./media-settle.js";
 export * from "./layout.js";
 export * from "./pointer-diagnostics.js";
 export * from "./touch-scroll.js";
+export * from "./viewport-apply.js";
 export { NekoSurfaceAllocatorClient, NekoSurfaceAllocatorError, createNekoSurfaceAllocatorClient, } from "./allocator-client.js";
 export const NEKO_BACKEND_CAPABILITIES = {
     eventChannel: "sse",

@@ -44,6 +44,23 @@ PDPP/reference-only concepts — including but not limited to `_ref`, `run_id`, 
 - **THEN** the re-export SHALL carry a `@deprecated` jsdoc that points consumers at `@opendatalabs/remote-surface/reference`
 - **AND** the re-export SHALL be removed by the deprecation horizon recorded in the change's tasks
 
+### Requirement: Generic remote-surface cores SHALL not live under reference source paths
+
+Generic token-session and surface-lease implementations SHALL live under host-neutral package source paths. PDPP reference compatibility files MAY re-export those implementations under legacy names, but they SHALL NOT be the implementation home.
+
+#### Scenario: Generic session and lease cores are imported from host-neutral paths
+
+- **WHEN** maintainers inspect `packages/remote-surface/src/server/surface-session-store.ts` and `packages/remote-surface/src/leases/index.ts`
+- **THEN** the generic implementation imports SHALL point at `src/sessions/token-session-store.ts` and `src/leases/surface-lease-manager.ts`
+- **AND** imports from `src/reference/streaming-session-store.ts` or `src/reference/browser-surface-leases.ts` SHALL appear only in deprecated compatibility aliases or tests that prove those aliases still work
+
+#### Scenario: PDPP wire compatibility has an explicit namespace
+
+- **WHEN** maintainers inspect package exports
+- **THEN** `./compat/pdpp-reference` SHALL be exported with `types` and `import` targets
+- **AND** `./reference` SHALL remain available as a deprecated alias for the current release cycle
+- **AND** README examples for new adopters SHALL use host-neutral session, lease, and route terminology rather than `BrowserSurface*`, `StreamingSession*`, `_ref`, `run_id`, or `interaction_id`
+
 ### Requirement: Remote surface license posture SHALL be declared and shipped
 
 `@opendatalabs/remote-surface` SHALL ship under Apache-2.0. The reference implementation MAY mirror that license. Documentation MAY adopt CC-BY-4.0. Community-Spec-1.0 SHALL be reserved for future formal-spec artifacts and SHALL NOT be applied to the package or reference code by this change.

@@ -216,4 +216,35 @@ export declare const REMOTE_SURFACE_DIAGNOSTICS_FIXTURE: {
         };
     }];
 };
+export declare const REMOTE_SURFACE_FORM_FIELD_SNAPSHOT_FIXTURE: {
+    readonly type: "form_fields";
+    readonly timestamp: 1765600000050;
+    readonly fields: readonly [{
+        readonly tag: "input";
+        readonly inputType: "password";
+        readonly placeholder: "Password";
+        readonly name: "password";
+        readonly id: "password";
+        readonly x: 24;
+        readonly y: 112;
+        readonly width: 280;
+        readonly height: 44;
+        readonly value: "";
+        readonly focused: true;
+        readonly disabled: false;
+        readonly readonly: false;
+    }, {
+        readonly tag: "contenteditable";
+        readonly inputType: "";
+        readonly placeholder: "";
+        readonly name: "";
+        readonly id: "editor";
+        readonly x: 12;
+        readonly y: 180;
+        readonly width: 320;
+        readonly height: 120;
+        readonly value: "draft";
+        readonly focused: false;
+    }];
+};
 //# sourceMappingURL=protocol-fixtures.d.ts.map

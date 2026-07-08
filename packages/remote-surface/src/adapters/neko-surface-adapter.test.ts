@@ -41,6 +41,7 @@ const baseConfig: NekoSurfaceConfig = {
 
 interface MockClient extends NekoClientApi {
   startCalls: Array<{ container: HTMLElement; config: unknown }>;
+  lifecycleCalls: string[];
   stopCalls: number;
   focusCalls: number;
   blurCalls: number;
@@ -58,6 +59,7 @@ interface CapturedLog {
 
 function makeMockClient(overrides: Partial<NekoClientApi> = {}): MockClient {
   const startCalls: MockClient["startCalls"] = [];
+  const lifecycleCalls: string[] = [];
   let stopCalls = 0;
   let focusCalls = 0;
   let blurCalls = 0;
@@ -67,6 +69,7 @@ function makeMockClient(overrides: Partial<NekoClientApi> = {}): MockClient {
   const pasteTextCalls: string[] = [];
   const client: MockClient = {
     startCalls,
+    lifecycleCalls,
     get stopCalls() {
       return stopCalls;
     },
@@ -83,9 +86,11 @@ function makeMockClient(overrides: Partial<NekoClientApi> = {}): MockClient {
       return copyRemoteSelectionCalls;
     },
     async start(container, config) {
+      lifecycleCalls.push("start");
       startCalls.push({ container, config });
     },
     async stop() {
+      lifecycleCalls.push("stop");
       stopCalls += 1;
     },
     focusKeyboard() {
@@ -121,6 +126,8 @@ describe("NekoSurfaceAdapter", () => {
     await adapter.mount(fakeEl);
     assert.equal(adapter.getLifecycleState(), "mounted");
     assert.equal(client.startCalls.length, 1);
+    assert.equal(client.stopCalls, 1);
+    assert.deepEqual(client.lifecycleCalls, ["stop", "start"]);
     assert.equal(client.startCalls[0]?.container, fakeEl);
     assert.deepEqual(client.startCalls[0]?.config, baseConfig);
   });
@@ -131,7 +138,36 @@ describe("NekoSurfaceAdapter", () => {
     await adapter.mount(fakeEl);
     await adapter.unmount();
     assert.equal(adapter.getLifecycleState(), "idle");
-    assert.equal(client.stopCalls, 1);
+    assert.equal(client.stopCalls, 2);
+    assert.deepEqual(client.lifecycleCalls, ["stop", "start", "stop"]);
+  });
+
+  it("cleans up before remounting so a stale n.eko instance cannot survive", async () => {
+    const client = makeMockClient();
+    const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
+
+    await adapter.mount(fakeEl);
+    await adapter.unmount();
+    await adapter.mount(fakeEl);
+
+    assert.equal(adapter.getLifecycleState(), "mounted");
+    assert.equal(client.startCalls.length, 2);
+    assert.equal(client.stopCalls, 3);
+    assert.deepEqual(client.lifecycleCalls, ["stop", "start", "stop", "stop", "start"]);
+  });
+
+  it("rejects mount when the injected n.eko client cannot clean up instances", async () => {
+    const client = {
+      async start() {
+        throw new Error("start should not run without cleanup");
+      },
+    } as unknown as NekoClientApi;
+    const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
+
+    await assert.rejects(() => adapter.mount(fakeEl), /requires client\.stop/u);
+
+    assert.equal(adapter.getLifecycleState(), "error");
+    assert.equal(adapter.getContainer(), null);
   });
 
   it("throws on double mount()", async () => {
@@ -175,6 +211,8 @@ describe("NekoSurfaceAdapter", () => {
     const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
     await assert.rejects(() => adapter.mount(fakeEl), /ws refused/);
     assert.equal(adapter.getLifecycleState(), "error");
+    assert.equal(client.stopCalls, 2);
+    assert.deepEqual(client.lifecycleCalls, ["stop", "stop"]);
   });
 
   it("unmount() is a no-op when already idle", async () => {
@@ -406,6 +444,9 @@ describe("NekoSurfaceAdapter", () => {
       async start() {
         /* ok */
       },
+      async stop() {
+        /* ok */
+      },
       getPointerControl: () => control,
       mapPointerToRemote: (x, y) => {
         mapCalls.push({ x, y });
@@ -440,6 +481,9 @@ describe("NekoSurfaceAdapter", () => {
       async start() {
         /* ok */
       },
+      async stop() {
+        /* ok */
+      },
     };
     const logs: Array<{ level: string; msg: string }> = [];
     const adapter = new NekoSurfaceAdapter({
@@ -467,6 +511,9 @@ describe("NekoSurfaceAdapter", () => {
       start: async () => {
         /* ok */
       },
+      stop: async () => {
+        /* ok */
+      },
     };
     const logs: Array<{ level: string; msg: string }> = [];
     const adapter = new NekoSurfaceAdapter({
@@ -490,6 +537,5 @@ describe("NekoSurfaceAdapter", () => {
     assert.ok(warnings.includes("neko-surface-adapter.no-remote-input-focus-helper"));
     assert.ok(warnings.includes("neko-surface-adapter.no-paste-text-helper"));
     assert.ok(warnings.includes("neko-surface-adapter.no-copy-remote-selection-helper"));
-    assert.ok(warnings.includes("neko-surface-adapter.no-stop-helper"));
   });
 });
