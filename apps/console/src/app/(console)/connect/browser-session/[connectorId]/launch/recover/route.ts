@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isBrowserBoundConnector } from "../../../../../lib/connection-modality.ts";
 import { requireDashboardAccess } from "../../../../../lib/dashboard-access.ts";
 import { listRuns, type RunSummary } from "../../../../../lib/ref-client.ts";
+import { isRecoverableBrowserSessionRun } from "../recovery-classification.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,8 +10,6 @@ export const runtime = "nodejs";
 interface RouteParams {
   connectorId: string;
 }
-
-const TERMINAL_STATUSES = new Set(["cancelled", "failed", "rejected", "succeeded"]);
 
 function pagePath(connectorId: string): string {
   return `/connect/browser-session/${encodeURIComponent(connectorId)}/launch`;
@@ -26,10 +25,6 @@ function matchesConnection(run: RunSummary, connectorId: string, connectionId: s
     run.source?.connection_id === connectionId ||
     run.source?.id === connectionId
   );
-}
-
-function isOpenRun(run: RunSummary): boolean {
-  return !TERMINAL_STATUSES.has(run.status);
 }
 
 export async function GET(request: Request, { params }: { params: Promise<RouteParams> }): Promise<NextResponse> {
@@ -49,7 +44,7 @@ export async function GET(request: Request, { params }: { params: Promise<RouteP
 
   const runs = await listRuns({ connector_id: connectorId, limit: 50 });
   const run = runs.data.find(
-    (candidate) => matchesConnection(candidate, connectorId, connectionId) && isOpenRun(candidate)
+    (candidate) => matchesConnection(candidate, connectorId, connectionId) && isRecoverableBrowserSessionRun(candidate)
   );
   if (!run) {
     return NextResponse.json({ message: "No active browser run found for this connection." }, { status: 404 });
