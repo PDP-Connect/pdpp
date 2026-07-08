@@ -129,7 +129,9 @@ export default async function RecordsIndexPage({
 function SourcesHeader({ error, message, notice }: { error?: string; message?: string; notice?: string }) {
   return (
     <header style={{ marginBottom: 24, maxWidth: 760 }}>
-      <h1 style={{ fontSize: 21, fontWeight: 800, letterSpacing: "-0.02em", margin: "0 0 4px" }}>Sources</h1>
+      <h1 className="pdpp-heading text-foreground" style={{ margin: "0 0 4px" }}>
+        Sources
+      </h1>
       <p
         style={{
           fontFamily: "var(--font-mono)",

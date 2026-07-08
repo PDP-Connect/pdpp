@@ -143,15 +143,7 @@ function TracesHeader() {
       <Eyebrow as="p" style={{ marginBottom: 6 }}>
         Sharing
       </Eyebrow>
-      <h1
-        style={{
-          fontSize: 21,
-          fontWeight: 800,
-          letterSpacing: "-0.02em",
-          margin: "0 0 4px",
-          fontFamily: "var(--font-sans)",
-        }}
-      >
+      <h1 className="pdpp-heading text-foreground" style={{ margin: "0 0 4px" }}>
         Audit
       </h1>
       <p
