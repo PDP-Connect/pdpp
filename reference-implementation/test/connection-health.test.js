@@ -509,6 +509,27 @@ test('degraded: retryable_gap coverage axis degrades a succeeded run', () => {
   assert.equal(snap.axes.coverage, 'retryable_gap');
 });
 
+test('retryable_gap coverage remediation is owner-actionable, not a passive wait', () => {
+  // The console's connection detail header already offers an owner-runnable
+  // Retry/Refresh now button whenever a source is owner-runnable, including
+  // for a retryable_gap connection. The condition's remediation label feeds
+  // the diagnostics tooltip next to that button, so it must not tell the
+  // owner to wait while a clickable retry sits right above it — that read as
+  // a contradiction (source-sync-actionability, 2026-07-09).
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ hasDegradingGaps: true }),
+      coverage: { axis: 'retryable_gap' },
+      freshness: { axis: 'fresh' },
+    })
+  );
+  const coverage = findCondition(snap, 'SourceCoverageComplete');
+  assert.equal(coverage?.remediation?.action, 'retry_by_runtime');
+  assert.equal(coverage?.remediation?.retryable, true);
+  assert.doesNotMatch(coverage?.remediation?.label ?? '', /^wait/i);
+  assert.match(coverage?.remediation?.label ?? '', /run the connector/i);
+});
+
 test('degraded: terminal_gap coverage axis degrades a succeeded run', () => {
   // Stream/scope-boundary coverage: at least one stream has a terminal
   // gap (owner-action required). Must degrade and preserve the axis so

@@ -9,6 +9,11 @@
 - [x] 1.6 Emit an owner retry action for idle sources with retryable coverage
       gaps unless active progress, source-pressure, scheduled retry, or
       cooldown evidence proves the system is already handling the work.
+- [x] 1.7 Fix the `retryable_gap` coverage condition's remediation label
+      ("Wait for detail-gap retry") that contradicted the owner-runnable
+      Retry/Refresh now CTA rendered next to it; match the "Run the
+      connector ..." phrasing already used by every other `retry_by_runtime`
+      remediation in this file.
 
 ## 2. Console Actionability
 

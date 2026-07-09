@@ -2181,7 +2181,14 @@ function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: Conn
       origin: "connector",
       remediation: {
         action: axes.coverage === "retryable_gap" ? "retry_by_runtime" : "update_connector",
-        label: axes.coverage === "retryable_gap" ? "Wait for detail-gap retry" : "Review source coverage gaps",
+        // A retryable gap is owner-runnable, same as every other
+        // `retry_by_runtime` remediation in this file (see the freshness
+        // conditions below): "Wait for detail-gap retry" told the owner to
+        // wait while the console's header CTA offered a clickable
+        // Retry/Refresh now for the same connection, which read as a
+        // contradiction. Match the established "Run the connector ..."
+        // phrasing so the tooltip agrees with the button.
+        label: axes.coverage === "retryable_gap" ? "Run the connector to retry the gap" : "Review source coverage gaps",
         retryable: axes.coverage === "retryable_gap",
         target: "coverage",
       },
