@@ -37,6 +37,8 @@ const ACTIONABILITY_PROJECTION = /const actionability = projectSourceActionabili
 const RENDERED_VERDICT_ACTION_FROM_PROJECTION = /connectionPrimaryAction: actionability\.primaryAction/;
 const RENDERED_VERDICT_HEADER_ACTION = /function RenderedVerdictHeaderAction/;
 const RENDERED_VERDICT_ACTION_TESTID = /data-testid="detail-action-rendered-verdict"/;
+const RENDERED_OWNER_ACTION_GUARD =
+  /const renderedOwnerAction =\s*renderedAction && renderedAction\.audience === "owner" && renderedAction\.satisfied_when\.kind !== "none"\s*\? renderedAction\s*: null;/;
 const NON_OWNER_HEADER_ACTIONS_RETURN_NULL =
   /if \(action\.audience !== "owner" \|\| action\.satisfied_when\.kind === "none"\) \{\s*return null;\s*\}/;
 // A device-local add_info recovery is NOT navigable — it must render as
@@ -44,7 +46,7 @@ const NON_OWNER_HEADER_ACTIONS_RETURN_NULL =
 // to /runs (which sent the owner in a hero→panel→runs→panel circle).
 const DEVICE_LOCAL_GUARD = /action\.remediation\?\.target\.kind === "local_device"/;
 const DEVICE_LOCAL_TESTID = /data-testid="detail-action-rendered-verdict-device-local"/;
-const RENDERED_VERDICT_ACTION_PRECEDES_SYNC = /if \(renderedAction\)[\s\S]*if \(primaryAction\.kind === "sync"\)/;
+const RENDERED_OWNER_ACTION_PRECEDES_SYNC = /if \(renderedOwnerAction\)[\s\S]*if \(primaryAction\.kind === "sync"\)/;
 const SYNC_BRANCH_GUARD = /if \(primaryAction\.kind === "sync"\)/;
 const COOLDOWN_BRANCH_GUARD = /if \(primaryAction\.kind === "cooldown_wait"\)/;
 const COOLDOWN_FORCE_BUTTON = /<SyncNowButton[\s\S]{0,260}force[\s\S]{0,260}idleLabel="Force run anyway"/;
@@ -98,8 +100,9 @@ test("rendered verdict owner action owns the header before generic sync fallback
   assert.match(src, RENDERED_VERDICT_ACTION_FROM_PROJECTION);
   assert.match(src, RENDERED_VERDICT_HEADER_ACTION);
   assert.match(src, RENDERED_VERDICT_ACTION_TESTID);
+  assert.match(src, RENDERED_OWNER_ACTION_GUARD);
   assert.match(src, NON_OWNER_HEADER_ACTIONS_RETURN_NULL);
-  assert.match(src, RENDERED_VERDICT_ACTION_PRECEDES_SYNC);
+  assert.match(src, RENDERED_OWNER_ACTION_PRECEDES_SYNC);
 });
 
 test("stored-credential sources repair credentials before browser-session fallback", async () => {

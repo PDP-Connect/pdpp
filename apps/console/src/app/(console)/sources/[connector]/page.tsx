@@ -760,6 +760,11 @@ function ConnectorPrimaryHeaderAction({
   storedCredentialUpdateHref: string | null;
   syncIdleLabel: string;
 }) {
+  const renderedOwnerAction =
+    renderedAction && renderedAction.audience === "owner" && renderedAction.satisfied_when.kind !== "none"
+      ? renderedAction
+      : null;
+
   if (revoked) {
     return (
       <Link
@@ -771,10 +776,10 @@ function ConnectorPrimaryHeaderAction({
       </Link>
     );
   }
-  if (renderedAction) {
+  if (renderedOwnerAction) {
     return (
       <RenderedVerdictHeaderAction
-        action={renderedAction}
+        action={renderedOwnerAction}
         browserSessionRepairHref={browserSessionRepairHref}
         connectionId={connectionId}
         connectorId={connectorId}
