@@ -889,17 +889,7 @@ function RenderedVerdictHeaderAction({
   storedCredentialUpdateHref: string | null;
 }) {
   if (action.audience !== "owner" || action.satisfied_when.kind === "none") {
-    return (
-      <span
-        className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
-        data-action-audience={action.audience}
-        data-action-kind={action.kind}
-        data-testid="detail-action-rendered-verdict-status"
-        title={action.terminal ? "This action is not owner-repairable." : "The reference is handling this action."}
-      >
-        {action.cta}
-      </span>
-    );
+    return null;
   }
   if (action.kind === "reauth") {
     const repair = reauthActionPresentation({

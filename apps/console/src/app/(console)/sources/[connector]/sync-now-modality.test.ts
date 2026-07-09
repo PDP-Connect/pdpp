@@ -37,7 +37,8 @@ const ACTIONABILITY_PROJECTION = /const actionability = projectSourceActionabili
 const RENDERED_VERDICT_ACTION_FROM_PROJECTION = /connectionPrimaryAction: actionability\.primaryAction/;
 const RENDERED_VERDICT_HEADER_ACTION = /function RenderedVerdictHeaderAction/;
 const RENDERED_VERDICT_ACTION_TESTID = /data-testid="detail-action-rendered-verdict"/;
-const RENDERED_VERDICT_STATUS_TESTID = /data-testid="detail-action-rendered-verdict-status"/;
+const NON_OWNER_HEADER_ACTIONS_RETURN_NULL =
+  /if \(action\.audience !== "owner" \|\| action\.satisfied_when\.kind === "none"\) \{\s*return null;\s*\}/;
 // A device-local add_info recovery is NOT navigable — it must render as
 // non-clickable guidance pointing to the Diagnostics commands, never a <Link>
 // to /runs (which sent the owner in a hero→panel→runs→panel circle).
@@ -97,7 +98,7 @@ test("rendered verdict owner action owns the header before generic sync fallback
   assert.match(src, RENDERED_VERDICT_ACTION_FROM_PROJECTION);
   assert.match(src, RENDERED_VERDICT_HEADER_ACTION);
   assert.match(src, RENDERED_VERDICT_ACTION_TESTID);
-  assert.match(src, RENDERED_VERDICT_STATUS_TESTID);
+  assert.match(src, NON_OWNER_HEADER_ACTIONS_RETURN_NULL);
   assert.match(src, RENDERED_VERDICT_ACTION_PRECEDES_SYNC);
 });
 
