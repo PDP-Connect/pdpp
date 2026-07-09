@@ -128,6 +128,9 @@ function renderNoAssistanceSurface({
   if (currentAssistance && requiresBrowserSurfaceAssistance(currentAssistance)) {
     return <UnavailableStreamSurface connector={connector} runId={runId} />;
   }
+  if (currentAssistance?.ownerAction === "act_elsewhere" && currentAssistance.responseContract === "none") {
+    return <ExternalApprovalSurface assistance={currentAssistance} connector={connector} runId={runId} />;
+  }
   const noAssistanceState = selectNoAssistanceStreamState({
     runHandleStatus: runStatus?.status ?? null,
     terminalStatus: envelope.terminal_status,
@@ -296,6 +299,33 @@ function PreparingBrowserSurface({ connector, runId }: { connector: ConnectorCon
         <p className="mt-3 text-muted-foreground text-sm leading-6">
           {subject} has started a browser-session repair. This page will open the browser controls as soon as the run
           asks for your input.
+        </p>
+        <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
+      </section>
+    </main>
+  );
+}
+
+function ExternalApprovalSurface({
+  assistance,
+  connector,
+  runId,
+}: {
+  assistance: NonNullable<ReturnType<typeof getCurrentRunAssistance>>;
+  connector: ConnectorContext | null;
+  runId: string;
+}) {
+  const subject = connector?.displayName ?? "This run";
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
+      <section className="rounded-3xl border border-border bg-card p-6 shadow-2xl shadow-black/10">
+        <NoAssistanceRunPoller runId={runId} />
+        <p className="pdpp-eyebrow text-muted-foreground">approval waiting</p>
+        <h1 className="pdpp-heading mt-3 text-balance text-foreground">Approve the prompt outside PDPP.</h1>
+        <p className="mt-3 text-muted-foreground text-sm leading-6">{assistance.message}</p>
+        <p className="mt-3 text-muted-foreground text-sm leading-6">
+          {subject} will continue automatically after the provider confirms the approval. No browser controls are waiting
+          on this page.
         </p>
         <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
       </section>

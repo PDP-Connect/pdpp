@@ -20,6 +20,8 @@ const UNAVAILABLE_STREAM_POLLER_RE =
 const PREPARING_BROWSER_SURFACE_GATE_RE =
   /hasActiveBrowserSurface\(envelope\.events\)[\s\S]{0,120}<PreparingBrowserSurface/;
 const PREPARING_BROWSER_SURFACE_COPY_RE = /Preparing the secure browser\./;
+const EXTERNAL_APPROVAL_COPY_RE =
+  /function ExternalApprovalSurface[\s\S]{0,900}Approve the prompt outside PDPP\.[\s\S]{0,900}No browser controls are waiting/;
 const POLLER_TIMELINE_PROBE_RE = /fetch\(`\/_ref\/runs\/\$\{encodeURIComponent\(runId\)\}\/timeline`/;
 const POLLER_STREAM_READY_RE = /getCurrentBrowserSurfaceAssistance\(timelineEventsFrom\(body\)\) !== null/;
 const POLLER_HARD_RELOAD_RE = /window\.location\.reload\(\)/;
@@ -79,6 +81,21 @@ test("stream page does not render resolved copy solely because assistance disapp
   assert.match(pageSource, PREPARING_BROWSER_SURFACE_COPY_RE);
   assert.match(pageSource, CONTINUING_SURFACE_RE);
   assert.match(pageSource, CONTINUING_POLLER_RE);
+});
+
+test("external provider approval does not render as a browser-session repair", () => {
+  const externalApprovalGate = pageSource.indexOf(
+    'currentAssistance?.ownerAction === "act_elsewhere" && currentAssistance.responseContract === "none"'
+  );
+  const browserPrepGate = pageSource.indexOf("hasActiveBrowserSurface(envelope.events)");
+
+  assert.notEqual(externalApprovalGate, -1);
+  assert.notEqual(browserPrepGate, -1);
+  assert.ok(
+    externalApprovalGate < browserPrepGate,
+    "external app approval must be handled before the generic active-browser fallback"
+  );
+  assert.match(pageSource, EXTERNAL_APPROVAL_COPY_RE);
 });
 
 test("stream page labels multi-account runs by connection instance before connector type", () => {
