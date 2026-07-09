@@ -59,6 +59,7 @@ import type { DetailItem, ListPageDiagnostics, ListPageOrder, OrderDetail } from
 const AMAZON_MANIFEST_PATH = new URL("../../manifests/amazon.json", import.meta.url);
 const AMAZON_INDEX_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
 const AMAZON_FOPO_DETAIL_FIXTURE = new URL("./__fixtures__/order-detail-fopo-minimal.html", import.meta.url);
+const AMAZON_UFF_DETAIL_FIXTURE = new URL("./__fixtures__/order-detail-uff-card-minimal.html", import.meta.url);
 const AMAZON_EMPTY_YEAR_FIXTURE = new URL("./__fixtures__/orders-list-empty-year-with-carousel.html", import.meta.url);
 
 interface RecordingDeps {
@@ -774,6 +775,27 @@ test("processListOrder: fopo Whole Foods detail URL hydrates instead of becoming
   assert.ok(
     emitted.some((r) => r.stream === "order_items" && r.data.asin === "B01FOPO001"),
     "fopo detail items enrich emitted order_items"
+  );
+});
+
+test("processListOrder: uff order-card detail URL hydrates instead of becoming a gap", async () => {
+  const coverage = newOrderItemsCoverage();
+  const { deps, emitted, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
+  const html = readFileSync(AMAZON_UFF_DETAIL_FIXTURE, "utf8");
+  const page = makeDetailPageStub(
+    html,
+    "https://www.amazon.com/uff/your-account/order-details/ref=ppx_hzod_rd_dt_b_fresh_uff_rd?orderID=fixture"
+  );
+
+  await processListOrder(page, deps, makeRunFlags(), makeListOrder({ orderId: "ord-uff-1" }));
+
+  assert.deepEqual(coverage.required, ["ord-uff-1"]);
+  assert.deepEqual(coverage.hydrated, ["ord-uff-1"]);
+  assert.deepEqual(coverage.gap, []);
+  assert.equal(findDetailGaps(protocolMessages).length, 0, "uff detail pages must not emit degraded detail gaps");
+  assert.ok(
+    emitted.some((r) => r.stream === "order_items" && r.data.asin === "B02HIJKLMN"),
+    "uff order-card detail items enrich emitted order_items"
   );
 });
 

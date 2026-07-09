@@ -1213,6 +1213,92 @@ test('runtime quarantines Amazon-shaped repeated no-progress re-deferrals at the
   assert.equal(terminal.last_error.attempt_count, 8);
 }));
 
+test('store deliberately requeues quarantined terminal gaps with a fresh no-progress budget', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const connectorInstanceId = 'cin_amazon_retry_test';
+  const orderId = '111-2222222-3333335';
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'amazon',
+    connectorInstanceId,
+    stream: 'order_items',
+    parentStream: 'orders',
+    recordKey: orderId,
+    detailLocator: { kind: 'amazon.order_detail', order_id: orderId, order_date: '2026-01-06' },
+    reason: 'retry_exhausted',
+    lastError: { class: 'transient_no_progress' },
+  });
+  for (let i = 0; i < 8; i++) {
+    await store.markGapStatus(seeded.gap_id, 'in_progress', { runId: `prior_run_${i}` });
+    await store.resetServedInProgressGaps([seeded.gap_id]);
+  }
+  await store.markGapStatus(seeded.gap_id, 'terminal', {
+    reason: 'quarantined',
+    lastError: {
+      class: 'quarantined',
+      reason: 'retry_exhausted',
+      failure_class: 'transient_no_progress',
+      attempt_count: 8,
+      threshold: 8,
+    },
+  });
+
+  const summary = await store.requeueQuarantinedTerminalGapsForConnectorInstance('amazon', connectorInstanceId, {
+    streams: ['order_items'],
+    now: '2026-07-09T12:00:00.000Z',
+  });
+
+  assert.deepEqual(summary, { matched: 1, requeued: 1 });
+  assert.equal(await store.countGapsByStatusForConnector('amazon', { status: 'terminal', connectorInstanceId }), 0);
+  const pending = await store.listPendingGaps({
+    connectorId: 'amazon',
+    connectorInstanceId,
+    streams: ['order_items'],
+    now: '2026-07-09T12:00:00.000Z',
+  });
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].gap_id, seeded.gap_id);
+  assert.equal(pending[0].status, 'pending');
+  assert.equal(pending[0].reason, 'retry_exhausted');
+  assert.equal(pending[0].attempt_count, 0);
+  assert.equal(pending[0].last_attempt_at, null);
+  assert.equal(pending[0].next_attempt_after, null);
+  assert.equal(pending[0].last_error.class, 'quarantine_retry_requested');
+  assert.equal(pending[0].last_error.previous_class, 'quarantined');
+  assert.equal(pending[0].last_error.previous_failure_class, 'transient_no_progress');
+}));
+
+test('store requeue path does not revive non-quarantined terminal gaps', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const connectorInstanceId = 'cin_amazon_terminal_test';
+  const orderId = '111-2222222-3333336';
+  const seeded = await store.upsertPendingGap({
+    connectorId: 'amazon',
+    connectorInstanceId,
+    stream: 'order_items',
+    parentStream: 'orders',
+    recordKey: orderId,
+    detailLocator: { kind: 'amazon.order_detail', order_id: orderId, order_date: '2026-01-07' },
+    reason: 'temporary_unavailable',
+    lastError: { class: 'transient_no_progress' },
+  });
+  await store.markGapStatus(seeded.gap_id, 'terminal', {
+    reason: 'not_found',
+    lastError: { class: 'not_found', status: 404 },
+  });
+
+  const summary = await store.requeueQuarantinedTerminalGapsForConnectorInstance('amazon', connectorInstanceId, {
+    streams: ['order_items'],
+  });
+
+  assert.deepEqual(summary, { matched: 0, requeued: 0 });
+  assert.equal(await store.countGapsByStatusForConnector('amazon', { status: 'terminal', connectorInstanceId }), 1);
+  const pending = await store.listPendingGaps({ connectorId: 'amazon', connectorInstanceId, streams: ['order_items'] });
+  assert.equal(pending.length, 0);
+  const terminal = await store.getGapById(seeded.gap_id);
+  assert.equal(terminal.status, 'terminal');
+  assert.equal(terminal.reason, 'not_found');
+}));
+
 // ─── Durable lease acceptance tests ──────────────────────────────────────────
 //
 // These tests prove the lease fix: gaps marked in_progress when served are

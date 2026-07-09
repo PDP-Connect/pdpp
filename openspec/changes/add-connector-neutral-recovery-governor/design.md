@@ -175,6 +175,13 @@ progress is quarantined with captured evidence and a terminal class, keeps its
 place in accounting (never silently dropped), and stops consuming the recovery
 budget of the items behind it.
 
+Quarantine is sticky by default, but not irreversible. If the connector or
+runtime is repaired, an operator-approved repair path may requeue scoped
+`terminal` / `quarantined` rows with a fresh no-progress budget. That path is
+not a general terminal reset: it must not revive terminal rows whose reason is a
+permanent unavailable class such as `not_found`, `gone`, or
+`permanent_forbidden`.
+
 ### D11. Owner UI pattern: one sentence, one evidence line, one action
 
 The owner UI target is not "show the recovery state machine." The target is a

@@ -230,6 +230,146 @@ function normalizeReasonScope(reasons) {
   return out.length ? out : null;
 }
 
+function normalizeStreamScope(streams) {
+  if (!Array.isArray(streams)) return null;
+  const out = [...new Set(streams.filter((stream) => typeof stream === 'string' && stream))];
+  return out.length ? out : null;
+}
+
+function normalizeGapMutationLimit(limit) {
+  const n = Number(limit);
+  if (!Number.isFinite(n)) return 100;
+  return Math.max(1, Math.min(Math.floor(n), 500));
+}
+
+function requeueReasonForQuarantinedGap(gap) {
+  const previousReason = nonEmptyString(gap?.last_error?.reason);
+  if (
+    previousReason === 'retry_exhausted'
+    || previousReason === 'temporary_unavailable'
+    || previousReason === 'run_cap_deferred'
+  ) {
+    return previousReason;
+  }
+  return 'temporary_unavailable';
+}
+
+function buildQuarantineRetryLastError(gap, now) {
+  const prior = gap?.last_error && typeof gap.last_error === 'object' ? gap.last_error : {};
+  return sanitizeDetailGapMetadata({
+    class: 'quarantine_retry_requested',
+    previous_class: typeof prior.class === 'string' ? prior.class : null,
+    previous_failure_class: typeof prior.failure_class === 'string' ? prior.failure_class : null,
+    previous_reason: gap?.reason ?? null,
+    requeued_at: now,
+  });
+}
+
+function normalizeQuarantinedRequeueScope(connectorId, connectorInstanceId, options = {}) {
+  const cid = nonEmptyString(connectorId);
+  if (!cid) throw new Error('requeueQuarantinedTerminalGapsForConnectorInstance requires connectorId');
+  return {
+    connectorId: cid,
+    connectorInstanceId: nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(cid),
+    limit: normalizeGapMutationLimit(options.limit),
+    now: nonEmptyString(options.now) || nowIso(),
+    streams: normalizeStreamScope(options.streams),
+  };
+}
+
+function sqliteQuarantinedRequeueRows(scope) {
+  const streamPlaceholders = scope.streams?.length ? scope.streams.map(() => '?').join(', ') : null;
+  // REVIEWED-DYNAMIC: bounded repair selection for terminal quarantined
+  // detail gaps. Only non-payload row metadata is read and the caller must
+  // scope by one connector instance; terminal rows are never blanket-reset.
+  return [...iterateDynamicSqlAcknowledged(`
+    SELECT * FROM connector_detail_gaps
+    WHERE connector_id = ?
+      AND connector_instance_id = ?
+      AND status = 'terminal'
+      AND reason = 'quarantined'
+      ${streamPlaceholders ? `AND stream IN (${streamPlaceholders})` : ''}
+    ORDER BY updated_at, created_at
+    LIMIT ?
+  `, [scope.connectorId, scope.connectorInstanceId, ...(scope.streams ?? []), scope.limit])].map(rowToGap);
+}
+
+function requeueSqliteQuarantinedRows(rows, scope) {
+  let requeued = 0;
+  for (const gap of rows) {
+    // REVIEWED-DYNAMIC: scoped status reset for operator-approved retry of
+    // quarantined no-progress detail gaps after a connector/runtime fix.
+    const result = execDynamicSqlAcknowledged(`
+      UPDATE connector_detail_gaps
+      SET status = 'pending',
+          reason = ?,
+          attempt_count = 0,
+          last_attempt_at = NULL,
+          next_attempt_after = NULL,
+          last_error_json = ?,
+          updated_at = ?
+      WHERE gap_id = ?
+        AND connector_id = ?
+        AND connector_instance_id = ?
+        AND status = 'terminal'
+        AND reason = 'quarantined'
+    `, [
+      requeueReasonForQuarantinedGap(gap),
+      encodeJson(buildQuarantineRetryLastError(gap, scope.now)),
+      scope.now,
+      gap.gap_id,
+      scope.connectorId,
+      scope.connectorInstanceId,
+    ]);
+    requeued += Number(result.changes || 0);
+  }
+  return { matched: rows.length, requeued };
+}
+
+async function postgresQuarantinedRequeueRows(scope) {
+  const result = await postgresQuery(`
+    SELECT * FROM connector_detail_gaps
+    WHERE connector_id = $1
+      AND connector_instance_id = $2
+      AND status = 'terminal'
+      AND reason = 'quarantined'
+      AND ($3::text[] IS NULL OR stream = ANY($3::text[]))
+    ORDER BY updated_at, created_at
+    LIMIT $4
+  `, [scope.connectorId, scope.connectorInstanceId, scope.streams, scope.limit]);
+  return result.rows.map(rowToGap);
+}
+
+async function requeuePostgresQuarantinedRows(rows, scope) {
+  let requeued = 0;
+  for (const gap of rows) {
+    const updated = await postgresQuery(`
+      UPDATE connector_detail_gaps
+      SET status = 'pending',
+          reason = $1,
+          attempt_count = 0,
+          last_attempt_at = NULL,
+          next_attempt_after = NULL,
+          last_error_json = $2::jsonb,
+          updated_at = $3
+      WHERE gap_id = $4
+        AND connector_id = $5
+        AND connector_instance_id = $6
+        AND status = 'terminal'
+        AND reason = 'quarantined'
+    `, [
+      requeueReasonForQuarantinedGap(gap),
+      encodeJson(buildQuarantineRetryLastError(gap, scope.now)),
+      scope.now,
+      gap.gap_id,
+      scope.connectorId,
+      scope.connectorInstanceId,
+    ]);
+    requeued += Number(updated.rowCount || 0);
+  }
+  return { matched: rows.length, requeued };
+}
+
 export function createSqliteConnectorDetailGapStore() {
   return {
     async upsertPendingGap(input) {
@@ -491,6 +631,11 @@ export function createSqliteConnectorDetailGapStore() {
           AND status = 'in_progress'
       `, [now, ...gapIds]);
     },
+
+    async requeueQuarantinedTerminalGapsForConnectorInstance(connectorId, connectorInstanceId, options = {}) {
+      const scope = normalizeQuarantinedRequeueScope(connectorId, connectorInstanceId, options);
+      return requeueSqliteQuarantinedRows(sqliteQuarantinedRequeueRows(scope), scope);
+    },
   };
 }
 
@@ -695,6 +840,11 @@ export function createPostgresConnectorDetailGapStore() {
         WHERE gap_id = ANY($2::text[])
           AND status = 'in_progress'
       `, [now, gapIds]);
+    },
+
+    async requeueQuarantinedTerminalGapsForConnectorInstance(connectorId, connectorInstanceId, options = {}) {
+      const scope = normalizeQuarantinedRequeueScope(connectorId, connectorInstanceId, options);
+      return requeuePostgresQuarantinedRows(await postgresQuarantinedRequeueRows(scope), scope);
     },
   };
 }

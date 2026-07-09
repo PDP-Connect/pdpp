@@ -258,6 +258,19 @@ visible in recovery accounting; they SHALL NOT be silently dropped.
   count
 - **AND** owner-only diagnostics SHALL expose the per-item evidence trail.
 
+#### Scenario: Quarantined items can be deliberately retried after repair
+
+- **WHEN** a quarantined item is terminal because it exhausted its no-progress
+  budget
+- **AND** an operator explicitly requeues that quarantined class after a
+  connector or runtime repair
+- **THEN** the runtime SHALL move only the scoped quarantined items back to
+  pending recovery with a fresh no-progress budget
+- **AND** it SHALL preserve bounded evidence that the prior terminal state was
+  a quarantine retry
+- **AND** it SHALL NOT requeue terminal rows whose reason is a permanent
+  unavailable class such as `not_found`, `gone`, or `permanent_forbidden`.
+
 ### Requirement: Recovery admission decisions SHALL be observable
 
 Each recovery admission decision SHALL be recorded with its outcome, reason

@@ -224,6 +224,27 @@ test("parseOrderDetailDom: fopo Whole Foods detail fixture parses alternate deta
   });
 });
 
+test("parseOrderDetailDom: uff order-card detail fixture parses alternate detail shape", () => {
+  const html = readFixture("order-detail-uff-card-minimal.html");
+  const d = parseOrderDetailDom(html);
+  assert.ok(d, "expected non-null OrderDetail");
+  assert.equal(d.grand_total, "$42.99");
+  assert.equal(d.status_detail, "Delivered January 17");
+  assert.equal(d.gift_order, false);
+  assert.equal(d.digital_order, false);
+  assert.equal(d.items.length, 2);
+  assert.deepEqual(d.items[0], {
+    asin: "B01ABCDEFG",
+    name: "Synthetic Widget Model A",
+    url: "https://www.amazon.com/dp/B01ABCDEFG?ref=fake",
+    unit_price: null,
+    quantity: 1,
+    seller: null,
+    item_image_url: null,
+    refund_status: null,
+  });
+});
+
 test("parseOrderDetailDom: shipping address <li>-only fallback (no inner span)", () => {
   // Old Amazon layouts render address lines as plain <li> without the
   // a-list-item <span>. The parser must still extract one line per <li>,

@@ -109,7 +109,7 @@ const RETRYABLE_ERROR_RE = /timeout|ECONN|ETIMEDOUT|net::|5\d\d/i;
 const SIGNIN_URL_RE = /\/ap\/(signin|challenge|mfa)/;
 const ORDERS_URL_RE = /\/your-orders|\/order-history/;
 const YEAR_VALUE_RE = /year-(\d{4})/;
-const DETAIL_URL_RE = /\/(?:gp\/your-account|fopo)\/order-details/;
+const DETAIL_URL_RE = /\/(?:gp\/your-account|fopo|uff\/your-account)\/order-details/;
 export const AMAZON_NO_ORDERS_TEXT_PATTERN = String.raw`you have not placed any orders|no orders found|0\s+orders\s+placed\s+in|looks like you didn['’]t place an order in`;
 
 export type AmazonDetailGapReason = "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
@@ -321,9 +321,8 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
 
   // Retry transient navigation failures (network, timeout, 5xx) with
   // exponential backoff. AbortError bypasses retries — we use it for the
-  // "Amazon redirected us to a non-detail URL" signal (e.g. Amazon Fresh
-  // orders that redirect to /uff/... with no #orderDetails), which retrying
-  // won't fix.
+  // "Amazon redirected us to a non-detail URL" signal. Valid alternate
+  // detail surfaces (for example /uff/... order cards) are handled below.
   try {
     await pRetry(
       async (): Promise<void> => {
@@ -331,11 +330,10 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
           waitUntil: "domcontentloaded",
           timeout: NAV_TIMEOUT_MS,
         });
-        // Wait for #orderDetails to appear OR for the cancellation/redirect
-        // page signature. waitForSelector replaces `await sleep(800)` —
-        // real sync primitive instead of a pacing guess.
+        // Wait for the known detail page signatures. waitForSelector replaces
+        // `await sleep(800)` — real sync primitive instead of a pacing guess.
         await page.waitForSelector(
-          '#orderDetails, [data-component="cancelled"], #f3_food_ItemList, #f3_food_WfmInStoreOrderSummary',
+          '#orderDetails, [data-component="cancelled"], #f3_food_ItemList, #f3_food_WfmInStoreOrderSummary, .js-order-card',
           {
             timeout: DETAIL_WAIT_MS,
             state: "attached",
@@ -364,8 +362,7 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
       // dead authenticated session, not a transient page miss: retrying it every
       // run is owner busywork. Route it to owner-repair so the run stops churning
       // retryable gaps and the owner is asked to reconnect. A redirect to any
-      // OTHER non-detail URL (e.g. an Amazon Fresh order bouncing to /uff/) stays
-      // a transient no-progress gap.
+      // OTHER non-detail URL stays a transient no-progress gap.
       const failureKind: DetailFailureKind = SIGNIN_URL_RE.test(landedUrl)
         ? "session_repair_required"
         : "redirected_non_detail";

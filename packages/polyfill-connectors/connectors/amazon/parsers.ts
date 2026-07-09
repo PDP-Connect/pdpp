@@ -375,11 +375,39 @@ function parseFopoOrderDetailDom(document: Document): OrderDetail | null {
   };
 }
 
+function parseUffOrderDetailDom(document: Document): OrderDetail | null {
+  const card = document.querySelector<HTMLElement>(".order-card, .js-order-card");
+  const order = card ? parseOrderCard(card) : null;
+  if (!order || order.items.length === 0) {
+    return null;
+  }
+
+  return {
+    status_detail: order.deliveryStatus,
+    recipient_name: null,
+    shipping_address_summary: null,
+    payment_method_summary: null,
+    grand_total: order.orderTotal,
+    gift_order: false,
+    digital_order: false,
+    items: order.items.map((item) => ({
+      asin: item.asin,
+      name: item.name,
+      url: item.url,
+      unit_price: null,
+      quantity: 1,
+      seller: null,
+      item_image_url: null,
+      refund_status: null,
+    })),
+  };
+}
+
 export function parseOrderDetailDom(html: string): OrderDetail | null {
   const { document } = parseHTML(html);
   const od = document.querySelector("#orderDetails");
   if (!od) {
-    return parseFopoOrderDetailDom(document);
+    return parseFopoOrderDetailDom(document) ?? parseUffOrderDetailDom(document);
   }
 
   const cancelledEl = od.querySelector('[data-component="cancelled"]');
