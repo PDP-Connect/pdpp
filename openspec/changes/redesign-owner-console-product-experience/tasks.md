@@ -174,3 +174,42 @@ Inputs: `tmp/workstreams/ui-url-brand-0703-report.md`, `ui-jump-0703-report.md`,
 - [x] 10.D.6 A client with `active_token_count > 1` drills into individual tokens with issued/expires and per-token revoke; no owner-visible token id is a usable bearer. (Accepted 2026-07-03: owner-access contracts and token-page invariants passed; live data has two multi-token clients; live tokens page exposes `token_id_public` revoke controls and no raw `token_id` field.)
 - [x] 10.D.7 The Grants page renders no Pending-approvals section when there are zero pending; the overview surfaces grant packages; the read/audit ladder labels match the grouped-vs-raw reality. (Accepted 2026-07-03: grants/standing/dashboard tests passed; live owner-session probes showed 0 pending approvals and 77 grant packages; live grants page has no `Pending approvals (0)`, overview links to grant packages, and read CTA says `audit log`, not `every read`.)
 - [ ] 10.D.8 Each durable-contract tranche (10.B, 10.C) carries desktop/mobile pixels, browser console/network evidence, data-truth probes for affected counts/labels, and an independent adversarial review before merge readiness. (Still open: data-truth probes and tests are captured; desktop/mobile pixels, browser console/network evidence, and independent adversarial review remain to archive/attach.)
+
+### 10.E 2026-07-09 State-Model Convergence (Wave 10 — planning accepted, implementation NOT started)
+
+Inputs: `design-notes/studio-critique-20260709.md`,
+`docs/research/owner-console-operator-prior-art-gaps-2026-07-09.md`,
+`tmp/workstreams/2026-07-09-owner-operating-reset/ROLLUP.md`,
+`tmp/workstreams/2026-07-09-instance-health/`, code-audit fact table
+(`tmp/studio/code-audit-C.md`, untracked). Sequencing per design §Wave 10.
+Nothing below is complete; these are the implementation tasks the studio
+review authorizes planning for.
+
+- [ ] 10.E.1 Recommend the owner-facing labels and copy principles from the
+      prior-art research (ownership-first: what is happening, who acts next,
+      the one action, evidence age) and validate them with a comprehension
+      check inside the design gate. The internal resolver enum is a
+      server-side contract, not an owner-facing vocabulary; this task does
+      not block on an owner label decision.
+- [ ] 10.E.2 Write the owner-console governing charter (calm, action-first,
+      taxonomy-free; Ink Carbon retained) and record that `.impeccable.md`
+      governs only public/reference surfaces.
+- [ ] 10.E.3 Tranche 10a: server-side owner-state derivation with resolver,
+      `as_of`, posture; emit `reattach_schedule`/`refresh_now`; exhaustive
+      cross-product property test.
+- [ ] 10.E.4 Tranche 10b: console consumes the server owner state; delete
+      `deriveSourceStatus` raw-state path, `source-actionability.ts` parallel
+      taxonomy, legacy client verdict fallback, `badgeState`, client-only
+      stall threshold; share/generate wire types; headline = list predicate;
+      remove audited dead action set and dead components.
+- [ ] 10.E.5 Tranche 10c: ownership-first source presentation (plain cause,
+      who acts next, one action, evidence age; three ownership groups; no
+      internal-state legend); recovery single-cause layout with evidence age
+      and re-check; axis chips behind advanced disclosure; per-stream
+      blast-radius line; timestamp and timeline consolidation; consistent
+      pause-semantics copy.
+- [ ] 10.E.6 Tranche 10d: run-lifecycle live-status on every branch;
+      pause→resume→refresh→watch journey without manual reload;
+      multi-condition aggregation on a Chase-shaped fixture.
+- [ ] 10.E.7 Each tranche carries §13 gate artifacts (journey evidence,
+      data-truth probes, vocabulary review, independent adversarial review).

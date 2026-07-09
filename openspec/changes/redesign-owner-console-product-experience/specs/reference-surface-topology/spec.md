@@ -534,3 +534,69 @@ The owner-access overview and its deep pages SHALL scale as the number of bearer
 - **WHEN** the reference contract supports editing a client or credential label
 - **THEN** the owner SHALL be able to edit that label in place and see it reflected across the overview and deep pages in one render cycle
 - **AND** a label SHALL be presented as editable only when the contract can persist the edit; scope and bearer material SHALL NOT be presented as editable
+
+### Requirement: Owner console SHALL render one server-derived owner state per source
+
+The reference SHALL derive, server-side, a single closed resolution of source status from the health/verdict spine — resolving every combination of underlying health evidence deterministically to exactly one resolution with at most one primary owner action — and owner console surfaces SHALL consume that derivation rather than re-deriving status, work grouping, attention counts, or repair routing from raw health axes. The owner-facing presentation contract for a source is ownership-first: what is happening in plain language, who acts next (owner, system, or maintainer), the single wired owner action when one exists, and the age of the evidence. Owner surfaces MAY organize sources into three ownership groups (working, needs the owner, system-or-maintainer-owned) and SHALL NOT require the owner to learn the internal state vocabulary or consult a persistent legend of internal states.
+
+#### Scenario: A source presents its status
+
+- **WHEN** a primary owner surface presents a source's status
+- **THEN** it SHALL lead with what is happening in plain language, who acts next, the single wired owner action when one exists, and the evidence age
+- **AND** it SHALL NOT present the internal state vocabulary as a taxonomy the owner must learn to interpret the surface
+
+#### Scenario: The same source appears on two surfaces
+
+- **WHEN** the same source is rendered on the Sources list, source detail, the Overview, Syncs, or a notification at the same instant
+- **THEN** each surface SHALL present the same ownership group, the same next-actor, and the same primary action for that source
+- **AND** no console surface SHALL compute a different status, freshness note, or work grouping from raw health state for normal owner presentation
+
+#### Scenario: A surface shows an attention rollup count
+
+- **WHEN** a surface shows a count of sources that need the owner
+- **THEN** the count SHALL be computed from the same server-owned predicate that selects the listed subjects
+- **AND** revealing the count SHALL show exactly the counted subjects
+
+#### Scenario: Internal state vocabulary is requested
+
+- **WHEN** an owner wants the underlying axis evidence (freshness, coverage, disposition, attention, outbox) for a source
+- **THEN** that vocabulary SHALL be available behind an intentional advanced/diagnostic disclosure
+- **AND** it SHALL NOT be the default presentation of source status on primary owner surfaces
+
+### Requirement: Owner-facing source status SHALL carry evidence age and posture
+
+Source status derived from a completed run's terminal evidence SHALL be distinguishable from status observed from current activity. The rendered status SHALL carry the timestamp of the evidence it derives from. A defect state derived from stale terminal evidence SHALL present as that run's finding with its age, and SHALL offer a re-verification action when the owner can run one, rather than presenting indefinitely as a current fact.
+
+#### Scenario: A defect verdict outlives its evidence
+
+- **WHEN** a degraded or blocked state derives from a terminal run older than the source's expected collection cadence
+- **THEN** the surface SHALL present the finding with its evidence age rather than as an unqualified current fact
+- **AND** it SHALL offer a re-verification action when an owner-runnable run or probe can re-check the finding
+
+#### Scenario: No work is in flight
+
+- **WHEN** a source or stream has no active run or probe
+- **THEN** its status SHALL NOT read as checking or in-progress
+- **AND** absent instrumentation SHALL render as an unmeasured state that is a contract gap, not as a resting checking state
+
+### Requirement: Paused and refresh-due sources SHALL state their semantics and carry one wired action
+
+An owner-paused source SHALL present pause as an owner-owned state with consistent copy stating what pause means: scheduled collection stops until resume, and whether manual sync remains available. A source in a refresh-due state SHALL carry exactly one wired owner action that performs the refresh or reattaches the schedule. The console SHALL NOT present a refresh-due or paused state whose stated remedy has no working control.
+
+#### Scenario: An owner pauses a schedule
+
+- **WHEN** the owner pauses a source's schedule
+- **THEN** the source SHALL render an owner-owned paused state with copy stating that scheduled runs stop until resume and whether manual sync remains available
+- **AND** the paused source SHALL NOT be presented as a system or connector issue
+- **AND** resume and any available manual sync SHALL be wired working actions
+
+#### Scenario: A source is due for a refresh
+
+- **WHEN** a source renders a refresh-due state
+- **THEN** the surface SHALL expose exactly one wired action that starts the refresh or reattaches the schedule
+- **AND** the state SHALL NOT render as advice with no corresponding control
+
+#### Scenario: Pause copy appears on multiple surfaces
+
+- **WHEN** pause-related copy renders on schedules, setup status, source detail, or an automatic-pause notice
+- **THEN** the surfaces SHALL use one consistent owner-facing description of pause semantics for the same underlying state

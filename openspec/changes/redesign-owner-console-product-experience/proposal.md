@@ -30,6 +30,19 @@ The 2026-07-03 owner review and three read-only audits (`tmp/workstreams/ui-url-
 
 These decisions supersede the earlier "keep `/dashboard`" and "defer route retirement" leanings recorded in the iteration log and the owner docket parking row; the design and spec deltas record the change.
 
+### 2026-07-09 studio review and state-model convergence
+
+A reconciled two-blind-assessment studio review
+(`design-notes/studio-critique-20260709.md`), grounded in the 2026-07-09 owner
+operating-reset and instance-health evidence, adds one durable direction the
+change did not previously cover: the console consumes **one server-derived
+owner state per source** (closed vocabulary, named resolver, evidence age and
+posture, wired action) and deletes its parallel status derivations; headline
+counts become definitionally equal to their lists; paused and refresh-due
+sources carry honest semantics and a wired action; and the owner console gets
+its own governing charter split from `.impeccable.md`'s leadership/demo brief.
+Design §Iteration 18 and §Wave 10 and the spec delta record the decisions.
+
 ## Capabilities
 
 Modified:

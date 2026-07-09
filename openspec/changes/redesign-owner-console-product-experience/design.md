@@ -455,6 +455,77 @@ become `/explore` and the Jump surface's clean equivalent. Removed legacy paths
 do not keep working; the unified palette's Enter behavior must not resurrect the
 "Enter silently redirects to Explore" defect the Jump audit found.
 
+### Iteration 18: 2026-07-09 Studio Review And State-Model Convergence
+
+Two blind assessments (design-studio and product-systems), a deterministic code
+audit, and a prior-art gap lane were reconciled in
+`design-notes/studio-critique-20260709.md`, with the 2026-07-09 owner
+operating-reset rollup and instance-health workstreams as primary friction
+evidence. Every load-bearing code claim was verified independently before
+acceptance.
+
+Accepted decisions:
+
+- **One server-derived owner state per source.** The server spine
+  (`computeConnectionHealth` + `synthesizeRenderedVerdict` +
+  `OwnerActionSurface`) is the asset; the defect is plurality. The reference
+  derives one closed owner-facing state (with a named resolver: owner, system,
+  or maintainer) and console surfaces consume it. The console's parallel
+  taxonomies — `deriveSourceStatus` raw-state path, the
+  `source-actionability.ts` status/work-group vocabulary, the legacy
+  client-side verdict fallback, ad-hoc badge/stall derivations — are deleted,
+  not reconciled. Migration is mostly deletion.
+- **Evidence age and posture become part of the verdict.** A defect verdict
+  read from a stale terminal run renders as that run's finding with its age
+  and a re-verification affordance, not as a bare current fact (USAA read
+  Degraded for ~23 days off pre-fix evidence; Chase's red was stale — both
+  07-09 macro lanes concluded "validation-needed, not code-defect").
+- **Headline attention counts are definitionally the filtered list** — same
+  server predicate, no console-side re-count.
+- **Every advertised state carries its wired action.** `reattach_schedule` /
+  `refresh_now` are emitted for owner-paused and refresh-due shapes; no
+  actionless "needs a refresh" text. Paused sources state their semantics
+  (no scheduled runs until resume; manual sync still available) with one
+  consistent copy.
+- **The owner-facing contract is ownership-first, not a taxonomy.** For each
+  source the console leads with four facts: what is happening (plain-language
+  cause or progress), who acts next (owner, system, or maintainer), the single
+  wired action when one exists, and evidence age. Lists organize by three
+  ownership groups (working / needs the owner / system-or-maintainer-owned).
+  The closed internal resolution stays a server-side contract; it is never a
+  vocabulary the owner must learn, and no persistent legend of internal states
+  is required — per-source copy states the concrete cause instead of forcing
+  an enum label. Verdict axis chips, disposition vocabulary, and diagnostics
+  narration move behind an advanced disclosure. Recovery leads with one cause,
+  one action, one banner. Mixed-stream sources get a blast-radius one-liner
+  ("3 of 5 streams collecting; 1 needs a code fix").
+- **The console gets its own governing charter, split from `.impeccable.md`.**
+  The leadership/demo brief correctly governs the public/reference surfaces
+  and was distorting the console toward forensic density and taxonomy leakage.
+  Console charter: calm, legible, action-first; the owner never learns
+  internal taxonomy; alarm reserved for owner-actionable breakage; Ink Carbon
+  tokens retained. This is a charter, not a parallel design system.
+
+Recorded disagreement and resolution: state cardinality. The design critique
+argued for ≤3 visible states; the systems critique for a closed 9-state enum.
+Resolution (owner-refined 2026-07-09): the closed set survives only as the
+internal server-side resolver — it earns its keep by making derivation
+exhaustive and deletion of console re-derivations safe. The owner-facing
+contract is task/action ownership, not the enum: what is happening, who acts
+next, what action is available, evidence age. The three groups organize lists;
+individual source copy states the concrete cause/progress. Final labels and
+copy principles are recommended from the prior-art research (Home Assistant
+Repairs' actionable queue, Start9's every-check-carries-an-action, Plaid's
+one-affordance repair) and validated by a comprehension check inside the
+design gate — not deferred to the owner as a blocking decision.
+
+Explicitly not restarted: 10.A–10.D landed work; the 2.5/2.6 merge decisions;
+active point changes that own their defect (`fix-detail-gap-locator-identity`,
+`define-stream-coverage-freshness-evidence`, `show-sync-start-feedback`,
+`complete-connection-repair-action-surfaces`, and siblings). Wave 10 sequences
+with them and deletes the duplication that forced the 07-09 verdict fix to be
+applied twice while still missing a third path.
+
 ## 8. Essential Surface Model
 
 ### Sources
@@ -792,6 +863,86 @@ Gate: owner can rename a credential and see it reflected everywhere in one
 render cycle; a client with multiple active tokens drills into individual
 tokens with per-token revoke; no owner-visible token id is a usable bearer;
 data-truth evidence backs the count/label claims.
+
+### Wave 10: 2026-07-09 State-Model Convergence
+
+Goal: one owner state per source, rendered identically everywhere, with
+evidence age, wired actions, and calm presentation — by deleting the console's
+parallel derivations over the existing server spine. Organized by complete
+owner journeys, not pages. Sequencing: 10a before 10b before 10c; 10d can
+overlap 10c. The charter split (studio-critique decision) is an artifact task
+and may land first.
+
+Tranche 10a — truth spine (journey: "is my system OK?" — OJ1/OJ4):
+
+- derive the closed owner state server-side from the existing snapshot
+  (state + resolver + `as_of` + posture `{observed | frozen-since-last-run}`),
+  adjacent to `synthesizeRenderedVerdict`
+- emit the missing `reattach_schedule`/`refresh_now` required actions for
+  owner-paused and refresh-due shapes
+- exhaustive cross-product property test: every axis combination resolves
+  deterministically to exactly one owner state with at most one primary owner
+  action
+
+Gate: for a Chase-shaped, USAA-shaped, owner-paused, never-run, and healthy
+fixture set, the derived state, resolver, action, and age are each the single
+documented expected value.
+
+Tranche 10b — console consumption by deletion (OJ1):
+
+- view models consume the server owner state; delete `deriveSourceStatus`'s
+  raw-state path, the `source-actionability.ts` parallel taxonomy, the legacy
+  client-side verdict fallback, `badgeState`, and the client-only recovery
+  stall threshold
+- share or generate the console wire types from server types (end
+  `ref-client.ts` hand-mirroring)
+- headline counts read the same server predicate as the lists
+- remove the dead sibling action set and dead exported components the code
+  audit confirmed
+
+Gate: Sources, source detail, Overview, Syncs, and notifications render the
+same ownership group, next-actor, and primary action for the same source in
+one live walkthrough; net console LOC
+decreases.
+
+Tranche 10c — calm presentation (journeys: "it's broken — fix it" and daily
+check-in — OJ4/OJ1):
+
+- ownership-first source presentation: plain-language what-is-happening, who
+  acts next, the one wired action, evidence age; lists organized by the three
+  ownership groups; no persistent internal-state legend; axis chips and
+  diagnostics behind an advanced disclosure
+- recovery/source detail leads with one cause, one action, one banner (no
+  duplicate verdict render); frozen defect states read "last run found X
+  (Nd ago)" with a re-check affordance
+- per-stream blast-radius one-liner for mixed-stream sources
+- one canonical timestamp component; one radius language; timeline primitive
+  consolidation for grant + audit
+- paused-source semantics copy, consistent across schedules, setup-status,
+  and auto-pause surfaces
+
+Gate: a non-engineer can state what is wrong and what to do in one read of a
+broken source's page; no owner-facing screen shows raw axis vocabulary by
+default.
+
+Tranche 10d — progress and pause journeys (OJ2/OJ4):
+
+- run-lifecycle live-status contract on every branch (queued → running →
+  phase → terminal) without manual refresh; progress presented as movement +
+  position, not fabricated percentages
+- pause/resume round-trip: pausing states its meaning, resuming reflects in
+  the owner state in one cycle
+- multi-condition failures aggregate to one owner cause with detail one click
+  down (Wave 5 contract, Chase-shaped fixture)
+
+Gate: owner completes pause → resume → refresh → watch-sync on a live source
+without a manual reload or an unexplained state.
+
+Wave 10 acceptance follows §13 gates (journey evidence, data-truth probes,
+adversarial review). Owner-facing labels/copy follow principles recommended
+from the prior-art research and are validated by a comprehension check inside
+the design gate; the internal resolver enum is not an owner-facing contract
+and requires no owner label review.
 
 ## 12. Delegation Plan
 
