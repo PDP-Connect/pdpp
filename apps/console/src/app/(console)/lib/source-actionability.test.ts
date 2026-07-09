@@ -213,6 +213,54 @@ test("source actionability does not convert maintainer-primary work into owner w
   assert.equal(actionability.failureSummary?.ownerActionRequired, false);
 });
 
+test("source actionability routes a Needs refresh pill (no wired owner action) to review, not systemIssue", () => {
+  // e.g. an owner-paused schedule with no other stale signal: the server labels
+  // the pill "Needs refresh" (amber, not-actually-broken) but has not wired a
+  // refresh_now/reattach_schedule action yet. This must not read as "System or
+  // connector issue" / "no account action is needed from you" — that group
+  // copy is a lie for a paused-schedule connection the owner can resume.
+  const actionability = projectSourceActionability(
+    connector({
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Needs refresh", tone: "amber" },
+        forward_statement: "This connection is paused.",
+        required_actions: [],
+      }),
+    })
+  );
+
+  assert.equal(actionability.work?.group, "review");
+  assert.equal(actionability.work?.statusLabel, "needs a refresh");
+});
+
+test("source actionability keeps a Degraded pill (no wired owner action) in systemIssue", () => {
+  // Contrast case: a real Degraded verdict without an owner-satisfiable action
+  // (e.g. maintainer-only code_fix) correctly stays in systemIssue with "is
+  // degraded" copy — only the Needs refresh label reroutes.
+  const actionability = projectSourceActionability(
+    connector({
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Degraded", tone: "amber" },
+        forward_statement: "Connector code needs a fix before this can collect again.",
+        required_actions: [
+          action({
+            audience: "maintainer",
+            cta: "Connector code needs a fix",
+            kind: "code_fix",
+            satisfied_when: { kind: "none" },
+            terminal: true,
+          }),
+        ],
+      }),
+    })
+  );
+
+  assert.equal(actionability.work?.group, "systemIssue");
+  assert.equal(actionability.work?.statusLabel, "is degraded");
+});
+
 test("source actionability does not infer owner repair from reconnect copy without an owner-satisfiable action", () => {
   const actionability = projectSourceActionability(
     connector({
@@ -403,6 +451,31 @@ test("source actionability headline counts only needs-owner work and exposes sta
       note: "Evidence is missing and no active check is running.",
     },
   });
+});
+
+test("source actionability groups a Needs refresh connection under review, never systemIssue or the needs-you headline", () => {
+  // Vana-Slack-shaped: paused schedule, amber tone, "Needs refresh" label, no
+  // owner-satisfiable action wired up yet. Must not surface as a system issue
+  // and must not inflate the "needs you" count — it is an optional accelerant,
+  // not a defect and not an owner-blocking action.
+  const groups = sourceWorkFromConnectors([
+    connector({
+      connection_id: "cin_needs_refresh",
+      display_name: "Paused source",
+      rendered_verdict: verdict({
+        channel: "advisory",
+        pill: { label: "Needs refresh", tone: "amber" },
+        forward_statement: "This connection is paused.",
+        required_actions: [],
+      }),
+    }),
+  ]);
+
+  assert.equal(groups.review.length, 1);
+  assert.equal(groups.systemIssues.length, 0);
+  assert.equal(groups.needsOwner.length, 0);
+  assert.equal(groups.review[0]?.statusLabel, "needs a refresh");
+  assert.equal(sourceAttentionHeadline(groups).needsYou, 0);
 });
 
 // ─── Recovery-state grouping (connector-neutral recovery governor UI tranche) ──

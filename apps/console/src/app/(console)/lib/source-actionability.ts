@@ -294,6 +294,13 @@ function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_ve
   if (verdict.pill.tone === "red" || verdict.pill.label === "Can't collect") {
     return "can't collect";
   }
+  // "Needs refresh" is amber-toned but not-actually-broken (idle/stale/
+  // owner_refresh_due) — it must not read as "degraded". Key off the pill
+  // label, not tone alone, so this stays in sync with the server's amber
+  // label split (rendered-verdict.ts amberLabel).
+  if (verdict.pill.label === "Needs refresh") {
+    return "needs a refresh";
+  }
   if (verdict.pill.tone === "amber" || verdict.pill.label === "Degraded") {
     return "is degraded";
   }
@@ -437,7 +444,13 @@ export function sourceWorkItemFromConnector(connector: RefConnectorSummary): Sou
 
   const statusLabel = sourceIssueStatus(verdict);
   if (statusLabel) {
-    return itemFromConnector(connector, "systemIssue", {
+    // "Needs refresh" is not a system/connector defect — it must not land under
+    // the "System or connector issue" / "no account action is needed from you"
+    // group copy. Route it to "review" ("Available actions"), same as a
+    // refresh_now-bearing verdict above, even when no required action is wired
+    // up yet (e.g. an owner-paused schedule with no other stale signal).
+    const group = verdict.pill.label === "Needs refresh" ? "review" : "systemIssue";
+    return itemFromConnector(connector, group, {
       statusLabel,
       what: verdict.forward_statement,
     });

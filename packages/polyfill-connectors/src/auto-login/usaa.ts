@@ -104,7 +104,7 @@ async function verifyLoggedIn(context: BrowserContext, page: Page): Promise<bool
   return LOGGED_IN_TEXT.test(bodyText);
 }
 
-async function requestManualLoginAfterNavigationFailure({
+async function requestManualLoginRecovery({
   context,
   page,
   reason,
@@ -115,7 +115,7 @@ async function requestManualLoginAfterNavigationFailure({
       page,
       reason: "login",
       message:
-        `USAA login page failed to load automatically (${reason}). ` +
+        `USAA login did not complete automatically (${reason}). ` +
         "This often means USAA is rejecting the current automated browser mode. " +
         "If this run opened a visible browser, complete USAA login there and respond success. " +
         "If it is headless, cancel this interaction and rerun USAA headed (for example with PDPP_USAA_HEADLESS=0 on a desktop or under xvfb-run).",
@@ -208,7 +208,7 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
     const message = errorMessage(err);
     if (LOGIN_NAVIGATION_INTERVENTION_ERROR.test(message)) {
       const reason = firstLine(message);
-      if (await requestManualLoginAfterNavigationFailure({ context, page, reason, sendInteraction })) {
+      if (await requestManualLoginRecovery({ context, page, reason, sendInteraction })) {
         return true;
       }
       throw new Error(`USAA login page navigation failed (${reason}); manual action did not establish a session`);
@@ -253,7 +253,11 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
         );
       })
       .catch((): InputProbe[] => []);
-    throw new Error(passwordStepFailureMessage({ body, inputs, url: page.url() }));
+    const reason = passwordStepFailureMessage({ body, inputs, url: page.url() });
+    if (await requestManualLoginRecovery({ context, page, reason, sendInteraction })) {
+      return true;
+    }
+    throw new Error(`USAA login stalled after Next click (${reason}); manual action did not establish a session`);
   }
   await page.fill('input[name="password"]', password);
   await page.waitForTimeout(500);

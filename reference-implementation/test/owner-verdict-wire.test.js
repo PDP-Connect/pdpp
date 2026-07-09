@@ -63,6 +63,10 @@ function staleManualSnapshot() {
     // without it, the synthesizer emits no refresh_now action and channel stays calm.
     forward_disposition: 'owner_refresh_due',
     reason_code: 'stale_manual_refresh',
+    // A stale-manual verdict implies a prior successful collection whose data has
+    // since aged past the freshness window — distinguishing it from a genuinely
+    // never-run idle connection, which stays green/grey instead of amber.
+    last_success_at: '2026-05-15T00:00:00.000Z',
   };
 }
 
@@ -235,7 +239,7 @@ test('owner-wire: latest-run partial sample rows do not override connection-leve
 
 // ─── 8.1 — stale manual connection produces healthy/advisory verdict ──────────
 
-test('owner-wire: stale manual-refresh connection → Healthy pill + advisory refresh action', () => {
+test('owner-wire: stale manual-refresh connection → amber/Needs refresh pill + advisory refresh action, not Healthy or Degraded', () => {
   const verdict = synthesizeConnectorVerdict({
     snapshot: staleManualSnapshot(),
     report: collectionReport(),
@@ -244,8 +248,8 @@ test('owner-wire: stale manual-refresh connection → Healthy pill + advisory re
     progress: null,
   });
 
-  assert.equal(verdict.pill.tone, 'green');
-  assert.equal(verdict.pill.label, 'Healthy');
+  assert.equal(verdict.pill.tone, 'amber');
+  assert.equal(verdict.pill.label, 'Needs refresh');
   assert.equal(verdict.channel, 'advisory');
   // Must carry a freshness annotation
   const freshnessAnnotation = verdict.annotations.find((a) => a.kind === 'freshness');

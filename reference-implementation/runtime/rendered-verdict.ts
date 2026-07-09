@@ -57,8 +57,24 @@ export type VerdictTone = "amber" | "green" | "grey" | "red";
  * stale freshness or other advisory states. Grey labels are evidence-dependent:
  * "Checking" requires active work; otherwise missing evidence reads "Not
  * measured".
+ *
+ * `amber` tone splits into two labels (`labelForPill`): "Needs refresh" is
+ * reserved for a connection that is otherwise working but not current —
+ * idle-with-prior-success, stale freshness, or `owner_refresh_due` — where the
+ * owner action is a routine nudge, not a fix. "Degraded" is reserved for real
+ * collection trouble: coverage gaps, attention, or a stalled outbox. Both
+ * labels can carry `channel: "advisory"`; the label distinguishes "needs a
+ * routine refresh" from "something is actually wrong" without changing whether
+ * the owner is interrupted.
  */
-export type VerdictLabel = "Can't collect" | "Checking" | "Degraded" | "Healthy" | "Not measured" | "Syncing";
+export type VerdictLabel =
+  | "Can't collect"
+  | "Checking"
+  | "Degraded"
+  | "Healthy"
+  | "Needs refresh"
+  | "Not measured"
+  | "Syncing";
 
 export interface VerdictPill {
   readonly label: VerdictLabel;
@@ -337,12 +353,56 @@ const TONE_TO_LABEL: Record<VerdictTone, VerdictLabel> = {
   red: "Can't collect",
 };
 
-function labelForPill(tone: VerdictTone, snapshot: ConnectionHealthSnapshot): VerdictLabel {
+/**
+ * Axes whose amber-or-worse tone always means real collection trouble, never a
+ * routine nudge: `coverage` (a stream gap), `attention` (owner-attention open),
+ * `outbox` (stalled uploads). `state` reaching `degraded`/`needs_attention`/
+ * `cooling_off` is likewise always real trouble (`classifyDegradedEvidence`,
+ * `connection-health.ts`, only fires on a genuine degrading condition) — the
+ * ONLY state that can be amber-but-not-broken is `idle` with a prior success.
+ * `disposition` similarly is always real trouble EXCEPT `owner_refresh_due`
+ * (`resumable`/`awaiting_owner` only ever arise from an outstanding coverage
+ * gap — `deriveForwardDisposition`, `connection-health.ts` — so they always
+ * co-occur with a real `coverage` gap in practice, but are checked explicitly
+ * here rather than relying on that co-occurrence).
+ */
+const DEGRADING_AXES = new Set(["coverage", "attention", "outbox"]);
+
+/**
+ * Decide the amber label. "Needs refresh" only when EVERY reason the tone
+ * reached amber-or-worse is one of the not-actually-broken shapes: `state:
+ * idle` (with a prior success), `freshness: stale`, or `disposition:
+ * owner_refresh_due`. Any other axis reaching amber-or-worse — or `state`
+ * being anything other than `idle`, or `disposition` being anything other
+ * than `owner_refresh_due` — means real trouble, so it stays "Degraded".
+ */
+function amberLabel(
+  snapshot: ConnectionHealthSnapshot,
+  disposition: ForwardDisposition,
+  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+): VerdictLabel {
+  const stateIsBroken = snapshot.state !== "idle" && TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
+  const dispositionIsBroken = disposition !== "owner_refresh_due" && TONE_RANK[dispositionTone(disposition)] >= TONE_RANK.amber;
+  const hasDegradingAxis = toneInputs.some(
+    (input) => DEGRADING_AXES.has(input.axis) && TONE_RANK[input.tone] >= TONE_RANK.amber
+  );
+  return stateIsBroken || dispositionIsBroken || hasDegradingAxis ? "Degraded" : "Needs refresh";
+}
+
+function labelForPill(
+  tone: VerdictTone,
+  snapshot: ConnectionHealthSnapshot,
+  disposition: ForwardDisposition,
+  toneInputs: readonly { axis: string; tone: VerdictTone }[]
+): VerdictLabel {
   if (tone === "grey" && snapshot.badges.syncing) {
     return "Checking";
   }
   if (tone === "green" && snapshot.axes.outbox === "active") {
     return "Syncing";
+  }
+  if (tone === "amber") {
+    return amberLabel(snapshot, disposition, toneInputs);
   }
   return TONE_TO_LABEL[tone];
 }
@@ -351,13 +411,24 @@ function worse(a: VerdictTone, b: VerdictTone): VerdictTone {
   return TONE_RANK[a] >= TONE_RANK[b] ? a : b;
 }
 
-/** Base tone implied by the headline state — NEVER read straight as the pill tone. */
-function baseStateTone(state: ConnectionHealthSnapshot["state"]): VerdictTone {
+/**
+ * Base tone implied by the headline state — NEVER read straight as the pill tone.
+ *
+ * `idle` covers two distinct shapes: a genuinely never-run connection with no
+ * evidence yet (no prior success), and a connection that HAS run before but is
+ * currently not making progress on its own — owner-paused schedule, or a
+ * stale manual/assisted-refresh advisory (`classifyOwnerPaused` /
+ * `classifyStaleAdvisory`, `connection-health.ts`). The first case has nothing
+ * to act on and stays green. The second case is a live connection sitting on
+ * old data or a paused schedule; the owner has a legible action (resume the
+ * schedule, run a refresh) so it must not read as `Healthy`.
+ */
+function baseStateTone(state: ConnectionHealthSnapshot["state"], lastSuccessAt: string | null): VerdictTone {
   switch (state) {
     case "healthy":
       return "green";
     case "idle":
-      return "green";
+      return lastSuccessAt === null ? "green" : "amber";
     case "cooling_off":
       return "amber";
     case "needs_attention":
@@ -381,7 +452,7 @@ function freshnessHealthTone(snapshot: ConnectionHealthSnapshot): VerdictTone {
     case "fresh":
       return "green";
     case "stale":
-      return "green";
+      return "amber";
     case "unknown":
       return "grey";
     default: {
@@ -424,7 +495,7 @@ function dispositionTone(disposition: ForwardDisposition): VerdictTone {
     case "resumable":
       return "amber";
     case "owner_refresh_due":
-      return "green";
+      return "amber";
     case "awaiting_owner":
       return "amber";
     case "terminal":
@@ -1506,14 +1577,17 @@ function connectionActionTerminalViolation(action: RequiredAction, dispositionTe
 }
 
 function toneBelowBaseStateViolation(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string | null {
-  if (TONE_RANK[verdict.pill.tone] < TONE_RANK[baseStateTone(snapshot.state)]) {
+  if (TONE_RANK[verdict.pill.tone] < TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)]) {
     return "pill.tone is below the base state tone — not worst-wins (inv 5)";
   }
   return null;
 }
 
 function toneLabelViolation(verdict: RenderedVerdict, snapshot: ConnectionHealthSnapshot): string | null {
-  if (verdict.pill.label !== labelForPill(verdict.pill.tone, snapshot)) {
+  if (
+    verdict.pill.label !==
+    labelForPill(verdict.pill.tone, snapshot, verdict.detail.forward_disposition, verdict.trace.tone_inputs)
+  ) {
     return "pill.label does not match tone plus active-work evidence (inv 6)";
   }
   return null;
@@ -1648,7 +1722,7 @@ export function synthesizeRenderedVerdict(
   const coverageHealthTone = terminalAwareTone(worstStreamCoverageTone(streams), snapshot, disposition);
   const dispositionHealthTone = terminalAwareTone(dispositionTone(disposition), snapshot, disposition);
   const toneInputs: { axis: string; tone: VerdictTone }[] = [
-    { axis: "state", tone: baseStateTone(snapshot.state) },
+    { axis: "state", tone: baseStateTone(snapshot.state, snapshot.last_success_at) },
     { axis: "freshness", tone: freshnessHealthTone(snapshot) },
     { axis: "coverage", tone: coverageHealthTone },
     { axis: "disposition", tone: dispositionHealthTone },
@@ -1656,7 +1730,7 @@ export function synthesizeRenderedVerdict(
     { axis: "outbox", tone: outboxTone(snapshot) },
   ];
   const tone = toneInputs.reduce<VerdictTone>((acc, input) => worse(acc, input.tone), "green");
-  const pill: VerdictPill = { tone, label: labelForPill(tone, snapshot) };
+  const pill: VerdictPill = { tone, label: labelForPill(tone, snapshot, disposition, toneInputs) };
 
   // ── required actions (terminality derived from the sole oracle) ──
   const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress);

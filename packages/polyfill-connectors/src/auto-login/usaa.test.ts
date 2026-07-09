@@ -292,8 +292,11 @@ test("ensureUsaaSession classifies delayed USAA source-unavailable modal after m
         page,
         sendInteraction: interactions.sendInteraction,
       }),
-      /source_unavailable: USAA reported its login system is currently unavailable after Next click/
+      /USAA login stalled after Next click \(source_unavailable: USAA reported its login system is currently unavailable after Next click/
     );
-    assert.equal(interactions.requests.length, 0);
+    // The stall now routes through the same manual-recovery interaction as a
+    // failed navigation, instead of failing with no owner-visible signal.
+    assert.equal(interactions.requests.length, 1);
+    assert.equal(interactions.requests[0]?.kind, "manual_action");
   });
 });

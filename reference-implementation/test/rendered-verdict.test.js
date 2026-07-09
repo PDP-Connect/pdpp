@@ -161,6 +161,30 @@ const BASE_STATE_TONE = {
   blocked: 'red',
   unknown: 'grey',
 };
+const DISPOSITION_TONE = {
+  complete: 'green',
+  checking: 'grey',
+  unmeasured: 'grey',
+  resumable: 'amber',
+  owner_refresh_due: 'amber',
+  awaiting_owner: 'amber',
+  terminal: 'red',
+};
+
+// Mirrors rendered-verdict.ts amberLabel: "Needs refresh" only when every
+// reason the tone reached amber-or-worse is a not-actually-broken shape
+// (idle-with-prior-success state, stale freshness, owner_refresh_due
+// disposition); any coverage/attention/outbox axis, a broken state, or a
+// broken disposition keeps "Degraded".
+function expectedAmberLabel(snap, disposition, toneInputs) {
+  const stateIsBroken = snap.state !== 'idle' && TONE_RANK[BASE_STATE_TONE[snap.state]] >= TONE_RANK.amber;
+  const dispositionIsBroken =
+    disposition !== 'owner_refresh_due' && TONE_RANK[DISPOSITION_TONE[disposition]] >= TONE_RANK.amber;
+  const hasDegradingAxis = toneInputs.some(
+    (input) => ['coverage', 'attention', 'outbox'].includes(input.axis) && TONE_RANK[input.tone] >= TONE_RANK.amber
+  );
+  return stateIsBroken || dispositionIsBroken || hasDegradingAxis ? 'Degraded' : 'Needs refresh';
+}
 
 function assertAllInvariants(verdict, snap, runtimeOk) {
   // (1) freshness-mandatory-off-fresh
@@ -197,12 +221,16 @@ function assertAllInvariants(verdict, snap, runtimeOk) {
   );
   // (6) label follows tone plus active-work evidence. Grey is only "Checking"
   // when current activity evidence proves the system is actively checking.
+  // Amber splits into "Needs refresh" (not-actually-broken) vs "Degraded"
+  // (real trouble) — see expectedAmberLabel.
   const expectedLabel =
     verdict.pill.tone === 'grey' && snap.badges.syncing
       ? 'Checking'
       : verdict.pill.tone === 'green' && snap.axes.outbox === 'active'
         ? 'Syncing'
-        : TONE_TO_LABEL[verdict.pill.tone];
+        : verdict.pill.tone === 'amber'
+          ? expectedAmberLabel(snap, verdict.detail.forward_disposition, verdict.trace.tone_inputs)
+          : TONE_TO_LABEL[verdict.pill.tone];
   assert.equal(verdict.pill.label, expectedLabel, 'inv6: label matches tone plus active-work evidence');
   // (7) no contradictory chip pair
   for (const row of verdict.streams) {
@@ -293,15 +321,16 @@ test('tone: healthy + fresh + complete is green/Healthy', () => {
   assert.equal(v.channel, 'calm');
 });
 
-test('tone: stale-but-healthy stays health-green and carries a freshness annotation (inv1)', () => {
+test('tone: stale owner-refresh-due is amber/advisory/Needs refresh, not Healthy or Degraded, and still carries a freshness annotation (inv1)', () => {
   const snap = snapshot({
     state: 'idle',
     axes: { freshness: 'stale' },
     forward_disposition: 'owner_refresh_due',
+    last_success_at: '2026-05-15T00:00:00.000Z',
   });
   const v = synthesizeRenderedVerdict(snap, [stream()], MANUAL_REFRESH, true);
-  assert.equal(v.pill.tone, 'green');
-  assert.equal(v.pill.label, 'Healthy');
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Needs refresh');
   assert.equal(v.channel, 'advisory');
   assert.ok(v.annotations.some((a) => a.kind === 'freshness'));
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now'));
@@ -1086,7 +1115,12 @@ test('property: tone is worst-wins (never below base state) and (tone,channel) o
             );
             // tone never read straight from label-of-state: label follows tone
             // plus current activity evidence.
-            const expectedLabel = v.pill.tone === 'grey' && snap.badges.syncing ? 'Checking' : TONE_TO_LABEL[v.pill.tone];
+            const expectedLabel =
+              v.pill.tone === 'grey' && snap.badges.syncing
+                ? 'Checking'
+                : v.pill.tone === 'amber'
+                  ? expectedAmberLabel(snap, v.detail.forward_disposition, v.trace.tone_inputs)
+                  : TONE_TO_LABEL[v.pill.tone];
             assert.equal(v.pill.label, expectedLabel);
             const set = channelByTone.get(v.pill.tone) ?? new Set();
             set.add(v.channel);
@@ -1235,11 +1269,12 @@ test('golden: ChatGPT — green/calm/fresh, no 2532 on dashboard, 2532 present i
   assert.ok(v.detail.suppressed.some((s) => s.kind === 'drain'));
 });
 
-test('golden: Amazon/Reddit stale manual — health remains Healthy, advisory Refresh now', () => {
+test('golden: Amazon/Reddit stale manual — amber/advisory/Needs refresh, not Healthy or Degraded', () => {
   const snap = snapshot({
     state: 'idle',
     axes: { freshness: 'stale', coverage: 'complete' },
     forward_disposition: 'owner_refresh_due',
+    last_success_at: '2026-05-15T00:00:00.000Z',
   });
   const v = synthesizeRenderedVerdict(snap, [stream()], MANUAL_REFRESH, true, {
     mode: 'manual',
@@ -1247,19 +1282,20 @@ test('golden: Amazon/Reddit stale manual — health remains Healthy, advisory Re
     last_refreshed_at: '2026-05-15T00:00:00.000Z',
     observed_at: '2026-06-15T12:00:00.000Z',
   });
-  assert.equal(v.pill.tone, 'green');
-  assert.equal(v.pill.label, 'Healthy');
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Needs refresh');
   assert.equal(v.channel, 'advisory');
   assert.ok(v.annotations.some((a) => a.kind === 'freshness' && a.text === 'Last refreshed 31 days ago.'));
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now' && a.audience === 'owner'));
 });
 
-test('stale manual owner refresh survives optional checking streams', () => {
+test('stale manual owner refresh survives optional checking streams, amber/Needs refresh not Healthy/Degraded', () => {
   const snap = snapshot({
     state: 'idle',
     axes: { freshness: 'stale', coverage: 'complete' },
     forward_disposition: 'owner_refresh_due',
     reason_code: 'stale_manual_refresh',
+    last_success_at: '2026-06-01T00:00:00.000Z',
   });
   const v = synthesizeRenderedVerdict(
     snap,
@@ -1278,11 +1314,144 @@ test('stale manual owner refresh survives optional checking streams', () => {
   );
 
   assert.equal(v.detail.forward_disposition, 'owner_refresh_due');
-  assert.equal(v.pill.tone, 'green');
-  assert.equal(v.pill.label, 'Healthy');
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Needs refresh');
   assert.equal(v.channel, 'advisory');
   assert.equal(v.forward_statement, 'Run a refresh to bring this up to date.');
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now' && a.audience === 'owner'));
+});
+
+test('idle owner-paused with fresh data (no stale evidence yet) is amber/Needs refresh once a prior success exists', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'fresh', coverage: 'complete' },
+    forward_disposition: 'complete',
+    last_success_at: '2026-07-01T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream()], null, true);
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Needs refresh');
+});
+
+test('golden: Vana Slack-shaped paused schedule + stale freshness + cancelled last run is amber/Needs refresh, not Healthy', () => {
+  // Owner paused the schedule (classifyOwnerPaused -> state: idle), freshness has
+  // aged past the staleness window, and the last run was cancelled rather than
+  // succeeded (no fresh CollectionSucceeded evidence). This must not render green,
+  // and — since nothing about the connector itself is broken — it must not
+  // overstate the situation as "Degraded" either.
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'stale', coverage: 'complete' },
+    forward_disposition: 'owner_refresh_due',
+    last_success_at: '2026-05-01T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream()], ASSISTED_REFRESH, true);
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Needs refresh');
+  assert.notEqual(v.pill.label, 'Healthy');
+  assert.notEqual(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'advisory');
+});
+
+test('golden: Chase-shaped resumable retryable gap stays Degraded, not Needs refresh', () => {
+  // A real coverage gap (retryable_gap) with disposition:resumable is genuine
+  // collection trouble, not a routine refresh nudge — even though the
+  // connection is otherwise "idle". The coverage axis must keep the label at
+  // Degraded.
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'stale', coverage: 'retryable_gap' },
+    forward_disposition: 'resumable',
+    last_success_at: '2026-06-01T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ stream_id: 'transactions', coverage: 'retryable_gap', gap_retryable: true })],
+    MANUAL_REFRESH,
+    true
+  );
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'advisory');
+});
+
+test('golden: USAA-shaped awaiting_owner attention-open gap stays Degraded, not Needs refresh', () => {
+  // A gap blocked on structured owner attention is real trouble the owner must
+  // resolve, not a passive refresh nudge.
+  const snap = snapshot({
+    state: 'needs_attention',
+    axes: { freshness: 'stale', coverage: 'retryable_gap', attention: 'open' },
+    forward_disposition: 'awaiting_owner',
+    last_success_at: '2026-06-01T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ stream_id: 'accounts', coverage: 'retryable_gap', gap_retryable: true, attention_open: true })],
+    MANUAL_REFRESH,
+    true
+  );
+  assert.equal(v.pill.label, 'Degraded');
+  assert.notEqual(v.pill.label, 'Needs refresh');
+});
+
+test('golden: terminal coverage stays Can\'t collect, not Needs refresh', () => {
+  const snap = snapshot({
+    state: 'degraded',
+    axes: { coverage: 'terminal_gap', freshness: 'stale' },
+    forward_disposition: 'terminal',
+    last_success_at: '2026-06-01T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ coverage: 'terminal_gap', priority: 'required' })],
+    MANUAL_REFRESH,
+    true
+  );
+  assert.equal(v.pill.tone, 'red');
+  assert.equal(v.pill.label, "Can't collect");
+});
+
+test('degraded state (real degrading condition) with only stale freshness, no coverage/attention/outbox axis, still stays Degraded', () => {
+  // state:degraded only ever fires on a genuine degrading condition
+  // (classifyDegradedEvidence), so it must never be softened to "Needs refresh"
+  // even if the per-stream/attention/outbox axes happen to look clean in this
+  // synthetic input shape.
+  const snap = snapshot({
+    state: 'degraded',
+    axes: { freshness: 'stale', coverage: 'complete' },
+    forward_disposition: 'complete',
+    last_success_at: '2026-06-01T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream()], MANUAL_REFRESH, true);
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+});
+
+test('idle never-run (no prior success, no stale evidence) stays neutral, not amber', () => {
+  // No prior success and unmeasured freshness is honestly "Not measured" (grey),
+  // not a false-positive green or a false-negative amber — there is nothing yet
+  // to call degraded.
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'unknown', coverage: 'complete' },
+    forward_disposition: 'complete',
+    last_success_at: null,
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream()], null, true);
+  assert.equal(v.pill.tone, 'grey');
+  assert.equal(v.pill.label, 'Not measured');
+});
+
+test('idle never-run with fresh evidence (no prior terminal run yet) stays green, not amber', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'fresh', coverage: 'complete' },
+    forward_disposition: 'complete',
+    last_success_at: null,
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream()], null, true);
+  assert.equal(v.pill.tone, 'green');
+  assert.equal(v.pill.label, 'Healthy');
 });
 
 test('golden: Chase — degraded/advisory with a retryable transactions gap', () => {
