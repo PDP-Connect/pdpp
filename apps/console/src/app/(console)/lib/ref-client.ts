@@ -596,6 +596,15 @@ export interface RefConnectorSummary {
   manifest_version: string | null;
   /** Top-level mirror of `connection_health.next_action`. */
   next_action: RefNextAction | null;
+  /**
+   * The one closed owner-facing state for this source (Wave 10a, 2026-07-09
+   * state-model convergence). Derived server-side by `deriveOwnerState`
+   * (`reference-implementation/runtime/owner-state.ts`); optional on the
+   * mirror because a reference predating this field omits it, in which case
+   * console view-models fall back to deriving from `rendered_verdict` alone
+   * rather than inventing owner-state evidence.
+   */
+  owner_state?: RefOwnerState | null;
   refresh_policy?: RefreshPolicy | null;
   /**
    * Server-owned owner-surface verdict. Current reference builds send this
@@ -641,6 +650,39 @@ export interface RefConnectorRuntimeStatus {
 
 export interface RefConnectorSummariesResponse extends ListResponse<RefConnectorSummary> {
   runtime?: RefConnectorRuntimeStatus;
+}
+
+/**
+ * Mirrors `OwnerStateResolver` (`reference-implementation/runtime/owner-state.ts`).
+ * Closed, server-side derivation aid — NEVER rendered to the owner verbatim.
+ * Console copy states the concrete cause/action instead of this enum label.
+ */
+export type RefOwnerStateResolver =
+  | "blocked_maintainer"
+  | "collecting"
+  | "healthy"
+  | "needs_owner"
+  | "not_measured"
+  | "owner_paused"
+  | "refresh_due"
+  | "retired"
+  | "system_degraded";
+
+export type RefOwnerOfState = "maintainer" | "owner" | "system";
+export type RefOwnerStatePosture = "frozen-since-last-run" | "observed";
+
+/** Mirrors `OwnerState` (`reference-implementation/runtime/owner-state.ts`). */
+export interface RefOwnerState {
+  /**
+   * ISO-8601 instant of the EVIDENCE that produced this state — never
+   * read/projection time. `null` when the server has no evidence at all
+   * (never-run source, no freshness proof yet) — never fabricated from
+   * request time.
+   */
+  evidence_as_of: string | null;
+  owner_of_state: RefOwnerOfState;
+  posture: RefOwnerStatePosture;
+  resolver: RefOwnerStateResolver;
 }
 
 export type RefVerdictTone = "amber" | "green" | "grey" | "red";

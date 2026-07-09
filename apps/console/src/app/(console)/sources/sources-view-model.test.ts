@@ -22,7 +22,6 @@ import {
   buildSourcesChurnAdvisory,
   buildSourcesRuntimeAdvisory,
   collapseDuplicateFallbackSources,
-  deriveSourceStatus,
   exploreHrefFor,
   formatSchedule,
   manualUploadHrefForSource,
@@ -35,9 +34,6 @@ const MESSAGES_STREAM_HREF_RE = /stream=messages/;
 const CHURN_SIGNAL_RE = /ynab \/ budgets retains 273\.75 versions/;
 const CHURN_CLASSIFIED_RE = /classified/;
 const CHURN_NEEDS_REVIEW_RE = /needs review/;
-const ANY_FRESHNESS_SEPARATOR_RE = /·/;
-const STALE_LABEL_RE = /stale/;
-const STALE_SUFFIX_RE = /· stale$/;
 
 const EMPTY_AXES = {
   attention: {} as RefConnectionHealthSnapshot["axes"]["attention"],
@@ -119,49 +115,6 @@ function manualUploadManifest(connectorId = "whatsapp") {
 function passportField(view: ReturnType<typeof toSourceInstanceView>, key: string): string | null | undefined {
   return view.passportFields.find((field) => field.k === key)?.value;
 }
-
-test("deriveSourceStatus maps healthy/idle to a green dot", () => {
-  assert.equal(deriveSourceStatus(health("healthy"), false).tone, "success");
-  assert.equal(deriveSourceStatus(health("idle"), false).kind, "healthy");
-});
-
-test("deriveSourceStatus maps degraded family to a warning half-dot", () => {
-  for (const state of ["degraded", "cooling_off", "needs_attention"] as const) {
-    const flag = deriveSourceStatus(health(state), false);
-    assert.equal(flag.tone, "warning");
-    assert.equal(flag.dot, "◐");
-  }
-});
-
-test("deriveSourceStatus maps blocked to a destructive interdict", () => {
-  const flag = deriveSourceStatus(health("blocked"), false);
-  assert.equal(flag.kind, "blocked");
-  assert.equal(flag.tone, "destructive");
-});
-
-test("deriveSourceStatus renders unknown (never green) when no projection", () => {
-  const flag = deriveSourceStatus(undefined, false);
-  assert.equal(flag.kind, "unknown");
-  assert.equal(flag.tone, "muted");
-});
-
-function healthWithFreshness(
-  state: RefConnectionHealthSnapshot["state"],
-  freshness: RefConnectionHealthSnapshot["axes"]["freshness"]
-): RefConnectionHealthSnapshot {
-  const base = health(state);
-  return { ...base, axes: { ...base.axes, freshness } };
-}
-
-test("deriveSourceStatus: a stale-but-healthy connection carries a mandatory freshness annotation (phase 2 lie fix)", () => {
-  // An assisted scheduled connector projects `healthy` while its freshness axis
-  // is `stale`. The flag must disclose staleness, not read a bare green "Healthy".
-  const flag = deriveSourceStatus(healthWithFreshness("healthy", "stale"), false);
-  assert.equal(flag.kind, "healthy");
-  assert.equal(flag.freshnessNote, "stale");
-  assert.match(flag.label, STALE_LABEL_RE);
-  assert.equal(flag.label, "Healthy · stale");
-});
 
 test("deriveRenderedSourceStatus prefers the server-owned verdict over raw health state", () => {
   const flag = deriveRenderedSourceStatus(renderedVerdict({ pill: { label: "Degraded", tone: "amber" } }), false);
@@ -522,28 +475,6 @@ test("buildSourcesRuntimeAdvisory renders one global runtime fault and ignores h
       note: "Saved records remain available. Collection resumes when the reference runtime is back.",
     }
   );
-});
-
-test("deriveSourceStatus: every non-fresh state carries a freshness annotation, fresh carries none", () => {
-  for (const state of ["healthy", "idle", "degraded", "blocked", "unknown"] as const) {
-    const stale = deriveSourceStatus(healthWithFreshness(state, "stale"), false);
-    assert.equal(stale.freshnessNote, "stale", `${state} stale should annotate`);
-    assert.match(stale.label, STALE_SUFFIX_RE, `${state} stale label should disclose`);
-
-    const unknownFreshness = deriveSourceStatus(healthWithFreshness(state, "unknown"), false);
-    assert.equal(unknownFreshness.freshnessNote, "freshness unknown", `${state} unknown-freshness should annotate`);
-
-    const fresh = deriveSourceStatus(healthWithFreshness(state, "fresh"), false);
-    assert.equal(fresh.freshnessNote, null, `${state} fresh should NOT annotate`);
-    assert.doesNotMatch(fresh.label, ANY_FRESHNESS_SEPARATOR_RE, `${state} fresh label should be bare`);
-  }
-});
-
-test("revoked lifecycle overrides any health verdict and carries no freshness note", () => {
-  const flag = deriveSourceStatus(healthWithFreshness("healthy", "stale"), true);
-  assert.equal(flag.kind, "revoked");
-  assert.equal(flag.freshnessNote, null);
-  assert.equal(flag.label, "Revoked");
 });
 
 test("formatSchedule is honest about no schedule, paused, and policy-ineligible", () => {

@@ -194,14 +194,58 @@ review authorizes planning for.
 - [ ] 10.E.2 Write the owner-console governing charter (calm, action-first,
       taxonomy-free; Ink Carbon retained) and record that `.impeccable.md`
       governs only public/reference surfaces.
-- [ ] 10.E.3 Tranche 10a: server-side owner-state derivation with resolver,
-      `as_of`, posture; emit `reattach_schedule`/`refresh_now`; exhaustive
-      cross-product property test.
+- [x] 10.E.3 Tranche 10a: server-side owner-state derivation with resolver,
+      `evidence_as_of`, posture; emit `reattach_schedule`/`refresh_now`;
+      exhaustive cross-product property test. (`reference-implementation/runtime/owner-state.ts`,
+      wired into `ConnectorSummary.owner_state`/`ConnectorDetail.owner_state`
+      in `server/ref-control.ts`; `test/owner-state.test.js`.) `reattach_schedule`
+      is emitted inside `buildRequiredActions`'s SINGLE synthesis pass
+      (`rendered-verdict.ts`) via an optional typed `ScheduleEvidence` param —
+      NOT a post-pass mutation on the finished verdict, so `channel`/
+      `forward_statement`/`annotations`/`streams[].action_ref`/`trace` are
+      always consistent with it (an earlier revision mutated post-synthesis
+      and was corrected mid-tranche; proven by 9 invariant-consistency tests
+      in `test/rendered-verdict.test.js`, incl. paused+reauth/paused+code_fix
+      priority and byte-identical-when-omitted). The action's CTA is wired
+      end-to-end: `apps/console/.../sources/[connector]/page.tsx`'s
+      `RenderedVerdictHeaderAction` renders it as a `<form action={resumeConnectorScheduleAction}>`
+      reaching the real instance-scoped schedule-resume server action
+      (`actions.ts`), proven by `sync-now-modality.test.ts` — not merely a
+      declared action kind with a dead-end link, and not routed through the
+      generic `SyncNowButton` fallthrough (which would run once but leave the
+      schedule disabled).
 - [ ] 10.E.4 Tranche 10b: console consumes the server owner state; delete
       `deriveSourceStatus` raw-state path, `source-actionability.ts` parallel
       taxonomy, legacy client verdict fallback, `badgeState`, client-only
       stall threshold; share/generate wire types; headline = list predicate;
-      remove audited dead action set and dead components.
+      remove audited dead action set and dead components. DONE this tranche:
+      deleted `deriveSourceStatus` (dead code — the live Sources view never
+      called it), the `synthesizeConnectionVerdict`/`ConnectionVerdict`/
+      `badgeState` legacy verdict synthesizer and its `connection-diagnostics.tsx`
+      fallback call site, and the wholly-dead `connector-row.tsx` component
+      (unimported, carried the other `badgeState` call site). Added the
+      `owner_state`/`RefOwnerState` wire mirror in `ref-client.ts` (hand-mirrored,
+      NOT yet shared/generated via `@pdpp/reference-contract` — still open).
+      Wired the `reattach_schedule` CTA into the source detail page (see
+      10.E.3 note) — the one piece of real console consumption landed this
+      tranche. Headline counts already used one predicate
+      (`sourceAttentionHeadline`/`sourceWorkFromConnectors` in
+      `source-actionability.ts`) before this tranche — verified, not
+      re-derived. NOT done: `source-actionability.ts`'s 537-line, 18-export
+      taxonomy itself is not deleted — it still independently derives
+      ownership/grouping from `verdict.pill.label`/`.tone`/`.channel` COPY-
+      STRING matching (`"Can't collect"`, `"Checking"`, `"Needs refresh"`),
+      exactly the parallel taxonomy this task requires deleting; **zero**
+      non-test console consumers currently read `connector.owner_state`
+      anywhere outside the one `reattach_schedule` CTA above (verified by
+      direct grep before recording this). Refactoring `source-actionability.ts`
+      into a thin `owner_state`-driven presenter across its 11 consumer files
+      (Sources, Overview, Syncs, detail) is a full additional tranche, not
+      completable safely alongside 10.E.3 — deferred, not dropped. Wire types
+      remain hand-mirrored, not generated. The client-only recovery stall
+      threshold (`RECOVERY_STALL_CADENCE_MS`) is not deleted (no server-side
+      stall signal exists yet to replace it). Full console UI consumption of
+      `owner_state` (10c copy/presentation) is out of this tranche's scope.
 - [ ] 10.E.5 Tranche 10c: ownership-first source presentation (plain cause,
       who acts next, one action, evidence age; three ownership groups; no
       internal-state legend); recovery single-cause layout with evidence age

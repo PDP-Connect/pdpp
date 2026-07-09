@@ -87,7 +87,7 @@ test('6.3: a stale manual account projects owner_refresh_due without degrading c
       nowIso: NOW,
     });
     // The projection routes stale manual to the owner-refresh advisory; the
-    // rendered verdict decides health separately and can remain Healthy.
+    // rendered verdict turns that typed disposition into an actionable state.
     assert.equal(snap.state, 'idle', `${connector} projects idle advisory`);
     assert.equal(snap.reason_code, 'stale_manual_refresh', `${connector} reason is stale_manual_refresh`);
     assert.equal(snap.axes.freshness, 'stale');
@@ -96,7 +96,7 @@ test('6.3: a stale manual account projects owner_refresh_due without degrading c
   }
 });
 
-test('6.3: the synthesized verdict for a stale manual account is Healthy/advisory with Refresh now', () => {
+test('6.3: the synthesized verdict for a stale manual account is Needs refresh/advisory with Refresh now', () => {
   for (const connector of MANUAL_CONNECTORS) {
     const run = succeededRun();
     const policy = readRefreshPolicy(connector);
@@ -121,8 +121,8 @@ test('6.3: the synthesized verdict for a stale manual account is Healthy/advisor
       true,
       { mode: 'manual', retained_records: 100, last_refreshed_at: '2026-05-15T00:00:00.000Z' }
     );
-    assert.equal(verdict.pill.tone, 'green', `${connector} stays health-green while stale`);
-    assert.equal(verdict.pill.label, 'Healthy');
+    assert.equal(verdict.pill.tone, 'amber', `${connector} is visibly refresh-due while stale`);
+    assert.equal(verdict.pill.label, 'Needs refresh');
     assert.equal(verdict.channel, 'advisory');
     assert.ok(
       verdict.required_actions.some((a) => a.kind === 'refresh_now' && a.audience === 'owner'),

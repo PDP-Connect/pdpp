@@ -1650,3 +1650,125 @@ test('grant-scope: toGrantScopedVerdict strips detail and trace', () => {
   // Public fields survive.
   assert.ok('pill' in scoped && 'channel' in scoped && 'forward_statement' in scoped);
 });
+
+// ─── Wave 10a: reattach_schedule (owner-paused schedule), single-pass invariant ───
+//
+// `reattach_schedule` is emitted INSIDE `buildRequiredActions`'s single
+// synthesis pass, never as a post-pass mutation on an already-built verdict
+// (owner review, 2026-07-09: a post-pass mutator leaves `forward_statement`,
+// `channel`, `annotations`, `streams[].action_ref`, and `trace` derived from
+// the STALE pre-mutation action set — action derivation must have ONE
+// owner). These tests prove the verdict's derived fields all agree with the
+// FINAL action set, not just that the action array itself looks right.
+
+const SCHEDULED_DISABLED_WITH_HISTORY = { hasPriorSuccess: true, mode: 'scheduled-disabled' };
+const SCHEDULED_DISABLED_NO_HISTORY = { hasPriorSuccess: false, mode: 'scheduled-disabled' };
+const SCHEDULED_ACTIVE = { hasPriorSuccess: true, mode: 'scheduled-active' };
+const MANUAL_NO_SCHEDULE = { hasPriorSuccess: true, mode: 'manual' };
+
+test('reattach_schedule: an owner-paused source with prior success emits it as primary, and every derived field agrees', () => {
+  const snap = snapshot({ state: 'idle', last_success_at: '2026-06-01T00:00:00.000Z' });
+  const v = synthesizeRenderedVerdict(snap, [], null, true, null, SCHEDULED_DISABLED_WITH_HISTORY);
+  assert.equal(v.required_actions[0].kind, 'reattach_schedule');
+  // `{ kind: "schedule" }` (OwnerActionSurfaceKind, connection-health.ts) —
+  // NOT `runtime_retry`, which means "run this once now." Resuming a paused
+  // schedule is a distinct affordance from a one-off retry; a generic
+  // client rendering by surface kind must route this to schedule
+  // management, not a run-now button.
+  assert.deepEqual(v.required_actions[0].surface, { kind: 'schedule' });
+  // channel: an owner-satisfiable, non-urgent (`soon`) action reads `advisory`.
+  assert.equal(v.channel, 'advisory');
+  // forward_statement: derived from actions[0] via buildForwardStatement —
+  // reattach_schedule has its own dedicated case (pause/resume semantics,
+  // not the generic "your action" sentence every other owner action falls
+  // back to).
+  assert.equal(v.forward_statement, 'Resume the schedule to continue automatic collection.');
+  // trace: primary_action_kind/satisfied_when/channel_cause all reference
+  // the FINAL action, not a stale one.
+  assert.equal(v.trace.primary_action_kind, 'reattach_schedule');
+  assert.deepEqual(v.trace.satisfied_when, { kind: 'schedule_attached_and_enabled' });
+  assert.equal(v.trace.channel_cause, 'owner_optional_or_status:reattach_schedule');
+});
+
+test('reattach_schedule: never emitted for a never-run source, even with a disabled schedule', () => {
+  const snap = snapshot({ state: 'idle', last_success_at: null });
+  const v = synthesizeRenderedVerdict(snap, [], null, true, null, SCHEDULED_DISABLED_NO_HISTORY);
+  assert.ok(!v.required_actions.some((a) => a.kind === 'reattach_schedule'));
+});
+
+test('reattach_schedule: never emitted for an active (non-disabled) schedule', () => {
+  const snap = snapshot({ state: 'idle', last_success_at: '2026-06-01T00:00:00.000Z' });
+  const v = synthesizeRenderedVerdict(snap, [], null, true, null, SCHEDULED_ACTIVE);
+  assert.ok(!v.required_actions.some((a) => a.kind === 'reattach_schedule'));
+});
+
+test('reattach_schedule: never emitted for a manual connector (no schedule concept applies)', () => {
+  const snap = snapshot({ state: 'idle', last_success_at: '2026-06-01T00:00:00.000Z' });
+  const v = synthesizeRenderedVerdict(snap, [], null, true, null, MANUAL_NO_SCHEDULE);
+  assert.ok(!v.required_actions.some((a) => a.kind === 'reattach_schedule'));
+});
+
+test('reattach_schedule: omitting scheduleEvidence entirely is byte-identical to passing null (existing callers unaffected)', () => {
+  const snap = snapshot({ state: 'idle', last_success_at: '2026-06-01T00:00:00.000Z' });
+  const withoutParam = synthesizeRenderedVerdict(snap, [], null, true, null);
+  const withNull = synthesizeRenderedVerdict(snap, [], null, true, null, null);
+  assert.deepEqual(withoutParam, withNull);
+  assert.ok(!withoutParam.required_actions.some((a) => a.kind === 'reattach_schedule'));
+});
+
+// Named priority-conflict fixtures (owner review, 2026-07-09): a disabled
+// schedule must NEVER mask a more urgent credential (reauth) or
+// maintainer-blocked (code_fix) defect. Proven here at the SOURCE
+// (`buildRequiredActions`), not just re-derived downstream in owner-state.ts.
+
+test('reattach_schedule: paused schedule + credential failure — reauth stays primary, reattach_schedule does not fire at all', () => {
+  const snap = snapshot({
+    state: 'blocked',
+    conditions: [credentialRejectedCondition()],
+    last_success_at: '2026-06-01T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(snap, [], null, true, null, SCHEDULED_DISABLED_WITH_HISTORY);
+  assert.equal(v.required_actions[0].kind, 'reauth');
+  assert.equal(v.trace.primary_action_kind, 'reauth');
+  assert.equal(v.channel, 'attention');
+  assert.equal(v.forward_statement, 'Reconnect this account and collection resumes.');
+  assert.ok(!v.required_actions.some((a) => a.kind === 'reattach_schedule'), 'reattach_schedule must not fire alongside a real credential defect');
+});
+
+test('reattach_schedule: paused schedule + terminal code_fix defect — code_fix stays primary, reattach_schedule never fires', () => {
+  const snap = snapshot({
+    state: 'blocked',
+    forward_disposition: 'terminal',
+    last_success_at: '2026-06-01T00:00:00.000Z',
+  });
+  const streams = [stream({ coverage: 'terminal_gap', priority: 'required' })];
+  const v = synthesizeRenderedVerdict(snap, streams, null, true, null, SCHEDULED_DISABLED_WITH_HISTORY);
+  assert.equal(v.required_actions[0].kind, 'code_fix');
+  assert.equal(v.trace.primary_action_kind, 'code_fix');
+  assert.ok(!v.required_actions.some((a) => a.kind === 'reattach_schedule'), 'reattach_schedule must not fire alongside a real maintainer defect');
+});
+
+test('reattach_schedule: paused schedule preempts refresh_now — a merely-stale paused source gets Resume schedule, not a one-off refresh', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'stale' },
+    forward_disposition: 'owner_refresh_due',
+    last_success_at: '2026-06-01T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(snap, [], MANUAL_REFRESH, true, null, SCHEDULED_DISABLED_WITH_HISTORY);
+  assert.equal(v.required_actions[0].kind, 'reattach_schedule');
+  assert.ok(!v.required_actions.some((a) => a.kind === 'refresh_now'), 'refresh_now must not compete with reattach_schedule — both mean "run it again"');
+});
+
+test('refresh_now: unaffected by an ACTIVE (non-paused) schedule — byte-identical to omitting scheduleEvidence', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'stale' },
+    forward_disposition: 'owner_refresh_due',
+    last_success_at: '2026-06-01T00:00:00.000Z',
+  });
+  const withoutSchedule = synthesizeRenderedVerdict(snap, [], MANUAL_REFRESH, true, null);
+  const withActiveSchedule = synthesizeRenderedVerdict(snap, [], MANUAL_REFRESH, true, null, SCHEDULED_ACTIVE);
+  assert.deepEqual(withoutSchedule, withActiveSchedule);
+  assert.equal(withoutSchedule.required_actions[0].kind, 'refresh_now');
+});

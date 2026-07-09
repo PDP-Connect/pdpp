@@ -342,6 +342,32 @@ export interface ProgressEvidence {
   readonly retained_records?: number | null;
 }
 
+/**
+ * Typed instance-schedule evidence for the `reattach_schedule` required
+ * action (Wave 10a, owner review 2026-07-09). Optional — omitted callers get
+ * byte-identical prior behavior (no `reattach_schedule` emission).
+ *
+ * `mode` mirrors `OwnerStateScheduleMode` (`owner-state.ts`) — that module
+ * imports this type rather than declaring its own, so there is ONE owner of
+ * "what does a disabled schedule mean" across both the verdict synthesis and
+ * the owner-state resolver:
+ *   - `manual`             : no schedule row exists. `reattach_schedule` is unreachable.
+ *   - `scheduled-active`   : a schedule row exists and is enabled. Unreachable (nothing to reattach).
+ *   - `scheduled-disabled` : a schedule row exists and is disabled — the ONLY
+ *                             mode `reattach_schedule` can emit from, and
+ *                             only when the connection has a prior success
+ *                             (`hasPriorSuccess`) and no higher-priority
+ *                             action already exists (`buildRequiredActions`'
+ *                             `actions.length === 0` gate, run AFTER every
+ *                             reauth/code_fix/add_info/refresh_now/retry_gap
+ *                             check — a disabled schedule must never mask a
+ *                             more urgent defect).
+ */
+export interface ScheduleEvidence {
+  readonly hasPriorSuccess: boolean;
+  readonly mode: "manual" | "scheduled-active" | "scheduled-disabled";
+}
+
 // ─── Tone (worst-wins) ──────────────────────────────────────────────────────
 
 const TONE_RANK: Record<VerdictTone, number> = { green: 0, grey: 1, amber: 2, red: 3 };
@@ -853,7 +879,8 @@ function buildRequiredActions(
   streams: readonly StreamRollup[],
   refresh: ConnectionRefreshEvidence | null,
   disposition: ForwardDisposition,
-  progress: ProgressEvidence | null
+  progress: ProgressEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null
 ): RequiredAction[] {
   const terminal = disposition === "terminal";
   const actions: RequiredAction[] = [];
@@ -945,9 +972,57 @@ function buildRequiredActions(
     });
   }
 
+  // Owner-paused schedule (Wave 10a, owner review 2026-07-09): a disabled
+  // schedule with a prior success means the system CANNOT self-recover —
+  // there is no automatic retry to fall back on. Emit `reattach_schedule`
+  // BEFORE the refresh_now/retry_gap/wait branches below (which all assume
+  // the system can still act on its own), so an otherwise
+  // healthy/stale/resumable paused source gets "Resume schedule" as its
+  // primary action rather than a one-off Retry/Refresh that leaves the
+  // schedule disabled, or a calm "Collecting — no action needed" that is
+  // false while the schedule is off. Gated on `actions.length === 0` so a
+  // real defect already found above (`reauth`/`add_info`/`code_fix`/stalled
+  // outbox) always outranks a merely-paused schedule — this is exactly why
+  // action derivation must have one owner: the same `actions.length === 0`
+  // gate the later branches use naturally keeps them silent once this fires.
+  if (
+    scheduleEvidence?.mode === "scheduled-disabled" &&
+    scheduleEvidence.hasPriorSuccess &&
+    actions.length === 0
+  ) {
+    actions.push({
+      kind: "reattach_schedule",
+      audience: "owner",
+      urgency: "soon",
+      affects: [],
+      cta: "Resume schedule",
+      // `{ kind: "schedule" }` (`OwnerActionSurfaceKind`, connection-health.ts)
+      // — NOT `runtime_retry`, which means "run this once now." Resuming a
+      // paused schedule is a distinct affordance from a one-off retry; a
+      // generic client rendering by surface kind must route this to a
+      // schedule-management control, not a run-now button.
+      surface: { kind: "schedule" },
+      terminal: false,
+      satisfied_when: { kind: "schedule_attached_and_enabled" },
+    });
+  }
+
   // Manual/assisted-refresh stale: owner-refresh-due. Owner-actionable but NON-urgent
   // (the data is simply aging; the owner can accelerate but inaction is not a failure).
-  if (disposition === "owner_refresh_due" && (isManualRefreshOnly(refresh) || isAssistedRefresh(refresh))) {
+  // Guarded specifically on `scheduleEvidence?.mode !== "scheduled-disabled"`
+  // (Wave 10a, owner review 2026-07-09) — reattach_schedule already owns the
+  // paused case above, and both mean "run it again now." This does NOT add
+  // a general `actions.length === 0` guard: every caller that omits
+  // `scheduleEvidence` (`null`) — i.e. every pre-existing caller — takes
+  // this same `!== "scheduled-disabled"` branch unconditionally-true, so
+  // behavior stays byte-for-byte identical for all non-paused callers,
+  // including the pre-existing transient-upload `wait` + `refresh_now`
+  // co-occurrence.
+  if (
+    disposition === "owner_refresh_due" &&
+    scheduleEvidence?.mode !== "scheduled-disabled" &&
+    (isManualRefreshOnly(refresh) || isAssistedRefresh(refresh))
+  ) {
     actions.push({
       kind: "refresh_now",
       audience: "owner",
@@ -1243,6 +1318,8 @@ function buildForwardStatement(
         return "Retry now to give the recoverable gap another run.";
       case "backfill":
         return "Run a backfill to fill the missing window.";
+      case "reattach_schedule":
+        return "Resume the schedule to continue automatic collection.";
       default:
         return "Your action will bring this up to date.";
     }
@@ -1704,18 +1781,21 @@ function safeGreyVerdict(snapshot: ConnectionHealthSnapshot): RenderedVerdict {
  * Synthesize the one server-owned verdict. PURE: no I/O, no clock read; identical
  * inputs always produce an identical verdict.
  *
- * @param snapshot   the existing connection-health projection output
- * @param streams    per-stream rollups (synthesizer input; wire-forwarding is Dispatch C)
- * @param refresh    the manifest refresh evidence (`buildRefreshEvidence(...)` output)
- * @param runtime_ok whether the runtime serving the connections is itself healthy
- * @param progress   optional collection-model progress evidence
+ * @param snapshot        the existing connection-health projection output
+ * @param streams         per-stream rollups (synthesizer input; wire-forwarding is Dispatch C)
+ * @param refresh         the manifest refresh evidence (`buildRefreshEvidence(...)` output)
+ * @param runtime_ok      whether the runtime serving the connections is itself healthy
+ * @param progress        optional collection-model progress evidence
+ * @param scheduleEvidence optional instance-schedule evidence for `reattach_schedule`
+ *                        (Wave 10a) — omitted callers get byte-identical prior behavior
  */
 export function synthesizeRenderedVerdict(
   snapshot: ConnectionHealthSnapshot,
   streams: readonly StreamRollup[],
   refresh: ConnectionRefreshEvidence | null,
   runtime_ok: boolean,
-  progress: ProgressEvidence | null = null
+  progress: ProgressEvidence | null = null,
+  scheduleEvidence: ScheduleEvidence | null = null
 ): RenderedVerdict {
   // ── tone: worst-wins over base(state) + every axis ──
   const disposition = connectionDisposition(snapshot, streams, refresh);
@@ -1733,7 +1813,7 @@ export function synthesizeRenderedVerdict(
   const pill: VerdictPill = { tone, label: labelForPill(tone, snapshot, disposition, toneInputs) };
 
   // ── required actions (terminality derived from the sole oracle) ──
-  const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress);
+  const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress, scheduleEvidence);
 
   // ── channel: computed AFTER tone in the same pass; runtime fault caps at calm ──
   let channel = computeChannel(actions);

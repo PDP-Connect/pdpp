@@ -157,14 +157,14 @@ const FIXTURES = [
   // ── Amazon: manual-refresh, 31-day stale ──────────────────────────────────
   //
   // Old headline: "Healthy" (state:idle maps to "Healthy" in old UI)
-  // New headline: "Healthy" (stale manual is freshness, not broken collection)
-  // Classification: deliberate_silence_correction — new adds advisory freshness
-  // and Refresh now without false owner-urgency language.
+  // New headline: "Needs refresh" (actionable freshness without claiming breakage)
+  // Classification: fixed_lie — the old headline hid an owner-visible refresh
+  // action behind a green Healthy state.
   {
     id: 'amazon_manual_stale',
     description: 'Amazon: manual-refresh, 31-day stale',
-    expectedClassification: 'deliberate_silence_correction',
-    reason: 'Silence correction: stale manual source stays Healthy while freshness and Refresh now move to advisory detail',
+    expectedClassification: 'fixed_lie',
+    reason: 'Fixed false green: stale manual source says Needs refresh and offers Refresh now',
     snapshot: {
       state: 'idle',
       axes: { attention: 'none', coverage: 'complete', freshness: 'stale', outbox: 'idle', remote_surface: 'none' },
@@ -188,8 +188,8 @@ const FIXTURES = [
     progress: null,
     runtimeOk: true,
     assertions: (verdict) => {
-      assert.equal(verdict.pill.tone, 'green', 'Amazon: stale manual health stays green');
-      assert.equal(verdict.pill.label, 'Healthy', 'Amazon: stale manual health label stays Healthy');
+      assert.equal(verdict.pill.tone, 'amber', 'Amazon: stale manual source is visibly refresh-due');
+      assert.equal(verdict.pill.label, 'Needs refresh', 'Amazon: stale manual source says Needs refresh');
       assert.equal(verdict.channel, 'advisory', `Amazon: advisory refresh affordance, got ${verdict.channel}`);
       const refreshAction = verdict.required_actions.find((a) => a.kind === 'refresh_now');
       assert.ok(refreshAction, 'Amazon: refresh_now action present');

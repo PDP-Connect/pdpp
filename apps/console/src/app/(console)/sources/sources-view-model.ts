@@ -32,7 +32,6 @@ import {
 import { formatStreamCollectionFacts, indexCollectionReportByStream } from "../lib/collection-report.ts";
 import type { FormattedNextAction } from "../lib/next-action.ts";
 import type {
-  RefConnectionHealthSnapshot,
   RefConnectorRunSummary,
   RefConnectorRuntimeStatus,
   RefConnectorSummary,
@@ -50,18 +49,19 @@ import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
 /**
  * The status flag rendered against each instance in the list and the passport.
- * Current references derive it from server-owned `RenderedVerdict.pill` plus
- * co-required annotations; older references fall back to the legacy
- * connection-health `state` and freshness axis. In both cases the dot, the
- * Endorse badge, and the headline read from one source of truth — and a
- * stale-but-healthy connection discloses its staleness instead of reading bare
- * green.
+ * Derived from the server-owned `RenderedVerdict.pill` (plus co-required
+ * annotations) via `deriveRenderedSourceStatus` in `source-actionability.ts`
+ * — the single derivation every owner surface consumes. There is no
+ * client-side fallback to raw connection-health `state`: a source with no
+ * verdict reads honest "unknown", never a guess reconstructed from raw axes
+ * (Wave 10a/10b, 2026-07-09 state-model convergence — see
+ * `design-notes/studio-critique-20260709.md`).
  *
- *   ● healthy    — green dot       (state: healthy | idle)
- *   ◐ degraded   — amber half-dot  (state: degraded | cooling_off | needs_attention)
- *   ⊘ blocked    — red interdict   (state: blocked)
- *   ○ unknown    — muted ring      (state: unknown, or no health projection)
- *   ⊘ revoked    — struck          (revoked lifecycle, overrides health)
+ *   ● healthy    — green dot       (verdict tone: green)
+ *   ◐ degraded   — amber half-dot  (verdict tone: amber)
+ *   ⊘ blocked    — red interdict   (verdict tone: red)
+ *   ○ unknown    — muted ring      (no verdict, or verdict tone: grey)
+ *   ⊘ revoked    — struck          (revoked lifecycle, overrides the verdict)
  */
 /** One row in the passport's stream manifest table. */
 export interface SourceStreamManifestRow {
@@ -181,95 +181,7 @@ export interface SourcesRuntimeAdvisory {
 
 type SourceManifestLike = ConnectorManifestLike & { connector_id: string };
 
-const HEALTHY_STATES = new Set(["healthy", "idle"]);
-const DEGRADED_STATES = new Set(["degraded", "cooling_off", "needs_attention"]);
 const DUPLICATE_SOURCE_GROUP_MIN_UNNAMED = 3;
-
-/**
- * The freshness annotation for a status flag, or `null` when the connection is
- * fresh / carries no freshness evidence. Mandatory whenever the freshness axis
- * is not `fresh`: a healthy connection can still be `stale` (an assisted
- * scheduled connector awaiting a scheduled refresh; see `stale_assisted_refresh`)
- * or `unknown`, and the status flag must disclose that rather than reading a
- * bare "Healthy" that implies up-to-date data.
- */
-function deriveFreshnessNote(health: RefConnectionHealthSnapshot | undefined): string | null {
-  switch (health?.axes.freshness) {
-    case "stale":
-      return "stale";
-    case "unknown":
-      return "freshness unknown";
-    default:
-      // "fresh", or no freshness evidence at all → nothing to disclose.
-      return null;
-  }
-}
-
-/** Fold a freshness note into a base label, e.g. "Healthy" + "stale" → "Healthy · stale". */
-function labelWithFreshness(base: string, note: string | null): string {
-  return note ? `${base} · ${note}` : base;
-}
-
-/**
- * Map the connection-health `state` and freshness axis (and the durable revoked
- * flag) to the single status flag the list dot, the Endorse badge, and the
- * headline share. Revoked is a lifecycle fact that overrides any health verdict
- * — a revoked connection reads "struck, not erased" regardless of its last
- * health snapshot.
- *
- * Freshness is co-required, not just `state`: a connection that is healthy/idle
- * by state can still be `stale` or `unknown` on the freshness axis, so the flag
- * carries a mandatory `freshnessNote` (folded into `label`) whenever the
- * freshness axis is not `fresh`. This is the Phase-2 honesty fix that stops a
- * stale-but-healthy connection from reading as a bare green "Healthy".
- */
-export function deriveSourceStatus(
-  health: RefConnectionHealthSnapshot | undefined,
-  revoked: boolean
-): SourceStatusFlag {
-  if (revoked) {
-    // A revoked connection is no longer collecting, so its last-known freshness
-    // is not a live signal; the struck lifecycle is the whole story.
-    return { kind: "revoked", dot: "⊘", tone: "muted", label: "Revoked", freshnessNote: null };
-  }
-  const state = health?.state;
-  const freshnessNote = deriveFreshnessNote(health);
-  if (state && HEALTHY_STATES.has(state)) {
-    return {
-      kind: "healthy",
-      dot: "●",
-      tone: "success",
-      label: labelWithFreshness("Healthy", freshnessNote),
-      freshnessNote,
-    };
-  }
-  if (state === "blocked") {
-    return {
-      kind: "blocked",
-      dot: "⊘",
-      tone: "destructive",
-      label: labelWithFreshness("Blocked", freshnessNote),
-      freshnessNote,
-    };
-  }
-  if (state && DEGRADED_STATES.has(state)) {
-    return {
-      kind: "degraded",
-      dot: "◐",
-      tone: "warning",
-      label: labelWithFreshness(state === "needs_attention" ? "Needs attention" : "Degraded", freshnessNote),
-      freshnessNote,
-    };
-  }
-  // state === "unknown", or no projection at all → honest unknown, never green.
-  return {
-    kind: "unknown",
-    dot: "○",
-    tone: "muted",
-    label: labelWithFreshness("Unknown", freshnessNote),
-    freshnessNote,
-  };
-}
 
 const SECONDS_PER_DAY = 86_400;
 const SECONDS_PER_HOUR = 3600;

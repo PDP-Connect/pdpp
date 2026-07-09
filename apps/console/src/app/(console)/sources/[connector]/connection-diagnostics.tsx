@@ -17,7 +17,6 @@ import {
   summarizeAxisChips,
   summarizeOutboxStallRemediation,
   summarizeSchedule,
-  synthesizeConnectionVerdict,
 } from "../../lib/connection-evidence.ts";
 import type {
   DeviceSourceInstance,
@@ -475,16 +474,19 @@ function ProjectedStateDiagnostics({
   // Single-voice synthesis [SLVP §1.3, Frame 3 P11]: the detail header badge
   // uses the SAME effective state as the list row, so a source-pressure
   // cooldown reads "cooling off" on both surfaces with no vocabulary drift. The
-  // synthesized runbook is the badge tooltip. The raw `reason_code` still shows
-  // beside it here — the detail page is the place for the underlying evidence.
-  const legacyVerdict = synthesizeConnectionVerdict(connectionHealth);
+  // synthesized forward statement is the badge tooltip. The raw `reason_code`
+  // still shows beside it here — the detail page is the place for the
+  // underlying evidence. There is no client-side legacy verdict fallback: a
+  // connector summary with no `rendered_verdict` reads honest "unknown"
+  // (Wave 10a/10b, 2026-07-09 state-model convergence — the server owns the
+  // one verdict; the console never re-derives a second one from raw state).
   const renderedStatus = renderedVerdict ? deriveRenderedSourceStatus(renderedVerdict, false) : null;
   const badge = renderedStatus ? (
     <StatusBadge status={renderedStatus.kind} vocabulary={renderedSourceStatusVocabulary(renderedStatus)} />
   ) : (
-    <StatusBadge status={legacyVerdict.badgeState} vocabulary={CONNECTION_HEALTH_VOCABULARY} />
+    <StatusBadge status="unknown" vocabulary={CONNECTION_HEALTH_VOCABULARY} />
   );
-  const badgeTitle = renderedVerdict?.forward_statement ?? legacyVerdict.runbook;
+  const badgeTitle = renderedVerdict?.forward_statement ?? "Verdict unavailable.";
   return (
     <div className="flex flex-col gap-2">
       <p className="pdpp-caption flex flex-wrap items-center gap-1.5 text-muted-foreground">

@@ -24,7 +24,6 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ACTIONS_FILE = `${HERE}actions.ts`;
 const ISLAND_FILE = `${HERE}rename-connection.tsx`;
-const ROW_FILE = `${HERE}../connector-row.tsx`;
 const PAGE_FILE = `${HERE}page.tsx`;
 
 const ACTION_SIGNATURE_RE =
@@ -42,20 +41,6 @@ const ISLAND_RESEEDS_RE = /useEffect\(\(\) => \{\s*setValue\(currentLabel\);\s*\
 const ISLAND_REFRESHES_RE = /router\.refresh\(\)/;
 const ISLAND_DISABLES_EMPTY_RE = /disabled=\{isPending \|\| !value\.trim\(\)\}/;
 const ISLAND_HIDES_WHEN_NULL_RE = /if \(connectionId === null\) \{\s*return null;\s*\}/;
-
-// The row no longer decides "label needed" in isolation. The hint depends on
-// SIBLING connections — a fallback label ("Amazon") is only ambiguous, and thus
-// worth renaming, when two or more unnamed connections of the same connector
-// type exist. That cross-row decision is computed once by the list and passed
-// in as the `labelNeeded` prop, so a lone connection of a type is never nagged.
-const ROW_LABEL_NEEDED_PROP_RE = /labelNeeded: boolean;/;
-const ROW_LABEL_NEEDED_DESTRUCTURED_RE = /function ConnectorRow\(\{ labelNeeded, overview, runsHref \}: RowProps\)/;
-const ROW_LABEL_NEEDED_CONDITIONAL_RE = /\{labelNeeded \? \(/;
-const ROW_LABEL_NEEDED_TESTID_RE = /data-testid="label-needed-hint"/;
-// Guard against regressing to the per-row isolation bug: the row must NOT
-// recompute fallback status itself (which fired on every never-renamed
-// connection regardless of ambiguity).
-const ROW_NO_ISOLATED_FALLBACK_RE = /isFallbackConnectionLabel/;
 
 const PAGE_SEED_RE = /isFallbackConnectionLabel\(\{[\s\S]*?\}\)\s*\?\s*""\s*:\s*\(summary\.display_name \?\? ""\)/;
 const PAGE_RENDERS_ISLAND_RE = /<RenameConnection/;
@@ -112,21 +97,14 @@ test("rename island hides itself when there is no addressable connection", async
   assert.match(src, ISLAND_HIDES_WHEN_NULL_RE);
 });
 
-test("connector-row renders the label-needed hint only behind the list-supplied prop", async () => {
-  const src = await readFile(ROW_FILE, "utf8");
-  assert.match(src, ROW_LABEL_NEEDED_PROP_RE);
-  assert.match(src, ROW_LABEL_NEEDED_DESTRUCTURED_RE);
-  assert.match(src, ROW_LABEL_NEEDED_CONDITIONAL_RE);
-  assert.match(src, ROW_LABEL_NEEDED_TESTID_RE);
-});
-
-test("connector-row does not decide label-needed in isolation (ambiguity is a cross-row concern)", async () => {
-  // The previous per-row `isFallbackConnectionLabel` call nagged every
-  // never-renamed connection (single Amazon/USAA/GitHub/YNAB included). The
-  // honest signal lives in the list's ambiguity computation, not the row.
-  const src = await readFile(ROW_FILE, "utf8");
-  assert.equal(ROW_NO_ISOLATED_FALLBACK_RE.test(src), false);
-});
+// The "label needed" hint's cross-row ambiguity rule (a fallback label like
+// "Amazon" is only worth nagging when two or more unnamed connections of the
+// same connector type exist, so a lone connection is never nagged) lived in
+// the now-deleted `connector-row.tsx` (Wave 10a/10b, 2026-07-09 state-model
+// convergence — that whole component was unimported dead code). The ambiguity
+// computation itself is covered directly in `lib/connection-label-ambiguity.test.ts`.
+// The live Sources list does not currently render an inline "label needed"
+// hint at all; re-adding one is out of this tranche's scope.
 
 test("detail page seeds the rename field blank for fallback labels", async () => {
   const src = await readFile(PAGE_FILE, "utf8");

@@ -1,4 +1,4 @@
-import { buttonVariants, IcTimestamp } from "@pdpp/brand-react";
+import { buttonVariants, IcButton, IcTimestamp } from "@pdpp/brand-react";
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import {
@@ -61,6 +61,7 @@ import {
 } from "../../lib/source-actionability.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
 import { findManifestForConnectorId } from "../lib/relationships.ts";
+import { resumeConnectorScheduleAction } from "./actions.ts";
 import { ConnectionDangerZone } from "./connection-danger-zone.tsx";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { RenameConnection } from "./rename-connection.tsx";
@@ -949,6 +950,23 @@ function RenderedVerdictHeaderAction({
       >
         {action.cta}
       </Link>
+    );
+  }
+  if (action.kind === "reattach_schedule") {
+    // The owner paused this connection's automatic schedule. `Sync now`
+    // would run once but leave the schedule disabled — it does not satisfy
+    // `schedule_attached_and_enabled`, the action's real contract. Wire the
+    // existing `resumeConnectorScheduleAction` server action (already
+    // reaches the real instance-scoped `/schedule/resume` endpoint) instead
+    // of falling through to the sync-now button below.
+    return (
+      <form action={resumeConnectorScheduleAction}>
+        <input name="connector_id" type="hidden" value={connectorId} />
+        {connectionId ? <input name="connection_id" type="hidden" value={connectionId} /> : null}
+        <IcButton data-testid="detail-action-reattach-schedule" size="sm" type="submit" variant="default">
+          {action.cta}
+        </IcButton>
+      </form>
     );
   }
   return (

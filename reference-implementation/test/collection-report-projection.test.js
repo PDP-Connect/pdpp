@@ -141,6 +141,128 @@ test('owner-cancelled latest run reuses prior successful facts for stream covera
   assert.equal(entry.covered, 1125);
 });
 
+// Wave 10a live-evidence regression (2026-07-09): while a scheduled run is
+// queued/starting/in_progress, it carries no `collection_facts` yet. Before
+// `coverageClassifyingRun`'s fix, this nonterminal `lastRun` won outright
+// (it is not owner-cancelled), so every previously-complete stream read
+// unknown/unmeasured for the duration of the run. An active run must instead
+// fall back to the prior successful run's proven coverage, exactly like the
+// owner-cancel case above — active progress is a SEPARATE signal
+// (`connectionHealth.badges.syncing` / `OwnerStateEvidence.progress.active`),
+// not this function's concern.
+test('active in-progress latest run preserves prior successful coverage (does not read unknown)', () => {
+  const inProgressRun = {
+    event_count: 0,
+    failure_reason: null,
+    finished_at: null,
+    first_at: '2026-05-19T12:09:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:09:00.000Z',
+    run_id: 'run_in_progress',
+    started_at: '2026-05-19T12:09:00.000Z',
+    status: 'in_progress',
+    terminal_reason: null,
+    collection_facts: null,
+  };
+  const successfulRun = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_success',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+    collection_facts: {
+      streams: [fact({ stream: 'messages', collected: 0, considered: 1125, covered: 1125 })],
+    },
+  };
+  const entries = projectCollectionReport({
+    lastRun: inProgressRun,
+    lastSuccessfulRun: successfulRun,
+    connectionHealth: { axes: { attention: 'none', freshness: 'fresh' } },
+    manifestStreams: [{ name: 'messages', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' }],
+    refreshPolicy: null,
+  });
+  const entry = entryFor(entries, 'messages');
+
+  assert.equal(entry.coverage_condition, 'complete');
+  assert.equal(entry.considered, 1125);
+  assert.equal(entry.covered, 1125);
+});
+
+test('active in-progress latest run with NO prior success stays unknown (never false-green)', () => {
+  const inProgressRun = {
+    event_count: 0,
+    failure_reason: null,
+    finished_at: null,
+    first_at: '2026-05-19T12:09:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:09:00.000Z',
+    run_id: 'run_in_progress_first_ever',
+    started_at: '2026-05-19T12:09:00.000Z',
+    status: 'in_progress',
+    terminal_reason: null,
+    collection_facts: null,
+  };
+  const entries = projectCollectionReport({
+    lastRun: inProgressRun,
+    lastSuccessfulRun: null,
+    connectionHealth: { axes: { attention: 'none', freshness: 'unknown' } },
+    manifestStreams: [{ name: 'messages', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' }],
+    refreshPolicy: null,
+  });
+  const entry = entryFor(entries, 'messages');
+
+  assert.equal(entry.coverage_condition, 'unknown');
+  assert.equal(entry.forward_disposition, 'unmeasured');
+});
+
+test('terminal failed latest run is NEVER substituted by a prior success (failure stays a failure)', () => {
+  const failedRun = {
+    event_count: 0,
+    failure_reason: 'credential_rejected',
+    finished_at: '2026-05-19T12:10:00.000Z',
+    first_at: '2026-05-19T12:09:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:10:00.000Z',
+    run_id: 'run_failed',
+    started_at: '2026-05-19T12:09:00.000Z',
+    status: 'failed',
+    terminal_reason: 'credential_rejected',
+    collection_facts: null,
+  };
+  const successfulRun = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_success',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+    collection_facts: {
+      streams: [fact({ stream: 'messages', collected: 0, considered: 1125, covered: 1125 })],
+    },
+  };
+  const entries = projectCollectionReport({
+    lastRun: failedRun,
+    lastSuccessfulRun: successfulRun,
+    connectionHealth: { axes: { attention: 'none', freshness: 'stale' } },
+    manifestStreams: [{ name: 'messages', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' }],
+    refreshPolicy: null,
+  });
+  const entry = entryFor(entries, 'messages');
+
+  // The failed run carries no collection_facts of its own and is NOT
+  // owner-cancelled, so it is NOT substituted — it reads unknown, never the
+  // prior success's `complete`. Terminal failures must never appear green.
+  assert.equal(entry.coverage_condition, 'unknown');
+  assert.notEqual(entry.coverage_condition, 'complete');
+});
+
 // ─── considered known: satisfied -> complete, short -> partial ────────────────
 
 test('considered satisfied (collected === considered), fresh -> complete / complete', () => {

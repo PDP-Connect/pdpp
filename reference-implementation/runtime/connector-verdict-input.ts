@@ -28,6 +28,7 @@ import {
   type ProgressEvidence,
   type ProgressMode,
   type RenderedVerdict,
+  type ScheduleEvidence,
   type StreamRollup,
   synthesizeRenderedVerdict,
 } from "./rendered-verdict.ts";
@@ -213,7 +214,16 @@ export function synthesizeConnectorVerdict(input: {
   readonly refresh: ConnectionRefreshEvidence | null;
   readonly progress: ProgressEvidence | null;
   readonly runtimeOk?: boolean;
+  /** Optional instance-schedule evidence for `reattach_schedule` (Wave 10a). */
+  readonly scheduleEvidence?: ScheduleEvidence | null;
 }): RenderedVerdict {
   const streams = buildStreamRollups(input.report, input.manifestStreams, input.snapshot);
-  return synthesizeRenderedVerdict(input.snapshot, streams, input.refresh, input.runtimeOk ?? true, input.progress);
+  return synthesizeRenderedVerdict(
+    input.snapshot,
+    streams,
+    input.refresh,
+    input.runtimeOk ?? true,
+    input.progress,
+    input.scheduleEvidence ?? null
+  );
 }

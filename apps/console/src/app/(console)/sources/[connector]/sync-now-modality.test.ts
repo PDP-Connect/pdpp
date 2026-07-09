@@ -168,3 +168,43 @@ test("detail Sync now acknowledges accepted starts without stale optimistic runn
   assert.match(src, SYNC_BUTTON_RUN_LINK);
   assert.match(src, SYNC_BUTTON_LONGER_TOAST_TTL);
 });
+
+// Wave 10a: `reattach_schedule` (owner-paused connection with a disabled
+// schedule and prior success) must wire to the real schedule-resume server
+// action, not fall through to the ordinary Sync now button. Sync now would
+// run once but leave the schedule disabled — it does not satisfy the
+// action's real contract (`schedule_attached_and_enabled`). Without this
+// guard, `reattach_schedule` silently mis-wires to `runConnectorNowAction`
+// via the fallthrough branch, a dead end for the schedule itself.
+const REATTACH_SCHEDULE_IMPORT =
+  /import \{ resumeConnectorScheduleAction \} from "\.\/actions\.ts";/;
+const REATTACH_SCHEDULE_BRANCH_GUARD = /if \(action\.kind === "reattach_schedule"\)/;
+const REATTACH_SCHEDULE_FORM_ACTION = /<form action=\{resumeConnectorScheduleAction\}>/;
+const REATTACH_SCHEDULE_CONNECTOR_ID_INPUT =
+  /<input name="connector_id" type="hidden" value=\{connectorId\} \/>/;
+const REATTACH_SCHEDULE_CONNECTION_ID_INPUT =
+  /<input name="connection_id" type="hidden" value=\{connectionId\} \/>/;
+const REATTACH_SCHEDULE_TESTID = /data-testid="detail-action-reattach-schedule"/;
+// The branch must appear before the generic SyncNowButton fallthrough so a
+// future refactor cannot silently reorder it behind the catch-all.
+const REATTACH_SCHEDULE_PRECEDES_SYNC_FALLTHROUGH =
+  /if \(action\.kind === "reattach_schedule"\)[\s\S]*return \(\s*<SyncNowButton/;
+
+test("reattach_schedule wires to the real schedule-resume server action, never the sync-now fallthrough", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, REATTACH_SCHEDULE_IMPORT);
+  assert.match(src, REATTACH_SCHEDULE_BRANCH_GUARD);
+  assert.match(src, REATTACH_SCHEDULE_FORM_ACTION);
+  assert.match(src, REATTACH_SCHEDULE_CONNECTOR_ID_INPUT);
+  assert.match(src, REATTACH_SCHEDULE_CONNECTION_ID_INPUT);
+  assert.match(src, REATTACH_SCHEDULE_TESTID);
+  assert.match(src, REATTACH_SCHEDULE_PRECEDES_SYNC_FALLTHROUGH);
+});
+
+test("resumeConnectorScheduleAction reaches the real instance-scoped schedule-resume call, not a stub", async () => {
+  const src = await readFile(`${HERE}actions.ts`, "utf8");
+  assert.match(src, /export async function resumeConnectorScheduleAction\(formData: FormData\)/);
+  // Instance-scoped resume when a connection_id is present — never silently
+  // falls back to the connector-wide resume for a connection-scoped action.
+  assert.match(src, /connectionId \? resumeConnectionSchedule\(connectionId\) : resumeConnectorSchedule\(connectorId\)/);
+});

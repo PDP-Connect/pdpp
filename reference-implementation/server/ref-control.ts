@@ -40,6 +40,14 @@ import {
   type ManifestStreamLike as VerdictManifestStreamLike,
 } from "../runtime/connector-verdict-input.ts";
 import {
+  type ClassifiedRunForOwnerState,
+  deriveOwnerState,
+  type OwnerState,
+  type OwnerStateEvidence,
+  ownerStateCausalEvidenceFrom,
+  scheduleModeFrom,
+} from "../runtime/owner-state.ts";
+import {
   deriveRecoveryStall,
   RECOVERY_STALL_CADENCE_MS,
   type RecoveryAdmissionDiagnostics,
@@ -47,7 +55,7 @@ import {
   type RecoveryStallObservation,
   summarizeRecoveryAdmissionDiagnostics,
 } from "../runtime/recovery-decision.ts";
-import type { RenderedVerdict } from "../runtime/rendered-verdict.ts";
+import type { RenderedVerdict, ScheduleEvidence } from "../runtime/rendered-verdict.ts";
 import { SOURCE_PRESSURE_GAP_REASONS } from "../runtime/scheduler-source-pressure-cooldown.ts";
 import { pickMostUrgentAttention } from "./attention-urgency.ts";
 import { getConnectorManifest } from "./auth.js";
@@ -429,14 +437,14 @@ interface DetailGapProjection {
 }
 
 interface ConnectorDetailGapStoreLike {
-  countGapsByStatusForConnector?: (
-    connectorId: string,
-    options: { status: string; reasons?: readonly string[] | null; connectorInstanceId?: string | null }
-  ) => Promise<number> | number;
   countGapsByStatusByStreamForConnector?: (
     connectorId: string,
     options: { status: string; connectorInstanceId?: string | null }
   ) => Promise<readonly { stream?: unknown; count?: unknown }[]> | readonly { stream?: unknown; count?: unknown }[];
+  countGapsByStatusForConnector?: (
+    connectorId: string,
+    options: { status: string; reasons?: readonly string[] | null; connectorInstanceId?: string | null }
+  ) => Promise<number> | number;
   listPendingGaps(input: {
     connectorId: string;
     connectorInstanceId?: string;
@@ -553,6 +561,14 @@ export interface ConnectorSummary {
    * connection does not need owner action.
    */
   readonly next_action: NextAction | null;
+  /**
+   * The one closed owner-facing state for this source (Wave 10a, 2026-07-09
+   * state-model convergence). Derived from `rendered_verdict` and `schedule`
+   * by `deriveOwnerState` (`owner-state.ts`); console surfaces consume this
+   * instead of re-deriving their own status/actionability taxonomy.
+   * `resolver` is a closed server-side contract, never owner-facing copy.
+   */
+  readonly owner_state: OwnerState;
   readonly refresh_policy: unknown;
   /**
    * Synthesized owner verdict — the single object every owner-facing surface
@@ -610,6 +626,8 @@ export interface ConnectorDetail {
   /** See `ConnectorSummary.next_action`. */
   readonly next_action: NextAction | null;
   readonly object: "ref_connector_detail";
+  /** See {@link ConnectorSummary.owner_state}. */
+  readonly owner_state: OwnerState;
   readonly recent_runs: ConnectorRunSummary[];
   /** See {@link ConnectorSummary.rendered_verdict}. */
   readonly rendered_verdict: RenderedVerdict;
@@ -1323,7 +1341,7 @@ async function getTerminalGapCountsByStream(
     for (const row of rows) {
       const stream = typeof row?.stream === "string" ? row.stream : "";
       const count = typeof row?.count === "number" ? row.count : Number(row?.count);
-      if (!stream || !Number.isFinite(count) || count <= 0) {
+      if (!(stream && Number.isFinite(count)) || count <= 0) {
         continue;
       }
       map.set(stream, Math.floor(count));
@@ -1689,12 +1707,58 @@ function healthClassifyingRun(run: ConnectorRunSummary | null): ConnectorRunSumm
   return isOwnerCancelledRun(run) ? null : run;
 }
 
+/**
+ * Wave 10a live-evidence fix (2026-07-09): while the latest run is
+ * queued/starting/in_progress (`isActiveRunSummaryStatus`), it carries no
+ * `collection_facts` yet — using it as the coverage-classifying run would
+ * wipe a prior successful run's proven coverage/freshness for the duration
+ * of every scheduled refresh, reading previously-complete streams as
+ * unknown/unmeasured and `last_success_at` as `null` even though a real
+ * `lastSuccessfulRun` exists. An active nonterminal run therefore falls back
+ * to `lastSuccessfulRun` here, exactly like the existing owner-cancel
+ * fallback — the active-run progress overlay (`badges.syncing` /
+ * `OwnerStateEvidence.progress.active`) stays live and honest via a SEPARATE
+ * signal; this function answers "what proven coverage do we have," not "is
+ * something running right now." A terminal failure/gap run is NEVER
+ * substituted — only a nonterminal in-flight run with no coverage evidence
+ * of its own falls back.
+ */
 function coverageClassifyingRun(
   lastRun: ConnectorRunSummary | null,
   lastSuccessfulRun: ConnectorRunSummary | null
 ): ConnectorRunSummary | null {
+  if (lastRun && isActiveRunSummaryStatus(lastRun.status)) {
+    return lastSuccessfulRun ?? null;
+  }
   const latest = healthClassifyingRun(lastRun);
   return latest ?? (isOwnerCancelledRun(lastRun) ? lastSuccessfulRun : null);
+}
+
+/**
+ * Narrow `coverageClassifyingRun`'s result — the SAME classifying run
+ * health/coverage already resolved to (owner review, 2026-07-09) — down to
+ * the minimal shape `ownerStateCausalEvidenceFrom` (`owner-state.ts`) needs.
+ * `owner-state.ts` owns the causal-evidence-selection CONCEPT; this file
+ * keeps owning run classification (`coverageClassifyingRun`,
+ * `healthClassifyingRun`, `isOwnerCancelledRun`) since those already depend
+ * on this file's local `ConnectorRunSummary`/run-status helpers. An
+ * owner-cancelled `lastRun` is excluded by `coverageClassifyingRun` exactly
+ * like the coverage/health projection — its own timestamp/status is never
+ * passed through here when the classifying run is actually
+ * `lastSuccessfulRun`.
+ */
+function classifiedRunForOwnerState(
+  lastRun: ConnectorRunSummary | null,
+  lastSuccessfulRun: ConnectorRunSummary | null
+): ClassifiedRunForOwnerState | null {
+  const classifyingRun = coverageClassifyingRun(lastRun, lastSuccessfulRun);
+  if (classifyingRun == null) {
+    return null;
+  }
+  return {
+    last_at: classifyingRun.last_at,
+    succeeded: mapRunStatus(classifyingRun.status) === "succeeded",
+  };
 }
 
 // Generic terminal reasons that carry NO specific cause — a connector that
@@ -2124,7 +2188,9 @@ function buildCollectionReportEntry(input: {
       : null;
   const terminalDetailGaps = input.terminalGapCountByStream.get(input.stream) ?? 0;
   const coverageCondition =
-    terminalDetailGaps > 0 ? "terminal_gap" : localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream);
+    terminalDetailGaps > 0
+      ? "terminal_gap"
+      : (localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream));
   const forwardDisposition = deriveForwardDisposition({
     coverage: coverageCondition,
     gapRetryable: coverageCondition === "retryable_gap",
@@ -3528,6 +3594,16 @@ function buildRenderedVerdictForSummary(input: {
     lastRefreshedAt: input.freshness.captured_at ?? null,
     observedAt: input.observedAt,
   });
+  // Wave 10a (owner review, 2026-07-09): `reattach_schedule` (the
+  // previously-declared-but-never-emitted "Resume schedule" action) is
+  // emitted INSIDE `synthesizeConnectorVerdict`'s single synthesis pass —
+  // never as a post-pass mutation — so `channel`/`forward_statement`/
+  // `annotations`/`trace` are always derived from the SAME action set the
+  // owner sees.
+  const scheduleEvidence: ScheduleEvidence = {
+    hasPriorSuccess: input.connectionHealth.last_success_at !== null,
+    mode: scheduleModeFrom(scheduleApiShape(input.schedule)),
+  };
   return synthesizeConnectorVerdict({
     snapshot: input.connectionHealth,
     report: input.collectionReport,
@@ -3535,7 +3611,32 @@ function buildRenderedVerdictForSummary(input: {
     refresh,
     progress: progressEvidence,
     runtimeOk: input.runtimeOk,
+    scheduleEvidence,
   });
+}
+
+/**
+ * Narrow the opaque `schedule: unknown` boundary to the real `ScheduleApi`
+ * field `scheduleModeFrom` (`owner-state.ts`) needs, without pretending the
+ * caller has more evidence than it does. `null`/malformed input narrows to
+ * `null` (manual — no schedule row), matching `scheduleModeFrom`'s own
+ * "no schedule row" branch.
+ *
+ * Deliberately does NOT read `effective_mode`: `computeEffectiveMode`
+ * (`controller.ts:1685-1696`) collapses operator-disabled and
+ * system-ineligible-but-armed into the same `"paused"` value and never
+ * returns `"manual"`, so it cannot serve as the owner-pause authority. The
+ * row's own `enabled` flag is (see `scheduleModeFrom`'s doc comment).
+ */
+function scheduleApiShape(schedule: unknown): { readonly enabled: boolean } | null {
+  if (!schedule || typeof schedule !== "object") {
+    return null;
+  }
+  const row = schedule as { enabled?: unknown };
+  if (typeof row.enabled !== "boolean") {
+    return null;
+  }
+  return { enabled: row.enabled };
 }
 
 interface ConnectorSummarySynthesisInput {
@@ -3667,6 +3768,35 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     runtimeOk,
     schedule,
   });
+  // Owner review, 2026-07-09: reuse `coverageClassifyingRun` — the SAME
+  // classifying run health/coverage already resolved to — so an
+  // owner-cancelled `lastRun` is excluded exactly like the health/coverage
+  // projection, never labeled `latest_terminal_run`/frozen using its own
+  // timestamp when the rendered verdict actually came from
+  // `lastSuccessfulRun`. `freshness.captured_at` is genuinely nullable; with
+  // no classifying run and no freshness proof, `source` is `"none"` and
+  // `as_of` is `null` — never fabricated from projection read time (design
+  // gate #4).
+  const causalEvidence = ownerStateCausalEvidenceFrom(
+    classifiedRunForOwnerState(lastRun, lastSuccessfulRun),
+    freshness.captured_at ?? null
+  );
+  const ownerStateEvidence: OwnerStateEvidence = activeRun
+    ? {
+        as_of: activeRun.started_at,
+        lifecycle: { status: instance.status ?? "active" },
+        progress: { active: true },
+        schedule_mode: scheduleModeFrom(scheduleApiShape(schedule)),
+        source: "active_progress",
+      }
+    : {
+        as_of: causalEvidence.as_of,
+        lifecycle: { status: instance.status ?? "active" },
+        progress: { active: false },
+        schedule_mode: scheduleModeFrom(scheduleApiShape(schedule)),
+        source: causalEvidence.source,
+      };
+  const ownerState = deriveOwnerState(renderedVerdict, connectionHealth, ownerStateEvidence);
   return {
     acquisition_coverage: acquisitionCoverage,
     collection_report: collectionReport,
@@ -3681,6 +3811,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     local_device_progress: localDeviceProgress,
     manifest_version: manifest.version || null,
     next_action: connectionHealth.next_action,
+    owner_state: ownerState,
     rendered_verdict: renderedVerdict,
     retained_bytes: live.retainedBytes,
     revoked_at: instance.revokedAt ?? null,
@@ -4170,6 +4301,27 @@ export async function getConnectorDetail(
     runtimeOk: controller != null,
     schedule,
   });
+  // This is the connector-catalog-keyed detail path (no instance row in
+  // scope — see the credential-evidence comment above): no lifecycle or
+  // active-run evidence is resolvable here, so `retired` stays unreachable
+  // and progress reads honestly as not-observed-active rather than guessed.
+  // Owner review, 2026-07-09: reuse `coverageClassifyingRun` (via
+  // `classifiedRunForOwnerState`/`ownerStateCausalEvidenceFrom`) so an
+  // owner-cancelled `lastRun` is excluded exactly like the health/coverage
+  // projection, never labeled `latest_terminal_run`/frozen using its own
+  // timestamp when the verdict actually came from `lastSuccessfulRun`.
+  const detailCausalEvidence = ownerStateCausalEvidenceFrom(
+    classifiedRunForOwnerState(lastRun, lastSuccessfulRun),
+    freshness.captured_at ?? null
+  );
+  const ownerStateEvidence: OwnerStateEvidence = {
+    as_of: detailCausalEvidence.as_of,
+    lifecycle: null,
+    progress: { active: false },
+    schedule_mode: scheduleModeFrom(scheduleApiShape(schedule)),
+    source: detailCausalEvidence.source,
+  };
+  const ownerState = deriveOwnerState(renderedVerdict, connectionHealth, ownerStateEvidence);
   return {
     object: "ref_connector_detail",
     acquisition_coverage: null,
@@ -4180,6 +4332,7 @@ export async function getConnectorDetail(
     display_name: manifest.display_name || connectorId,
     manifest_version: manifest.version || null,
     next_action: connectionHealth.next_action,
+    owner_state: ownerState,
     rendered_verdict: renderedVerdict,
     total_records: live.totalRecords,
     freshness,

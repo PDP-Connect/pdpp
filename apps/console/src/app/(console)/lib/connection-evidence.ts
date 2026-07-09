@@ -967,9 +967,6 @@ export function resolveRecordCountDisplay(overview: ConnectorOverview): RecordCo
  */
 const SOURCE_PRESSURE_REASON_CODE = "source_pressure";
 
-/** Capitalizes a sentence-leading "caught up" backlog clause for the synthesized verdict. */
-const CAUGHT_UP_LEAD_RE = /^caught up/;
-
 /**
  * The owner-facing one-line coverage statement for a `healthy` connection.
  *
@@ -1122,45 +1119,18 @@ export function deriveConnectionStatusDisplay(input: {
 }
 
 /**
- * The single-voice verdict for a connection row [SLVP §1.3].
+ * Whether this snapshot's root cause is a self-resolving source-pressure
+ * cooldown. Still load-bearing: `deriveFailureSummary`'s `blocked` branch
+ * (below) reuses this guard so a source-pressure `blocked` never carries a
+ * dead-end Reconnect CTA.
  *
- * The Sources redesign collapses the per-row status-soup (badge + axis chips +
- * dominant-condition notice + next-action pill + next-step guidance) into ONE
- * badge and ONE peek sentence. The hardest case is the rate-limited card whose
- * last run actually *succeeded*: the live ChatGPT card simultaneously read
- * `blocked` (danger) + `Cooling off` + a retryable-gap chip + "Retry policy
- * reached the blocked threshold" — four independent failure signals on a
- * connection that is simply throttled and self-resolving. The owner should read
- * "rate-limited; cooling off; will retry; your data is fine," not "broken."
- *
- * This pure function synthesizes that. The decisive rule: when the connection's
- * root cause is a cross-run **source-pressure cooldown** — `reason_code ===
- * "source_pressure"`, OR a `blocked`/`cooling_off` state that still carries a
- * scheduled `next_attempt_at` plus a pending source-pressure backlog — the
- * scheduler-retry exhaustion is a *consequence* of the cooldown, not an
- * independent failure. So the badge reads `cooling_off` (warning, never danger),
- * the `blocked` label is suppressed, and the row shows no imperative button:
- * the system is handling it. Genuine `blocked` (credential expiry, provider
- * block) with no source-pressure cooldown keeps its danger badge and reconnect
- * CTA.
- *
- * Returns the effective badge state (drives the one `StatusBadge`), a one-line
- * runbook sentence (the peek body + badge tooltip), and `handlingItself` (true
- * ⇒ no danger tint, no owner button). Pure and JSX-free so the ChatGPT-card
- * behaviour is locked by unit tests before any JSX.
+ * The client-side `badgeState`/`synthesizeConnectionVerdict` single-voice
+ * badge synthesizer this guard used to feed was deleted (Wave 10a/10b,
+ * 2026-07-09 state-model convergence): the server-owned `RenderedVerdict.pill`
+ * (via `deriveRenderedSourceStatus` in `source-actionability.ts`) is the one
+ * badge every owner surface renders; the console no longer re-derives a
+ * second badge state from raw connection-health `state`.
  */
-export interface ConnectionVerdict {
-  /** The state the single `StatusBadge` renders (post-synthesis). */
-  badgeState: RefConnectionHealthSnapshot["state"];
-  /** True when the system is handling it (cooling off / scheduled): no danger, no button. */
-  handlingItself: boolean;
-  /** One plain-language sentence: the peek body and the badge tooltip. */
-  runbook: string;
-  /** Whether a `blocked` label/tint was suppressed because the root cause is a cooldown. */
-  suppressedBlocked: boolean;
-}
-
-/** Whether this snapshot's root cause is a self-resolving source-pressure cooldown. */
 function isSourcePressureCooldown(health: RefConnectionHealthSnapshot): boolean {
   if (health.reason_code === SOURCE_PRESSURE_REASON_CODE) {
     return true;
@@ -1171,85 +1141,6 @@ function isSourcePressureCooldown(health: RefConnectionHealthSnapshot): boolean 
   const backlog = health.detail_gap_backlog;
   const hasPendingBacklog = Boolean(backlog && ((backlog.pending ?? 0) > 0 || (backlog.pending_other ?? 0) > 0));
   return hasPendingBacklog && Boolean(health.next_attempt_at);
-}
-
-export function synthesizeConnectionVerdict(health: RefConnectionHealthSnapshot): ConnectionVerdict {
-  const sourcePressure = isSourcePressureCooldown(health);
-  const backlogScale = formatSourcePressureBacklogScale(health.detail_gap_backlog);
-  const resumeAt = health.next_attempt_at ?? health.detail_gap_backlog?.next_attempt_at ?? null;
-
-  // Source-pressure cooldown (whether the raw state is `cooling_off` or
-  // `blocked`): one honest, non-danger "handling it" verdict and one sentence.
-  if (sourcePressure) {
-    const backlogClause = backlogScale ? ` ${backlogScale.replace(CAUGHT_UP_LEAD_RE, "Caught up")};` : "";
-    const resumeClause = resumeAt
-      ? ` The scheduler is spacing out the next attempt (resumes after ${resumeAt}).`
-      : " The scheduler is spacing out the next attempt; it resumes on its own.";
-    return {
-      badgeState: "cooling_off",
-      handlingItself: true,
-      suppressedBlocked: health.state === "blocked",
-      runbook: `This source throttled the sync.${resumeClause}${backlogClause ? `${backlogClause} captured progress is safe — no action needed.` : " Captured progress is safe — no action needed."}`,
-    };
-  }
-
-  // Everything else keeps its raw state. The runbook mirrors the per-state copy
-  // the detail surface already uses, so the badge tooltip and the peek read the
-  // same single sentence with no vocabulary drift.
-  switch (health.state) {
-    case "cooling_off":
-      return {
-        badgeState: "cooling_off",
-        handlingItself: true,
-        suppressedBlocked: false,
-        runbook: resumeAt
-          ? `In scheduler back-off after recent failures; the next automatic attempt is at ${resumeAt}. Captured progress is retained.`
-          : "In scheduler back-off after recent failures; it retries automatically. Captured progress is retained.",
-      };
-    case "blocked":
-      return {
-        badgeState: "blocked",
-        handlingItself: false,
-        suppressedBlocked: false,
-        runbook:
-          "This connection stopped making progress — usually expired credentials or a blocked session. Reconnect to start a fresh setup, or try a manual run to see if it cleared.",
-      };
-    case "needs_attention": {
-      const dominant = formatDominantCondition(health);
-      return {
-        badgeState: "needs_attention",
-        handlingItself: false,
-        suppressedBlocked: false,
-        runbook: dominant?.label ?? "Owner action is required before this connection can make progress.",
-      };
-    }
-    case "degraded": {
-      const retryable = health.axes.coverage === "retryable_gap";
-      const scale = backlogScale ? ` ${backlogScale}.` : "";
-      return {
-        badgeState: "degraded",
-        handlingItself: retryable,
-        suppressedBlocked: false,
-        runbook: retryable
-          ? `Some required detail is still outstanding, but it is recoverable — an ordinary run fills it and the records already collected stay valid.${scale}`
-          : "Useful data may exist, but coverage or freshness is incomplete. Open the connection to see which streams are behind.",
-      };
-    }
-    case "healthy":
-      return {
-        badgeState: "healthy",
-        handlingItself: true,
-        suppressedBlocked: false,
-        runbook: healthyCoverageStatement(health),
-      };
-    default:
-      return {
-        badgeState: health.state,
-        handlingItself: true,
-        suppressedBlocked: false,
-        runbook: "No active collection issue is known for this connection.",
-      };
-  }
 }
 
 function idleDisplay(input: {
@@ -1766,11 +1657,11 @@ export function deriveFailureSummary(
       };
     }
     case "blocked": {
-      // §6.2: derive from the SAME verdict synthesizeConnectionVerdict uses.
-      // A source-pressure cooldown whose raw state happens to be `blocked`
-      // is self-resolving — it must never carry a Reconnect CTA that directs
-      // the owner to manual action. Apply the same isSourcePressureCooldown
-      // guard here; its `cooling_off` branch already does this (see L1612).
+      // §6.2: A source-pressure cooldown whose raw state happens to be
+      // `blocked` is self-resolving — it must never carry a Reconnect CTA
+      // that directs the owner to manual action. Apply the shared
+      // isSourcePressureCooldown guard here; its `cooling_off` branch above
+      // already does this.
       if (isSourcePressureCooldown(health)) {
         return {
           actionLabel: "No action needed",
