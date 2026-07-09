@@ -3249,7 +3249,21 @@ export async function runConnector(opts) {
               record_key: msg.record_key == null ? null : String(msg.record_key),
             },
           });
-          appendKnownGap(gap);
+          // The store's ON CONFLICT upsert pins `status` sticky at `recovered`/
+          // `terminal` (see upsertPendingGap) — a connector that rediscovers the
+          // same record identity via its ordinary forward pass (independent of
+          // the runtime's separate gap-recovery pass) re-emits DETAIL_GAP for
+          // detail it already has, with no way to know a prior run already
+          // closed it. `durableDetailGaps.push` above stays unconditional (it
+          // feeds the commit-coverage gate, which already treats a `recovered`
+          // row as satisfying its required key). But a `recovered`/`terminal`
+          // row is NOT an outstanding gap for THIS run: appending it to
+          // `known_gaps` would surface an already-closed record as a fresh
+          // `retry_by_runtime` gap, degrading the owner-facing connection
+          // health/coverage projection for work that has no pending backlog.
+          if (storedGap.status === 'pending' || storedGap.status === 'in_progress') {
+            appendKnownGap(gap);
+          }
           // Spine = append-only audit log of lifecycle TRANSITIONS, not a per-run
           // re-observation breadcrumb (SLVP-ideal audit-logging design, >=95%
           // red-teamed: see docs/research/slvp-ideal-audit-logging). Emit
@@ -3263,8 +3277,8 @@ export async function runConnector(opts) {
           // "re-seen unchanged for the 7th time") and manufacture fake activity.
           // The "worked across N runs" story lives in the durable row's monotonic
           // attempt_count/last_run_id (Temporal/Kafka transition-vs-state split).
-          // durableDetailGaps.push + appendKnownGap + onProgress above stay
-          // OUTSIDE this gate — they feed the commit-coverage gate every run.
+          // durableDetailGaps.push + onProgress above stay OUTSIDE this gate —
+          // they feed the commit-coverage gate every run.
           if (storedGap.discovered_run_id === runId && !detailGapRecordedThisRun.has(storedGap.gap_id)) {
             detailGapRecordedThisRun.add(storedGap.gap_id);
             await emitSpineEventTracked({

@@ -203,3 +203,113 @@ test('run.detail_gap_recorded fires once at first sighting, NOT on a prior-run r
   assert.equal(recordedEvents[0].data.discovered_run_id, result.run_id, 'recorded event names the discovering run');
   assert.equal(typeof recordedEvents[0].data.attempt_count, 'number', 'recorded event carries attempt_count');
 });
+
+// Live evidence (run_1783616353033, Amazon connector, rev 64a4b195d): a run that
+// recovered every truly-pending order_items detail gap still reported connection
+// health degraded / coverage retryable_gap, because the connector's ordinary
+// forward pass rediscovers the same order identities every run (independent of
+// the runtime's separate gap-recovery pass) and re-emits DETAIL_GAP for detail it
+// already has. The store's upsertPendingGap pins `status` sticky at `recovered`,
+// but the runtime unconditionally appended a fresh `retry_by_runtime` known_gap
+// for the re-defer — so an already-closed record kept surfacing as an outstanding
+// gap on every subsequent run's known_gaps, degrading health for work with zero
+// pending backlog. `known_gaps` (not the durable store) is what the connection-
+// health projection reads for the "latest run" coverage axis
+// (server/connector-gap-classification.ts: isRetryableKnownGap /
+// hasTerminalKnownGap over `run.known_gaps`), so this is a health-projection bug
+// distinct from the (already correct) commit-gate and spine-dedup behavior the
+// tests above cover.
+test('a recovered gap re-deferred with the same identity is NOT surfaced as a known_gap', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  await fetchJson(`${asUrl}/connectors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(MANIFEST) });
+  const ownerToken = await issueOwnerToken(asUrl);
+  const connectorId = MANIFEST.connector_id;
+  const store = getDefaultConnectorDetailGapStore();
+
+  const LOCATOR = { kind: 'chatgpt.conversation', conversation_id: 'X' };
+  const seeded = await store.upsertPendingGap({
+    connectorId, grantId: null,
+    source: { kind: 'connector', id: connectorId }, stream: 'messages', parentStream: null, recordKey: 'X',
+    detailLocator: LOCATOR, listCursor: null, scope: null, reason: 'retry_exhausted',
+    lastError: null, discoveredRunId: 'prior', lastRunId: 'prior',
+  });
+  await store.markGapStatus(seeded.gap_id, 'recovered', { runId: 'prior' });
+
+  const messages = [
+    { type: 'DETAIL_GAP', stream: 'messages', record_key: 'X', reason: 'retry_exhausted', retryable: true, detail_locator: LOCATOR },
+    { type: 'DETAIL_COVERAGE', reference_only: true, state_stream: 'conversations', stream: 'messages',
+      required_keys: ['X'], hydrated_keys: [], gap_keys: ['X'] },
+    { type: 'STATE', stream: 'messages', cursor: { last_update_time: '2026-06-05T21:21:53.495Z' } },
+    { type: 'STATE', stream: 'conversations', cursor: { last_update_time: '2026-06-05T21:21:53.495Z' } },
+    { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+  ];
+  const { connectorPath, cleanup } = createCannedConnector(messages);
+
+  let result = null;
+  try {
+    result = await runConnector({
+      connectorPath, connectorId, ownerToken, manifest: MANIFEST,
+      scope: { streams: [{ name: 'conversations' }, { name: 'messages' }] },
+      state: null, collectionMode: 'full_refresh', persistState: true,
+      rsUrl: `http://localhost:${rsPort}`, onInteraction: async () => ({}),
+      detailGapStore: store,
+    });
+  } finally {
+    cleanup();
+    await closeServer(server);
+  }
+
+  assert.equal(result.status, 'succeeded');
+  // The durable substrate still carries the (recovered) gap — lose-nothing.
+  assert.equal(result.detail_gaps.length, 1);
+  assert.equal(result.detail_gaps[0].status, 'recovered');
+  // But the run's owner-facing known_gaps must NOT contain a detail_gap entry
+  // for it: the record has no outstanding work, so it must not read as a fresh
+  // retryable gap on this run.
+  const detailGapKnownGaps = result.known_gaps.filter((g) => g.kind === 'detail_gap');
+  assert.equal(detailGapKnownGaps.length, 0, 'a recovered gap re-defer must not become a known_gap');
+});
+
+test('a truly pending gap still surfaces as a retryable known_gap', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const { asPort, rsPort } = server;
+  const asUrl = `http://localhost:${asPort}`;
+  await fetchJson(`${asUrl}/connectors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(MANIFEST) });
+  const ownerToken = await issueOwnerToken(asUrl);
+  const connectorId = MANIFEST.connector_id;
+  const store = getDefaultConnectorDetailGapStore();
+
+  const messages = [
+    { type: 'DETAIL_GAP', stream: 'messages', record_key: 'NEW', reason: 'retry_exhausted', retryable: true,
+      detail_locator: { kind: 'chatgpt.conversation', conversation_id: 'NEW' } },
+    { type: 'DETAIL_COVERAGE', reference_only: true, state_stream: 'conversations', stream: 'messages',
+      required_keys: ['NEW'], hydrated_keys: [], gap_keys: ['NEW'] },
+    { type: 'STATE', stream: 'messages', cursor: { last_update_time: '2026-06-05T21:21:53.495Z' } },
+    { type: 'STATE', stream: 'conversations', cursor: { last_update_time: '2026-06-05T21:21:53.495Z' } },
+    { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+  ];
+  const { connectorPath, cleanup } = createCannedConnector(messages);
+
+  let result = null;
+  try {
+    result = await runConnector({
+      connectorPath, connectorId, ownerToken, manifest: MANIFEST,
+      scope: { streams: [{ name: 'conversations' }, { name: 'messages' }] },
+      state: null, collectionMode: 'full_refresh', persistState: true,
+      rsUrl: `http://localhost:${rsPort}`, onInteraction: async () => ({}),
+      detailGapStore: store,
+    });
+  } finally {
+    cleanup();
+    await closeServer(server);
+  }
+
+  assert.equal(result.status, 'succeeded');
+  assert.equal(result.detail_gaps.length, 1);
+  assert.equal(result.detail_gaps[0].status, 'pending');
+  const detailGapKnownGaps = result.known_gaps.filter((g) => g.kind === 'detail_gap');
+  assert.equal(detailGapKnownGaps.length, 1, 'a genuinely pending gap must still surface as a known_gap');
+  assert.equal(detailGapKnownGaps[0].recovery_hint.action, 'retry_by_runtime');
+});
