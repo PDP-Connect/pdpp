@@ -72,7 +72,7 @@ const ADVISORY_METADATA = {
     introspection_endpoint: 'https://ref.test/introspect',
     registration_endpoint: 'https://ref.test/oauth/register',
     revocation_path_template: 'https://ref.test/oauth/register/{client_id}',
-    owner_approval_url: 'https://ref.test/dashboard',
+    owner_approval_url: 'https://ref.test',
     schema_endpoint: 'https://ref.test/v1/schema',
     schema_compact_endpoint: 'https://ref.test/v1/schema?view=compact',
     streams_endpoint: 'https://ref.test/v1/streams',
@@ -891,7 +891,7 @@ test('setup formats a proof-gated static-secret connector honestly', async () =>
         next_step: {
           kind: 'capture_static_secret',
           reason: 'Open the owner-session static-secret setup page; provider secrets are not returned to agents.',
-          capture_endpoint: '/dashboard/connect/static-secret/gmail',
+          capture_endpoint: '/connect/static-secret/gmail',
           runbook_path: 'docs/operator/static-secret-connection-runbook.md',
         },
       },
@@ -900,7 +900,7 @@ test('setup formats a proof-gated static-secret connector honestly', async () =>
     assert.equal(code, 0);
     assert.match(captured.stdout, /status: proof-gated/);
     assert.match(captured.stdout, /Next step: capture_static_secret/);
-    assert.match(captured.stdout, /capture endpoint: \/dashboard\/connect\/static-secret\/gmail/);
+    assert.match(captured.stdout, /capture endpoint: \/connect\/static-secret\/gmail/);
     assert.match(captured.stdout, /runbook: docs\/operator\/static-secret-connection-runbook\.md/);
     // The CLI surfaces the synchronous validation mode without any secret.
     assert.match(captured.stdout, /credential validation: synchronous/);
@@ -927,7 +927,7 @@ test('setup formats a manual/upload connector with an owner upload endpoint', as
         next_step: {
           kind: 'provide_import_file',
           reason: 'Upload the owner-provided import file from the owner session.',
-          upload_endpoint: '/dashboard/connect/manual-upload/google-maps',
+          upload_endpoint: '/connect/manual-upload/google-maps',
         },
       },
     });
@@ -939,7 +939,7 @@ test('setup formats a manual/upload connector with an owner upload endpoint', as
     assert.match(captured.stdout, /status: supported/);
     assert.match(captured.stdout, /setup modality: manual_or_upload/);
     assert.match(captured.stdout, /Next step: provide_import_file/);
-    assert.match(captured.stdout, /upload endpoint: \/dashboard\/connect\/manual-upload\/google-maps/);
+    assert.match(captured.stdout, /upload endpoint: \/connect\/manual-upload\/google-maps/);
     assert.doesNotMatch(captured.stdout, /GOOGLE_MAPS_TIMELINE_DIR|import_dir|pdpp_owner_session/i);
   });
 });

@@ -399,10 +399,9 @@ Accepted decisions:
   `/dashboard/records` becomes `/sources`. This reverses the Iteration 13 "keep
   `/dashboard` for now" leaning and the owner-docket `future-roadmap` parking of
   `/dashboard/records/*` route retirement.
-- Legacy `/dashboard/*` routes SHALL be preserved as redirects. Bookmarks,
-  owner-agent/CLI links, and external references must not break. The records
-  subtree redirects (currently non-permanent pending "the Connections rename")
-  become permanent as part of this move.
+- Legacy `/dashboard/*` routes SHALL NOT be preserved as redirects or repair
+  surfaces. Owner-agent/CLI links and generated owner actions must emit clean
+  routes directly rather than depending on compatibility behavior.
 - The owner-noun rename completes: Runs → Syncs, Traces → Audit, and the
   already-shipped Records → Sources label is matched by the `/sources` route.
   All four label surfaces (live shell `NAV_GROUPS`, command palette, legacy
@@ -435,8 +434,8 @@ Label-only vs contract-changing split (governs sequencing, see §11 waves):
   de-duplication, Traces → Audit and Runs → Syncs label completion, palette
   unification and behavior, bearer preview/collapse, timestamp consistency,
   zero-pending collapse, read-ladder relabel, grant-package overview link.
-- Route/topology contract (durable, needs the redirect + spec/voice
-  reconciliation): `/dashboard` prefix removal and `/dashboard/records` →
+- Route/topology contract (durable, needs spec/voice reconciliation):
+  `/dashboard` prefix removal and `/dashboard/records` →
   `/sources`, plus the sibling section moves. This modifies
   `reference-surface-topology` requirements that pin `/dashboard/**` and the
   Explore/Jump route literals.
@@ -452,10 +451,9 @@ Label-only vs contract-changing split (governs sequencing, see §11 waves):
 Jump vs Explore interaction with the topology change: the base spec's
 "separate record-content search from spine artifact lookup" requirement pins
 `/dashboard/explore` and `/dashboard/search`. Under the clean topology those
-become `/explore` and the Jump surface's clean equivalent; the redirect
-requirement keeps the legacy paths working, and the unified palette's Enter
-behavior must not resurrect the "Enter silently redirects to Explore" defect the
-Jump audit found.
+become `/explore` and the Jump surface's clean equivalent. Removed legacy paths
+do not keep working; the unified palette's Enter behavior must not resurrect the
+"Enter silently redirects to Explore" defect the Jump audit found.
 
 ## 8. Essential Surface Model
 
@@ -479,7 +477,7 @@ Sources own:
 
 The owner-facing noun is `Source`. The UI may internally use `connection_id`, but normal owner-facing navigation, headings, and CTAs SHALL use `Source`. `Connection` remains acceptable in API docs, protocol/debug views, logs, and advanced copy where the technical identifier matters.
 
-The Sources section's canonical owner route is `/sources` (Iteration 17). `/dashboard/records` and `/dashboard/records/*` are legacy compatibility paths that SHALL redirect to the `/sources` topology.
+The Sources section's canonical owner route is `/sources` (Iteration 17). `/dashboard/records` and `/dashboard/records/*` are removed routes, not compatibility paths.
 
 ### Streams
 
@@ -592,9 +590,9 @@ Goal: one owner-facing noun model.
 Work:
 
 - choose and document the owner noun for configured data sources
-- normalize nav labels, page headings, CTA labels, and route aliases
-- decide whether `/dashboard` remains a hidden implementation prefix or is replaced by cleaner owner routes with compatibility redirects
-- add redirects/compatibility for old routes where needed
+- normalize nav labels, page headings, and CTA labels
+- replace the `/dashboard` prefix with clean owner routes
+- remove compatibility behavior for old owner routes
 - make "Source detail" an explicit destination, not hidden behind Reauthorize
 - make Add Data a primary action from Sources and the dashboard
 
@@ -767,9 +765,8 @@ Tranche 9b — clean owner-route topology (durable route contract):
   top-level nouns for deployment/admin surfaces.
 - `/dashboard/records` → `/sources`; retire `/dashboard` as an owner-visible
   prefix.
-- Preserve every legacy `/dashboard/*` route as a redirect (permanent for the
-  now-final targets), including the records subtree, chained legacy aliases,
-  and the Explore/Jump paths. Bookmarks and owner-agent/CLI links keep working.
+- Do not preserve legacy `/dashboard/*` routes as redirects, repair pages, or
+  generated links. Owner-agent/CLI links must use clean owner routes directly.
 - Keep the shared `routes.ts` `basePath` factory correct: the console basePath
   moves without changing the `/sandbox` mirror; the sandbox-route-parity test is
   reworked, not broken.
@@ -777,10 +774,9 @@ Tranche 9b — clean owner-route topology (durable route contract):
   `reference-surface-topology` spec references to `/dashboard/**` with the new
   topology.
 
-Gate: the owner reaches every section at its clean route; every legacy
-`/dashboard/*` link redirects to the correct clean target; `/sandbox` is
-unchanged; voice guide and topology spec no longer contradict the shipped
-routes.
+Gate: the owner reaches every section at its clean route; removed
+`/dashboard/*` routes are not compatibility routes; `/sandbox` is unchanged;
+voice guide and topology spec no longer contradict the shipped routes.
 
 Tranche 9c — owner-access reference contracts (durable, additive, smallest viable):
 

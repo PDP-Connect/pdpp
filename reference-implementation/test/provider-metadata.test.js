@@ -469,7 +469,7 @@ function assertOwnerAgentOnboardingBlock(block, { origin }) {
   assert.ok(block.warning.length > 0, 'warning must be non-empty');
   assert.equal(block.authorization_server, origin);
   assert.equal(block.resource, origin);
-  assert.equal(block.owner_approval_url, `${origin}/dashboard`);
+  assert.equal(block.owner_approval_url, origin);
   assert.equal(block.device_authorization_endpoint, `${origin}/oauth/device_authorization`);
   assert.equal(block.token_endpoint, `${origin}/oauth/token`);
   assert.equal(block.introspection_endpoint, `${origin}/introspect`);

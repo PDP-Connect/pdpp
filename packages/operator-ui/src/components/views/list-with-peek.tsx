@@ -1,8 +1,8 @@
 /**
  * Shared list-with-peek view used by:
- *   - /dashboard/grants and /sandbox/grants
- *   - /dashboard/runs and /sandbox/runs
- *   - /dashboard/traces and /sandbox/traces
+ *   - /grants and /sandbox/grants
+ *   - /syncs and /sandbox/runs
+ *   - /audit and /sandbox/traces
  *
  * The page passes:
  *   - the list response from the data source

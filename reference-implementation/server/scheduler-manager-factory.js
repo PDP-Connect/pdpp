@@ -421,14 +421,14 @@ export function createReferenceSchedulerManager({
       // so a push delivery failure never crashes the scheduler loop.
       onHumanRequiredStateEscalation: async ({ connectorId, connectorInstanceId, reason }) => {
         let connectorDisplayName = connectorId;
-        let connectionUrl = `/dashboard/deployment`;
+        let connectionUrl = `/deployment`;
         let renderedVerdict = null;
         const routeId = connectorInstanceId || connectorId;
         try {
           const summary = await getConnectorSummaryForRoute(routeId, controller);
           if (summary) {
             connectorDisplayName = summary.display_name || summary.connector_display_name || connectorId;
-            connectionUrl = `/dashboard/records/${encodeURIComponent(summary.connection_id || routeId)}`;
+            connectionUrl = `/sources/${encodeURIComponent(summary.connection_id || routeId)}`;
             renderedVerdict = summary.rendered_verdict ?? null;
           }
         } catch (err) {

@@ -155,9 +155,9 @@ function buildClickUrl(runId: string | undefined, kind: string, interactionId: s
   const encodedRunId = encodeURIComponent(runId);
   const encodedInteractionId = encodeURIComponent(interactionId || "");
   if (kind === "manual_action") {
-    return `${webBaseUrl}/dashboard/runs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`;
+    return `${webBaseUrl}/syncs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`;
   }
-  return `${webBaseUrl}/dashboard/runs/${encodedRunId}`;
+  return `${webBaseUrl}/syncs/${encodedRunId}`;
 }
 
 export async function handleInteraction(

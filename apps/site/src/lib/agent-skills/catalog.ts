@@ -205,7 +205,7 @@ export function ownerAgentOnboardingLLMSIndex(): string {
     `- Grant-scoped MCP (ordinary external clients, not owner agents): ${MCP_ENDPOINT_PATH} — \`/mcp\` rejects owner bearers by design.`,
     "- REST/CLI owner-agent guidance: use the owner bearer only on owner-supported `/v1/**` REST routes; the `pdpp owner-agent onboard <entrypoint>` CLI runs the browser-mediated flow without printing the bearer.",
     "",
-    "Do not paste tokens. Owner approval happens in a browser/dashboard flow; the credential is written to a local credential target. Never ask the operator to paste a bearer into chat or a terminal, and never echo or log the bearer.",
+    "Do not paste tokens. Owner approval happens in a browser-mediated owner-console flow; the credential is written to a local credential target. Never ask the operator to paste a bearer into chat or a terminal, and never echo or log the bearer.",
   ].join("\n");
 }
 

@@ -46,13 +46,13 @@ describe("buildClickUrl", () => {
   test("manual_action produces stream viewer URL with interaction_id", () => {
     process.env.PDPP_REFERENCE_ORIGIN = "https://reference.example.com";
     const url = buildClickUrl("run-1", "manual_action", "i-42");
-    assert.equal(url, "https://reference.example.com/dashboard/runs/run-1/stream?interaction_id=i-42");
+    assert.equal(url, "https://reference.example.com/syncs/run-1/stream?interaction_id=i-42");
   });
 
   test("non-manual_action kinds produce the run page URL", () => {
     process.env.PDPP_REFERENCE_ORIGIN = "https://reference.example.com";
     const url = buildClickUrl("run-1", "credentials", "i-42");
-    assert.equal(url, "https://reference.example.com/dashboard/runs/run-1");
+    assert.equal(url, "https://reference.example.com/syncs/run-1");
   });
 
   test("PDPP_WEB_BASE_URL takes priority over PDPP_REFERENCE_ORIGIN", () => {
@@ -89,7 +89,7 @@ describe("buildClickUrl", () => {
   test("missing interactionId still produces a URL with empty query value", () => {
     process.env.PDPP_REFERENCE_ORIGIN = "https://reference.example.com";
     const url = buildClickUrl("run-1", "manual_action", undefined);
-    assert.equal(url, "https://reference.example.com/dashboard/runs/run-1/stream?interaction_id=");
+    assert.equal(url, "https://reference.example.com/syncs/run-1/stream?interaction_id=");
   });
 });
 

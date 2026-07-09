@@ -308,6 +308,21 @@ test('current pending detail gap without a terminal fact block is visible on its
   assert.equal(transactions.forward_disposition, 'resumable');
 });
 
+test('terminal detail gap without a denominator is visible on its stream', () => {
+  const entries = report([fact({ stream: 'order_items', collected: 272, considered: null, checkpoint: 'not_staged' })], {
+    manifestStreams: [{ name: 'orders' }, { name: 'order_items' }],
+    terminalDetailGapsByStream: new Map([['order_items', 33]]),
+  });
+  const orders = entryFor(entries, 'orders');
+  const orderItems = entryFor(entries, 'order_items');
+
+  assert.equal(orders.coverage_condition, 'unknown');
+  assert.equal(orderItems.collected, 272);
+  assert.equal(orderItems.considered, 'unknown');
+  assert.equal(orderItems.coverage_condition, 'terminal_gap');
+  assert.equal(orderItems.forward_disposition, 'terminal');
+});
+
 test('current pending detail gap raises an old zero-gap fact', () => {
   const entries = report([fact({ pending_detail_gaps: 0 })], {
     pendingDetailGaps: [{ reason: 'temporary_unavailable', status: 'pending', stream: 'transactions' }],

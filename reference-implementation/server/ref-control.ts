@@ -424,14 +424,19 @@ interface DetailGapProjection {
    * about 100% (§6.3).
    */
   readonly terminal: number | null;
+  readonly terminalByStream: ReadonlyMap<string, number> | null;
   readonly unreliable: boolean;
 }
 
 interface ConnectorDetailGapStoreLike {
   countGapsByStatusForConnector?: (
     connectorId: string,
-    options: { status: string; reasons?: readonly string[] | null }
+    options: { status: string; reasons?: readonly string[] | null; connectorInstanceId?: string | null }
   ) => Promise<number> | number;
+  countGapsByStatusByStreamForConnector?: (
+    connectorId: string,
+    options: { status: string; connectorInstanceId?: string | null }
+  ) => Promise<readonly { stream?: unknown; count?: unknown }[]> | readonly { stream?: unknown; count?: unknown }[];
   listPendingGaps(input: {
     connectorId: string;
     connectorInstanceId?: string;
@@ -1220,12 +1225,20 @@ async function getConnectorDetailGapProjection(
     return {
       gaps,
       readLimit: DETAIL_GAP_PROJECTION_LIMIT,
-      recovered: await getRecoveredSourcePressureGapCount(store, connectorId),
-      terminal: await getTerminalGapCount(store, connectorId),
+      recovered: await getRecoveredSourcePressureGapCount(store, connectorId, connectorInstanceId),
+      terminal: await getTerminalGapCount(store, connectorId, connectorInstanceId),
+      terminalByStream: await getTerminalGapCountsByStream(store, connectorId, connectorInstanceId),
       unreliable: false,
     };
   } catch {
-    return { gaps: [], readLimit: DETAIL_GAP_PROJECTION_LIMIT, recovered: null, terminal: null, unreliable: true };
+    return {
+      gaps: [],
+      readLimit: DETAIL_GAP_PROJECTION_LIMIT,
+      recovered: null,
+      terminal: null,
+      terminalByStream: null,
+      unreliable: true,
+    };
   }
 }
 
@@ -1241,7 +1254,8 @@ async function getConnectorDetailGapProjection(
  */
 async function getRecoveredSourcePressureGapCount(
   store: ConnectorDetailGapStoreLike,
-  connectorId: string
+  connectorId: string,
+  connectorInstanceId?: string
 ): Promise<number | null> {
   if (typeof store.countGapsByStatusForConnector !== "function") {
     return null;
@@ -1250,6 +1264,7 @@ async function getRecoveredSourcePressureGapCount(
     const recovered = await Promise.resolve(
       store.countGapsByStatusForConnector(connectorId, {
         status: "recovered",
+        connectorInstanceId: connectorInstanceId ?? null,
         reasons: [...SOURCE_PRESSURE_GAP_REASONS],
       })
     );
@@ -1268,13 +1283,52 @@ async function getRecoveredSourcePressureGapCount(
  * honest "N no longer retrievable" count (§6.3) spans all terminal gaps.
  * `null` means unmeasured, never a fabricated zero.
  */
-async function getTerminalGapCount(store: ConnectorDetailGapStoreLike, connectorId: string): Promise<number | null> {
+async function getTerminalGapCount(
+  store: ConnectorDetailGapStoreLike,
+  connectorId: string,
+  connectorInstanceId?: string
+): Promise<number | null> {
   if (typeof store.countGapsByStatusForConnector !== "function") {
     return null;
   }
   try {
-    const terminal = await Promise.resolve(store.countGapsByStatusForConnector(connectorId, { status: "terminal" }));
+    const terminal = await Promise.resolve(
+      store.countGapsByStatusForConnector(connectorId, {
+        status: "terminal",
+        connectorInstanceId: connectorInstanceId ?? null,
+      })
+    );
     return typeof terminal === "number" && Number.isFinite(terminal) && terminal >= 0 ? Math.floor(terminal) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getTerminalGapCountsByStream(
+  store: ConnectorDetailGapStoreLike,
+  connectorId: string,
+  connectorInstanceId?: string
+): Promise<ReadonlyMap<string, number> | null> {
+  if (typeof store.countGapsByStatusByStreamForConnector !== "function") {
+    return null;
+  }
+  try {
+    const rows = await Promise.resolve(
+      store.countGapsByStatusByStreamForConnector(connectorId, {
+        status: "terminal",
+        connectorInstanceId: connectorInstanceId ?? null,
+      })
+    );
+    const map = new Map<string, number>();
+    for (const row of rows) {
+      const stream = typeof row?.stream === "string" ? row.stream : "";
+      const count = typeof row?.count === "number" ? row.count : Number(row?.count);
+      if (!stream || !Number.isFinite(count) || count <= 0) {
+        continue;
+      }
+      map.set(stream, Math.floor(count));
+    }
+    return map;
   } catch {
     return null;
   }
@@ -1973,6 +2027,7 @@ export function buildCollectionReport(input: {
    */
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly pendingDetailGapsReadLimit?: number | null;
+  readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
   readonly freshness: FreshnessAxis;
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
@@ -1985,6 +2040,7 @@ export function buildCollectionReport(input: {
   }
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const pendingGapCountByStream = pendingDetailGapCountsByStream(pendingDetailGaps);
+  const terminalGapCountByStream = input.terminalDetailGapsByStream ?? new Map<string, number>();
   const pendingReadLimit =
     typeof input.pendingDetailGapsReadLimit === "number" &&
     Number.isFinite(input.pendingDetailGapsReadLimit) &&
@@ -2006,6 +2062,7 @@ export function buildCollectionReport(input: {
     ...manifestByStream.keys(),
     ...factByStream.keys(),
     ...pendingGapCountByStream.keys(),
+    ...terminalGapCountByStream.keys(),
   ]);
   const entries: CollectionReportEntry[] = [];
   for (const stream of inScope) {
@@ -2014,6 +2071,7 @@ export function buildCollectionReport(input: {
         stream,
         factByStream,
         pendingGapCountByStream,
+        terminalGapCountByStream,
         pendingGapReadHitLimit,
         manifestByStream,
         localCoverageConditionByStream,
@@ -2031,6 +2089,7 @@ function buildCollectionReportEntry(input: {
   readonly stream: string;
   readonly factByStream: ReadonlyMap<string, RuntimeCollectionFact>;
   readonly pendingGapCountByStream: ReadonlyMap<string, number>;
+  readonly terminalGapCountByStream: ReadonlyMap<string, number>;
   readonly pendingGapReadHitLimit: boolean;
   readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
   readonly localCoverageConditionByStream: ReadonlyMap<string, CoverageAxis>;
@@ -2063,7 +2122,9 @@ function buildCollectionReportEntry(input: {
     !hasRuntimeFact && effectiveFact.pending_detail_gaps === 0
       ? input.localCoverageConditionByStream.get(input.stream)
       : null;
-  const coverageCondition = localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream);
+  const terminalDetailGaps = input.terminalGapCountByStream.get(input.stream) ?? 0;
+  const coverageCondition =
+    terminalDetailGaps > 0 ? "terminal_gap" : localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream);
   const forwardDisposition = deriveForwardDisposition({
     coverage: coverageCondition,
     gapRetryable: coverageCondition === "retryable_gap",
@@ -2136,6 +2197,7 @@ export function projectCollectionReport(input: {
   readonly manifestStreams: readonly ManifestStream[];
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly pendingDetailGapsReadLimit?: number | null;
+  readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
   readonly refreshPolicy: unknown;
 }): CollectionReportEntry[] {
   return buildCollectionReport({
@@ -2144,6 +2206,7 @@ export function projectCollectionReport(input: {
     manifestStreams: input.manifestStreams,
     pendingDetailGaps: input.pendingDetailGaps ?? [],
     pendingDetailGapsReadLimit: input.pendingDetailGapsReadLimit ?? null,
+    terminalDetailGapsByStream: input.terminalDetailGapsByStream ?? null,
     freshness: input.connectionHealth.axes.freshness,
     attentionOpen: input.connectionHealth.axes.attention !== "none",
     refresh: buildRefreshEvidence(input.refreshPolicy),
@@ -3582,6 +3645,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     manifestStreams: manifest.streams ?? [],
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
+    terminalDetailGapsByStream: detailGaps.terminalByStream,
     refreshPolicy,
   });
   const connectionHealth = refineConnectionHealthWithCollectionReport(
@@ -4083,6 +4147,7 @@ export async function getConnectorDetail(
     manifestStreams: manifest.streams ?? [],
     pendingDetailGaps: detailGaps.gaps,
     pendingDetailGapsReadLimit: detailGaps.readLimit,
+    terminalDetailGapsByStream: detailGaps.terminalByStream,
     refreshPolicy,
   });
   const connectionHealth = refineConnectionHealthWithCollectionReport(

@@ -8,7 +8,7 @@
 - [x] 2.1 Add `/notifications` page that renders the existing `WebPushSettings` component from live config and subscriptions.
 - [x] 2.2 Add Notifications to live navigation and command palette.
 - [x] 2.3 Add an overview utility entry point.
-- [x] 2.4 Add a bounded stale-PWA repair page under `/dashboard/*`.
+- [x] 2.4 Keep removed `/dashboard/*` paths unserved; PWA metadata starts at `/`.
 
 ## 3. Verification
 

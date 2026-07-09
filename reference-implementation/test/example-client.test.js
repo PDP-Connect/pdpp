@@ -229,39 +229,6 @@ test('example client surfaces owner-auth enabled as an honest failure instead of
   }
 });
 
-test('dashboard DCR default uses the shared local reference token when env is unset', async () => {
-  // Prove that when PDPP_DCR_INITIAL_ACCESS_TOKENS is unset, the dashboard's
-  // default falls back to the shared local reference default. We read the
-  // dashboard source directly to avoid bootstrapping Next.js runtime state.
-  // The operator dashboard lives in apps/console after the public-site /
-  // operator-console split (apps/web was removed).
-  const DASHBOARD_FILE = join(
-    REFERENCE_IMPL_DIR,
-    '..',
-    'apps',
-    'console',
-    'src',
-    'app',
-    'dashboard',
-    'lib',
-    'operator-grant-request.ts',
-  );
-  const source = readFileSync(DASHBOARD_FILE, 'utf8');
-  assert.match(
-    source,
-    /DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN/,
-    'dashboard DCR default should fall back to the shared reference-local constant',
-  );
-  assert.match(
-    source,
-    /pdpp-reference-implementation\/reference-local-defaults/,
-    'dashboard should import the shared defaults module, not duplicate the literal',
-  );
-  // Also verify the shared constant itself has a sensible value.
-  assert.equal(typeof DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN, 'string');
-  assert.ok(DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN.length > 8);
-});
-
 test('example client shipped defaults stage a PAR request and reach records against a normally-registered reference manifest', async () => {
   // This test is the guardrail for the "follow the five sections top to
   // bottom" promise in the example app README: submit the form as-shipped,

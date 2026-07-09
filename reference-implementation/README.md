@@ -443,7 +443,7 @@ or, for the same stack without rebuilding images:
 pnpm docker:reference:quick
 ```
 
-Then open `http://localhost:${PDPP_WEB_PORT:-3002}/dashboard/stream-playground?backend=neko`.
+Then open `http://localhost:${PDPP_WEB_PORT:-3002}/stream-playground?backend=neko`.
 The overlay runs n.eko in the reference container's network namespace, so the
 reference process uses the loopback `http://127.0.0.1:8080/neko` target. The
 browser still uses the same public origin through the reference `/neko/*`

@@ -1,6 +1,6 @@
 /**
  * Deployment diagnostics — unit coverage for the reference operator
- * /dashboard/deployment surface.
+ * /deployment surface.
  *
  * Pins the two must-hold properties from:
  *   openspec/changes/make-semantic-retrieval-operational/

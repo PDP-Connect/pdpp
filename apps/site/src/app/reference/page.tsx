@@ -44,7 +44,7 @@ const architectureLayers = [
   },
   {
     label: "Live instance",
-    route: "/dashboard",
+    route: "/",
     title: "Operator dashboard",
     body: "A stateful control plane for a running local or self-hosted instance. It is not a public hosted demo.",
   },
@@ -145,7 +145,7 @@ export default async function ReferencePage() {
             <div className="pdpp-eyebrow text-muted-foreground">Run posture</div>
             <div className="mt-4 space-y-4">
               <CalloutMetric label="Local app" value={providerUrl} />
-              <CalloutMetric label="Operator surface" value="/dashboard" />
+              <CalloutMetric label="Operator surface" value="/" />
               <CalloutMetric label="Public sandbox" value="/sandbox" />
             </div>
             <p className="pdpp-caption mt-5 text-muted-foreground">
@@ -189,7 +189,7 @@ export default async function ReferencePage() {
   ghcr.io/vana-com/pdpp/railway-core:main
 docker logs -f pdpp`}
               eyebrow="Your machine, one command"
-              footer="Open http://localhost:3000/dashboard and sign in with the printed password. Your data persists in the pdpp_data volume across restarts and upgrades."
+              footer="Open http://localhost:3000 and sign in with the printed password. Your data persists in the pdpp_data volume across restarts and upgrades."
               title="Run with Docker"
             />
           </div>

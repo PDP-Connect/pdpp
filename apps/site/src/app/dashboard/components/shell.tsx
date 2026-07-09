@@ -35,8 +35,7 @@ export type DashboardSection =
  * On the public site (`apps/site`) the shell only ever renders the public
  * mock sandbox, so `mock-owner` is the only supported binding. The prop is
  * retained for source compatibility with the shared dashboard feature
- * components, but the live operator binding (`live`) — which probed the
- * configured AS/RS and linked into `/dashboard/**` — has moved to the
+ * components, but the live operator binding (`live`) has moved to the
  * operator console (`apps/console`). The public bundle therefore carries no
  * owner-token/session import and no live AS/RS reachability.
  */

@@ -6,17 +6,7 @@ import { usePathname } from "next/navigation";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
 
-// The shared brand `siteNav` is consumed by both the public site (`apps/site`)
-// and the operator console (`apps/console`). It still lists the operator
-// console's `/dashboard`, which lives on a SEPARATE origin from the public
-// site (proposal: "public surfaces SHALL NOT share an origin with a live
-// operator dashboard"). The public site has no `/dashboard` route, so linking
-// to it would 404 on this origin and would send a mock-owner visitor out of
-// the public surface. Filter operator-console links out of the public header.
-// The brand package and the operator console (which DOES serve `/dashboard`)
-// are intentionally left untouched.
-const OPERATOR_CONSOLE_LINK_RE = /^\/dashboard(?:\/|$)/;
-const publicSiteNav = siteNav.filter((item) => !OPERATOR_CONSOLE_LINK_RE.test(item.link));
+const publicSiteNav = siteNav;
 
 export function SiteHeader({
   currentLabel,

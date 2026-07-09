@@ -26,7 +26,7 @@
 //   - It is durable: implicit default-account materialization no longer
 //     resurrects a revoked row (the durability guard in
 //     `ensureDefaultAccountConnection` + the resolver's non-active fail-closed),
-//     so the revoke survives every owner/dashboard read and grant/polyfill scope
+//     so the revoke survives every owner-console read and grant/polyfill scope
 //     resolution. A revoked connection is reversible only by an explicit owner
 //     re-initiate, never silently.
 //

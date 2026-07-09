@@ -375,8 +375,9 @@ export function createSqliteConnectorDetailGapStore() {
     // returns only a scalar integer (no row bodies, locators, or payloads), in
     // the same connector-wide + reason scope the `pending` projection reads.
     // Throws on a malformed count so the caller can keep `recovered` `null`.
-    async countGapsByStatusForConnector(connectorId, { status, reasons = null } = {}) {
+    async countGapsByStatusForConnector(connectorId, { status, reasons = null, connectorInstanceId = null } = {}) {
       if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
       const reasonScope = normalizeReasonScope(reasons);
       const reasonPlaceholders = reasonScope ? reasonScope.map(() => '?').join(', ') : null;
       // REVIEWED-DYNAMIC: bounded reason-scoped count-by-status aggregate over
@@ -385,9 +386,26 @@ export function createSqliteConnectorDetailGapStore() {
         SELECT COUNT(*) AS gap_count FROM connector_detail_gaps
         WHERE connector_id = ?
           AND status = ?
+          AND (? IS NULL OR connector_instance_id = ?)
           ${reasonScope ? `AND reason IN (${reasonPlaceholders})` : ''}
-      `, [connectorId, status, ...(reasonScope ?? [])]);
+      `, [connectorId, status, scopedConnectorInstanceId, scopedConnectorInstanceId, ...(reasonScope ?? [])]);
       return coerceCount(row?.gap_count ?? 0);
+    },
+
+    async countGapsByStatusByStreamForConnector(connectorId, { status, connectorInstanceId = null } = {}) {
+      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
+      // REVIEWED-DYNAMIC: bounded grouped count-by-status aggregate over the
+      // store-owned detail-gap table; only stream names and counts are returned.
+      const rows = [...iterateDynamicSqlAcknowledged(`
+        SELECT stream, COUNT(*) AS gap_count FROM connector_detail_gaps
+        WHERE connector_id = ?
+          AND status = ?
+          AND (? IS NULL OR connector_instance_id = ?)
+        GROUP BY stream
+        ORDER BY stream
+      `, [connectorId, status, scopedConnectorInstanceId, scopedConnectorInstanceId])];
+      return rows.map((row) => ({ stream: row.stream, count: coerceCount(row.gap_count ?? 0) }));
     },
 
     async markGapStatus(gapId, status, options = {}) {
@@ -577,9 +595,10 @@ export function createPostgresConnectorDetailGapStore() {
       return result.rows.map(rowToGap);
     },
 
-    async countGapsByStatusForConnector(connectorId, { status, reasons = null } = {}) {
+    async countGapsByStatusForConnector(connectorId, { status, reasons = null, connectorInstanceId = null } = {}) {
       if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
       const reasonScope = normalizeReasonScope(reasons);
+      const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
       // Bounded reason-scoped count-by-status aggregate (Postgres analogue of
       // the SQLite path). `$3::text[]` is `NULL` when no reason scope is given,
       // so the predicate counts every reason; otherwise it restricts to the
@@ -589,8 +608,23 @@ export function createPostgresConnectorDetailGapStore() {
         WHERE connector_id = $1
           AND status = $2
           AND ($3::text[] IS NULL OR reason = ANY($3::text[]))
-      `, [connectorId, status, reasonScope]);
+          AND ($4::text IS NULL OR connector_instance_id = $4)
+      `, [connectorId, status, reasonScope, scopedConnectorInstanceId]);
       return coerceCount(result.rows[0]?.gap_count ?? 0);
+    },
+
+    async countGapsByStatusByStreamForConnector(connectorId, { status, connectorInstanceId = null } = {}) {
+      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
+      const result = await postgresQuery(`
+        SELECT stream, COUNT(*) AS gap_count FROM connector_detail_gaps
+        WHERE connector_id = $1
+          AND status = $2
+          AND ($3::text IS NULL OR connector_instance_id = $3)
+        GROUP BY stream
+        ORDER BY stream
+      `, [connectorId, status, scopedConnectorInstanceId]);
+      return result.rows.map((row) => ({ stream: row.stream, count: coerceCount(row.gap_count ?? 0) }));
     },
 
     async markGapStatus(gapId, status, options = {}) {

@@ -1,7 +1,7 @@
 /**
  * Shared detail-with-timeline view used by:
- *   - /dashboard/grants/[grantId] and /sandbox/grants/[grantId]
- *   - /dashboard/traces/[traceId] and /sandbox/traces/[traceId]
+ *   - /grants/[grantId] and /sandbox/grants/[grantId]
+ *   - /audit/[traceId] and /sandbox/traces/[traceId]
  *
  * This is the structural body for "show one envelope, surface pivot
  * links to the related artifacts, embed the spine timeline, show the

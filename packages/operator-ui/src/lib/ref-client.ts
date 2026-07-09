@@ -477,7 +477,7 @@ export interface DatasetSummaryProjectionMetadata {
 }
 
 // The reference deployment diagnostics surface. Consumed by the operator-
-// facing /dashboard/deployment page. Shape matches the report returned by
+// facing /deployment page. Shape matches the report returned by
 // server/deployment-diagnostics.ts; the RS redacts secrets before sending,
 // and the dashboard must not re-assemble them.
 export interface DeploymentDiagnostics {

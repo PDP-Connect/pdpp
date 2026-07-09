@@ -29,11 +29,11 @@
 - [x] 2.1 Decide the owner-facing noun for configured data-producing instances and document the internal/API term mapping.
 - [x] 2.2 Produce a route/nav/headline inventory showing current noun drift.
 - [x] 2.3 Decide which current surfaces remain primary, which merge, which demote, and which become evidence layers.
-- [x] 2.4 Identify route aliases or redirects needed for backwards compatibility.
+- [x] 2.4 Identify removed routes and generated links that must move to clean owner routes without compatibility redirects.
 - [ ] 2.5 Produce an owner-reviewed prior-art memo and mock before deciding whether Runs/Syncs merges into Sources or remains a secondary activity view.
 - [ ] 2.6 Produce an owner-reviewed prior-art memo and mock before deciding whether Explore and stream-scoped record views fully merge or remain separate with shared rendering.
 - [x] 2.7 Resolve the Source / Source instance / collector / device hierarchy in owner language, including whether one Source can intentionally have multiple collectors and how that nesting is shown.
-- [x] 2.8 Define the owner-route hygiene plan, including whether `/dashboard` remains an implementation prefix, which clean owner routes should exist, and which compatibility redirects are required.
+- [x] 2.8 Define the owner-route hygiene plan: `/dashboard` is not an implementation prefix, clean owner routes are canonical, and removed owner routes are not compatibility redirects.
 - [x] 2.9 Produce hard-problem charters for Sources/Syncs/Runs, Add Data, Explore, Recovery, Grants/Connect, Evidence timelines, and fresh-owner onboarding before broad UI implementation.
 
 ## 3. Journey Atlas
@@ -73,7 +73,7 @@
 - [x] 5.8 Write acceptance packets for Wave 8 craft/mobile/delight.
 - [x] 5.9 Add cross-cutting acceptance criteria for live status without manual refresh on setup, recovery, and first-sync status pages.
 - [x] 5.10 Track collector-side `coverage_missing` emission as runtime work required by the console product promise.
-- [x] 5.11 Add URL/noun hygiene acceptance, including the `/dashboard` prefix decision and compatibility redirect plan.
+- [x] 5.11 Add URL/noun hygiene acceptance, including the `/dashboard` prefix removal and clean-route generation plan.
 - [x] 5.12 Add cross-cutting acceptance criteria for no artificial caps as final UX: every bounded owner list has a next-page, view-all, or virtualization path.
 - [x] 5.13 Add cross-cutting acceptance criteria for owner-visible counts: every count has a basis label and every rollup drills through to its counted subjects.
 - [x] 5.14 Add cross-cutting acceptance criteria for source setup: proven connectors remain addable for additional accounts, setup captures or echoes an owner label, and source rename reflects everywhere in one render cycle.

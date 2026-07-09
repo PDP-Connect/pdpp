@@ -17,7 +17,7 @@
  *     calling the live AS/RS (sync now, device-flow approval, run
  *     interactions) is not part of this data source. The sandbox pages
  *     that consume it must not import the live action modules.
- *   - This file lives under `_demo/` so the live `/dashboard/**` tree
+ *   - This file lives under `_demo/` so the live owner-console tree
  *     never resolves it through path-based discovery.
  */
 

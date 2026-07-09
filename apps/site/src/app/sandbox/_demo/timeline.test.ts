@@ -3,7 +3,7 @@
  * sandbox `DashboardDataSource`.
  *
  * The same `loadTimeline` function powers the time-range lens on
- * `/dashboard/explore` (live AS/RS) and `/sandbox/records/timeline`
+ * `/explore` (live AS/RS) and `/sandbox/records/timeline`
  * (deterministic mock dataset). These tests assert the sandbox binding
  * produces a usable,
  * deterministic timeline and that the seeded sandbox manifests advertise

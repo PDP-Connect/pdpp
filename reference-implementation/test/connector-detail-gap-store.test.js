@@ -575,6 +575,20 @@ async function assertRecoveredCountAggregate(store, connectorId) {
   });
   assert.equal(recovered, 2, 'counts only recovered source-pressure gaps across every instance');
 
+  const scopedRecovered = await store.countGapsByStatusForConnector(connectorId, {
+    status: 'recovered',
+    reasons: ['rate_limited', 'upstream_pressure'],
+    connectorInstanceId: 'cin_recovered_a',
+  });
+  assert.equal(scopedRecovered, 1, 'connection-scoped aggregate excludes sibling recovered gaps');
+
+  const scopedEmpty = await store.countGapsByStatusForConnector(connectorId, {
+    status: 'recovered',
+    reasons: ['rate_limited', 'upstream_pressure'],
+    connectorInstanceId: 'cin_missing',
+  });
+  assert.equal(scopedEmpty, 0, 'connection-scoped aggregate returns exact 0 when no sibling rows match');
+
   // The pending source-pressure gap proves the status filter: it is NOT in the
   // recovered count, but IS in the pending count (same reason scope).
   const pending = await store.countGapsByStatusForConnector(connectorId, {
@@ -591,6 +605,21 @@ async function assertRecoveredCountAggregate(store, connectorId) {
   });
   assert.equal(recoveredAnyReason, 3, 'no reason scope counts every recovered reason');
 
+  const recoveredByStream = await store.countGapsByStatusByStreamForConnector(connectorId, {
+    status: 'recovered',
+  });
+  assert.deepEqual(recoveredByStream, [{ stream: 'messages', count: 3 }], 'stream aggregate groups by stream');
+
+  const scopedRecoveredByStream = await store.countGapsByStatusByStreamForConnector(connectorId, {
+    status: 'recovered',
+    connectorInstanceId: 'cin_recovered_b',
+  });
+  assert.deepEqual(
+    scopedRecoveredByStream,
+    [{ stream: 'messages', count: 1 }],
+    'stream aggregate respects connection scope',
+  );
+
   // A connector with no rows drains to a real exact 0 (never null/NaN).
   const empty = await store.countGapsByStatusForConnector('no_such_connector', {
     status: 'recovered',
@@ -601,6 +630,10 @@ async function assertRecoveredCountAggregate(store, connectorId) {
   // Guards the contract by construction: an unsupported status throws.
   await assert.rejects(
     () => Promise.resolve(store.countGapsByStatusForConnector(connectorId, { status: 'bogus' })),
+    /Unsupported connector detail gap status/,
+  );
+  await assert.rejects(
+    () => Promise.resolve(store.countGapsByStatusByStreamForConnector(connectorId, { status: 'bogus' })),
     /Unsupported connector detail gap status/,
   );
 }
@@ -1168,6 +1201,11 @@ test('runtime quarantines Amazon-shaped repeated no-progress re-deferrals at the
   const terminal = await store.getGapById(seeded.gap_id);
   assert.equal(pending.length, 0, 'poison item no longer consumes the fillable-pending recovery budget');
   assert.equal(await store.countGapsByStatusForConnector('amazon', { status: 'terminal' }), 1);
+  assert.deepEqual(
+    await store.countGapsByStatusByStreamForConnector('amazon', { status: 'terminal' }),
+    [{ stream: 'order_items', count: 1 }],
+    'terminal stream aggregate makes quarantined detail gaps visible to source projection',
+  );
   assert.equal(terminal.status, 'terminal');
   assert.equal(terminal.reason, 'quarantined');
   assert.equal(terminal.last_error.class, 'quarantined');

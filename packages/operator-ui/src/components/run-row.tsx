@@ -1,7 +1,7 @@
 /**
  * The single run-row grammar, shared by every surface that lists connector
  * runs:
- *   - the standalone /dashboard/runs and /sandbox/runs list
+ *   - the standalone /syncs and /sandbox/runs list
  *   - the overview "Recent runs" mini-list
  *   - the overview "Failed runs" panel
  *

@@ -159,9 +159,9 @@ const nextConfig = {
         destination: '/sandbox/explore',
         permanent: false,
       },
-      // NOTE: `/dashboard/**` and `/explore` redirects were dropped when the
-      // operator console moved to `apps/console`. The public site owns no
-      // `/dashboard` surface; those redirects live in `apps/console/next.config.mjs`.
+      // NOTE: old owner-console redirects were dropped when the operator
+      // console moved to `apps/console`. The public site owns no live
+      // owner-console surface.
     ];
   },
   async rewrites() {

@@ -51,7 +51,7 @@ A common failure: writing dashboard tooltip text in the voice of a hosted SaaS (
 - **`/docs/**` on the site** — protocol documentation. Never shows live owner state.
 - **`/reference/**`** — public explainer of the reference implementation, including a coverage matrix. Use it to show *what the reference proves today*. It is not the protocol; it is one realization of it.
 - **`/sandbox/**`** — mock-backed pedagogical dashboard with deterministic fictional data. Always label specimens as such. Never collects real credentials.
-- **clean owner routes (`/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and clean deployment/admin nouns)** — the live owner/operator control plane. Owner-authed. Talk to the operator, not "the user of a service." Legacy `/dashboard/**` paths remain reachable only as compatibility redirects into these clean routes (see `openspec/specs/reference-surface-topology/spec.md`).
+- **clean owner routes (`/`, `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and clean deployment/admin nouns)** — the live owner/operator control plane. Owner-authed. Talk to the operator, not "the user of a service." Removed `/dashboard/**` paths are not compatibility routes; generated owner links use the clean routes directly.
 - **`/planning/**`** — OpenSpec viewer. Project planning, not protocol authority.
 - **`/design`, `/palette`** — local contributor workbenches. Don't cite them as user-facing surfaces.
 

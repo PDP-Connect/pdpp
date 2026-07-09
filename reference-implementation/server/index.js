@@ -3435,7 +3435,7 @@ function buildAsApp(opts = {}) {
   // URL, registers its CDP page-target wsUrl with the run-target registry
   // under a synthetic (runId, interactionId), and shims
   // controller.getPendingInteraction so the standard streaming-mint route
-  // accepts the synthetic runId. The dashboard's /dashboard/stream-playground
+  // accepts the synthetic runId. The console's /stream-playground
   // route hits this endpoint to obtain the (runId, interactionId) to feed
   // into <StreamSurface>.
   //
@@ -4039,7 +4039,7 @@ function buildOwnerAgentOnboardingMetadata({ origin, resource, issuer }) {
       'Owner-level local automation. This profile yields an owner bearer that authorizes owner-visible REST/control-plane access — not a grant-scoped external client. Use grant-scoped MCP for ordinary third-party agents.',
     authorization_server: as,
     resource: rs,
-    owner_approval_url: `${approvalBase}/dashboard`,
+    owner_approval_url: approvalBase,
     device_authorization_endpoint: `${as}/oauth/device_authorization`,
     token_endpoint: `${as}/oauth/token`,
     introspection_endpoint: `${as}/introspect`,

@@ -1,7 +1,7 @@
 /**
  * Shared Explorer data assembly, parameterized by a DashboardDataSource adapter.
  *
- * Both /dashboard/explore (live, liveDashboardDataSource) and /sandbox/explore
+ * Both the live /explore route (liveDashboardDataSource) and /sandbox/explore
  * (mock-owner, sandboxDashboardDataSource) call assembleExplorerData. The live
  * page additionally handles auth and ReferenceServerUnreachableError boundaries;
  * the sandbox page supplies SANDBOX_RS_EXAMPLE_BASE as the rsBaseUrl config.

@@ -453,6 +453,61 @@ test('a succeeded run with partial stream coverage does not render the connectio
   assert.equal(detail.rendered_verdict.pill.label, 'Degraded');
 }));
 
+test('terminal detail gaps downgrade the connection verdict and stream coverage', withTmpDb(async () => {
+  seedConnector();
+  await seedInstance({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    displayName: 'Amazon-shaped terminal detail gaps',
+    sourceKind: 'browser_collector',
+    sourceBindingKey: 'amazon-terminal',
+    sourceBinding: { kind: 'browser_collector', account: 'amazon' },
+  });
+
+  const gapStore = getDefaultConnectorDetailGapStore();
+  const terminalGap = await gapStore.upsertPendingGap({
+    connectorId: CONNECTOR_ID,
+    connectorInstanceId: WORK_INSTANCE_ID,
+    grantId: 'grant_1',
+    stream: 'files',
+    parentStream: 'messages',
+    recordKey: 'file_never_loaded',
+    reason: 'temporary_unavailable',
+  });
+  await gapStore.markGapStatus(terminalGap.gap_id, 'terminal', {
+    runId: 'run_terminal_detail_gap',
+    error: { class: 'quarantined' },
+  });
+
+  await seedManualRunWithCollectionFacts({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    runId: 'run_terminal_detail_gap',
+    occurredAt: '2026-05-20T12:11:00.000Z',
+    streams: [
+      { stream: 'messages', collected: 2, considered: null, covered: null, checkpoint: 'not_staged', pending_detail_gaps: 0, skipped: null },
+      { stream: 'files', collected: 1, considered: null, covered: null, checkpoint: 'not_staged', pending_detail_gaps: 0, skipped: null },
+    ],
+  });
+
+  const summaries = await listConnectorSummaries();
+  const summary = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === WORK_INSTANCE_ID,
+  );
+  assert.ok(summary, 'the terminal-gap connection projects a source-list summary');
+  const reportByStream = collectionReportByStream(summary.collection_report);
+  assert.equal(reportByStream.messages.coverage_condition, 'unknown');
+  assert.equal(reportByStream.files.coverage_condition, 'terminal_gap');
+  assert.equal(reportByStream.files.forward_disposition, 'terminal');
+  assert.equal(summary.connection_health.axes.coverage, 'terminal_gap');
+  assert.notEqual(summary.connection_health.state, 'healthy');
+  assert.notEqual(summary.rendered_verdict.pill.label, 'Healthy');
+
+  const detail = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
+  assert.ok(detail, 'the terminal-gap connection resolves a source-detail summary');
+  assert.equal(detail.connection_health.axes.coverage, 'terminal_gap');
+  assert.equal(collectionReportByStream(detail.collection_report).files.coverage_condition, 'terminal_gap');
+  assert.notEqual(detail.rendered_verdict.pill.label, 'Healthy');
+}));
+
 test('reference connector summaries project concrete connection rows with instance-scoped records', withTmpDb(async () => {
   seedConnector();
   await seedInstances({ sourceKind: 'manual' });
@@ -916,7 +971,7 @@ test('connection summary surfaces a recovered count from the durable count-by-st
   await seedInstances({ sourceKind: 'manual' });
 
   const gapStore = getDefaultConnectorDetailGapStore();
-  // One still-pending source-pressure gap on the WORK connection...
+  // Two still-pending source-pressure gaps on the WORK connection...
   await gapStore.upsertPendingGap({
     connectorId: CONNECTOR_ID,
     connectorInstanceId: WORK_INSTANCE_ID,
@@ -925,8 +980,16 @@ test('connection summary surfaces a recovered count from the durable count-by-st
     recordKey: 'pending_conv',
     reason: 'upstream_pressure',
   });
-  // ...two recovered source-pressure gaps (across both connections — the count
-  // is connector-wide, matching the pending read's scope)...
+  await gapStore.upsertPendingGap({
+    connectorId: CONNECTOR_ID,
+    connectorInstanceId: WORK_INSTANCE_ID,
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'pending_conv_2',
+    reason: 'rate_limited',
+  });
+  // ...two recovered source-pressure gaps across sibling connections. The WORK
+  // summary must count only the WORK row.
   for (const [instanceId, recordKey] of [
     [WORK_INSTANCE_ID, 'recovered_conv_1'],
     [PERSONAL_INSTANCE_ID, 'recovered_conv_2'],
@@ -958,15 +1021,15 @@ test('connection summary surfaces a recovered count from the durable count-by-st
 
   const backlog = work.connection_health.detail_gap_backlog;
   assert.notEqual(backlog, null, 'a readable store yields a non-null backlog rollup');
-  assert.equal(backlog.recovered, 2, 'recovered counts only recovered source-pressure gaps, connector-wide');
-  assert.equal(backlog.pending, 1, 'pending is the still-pending source-pressure gap, distinct from recovered');
+  assert.equal(backlog.recovered, 1, 'recovered counts only source-pressure gaps for the projected connection');
+  assert.equal(backlog.pending, 2, 'pending is the still-pending source-pressure gap count, distinct from recovered');
   // recovered must be a real count, never aliased to pending.
   assert.notEqual(backlog.recovered, backlog.pending);
 
   assert.ok(work.rendered_verdict, 'owner wire summary carries the synthesized rendered_verdict');
   assert.equal(
     work.rendered_verdict.detail.detail_gap_backlog.recovered,
-    2,
+    1,
     'owner-only rendered_verdict detail carries the recovered backlog count',
   );
   assert.equal(

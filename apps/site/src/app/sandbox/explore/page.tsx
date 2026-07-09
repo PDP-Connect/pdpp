@@ -1,13 +1,13 @@
 /**
  * Sandbox Records Explorer — mock-owner mode.
  *
- * Mirrors /dashboard/explore against the deterministic sandbox dataset.
+ * Mirrors the live /explore route against the deterministic sandbox dataset.
  * No owner auth, no live AS/RS calls.  The RecordsExplorerView component
  * is identical to the live surface so the sandbox shows the same IA shape
  * as a real reference instance.
  *
  * Data assembly (feed loading, peek building, timestamp metadata) lives in
- * explore-data-assembler.ts and is shared with /dashboard/explore so both
+ * explore-data-assembler.ts and is shared with /explore so both
  * surfaces stay aligned by construction.
  *
  * Data contract notes:

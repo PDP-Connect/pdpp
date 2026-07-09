@@ -1,7 +1,7 @@
 /**
  * Reference deployment diagnostics.
  *
- * Pure, read-only helper for the operator-facing /dashboard/deployment page.
+ * Pure, read-only helper for the operator-facing /deployment page.
  * Reports:
  *   - Semantic embedding backend availability, identity, and language bias
  *   - Vector index kind (sqlite-vec vs blob-flat fallback) and index state
@@ -880,7 +880,7 @@ function normalizeDiskHeadroomEntries(
 // the RS advertises semantic retrieval AND at least one (connector, stream,
 // field) tuple participates. A ready backend with zero participation yields
 // zero hits and looks identical to "semantic retrieval is broken", so we
-// skip the call and let /dashboard/deployment surface the reason.
+// skip the call and let /deployment surface the reason.
 //
 // Pure function; lives here (not on the web side) so Node tests that run
 // against the reference package can pin this invariant directly.

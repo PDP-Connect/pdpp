@@ -1,8 +1,8 @@
 ## MODIFIED Requirements
 
-### Requirement: Live dashboard surfaces SHALL be stateful owner/operator surfaces
+### Requirement: Live owner-console surfaces SHALL be stateful owner/operator surfaces
 
-The live owner-console route family SHALL be treated as stateful live-instance operation. It SHALL be owner-authenticated when owner authentication is configured, SHALL avoid static caching of live state, SHALL avoid search-engine indexing, SHALL be safe to disable on hosted public documentation deployments, and SHALL be owned by the operator-console deployable rather than the public-site deployable. Clean owner routes SHALL be the normal navigation topology. The removed `/dashboard/*` prefix MAY render only a bounded stale-installed-PWA repair surface and SHALL NOT be used as a normal content route.
+The live owner-console route family SHALL be treated as stateful live-instance operation. It SHALL be owner-authenticated when owner authentication is configured, SHALL avoid static caching of live state, SHALL avoid search-engine indexing, SHALL be safe to disable on hosted public documentation deployments, and SHALL be owned by the operator-console deployable rather than the public-site deployable. Clean owner routes SHALL be the normal navigation topology. The removed `/dashboard/*` prefix SHALL NOT be preserved as a redirect, repair surface, or normal content route.
 
 #### Scenario: Owner auth is configured
 
@@ -21,8 +21,8 @@ The live owner-console route family SHALL be treated as stateful live-instance o
 - **THEN** clean owner routes and the BFF/proxy routes (`/_ref/**`, `/v1/**`, `/oauth/**`, `/.well-known/**`, `/consent`, `/device`, `/owner/**`, `/__pdpp/**`, `/connectors/**`, `/neko/**`, `/agent-connect`) SHALL be owned by the operator-console deployable
 - **AND** the BFF/proxy SHALL terminate at the co-deployed AS/RS over the internal operator network rather than over the public internet
 
-#### Scenario: Stale installed PWA opens the old dashboard prefix
+#### Scenario: Removed dashboard prefix is requested
 
-- **WHEN** an installed PWA opens `/dashboard` or `/dashboard/*`
-- **THEN** the operator-console deployable MAY render a bounded repair page for stale launch metadata
-- **AND** that repair page SHALL point to clean owner routes rather than reintroducing `/dashboard/*` as a normal route family.
+- **WHEN** a request arrives for `/dashboard` or `/dashboard/*`
+- **THEN** the operator-console deployable SHALL NOT route it to an owner-console compatibility surface
+- **AND** generated owner links SHALL continue to use clean owner routes directly.

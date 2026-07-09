@@ -41,7 +41,7 @@ import { buildConsentCardConnections } from "@/lib/consent-connection-label.ts";
 import { LONGVIEW_CLIENT_URI, LONGVIEW_POLICY_URI, LONGVIEW_TOS_URI } from "@/lib/longview-world.ts";
 
 // Showcase-only no-op — this page is a static design surface; real revoke is
-// wired up in /dashboard/grants. Lint (noEmptyBlockStatements) rejects `() => {}`.
+// wired up in /grants. Lint (noEmptyBlockStatements) rejects `() => {}`.
 function noopRevoke(): void {
   // Intentionally empty; see comment above.
 }
@@ -2024,13 +2024,13 @@ function ComponentsSection() {
 
 // ─── 07b Dashboard Primitives ─────────────────────────────────────────────────
 // The control-plane grammar. These primitives are consumed across every
-// /dashboard route. Document them here so the grammar is discoverable.
+// owner-console route. Document them here so the grammar is discoverable.
 
 function DashboardPrimitivesSection() {
   return (
     <SectionWrap id="dashboard">
       <SectionHeader
-        description="The control-plane grammar. Layout first, surfaces selective. Every /dashboard route composes these pieces; no page should invent its own header, list, or status affordance."
+        description="The control-plane grammar. Layout first, surfaces selective. Every owner-console route composes these pieces; no page should invent its own header, list, or status affordance."
         title="Dashboard primitives"
       />
 

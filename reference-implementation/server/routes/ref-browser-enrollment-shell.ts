@@ -25,7 +25,7 @@
 //   - No provider secret, browser session cookie, or credential accepted/returned.
 //   - Only browser-bound connectors accepted; static-secret/local-collector
 //     connectors are refused with a typed 409.
-//   - Shells are invisible to every list/count/dashboard surface until enrollment
+//   - Shells are invisible to every list/count/owner-console surface until enrollment
 //     captures source identity and flips the shell to `active`.
 
 import { randomBytes } from "node:crypto";
