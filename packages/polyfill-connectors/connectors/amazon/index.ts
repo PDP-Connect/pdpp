@@ -333,7 +333,15 @@ async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetc
         // Wait for the known detail page signatures. waitForSelector replaces
         // `await sleep(800)` — real sync primitive instead of a pacing guess.
         await page.waitForSelector(
-          '#orderDetails, [data-component="cancelled"], #f3_food_ItemList, #f3_food_WfmInStoreOrderSummary, .js-order-card',
+          [
+            "#orderDetails",
+            '[data-component="cancelled"]',
+            "#f3_food_ItemList",
+            "#f3_food_WfmInStoreOrderSummary",
+            ".ufpo-item-list-table",
+            "#ufpo-order-status-container",
+            ".js-order-card",
+          ].join(", "),
           {
             timeout: DETAIL_WAIT_MS,
             state: "attached",

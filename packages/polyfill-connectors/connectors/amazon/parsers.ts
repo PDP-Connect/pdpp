@@ -148,6 +148,8 @@ const FOPO_AT_PRICE_RE = /@\s*(\$[\d,]+\.\d{2})/;
 const FOPO_CARD_TAIL_PREFIX_RE = /^\*/;
 const HTML_TAG_RE = /<[^>]*>/g;
 const FOPO_QTY_RE = /\bQty:\s*(\d+(?:\.\d+)?)/i;
+const UFPO_ITEM_ROW_ID_RE = /^([A-Z0-9]{10})-item-grid-row$/;
+const UFPO_TOTAL_LABEL_RE = /total/i;
 
 const PAY_METHOD_MAX_LEN = 200;
 const ADDRESS_MAX_LEN = 240;
@@ -375,6 +377,82 @@ function parseFopoOrderDetailDom(document: Document): OrderDetail | null {
   };
 }
 
+function parseUfpoDetailItem(row: Element): DetailItem | null {
+  const titleLink = row.querySelector<HTMLAnchorElement>('a[href*="/dp/"], a[href*="/gp/product/"]');
+  const name = normText(titleLink);
+  const href = titleLink?.getAttribute("href") ?? "";
+  const asinM = href.match(ASIN_RE) ?? row.id.match(UFPO_ITEM_ROW_ID_RE);
+  if (!(name && asinM?.[1])) {
+    return null;
+  }
+
+  const absoluteHref = href.startsWith("/") ? `https://www.amazon.com${href}` : href || null;
+  const itemRow = titleLink?.closest<HTMLElement>(".a-row") ?? row;
+  const cells = [...itemRow.children].filter((child) => child.getAttribute("role") === "gridcell");
+  const quantityText = normText(cells[1]);
+  const quantity = INT_RE.test(quantityText) ? Number(quantityText) : 1;
+  const totalText = normText(cells.at(-1));
+  const totalMatch = totalText.match(DOLLAR_RE);
+  const itemStatus = normText(row.querySelector(".ufpo-item-status"));
+
+  return {
+    asin: asinM[1],
+    name: name.slice(0, ITEM_NAME_MAX_LEN),
+    url: absoluteHref,
+    unit_price: quantity === 1 && totalMatch?.[1] ? `$${totalMatch[1]}` : null,
+    quantity,
+    seller: null,
+    item_image_url: row.querySelector<HTMLImageElement>(".ufpo-item-image-column img")?.getAttribute("src") ?? null,
+    refund_status: itemStatus && itemStatus.length < STATUS_MAX_LEN ? itemStatus : null,
+  };
+}
+
+function parseUfpoGrandTotal(summaryEl: Element | null): string | null {
+  if (!summaryEl) {
+    return null;
+  }
+  let total: string | null = null;
+  for (const row of summaryEl.querySelectorAll<HTMLElement>(".a-row")) {
+    const label = normText(row.querySelector("dt"));
+    const value = normText(row.querySelector("dd"));
+    const match = value.match(DOLLAR_RE);
+    if (UFPO_TOTAL_LABEL_RE.test(label) && match?.[1]) {
+      total = `$${match[1]}`;
+    }
+  }
+  return total;
+}
+
+function parseUfpoOrderDetailDom(document: Document): OrderDetail | null {
+  const itemTable = document.querySelector(".ufpo-item-list-table");
+  const status = [
+    normText(document.querySelector("#ufpo-order-status-primary")),
+    normText(document.querySelector("#ufpo-order-status-secondary")),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  if (!(itemTable || status)) {
+    return null;
+  }
+
+  const rows = itemTable ? [...itemTable.querySelectorAll<HTMLElement>('[id$="-item-grid-row"]')] : [];
+  const items = rows.map((row) => parseUfpoDetailItem(row)).filter((item): item is DetailItem => Boolean(item));
+  if (items.length === 0) {
+    return null;
+  }
+
+  return {
+    status_detail: status && status.length < STATUS_MAX_LEN ? status : null,
+    recipient_name: null,
+    shipping_address_summary: null,
+    payment_method_summary: parsePaymentMethod(document.querySelector(".pmts-payments-instrument-details")),
+    grand_total: parseUfpoGrandTotal(document.querySelector(".ufpo-order-summary-list")),
+    gift_order: false,
+    digital_order: false,
+    items,
+  };
+}
+
 function parseUffOrderDetailDom(document: Document): OrderDetail | null {
   const card = document.querySelector<HTMLElement>(".order-card, .js-order-card");
   const order = card ? parseOrderCard(card) : null;
@@ -407,7 +485,7 @@ export function parseOrderDetailDom(html: string): OrderDetail | null {
   const { document } = parseHTML(html);
   const od = document.querySelector("#orderDetails");
   if (!od) {
-    return parseFopoOrderDetailDom(document) ?? parseUffOrderDetailDom(document);
+    return parseFopoOrderDetailDom(document) ?? parseUfpoOrderDetailDom(document) ?? parseUffOrderDetailDom(document);
   }
 
   const cancelledEl = od.querySelector('[data-component="cancelled"]');

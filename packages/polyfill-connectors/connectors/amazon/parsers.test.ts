@@ -224,6 +224,38 @@ test("parseOrderDetailDom: fopo Whole Foods detail fixture parses alternate deta
   });
 });
 
+test("parseOrderDetailDom: ufpo grocery detail fixture parses current alternate detail shape", () => {
+  const html = readFixture("order-detail-ufpo-minimal.html");
+  const d = parseOrderDetailDom(html);
+  assert.ok(d, "expected non-null OrderDetail");
+  assert.equal(d.grand_total, "$10.50");
+  assert.equal(d.status_detail, "Delivered today · Arrived during the selected window");
+  assert.equal(d.payment_method_summary, null);
+  assert.equal(d.gift_order, false);
+  assert.equal(d.digital_order, false);
+  assert.equal(d.items.length, 2);
+  assert.deepEqual(d.items[0], {
+    asin: "B01UFPO001",
+    name: "Fictional Grocery Apples",
+    url: "https://www.amazon.com/gp/product/B01UFPO001?ref_=uff_od_product",
+    unit_price: "$3.00",
+    quantity: 1,
+    seller: null,
+    item_image_url: "https://example.com/ufpo-a.jpg",
+    refund_status: "Delivered",
+  });
+  assert.deepEqual(d.items[1], {
+    asin: "B02UFPO002",
+    name: "Fictional Grocery Peaches",
+    url: "https://www.amazon.com/dp/B02UFPO002?ref_=uff_od_product",
+    unit_price: null,
+    quantity: 2,
+    seller: null,
+    item_image_url: "https://example.com/ufpo-b.jpg",
+    refund_status: null,
+  });
+});
+
 test("parseOrderDetailDom: uff order-card detail fixture parses alternate detail shape", () => {
   const html = readFixture("order-detail-uff-card-minimal.html");
   const d = parseOrderDetailDom(html);
