@@ -10,8 +10,11 @@
 //   node scripts/stream-evidence-inventory.mjs           writes the file
 //   node scripts/stream-evidence-inventory.mjs --check    regenerates to a
 //     buffer and exits 1 with a diff hint if the committed file is stale,
-//     OR if any stream is missing a coverage_strategy/freshness_strategy
-//     (new debt fails the check even if the file itself is fresh).
+//     OR if any stream is missing a coverage_strategy/freshness_strategy,
+//     OR if any stream combines required:true/default-required with an
+//     accepted-absence coverage policy (deferred, inventory_only,
+//     unavailable, unsupported). New debt fails the check even if the file
+//     itself is fresh.
 //
 // This is a developer/CI audit, not a runtime module: it reads manifests
 // from disk and writes a docs artifact. See
@@ -33,7 +36,7 @@ const MANIFEST_DIRS = [
 /**
  * @returns {Array<{ manifestSet: string, connectorId: string, manifest: object }>}
  */
-function readManifests() {
+export function readManifests() {
   const manifests = [];
   for (const dir of MANIFEST_DIRS) {
     if (!existsSync(dir.path)) {
@@ -62,11 +65,17 @@ function cell(value) {
   return String(value).replace(/\|/g, "\\|");
 }
 
+const ACCEPTED_ABSENCE_POLICIES = new Set(["deferred", "inventory_only", "unavailable", "unsupported"]);
+
+function isAcceptedAbsencePolicy(policy) {
+  return ACCEPTED_ABSENCE_POLICIES.has(policy);
+}
+
 /**
  * @param {Array<{ manifestSet: string, connectorId: string, manifest: object }>} manifests
- * @returns {{ markdown: string, missingStrategyCount: number }}
+ * @returns {{ markdown: string, missingStrategyCount: number, requiredAcceptedAbsenceCount: number }}
  */
-function renderInventory(manifests) {
+export function renderInventory(manifests) {
   const lines = [];
   lines.push("# Stream evidence inventory");
   lines.push("");
@@ -85,6 +94,7 @@ function renderInventory(manifests) {
   lines.push("");
 
   let missingStrategyCount = 0;
+  let requiredAcceptedAbsenceCount = 0;
 
   for (const { manifestSet, connectorId, manifest } of manifests) {
     lines.push(`## ${manifestSet}/${connectorId}`);
@@ -102,6 +112,9 @@ function renderInventory(manifests) {
         missingStrategyCount += 1;
       }
       const required = stream?.required === false ? "false" : "true";
+      if (stream?.required !== false && isAcceptedAbsencePolicy(stream?.coverage_policy)) {
+        requiredAcceptedAbsenceCount += 1;
+      }
       lines.push(
         `| ${cell(stream?.name)} | ${cell(coverageStrategy)} | ${cell(freshnessStrategy)} | ` +
           `${cell(stream?.coverage_policy)} | ${cell(required)} | ${cell(stream?.state_stream)} | ` +
@@ -116,8 +129,11 @@ function renderInventory(manifests) {
   lines.push(
     `${missingStrategyCount} stream(s) missing a coverage_strategy or freshness_strategy declaration (debt).`
   );
+  lines.push(
+    `${requiredAcceptedAbsenceCount} stream(s) combine required=true/default-required with an accepted-absence coverage_policy (debt).`
+  );
 
-  return { markdown: `${lines.join("\n")}\n`, missingStrategyCount };
+  return { markdown: `${lines.join("\n")}\n`, missingStrategyCount, requiredAcceptedAbsenceCount };
 }
 
 function parseArgs(argv) {
@@ -127,7 +143,7 @@ function parseArgs(argv) {
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const manifests = readManifests();
-  const { markdown, missingStrategyCount } = renderInventory(manifests);
+  const { markdown, missingStrategyCount, requiredAcceptedAbsenceCount } = renderInventory(manifests);
 
   if (!args.check) {
     mkdirSync(dirname(OUTPUT_PATH), { recursive: true });
@@ -136,15 +152,22 @@ function main() {
     if (missingStrategyCount > 0) {
       process.stdout.write(`Note: ${missingStrategyCount} stream(s) still missing a strategy declaration.\n`);
     }
+    if (requiredAcceptedAbsenceCount > 0) {
+      process.stdout.write(
+        `Note: ${requiredAcceptedAbsenceCount} stream(s) still combine required=true/default-required with an accepted-absence coverage_policy.\n`
+      );
+    }
     return;
   }
 
   const existing = existsSync(OUTPUT_PATH) ? readFileSync(OUTPUT_PATH, "utf8") : null;
   const stale = existing !== markdown;
-  const hasNewDebt = missingStrategyCount > 0;
+  const hasNewDebt = missingStrategyCount > 0 || requiredAcceptedAbsenceCount > 0;
 
   if (!stale && !hasNewDebt) {
-    process.stdout.write("stream-evidence inventory: PASS (artifact current, no missing strategies)\n");
+    process.stdout.write(
+      "stream-evidence inventory: PASS (artifact current, no missing strategies, no required+accepted-absence contradictions)\n"
+    );
     process.exitCode = 0;
     return;
   }
@@ -156,10 +179,17 @@ function main() {
     );
   }
   if (hasNewDebt) {
-    process.stdout.write(
-      `stream-evidence inventory: FAIL — ${missingStrategyCount} stream(s) are missing a coverage_strategy or ` +
-        "freshness_strategy declaration. Every new or touched stream must declare both.\n"
-    );
+    if (missingStrategyCount > 0) {
+      process.stdout.write(
+        `stream-evidence inventory: FAIL — ${missingStrategyCount} stream(s) are missing a coverage_strategy or ` +
+          "freshness_strategy declaration. Every new or touched stream must declare both.\n"
+      );
+    }
+    if (requiredAcceptedAbsenceCount > 0) {
+      process.stdout.write(
+        `stream-evidence inventory: FAIL — ${requiredAcceptedAbsenceCount} stream(s) combine required=true/default-required with an accepted-absence coverage_policy. Such manifests are contradictory and must opt out of requiredness.\n`
+      );
+    }
   }
   process.exitCode = 1;
 }

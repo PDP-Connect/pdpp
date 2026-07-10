@@ -57,13 +57,13 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | skills | snapshot_import_receipt | device_heartbeat | — | true | — | — |
 | memory_notes | checkpoint_window | device_heartbeat | — | true | sessions | — |
 | slash_commands | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| file_history | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| cache_inventory | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| coverage_diagnostics | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| debug_artifacts | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| downloads | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| backup_inventory | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| config_inventory | snapshot_import_receipt | device_heartbeat | — | true | — | — |
+| file_history | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
+| cache_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
+| coverage_diagnostics | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
+| debug_artifacts | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
+| downloads | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
+| backup_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
+| config_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 
 ## polyfill/codex
 
@@ -76,12 +76,12 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | prompts | snapshot_import_receipt | device_heartbeat | — | true | — | — |
 | skills | snapshot_import_receipt | device_heartbeat | — | true | — | — |
 | history | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| session_index | snapshot_import_receipt | device_heartbeat | — | true | — | — |
+| session_index | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | coverage_diagnostics | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| logs | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| shell_snapshots | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| config_inventory | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| cache_inventory | snapshot_import_receipt | device_heartbeat | — | true | — | — |
+| logs | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
+| shell_snapshots | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
+| config_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
+| cache_inventory | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 
 ## polyfill/doordash
 
@@ -337,3 +337,4 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 ## Summary
 
 0 stream(s) missing a coverage_strategy or freshness_strategy declaration (debt).
+0 stream(s) combine required=true/default-required with an accepted-absence coverage_policy (debt).

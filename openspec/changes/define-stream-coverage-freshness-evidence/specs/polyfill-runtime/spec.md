@@ -28,6 +28,10 @@ declarations during migration:
 - `unavailable` and `unsupported` mean the provider or connector cannot
   establish coverage for this stream and SHALL carry a reason when available.
 
+Streams that use an accepted-absence policy because the current connector does
+not owe the stream's collection SHALL also declare `required: false`. A
+manifest SHALL NOT leave an accepted-absence stream load-bearing.
+
 Absence of both a coverage evidence strategy and runtime coverage evidence SHALL
 not be treated as successful coverage. It SHALL classify as missing
 measurement evidence for existing streams and SHALL fail developer validation
@@ -43,10 +47,21 @@ considered and collected counts.
 #### Scenario: legacy deferred coverage policy remains accepted absence
 
 **WHEN** a manifest stream declares legacy `coverage_policy: "deferred"`
+**AND** the stream opts out of requiredness with `required: false`
 **THEN** runtime normalization SHALL treat that stream as accepted deferred
 coverage
 **AND** owner projections SHALL NOT leave that stream in unknown coverage solely
 because it did not collect records in the run.
+
+#### Scenario: accepted-absence streams opt out of requiredness
+
+**WHEN** a manifest stream declares `coverage_policy: "inventory_only"`
+**OR** `coverage_policy: "deferred"`
+**OR** `coverage_policy: "unavailable"`
+**OR** `coverage_policy: "unsupported"`
+**AND** the stream declares `required: false`
+**THEN** developer validation SHALL accept the manifest
+**AND** the stream SHALL remain a non-load-bearing accepted-absence stream.
 
 #### Scenario: missing coverage evidence is developer debt
 

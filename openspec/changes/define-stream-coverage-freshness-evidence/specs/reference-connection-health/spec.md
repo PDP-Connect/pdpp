@@ -275,8 +275,9 @@ reports and fails when any required stream rests at unknown/unmeasured
 coverage while the connection renders Healthy. The audit SHALL run against
 seeded fixtures in developer gates and SHALL support running against a live
 owner instance. Generated connector inventory SHALL record every declared
-stream's coverage and freshness posture so newly added debt fails developer
-validation.
+stream's coverage and freshness posture and SHALL fail developer validation
+when a stream combines required=true/default-required with an accepted-absence
+coverage policy, so newly added debt fails developer validation.
 
 #### Scenario: audit fails on a masked unmeasured stream
 
@@ -293,3 +294,12 @@ postures
 **THEN** the audit SHALL exit zero
 **AND** accepted-absence and locally-proven streams SHALL NOT be reported as
 debt.
+
+#### Scenario: inventory gate fails contradictory required accepted-absence streams
+
+**WHEN** the generated connector inventory reads a manifest stream with
+`required: true` or no explicit required flag
+**AND** that stream declares an accepted-absence coverage policy such as
+`deferred`, `inventory_only`, `unavailable`, or `unsupported`
+**THEN** the inventory check SHALL exit non-zero
+**AND** the failure SHALL name the connector and stream.

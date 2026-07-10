@@ -756,6 +756,8 @@
         "resources": true
       },
       "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "device_heartbeat"
     },
@@ -821,6 +823,8 @@
         "resources": true
       },
       "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "device_heartbeat"
     },
@@ -866,6 +870,8 @@
         "resources": true
       },
       "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "device_heartbeat"
     },
@@ -931,6 +937,8 @@
         "resources": true
       },
       "incremental": false,
+      "required": false,
+      "coverage_policy": "deferred",
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "device_heartbeat"
     },
@@ -996,6 +1004,8 @@
         "resources": true
       },
       "incremental": false,
+      "required": false,
+      "coverage_policy": "deferred",
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "device_heartbeat"
     },
@@ -1061,6 +1071,8 @@
         "resources": true
       },
       "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "device_heartbeat"
     },
@@ -1126,6 +1138,8 @@
         "resources": true
       },
       "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
       "coverage_strategy": "snapshot_import_receipt",
       "freshness_strategy": "device_heartbeat"
     }
