@@ -1,10 +1,12 @@
 // Pure machine audit: a required stream without a resolved coverage posture
-// SHALL never hide beneath a Healthy connection verdict.
+// SHALL never hide beneath a Healthy connection verdict, and settled/live
+// acceptance SHALL inspect every non-revoked connection rather than only
+// Healthy pills.
 //
 // Implements openspec/changes/define-stream-coverage-freshness-evidence
 // specs/reference-connection-health/spec.md requirement "A reproducible
-// machine audit SHALL fail on unmeasured required streams beneath Healthy"
-// (tasks.md 9.1).
+// machine audit SHALL distinguish settled failures from active or
+// unreliable evidence" (tasks.md 9.1).
 //
 // Input shape (one entry per configured connection), as served by the
 // `GET /_ref/connectors` summaries route (`ConnectorSummary` in
@@ -25,13 +27,15 @@
 // as required — the audit must not go blind on collection reports that
 // predate the field.
 //
-// The Healthy pill is audited unconditionally — there is NO active-run
-// exemption. Under active bounded work the verdict contract renders
-// Syncing/Checking, never Healthy, so a Healthy pill coexisting with an
-// active run AND a required-unknown stream is an internally impossible
-// snapshot; it fails through the normal path rather than being excused.
+// Settle/live acceptance is conservative:
+//   - required unknown/unmeasured and required+accepted-absence are hard
+//     failures on settled connections, regardless of pill label;
+//   - active bounded work is reported as inconclusive, but it does not
+//     suppress masked failures;
+//   - declared-stream count absence fails only when the retained-size
+//     projection is reliable, otherwise it stays inconclusive.
 
-const HEALTHY_LABEL = "Healthy";
+const ACTIVE_PILL_LABELS = new Set(["Checking", "Syncing"]);
 
 // Accepted-absence coverage conditions. On a NON-required stream these are
 // accepted postures and are not debt. On a REQUIRED stream they are a
@@ -67,9 +71,64 @@ function restsUnmeasured(entry) {
   return coverage === "unknown" || disposition === "unmeasured";
 }
 
-function isHealthyPill(verdict) {
-  const pill = verdict?.pill;
-  return !!pill && typeof pill === "object" && pill.label === HEALTHY_LABEL;
+function isSettledConnection(connection) {
+  const status = connection?.status;
+  return status !== "revoked" && connection?.revoked_at == null;
+}
+
+function hasActiveBoundedWork(connection) {
+  const ownerState = connection?.owner_state;
+  const health = connection?.connection_health;
+  const pillLabel = connection?.rendered_verdict?.pill?.label;
+  return (
+    ownerState?.resolver === "collecting" ||
+    health?.badges?.syncing === true ||
+    pillLabel === "Checking" ||
+    pillLabel === "Syncing" ||
+    ACTIVE_PILL_LABELS.has(pillLabel)
+  );
+}
+
+function projectionIsReliable(connection) {
+  const conditions = Array.isArray(connection?.connection_health?.conditions) ? connection.connection_health.conditions : [];
+  return conditions.some((condition) => condition?.type === "ProjectionReliable" && condition?.status === "true");
+}
+
+function declaredStreamNames(connection) {
+  const declared = Array.isArray(connection?.streams) ? connection.streams : [];
+  return declared.filter((stream) => typeof stream === "string" && stream.length > 0);
+}
+
+function reportStreamNames(report) {
+  const declared = new Set();
+  const names = [];
+  for (const entry of Array.isArray(report) ? report : []) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const stream = typeof entry.stream === "string" ? entry.stream : null;
+    if (!stream || declared.has(stream)) {
+      continue;
+    }
+    declared.add(stream);
+    names.push(stream);
+  }
+  return names;
+}
+
+function streamRecordsByName(connection) {
+  const records = new Map();
+  for (const entry of Array.isArray(connection?.stream_records) ? connection.stream_records : []) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const stream = typeof entry.stream === "string" ? entry.stream : null;
+    if (!stream) {
+      continue;
+    }
+    records.set(stream, entry);
+  }
+  return records;
 }
 
 function connectionLabel(connection) {
@@ -100,6 +159,8 @@ function connectionId(connection) {
  *     denominator, or skip fact resolved the stream. (Suggests investigating
  *     the connector's coverage-evidence emission — but the oracle only
  *     asserts the missing runtime evidence.)
+ *   - "declared_stream_count_unavailable": the retained-size projection is
+ *     unreliable, so the audit cannot prove an exact zero.
  *   - "accepted_absence_on_required": the entry is required AND carries an
  *     accepted-absence coverage condition — the contradictory-manifest
  *     combination the projection refuses to paint green.
@@ -111,51 +172,118 @@ function evidenceClassForUnmeasured(entry) {
   return "runtime_evidence_missing";
 }
 
+function streamCoverageClass(entry) {
+  if (restsUnmeasured(entry)) {
+    return evidenceClassForUnmeasured(entry);
+  }
+  if (ACCEPTED_ABSENCE_CONDITIONS.has(entry?.coverage_condition)) {
+    return "accepted_absence_on_required";
+  }
+  return null;
+}
+
 /**
  * Audit a set of connector summaries for required streams without a
- * resolved coverage posture beneath a Healthy verdict.
+ * resolved coverage posture beneath a settled verdict.
  *
- * A failure = a Healthy-pill connection with a required collection-report
- * entry that either (a) rests at unknown/unmeasured coverage, or (b)
- * carries an accepted-absence coverage condition (accepted absence is only
- * a resolved posture for non-required streams). There is no active-run
- * exemption; see the module comment.
+ * A failure = a settled connection with a required collection-report entry
+ * that either (a) rests at unknown/unmeasured coverage, or (b) carries an
+ * accepted-absence coverage condition (accepted absence is only a resolved
+ * posture for non-required streams). Active bounded work and unreliable
+ * retained-size evidence make the audit inconclusive rather than passing.
+ * Active bounded work is still reported as inconclusive, but it does not
+ * hide masked failures.
  *
  * @param {readonly unknown[]} connections
- * @returns {{ ok: boolean, failures: Array<{
+ * @returns {{ ok: boolean, status: "pass" | "fail" | "inconclusive", failures: Array<{
  *   connection_id: string|null,
  *   connection_label: string,
  *   streams: Array<{ stream: string,
  *     class: "strategy_declaration_missing"|"runtime_evidence_missing"|"accepted_absence_on_required" }>,
+ * }>, inconclusive: Array<{
+ *   connection_id: string|null,
+ *   connection_label: string,
+ *   streams: Array<{ stream: string, class: "active_bounded_work"|"declared_stream_count_unavailable" }>,
  * }> }}
  */
 export function auditStreamHealth(connections) {
   const failures = [];
+  const inconclusive = [];
 
   for (const connection of Array.isArray(connections) ? connections : []) {
-    if (!isHealthyPill(connection?.rendered_verdict)) {
+    if (!isSettledConnection(connection)) {
       continue;
     }
 
     const report = Array.isArray(connection?.collection_report) ? connection.collection_report : [];
     const maskedStreams = [];
-    for (const entry of report) {
-      if (!isRequiredEntry(entry)) {
+    const unsettledStreams = [];
+    const activeBoundedWork = hasActiveBoundedWork(connection);
+    const projectionReliable = projectionIsReliable(connection);
+    const declaredStreams = declaredStreamNames(connection);
+    const declaredStreamSet = new Set(declaredStreams);
+    const reportOnlyStreams = reportStreamNames(report).filter((stream) => !declaredStreamSet.has(stream));
+    const auditedStreams = declaredStreams.concat(reportOnlyStreams);
+    const streamRecords = streamRecordsByName(connection);
+
+    for (const stream of auditedStreams) {
+      const reportEntry = report.find((entry) => entry?.stream === stream);
+      if (!reportEntry) {
+        if (!projectionReliable) {
+          unsettledStreams.push({
+            stream,
+            class: "declared_stream_count_unavailable",
+          });
+        } else {
+          maskedStreams.push({
+            stream,
+            class: "runtime_evidence_missing",
+          });
+        }
         continue;
       }
-      if (restsUnmeasured(entry)) {
-        maskedStreams.push({
-          stream: String(entry?.stream ?? "<unknown stream>"),
-          class: evidenceClassForUnmeasured(entry),
+
+      if (isRequiredEntry(reportEntry)) {
+        const streamClass = streamCoverageClass(reportEntry);
+        if (streamClass) {
+          maskedStreams.push({
+            stream,
+            class: streamClass,
+          });
+        }
+      }
+
+      const record = streamRecords.get(stream);
+      if (record) {
+        continue;
+      }
+      if (!projectionReliable) {
+        unsettledStreams.push({
+          stream,
+          class: "declared_stream_count_unavailable",
         });
         continue;
       }
-      if (ACCEPTED_ABSENCE_CONDITIONS.has(entry?.coverage_condition)) {
-        maskedStreams.push({
-          stream: String(entry?.stream ?? "<unknown stream>"),
-          class: "accepted_absence_on_required",
-        });
-      }
+      maskedStreams.push({
+        stream,
+        class: "runtime_evidence_missing",
+      });
+    }
+
+    if (activeBoundedWork) {
+      inconclusive.push({
+        connection_id: connectionId(connection),
+        connection_label: connectionLabel(connection),
+        streams: [{ stream: "<active bounded work>", class: "active_bounded_work" }],
+      });
+    }
+
+    if (unsettledStreams.length > 0) {
+      inconclusive.push({
+        connection_id: connectionId(connection),
+        connection_label: connectionLabel(connection),
+        streams: unsettledStreams,
+      });
     }
 
     if (maskedStreams.length > 0) {
@@ -167,5 +295,6 @@ export function auditStreamHealth(connections) {
     }
   }
 
-  return { ok: failures.length === 0, failures };
+  const status = failures.length > 0 ? "fail" : inconclusive.length > 0 ? "inconclusive" : "pass";
+  return { ok: status === "pass", status, failures, inconclusive };
 }

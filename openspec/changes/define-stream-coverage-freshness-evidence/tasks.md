@@ -66,7 +66,7 @@
 
 ## 9. Machine Gates
 
-- [x] 9.1 Reproducible machine audit that fails when a required stream rests unmeasured/unknown beneath a Healthy connection verdict: a seeded local test plus a live mode reusing the owner-journey acceptance harness. The live mode SHALL distinguish stored-manifest drift (per-stream `coverage_strategy` missing from the served collection report) from producer gaps (strategy present, checkpoint/denominator absent) so each audited row has a named root-cause class.
+- [x] 9.1 Reproducible machine audit that fails when a required stream rests unmeasured/unknown beneath a settled connection verdict: a seeded local test plus a live mode reusing the owner-journey acceptance harness. The live mode SHALL audit every non-revoked connection, distinguish stored-manifest drift (per-stream `coverage_strategy` missing from the served collection report) from producer gaps (strategy present, checkpoint/denominator absent), treat active bounded work as inconclusive, and keep declared-stream count absence inconclusive when retained-size evidence is dirty/unavailable instead of fabricating zero.
 - [x] 9.2 Generated stream-evidence inventory artifact (per connector, per stream: strategies, policy, requiredness, `state_stream`) with a drift check wired into CI so new debt fails.
 - [x] 9.3 Close the CI path hole: edits under `reference-implementation/manifests/**` must run the stream-evidence manifest guardrail test.
 - [x] 9.4 Full-suite acceptance: `openspec validate define-stream-coverage-freshness-evidence --strict`, reference-implementation/polyfill-connectors/console suites, typechecks, and lint.

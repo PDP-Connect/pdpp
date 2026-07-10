@@ -43,9 +43,9 @@
 // scripts/owner-journey-acceptance/live.mjs:
 //   PDPP_ACCEPTANCE_ORIGIN or --origin   the instance origin
 //   PDPP_OWNER_SESSION_COOKIE            full Cookie header for an owner session
-//   PDPP_OWNER_TOKEN                     owner bearer token (fallback)
-// Auth values are read from the environment and never printed — only
-// whether auth was supplied (the resolved mode).
+//   PDPP_OWNER_TOKEN                     owner bearer token (not supported)
+// This route family is cookie-only. Bearer tokens are rejected before any
+// HTTP call instead of being claimed as supported.
 
 import { auditStreamHealth } from "./audit.mjs";
 
@@ -54,18 +54,18 @@ import { auditStreamHealth } from "./audit.mjs";
  * Mirrors `resolveOwnerAuthFromEnv` in scripts/owner-journey-acceptance/live.mjs.
  *
  * @param {NodeJS.ProcessEnv} env
- * @returns {{ header: Record<string,string>, mode: "cookie"|"bearer"|"none" }}
+ * @returns {{ header: Record<string,string>, mode: "cookie"|"bearer"|"none", supported: boolean }}
  */
 export function resolveOwnerAuthFromEnv(env = process.env) {
   const cookie = env.PDPP_OWNER_SESSION_COOKIE?.trim();
   if (cookie) {
-    return { header: { cookie }, mode: "cookie" };
+    return { header: { cookie }, mode: "cookie", supported: true };
   }
   const token = env.PDPP_OWNER_TOKEN?.trim();
   if (token) {
-    return { header: { authorization: `Bearer ${token}` }, mode: "bearer" };
+    return { header: {}, mode: "bearer", supported: false };
   }
-  return { header: {}, mode: "none" };
+  return { header: {}, mode: "none", supported: false };
 }
 
 function asArrayList(raw) {
@@ -86,12 +86,33 @@ function asArrayList(raw) {
  * @param {string} args.origin   e.g. https://pdpp.example.com
  * @param {object} [args.env]    defaults to process.env
  * @param {Function} [args.fetchImpl] injectable for tests; defaults to global fetch
- * @returns {Promise<{ origin: string, authMode: string, fetched: boolean,
- *   error: string|null, connectionCount: number, ok: boolean, failures: Array }>}
+ * @returns {Promise<{ origin: string, authMode: string, authCapability: string,
+ *   fetched: boolean, error: string|null, connectionCount: number,
+ *   ok: boolean, status: "pass"|"fail"|"inconclusive", failures: Array,
+ *   inconclusive: Array }>}
  */
 export async function runLiveStreamHealthAudit({ origin, env = process.env, fetchImpl = fetch }) {
   const base = origin.replace(/\/+$/, "");
-  const { header, mode } = resolveOwnerAuthFromEnv(env);
+  const { header, mode, supported } = resolveOwnerAuthFromEnv(env);
+
+  if (!supported) {
+    const error =
+      mode === "bearer"
+        ? "PDPP_OWNER_TOKEN is not supported for /_ref/connectors; set PDPP_OWNER_SESSION_COOKIE instead."
+        : "No owner session cookie supplied. Set PDPP_OWNER_SESSION_COOKIE to audit /_ref/connectors.";
+    return {
+      origin: base,
+      authMode: mode,
+      authCapability: "cookie_only",
+      fetched: false,
+      error,
+      connectionCount: 0,
+      ok: false,
+      status: "inconclusive",
+      failures: [],
+      inconclusive: [],
+    };
+  }
 
   try {
     const res = await fetchImpl(`${base}/_ref/connectors?limit=500`, {
@@ -102,35 +123,44 @@ export async function runLiveStreamHealthAudit({ origin, env = process.env, fetc
       return {
         origin: base,
         authMode: mode,
+        authCapability: "cookie_only",
         fetched: false,
         error: `GET /_ref/connectors returned status ${res.status}`,
         connectionCount: 0,
         ok: false,
+        status: "inconclusive",
         failures: [],
+        inconclusive: [],
       };
     }
     const body = await res.text();
     const parsed = JSON.parse(body);
     const connections = asArrayList(parsed);
-    const { ok, failures } = auditStreamHealth(connections);
+    const { ok, status, failures, inconclusive } = auditStreamHealth(connections);
     return {
       origin: base,
       authMode: mode,
+      authCapability: "cookie_only",
       fetched: true,
       error: null,
       connectionCount: connections.length,
       ok,
+      status,
       failures,
+      inconclusive,
     };
   } catch (err) {
     return {
       origin: base,
       authMode: mode,
+      authCapability: "cookie_only",
       fetched: false,
       error: err instanceof Error ? err.message : String(err),
       connectionCount: 0,
       ok: false,
+      status: "inconclusive",
       failures: [],
+      inconclusive: [],
     };
   }
 }

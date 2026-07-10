@@ -267,30 +267,51 @@ zero when no records are retained
 **AND** proven coverage SHALL NOT coexist with a silently missing retained
 count.
 
-### Requirement: A reproducible machine audit SHALL fail on unmeasured required streams beneath Healthy
+### Requirement: A reproducible machine audit SHALL distinguish settled failures from active or unreliable evidence
 
 The reference implementation SHALL provide a reproducible machine audit that
-inspects connection verdicts together with their per-stream collection
-reports and fails when any required stream rests at unknown/unmeasured
-coverage while the connection renders Healthy. The audit SHALL run against
-seeded fixtures in developer gates and SHALL support running against a live
-owner instance. Generated connector inventory SHALL record every declared
-stream's coverage and freshness posture and SHALL fail developer validation
-when a stream combines required=true/default-required with an accepted-absence
-coverage policy, so newly added debt fails developer validation.
+inspects every non-revoked connection together with its per-stream collection
+report. On a settled connection, the audit SHALL fail when any required stream
+rests at unknown/unmeasured coverage or carries an accepted-absence condition.
+When active bounded work is currently expected to resolve the missing evidence,
+the audit SHALL be explicitly inconclusive rather than passing. When declared
+stream counts are unavailable because retained-size evidence is dirty,
+unavailable, or otherwise unreliable, the audit SHALL be inconclusive rather
+than fabricating zero; when the retained-size projection is clean, an absent
+declared stream count SHALL fail. The audit SHALL run against seeded fixtures
+in developer gates and SHALL support running against a live owner instance.
+Generated connector inventory SHALL record every declared stream's coverage and
+freshness posture so newly added debt fails developer validation.
 
-#### Scenario: audit fails on a masked unmeasured stream
+#### Scenario: audit fails on a settled masked unmeasured stream
 
-**WHEN** the machine audit reads a connection whose rendered verdict is Healthy
-**AND** a required stream in its collection report rests at unknown coverage
-with an unmeasured disposition and no active run
+**WHEN** the machine audit reads a settled connection whose collection report
+contains a required stream at unknown coverage with an unmeasured disposition
 **THEN** the audit SHALL exit non-zero
 **AND** the failure SHALL name the connection and the unmeasured streams.
 
+#### Scenario: audit is inconclusive while active bounded work is expected
+
+**WHEN** the machine audit reads a connection with active bounded work evidence
+**AND** the connection is not revoked
+**THEN** the audit SHALL exit non-zero
+**AND** the result SHALL be explicitly inconclusive rather than a pass.
+
+#### Scenario: audit is inconclusive when retained counts are unavailable
+
+**WHEN** the machine audit reads a settled connection whose declared stream is
+absent from the retained-count projection
+**AND** the retained-size evidence is dirty or otherwise unreliable
+**THEN** the audit SHALL exit non-zero
+**AND** the result SHALL be explicitly inconclusive rather than fabricating
+zero.
+
 #### Scenario: audit passes an honest instance
 
-**WHEN** every Healthy connection's required streams carry resolved coverage
-postures
+**WHEN** every non-revoked connection's required streams carry resolved
+coverage postures
+**AND** every declared stream count is either present or cleanly synthesized
+as zero
 **THEN** the audit SHALL exit zero
 **AND** accepted-absence and locally-proven streams SHALL NOT be reported as
 debt.

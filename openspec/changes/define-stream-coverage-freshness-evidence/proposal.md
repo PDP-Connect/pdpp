@@ -26,6 +26,12 @@ historical data that predates instrumentation.
   resolves to a maintainer/system disposition — never an owner CTA and never
   indefinite active "checking". Accepted-absence policies and proven
   local-diagnostic states stay non-degrading.
+- Add a settled machine audit over the cookie-gated connector summary: inspect
+  every non-revoked connection, fail required unknown/unmeasured and
+  required+accepted-absence regardless of pill label, treat active bounded work
+  as inconclusive until it ends, and treat declared-stream count absence as a
+  failure only when the retained-size projection is reliable enough to prove an
+  exact zero.
 - Derive per-stream coverage from the latest resolved evidence across recent
   terminal fact blocks: a scoped run neither erases prior valid proof for
   omitted streams nor invents proof for them, and run selection is never
@@ -37,6 +43,9 @@ historical data that predates instrumentation.
 - Add developer-time validation so new streams cannot silently add unknown
   coverage/freshness debt, plus a reproducible machine audit that fails when a
   required stream rests unmeasured beneath a Healthy connection.
+- Keep the live audit cookie-only: `PDPP_OWNER_TOKEN` is not supported against
+  the cookie-gated `/_ref/connectors` summary route and is rejected before any
+  HTTP request is attempted.
 
 ## Capabilities
 

@@ -274,7 +274,9 @@ sections above and the tasks in sections 6–9 treat every post-boot unmeasured
 row as open until a deterministic reproduction proves the projection now
 resolves it. The reproducible machine audit exists so this class of claim can
 never again rest on a checked task box: it fails whenever a required stream
-rests unmeasured beneath a Healthy connection.
+rests unmeasured beneath a settled connection, treats active bounded work as
+inconclusive, and stays cookie-only because `/_ref/connectors` is gated by an
+owner session cookie rather than a bearer token.
 
 ## Implementation Sequence
 

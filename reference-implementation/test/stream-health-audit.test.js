@@ -1,369 +1,314 @@
 /**
  * Unit tests for the pure stream-health machine audit
- * (scripts/stream-health-audit/audit.mjs).
+ * (scripts/stream-health-audit/audit.mjs) and its live auth preflight.
  *
- * Fixture connection objects are shaped like the `GET /_ref/connectors`
- * summary entries (`ConnectorSummary` in server/ref-control.ts):
- * `rendered_verdict.pill.label`, `collection_report[]`. No server is
- * started — auditStreamHealth is a pure function of these fixtures per
- * openspec/changes/define-stream-coverage-freshness-evidence tasks.md 9.1.
- *
- * Contract highlights pinned here:
- *   - No active-run exemption: under active work the pill must render
- *     Syncing/Checking, never Healthy, so Healthy + active work +
- *     required-unknown is an impossible snapshot and FAILS.
- *   - Accepted-absence coverage conditions resolve a stream only when it is
- *     non-required. required:true + accepted-absence is a contradictory
- *     manifest (`pickRequiredAcceptedCoverage`,
- *     server/connector-coverage-policy.ts) and FAILS beneath Healthy.
- *   - Failure classes are neutral evidence facts, not inferred causes:
- *     strategy_declaration_missing / runtime_evidence_missing /
- *     accepted_absence_on_required.
+ * The audit now runs in settled/full mode over ConnectorSummary-shaped
+ * fixtures:
+ *   - required unknown/unmeasured and required+accepted-absence fail on
+ *     settled connections regardless of pill label;
+ *   - active bounded work is reported as inconclusive, but it does not
+ *     suppress masked failures;
+ *   - declared-stream count absence fails only when the retained-size
+ *     projection is reliable, otherwise it stays inconclusive;
+ *   - bearer auth is rejected before HTTP because /_ref/connectors is
+ *     cookie-gated.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { auditStreamHealth } from "../../scripts/stream-health-audit/audit.mjs";
+import { runLiveStreamHealthAudit } from "../../scripts/stream-health-audit/live.mjs";
 
-function healthyVerdict() {
-  return { pill: { label: "Healthy", tone: "green" } };
+function healthyVerdict(label = "Healthy", tone = "green") {
+  return { pill: { label, tone } };
 }
 
-function baseEntry(overrides = {}) {
+function coverageEntry(overrides = {}) {
   return {
-    stream: "orders",
+    stream: "messages",
     coverage_condition: "complete",
     forward_disposition: "complete",
     coverage_strategy: "checkpoint_window",
-    freshness_strategy: "manual_as_of",
+    freshness_strategy: "scheduled_window",
     checkpoint: "2026-07-09T00:00:00.000Z",
-    considered: 12,
-    covered: 12,
+    considered: 1,
+    covered: 1,
     required: true,
     ...overrides,
   };
 }
 
-test("masked case: Healthy connection with a required stream resting unmeasured fails, strategy present -> runtime_evidence_missing", () => {
-  const connection = {
-    connection_id: "conn_amazon_1",
-    display_name: "Amazon",
+function retainedStream(stream, recordCount) {
+  return { stream, record_count: recordCount, last_updated: null };
+}
+
+function settledConnection(overrides = {}) {
+  return {
+    connection_id: "conn_a",
+    connector_id: "connector_a",
+    display_name: "Conn A",
+    status: "active",
+    revoked_at: null,
     rendered_verdict: healthyVerdict(),
-    last_run: { status: "succeeded" },
-    collection_report: [
-      baseEntry(),
-      baseEntry({
-        stream: "order_items",
-        coverage_condition: "unknown",
-        forward_disposition: "unmeasured",
-        coverage_strategy: "parent_detail_accounting",
-        checkpoint: "unknown",
-        considered: "unknown",
-        covered: "unknown",
-      }),
-    ],
+    connection_health: {
+      badges: { syncing: false, stale: false },
+      conditions: [{ type: "ProjectionReliable", status: "true" }],
+      state: "healthy",
+    },
+    owner_state: { resolver: "healthy" },
+    streams: ["messages", "attachments"],
+    stream_records: [retainedStream("messages", 4), retainedStream("attachments", 0)],
+    collection_report: [coverageEntry(), coverageEntry({ stream: "attachments" })],
+    ...overrides,
   };
+}
 
-  const result = auditStreamHealth([connection]);
+test("settled mode: degraded connection with a required unmeasured stream fails", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      rendered_verdict: healthyVerdict("Degraded", "amber"),
+      collection_report: [
+        coverageEntry(),
+        coverageEntry({
+          stream: "attachments",
+          coverage_condition: "unknown",
+          forward_disposition: "unmeasured",
+          checkpoint: "unknown",
+          considered: "unknown",
+          covered: "unknown",
+        }),
+      ],
+    }),
+  ]);
 
+  assert.equal(result.status, "fail");
   assert.equal(result.ok, false);
   assert.equal(result.failures.length, 1);
-  assert.equal(result.failures[0].connection_id, "conn_amazon_1");
-  assert.deepEqual(result.failures[0].streams, [{ stream: "order_items", class: "runtime_evidence_missing" }]);
-});
-
-test("masked case: missing coverage_strategy on the entry classifies as strategy_declaration_missing", () => {
-  const connection = {
-    connection_id: "conn_usaa_1",
-    display_name: "USAA",
-    rendered_verdict: healthyVerdict(),
-    last_run: { status: "succeeded" },
-    collection_report: [
-      baseEntry({
-        stream: "statements",
-        coverage_condition: "unknown",
-        forward_disposition: "unmeasured",
-        coverage_strategy: null,
-        checkpoint: "unknown",
-        considered: "unknown",
-        covered: "unknown",
-      }),
-    ],
-  };
-
-  const result = auditStreamHealth([connection]);
-
-  assert.equal(result.ok, false);
-  assert.deepEqual(result.failures[0].streams, [{ stream: "statements", class: "strategy_declaration_missing" }]);
-});
-
-test("honest case: Healthy connection with all required streams proven complete passes", () => {
-  const connection = {
-    connection_id: "conn_chase_1",
-    display_name: "Chase",
-    rendered_verdict: healthyVerdict(),
-    last_run: { status: "succeeded" },
-    collection_report: [baseEntry({ stream: "balances" }), baseEntry({ stream: "current_activity" })],
-  };
-
-  const result = auditStreamHealth([connection]);
-
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.failures, []);
-});
-
-test("accepted-policy case: non-required unknown coverage does not fail even when Healthy", () => {
-  const connection = {
-    connection_id: "conn_slack_1",
-    display_name: "Slack",
-    rendered_verdict: healthyVerdict(),
-    last_run: { status: "succeeded" },
-    collection_report: [
-      baseEntry({ stream: "messages" }),
-      baseEntry({
-        stream: "stars",
-        coverage_condition: "unknown",
-        forward_disposition: "unmeasured",
-        coverage_strategy: "full_inventory",
-        required: false,
-        checkpoint: "unknown",
-        considered: "unknown",
-        covered: "unknown",
-      }),
-    ],
-  };
-
-  const result = auditStreamHealth([connection]);
-
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.failures, []);
-});
-
-test("accepted-policy case: accepted-absence conditions on NON-required streams pass", () => {
-  const connection = {
-    connection_id: "conn_slack_2",
-    display_name: "Slack Accepted",
-    rendered_verdict: healthyVerdict(),
-    last_run: { status: "succeeded" },
-    collection_report: [
-      baseEntry({ stream: "messages" }),
-      baseEntry({ stream: "a", coverage_condition: "deferred", forward_disposition: "complete", required: false }),
-      baseEntry({ stream: "b", coverage_condition: "inventory_only", forward_disposition: "complete", required: false }),
-      baseEntry({ stream: "c", coverage_condition: "unavailable", forward_disposition: "complete", required: false }),
-      baseEntry({ stream: "d", coverage_condition: "unsupported", forward_disposition: "complete", required: false }),
-    ],
-  };
-
-  const result = auditStreamHealth([connection]);
-
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.failures, []);
-});
-
-test("contradictory-manifest case: accepted-absence conditions on REQUIRED streams fail beneath Healthy", () => {
-  const connection = {
-    connection_id: "conn_contradictory_1",
-    display_name: "Contradictory Manifest",
-    rendered_verdict: healthyVerdict(),
-    last_run: { status: "succeeded" },
-    collection_report: [
-      baseEntry({ stream: "a", coverage_condition: "deferred", forward_disposition: "complete" }),
-      baseEntry({ stream: "b", coverage_condition: "inventory_only", forward_disposition: "complete" }),
-      baseEntry({ stream: "c", coverage_condition: "unavailable", forward_disposition: "complete" }),
-      baseEntry({ stream: "d", coverage_condition: "unsupported", forward_disposition: "complete" }),
-    ],
-  };
-
-  const result = auditStreamHealth([connection]);
-
-  assert.equal(result.ok, false);
   assert.deepEqual(result.failures[0].streams, [
-    { stream: "a", class: "accepted_absence_on_required" },
-    { stream: "b", class: "accepted_absence_on_required" },
-    { stream: "c", class: "accepted_absence_on_required" },
-    { stream: "d", class: "accepted_absence_on_required" },
+    { stream: "attachments", class: "runtime_evidence_missing" },
   ]);
 });
 
-test("impossible-snapshot case: Healthy pill with an in-progress run AND a required-unknown stream still fails", () => {
-  // Under active bounded work the verdict contract renders Syncing/Checking,
-  // never Healthy — this snapshot is internally impossible and must FAIL,
-  // not be excused by the active run.
-  const connection = {
-    connection_id: "conn_impossible_1",
-    display_name: "Impossible Snapshot",
-    rendered_verdict: healthyVerdict(),
-    last_run: { status: "in_progress" },
-    collection_report: [
-      baseEntry({
-        stream: "messages",
-        coverage_condition: "unknown",
-        forward_disposition: "checking",
-        checkpoint: "unknown",
-        considered: "unknown",
-        covered: "unknown",
-      }),
-    ],
-  };
+test("settled mode: missing coverage_strategy is classified as stored-manifest drift", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      collection_report: [
+        coverageEntry(),
+        coverageEntry({
+          stream: "attachments",
+          coverage_strategy: null,
+          coverage_condition: "unknown",
+          forward_disposition: "unmeasured",
+          checkpoint: "unknown",
+          considered: "unknown",
+          covered: "unknown",
+        }),
+      ],
+    }),
+  ]);
 
-  const result = auditStreamHealth([connection]);
-
+  assert.equal(result.status, "fail");
   assert.equal(result.ok, false);
-  assert.deepEqual(result.failures[0].streams, [{ stream: "messages", class: "runtime_evidence_missing" }]);
+  assert.equal(result.failures.length, 1);
+  assert.deepEqual(result.failures[0].streams, [
+    { stream: "attachments", class: "strategy_declaration_missing" },
+  ]);
 });
 
-test("impossible-snapshot case: an explicit active_run boolean does not excuse Healthy + required-unknown", () => {
-  const connection = {
-    connection_id: "conn_impossible_2",
-    display_name: "Impossible Snapshot 2",
-    rendered_verdict: healthyVerdict(),
-    active_run: true,
-    collection_report: [
-      baseEntry({
-        stream: "messages",
-        coverage_condition: "unknown",
-        forward_disposition: "unmeasured",
-        checkpoint: "unknown",
-        considered: "unknown",
-        covered: "unknown",
-      }),
-    ],
-  };
+test("settled mode: blocked connection with a required unmeasured stream fails", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      rendered_verdict: healthyVerdict("Can't collect", "red"),
+      collection_report: [
+        coverageEntry(),
+        coverageEntry({
+          stream: "attachments",
+          coverage_condition: "unknown",
+          forward_disposition: "unmeasured",
+          checkpoint: "unknown",
+          considered: "unknown",
+          covered: "unknown",
+        }),
+      ],
+    }),
+  ]);
 
-  const result = auditStreamHealth([connection]);
-
+  assert.equal(result.status, "fail");
   assert.equal(result.ok, false);
-  assert.deepEqual(result.failures[0].streams, [{ stream: "messages", class: "runtime_evidence_missing" }]);
+  assert.equal(result.failures.length, 1);
+  assert.deepEqual(result.failures[0].streams, [
+    { stream: "attachments", class: "runtime_evidence_missing" },
+  ]);
 });
 
-test("active-run case with a Checking pill: non-Healthy verdicts are not audited", () => {
-  // The legitimate active-work rendering: the pill itself reads Checking
-  // (or Syncing), not Healthy. The audit only inspects Healthy pills, so
-  // this connection passes regardless of its unresolved streams.
-  const connection = {
-    connection_id: "conn_checking_1",
-    display_name: "Checking Source",
-    rendered_verdict: { pill: { label: "Checking", tone: "grey" } },
-    last_run: { status: "in_progress" },
-    collection_report: [
-      baseEntry({
-        stream: "messages",
-        coverage_condition: "unknown",
-        forward_disposition: "checking",
-        checkpoint: "unknown",
-        considered: "unknown",
-        covered: "unknown",
-      }),
-    ],
-  };
+test("settled mode: optional accepted absence does not fail", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      collection_report: [
+        coverageEntry(),
+        coverageEntry({
+          stream: "attachments",
+          coverage_condition: "deferred",
+          forward_disposition: "complete",
+          required: false,
+        }),
+      ],
+    }),
+  ]);
 
-  const result = auditStreamHealth([connection]);
-
+  assert.equal(result.status, "pass");
   assert.equal(result.ok, true);
   assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.inconclusive, []);
 });
 
-test("non-Healthy connections are not audited even with masked-looking required streams", () => {
-  const connection = {
-    connection_id: "conn_degraded_1",
-    display_name: "Degraded Source",
-    rendered_verdict: { pill: { label: "Degraded", tone: "amber" } },
-    last_run: { status: "succeeded" },
-    collection_report: [
-      baseEntry({
-        stream: "messages",
-        coverage_condition: "unknown",
-        forward_disposition: "unmeasured",
-        checkpoint: "unknown",
-        considered: "unknown",
-        covered: "unknown",
-      }),
-    ],
-  };
+test("settled mode: active bounded work alone is inconclusive", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      rendered_verdict: healthyVerdict("Checking", "grey"),
+      connection_health: {
+        badges: { syncing: true, stale: false },
+        conditions: [{ type: "ProjectionReliable", status: "true" }],
+        state: "unknown",
+      },
+      owner_state: { resolver: "collecting" },
+    }),
+  ]);
 
-  const result = auditStreamHealth([connection]);
+  assert.equal(result.status, "inconclusive");
+  assert.equal(result.ok, false);
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.inconclusive.length, 1);
+  assert.deepEqual(result.inconclusive[0].streams, [
+    { stream: "<active bounded work>", class: "active_bounded_work" },
+  ]);
+});
 
+test("settled mode: contradictory active work still fails masked streams", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      rendered_verdict: healthyVerdict("Healthy", "green"),
+      connection_health: {
+        badges: { syncing: true, stale: false },
+        conditions: [{ type: "ProjectionReliable", status: "true" }],
+        state: "unknown",
+      },
+      owner_state: { resolver: "collecting" },
+      collection_report: [
+        coverageEntry(),
+        coverageEntry({
+          stream: "attachments",
+          coverage_condition: "unknown",
+          forward_disposition: "unmeasured",
+          checkpoint: "unknown",
+          considered: "unknown",
+          covered: "unknown",
+        }),
+      ],
+    }),
+  ]);
+
+  assert.equal(result.status, "fail");
+  assert.equal(result.ok, false);
+  assert.equal(result.failures.length, 1);
+  assert.deepEqual(result.failures[0].streams, [
+    { stream: "attachments", class: "runtime_evidence_missing" },
+  ]);
+  assert.equal(result.inconclusive.length, 1);
+  assert.deepEqual(result.inconclusive[0].streams, [
+    { stream: "<active bounded work>", class: "active_bounded_work" },
+  ]);
+});
+
+test("settled mode: exact zero from a reliable retained projection passes", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      streams: ["messages", "attachments"],
+      stream_records: [retainedStream("messages", 4), retainedStream("attachments", 0)],
+      collection_report: [coverageEntry(), coverageEntry({ stream: "attachments" })],
+    }),
+  ]);
+
+  assert.equal(result.status, "pass");
   assert.equal(result.ok, true);
   assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.inconclusive, []);
 });
 
-test("proven local-diagnostic completes (proven coverage condition) do not fail even at unmeasured freshness", () => {
-  const connection = {
-    connection_id: "conn_local_1",
-    display_name: "Local Device",
-    rendered_verdict: healthyVerdict(),
-    last_run: { status: "succeeded" },
-    collection_report: [
-      baseEntry({
-        stream: "device_export",
-        coverage_condition: "complete",
-        forward_disposition: "complete",
-        freshness_strategy: "device_heartbeat",
-      }),
-    ],
-  };
+test("settled mode: dirty retained projection keeps declared-stream count unavailable and inconclusive", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      connection_health: {
+        badges: { syncing: false, stale: false },
+        conditions: [{ type: "ProjectionReliable", status: "false" }],
+        state: "healthy",
+      },
+      stream_records: [retainedStream("messages", 4)],
+      collection_report: [coverageEntry(), coverageEntry({ stream: "attachments" })],
+    }),
+  ]);
 
-  const result = auditStreamHealth([connection]);
-
-  assert.equal(result.ok, true);
+  assert.equal(result.status, "inconclusive");
+  assert.equal(result.ok, false);
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.inconclusive.length, 1);
+  assert.deepEqual(result.inconclusive[0].streams, [
+    { stream: "attachments", class: "declared_stream_count_unavailable" },
+  ]);
 });
 
-test("missing required field on the entry is treated as required (fail closed)", () => {
-  const entry = baseEntry({
-    stream: "transactions",
-    coverage_condition: "unknown",
-    forward_disposition: "unmeasured",
-    checkpoint: "unknown",
-    considered: "unknown",
-    covered: "unknown",
+test("settled mode: required collection_report entries outside declared streams are still audited", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      streams: ["messages"],
+      stream_records: [retainedStream("messages", 4), retainedStream("legacy_stream", 0)],
+      collection_report: [
+        coverageEntry(),
+        coverageEntry({
+          stream: "legacy_stream",
+          coverage_condition: "unknown",
+          forward_disposition: "unmeasured",
+          checkpoint: "unknown",
+          considered: "unknown",
+          covered: "unknown",
+        }),
+      ],
+    }),
+  ]);
+
+  assert.equal(result.status, "fail");
+  assert.equal(result.ok, false);
+  assert.equal(result.failures.length, 1);
+  assert.deepEqual(result.failures[0].streams, [
+    { stream: "legacy_stream", class: "runtime_evidence_missing" },
+  ]);
+  assert.deepEqual(result.inconclusive, []);
+});
+
+test("live audit: bearer auth is rejected before HTTP", async () => {
+  let called = false;
+  const result = await runLiveStreamHealthAudit({
+    origin: "https://pdpp.example.com",
+    env: { PDPP_OWNER_TOKEN: "owner-token-only" },
+    fetchImpl: async () => {
+      called = true;
+      throw new Error("fetch should not run");
+    },
   });
-  delete entry.required;
 
-  const connection = {
-    connection_id: "conn_no_required_field_1",
-    display_name: "Pre-required-field Source",
-    rendered_verdict: healthyVerdict(),
-    last_run: { status: "succeeded" },
-    collection_report: [entry],
-  };
-
-  const result = auditStreamHealth([connection]);
-
-  assert.equal(result.ok, false);
-  assert.equal(result.failures[0].streams[0].stream, "transactions");
-});
-
-test("multiple failures across connections are all reported", () => {
-  const connections = [
-    {
-      connection_id: "conn_a",
-      display_name: "A",
-      rendered_verdict: healthyVerdict(),
-      last_run: { status: "succeeded" },
-      collection_report: [
-        baseEntry({ stream: "s1", coverage_condition: "unknown", forward_disposition: "unmeasured" }),
-      ],
-    },
-    {
-      connection_id: "conn_b",
-      display_name: "B",
-      rendered_verdict: healthyVerdict(),
-      last_run: { status: "succeeded" },
-      collection_report: [
-        baseEntry({ stream: "s2", coverage_condition: "unknown", forward_disposition: "unmeasured" }),
-      ],
-    },
-  ];
-
-  const result = auditStreamHealth(connections);
-
-  assert.equal(result.ok, false);
-  assert.equal(result.failures.length, 2);
+  assert.equal(called, false);
+  assert.equal(result.fetched, false);
+  assert.equal(result.authMode, "bearer");
+  assert.equal(result.authCapability, "cookie_only");
+  assert.equal(result.status, "inconclusive");
+  assert.match(result.error, /not supported for \/_ref\/connectors/);
 });
 
 test("empty input passes", () => {
   const result = auditStreamHealth([]);
+  assert.equal(result.status, "pass");
   assert.equal(result.ok, true);
   assert.deepEqual(result.failures, []);
+  assert.deepEqual(result.inconclusive, []);
 });
