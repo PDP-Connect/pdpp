@@ -15,6 +15,14 @@ import { canonicalConnectorKey } from "../server/connector-key.js";
 import { connectorRetainsSurfaceProcess } from "./browser-surface/retained-surface-connectors.ts";
 
 export const DEFAULT_NEKO_READINESS_TIMEOUT_MS = 120_000;
+/**
+ * Default periodic sweep cadence for expiring past-TTL waiting leases,
+ * reconciling surfaces against the allocator, and retrying capacity-pressure
+ * reclaim. A fraction of the lease wait timeout so a stranded lease is
+ * revisited well before an owner would notice, without being so frequent
+ * that it floods the allocator with status polls.
+ */
+export const DEFAULT_NEKO_LEASE_SWEEP_INTERVAL_MS = 30_000;
 
 export type NekoProfileStoragePolicy = "persistent";
 
@@ -28,6 +36,7 @@ export interface NekoDynamicBrowserSurfaceRuntimeConfig {
 export interface NekoBrowserSurfaceRuntimeConfig {
   readonly dynamic?: NekoDynamicBrowserSurfaceRuntimeConfig;
   readonly leaseConfig: BrowserSurfaceLeaseConfig;
+  readonly leaseSweepIntervalMs: number;
 }
 
 /** Durable cross-run profile identity, drawn from the lease. */
@@ -178,8 +187,13 @@ export function parseNekoBrowserSurfaceRuntimeConfig(
   const shape = readNekoEnvShape(env);
   enforceStaticModeInvariants(shape);
   const leaseConfig = buildLeaseConfig(shape, env);
+  const leaseSweepIntervalMs = parsePositiveIntegerEnv(
+    env.PDPP_NEKO_LEASE_SWEEP_INTERVAL_MS,
+    "PDPP_NEKO_LEASE_SWEEP_INTERVAL_MS",
+    DEFAULT_NEKO_LEASE_SWEEP_INTERVAL_MS
+  );
   if (shape.surfaceMode === "static" || shape.managedConnectors.size === 0) {
-    return { leaseConfig };
+    return { leaseConfig, leaseSweepIntervalMs };
   }
   enforceDynamicModeInvariants(shape);
   const dynamic = parseDynamicRuntimeConfig(env);
@@ -187,6 +201,7 @@ export function parseNekoBrowserSurfaceRuntimeConfig(
   return {
     leaseConfig,
     dynamic,
+    leaseSweepIntervalMs,
   };
 }
 
@@ -204,10 +219,7 @@ function splitCsv(value: string | undefined): string[] {
   ];
 }
 
-function assertRetainedManagedConnectorReserve(
-  surfaceCap: number,
-  managedConnectorIds: readonly string[]
-): void {
+function assertRetainedManagedConnectorReserve(surfaceCap: number, managedConnectorIds: readonly string[]): void {
   const retainedManagedConnectorCount = countRetainedManagedConnectors(managedConnectorIds);
   if (retainedManagedConnectorCount === 0 || surfaceCap > retainedManagedConnectorCount) {
     return;

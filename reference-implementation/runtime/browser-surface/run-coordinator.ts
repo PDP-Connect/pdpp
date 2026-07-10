@@ -111,6 +111,10 @@ export interface BrowserSurfaceManagerDeps {
   readonly browserSurfaceMidWaitPollIntervalMs: number | undefined;
   readonly browserSurfaceReadinessProbe: BrowserSurfaceReadinessProbe | null;
   readonly browserSurfaceReadinessTimeoutMs: number | undefined;
+  /** Bounded retry attempts for a capacity-pressure reclaim's allocator stop call. Defaults to 3. */
+  readonly browserSurfaceReclaimRetryAttempts?: number;
+  /** Delay between reclaim retry attempts. Defaults to 250ms. Tests inject 0. */
+  readonly browserSurfaceReclaimRetryDelayMs?: number;
   readonly listPersistedActiveRuns: () => Promise<ReadonlyArray<{ run_id: string }>>;
   readonly log: ControllerLogger;
   readonly pendingBrowserSurfaceLaunches: Map<string, RunNowOptions>;
@@ -126,6 +130,8 @@ export interface BrowserSurfaceManagerDeps {
     options: RunNowOptions,
     onFailure: (err: unknown) => Promise<void>
   ) => void;
+  /** Injectable sleep, so tests can avoid real wall-clock delay. Defaults to setTimeout. */
+  readonly sleep?: (ms: number) => Promise<void>;
   readonly startupControllerRunReconciliation: Promise<void>;
 }
 
@@ -148,6 +154,10 @@ export interface BrowserSurfaceManager {
   ): Promise<void>;
   /** Expire timed-out waiters and promote queued leases. */
   expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]>;
+  /** Promote boot-time queued leases after the listener is up. */
+  promoteBrowserSurfaceLeasesAfterBoot(): Promise<void>;
+  /** Reconcile leases against the allocator and persisted active runs after a restart. */
+  reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void>;
   /**
    * Recycle a managed dynamic surface after a run's terminal connector
    * error carries the typed attach-exhausted disposition (readiness
@@ -165,10 +175,6 @@ export interface BrowserSurfaceManager {
     readonly runId: string;
     readonly traceContext: SpineTraceContext;
   }): Promise<void>;
-  /** Promote boot-time queued leases after the listener is up. */
-  promoteBrowserSurfaceLeasesAfterBoot(): Promise<void>;
-  /** Reconcile leases against the allocator and persisted active runs after a restart. */
-  reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void>;
   /**
    * Release a lease, swallowing errors. Covers both the pre-spawn failure path
    * (registerActiveRunBookkeeping) and the post-run cleanup path (finalizeRunCleanup).
@@ -179,6 +185,14 @@ export interface BrowserSurfaceManager {
     runId: string,
     traceContext: SpineTraceContext
   ): Promise<void>;
+  /**
+   * Independent periodic sweep: reconciles surfaces against the allocator,
+   * expires + promotes past-TTL waiting leases, and retries capacity-pressure
+   * reclaim for anything still queued afterward. Reentrancy-guarded — an
+   * overlapping call while a sweep is in flight is a no-op. Never mutates an
+   * active leased run.
+   */
+  sweepBrowserSurfaceLeases(): Promise<void>;
   /** Wrap an interaction handler with mid-wait browser-surface loss detection. */
   wrapInteractionHandlerWithSurfaceLossDetection(
     runId: string,
@@ -199,12 +213,16 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     browserSurfaceMidWaitPollIntervalMs,
     browserSurfaceReadinessProbe,
     browserSurfaceReadinessTimeoutMs,
+    browserSurfaceReclaimRetryAttempts = 3,
+    browserSurfaceReclaimRetryDelayMs = 250,
+    sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     listPersistedActiveRuns,
     log,
     pendingBrowserSurfaceLaunches,
     scheduleRun,
     startupControllerRunReconciliation,
   } = deps;
+  let browserSurfaceSweepInFlight = false;
 
   function buildRunSource(connectorId: string): { kind: "connector"; id: string } {
     return { kind: "connector", id: connectorId };
@@ -612,6 +630,73 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     return { lease: current, ...(surface ? { surface } : {}) };
   }
 
+  /**
+   * Bounded retry/backoff around the allocator's stopSurface call for a
+   * capacity-pressure reclaim. A single transient DELETE timeout must not
+   * permanently strand the queued lease's only reclaim attempt (see the
+   * 2026-07-10 capacity incident: one allocator timeout, no retry, no
+   * cross-run trigger — the lease sat past its own expires_at unswept).
+   * Emits run.browser_surface_reclaim_retry on each retry attempt (not on
+   * the first try) so a retry is observable evidence distinct from a
+   * terminal defer or a successful promotion.
+   */
+  async function announceReclaimRetry(lease: BrowserSurfaceLease): Promise<void> {
+    await emitBrowserSurfaceLeaseEvent(
+      "run.browser_surface_reclaim_retry",
+      lease.connector_id,
+      lease.run_id,
+      createTraceContext(),
+      lease
+    );
+    if (browserSurfaceReclaimRetryDelayMs > 0) {
+      await sleep(browserSurfaceReclaimRetryDelayMs);
+    }
+  }
+
+  /** One allocator stopSurface attempt. Returns the caught error message, or undefined on success. */
+  async function attemptStopSurface(surface: BrowserSurface): Promise<string | undefined> {
+    try {
+      await browserSurfaceAllocator?.stopSurface({
+        surfaceId: surface.surface_id,
+        reason: "capacity_pressure",
+      });
+      return;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function stopSurfaceRetryStep(
+    surface: BrowserSurface,
+    lease: BrowserSurfaceLease,
+    attempt: number,
+    attempts: number
+  ): Promise<{ ok: boolean; lastMessage?: string }> {
+    const errorMessage = await attemptStopSurface(surface);
+    if (errorMessage === undefined) {
+      return { ok: true };
+    }
+    if (attempt >= attempts) {
+      return { ok: false, lastMessage: errorMessage };
+    }
+    await announceReclaimRetry(lease);
+    return stopSurfaceRetryStep(surface, lease, attempt + 1, attempts);
+  }
+
+  async function stopSurfaceWithRetry(surface: BrowserSurface, lease: BrowserSurfaceLease): Promise<{ ok: boolean }> {
+    if (!browserSurfaceAllocator) {
+      return { ok: false };
+    }
+    const attempts = Math.max(1, browserSurfaceReclaimRetryAttempts);
+    const result = await stopSurfaceRetryStep(surface, lease, 1, attempts);
+    if (!result.ok) {
+      log.warn?.(
+        `[controller] browser-surface capacity reclaim for ${lease.run_id} failed after ${attempts} attempt(s): ${result.lastMessage}`
+      );
+    }
+    return { ok: result.ok };
+  }
+
   async function reclaimCapacityAndPromoteLease(
     lease: BrowserSurfaceLease
   ): Promise<{ lease: BrowserSurfaceLease; surface?: BrowserSurface; reclaimed: boolean }> {
@@ -622,14 +707,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     if (!reclaimable) {
       return { lease, reclaimed: false };
     }
-    try {
-      await browserSurfaceAllocator.stopSurface({
-        surfaceId: reclaimable.surface_id,
-        reason: "capacity_pressure",
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.warn?.(`[controller] browser-surface capacity reclaim for ${lease.run_id} failed: ${message}`);
+    const stopResult = await stopSurfaceWithRetry(reclaimable, lease);
+    if (!stopResult.ok) {
       return { lease, reclaimed: false };
     }
 
@@ -1185,6 +1264,62 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     return deferred.map((lease) => projectBrowserSurfaceLease(lease));
   }
 
+  /**
+   * Independent periodic sweep. Composes three already-correct operations
+   * that previously only ran boot-once (allocator reconcile) or as a lazy
+   * side effect of an unrelated run's acquire (expiry) — see the 2026-07-10
+   * capacity incident: a queued lease sat 5+ minutes past its own
+   * expires_at because nothing revisited it on a wall clock, and a stale
+   * ready surface over an exited container kept inflating the capacity
+   * count between restarts. This function is the sole periodic caller of
+   * all three; reentrancy-guarded so an overlapping tick is a no-op, and it
+   * never touches an active leased run (none of the composed operations
+   * mutate a leased lease unless the allocator itself reports the surface
+   * gone/unhealthy).
+   */
+  /** Re-attempt capacity-pressure reclaim for one still-queued lease during a sweep tick. No-op if it settled since the queued snapshot was taken. */
+  async function sweepReclaimStillQueuedLease(
+    leaseManager: BrowserSurfaceLeaseManager,
+    leaseId: string
+  ): Promise<void> {
+    const current = leaseManager.getLease(leaseId);
+    if (!current || current.status !== "waiting_for_browser_surface") {
+      return;
+    }
+    const reclaimedResult = await reclaimCapacityAndPromoteLease(current);
+    if (!reclaimedResult.reclaimed) {
+      return;
+    }
+    await persistBrowserSurfaceLeaseMutation(reclaimedResult.lease, reclaimedResult.surface);
+    if (reclaimedResult.lease.status !== "waiting_for_browser_surface") {
+      promoteBrowserSurfaceLease(reclaimedResult.lease, "browser-surface periodic sweep");
+    }
+  }
+
+  async function sweepReclaimStillQueuedLeases(leaseManager: BrowserSurfaceLeaseManager): Promise<void> {
+    const stillQueuedIds = leaseManager
+      .listLeases()
+      .filter((lease) => lease.status === "waiting_for_browser_surface" && lease.wait_reason === "capacity_full")
+      .map((lease) => lease.lease_id);
+    for (const leaseId of stillQueuedIds) {
+      await sweepReclaimStillQueuedLease(leaseManager, leaseId);
+    }
+  }
+
+  async function sweepBrowserSurfaceLeases(): Promise<void> {
+    if (!browserSurfaceLeaseManager || browserSurfaceSweepInFlight) {
+      return;
+    }
+    browserSurfaceSweepInFlight = true;
+    try {
+      await reconcileBrowserSurfacesWithAllocatorAtBoot();
+      await expireBrowserSurfaceWaits();
+      await sweepReclaimStillQueuedLeases(browserSurfaceLeaseManager);
+    } finally {
+      browserSurfaceSweepInFlight = false;
+    }
+  }
+
   async function reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void> {
     await startupControllerRunReconciliation;
     if (!browserSurfaceLeaseManager) {
@@ -1311,6 +1446,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     recycleAttachExhaustedManagedSurfaceAfterRun,
     reconcileBrowserSurfaceLeasesAfterBoot,
     releaseLease,
+    sweepBrowserSurfaceLeases,
     wrapInteractionHandlerWithSurfaceLossDetection,
   };
 }

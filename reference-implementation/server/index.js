@@ -208,7 +208,11 @@ import { SOURCE_PRESSURE_GAP_REASONS } from '../runtime/scheduler-source-pressur
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
 import { BrowserSurfaceLeaseManager } from '@opendatalabs/remote-surface/leases';
-import { parseNekoBrowserSurfaceRuntimeConfig } from '../runtime/browser-surface-leases.ts';
+import {
+  DEFAULT_NEKO_LEASE_SWEEP_INTERVAL_MS,
+  parseNekoBrowserSurfaceRuntimeConfig,
+} from '../runtime/browser-surface-leases.ts';
+import { createBrowserSurfaceLeaseSweepTimer } from '../runtime/browser-surface-lease-sweep-timer.ts';
 import { connectorRetainsSurfaceProcess } from '../runtime/browser-surface/retained-surface-connectors.ts';
 import { NekoSurfaceAllocatorClient } from '../runtime/neko-surface-allocator.ts';
 import { createDefaultBrowserSurfaceReadinessProbe } from '../runtime/browser-surface-readiness.ts';
@@ -5040,6 +5044,18 @@ export async function startServer(opts = {}) {
     markStaticSecretCredentialRejected: buildControllerStaticSecretCredentialRejectionMarker(),
   });
   await controller.reconcileBrowserSurfaceLeasesAfterBoot();
+  // Constructed here (unstarted) because sweepBrowserSurfaceLeases closes
+  // over `controller`, which exists at this point. NOT started here — see
+  // armBrowserSurfaceLeaseSweepAfterBoot below for why start() is deferred
+  // to the very end of this function.
+  const browserSurfaceLeaseSweepTimer = createBrowserSurfaceLeaseSweepTimerFor(
+    controller,
+    browserSurfaceControllerOptions,
+    logger,
+  );
+  function stopBrowserSurfaceLeaseSweep() {
+    browserSurfaceLeaseSweepTimer.stop();
+  }
   let schedulerManager = null;
 
   // Client event subscriptions: install the post-commit hook from
@@ -5320,6 +5336,14 @@ export async function startServer(opts = {}) {
   if (opts.awaitStartupBackfill === true) {
     await startupBackfillDone;
   }
+  // Arm (bind + start) the browser-surface lease sweep timer LAST, only once
+  // every fallible await above has succeeded. See
+  // armBrowserSurfaceLeaseSweepAfterBoot / createBrowserSurfaceLeaseSweepTimerFor
+  // for why: a boot failure anywhere before this line rejects startServer's
+  // promise before the timer is ever started, so there is no window where a
+  // caller that never received a server object could be left with an
+  // unreachable running timer.
+  armBrowserSurfaceLeaseSweepAfterBoot(browserSurfaceLeaseSweepTimer, browserSurfaceControllerOptions, asServer, rsServer);
   return {
     asServer,
     rsServer,
@@ -5337,6 +5361,10 @@ export async function startServer(opts = {}) {
     // `runtime/controller.ts` and `polyfill-connectors/src/profile-lock.ts`
     // for the layered design.
     controller,
+    // Exposed so the CLI shutdown path (and tests that start/stop many
+    // server instances per process) can clear the periodic browser-surface
+    // sweep timer. A no-op when no dynamic allocator was configured.
+    stopBrowserSurfaceLeaseSweep,
   };
 }
 
@@ -5365,6 +5393,57 @@ function rederiveRetainedLeases(leases) {
   return leases.map((lease) =>
     connectorRetainsSurfaceProcess(lease.connector_id) ? { ...lease, retained: true } : lease
   );
+}
+
+// Independent periodic sweep for the managed browser-surface lease
+// lifecycle: expires past-TTL waiting leases, reconciles surfaces against the
+// Constructs (but never starts) the periodic browser-surface lease sweep
+// timer. Expires past-TTL waiting leases, reconciles surfaces against the
+// live allocator, and retries capacity-pressure reclaim for anything left
+// queued — on its own wall clock, not only as a side effect of some other
+// run's next acquire. See openspec/changes/fix-browser-surface-capacity-self-heal.
+// The timer's own start/stop/unref/no-double-start/stopWhenAllClosed seam
+// lives in createBrowserSurfaceLeaseSweepTimer
+// (runtime/browser-surface-lease-sweep-timer.ts) so it is directly
+// unit-testable with fake timers, independent of this HTTP boot.
+//
+// Deliberately does NOT call timer.start() here. startServer's boot has
+// many later fallible awaits (buildRsApp, rsApp.listen, schedulerManager.start,
+// auto-enroll, ...) between where the controller/allocator become known and
+// where startServer actually returns a server object. Starting the timer
+// this early would let a later boot failure leave a running, unref'd timer
+// with no reference anywhere the caller (who never received a server object)
+// could use to stop it — a structural leak, not merely a missed cleanup
+// call. armBrowserSurfaceLeaseSweepAfterBoot (below) is the ONLY place this
+// module ever calls timer.start(), and it is the last thing startServer does
+// before its return, specifically so a boot failure anywhere before that
+// point can never leave a started-but-unowned timer.
+export function createBrowserSurfaceLeaseSweepTimerFor(controller, browserSurfaceControllerOptions, logger) {
+  return createBrowserSurfaceLeaseSweepTimer({
+    sweep: () => controller.sweepBrowserSurfaceLeases(),
+    intervalMs: browserSurfaceControllerOptions.browserSurfaceLeaseSweepIntervalMs
+      ?? DEFAULT_NEKO_LEASE_SWEEP_INTERVAL_MS,
+    onSweepError: (err) => {
+      logger.warn({ err: String(err?.message ?? err) }, 'browser-surface periodic sweep failed');
+    },
+  });
+}
+
+// The ONLY call site of timer.start() for the browser-surface lease sweep.
+// Binds stopWhenAllClosed BEFORE start() so there is no window where the
+// timer is running without an owner: if start() were called first and the
+// process were killed between the two calls, nothing would change (start()
+// is synchronous and non-fallible), but bind-before-start is also the
+// smaller, more obviously correct ordering to reason about and matches the
+// documented contract ("bound before running"). No-ops (never starts) when
+// no dynamic-mode allocator is configured, matching every other
+// browser-surface manager method's guard.
+export function armBrowserSurfaceLeaseSweepAfterBoot(timer, browserSurfaceControllerOptions, asServer, rsServer) {
+  if (!browserSurfaceControllerOptions.browserSurfaceAllocator) {
+    return;
+  }
+  timer.stopWhenAllClosed([asServer, rsServer]);
+  timer.start();
 }
 
 export async function resolveNekoBrowserSurfaceControllerOptions({
@@ -5411,6 +5490,7 @@ export async function resolveNekoBrowserSurfaceControllerOptions({
       baseUrl: runtimeConfig.dynamic.allocatorUrl,
     });
     options.browserSurfaceReadinessTimeoutMs = runtimeConfig.dynamic.readinessTimeoutMs;
+    options.browserSurfaceLeaseSweepIntervalMs = runtimeConfig.leaseSweepIntervalMs;
   }
 
   return options;
@@ -5965,7 +6045,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
   process.on('uncaughtException', handleUncaught);
   process.on('unhandledRejection', exitOnFatal('unhandledRejection'));
 
-  const server = { asServer: null, rsServer: null, abortStartupBackfill: null, startupBackfillDone: null, schedulerManager: null, controller: null };
+  const server = { asServer: null, rsServer: null, abortStartupBackfill: null, startupBackfillDone: null, schedulerManager: null, controller: null, stopBrowserSurfaceLeaseSweep: null };
   const exitOnSignal = (signal) => async () => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -6008,6 +6088,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
       ? Promise.resolve(server.startupBackfillDone).catch(() => {})
       : Promise.resolve();
     try { server.schedulerManager?.stop?.(); } catch {}
+    server.stopBrowserSurfaceLeaseSweep?.();
     // Drain in-flight connector children IN PARALLEL with the HTTP /
     // backfill drains. Children received their own SIGTERM from Docker
     // and are running their Layer A shutdown-hook to release Chromium.
@@ -6049,6 +6130,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     server.startupBackfillDone = result.startupBackfillDone;
     server.schedulerManager = result.schedulerManager;
     server.controller = result.controller;
+    server.stopBrowserSurfaceLeaseSweep = result.stopBrowserSurfaceLeaseSweep;
   }).catch(err => {
     closePostgresStorage().finally(() => closeDb());
     cliLogger.fatal({ err }, 'startup failed');

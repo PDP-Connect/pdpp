@@ -7,6 +7,7 @@ import {
   projectBrowserSurfaceLease,
 } from "@opendatalabs/remote-surface/leases";
 import {
+  DEFAULT_NEKO_LEASE_SWEEP_INTERVAL_MS,
   DEFAULT_NEKO_READINESS_TIMEOUT_MS,
   browserSurfaceLeaseEnv,
   parseNekoBrowserSurfaceLeaseConfig,
@@ -693,6 +694,16 @@ test("runtime config parser does not require dynamic settings when no n.eko conn
   assert.equal(parsed.leaseConfig.surfaceMode, "dynamic");
   assert.equal(parsed.leaseConfig.surfaceCap, 0);
   assert.equal(parsed.leaseConfig.managedConnectors.size, 0);
+});
+
+test("runtime config parser defaults the periodic sweep interval and honors an override", () => {
+  const defaulted = parseNekoBrowserSurfaceRuntimeConfig({});
+  assert.equal(defaulted.leaseSweepIntervalMs, DEFAULT_NEKO_LEASE_SWEEP_INTERVAL_MS);
+
+  const overridden = parseNekoBrowserSurfaceRuntimeConfig({
+    PDPP_NEKO_LEASE_SWEEP_INTERVAL_MS: "5000",
+  });
+  assert.equal(overridden.leaseSweepIntervalMs, 5000);
 });
 
 test("runtime config parser supports explicit dynamic one-connector mode", () => {

@@ -434,6 +434,64 @@ test("dynamic mode ignores persisted static surface rows from a previous boot", 
   assert.equal(result.surface?.health, "starting");
 });
 
+test("regression (2026-07-10 capacity incident): a leftover static placeholder row never counts toward dynamic-mode capacity", () => {
+  // Mirrors the live incident inventory exactly: surfaceCap=3, one leftover
+  // static-mode placeholder row (neko-static) rehydrated from a prior boot,
+  // plus two genuinely live ready surfaces under cap. If the placeholder
+  // counted toward capacity, 2 live + 1 phantom == 3 would already read
+  // capacity_full with only 2 real surfaces occupied — a false positive this
+  // test proves does NOT happen.
+  const { leases } = manager({
+    config: { surfaceCap: 3, managedConnectors: new Set(["chatgpt", "usaa"]) },
+    initialSurfaces: [
+      {
+        surface_id: "neko-static",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-14T00:00:00.000Z",
+        last_used_at: "2026-05-14T00:00:00.000Z",
+      },
+      {
+        surface_id: "surface_live_a",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222/a",
+        stream_base_url: "http://neko:8080/a",
+        health: "ready",
+        created_at: "2026-05-12T12:00:00.000Z",
+        last_used_at: "2026-05-12T12:00:00.000Z",
+      },
+      {
+        surface_id: "surface_live_b",
+        backend: "neko",
+        profile_key: "usaa",
+        connector_id: "usaa",
+        cdp_url: "http://neko:9222/b",
+        stream_base_url: "http://neko:8080/b",
+        health: "ready",
+        created_at: "2026-05-12T12:00:00.000Z",
+        last_used_at: "2026-05-12T12:00:00.000Z",
+      },
+    ],
+  });
+
+  // The placeholder must never have entered the surfaces map at all —
+  // construction-time filtering, not merely a runtime exclusion.
+  assert.equal(leases.getSurface("neko-static"), undefined);
+
+  // With cap=3 and only 2 real ready surfaces occupied, a third distinct
+  // profile MUST be able to acquire — capacity is NOT full. If the
+  // placeholder counted, this would incorrectly read capacity_full.
+  const result = leases.acquire({ connectorId: "chatgpt", runId: "run_third", profileKey: "chatgpt:third" });
+  assert.equal(result.lease.status, "starting_surface");
+  assert.notEqual(result.lease.wait_reason, "capacity_full");
+});
+
 test("boot detaches persisted active_lease_id when the active lease is no longer non-terminal", () => {
   const { leases } = manager({
     initialSurfaces: [

@@ -46,7 +46,11 @@ import {
   type SchedulerRunHistoryRecord,
   type SchedulerStore,
 } from "../server/stores/scheduler-store.ts";
-import { type BrowserSurfaceReadinessProbe, createBrowserSurfaceManager } from "./browser-surface/index.ts";
+import {
+  type BrowserSurfaceManagerDeps,
+  type BrowserSurfaceReadinessProbe,
+  createBrowserSurfaceManager,
+} from "./browser-surface/index.ts";
 import { runConnector } from "./index.js";
 import {
   classifyRecoveryGap,
@@ -397,6 +401,12 @@ export interface ControllerOptions {
    */
   browserSurfaceReadinessProbe?: BrowserSurfaceReadinessProbe | null;
   browserSurfaceReadinessTimeoutMs?: number;
+  /** Bounded retry attempts for a capacity-pressure reclaim's allocator stop call. Defaults to 3. */
+  browserSurfaceReclaimRetryAttempts?: number;
+  /** Delay between reclaim retry attempts (ms). Defaults to 250. Tests set 0. */
+  browserSurfaceReclaimRetryDelayMs?: number;
+  /** Injectable sleep for the reclaim retry delay. Defaults to setTimeout. Tests inject a synchronous no-op. */
+  browserSurfaceSleep?: (ms: number) => Promise<void>;
   connectorPathResolver?: ConnectorPathResolver;
   // Optional durable detail-gap store override; defaults to the configured
   // storage-backed singleton. The controller reads pending *source-pressure*
@@ -576,6 +586,15 @@ export interface Controller {
   markNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): void;
   promoteBrowserSurfaceLeasesAfterBoot(): Promise<void>;
   reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void>;
+  /**
+   * Independent periodic sweep for the managed browser-surface lease
+   * lifecycle: reconciles surfaces against the allocator, expires +
+   * promotes past-TTL waiting leases, and retries capacity-pressure reclaim
+   * for anything left queued. See `run-coordinator.ts`'s
+   * `sweepBrowserSurfaceLeases` for the composed operations. Intended caller:
+   * `server/index.js`'s owned sweep timer.
+   */
+  sweepBrowserSurfaceLeases(): Promise<void>;
   respondToInteraction(runId: string, input?: RunInteractionResponseInput): RunInteractionAck;
   runNow(connectorId: string, options?: RunNowOptions): Promise<RunNowResult>;
   setScheduleEnabled(
@@ -1992,6 +2011,27 @@ function scheduleToApi(
 // ─── Controller factory ─────────────────────────────────────────────────────
 
 /**
+ * Optional capacity-pressure reclaim retry/sleep overrides, present only when
+ * the caller (production wiring or a test) actually set them. Extracted so
+ * createController's already-large body does not carry this branching itself.
+ */
+function browserSurfaceReclaimOverridesFor(
+  opts: ControllerOptions
+): Partial<
+  Pick<BrowserSurfaceManagerDeps, "browserSurfaceReclaimRetryAttempts" | "browserSurfaceReclaimRetryDelayMs" | "sleep">
+> {
+  return {
+    ...(opts.browserSurfaceReclaimRetryAttempts === undefined
+      ? {}
+      : { browserSurfaceReclaimRetryAttempts: opts.browserSurfaceReclaimRetryAttempts }),
+    ...(opts.browserSurfaceReclaimRetryDelayMs === undefined
+      ? {}
+      : { browserSurfaceReclaimRetryDelayMs: opts.browserSurfaceReclaimRetryDelayMs }),
+    ...(opts.browserSurfaceSleep ? { sleep: opts.browserSurfaceSleep } : {}),
+  };
+}
+
+/**
  * Create a new controller instance.
  */
 export function createController(opts: ControllerOptions = {}): Controller {
@@ -2219,6 +2259,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     browserSurfaceMidWaitPollIntervalMs,
     browserSurfaceReadinessProbe,
     browserSurfaceReadinessTimeoutMs,
+    ...browserSurfaceReclaimOverridesFor(opts),
     listPersistedActiveRuns,
     log,
     pendingBrowserSurfaceLaunches,
@@ -3553,6 +3594,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     listBrowserSurfaceRunProjections,
     promoteBrowserSurfaceLeasesAfterBoot: () => browserSurface.promoteBrowserSurfaceLeasesAfterBoot(),
     reconcileBrowserSurfaceLeasesAfterBoot: () => browserSurface.reconcileBrowserSurfaceLeasesAfterBoot(),
+    sweepBrowserSurfaceLeases: () => browserSurface.sweepBrowserSurfaceLeases(),
     getPendingInteraction,
     isNeedsHuman: (connectorId: string, options: ConnectorInstanceOptions = {}) =>
       needsHumanAttention.has(runtimeKey(connectorId, options.connectorInstanceId)),

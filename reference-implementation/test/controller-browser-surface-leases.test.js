@@ -254,6 +254,8 @@ function setup(
     browserSurfaceAllocator,
     browserSurfaceLeaseStore,
     browserSurfaceReadinessTimeoutMs,
+    browserSurfaceReclaimRetryAttempts,
+    browserSurfaceReclaimRetryDelayMs = 0,
     runConnectorImpl,
     connectorPathResolver = () => "/tmp/connector.js",
   } = {},
@@ -277,6 +279,8 @@ function setup(
     browserSurfaceLeaseManager: manager,
     browserSurfaceLeaseStore,
     browserSurfaceReadinessTimeoutMs,
+    ...(browserSurfaceReclaimRetryAttempts !== undefined ? { browserSurfaceReclaimRetryAttempts } : {}),
+    browserSurfaceReclaimRetryDelayMs,
     connectorPathResolver,
     logger: { error: () => {}, warn: () => {} },
     schedulerStore: createSchedulerStore(calls),
@@ -543,11 +547,13 @@ test("dynamic capacity pressure stops incompatible idle surface and starts disti
   assert.ok(listRunEventTypes("run_pressure_second").includes("run.browser_surface_leased"));
 });
 
-test("dynamic capacity-pressure stop failure leaves distinct-profile run queued", async (t) => {
+test("dynamic capacity-pressure stop failure retries a bounded number of times, then leaves distinct-profile run queued", async (t) => {
   const allocator = createStopFailingAllocator();
   const { calls, controller, manager } = setup(t, {
     manager: createDynamicManager({ surfaceCap: 1 }),
     browserSurfaceAllocator: allocator,
+    browserSurfaceReclaimRetryAttempts: 3,
+    browserSurfaceReclaimRetryDelayMs: 0,
   });
 
   await controller.runNow("managed", {
@@ -565,13 +571,69 @@ test("dynamic capacity-pressure stop failure leaves distinct-profile run queued"
 
   assert.equal(queued.status, "waiting_for_browser_surface");
   assert.equal(queued.browser_surface.browser_surface_wait_reason, "capacity_full");
-  assert.deepEqual(allocator.stopRequests.map((request) => request.reason), ["capacity_pressure"]);
+  // Every attempt in the allocator's stop call failed, so the bounded retry
+  // exhausts all 3 configured attempts before giving up — a single transient
+  // failure alone (the 2026-07-10 incident) must not be the end of the story.
+  assert.deepEqual(
+    allocator.stopRequests.map((request) => request.reason),
+    ["capacity_pressure", "capacity_pressure", "capacity_pressure"]
+  );
   assert.equal(allocator.ensureRequests.length, 1);
   assert.equal(calls.runConnector, 1);
   assert.equal(manager.getSurface("surface_1").health, "ready");
   assert.equal(manager.getLease("lease_2").status, "waiting_for_browser_surface");
   assert.equal(controller.getActiveRun("other-managed"), null);
   assert.equal(listRunEventTypes("run_stop_failure_second").includes("run.started"), false);
+  // Two retries were attempted (attempts 2 and 3), each observable as a
+  // distinct reclaim-retry event before the reclaim was ultimately abandoned.
+  assert.equal(
+    listRunEventTypes("run_stop_failure_second").filter((type) => type === "run.browser_surface_reclaim_retry").length,
+    2
+  );
+});
+
+test("dynamic capacity-pressure stop failure recovers on retry and promotes the queued run", async (t) => {
+  const allocator = createStopFailingAllocator();
+  let attempts = 0;
+  const originalStopSurface = allocator.stopSurface;
+  allocator.stopSurface = async (request) => {
+    attempts += 1;
+    if (attempts < 2) {
+      return originalStopSurface(request);
+    }
+    allocator.stopRequests.push(request);
+    return { ...request, surface_id: request.surfaceId, backend: "neko", health: "stopping" };
+  };
+  const { calls, controller, manager } = setup(t, {
+    manager: createDynamicManager({ surfaceCap: 1 }),
+    browserSurfaceAllocator: allocator,
+    browserSurfaceReclaimRetryAttempts: 3,
+    browserSurfaceReclaimRetryDelayMs: 0,
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_stop_recovery_first",
+  });
+  await controller.drainActiveRuns(1000);
+
+  await controller.runNow("other-managed", {
+    manifest: DISTINCT_PROFILE_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_stop_recovery_second",
+  });
+
+  // First attempt failed, second attempt (the retry) succeeded: the reclaim
+  // completed and the queued lease promoted within the same acquire call —
+  // no owner intervention, no separate sweep tick needed for this case.
+  assert.equal(attempts, 2);
+  assert.equal(calls.runConnector, 2);
+  assert.equal(manager.getLease("lease_2").status, "leased");
+  assert.equal(
+    listRunEventTypes("run_stop_recovery_second").filter((type) => type === "run.browser_surface_reclaim_retry").length,
+    1
+  );
 });
 
 test("dynamic cap queues distinct-profile managed run, then promotes after incompatible idle cleanup", async (t) => {
@@ -1110,4 +1172,248 @@ test("release frees the lease for the next managed run", async (t) => {
   assert.equal(second.status, "started");
   assert.equal(manager.getLease("lease_1").status, "released");
   assert.equal(manager.getLease("lease_2").status, "released");
+});
+
+// ─── Periodic sweep (openspec/changes/fix-browser-surface-capacity-self-heal) ─
+
+test("sweep terminalizes a past-TTL waiting lease with no other run acquiring anything", async (t) => {
+  let releaseFirst;
+  const manager = createManager({ surfaceCap: 1, staticProfileKey: "managed-profile", leaseWaitTimeoutMs: 0 });
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_sweep_first") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed" });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { controller } = setup(t, { manager, runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_sweep_first",
+  });
+  await controller.runNow("other-managed", {
+    manifest: OTHER_MANAGED_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_sweep_waiter",
+  });
+
+  assert.equal(manager.getLease("lease_2").status, "waiting_for_browser_surface");
+
+  // The sweep alone — not another run's acquisition — terminalizes the
+  // past-TTL waiting lease. This is the exact gap the 2026-07-10 incident
+  // exposed: expiry previously only happened as a side effect of some other
+  // run's acquire attempt.
+  await controller.sweepBrowserSurfaceLeases();
+
+  assert.equal(manager.getLease("lease_2").status, "deferred");
+  assert.equal(manager.getLease("lease_2").wait_reason, "lease_wait_timeout");
+  const events = listRunEvents("run_sweep_waiter");
+  assert.ok(events.some((event) => event.event_type === "run.browser_surface_deferred"));
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+});
+
+test("sweep reconciles a ready surface whose backing container has already exited", async (t) => {
+  const allocator = createReadyAllocator();
+  const manager = createDynamicManager({ surfaceCap: 3 });
+  const { controller } = setup(t, { manager, browserSurfaceAllocator: allocator });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_reconcile_first",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(manager.getSurface("surface_1").health, "ready");
+
+  // Simulate the container exiting mid-uptime, discovered only by the
+  // allocator's live view — the manager's in-memory copy still says "ready"
+  // until something re-asks the allocator. Boot-time reconciliation would
+  // have caught this only on the next restart; the periodic sweep catches it
+  // without one.
+  await allocator.stopSurface({ surfaceId: "surface_1", reason: "operator" });
+
+  await controller.sweepBrowserSurfaceLeases();
+
+  assert.equal(manager.getSurface("surface_1"), undefined);
+});
+
+test("sweep retries capacity-pressure reclaim for a lease still queued after expiry", async (t) => {
+  const allocator = createStopFailingAllocator();
+  let attempts = 0;
+  const originalStopSurface = allocator.stopSurface;
+  allocator.stopSurface = async (request) => {
+    attempts += 1;
+    if (attempts < 2) {
+      return originalStopSurface(request);
+    }
+    allocator.stopRequests.push(request);
+    return { ...request, surface_id: request.surfaceId, backend: "neko", health: "stopping" };
+  };
+  const manager = createDynamicManager({ surfaceCap: 1 });
+  const { calls, controller } = setup(t, {
+    manager,
+    browserSurfaceAllocator: allocator,
+    browserSurfaceReclaimRetryAttempts: 1,
+    browserSurfaceReclaimRetryDelayMs: 0,
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_sweep_reclaim_first",
+  });
+  await controller.drainActiveRuns(1000);
+
+  await controller.runNow("other-managed", {
+    manifest: DISTINCT_PROFILE_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_sweep_reclaim_second",
+  });
+
+  // The acquire-path's own bounded retry (1 attempt) exhausted without
+  // recovering; the lease is still queued on capacity_full.
+  assert.equal(manager.getLease("lease_2").status, "waiting_for_browser_surface");
+  assert.equal(calls.runConnector, 1);
+
+  // The periodic sweep's own reclaim attempt is the retry that succeeds —
+  // this is the cross-run trigger the incident's Defect A lacked: capacity
+  // reclaim is no longer gated on the stranded run's own request path ever
+  // running again.
+  await controller.sweepBrowserSurfaceLeases();
+  await waitFor(() => calls.runConnector === 2, "reclaimed lease should promote and spawn after sweep");
+  await controller.drainActiveRuns(1000);
+
+  // The default mock connector resolves immediately, so by the time the run
+  // drains the lease has already completed its lifecycle to `released` —
+  // the meaningful assertion is that it was NOT abandoned in
+  // `waiting_for_browser_surface`/`deferred`, and the connector actually ran.
+  assert.equal(manager.getLease("lease_2").status, "released");
+  assert.equal(calls.runConnector, 2);
+});
+
+test("sweep never touches an active leased run", async (t) => {
+  let releaseFirst;
+  const allocator = createReadyAllocator();
+  const manager = createDynamicManager({ surfaceCap: 1 });
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_sweep_active") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed" });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { controller, manager: managerRef } = setup(t, { manager, browserSurfaceAllocator: allocator, runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_sweep_active",
+  });
+
+  assert.equal(managerRef.getLease("lease_1").status, "leased");
+
+  await controller.sweepBrowserSurfaceLeases();
+
+  assert.equal(managerRef.getLease("lease_1").status, "leased");
+  assert.equal(managerRef.getSurface("surface_1").health, "ready");
+  assert.equal(managerRef.getSurface("surface_1").active_lease_id, "lease_1");
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+});
+
+test("sweep DOES reconcile a leased run whose surface the allocator confirms is gone — this is the deliberate dead-surface reconciliation, not an exemption violation", async (t) => {
+  let releaseFirst;
+  const allocator = createReadyAllocator();
+  const manager = createDynamicManager({ surfaceCap: 1 });
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_sweep_dead_surface") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed" });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { controller, manager: managerRef } = setup(t, { manager, browserSurfaceAllocator: allocator, runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_sweep_dead_surface",
+  });
+
+  assert.equal(managerRef.getLease("lease_1").status, "leased");
+
+  // Simulate the allocator's own view of the surface disappearing (the same
+  // fixture convention "sweep reconciles a ready surface whose backing
+  // container has already exited" uses above): calling stopSurface directly
+  // on the fake allocator removes it from the allocator's internal map, so
+  // the manager's NEXT getSurfaceStatus call — inside
+  // reconcileSurfacesWithAllocator — returns null, meaning "cannot prove
+  // this surface is live". This is the exact live-incident shape (a ready
+  // row over an exited container the manager does not yet know about).
+  const surfaceStatus = await allocator.getSurfaceStatus("surface_1");
+  assert.ok(surfaceStatus, "precondition: the surface is registered with the allocator before it disappears");
+  await allocator.stopSurface({ surfaceId: "surface_1", reason: "operator" });
+
+  await controller.sweepBrowserSurfaceLeases();
+
+  // The sweep DID mutate this leased lease and surface — the requirement's
+  // "SHALL NOT reclaim/expire/mutate a leased lease" scope is explicitly
+  // "whose surface the allocator confirms is still live", not "any leased
+  // lease unconditionally". A dead-per-allocator surface is not exempt.
+  assert.equal(managerRef.getLease("lease_1").status, "surface_failed");
+  assert.equal(managerRef.getSurface("surface_1"), undefined);
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+});
+
+test("overlapping sweep calls: the second is a no-op while the first is in flight", async (t) => {
+  const allocator = createReadyAllocator();
+  const manager = createDynamicManager({ surfaceCap: 3 });
+  const { controller } = setup(t, { manager, browserSurfaceAllocator: allocator });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_overlap_first",
+  });
+  await controller.drainActiveRuns(1000);
+
+  // Install the blocking override only AFTER the initial run settles — the
+  // acquire path's own readiness wait already calls getSurfaceStatus once
+  // per lease, so blocking from the start would hang run setup itself
+  // rather than isolating the sweep's own allocator round trip.
+  let unblockAllocator;
+  const blockedGate = new Promise((resolve) => {
+    unblockAllocator = resolve;
+  });
+  let getSurfaceStatusCalls = 0;
+  const originalGetSurfaceStatus = allocator.getSurfaceStatus;
+  allocator.getSurfaceStatus = async (surfaceId) => {
+    getSurfaceStatusCalls += 1;
+    if (getSurfaceStatusCalls === 1) {
+      await blockedGate;
+    }
+    return originalGetSurfaceStatus(surfaceId);
+  };
+
+  const firstSweep = controller.sweepBrowserSurfaceLeases();
+  const secondSweep = controller.sweepBrowserSurfaceLeases();
+
+  // The second call must resolve immediately (no-op) rather than waiting on
+  // the first sweep's blocked allocator round trip.
+  await secondSweep;
+  assert.equal(getSurfaceStatusCalls, 1);
+
+  unblockAllocator();
+  await firstSweep;
 });
