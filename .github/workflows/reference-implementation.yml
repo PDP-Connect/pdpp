@@ -79,6 +79,10 @@ jobs:
               scripts/check-owner-journey-acceptance.mjs|\
               scripts/check-owner-journey-acceptance.test.mjs|\
               scripts/owner-journey-acceptance/*|scripts/owner-journey-acceptance/**|\
+              scripts/stream-evidence-inventory.mjs|\
+              scripts/stream-health-audit/*|scripts/stream-health-audit/**|\
+              scripts/check-stream-health-audit.mjs|\
+              docs/reference/stream-evidence-inventory.md|\
               .releaserc.yaml|\
               scripts/check-package-release-policy.mjs|\
               scripts/check-package-release-policy.test.mjs|\
@@ -125,6 +129,14 @@ jobs:
       - name: Test owner journey acceptance harness
         if: steps.changes.outputs.reference_impacting == 'true'
         run: pnpm owner-journey:acceptance:test
+
+      - name: Check stream evidence inventory is current
+        if: steps.changes.outputs.reference_impacting == 'true'
+        run: pnpm stream-evidence:check
+
+      - name: Test stream health audit
+        if: steps.changes.outputs.reference_impacting == 'true'
+        run: node --test reference-implementation/test/stream-health-audit.test.js
 
       - name: Test console health surface gate
         if: steps.changes.outputs.reference_impacting == 'true'

@@ -85,7 +85,7 @@ export async function connectorsWithData(
     manifests.map(async (m) => {
       try {
         const streams = await dataSource.listStreams(m.connector_id);
-        const withData = new Set(streams.filter((s) => s.record_count > 0).map((s) => s.name));
+        const withData = new Set(streams.filter((s) => (s.record_count ?? 0) > 0).map((s) => s.name));
         if (withData.size) {
           result.set(m.connector_id, withData);
         }

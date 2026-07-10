@@ -24,6 +24,9 @@ const OTP_RETRY_TEXT = /retry|invalid|incorrect|expired|try again/i;
 const LOGIN_NAVIGATION_INTERVENTION_ERROR = /page\.goto: net::ERR_(HTTP2_PROTOCOL_ERROR|CONNECTION_RESET|FAILED)\b/i;
 const USAA_SOURCE_UNAVAILABLE_TEXT = /unable to complete your request|system is currently unavailable|try again later/i;
 const MAX_OTP_ATTEMPTS = 3;
+const MANUAL_LOGIN_MESSAGE =
+  "USAA could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
+const STACK_TRACE_LOCATION_SUFFIX_RE = /\s+at\s+https?:\/\/\S+$/i;
 
 interface EnsureUsaaSessionArgs {
   context: BrowserContext;
@@ -53,7 +56,7 @@ export function classifyUsaaLoginStepFailure(bodyText: string): "source_unavaila
   return USAA_SOURCE_UNAVAILABLE_TEXT.test(bodyText) ? "source_unavailable" : "password_field_missing";
 }
 
-function passwordStepFailureMessage({
+function passwordStepFailureDiagnostic({
   body,
   inputs,
   url,
@@ -62,12 +65,7 @@ function passwordStepFailureMessage({
   inputs: InputProbe[];
   url: string;
 }): string {
-  const classification = classifyUsaaLoginStepFailure(body);
-  const diagnostic = `url=${url} inputs=${JSON.stringify(inputs)} body-preview=${trimForDiagnostic(body, 300)}`;
-  if (classification === "source_unavailable") {
-    return `source_unavailable: USAA reported its login system is currently unavailable after Next click. ${diagnostic}`;
-  }
-  return `password field never appeared after Next click. ${diagnostic}`;
+  return `url=${url} inputs=${JSON.stringify(inputs)} body-preview=${trimForDiagnostic(body, 300)}`;
 }
 
 function isLoggedInCookie(cookie: { name: string; value?: string }): boolean {
@@ -104,21 +102,12 @@ async function verifyLoggedIn(context: BrowserContext, page: Page): Promise<bool
   return LOGGED_IN_TEXT.test(bodyText);
 }
 
-async function requestManualLoginRecovery({
-  context,
-  page,
-  reason,
-  sendInteraction,
-}: EnsureUsaaSessionArgs & { reason: string }): Promise<boolean> {
+async function requestManualLoginRecovery({ context, page, sendInteraction }: EnsureUsaaSessionArgs): Promise<boolean> {
   await manualAction(
     {
       page,
       reason: "login",
-      message:
-        `USAA login did not complete automatically (${reason}). ` +
-        "This often means USAA is rejecting the current automated browser mode. " +
-        "If this run opened a visible browser, complete USAA login there and respond success. " +
-        "If it is headless, cancel this interaction and rerun USAA headed (for example with PDPP_USAA_HEADLESS=0 on a desktop or under xvfb-run).",
+      message: MANUAL_LOGIN_MESSAGE,
       timeoutSeconds: 1800,
     },
     sendInteraction
@@ -207,8 +196,8 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
   } catch (err) {
     const message = errorMessage(err);
     if (LOGIN_NAVIGATION_INTERVENTION_ERROR.test(message)) {
-      const reason = firstLine(message);
-      if (await requestManualLoginRecovery({ context, page, reason, sendInteraction })) {
+      const reason = firstLine(message).replace(STACK_TRACE_LOCATION_SUFFIX_RE, "");
+      if (await requestManualLoginRecovery({ context, page, sendInteraction })) {
         return true;
       }
       throw new Error(`USAA login page navigation failed (${reason}); manual action did not establish a session`);
@@ -253,11 +242,11 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
         );
       })
       .catch((): InputProbe[] => []);
-    const reason = passwordStepFailureMessage({ body, inputs, url: page.url() });
-    if (await requestManualLoginRecovery({ context, page, reason, sendInteraction })) {
+    const diagnostic = passwordStepFailureDiagnostic({ body, inputs, url: page.url() });
+    if (await requestManualLoginRecovery({ context, page, sendInteraction })) {
       return true;
     }
-    throw new Error(`USAA login stalled after Next click (${reason}); manual action did not establish a session`);
+    throw new Error(`USAA login stalled after Next click (${diagnostic}); manual action did not establish a session`);
   }
   await page.fill('input[name="password"]', password);
   await page.waitForTimeout(500);

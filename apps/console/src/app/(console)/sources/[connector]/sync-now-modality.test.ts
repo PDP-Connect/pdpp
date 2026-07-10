@@ -41,6 +41,11 @@ const RENDERED_OWNER_ACTION_GUARD =
   /const renderedOwnerAction =\s*renderedAction && renderedAction\.audience === "owner" && renderedAction\.satisfied_when\.kind !== "none"\s*\? renderedAction\s*: null;/;
 const NON_OWNER_HEADER_ACTIONS_RETURN_NULL =
   /if \(action\.audience !== "owner" \|\| action\.satisfied_when\.kind === "none"\) \{\s*return null;\s*\}/;
+const EXACT_SYNC_TARGET_GUARD = /action\.target\?\.kind !== "sync"/;
+const EXACT_SYNC_RUN_HREF = /href=\{`\/syncs\/\$\{encodeURIComponent\(action\.target\.run_id\)\}`\}/;
+const EXACT_SYNC_LINK_LABEL = /\{action\.cta\}/;
+const EXACT_SYNC_LINK_NO_TITLE = /title="Open the exact sync that needs owner input\."/;
+const EXACT_SYNC_LINK_NO_GENERIC_FALLBACK = /href=\{syncDetailHref \?\? "\/syncs"\}/;
 // A device-local add_info recovery is NOT navigable — it must render as
 // non-clickable guidance pointing to the Diagnostics commands, never a <Link>
 // to /runs (which sent the owner in a hero→panel→runs→panel circle).
@@ -72,10 +77,16 @@ const SYNC_BUTTON_FILE = `${HERE}sync-now-button.tsx`;
 const SYNC_BUTTON_NO_OPTIMISTIC_RUNNING = /optimisticRunning/;
 const SYNC_BUTTON_PENDING_LABEL = /else if \(isPending\) \{\s*buttonLabel = "Starting…";\s*\}/;
 const SYNC_BUTTON_SUCCESS_TOAST =
-  /setToast\(\{\s*message: "Sync started\.",\s*runHref: res\.run_id \? `\/syncs\/\$\{encodeURIComponent\(res\.run_id\)\}` : undefined,\s*tone: "info",\s*\}\)/;
+  /markSyncStartToast\([\s\S]*?syncToastScopeId,[\s\S]*?\{\s*message: nextToast\.message,[\s\S]*?runId: nextToast\.runId,[\s\S]*?tone: nextToast\.tone\s*\},[\s\S]*?TOAST_TTL_MS[\s\S]*?\)/;
 const SYNC_BUTTON_RUN_LINK =
-  /<Link className="underline underline-offset-2" href=\{toast\.runHref\}>[\s\S]{0,80}Open sync/;
+  /<Link className="underline underline-offset-2" href=\{toastRunHref\}>[\s\S]{0,120}View sync →/;
 const SYNC_BUTTON_LONGER_TOAST_TTL = /const TOAST_TTL_MS = 15_000/;
+const SYNC_BUTTON_DERIVES_RUN_HREF = /const toastRunHref = syncRunHref\(toast\?\.runId\)/;
+const SYNC_BUTTON_NO_REMARK_EFFECT = /markSyncStartToast\(syncToastScopeId, toast, TOAST_TTL_MS\)/;
+const SYNC_BUTTON_NO_HYDRATION_STATE = /hasHydrated/;
+const REATTACH_SCHEDULE_ACTION_EXPORT = /export async function resumeConnectorScheduleAction\(formData: FormData\)/;
+const REATTACH_SCHEDULE_RESUME_CALL =
+  /connectionId \? resumeConnectionSchedule\(connectionId\) : resumeConnectorSchedule\(connectorId\)/;
 
 test("detail page imports the shared primary-action classifier", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -103,6 +114,11 @@ test("rendered verdict owner action owns the header before generic sync fallback
   assert.match(src, RENDERED_OWNER_ACTION_GUARD);
   assert.match(src, NON_OWNER_HEADER_ACTIONS_RETURN_NULL);
   assert.match(src, RENDERED_OWNER_ACTION_PRECEDES_SYNC);
+  assert.match(src, EXACT_SYNC_TARGET_GUARD);
+  assert.match(src, EXACT_SYNC_RUN_HREF);
+  assert.match(src, EXACT_SYNC_LINK_LABEL);
+  assert.doesNotMatch(src, EXACT_SYNC_LINK_NO_TITLE);
+  assert.doesNotMatch(src, EXACT_SYNC_LINK_NO_GENERIC_FALLBACK);
 });
 
 test("stored-credential sources repair credentials before browser-session fallback", async () => {
@@ -163,6 +179,9 @@ test("the empty-streams hint gates Sync now copy on the owner-runnable branch", 
 test("detail Sync now acknowledges accepted starts without stale optimistic running state", async () => {
   const src = await readFile(SYNC_BUTTON_FILE, "utf8");
   assert.doesNotMatch(src, SYNC_BUTTON_NO_OPTIMISTIC_RUNNING);
+  assert.doesNotMatch(src, SYNC_BUTTON_NO_REMARK_EFFECT);
+  assert.doesNotMatch(src, SYNC_BUTTON_NO_HYDRATION_STATE);
+  assert.match(src, SYNC_BUTTON_DERIVES_RUN_HREF);
   assert.match(src, SYNC_BUTTON_PENDING_LABEL);
   assert.match(src, SYNC_BUTTON_SUCCESS_TOAST);
   assert.match(src, SYNC_BUTTON_RUN_LINK);
@@ -176,14 +195,11 @@ test("detail Sync now acknowledges accepted starts without stale optimistic runn
 // action's real contract (`schedule_attached_and_enabled`). Without this
 // guard, `reattach_schedule` silently mis-wires to `runConnectorNowAction`
 // via the fallthrough branch, a dead end for the schedule itself.
-const REATTACH_SCHEDULE_IMPORT =
-  /import \{ resumeConnectorScheduleAction \} from "\.\/actions\.ts";/;
+const REATTACH_SCHEDULE_IMPORT = /import \{ resumeConnectorScheduleAction \} from "\.\/actions\.ts";/;
 const REATTACH_SCHEDULE_BRANCH_GUARD = /if \(action\.kind === "reattach_schedule"\)/;
 const REATTACH_SCHEDULE_FORM_ACTION = /<form action=\{resumeConnectorScheduleAction\}>/;
-const REATTACH_SCHEDULE_CONNECTOR_ID_INPUT =
-  /<input name="connector_id" type="hidden" value=\{connectorId\} \/>/;
-const REATTACH_SCHEDULE_CONNECTION_ID_INPUT =
-  /<input name="connection_id" type="hidden" value=\{connectionId\} \/>/;
+const REATTACH_SCHEDULE_CONNECTOR_ID_INPUT = /<input name="connector_id" type="hidden" value=\{connectorId\} \/>/;
+const REATTACH_SCHEDULE_CONNECTION_ID_INPUT = /<input name="connection_id" type="hidden" value=\{connectionId\} \/>/;
 const REATTACH_SCHEDULE_TESTID = /data-testid="detail-action-reattach-schedule"/;
 // The branch must appear before the generic SyncNowButton fallthrough so a
 // future refactor cannot silently reorder it behind the catch-all.
@@ -203,8 +219,8 @@ test("reattach_schedule wires to the real schedule-resume server action, never t
 
 test("resumeConnectorScheduleAction reaches the real instance-scoped schedule-resume call, not a stub", async () => {
   const src = await readFile(`${HERE}actions.ts`, "utf8");
-  assert.match(src, /export async function resumeConnectorScheduleAction\(formData: FormData\)/);
+  assert.match(src, REATTACH_SCHEDULE_ACTION_EXPORT);
   // Instance-scoped resume when a connection_id is present — never silently
   // falls back to the connector-wide resume for a connection-scoped action.
-  assert.match(src, /connectionId \? resumeConnectionSchedule\(connectionId\) : resumeConnectorSchedule\(connectorId\)/);
+  assert.match(src, REATTACH_SCHEDULE_RESUME_CALL);
 });

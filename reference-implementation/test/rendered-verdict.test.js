@@ -98,6 +98,22 @@ function backlogStalledCondition(reason, message = 'Local-device outbox work is 
   });
 }
 
+function exactSyncAttention(overrides = {}) {
+  return {
+    actionTarget: 'dashboard',
+    expiresAt: null,
+    id: 'att_exact_sync',
+    lifecycle: 'open',
+    notificationState: 'sent',
+    ownerAction: 'provide_value',
+    reasonCode: 'otp_required',
+    responseContract: 'response_required',
+    runId: 'run_exact_sync',
+    sensitivity: 'secret',
+    ...overrides,
+  };
+}
+
 /** Default healthy/fresh snapshot. Override axes/state/conditions per case. */
 function snapshot(overrides = {}) {
   const axes = {
@@ -798,6 +814,47 @@ test('channel: dead-letter stalled outbox includes recover preview before apply'
     'npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id>',
     'npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply',
   ]);
+});
+
+test('channel: structured attention carries the exact sync target from its own run id', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'needs_attention',
+      axes: { attention: 'open', freshness: 'stale' },
+      forward_disposition: 'awaiting_owner',
+      reason_code: 'otp_required',
+    }),
+    [stream({ coverage: 'complete' })],
+    null,
+    true,
+    null,
+    null,
+    exactSyncAttention({ runId: 'run_causal', sensitivity: 'secret' })
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.channel, 'attention');
+  assert.equal(action.kind, 'add_info');
+  assert.equal(action.cta, 'Complete the requested action');
+  assert.deepEqual(action.target, { kind: 'sync', run_id: 'run_causal' });
+});
+
+test('channel: fallback add_info guidance stays plain text when no exact sync target exists', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'needs_attention',
+      axes: { attention: 'open', freshness: 'stale' },
+      forward_disposition: 'awaiting_owner',
+      reason_code: 'needs_human_attention',
+    }),
+    [stream({ coverage: 'complete' })],
+    null,
+    true
+  );
+  const action = v.required_actions[0];
+  assert.equal(v.channel, 'attention');
+  assert.equal(action.kind, 'add_info');
+  assert.equal(action.cta, 'Complete the requested action');
+  assert.equal(action.target, undefined);
 });
 
 test('channel: transient upload failures do not ask the owner to recover local uploads', () => {

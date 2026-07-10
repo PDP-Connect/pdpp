@@ -259,7 +259,10 @@ function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummar
     streams.push({
       name,
       object: "stream",
-      record_count: Number(record?.record_count ?? 0),
+      // An absent retained-size row is NOT zero: the server synthesizes
+      // exact-zero rows whenever the retained-size projection is proven
+      // fresh/clean, so absence means the count is currently unreliable.
+      record_count: record ? Number(record.record_count ?? 0) : null,
       last_updated: record?.last_updated ?? null,
     });
   };
@@ -618,7 +621,9 @@ function ConnectorPageView({
                   >
                     <span className="pdpp-body break-all font-medium font-mono">{s.name}</span>
                     <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">
-                      <span>{s.record_count.toLocaleString()} records</span>
+                      <span>
+                        {s.record_count === null ? "count unavailable" : `${s.record_count.toLocaleString()} records`}
+                      </span>
                       {s.last_updated ? (
                         <>
                           <span aria-hidden>·</span>
@@ -937,16 +942,25 @@ function RenderedVerdictHeaderAction({
         </span>
       );
     }
-    // A non-device add_info genuinely lives on a run (e.g. an OTP/response the
-    // owner provides in the run view). There is not yet a connection-scoped
-    // Runs filter, so use the neutral Runs surface rather than a connector-type
-    // filter that could include sibling sources.
+    // A non-device add_info is only clickable when the server attached a
+    // validated exact sync target from structured attention. Otherwise the
+    // action remains plain text; the console must not invent a generic
+    // /syncs fallback for a connection-scoped owner prompt.
+    if (action.target?.kind !== "sync") {
+      return (
+        <span
+          className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"
+          data-testid="detail-action-rendered-verdict"
+        >
+          {action.cta}
+        </span>
+      );
+    }
     return (
       <Link
         className={buttonVariants({ variant: "default", size: "sm" })}
         data-testid="detail-action-rendered-verdict"
-        href="/syncs"
-        title="Open the run that needs owner input."
+        href={`/syncs/${encodeURIComponent(action.target.run_id)}`}
       >
         {action.cta}
       </Link>

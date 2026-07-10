@@ -329,7 +329,7 @@ test("emitStatementRecords: required_keys === hydrated_keys ∪ gap_keys (runtim
   }
 });
 
-test("emitStatementRecords: a run with only disclosures (no statement docs) emits no coverage and no gaps", async () => {
+test("emitStatementRecords: a run with only disclosures (no statement docs) still emits a zero-candidate DETAIL_COVERAGE", async () => {
   const { deps, messages } = makeHarness();
   // Titles the statement-parse predicate rejects (agreement/disclosure).
   const indexRows = [
@@ -340,11 +340,35 @@ test("emitStatementRecords: a run with only disclosures (no statement docs) emit
   const summary: HydrationSummary = { attempts: 0, successes: 0, results: hydration };
   await emitStatementRecords(deps, indexRows, hydration, summary);
 
-  assert.equal(statementCoverage(messages), undefined, "no DETAIL_COVERAGE without a real denominator");
+  // Enumeration completed (the documents index was scraped; it just had zero
+  // statement-document candidates), so the run measured its denominator and
+  // must report it — considered: 0 / covered: 0 — rather than staying silent.
+  const coverage = statementCoverage(messages);
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE", "a zero-candidate run still emits DETAIL_COVERAGE");
+  assert.deepEqual(coverage.required_keys, []);
+  assert.deepEqual(coverage.hydrated_keys, []);
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
+  assert.equal(coverage.gap_keys, undefined, "no gaps when there is no real denominator");
   assert.equal(statementGaps(messages).length, 0, "no DETAIL_GAP for non-statement rows");
   // The statement records themselves still emit (index-only) — coverage is additive.
-  // (The disclosure rows are honest `statements` records; only the PDF-detail
-  //  coverage report is suppressed.)
+  // (The disclosure rows are honest `statements` records; the PDF-detail
+  //  coverage report now reflects the measured zero denominator instead of
+  //  being suppressed.)
+});
+
+test("emitStatementRecords: zero statement-document rows scraped still emits a zero-candidate DETAIL_COVERAGE", async () => {
+  const { deps, messages } = makeHarness();
+  const hydration = new Map<number, HydrationResult>();
+  const summary: HydrationSummary = { attempts: 0, successes: 0, results: hydration };
+  await emitStatementRecords(deps, [], hydration, summary);
+
+  const coverage = statementCoverage(messages);
+  assert.ok(coverage && coverage.type === "DETAIL_COVERAGE", "an empty documents index still emits DETAIL_COVERAGE");
+  assert.deepEqual(coverage.required_keys, []);
+  assert.deepEqual(coverage.hydrated_keys, []);
+  assert.equal(coverage.considered, 0);
+  assert.equal(coverage.covered, 0);
 });
 
 test("emitStatementRecords: DETAIL_GAP and DETAIL_COVERAGE never interpolate statement title or account text", async () => {

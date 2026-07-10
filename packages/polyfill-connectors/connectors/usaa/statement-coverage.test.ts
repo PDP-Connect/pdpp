@@ -8,7 +8,10 @@
  *   - hydrated_keys counts a present artifact (fresh OR carried-forward),
  *   - gap_keys + one DETAIL_GAP each cover every un-hydrated candidate, so
  *     required === hydrated ∪ gap (the runtime's coverage-completeness check),
- *   - zero candidates => candidateCount 0 (caller emits nothing),
+ *   - zero candidates => candidateCount 0 with empty key sets (the caller,
+ *     `emitStatementCoverage` in index.ts, still emits this as a real
+ *     considered:0/covered:0 DETAIL_COVERAGE when statement enumeration
+ *     completed — see integration.test.ts for that emit-path assertion),
  *   - the only key that leaves the module is the opaque statement id hash —
  *     never a title or account reference.
  */
@@ -95,7 +98,7 @@ test("non-statement rows (disclosures/agreements) are excluded from the denomina
   assert.equal(result.candidateCount, 1);
 });
 
-test("zero statement candidates => candidateCount 0 (caller emits nothing)", () => {
+test("zero statement candidates => candidateCount 0 with empty key sets (the pure compute step, not the emit decision)", () => {
   const result = computeStatementCoverage([nonCandidate("disclosure"), nonCandidate("agreement")]);
   assert.equal(result.candidateCount, 0);
   assert.deepEqual(result.coverage.requiredKeys, []);

@@ -542,3 +542,93 @@ test('reconciliation does not auto-register hidden manifests even when the file 
   const persisted = await getConnectorManifest(CONNECTOR_ID);
   assert.equal(persisted, null, 'no connectors row is created for a hidden shipped manifest');
 }));
+
+test('reconciliation disabled by options logs and reports disabled_reason instead of silently scanning nothing', withTmpDb(async ({ dir }) => {
+  const manifestsDir = writeManifestsDir(dir, 'polyfill', { 'seed-flip.json': shippedPolyfillManifest() });
+  const referenceFixturesDir = writeManifestsDir(dir, 'reference', {});
+
+  const lines = [];
+  const summary = await reconcilePolyfillManifests({
+    enabled: false,
+    manifestsDir,
+    referenceFixturesDir,
+    log: (line) => lines.push(line),
+  });
+
+  assert.equal(summary.scanned, 0, 'a disabled run scans nothing');
+  assert.equal(summary.disabled_reason, 'disabled_by_options', 'summary explains why nothing was scanned');
+  assert.ok(
+    lines.some((line) => line.includes('disabled by options')),
+    'a disabled-by-options run logs through the log option instead of staying silent',
+  );
+}));
+
+test('reconciliation skipped via PDPP_SKIP_MANIFEST_RECONCILE logs and reports disabled_reason', withTmpDb(async ({ dir }) => {
+  const manifestsDir = writeManifestsDir(dir, 'polyfill', { 'seed-flip.json': shippedPolyfillManifest() });
+  const referenceFixturesDir = writeManifestsDir(dir, 'reference', {});
+
+  const prior = process.env.PDPP_SKIP_MANIFEST_RECONCILE;
+  process.env.PDPP_SKIP_MANIFEST_RECONCILE = '1';
+  const lines = [];
+  let summary;
+  try {
+    summary = await reconcilePolyfillManifests({
+      enabled: true,
+      manifestsDir,
+      referenceFixturesDir,
+      log: (line) => lines.push(line),
+    });
+  } finally {
+    if (prior === undefined) {
+      delete process.env.PDPP_SKIP_MANIFEST_RECONCILE;
+    } else {
+      process.env.PDPP_SKIP_MANIFEST_RECONCILE = prior;
+    }
+  }
+
+  assert.equal(summary.scanned, 0, 'an env-skipped run scans nothing');
+  assert.equal(summary.disabled_reason, 'env_skip', 'summary explains why nothing was scanned');
+  assert.ok(
+    lines.some((line) => line.includes('PDPP_SKIP_MANIFEST_RECONCILE=1')),
+    'an env-skipped run logs through the log option instead of staying silent',
+  );
+}));
+
+test('reconciliation with an unavailable manifests dir logs and reports disabled_reason', withTmpDb(async ({ dir }) => {
+  const manifestsDir = join(dir, 'does-not-exist');
+  const referenceFixturesDir = writeManifestsDir(dir, 'reference', {});
+
+  const lines = [];
+  const summary = await reconcilePolyfillManifests({
+    enabled: true,
+    manifestsDir,
+    referenceFixturesDir,
+    log: (line) => lines.push(line),
+  });
+
+  assert.equal(summary.scanned, 0, 'a run against a missing manifests dir scans nothing');
+  assert.equal(
+    summary.disabled_reason,
+    'manifests_dir_unavailable',
+    'summary explains why nothing was scanned',
+  );
+  assert.ok(
+    lines.some((line) => line.includes('manifests dir unavailable')),
+    'a missing-manifests-dir run logs through the log option (pre-existing behavior)',
+  );
+}));
+
+test('reconciliation that actually scans reports disabled_reason: null', withTmpDb(async ({ dir }) => {
+  const manifestsDir = writeManifestsDir(dir, 'polyfill', { 'seed-flip.json': shippedPolyfillManifest() });
+  const referenceFixturesDir = writeManifestsDir(dir, 'reference', {});
+
+  const summary = await reconcilePolyfillManifests({
+    enabled: true,
+    manifestsDir,
+    referenceFixturesDir,
+    log: () => {},
+  });
+
+  assert.equal(summary.scanned, 1, 'the manifest file was scanned');
+  assert.equal(summary.disabled_reason, null, 'a real scan carries no disabled_reason');
+}));

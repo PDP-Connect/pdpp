@@ -1462,11 +1462,23 @@ export async function emitStatementIndexOnly(
 
 export type StatementDetailOutcome = { kind: "hydrated"; id: string } | { kind: "index_only"; id: string };
 
+/**
+ * Emit the per-run `statements` DETAIL_COVERAGE. `outcomes` is built from
+ * every row `runStatements` enumerated this run; the caller wraps
+ * navigation + enumeration in a try/catch that emits a `statements_scrape_
+ * failed` SKIP_RESULT and returns BEFORE reaching this function on an
+ * enumeration failure, so `outcomes.length === 0` here always means
+ * "enumeration completed and found zero statement rows," never "enumeration
+ * never happened." Always emits when statements are in scope — including
+ * the zero-outcome steady-state case (considered: 0, covered: 0, empty key
+ * sets) — so a run that legitimately enumerated its denominator to zero
+ * stays measured instead of silently unreported.
+ */
 export async function emitStatementDetailCoverage(
   deps: EmitDeps,
   outcomes: readonly StatementDetailOutcome[]
 ): Promise<void> {
-  if (!deps.wantsStatements || outcomes.length === 0) {
+  if (!deps.wantsStatements) {
     return;
   }
   const requiredKeys = outcomes.map((outcome) => outcome.id);

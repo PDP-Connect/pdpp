@@ -14,13 +14,20 @@
  * current `now` and controller/runtime liveness so a cached verdict can never
  * say a source is healthy after its evidence has gone stale or blocked.
  *
- * This module is storage + maintenance scaffolding. It does NOT yet back the
- * `/_ref/connectors` hot path; the read-path swap is a later slice. The rebuild
- * derives evidence from already-durable canonical state (connector_instances +
- * the maintained retained_size_* projection); it never re-runs connectors or
- * reads credentials.
+ * The `/_ref/connectors` routes run `reconcileDirtyConnectorSummaryEvidence`
+ * before every list/detail read, so the reconcile pass IS on the hot path;
+ * the identity/count columns still do not back the summary payload (the
+ * projection reads the retained_size_* tables directly). What the hot path
+ * DOES consume from here is the per-stream latest-attempt evidence
+ * (`stream_latest_facts_json`): the raw runtime fact from the newest terminal
+ * run that attempted each stream, folded from terminal spine events by
+ * `event_seq` checkpoint. Raw facts only — coverage/freshness are derived on
+ * read. The rebuild derives evidence from already-durable canonical state
+ * (connector_instances + the maintained retained_size_* projection + terminal
+ * spine events); it never re-runs connectors or reads credentials.
  *
  * Spec: openspec/changes/maintain-connector-summary-read-model/
+ *       openspec/changes/define-stream-coverage-freshness-evidence/
  */
 
 import { getDb } from "./db.js";
@@ -121,6 +128,7 @@ function createConnectorSummaryStore() {
           `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
                   revoked_at, total_records, stream_count, last_record_updated_at,
                   stream_records_json, retained_bytes_json, total_retained_bytes,
+                  stream_latest_facts_json, stream_facts_event_seq,
                   dirty, computed_at, source_event_seq, state, last_error
              FROM connector_summary_evidence
              ${where}
@@ -194,6 +202,7 @@ function createConnectorSummaryStore() {
               `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
                     revoked_at, total_records, stream_count, last_record_updated_at,
                     stream_records_json, retained_bytes_json, total_retained_bytes,
+                    stream_latest_facts_json, stream_facts_event_seq,
                     dirty, computed_at, source_event_seq, state, last_error
                FROM connector_summary_evidence
               WHERE connector_instance_id = ?
@@ -205,6 +214,7 @@ function createConnectorSummaryStore() {
               `SELECT connector_instance_id, connector_id, display_name, status, source_kind,
                     revoked_at, total_records, stream_count, last_record_updated_at,
                     stream_records_json, retained_bytes_json, total_retained_bytes,
+                    stream_latest_facts_json, stream_facts_event_seq,
                     dirty, computed_at, source_event_seq, state, last_error
                FROM connector_summary_evidence
               ORDER BY connector_instance_id ASC`
@@ -315,6 +325,8 @@ function shapeEvidenceRow(row: Row) {
     stream_count: Number(row.stream_count || 0),
     last_record_updated_at: row.last_record_updated_at || null,
     stream_records: parseEvidenceJson(row.stream_records_json, []),
+    stream_latest_facts: parseEvidenceJson(row.stream_latest_facts_json, null),
+    stream_facts_event_seq: row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq),
     retained_bytes: parseEvidenceJson(row.retained_bytes_json, emptyRetainedBytes()),
     total_retained_bytes: Number(row.total_retained_bytes || 0),
     dirty: Number(row.dirty || 0) !== 0,
@@ -372,6 +384,337 @@ export async function markAllConnectorSummaryEvidenceDirty(reason: unknown) {
     await store.markAllDirty({ sanitized });
   } catch {
     // Best-effort.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-stream latest-attempt evidence fold
+//
+// Terminal run events carry the runtime `collection_facts` block (objective
+// per-stream facts for the streams that run ATTEMPTED). This fold maintains,
+// per connection, the newest fact per stream — raw fact + the terminal
+// event's occurred_at (`evidence_as_of`) + run id — checkpointed by spine
+// `event_seq` so a terminal event recorded during an in-progress pass is
+// folded on the next pass rather than lost. A run that did not attempt a
+// stream leaves that stream's stored fact untouched; the newest attempt
+// replaces older proof even when unresolved (failure is never masked by
+// history). The connection is the isolation key: an event without a
+// `connector_instance_id`/`connection_id` (legacy connector-wide) is refused,
+// never attributed.
+//
+// Rows with a NULL checkpoint (pre-change instances) self-heal: the next
+// fold pass — reconcile runs before every `/_ref/connectors` read, and the
+// server schedules one pass at startup — folds their full attributable
+// terminal history once. On fold failure every row is marked stale with the
+// sanitized error so the state is visible, and the projection's fail-closed
+// default (missing facts read unknown) keeps verdicts truthful.
+// ---------------------------------------------------------------------------
+
+const TERMINAL_RUN_EVENT_TYPES = ["run.completed", "run.failed", "run.browser_surface_failed", "run.cancelled"];
+const TERMINAL_TYPES_SQL = TERMINAL_RUN_EVENT_TYPES.map((t) => `'${t}'`).join(", ");
+const STREAM_FACTS_FOLD_BATCH = 2000;
+
+/** One stored latest-attempt entry: the raw runtime fact plus its provenance. */
+interface StoredStreamFactEntry {
+  event_seq: number;
+  evidence_as_of: string | null;
+  fact: Row;
+  run_id: string | null;
+}
+
+function createStreamFactsFoldStore() {
+  if (isPostgresStorageBackend()) {
+    return {
+      async readMaxTerminalEventSeq(): Promise<number | null> {
+        const result = await postgresQuery(
+          `SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE event_type IN (${TERMINAL_TYPES_SQL})`
+        );
+        const value = (result.rows[0] as Row | undefined)?.max_seq;
+        return value == null ? null : Number(value);
+      },
+      async readTerminalFactEvents({ sinceSeq, maxSeq, limit }: { sinceSeq: number; maxSeq: number; limit: number }) {
+        const result = await postgresQuery(
+          `SELECT event_seq, occurred_at, run_id, data_json::text AS data_json
+             FROM spine_events
+            WHERE event_type IN (${TERMINAL_TYPES_SQL})
+              AND event_seq > $1 AND event_seq <= $2
+            ORDER BY event_seq ASC
+            LIMIT $3`,
+          [sinceSeq, maxSeq, limit]
+        );
+        return result.rows as Row[];
+      },
+      async updateStreamFacts({
+        connectorInstanceId,
+        factsJson,
+        eventSeq,
+      }: {
+        connectorInstanceId: string;
+        factsJson: string | null;
+        eventSeq: number;
+      }) {
+        await postgresQuery(
+          `UPDATE connector_summary_evidence
+              SET stream_latest_facts_json = COALESCE($2::jsonb, stream_latest_facts_json),
+                  stream_facts_event_seq = $3
+            WHERE connector_instance_id = $1`,
+          [connectorInstanceId, factsJson, eventSeq]
+        );
+      },
+    };
+  }
+  return {
+    readMaxTerminalEventSeq(): number | null {
+      const row = getDb()
+        .prepare(`SELECT MAX(event_seq) AS max_seq FROM spine_events WHERE event_type IN (${TERMINAL_TYPES_SQL})`)
+        .get() as Row | undefined;
+      const value = row?.max_seq;
+      return value == null ? null : Number(value);
+    },
+    readTerminalFactEvents({ sinceSeq, maxSeq, limit }: { sinceSeq: number; maxSeq: number; limit: number }) {
+      return getDb()
+        .prepare(
+          `SELECT event_seq, occurred_at, run_id, data_json
+             FROM spine_events
+            WHERE event_type IN (${TERMINAL_TYPES_SQL})
+              AND event_seq > ? AND event_seq <= ?
+            ORDER BY event_seq ASC
+            LIMIT ?`
+        )
+        .all(sinceSeq, maxSeq, limit) as Row[];
+    },
+    updateStreamFacts({
+      connectorInstanceId,
+      factsJson,
+      eventSeq,
+    }: {
+      connectorInstanceId: string;
+      factsJson: string | null;
+      eventSeq: number;
+    }) {
+      getDb()
+        .prepare(
+          `UPDATE connector_summary_evidence
+              SET stream_latest_facts_json = COALESCE(?, stream_latest_facts_json),
+                  stream_facts_event_seq = ?
+            WHERE connector_instance_id = ?`
+        )
+        .run(factsJson, eventSeq, connectorInstanceId);
+    },
+  };
+}
+
+/** The connection an event attributes to, or `null` when it names none (refused). */
+function readEventConnectionId(data: Row): string | null {
+  const instanceId = data.connector_instance_id;
+  if (typeof instanceId === "string" && instanceId) {
+    return instanceId;
+  }
+  const connectionId = data.connection_id;
+  if (typeof connectionId === "string" && connectionId) {
+    return connectionId;
+  }
+  return null;
+}
+
+/** Parse a terminal event row's payload into its fact stream array, or `null` when it carries none. */
+function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(String(row.data_json ?? "null"));
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return null;
+  }
+  const payload = data as Row;
+  const block = payload.collection_facts as Row | undefined;
+  const streams = block && typeof block === "object" && Array.isArray(block.streams) ? block.streams : null;
+  return streams && streams.length > 0 ? { payload, streams } : null;
+}
+
+/** Merge one event's stream facts into a connection's map: newest attempt wins per stream. */
+function mergeEventStreamFacts(
+  facts: Record<string, StoredStreamFactEntry>,
+  streams: readonly unknown[],
+  provenance: { evidenceAsOf: string | null; runId: string | null; eventSeq: number },
+  counters: { folded: number; refused: number }
+): void {
+  for (const rawFact of streams) {
+    if (!rawFact || typeof rawFact !== "object" || Array.isArray(rawFact)) {
+      continue;
+    }
+    const stream = (rawFact as Row).stream;
+    if (typeof stream !== "string" || !stream) {
+      continue;
+    }
+    const existing = facts[stream];
+    // Events are folded in ascending event_seq order, so a later event's
+    // fact replaces an earlier one — the newest ATTEMPT wins per stream,
+    // resolved or not.
+    if (!existing || existing.event_seq <= provenance.eventSeq) {
+      facts[stream] = {
+        fact: rawFact as Row,
+        evidence_as_of: provenance.evidenceAsOf,
+        run_id: provenance.runId,
+        event_seq: provenance.eventSeq,
+      };
+      counters.folded += 1;
+    }
+  }
+}
+
+/** Fold one terminal event's fact block into the per-instance maps. */
+function foldTerminalEventFacts(
+  factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>,
+  checkpointByInstance: Map<string, number | null>,
+  row: Row,
+  counters: { folded: number; refused: number }
+): void {
+  const parsed = parseTerminalFactEvent(row);
+  if (!parsed) {
+    return;
+  }
+  const instanceId = readEventConnectionId(parsed.payload);
+  if (!instanceId) {
+    // Legacy connector-wide event: cannot be attributed to exactly one
+    // connection, so it is refused rather than mixed across accounts.
+    counters.refused += 1;
+    return;
+  }
+  const facts = factsByInstance.get(instanceId);
+  if (!facts) {
+    // Not a tracked evidence row (deleted or foreign connection).
+    return;
+  }
+  const eventSeq = Number(row.event_seq);
+  const checkpoint = checkpointByInstance.get(instanceId);
+  if (!Number.isFinite(eventSeq) || (checkpoint != null && eventSeq <= checkpoint)) {
+    return;
+  }
+  mergeEventStreamFacts(
+    facts,
+    parsed.streams,
+    {
+      evidenceAsOf: typeof row.occurred_at === "string" && row.occurred_at ? row.occurred_at : null,
+      runId: typeof row.run_id === "string" && row.run_id ? row.run_id : null,
+      eventSeq,
+    },
+    counters
+  );
+}
+
+/** Seed the fold's in-memory state from the participating evidence rows. */
+function seedFoldState(participants: readonly Row[]): {
+  checkpointByInstance: Map<string, number | null>;
+  factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>;
+  sinceSeq: number;
+} {
+  const factsByInstance = new Map<string, Record<string, StoredStreamFactEntry>>();
+  const checkpointByInstance = new Map<string, number | null>();
+  let sinceSeq = Number.POSITIVE_INFINITY;
+  for (const row of participants) {
+    const instanceId = String(row.connector_instance_id);
+    const parsed = parseEvidenceJson(row.stream_latest_facts_json, null);
+    factsByInstance.set(
+      instanceId,
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? { ...(parsed as Record<string, StoredStreamFactEntry>) }
+        : {}
+    );
+    const checkpoint = row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq);
+    checkpointByInstance.set(instanceId, checkpoint);
+    sinceSeq = Math.min(sinceSeq, checkpoint ?? 0);
+  }
+  return { checkpointByInstance, factsByInstance, sinceSeq };
+}
+
+/**
+ * Fold terminal-event deltas into every evidence row's per-stream
+ * latest-attempt map, checkpointed by terminal `event_seq`. Bounded: reads
+ * only events newer than the oldest participating checkpoint (a NULL
+ * checkpoint participates from the beginning — the pre-change backfill),
+ * batched, and capped at the max sequence observed when the pass started.
+ * Returns fold counters; `{ folded: 0 }` when every row is current.
+ */
+export async function foldConnectorSummaryStreamFacts(): Promise<{
+  folded: number;
+  participants: number;
+  refused: number;
+}> {
+  const store = createConnectorSummaryStore();
+  const foldStore = createStreamFactsFoldStore();
+  const rows = (await store.listEvidence()) as Row[];
+  if (rows.length === 0) {
+    return { folded: 0, participants: 0, refused: 0 };
+  }
+  const maxSeq = await foldStore.readMaxTerminalEventSeq();
+  const participants = rows.filter((row) => {
+    const checkpoint = row.stream_facts_event_seq;
+    return checkpoint == null || (maxSeq != null && Number(checkpoint) < maxSeq);
+  });
+  if (participants.length === 0) {
+    return { folded: 0, participants: 0, refused: 0 };
+  }
+  if (maxSeq == null) {
+    // No terminal events exist yet; stamp a zero checkpoint so fresh rows do
+    // not re-participate on every pass.
+    for (const row of participants) {
+      await foldStore.updateStreamFacts({
+        connectorInstanceId: String(row.connector_instance_id),
+        factsJson: null,
+        eventSeq: 0,
+      });
+    }
+    return { folded: 0, participants: participants.length, refused: 0 };
+  }
+  const { factsByInstance, checkpointByInstance, sinceSeq } = seedFoldState(participants);
+  const counters = { folded: 0, refused: 0 };
+  let cursor = Number.isFinite(sinceSeq) ? sinceSeq : 0;
+  for (;;) {
+    const batch = await foldStore.readTerminalFactEvents({
+      sinceSeq: cursor,
+      maxSeq,
+      limit: STREAM_FACTS_FOLD_BATCH,
+    });
+    for (const row of batch) {
+      foldTerminalEventFacts(factsByInstance, checkpointByInstance, row, counters);
+    }
+    if (batch.length < STREAM_FACTS_FOLD_BATCH) {
+      break;
+    }
+    cursor = Number((batch.at(-1) as Row).event_seq);
+  }
+  // Every participant advances to the pass's max sequence — all attributable
+  // events at or below it have been folded, so later passes read only the
+  // delta. Events recorded after `maxSeq` during this pass fold next time.
+  for (const [instanceId, facts] of factsByInstance) {
+    await foldStore.updateStreamFacts({
+      connectorInstanceId: instanceId,
+      factsJson: Object.keys(facts).length > 0 ? JSON.stringify(facts) : null,
+      eventSeq: maxSeq,
+    });
+  }
+  return { folded: counters.folded, participants: participants.length, refused: counters.refused };
+}
+
+/**
+ * Fold wrapper used by reconcile/rebuild: a fold failure marks every row
+ * stale with the sanitized error and reports `ok: false` so the caller can
+ * SKIP the normal dirty-row refresh — running it would immediately re-clean
+ * the rows (`state = 'fresh'`, `last_error = NULL`) and erase the failure it
+ * just recorded, serving stale stream facts under a fresh evidence envelope.
+ * The projection's missing-facts default (unknown coverage) stays truthful
+ * while the fold retries on the next pass.
+ */
+async function foldStreamFactsBestEffort(): Promise<{ ok: boolean }> {
+  try {
+    await foldConnectorSummaryStreamFacts();
+    return { ok: true };
+  } catch (err) {
+    await markAllConnectorSummaryEvidenceDirty(err);
+    return { ok: false };
   }
 }
 
@@ -553,6 +896,12 @@ export async function rebuildConnectorSummaryEvidence() {
   } else {
     rebuildSqlite(evidence, computedAt);
   }
+  // Newly (re)inserted rows carry a NULL fold checkpoint; fold their full
+  // attributable terminal history now so a rebuild leaves the per-stream
+  // latest-attempt evidence current rather than pending the next read. A
+  // fold failure leaves the rows it marked stale visible (the rebuild's
+  // fresh stamp above is superseded by markAllDirty inside the wrapper).
+  await foldStreamFactsBestEffort();
   return listConnectorSummaryEvidence();
 }
 
@@ -680,8 +1029,17 @@ async function rebuildPostgres(evidence: Row[], computedAt: string) {
  * whose connection still exists is refreshed to clean (`dirty = 0`,
  * `state = 'fresh'`).
  */
-// biome-ignore lint/suspicious/useAwait: async preserves the Promise-returning contract; the sqlite branch is sync.
 export async function reconcileDirtyConnectorSummaryEvidence() {
+  // Fold terminal-event deltas FIRST, independent of the dirty flag: a read
+  // during an active run can clean the dirty flag before the terminal event
+  // lands, so the fold compares the max terminal event_seq against each
+  // row's checkpoint instead of trusting dirtiness alone. On fold failure
+  // the rows were just marked stale with the error — do NOT run the normal
+  // dirty-row refresh, which would re-clean them and erase the failure.
+  const fold = await foldStreamFactsBestEffort();
+  if (!fold.ok) {
+    return { reconciled: 0 };
+  }
   if (isPostgresStorageBackend()) {
     return reconcileDirtyPostgres();
   }

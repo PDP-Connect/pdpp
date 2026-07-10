@@ -243,6 +243,7 @@ import {
 } from './ref-control.ts';
 import { unresolvedOwnerActionEvidenceFromSummary } from './owner-action-gate.js';
 import {
+  foldConnectorSummaryStreamFacts,
   markConnectorSummaryEvidenceDirty,
   reconcileDirtyConnectorSummaryEvidence,
 } from './connector-summary-read-model.ts';
@@ -5298,6 +5299,23 @@ export async function startServer(opts = {}) {
     manifests: startupBackfillManifests,
     logger,
     signal: startupBackfillAbortController.signal,
+  });
+  // One-shot per-stream latest-attempt evidence fold. Pre-change instances
+  // carry a NULL fold checkpoint; folding here (off the request path, after
+  // listen) backfills their full attributable terminal history so the first
+  // owner-console read does not pay the historical scan. The reconcile pass
+  // before every /_ref/connectors read remains the correctness backstop; a
+  // failure here marks rows stale (visible) and the fold retries on read.
+  setImmediate(() => {
+    foldConnectorSummaryStreamFacts()
+      .then((summary) => {
+        if (summary.participants > 0) {
+          logger.info(summary, 'startup stream-facts fold summary');
+        }
+      })
+      .catch((err) => {
+        logger.warn({ err }, 'startup stream-facts fold failed; reconcile-on-read will retry');
+      });
   });
   if (opts.awaitStartupBackfill === true) {
     await startupBackfillDone;

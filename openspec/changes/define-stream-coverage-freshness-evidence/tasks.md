@@ -32,7 +32,7 @@
 - [x] 4.4 Add a generated inventory report showing every declared stream has a coverage and freshness posture.
 - [x] 4.5 Emit WhatsApp attachment `DETAIL_COVERAGE` from parsed media inventory so parent-detail stream rows do not remain unmeasured.
 - [x] 4.6 Mark Slack `unsupported_in_mode` streams as non-required accepted-absent streams so historical no-skip facts do not project as resting unknown coverage.
-- [x] 4.7 Make parent-detail producers that already know their run-time denominator and numerator emit explicit `considered` and `covered` counts so steady-state zero-emission runs still project complete.
+- [x] 4.7 Make parent-detail producers that already know their run-time denominator and numerator emit explicit `considered` and `covered` counts so steady-state zero-emission runs still project complete. (Re-opened 2026-07-10: post-boot live runs on served revision `aec6cabe1` still rest unmeasured — USAA `transactions` never emits `DETAIL_COVERAGE` at all, USAA `statements` rested unmeasured on the 11:55Z post-deploy run despite #285, and several producers gate coverage emission on nonzero candidates. Closed on this branch: USAA `transactions` producer added, zero-candidate suppression removed from USAA/Chase statements and Amazon order_items, and section 8.4's shipped-manifest reproductions pin every audit-named row; live confirmation runs through the 9.1 machine audit after deploy + reruns.)
 
 ## 5. Acceptance Checks
 
@@ -40,4 +40,33 @@
 - [x] 5.2 Shared contract/schema tests pass.
 - [x] 5.3 Runtime collection-report tests pass.
 - [x] 5.4 Reference connection-health and owner-surface tests pass.
-- [x] 5.5 Live owner-instance audit shows no resting stream row whose next step is generic "checking" solely because evidence is missing.
+- [x] 5.5 A required stream resting at unknown/unmeasured can never hide beneath a Healthy connection verdict. (Re-opened 2026-07-10: the live audit found 52 resting unmeasured stream rows across 10 active instances whose connection projection could still read Healthy; the prior check-off verified copy, not the rollup. Now enforced by the 6.2 rollup refusal (rollupCollectionReportCoverageOverride) and proven by collection-report-projection/connection-health-acceptance regressions; the 9.1 machine audit fails any live instance where it regresses. Live confirmation post-deploy is the owner's 9.1 live run.)
+
+## 6. Connection Rollup Blocking
+
+- [x] 6.1 Carry the manifest `required` flag on per-stream collection-report entries.
+- [x] 6.2 Roll required-stream `unknown` coverage into the connection axis: block the clean-success `complete` promotion, resolve the axis to `unknown`, and never upgrade an already-degrading axis (worst-wins preserved).
+- [x] 6.3 Stop the verdict stream-rollup from demoting a required unmeasured stream to `optional` priority under a `complete` connection axis.
+- [x] 6.4 Emit a maintainer-audience, non-terminal required action for required-unmeasured streams so the owner state resolves to a maintainer disposition (advisory channel, no owner CTA, "Checking" only during active bounded work).
+- [x] 6.5 Tests: rollup, verdict synthesis, owner-state resolution, and accepted-policy/local-diagnostic non-degradation regressions.
+
+## 7. Retained-Count Exactness
+
+- [x] 7.1 Join declared manifest streams against retained-size stream rows in the connector summary and synthesize exact-zero rows only when the retained-size/summary evidence is fresh and clean; expose the projection-state evidence on the summary.
+- [x] 7.2 Console stream rows render "0 records" only from a synthesized/present row and render count-unavailable when projection evidence is stale/dirty/unknown; never fabricate zero from an absent row.
+- [x] 7.3 Tests: mixed zero/nonzero streams under fresh evidence, dirty/stale evidence reads unavailable, and a fresh local collector with zero rows in declared streams projects exact zero.
+
+## 8. Scope-Exhaustive Runtime Facts And Producer Closure
+
+- [x] 8.1 Maintain durable per-connection, per-stream latest-attempt evidence in the connector-summary read model (raw fact + evidence_as_of + run id; terminal-event-sequence fold checkpoint; deterministic rebuild/backfill outside the hot read path; connection-scoped, ambiguous legacy events refused; no run-count correctness limit). Dashboard reads consume the one bounded projection and derive coverage/freshness on read; the Healthy gate anchors freshness to the oldest required-stream proof. Run selection is never classified as `deferred`. Acceptance tests: a scoped run preserves prior proof for omitted streams; a never-measured omitted required stream still prevents Healthy; an explicit manifest-deferred stream remains accepted; an attempted-but-unresolved newest fact replaces older proof; stale omitted proof cannot ride a fresh scoped run to Healthy; evidence never crosses connections.
+- [x] 8.2 Emit USAA `transactions` `DETAIL_COVERAGE` with explicit `considered`/`covered` from the per-account outcome accumulator (closes the surviving 4.7 gap).
+- [x] 8.3 Remove zero-candidate suppression from parent-detail coverage producers: a steady-state run that enumerated its denominator SHALL emit `considered`/`covered` even when both are zero (USAA `statements`, Chase `statements`, Amazon `order_items`).
+- [x] 8.4 Deterministic repro tests for the audit-named post-boot cases using the real shipped manifests: parse `packages/polyfill-connectors/manifests/<connector>.json`, feed the steady-state fact block the connector emits, and assert the projected coverage condition (Chase `balances`/`current_activity`, USAA `transactions`/`statements`, ChatGPT `custom_gpts`/`custom_instructions`/`memories`/`shared_conversations`, Slack accepted-absent quartet plus `channel_stats`, Reddit listing streams, Gmail `messages`/`threads`/`labels`/`message_bodies`).
+- [x] 8.5 Make manifest-reconcile silence loud: log when reconciliation is disabled, skipped by environment, or scans zero manifests, so a live instance serving pre-backfill stored manifests is diagnosable from boot logs.
+
+## 9. Machine Gates
+
+- [x] 9.1 Reproducible machine audit that fails when a required stream rests unmeasured/unknown beneath a Healthy connection verdict: a seeded local test plus a live mode reusing the owner-journey acceptance harness. The live mode SHALL distinguish stored-manifest drift (per-stream `coverage_strategy` missing from the served collection report) from producer gaps (strategy present, checkpoint/denominator absent) so each audited row has a named root-cause class.
+- [x] 9.2 Generated stream-evidence inventory artifact (per connector, per stream: strategies, policy, requiredness, `state_stream`) with a drift check wired into CI so new debt fails.
+- [x] 9.3 Close the CI path hole: edits under `reference-implementation/manifests/**` must run the stream-evidence manifest guardrail test.
+- [x] 9.4 Full-suite acceptance: `openspec validate define-stream-coverage-freshness-evidence --strict`, reference-implementation/polyfill-connectors/console suites, typechecks, and lint.

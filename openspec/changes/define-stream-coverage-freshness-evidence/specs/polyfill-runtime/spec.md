@@ -77,7 +77,11 @@ coverage evidence through another accepted stream evidence strategy.
 When the connector's local accumulator can prove the denominator and numerator
 from explicit runtime outcomes, the message SHALL include `considered` and
 `covered`. The connector SHALL NOT treat `required_keys` alone as sufficient to
-prove completeness when those counts are available.
+prove completeness when those counts are available. A steady-state run that
+enumerated its denominator SHALL emit the message even when the denominator is
+zero: `considered: 0` with `covered: 0` is proof of an empty boundary, and
+suppressing the message on zero candidates SHALL NOT leave the stream
+unmeasured.
 
 #### Scenario: detail coverage normalizes into parent-detail accounting
 
@@ -104,7 +108,33 @@ strategy such as `full_inventory`, `checkpoint_window`, or
 **AND** the projection SHALL NOT fall back to a false partial based on
 `collected` alone.
 
+#### Scenario: zero-candidate steady-state run still reports coverage
+
+**WHEN** a list+detail run enumerates its parent boundary and finds zero
+detail candidates
+**THEN** the connector SHALL still emit `DETAIL_COVERAGE` with
+`considered: 0` and `covered: 0`
+**AND** the stream SHALL classify as complete rather than resting unmeasured.
+
 ## ADDED Requirements
+
+### Requirement: Run scope selection SHALL NOT be conflated with stream coverage policy
+
+The runtime SHALL NOT stamp coverage, skip, or policy facts for declared
+streams excluded from the run's scope: a terminal collection-fact block
+records only what the run attempted. No layer SHALL classify a stream as
+accepted deferred coverage solely because a run's scope excluded it.
+Accepted-absence classifications SHALL come only from manifest policy
+declarations or explicit connector skip facts for attempted streams.
+
+#### Scenario: scoped run stamps nothing for excluded streams
+
+**WHEN** a run executes with a scope narrower than the manifest's declared
+streams
+**THEN** the terminal fact block SHALL contain entries only for the attempted
+streams
+**AND** no excluded stream SHALL gain a skip, policy, or coverage fact from
+scope selection alone.
 
 ### Requirement: A co-emitted stream SHALL declare its checkpoint parent via state_stream
 

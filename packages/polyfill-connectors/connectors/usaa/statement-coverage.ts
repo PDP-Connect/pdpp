@@ -55,8 +55,10 @@ export interface StatementCoverageRow {
 
 /** The coverage decision for a run: the params for one DETAIL_COVERAGE plus the
  *  redacted DETAIL_GAP messages to emit (one per gap candidate) before it.
- *  `candidateCount === 0` means the run saw no statement-document rows, so the
- *  caller should emit nothing — there is no real denominator to report. */
+ *  `candidateCount === 0` means the run saw no statement-document rows — the
+ *  caller still emits the resulting `considered: 0` / `covered: 0` coverage
+ *  (as long as enumeration itself completed) so a steady-state zero-candidate
+ *  run stays measured rather than silently unreported. */
 export interface StatementCoverageResult {
   candidateCount: number;
   coverage: DetailCoverageParams;

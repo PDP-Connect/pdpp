@@ -1425,6 +1425,13 @@ function ensureConnectorSummaryEvidenceColumns(raw) {
     'TEXT NOT NULL DEFAULT \'{"record_json_bytes":0,"record_changes_json_bytes":0,"blob_bytes":0,"total_bytes":0}\'',
   );
   addColumnIfMissing(raw, 'connector_summary_evidence', 'total_retained_bytes', 'INTEGER NOT NULL DEFAULT 0');
+  // Durable per-stream latest-attempt evidence: raw runtime facts from the
+  // newest terminal run that attempted each stream, plus the highest terminal
+  // spine event_seq folded into the map. NULL seq = never folded (pre-change
+  // row); the reconcile pass backfills it from terminal events. Raw facts
+  // only — coverage is derived on read.
+  addColumnIfMissing(raw, 'connector_summary_evidence', 'stream_latest_facts_json', 'TEXT');
+  addColumnIfMissing(raw, 'connector_summary_evidence', 'stream_facts_event_seq', 'INTEGER');
 }
 
 function ensureBrowserSurfaceLeaseIndexes(raw) {
@@ -3614,6 +3621,16 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   );
   raw.exec(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_spine_events_seq ON spine_events(event_seq) WHERE event_seq IS NOT NULL`
+  );
+  // Terminal-run events are the fold source for the connector-summary
+  // per-stream evidence; this seq-leading partial index serves the fold's
+  // max-seq and delta-range reads (idx_spine_events_run_terminal leads with
+  // run_id and cannot). Created here, AFTER the event_seq migration above —
+  // a pre-event_seq legacy DB has no such column yet.
+  raw.exec(
+    `CREATE INDEX IF NOT EXISTS idx_spine_events_terminal_seq
+      ON spine_events(event_seq)
+      WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
   );
   // Index gives us a fast lookup-by-approval-id and approximates the
   // UNIQUE constraint on the column (the inline CREATE TABLE form

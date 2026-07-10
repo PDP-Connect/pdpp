@@ -6,6 +6,11 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { syncStartFailureLead } from "../../lib/connection-evidence.ts";
 import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
+import {
+  markSyncStartToast,
+  readSyncStartToast,
+  syncStartToastDismissDelayMs,
+} from "../last-known-sync-start.ts";
 
 const RUNNING_POLL_MS = 3000;
 const TOAST_TTL_MS = 15_000;
@@ -33,8 +38,9 @@ interface Props {
 }
 
 interface SyncToast {
+  expiresAt?: number;
   message: string;
-  runHref?: string;
+  runId?: string;
   tone: "info" | "error" | "warning";
 }
 
@@ -42,6 +48,11 @@ interface SyncToast {
 type IcButtonVariant = "default" | "destructive" | "ghost";
 function toIcVariant(v: "default" | "destructive" | "outline"): IcButtonVariant {
   return v === "outline" ? "ghost" : v;
+}
+
+function syncRunHref(runId: string | undefined): string | null {
+  const normalizedRunId = runId?.trim();
+  return normalizedRunId ? `/syncs/${encodeURIComponent(normalizedRunId)}` : null;
 }
 
 export function SyncNowButton({
@@ -60,6 +71,8 @@ export function SyncNowButton({
   const [toast, setToast] = useState<SyncToast | null>(null);
   const running = initialRunning;
   const busy = running || isPending;
+  const syncToastScopeId = connectionId ?? connectorId;
+  const toastRunHref = syncRunHref(toast?.runId);
   let buttonLabel = idleLabel;
   if (running) {
     buttonLabel = runningLabel;
@@ -81,29 +94,60 @@ export function SyncNowButton({
     if (!toast) {
       return;
     }
-    const id = setTimeout(() => setToast(null), TOAST_TTL_MS);
+    const id = setTimeout(() => setToast(null), syncStartToastDismissDelayMs(toast));
     return () => clearTimeout(id);
   }, [toast]);
+
+  useEffect(() => {
+    const restored = readSyncStartToast(syncToastScopeId);
+    if (restored) {
+      setToast(restored);
+    }
+  }, [syncToastScopeId]);
 
   const handleClick = useCallback(() => {
     setToast(null);
     startTransition(async () => {
       const res: RunNowResult = await runConnectorNowAction(connectorId, connectionId, { force });
       if (res.ok === true) {
-        setToast({
+        const runId =
+          "run_id" in res && typeof res.run_id === "string" && res.run_id.trim().length > 0
+            ? res.run_id.trim()
+            : undefined;
+        const expiresAt = Date.now() + TOAST_TTL_MS;
+        const nextToast = {
+          expiresAt,
           message: "Sync started.",
-          runHref: res.run_id ? `/syncs/${encodeURIComponent(res.run_id)}` : undefined,
+          runId,
           tone: "info",
-        });
+        } satisfies SyncToast;
+        setToast(nextToast);
+        markSyncStartToast(
+          syncToastScopeId,
+          { message: nextToast.message, runId: nextToast.runId, tone: nextToast.tone },
+          TOAST_TTL_MS
+        );
         router.refresh();
         return;
       }
       if (res.reason === "already_running") {
-        setToast({
+        const runId =
+          "run_id" in res && typeof res.run_id === "string" && res.run_id.trim().length > 0
+            ? res.run_id.trim()
+            : undefined;
+        const expiresAt = Date.now() + TOAST_TTL_MS;
+        const nextToast = {
+          expiresAt,
           message: "A sync is already in progress.",
-          runHref: res.run_id ? `/syncs/${encodeURIComponent(res.run_id)}` : undefined,
+          runId,
           tone: "info",
-        });
+        } satisfies SyncToast;
+        setToast(nextToast);
+        markSyncStartToast(
+          syncToastScopeId,
+          { message: nextToast.message, runId: nextToast.runId, tone: nextToast.tone },
+          TOAST_TTL_MS
+        );
         router.refresh();
         return;
       }
@@ -113,7 +157,7 @@ export function SyncNowButton({
         tone: res.phase === "before_server" ? "warning" : "error",
       });
     });
-  }, [connectionId, connectorId, force, router]);
+  }, [connectionId, connectorId, force, router, syncToastScopeId]);
 
   return (
     <div className="flex flex-col items-end gap-1">
@@ -135,9 +179,9 @@ export function SyncNowButton({
           role="status"
         >
           {toast.message}{" "}
-          {toast.runHref ? (
-            <Link className="underline underline-offset-2" href={toast.runHref}>
-              Open sync
+          {toastRunHref ? (
+            <Link className="underline underline-offset-2" href={toastRunHref}>
+              View sync →
             </Link>
           ) : null}
         </span>

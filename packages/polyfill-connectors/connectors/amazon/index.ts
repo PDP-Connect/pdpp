@@ -717,15 +717,19 @@ export async function recoverPendingOrderItemDetailGapsBeforeForwardRun(
  * Emit the run-level `order_items` DETAIL_COVERAGE once after the year loop,
  * using the shared `emitDetailCoverage` helper. The detail stream described is
  * `order_items` (enriched by the per-order detail page); its cursor is anchored
- * by the `orders` list stream (`state_stream`). No-ops when no order was
- * considered, so a run that scraped zero in-scope years emits nothing rather
- * than an empty coverage report. Reuses DETAIL_COVERAGE as a reference-only
- * projection; it is not promoted to portable protocol.
+ * by the `orders` list stream (`state_stream`). The caller (`collect()`) only
+ * reaches this call site once the `for (const year of years)` sweep has run to
+ * completion without throwing — a thrown error aborts the whole collect() call
+ * before this line — so `coverage.required.length === 0` here always means
+ * "the year sweep completed and considered zero orders across every in-scope
+ * year," never "the sweep never ran." Always emits when the caller invokes it
+ * (order_items in scope) — including that zero-required steady-state case
+ * (considered: 0, covered: 0, empty key sets) — so a run that legitimately
+ * swept its denominator to zero stays measured instead of silently
+ * unreported. Reuses DETAIL_COVERAGE as a reference-only projection; it is
+ * not promoted to portable protocol.
  */
 export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItemsCoverage): Promise<void> {
-  if (coverage.required.length === 0) {
-    return;
-  }
   await emitDetailCoverage(deps, {
     stream: "order_items",
     stateStream: "orders",

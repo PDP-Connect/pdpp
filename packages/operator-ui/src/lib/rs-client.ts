@@ -16,7 +16,8 @@ export interface StreamSummary {
   last_updated: string | null;
   name: string;
   object: "stream";
-  record_count: number;
+  /** Retained-record count, or `null` when the count is currently unavailable. */
+  record_count: number | null;
 }
 
 export interface StreamRecord {

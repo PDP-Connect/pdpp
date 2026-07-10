@@ -196,7 +196,22 @@ test('owner-wire: active local-device outbox renders Syncing without owner actio
   assert.equal(verdict.required_actions.length, 0);
 });
 
-test('owner-wire: denominator-only unknown stream rows do not override connection-level complete coverage', () => {
+// This test previously asserted that a required stream resting at `unknown`
+// coverage was demoted to `optional` by `connectionCompleteReportGap` and so
+// stayed green/Healthy/calm underneath a `complete` connection-level axis —
+// the exact live-instance masking bug
+// (openspec/changes/define-stream-coverage-freshness-evidence,
+// "Connection Rollup Honesty" / requirement "A required stream without a
+// resolved coverage posture SHALL block a Healthy verdict"). A required
+// stream with NO resolved coverage evidence (not a sampled-run precision
+// gap) must keep its worst-wins vote, so the verdict renders grey/"Not
+// measured", not green/Healthy. (In the real pipeline, the upstream
+// `rollupCollectionReportCoverageOverride` — server/ref-control.ts — would
+// have already refused to promote `snapshot.axes.coverage` to `complete` for
+// this exact report shape; this unit calls `synthesizeConnectorVerdict`
+// directly with a pre-built `complete` snapshot to isolate the
+// `buildStreamRollups` guard.)
+test('owner-wire: a required stream with unresolved (unknown) coverage keeps its worst-wins vote — never masked green by a complete connection axis', () => {
   const verdict = synthesizeConnectorVerdict({
     snapshot: freshHealthySnapshot(),
     report: collectionReport({
@@ -210,10 +225,14 @@ test('owner-wire: denominator-only unknown stream rows do not override connectio
     progress: null,
   });
 
-  assert.equal(verdict.pill.tone, 'green');
-  assert.equal(verdict.pill.label, 'Healthy');
-  assert.equal(verdict.channel, 'calm');
+  assert.equal(verdict.pill.tone, 'grey');
+  assert.equal(verdict.pill.label, 'Not measured');
   assert.equal(verdict.streams[0]?.coverage, 'unknown', 'inspection row still carries unknown coverage');
+  // No maintainer action here: `freshHealthySnapshot()` carries no
+  // `CollectionSucceeded` condition, so the never-run gate on the new
+  // maintainer action holds (no fabricated defect claim on unproven history).
+  assert.equal(verdict.channel, 'calm');
+  assert.equal(verdict.required_actions.length, 0);
 });
 
 test('owner-wire: latest-run partial sample rows do not override connection-level complete coverage', () => {

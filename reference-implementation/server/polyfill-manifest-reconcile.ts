@@ -111,6 +111,15 @@ function manifestsEqual(a: unknown, b: unknown): boolean {
 }
 
 export interface ReconcileSummary {
+  /**
+   * Why this run scanned nothing (`scanned === 0`), or `null` when the run
+   * actually scanned the manifests dir (whether or not it found any files).
+   * Set on every early-return path — disabled by options, disabled by the
+   * `PDPP_SKIP_MANIFEST_RECONCILE` env escape hatch, or the manifests dir
+   * itself being unavailable — so callers/tests can assert *why* nothing
+   * happened instead of inferring it from a bare zero count.
+   */
+  disabled_reason: string | null;
   errors: number;
   invalidatedConnectors: number;
   invalidatedRecords: number;
@@ -216,6 +225,7 @@ async function loadReferenceFixtureFingerprints(
 }
 
 const EMPTY_SUMMARY: ReconcileSummary = {
+  disabled_reason: null,
   scanned: 0,
   updated: 0,
   unchanged: 0,
@@ -527,10 +537,12 @@ export async function reconcilePolyfillManifests(opts: ReconcileOptions = {}): P
     },
   } = opts;
   if (!enabled) {
-    return { ...EMPTY_SUMMARY };
+    log("[manifest-reconcile] disabled by options");
+    return { ...EMPTY_SUMMARY, disabled_reason: "disabled_by_options" };
   }
   if (process.env.PDPP_SKIP_MANIFEST_RECONCILE === "1") {
-    return { ...EMPTY_SUMMARY };
+    log("[manifest-reconcile] skipped: PDPP_SKIP_MANIFEST_RECONCILE=1");
+    return { ...EMPTY_SUMMARY, disabled_reason: "env_skip" };
   }
 
   // readdir's TS overload defaults the dirent buffer parameter to
@@ -542,7 +554,7 @@ export async function reconcilePolyfillManifests(opts: ReconcileOptions = {}): P
     entries = await readdir(manifestsDir, { withFileTypes: true, encoding: "utf8" });
   } catch (err) {
     log(`[manifest-reconcile] manifests dir unavailable: ${errorMessage(err)}`);
-    return { ...EMPTY_SUMMARY };
+    return { ...EMPTY_SUMMARY, disabled_reason: "manifests_dir_unavailable" };
   }
 
   const referenceFixtureFingerprints = await loadReferenceFixtureFingerprints(referenceFixturesDir);

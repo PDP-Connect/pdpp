@@ -83,11 +83,11 @@ export const CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE =
   "ChatGPT sent an app approval notification. Approve it in the ChatGPT app; PDPP will continue automatically after ChatGPT confirms the session.";
 export const CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE = CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE;
 export const CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE =
-  "ChatGPT sent an app approval notification, but the session did not continue automatically. Approve it in the ChatGPT app if you have not already, then click Continue here.";
+  "ChatGPT approval did not complete automatically; open the ChatGPT app to approve it. PDPP resumes when the session continues.";
 export const CHATGPT_BROWSER_LOGIN_ASSISTANCE_MESSAGE =
-  "Open the browser session and finish ChatGPT login. PDPP will continue automatically after ChatGPT confirms the session.";
+  "ChatGPT could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
 export const CHATGPT_BROWSER_LOGIN_FALLBACK_MESSAGE =
-  "ChatGPT login still is not active. Finish login in the browser session, then click Continue here.";
+  "ChatGPT could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
 export const CHATGPT_SESSION_REQUIRED_NON_INTERACTIVE_MESSAGE =
   "chatgpt_session_required: ChatGPT session is not active; start an owner-attended manual refresh to repair authentication.";
 export const CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE =
@@ -541,6 +541,7 @@ export async function handleBrowserLoginAssistance({
   capture,
   checkpoint,
   completeAssistance,
+  diagnosticMessage,
   message = CHATGPT_BROWSER_LOGIN_ASSISTANCE_MESSAGE,
   page,
   progress,
@@ -550,6 +551,7 @@ export async function handleBrowserLoginAssistance({
   EnsureChatGptSessionArgs,
   "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
 > & {
+  readonly diagnosticMessage?: string;
   readonly message?: string;
   readonly reason?: ManualActionReason;
 }): Promise<boolean> {
@@ -580,8 +582,11 @@ export async function handleBrowserLoginAssistance({
 
   if (assistanceRequestId && completeAssistance) {
     await completeAssistance(assistanceRequestId, "escalated", {
-      message: "ChatGPT login did not complete automatically; waiting for explicit browser confirmation.",
+      message:
+        diagnosticMessage ?? "ChatGPT login did not complete automatically; waiting for explicit browser confirmation.",
     });
+  } else if (diagnosticMessage) {
+    await progress?.(diagnosticMessage);
   }
 
   await manualAction(
@@ -623,13 +628,8 @@ async function fallbackForUnexpectedLoginUi({
   EnsureChatGptSessionArgs,
   "assist" | "capture" | "checkpoint" | "completeAssistance" | "page" | "progress" | "sendInteraction"
 >): Promise<boolean> {
-  // EARN the diagnosis instead of guessing. We only reach this branch because
-  // the expected login inputs were absent — historically we blindly blamed
-  // "possibly Cloudflare challenge", which was right by luck at best. Consult the
-  // shared connector-agnostic detector so the operator-facing message and the
-  // interaction reason reflect what the page ACTUALLY is.
   const cf = await detectCloudflareChallenge(page);
-  const message = cf.isChallenge
+  const diagnosticMessage = cf.isChallenge
     ? `Cloudflare challenge confirmed (signals: ${cf.signals.join(", ")}). Complete the "Verify you are human" check in the streaming companion, then the run will resume — or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.`
     : "ChatGPT login inputs were not found and no Cloudflare challenge was detected (the login page may have changed). Complete login in the streaming companion, or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.";
   return await handleBrowserLoginAssistance({
@@ -637,7 +637,8 @@ async function fallbackForUnexpectedLoginUi({
     ...(capture ? { capture } : {}),
     ...(checkpoint ? { checkpoint } : {}),
     ...(completeAssistance ? { completeAssistance } : {}),
-    message,
+    diagnosticMessage,
+    message: CHATGPT_BROWSER_LOGIN_FALLBACK_MESSAGE,
     page,
     ...(progress ? { progress } : {}),
     reason: "captcha",
@@ -890,8 +891,9 @@ async function fallbackForPostSubmitLogin({
     ...(capture ? { capture } : {}),
     ...(checkpoint ? { checkpoint } : {}),
     ...(completeAssistance ? { completeAssistance } : {}),
-    message:
+    diagnosticMessage:
       "ChatGPT login submitted but session still is not active. Use the streaming companion to complete login (Cloudflare challenge, 2FA, etc.). PDPP will continue automatically after ChatGPT confirms the session.",
+    message: CHATGPT_BROWSER_LOGIN_FALLBACK_MESSAGE,
     page,
     ...(progress ? { progress } : {}),
     reason: "login",

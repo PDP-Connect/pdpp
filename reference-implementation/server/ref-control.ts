@@ -74,6 +74,7 @@ import {
   type CoverageEvidenceStrategy,
   deriveStreamCoverageCondition,
   type FreshnessEvidenceStrategy,
+  isRequiredStream,
   pickAcceptedCoverage,
   pickRequiredAcceptedCoverage,
   readCoverageEvidenceStrategy,
@@ -91,6 +92,7 @@ import {
   projectConnectorOutboxAxisFromHeartbeats,
   projectLocalDeviceProgress,
 } from "./connector-outbox-axis.ts";
+import { listConnectorSummaryEvidence } from "./connector-summary-read-model.ts";
 import { getSqliteStoreCacheIdentity } from "./db.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { mapPendingPressureGaps } from "./pending-pressure-gap-map.ts";
@@ -105,7 +107,11 @@ import {
   timestampWithinWindow,
 } from "./ref-record-utils.ts";
 import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.js";
-import { parseCollectionRatePayload, readCollectionFactsFromTerminalData } from "./runtime-collection-facts.ts";
+import {
+  parseCollectionRatePayload,
+  readCollectionFactsFromTerminalData,
+  readRuntimeCollectionFact,
+} from "./runtime-collection-facts.ts";
 import {
   asBackoffRecord,
   asScheduleRecord,
@@ -257,6 +263,13 @@ interface RecordProjection {
   readonly byStream: Map<string, StreamProjection>;
   readonly freshness: Freshness;
   readonly retainedBytes: RetainedBytesBreakdown | null;
+  // True only when the connection's maintained retained-size projection has
+  // been proven clean (a connection row exists, is not dirty, and has
+  // computed at least once). Declared-but-absent streams may only be
+  // synthesized as an exact zero when this is true; otherwise `byStream`'s
+  // absence of a stream is a genuine measurement gap, not a zero, and must
+  // stay absent.
+  readonly retainedSizeReliable: boolean;
   readonly totalRecords: number;
 }
 
@@ -289,9 +302,11 @@ export interface RetainedBytesBreakdown {
 
 interface RetainedSizeConnectionProjectionRow {
   readonly blob_bytes?: number | string | null;
+  readonly computed_at?: string | null;
   readonly connector_id?: string | null;
   readonly connector_instance_id?: string | null;
   readonly current_record_json_bytes?: number | string | null;
+  readonly dirty?: boolean;
   readonly record_history_json_bytes?: number | string | null;
 }
 
@@ -1029,26 +1044,22 @@ async function getLatestRunSummaryForConnection({
   return toConnectorRunSummary(fallback);
 }
 
-async function getRetainedBytesForConnection(connectorInstanceId: string): Promise<RetainedBytesBreakdown | null> {
-  const row = (await listRetainedSizeConnections({ connectorInstanceId }))[0] as
-    | {
-        current_record_json_bytes?: number;
-        record_history_json_bytes?: number;
-        blob_bytes?: number;
-      }
+// A connection's retained-size projection is reliable evidence for synthesizing
+// an exact zero for a declared-but-absent stream only when its maintained
+// `retained_size_connection` row exists, is not mid-flight dirty, and has
+// computed at least once. A missing row (never ingested/never rebuilt) or a
+// dirty row (a write landed and reconcile/rebuild has not caught up) must NOT
+// be treated as proof of absence — the stream's true state stays unmeasured.
+function isRetainedSizeConnectionReliable(row: RetainedSizeConnectionProjectionRow | undefined): boolean {
+  return row != null && row.dirty !== true && row.computed_at != null;
+}
+
+async function getRetainedSizeConnectionRow(
+  connectorInstanceId: string
+): Promise<RetainedSizeConnectionProjectionRow | undefined> {
+  return (await listRetainedSizeConnections({ connectorInstanceId }))[0] as
+    | RetainedSizeConnectionProjectionRow
     | undefined;
-  if (!row) {
-    return null;
-  }
-  const recordJsonBytes = Number(row.current_record_json_bytes || 0);
-  const recordChangesJsonBytes = Number(row.record_history_json_bytes || 0);
-  const blobBytes = Number(row.blob_bytes || 0);
-  return {
-    blob_bytes: blobBytes,
-    record_changes_json_bytes: recordChangesJsonBytes,
-    record_json_bytes: recordJsonBytes,
-    total_bytes: recordJsonBytes + recordChangesJsonBytes + blobBytes,
-  };
 }
 
 function retainedBytesFromConnectionRow(
@@ -1070,6 +1081,7 @@ function retainedBytesFromConnectionRow(
 
 function buildRecordProjectionFromRetainedRows(input: {
   readonly retainedBytes: RetainedBytesBreakdown | null;
+  readonly retainedSizeReliable: boolean;
   readonly rows: readonly RecordProjectionRow[];
 }): RecordProjection {
   const byStream = new Map<string, StreamProjection>();
@@ -1090,6 +1102,7 @@ function buildRecordProjectionFromRetainedRows(input: {
     byStream,
     freshness: buildFreshness(latest),
     retainedBytes: input.retainedBytes,
+    retainedSizeReliable: input.retainedSizeReliable,
     totalRecords: input.rows.reduce((sum, row) => sum + Number(row.record_count || 0), 0),
   };
 }
@@ -1104,6 +1117,39 @@ function projectStreamRecordSummaries(byStream: ReadonlyMap<string, StreamProjec
     .sort((a, b) => a.stream.localeCompare(b.stream));
 }
 
+// `retained_size_stream` is sparse: a row exists only for a stream that has
+// ever been written, so a manifest-declared stream that genuinely has zero
+// records is indistinguishable, at the storage layer, from one that has never
+// been measured. Synthesizing an exact `record_count: 0` entry is only honest
+// when the connection's retained-size projection is PROVEN fresh and clean
+// (`retainedSizeReliable`) — otherwise the declared stream stays absent from
+// the result, exactly like today, so existing owner-console rendering keeps
+// treating an absent entry as unavailable rather than a fabricated zero.
+//
+// This only ever ADDS entries; it never changes a real (possibly zero, e.g.
+// post-delete) retained row already present in `byStream`, and it never feeds
+// back into `stream_count`/`totalRecords`, which stay tied to actual retained
+// evidence.
+function projectStreamRecordSummariesWithDeclaredZeros(
+  byStream: ReadonlyMap<string, StreamProjection>,
+  manifestStreams: readonly { readonly name?: string }[] | undefined,
+  retainedSizeReliable: boolean
+): StreamRecordSummary[] {
+  const summaries = projectStreamRecordSummaries(byStream);
+  if (!retainedSizeReliable || !manifestStreams || manifestStreams.length === 0) {
+    return summaries;
+  }
+  const present = new Set(summaries.map((entry) => entry.stream));
+  const synthesized = manifestStreams
+    .map((stream) => stream.name)
+    .filter((name): name is string => typeof name === "string" && name.length > 0 && !present.has(name))
+    .map((name) => ({ stream: name, record_count: 0, last_updated: null }));
+  if (synthesized.length === 0) {
+    return summaries;
+  }
+  return [...summaries, ...synthesized].sort((a, b) => a.stream.localeCompare(b.stream));
+}
+
 async function getConnectorRecordProjection(
   connectorId: string,
   connectorInstanceId?: string,
@@ -1111,15 +1157,19 @@ async function getConnectorRecordProjection(
 ): Promise<RecordProjection> {
   let rows: RecordProjectionRow[];
   if (connectorInstanceId && snapshot) {
+    const connectionRow = snapshot.connectionsByInstanceId.get(connectorInstanceId);
     rows = [...(snapshot.streamsByInstanceId.get(connectorInstanceId) ?? [])];
     return buildRecordProjectionFromRetainedRows({
       rows,
-      retainedBytes: retainedBytesFromConnectionRow(snapshot.connectionsByInstanceId.get(connectorInstanceId)),
+      retainedBytes: retainedBytesFromConnectionRow(connectionRow),
+      retainedSizeReliable: isRetainedSizeConnectionReliable(connectionRow),
     });
   }
   if (!connectorInstanceId && snapshot) {
     rows = [...(snapshot.streamsByConnectorId.get(connectorId) ?? [])];
-    return buildRecordProjectionFromRetainedRows({ rows, retainedBytes: null });
+    // No single connection is in scope for a connector-wide (not instance-scoped)
+    // read, so there is no one connection row to vouch for a synthesized zero.
+    return buildRecordProjectionFromRetainedRows({ rows, retainedBytes: null, retainedSizeReliable: false });
   }
   if (connectorInstanceId) {
     rows = (await listRetainedSizeStreams({ connectorInstanceId })).map(
@@ -1142,9 +1192,11 @@ async function getConnectorRecordProjection(
         last_updated: null,
       })) as RecordProjectionRow[];
   }
+  const connectionRow = connectorInstanceId ? await getRetainedSizeConnectionRow(connectorInstanceId) : undefined;
   return buildRecordProjectionFromRetainedRows({
     rows,
-    retainedBytes: connectorInstanceId ? await getRetainedBytesForConnection(connectorInstanceId) : null,
+    retainedBytes: retainedBytesFromConnectionRow(connectionRow),
+    retainedSizeReliable: connectorInstanceId ? isRetainedSizeConnectionReliable(connectionRow) : false,
   });
 }
 
@@ -1967,7 +2019,7 @@ function buildCoverageEvidence(
 
 const DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER = ["terminal_gap", "retryable_gap", "gaps", "partial"] as const;
 
-function rollupCollectionReportCoverageOverride(
+export function rollupCollectionReportCoverageOverride(
   currentAxis: CoverageAxis,
   report: readonly CollectionReportEntry[]
 ): CoverageAxis | null {
@@ -1976,10 +2028,99 @@ function rollupCollectionReportCoverageOverride(
   );
   const currentRank = currentIndex === -1 ? DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.length : currentIndex;
   const conditions = new Set(report.map((entry) => entry.coverage_condition));
-  return DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.slice(0, currentRank).find((axis) => conditions.has(axis)) ?? null;
+  const degrading =
+    DEGRADING_REPORT_COVERAGE_ROLLUP_ORDER.slice(0, currentRank).find((axis) => conditions.has(axis)) ?? null;
+  if (degrading) {
+    return degrading;
+  }
+  // A required stream resting at unknown coverage blocks the clean-success
+  // promotion: the connection axis resolves to `unknown`, which
+  // `sourceCoverageCondition` reads as a non-true `SourceCoverageComplete`
+  // (never Healthy) and `deriveForwardDisposition` reads as `unmeasured` —
+  // a maintainer/system disposition, not an owner CTA. Applied ONLY when the
+  // current axis is non-degrading (worst-wins preserved): an existing
+  // terminal_gap / retryable_gap / gaps / partial axis is never upgraded to
+  // `unknown` by missing measurement evidence.
+  if (
+    currentIndex === -1 &&
+    currentAxis !== "unknown" &&
+    report.some((entry) => entry.required && entry.coverage_condition === "unknown")
+  ) {
+    return "unknown";
+  }
+  return null;
 }
 
-function refineConnectionHealthWithCollectionReport(
+/**
+ * Oldest proof time among required streams whose coverage is proven complete —
+ * the anchor the connection's Healthy gate ages against. Accepted-policy,
+ * non-required, and unproven streams never contribute: an accepted absence
+ * has no proof to age, and an unproven stream already blocks Healthy through
+ * the coverage axis.
+ */
+function oldestRequiredCompleteEvidenceAsOf(report: readonly CollectionReportEntry[]): string | null {
+  let oldest: string | null = null;
+  for (const entry of report) {
+    if (!(entry.required && entry.coverage_condition === "complete" && entry.evidence_as_of)) {
+      continue;
+    }
+    if (oldest === null || entry.evidence_as_of < oldest) {
+      oldest = entry.evidence_as_of;
+    }
+  }
+  return oldest;
+}
+
+/**
+ * Cap an ISO-8601 anchor at an older proof time: the result is never NEWER
+ * than the cap, and a `null` anchor stays `null` (a cap must not invent
+ * proof). ISO-8601 UTC strings compare lexicographically.
+ */
+function capIsoAnchor(anchor: string | null, cap: string | null): string | null {
+  if (anchor == null || cap == null) {
+    return anchor;
+  }
+  return cap < anchor ? cap : anchor;
+}
+
+/**
+ * Proof-age freshness override: the Healthy gate is anchored to the OLDEST
+ * required-stream proof, not the newest run. When stored latest-attempt
+ * evidence carried an older proof than the classifying run, freshness is
+ * RECOMPUTED with its anchors capped at that proof time — the anchor feeds
+ * the freshness computation itself (same derivation, same staleness policy,
+ * injected `nowIso`), never a post-hoc status comparison. Connections with
+ * no staleness window (`maximum_staleness_seconds` absent) have no window to
+ * age the proof against and keep their computed freshness unchanged.
+ */
+function proofAgeFreshnessOverride(
+  healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0],
+  report: readonly CollectionReportEntry[]
+): Freshness | null {
+  const proofAnchor = oldestRequiredCompleteEvidenceAsOf(report);
+  if (!proofAnchor) {
+    return null;
+  }
+  const maximumStalenessSeconds = getMaximumStalenessSeconds(healthInput.refreshPolicy);
+  if (maximumStalenessSeconds === null) {
+    return null;
+  }
+  const current = healthInput.freshness;
+  const recomputed = deriveReferenceFreshness({
+    lastAttemptedAt: healthInput.lastRun?.last_at ?? null,
+    lastAttemptStatus: healthInput.lastRun?.status ?? null,
+    lastSuccessfulRunAt: capIsoAnchor(healthInput.lastSuccessfulRun?.last_at ?? null, proofAnchor),
+    maximumStalenessSeconds,
+    now: healthInput.nowIso ?? new Date().toISOString(),
+    recordLastUpdatedAt: capIsoAnchor(current?.captured_at ?? null, proofAnchor),
+  });
+  if (recomputed.status === current?.status && recomputed.captured_at === current?.captured_at) {
+    return null;
+  }
+  return recomputed;
+}
+
+export function refineConnectionHealthWithCollectionReport(
   healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0],
   initialConnectionHealth: ConnectionHealthSnapshot,
   collectionReport: readonly CollectionReportEntry[]
@@ -1988,12 +2129,14 @@ function refineConnectionHealthWithCollectionReport(
     initialConnectionHealth.axes.coverage,
     collectionReport
   );
-  if (coverageOverride === null) {
+  const freshnessOverride = proofAgeFreshnessOverride(healthInput, collectionReport);
+  if (coverageOverride === null && freshnessOverride === null) {
     return initialConnectionHealth;
   }
   return projectConnectorSummaryConnectionHealth({
     ...healthInput,
-    coverageOverride: { axis: coverageOverride },
+    ...(freshnessOverride ? { freshness: freshnessOverride } : {}),
+    ...(coverageOverride ? { coverageOverride: { axis: coverageOverride } } : {}),
   });
 }
 
@@ -2051,6 +2194,13 @@ export interface CollectionReportEntry {
    * so a steady-state full-sync run reads `complete` without a false `partial`.
    */
   readonly covered: ConsideredAxis;
+  /**
+   * Terminal time of the run that produced this stream's fact — the classifying
+   * run's terminal time, or the stored latest-attempt evidence's terminal time
+   * when the classifying run did not attempt the stream. `null` when no fact
+   * exists. This is the proof age the connection's Healthy gate anchors to.
+   */
+  readonly evidence_as_of: string | null;
   /** Derived forward disposition (what the next run is expected to do on this stream). */
   readonly forward_disposition: ForwardDisposition;
   /** Manifest-declared freshness proof strategy, or `null` when not yet instrumented. */
@@ -2058,9 +2208,75 @@ export interface CollectionReportEntry {
   /** Count of pending recoverable detail gaps for this stream (locators stay in the detail-gap backlog). */
   readonly pending_detail_gaps: number;
   readonly pending_detail_gaps_is_floor: boolean;
+  /**
+   * Manifest-declared load-bearing flag (`required !== false`). `false` for a
+   * stream with no manifest entry — an undeclared fact-only stream never
+   * blocks the connection verdict.
+   */
+  readonly required: boolean;
   /** The `SKIP_RESULT` fact for this stream, or `null`. */
   readonly skipped: RuntimeCollectionFactSkip | null;
   readonly stream: string;
+}
+
+/** One durable latest-attempt stream fact read from the connector-summary read model. */
+export interface LatestStreamFactRecord {
+  readonly evidenceAsOf: string | null;
+  readonly fact: RuntimeCollectionFact;
+  readonly runId: string | null;
+}
+
+/**
+ * A stream's effective fact plus its provenance. `source`/`runId` bound
+ * `state_stream` checkpoint inheritance to facts from the SAME run — a child
+ * carried from one run never inherits a parent checkpoint committed by a
+ * different run.
+ */
+interface EffectiveStreamFact {
+  readonly evidenceAsOf: string | null;
+  readonly fact: RuntimeCollectionFact;
+  readonly runId: string | null;
+  readonly source: "classifying" | "stored";
+}
+
+/**
+ * Resolve each stream's effective fact: the classifying run's own facts,
+ * overlaid onto the durable latest-attempt store. The classifying run wins
+ * for streams it attempted (it is the newest terminal run, so its fact is
+ * the newest attempt even when the fold has not caught up); the store fills
+ * streams it did not attempt. Stored run-local pending-gap counts are
+ * dropped — the durable gap store is the current retry contract, and a stale
+ * stored count must not fabricate a retryable gap.
+ */
+function resolveEffectiveStreamFacts(input: {
+  readonly collectionFacts: RuntimeCollectionFacts | null;
+  readonly collectionFactsAsOf?: string | null;
+  readonly collectionFactsRunId?: string | null;
+  readonly latestStreamFacts?: ReadonlyMap<string, LatestStreamFactRecord> | null;
+}): Map<string, EffectiveStreamFact> {
+  const factByStream = new Map<string, EffectiveStreamFact>();
+  for (const fact of input.collectionFacts?.streams ?? []) {
+    if (!factByStream.has(fact.stream)) {
+      factByStream.set(fact.stream, {
+        fact,
+        runId: input.collectionFactsRunId ?? null,
+        evidenceAsOf: input.collectionFactsAsOf ?? null,
+        source: "classifying",
+      });
+    }
+  }
+  for (const [stream, record] of input.latestStreamFacts ?? []) {
+    if (factByStream.has(stream) || record.fact.stream !== stream) {
+      continue;
+    }
+    factByStream.set(stream, {
+      fact: { ...record.fact, pending_detail_gaps: 0 },
+      runId: record.runId,
+      evidenceAsOf: record.evidenceAsOf,
+      source: "stored",
+    });
+  }
+  return factByStream;
 }
 
 /**
@@ -2081,6 +2297,16 @@ export interface CollectionReportEntry {
  */
 export function buildCollectionReport(input: {
   readonly collectionFacts: RuntimeCollectionFacts | null;
+  /** Terminal time of the classifying run (stamps evidence_as_of on its facts). */
+  readonly collectionFactsAsOf?: string | null;
+  /** Run id of the classifying run (bounds state_stream inheritance to one run). */
+  readonly collectionFactsRunId?: string | null;
+  /**
+   * Durable per-stream latest-attempt evidence from the connector-summary
+   * read model. Fills streams the classifying run did not attempt; never
+   * overrides the classifying run's own facts.
+   */
+  readonly latestStreamFacts?: ReadonlyMap<string, LatestStreamFactRecord> | null;
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
   readonly manifestStreams: readonly ManifestStream[];
   /**
@@ -2096,12 +2322,7 @@ export function buildCollectionReport(input: {
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
 }): CollectionReportEntry[] {
-  const factByStream = new Map<string, RuntimeCollectionFact>();
-  for (const fact of input.collectionFacts?.streams ?? []) {
-    if (!factByStream.has(fact.stream)) {
-      factByStream.set(fact.stream, fact);
-    }
-  }
+  const factByStream = resolveEffectiveStreamFacts(input);
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const pendingGapCountByStream = pendingDetailGapCountsByStream(pendingDetailGaps);
   const terminalGapCountByStream = input.terminalDetailGapsByStream ?? new Map<string, number>();
@@ -2151,7 +2372,7 @@ export function buildCollectionReport(input: {
 
 function buildCollectionReportEntry(input: {
   readonly stream: string;
-  readonly factByStream: ReadonlyMap<string, RuntimeCollectionFact>;
+  readonly factByStream: ReadonlyMap<string, EffectiveStreamFact>;
   readonly pendingGapCountByStream: ReadonlyMap<string, number>;
   readonly terminalGapCountByStream: ReadonlyMap<string, number>;
   readonly pendingGapReadHitLimit: boolean;
@@ -2161,8 +2382,9 @@ function buildCollectionReportEntry(input: {
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
 }): CollectionReportEntry {
-  const hasRuntimeFact = input.factByStream.has(input.stream);
-  const baseFact: RuntimeCollectionFact = input.factByStream.get(input.stream) ?? {
+  const effective = input.factByStream.get(input.stream);
+  const hasRuntimeFact = effective !== undefined;
+  const baseFact: RuntimeCollectionFact = effective?.fact ?? {
     stream: input.stream,
     collected: 0,
     considered: null,
@@ -2177,6 +2399,7 @@ function buildCollectionReportEntry(input: {
   };
   const manifestStream = input.manifestByStream.get(input.stream);
   const effectiveFact = applyStateStreamCheckpointInheritance({
+    child: effective,
     fact,
     manifestStream,
     parentFacts: input.factByStream,
@@ -2209,18 +2432,21 @@ function buildCollectionReportEntry(input: {
     skipped: effectiveFact.skipped,
     coverage_condition: coverageCondition,
     coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
+    evidence_as_of: effective?.evidenceAsOf ?? null,
     forward_disposition: forwardDisposition,
     freshness_strategy: readFreshnessEvidenceStrategy(manifestStream),
+    required: isRequiredStream(manifestStream),
   };
 }
 
 function applyStateStreamCheckpointInheritance(input: {
+  readonly child: EffectiveStreamFact | undefined;
   readonly fact: RuntimeCollectionFact;
   readonly manifestStream: ManifestStream | undefined;
-  readonly parentFacts: ReadonlyMap<string, RuntimeCollectionFact>;
+  readonly parentFacts: ReadonlyMap<string, EffectiveStreamFact>;
   readonly hasRuntimeFact: boolean;
 }): RuntimeCollectionFact {
-  const { fact, hasRuntimeFact, manifestStream, parentFacts } = input;
+  const { child, fact, hasRuntimeFact, manifestStream, parentFacts } = input;
   if (
     !hasRuntimeFact ||
     fact.skipped ||
@@ -2234,11 +2460,18 @@ function applyStateStreamCheckpointInheritance(input: {
   if (!parentStream) {
     return fact;
   }
-  const parentFact = parentFacts.get(parentStream);
-  if (!(parentFact && checkpointProvesStreamCoverage(parentFact.checkpoint))) {
+  const parent = parentFacts.get(parentStream);
+  // Inheritance is bound to ONE run: a co-emitted child rides its parent's
+  // cursor within the same pass, so a child fact carried from run N may only
+  // inherit run N's parent checkpoint — never a checkpoint committed by a
+  // different run.
+  if (!(parent && child && parent.source === child.source && parent.runId === child.runId)) {
     return fact;
   }
-  return { ...fact, checkpoint: parentFact.checkpoint };
+  if (!checkpointProvesStreamCoverage(parent.fact.checkpoint)) {
+    return fact;
+  }
+  return { ...fact, checkpoint: parent.fact.checkpoint };
 }
 
 function checkpointProvesStreamCoverage(checkpoint: string | null): boolean {
@@ -2258,6 +2491,7 @@ export function projectCollectionReport(input: {
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun?: ConnectorRunSummary | null;
   readonly connectionHealth: ConnectionHealthSnapshot;
+  readonly latestStreamFacts?: ReadonlyMap<string, LatestStreamFactRecord> | null;
   readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
   readonly localDeviceBacked?: boolean;
   readonly manifestStreams: readonly ManifestStream[];
@@ -2266,8 +2500,12 @@ export function projectCollectionReport(input: {
   readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
   readonly refreshPolicy: unknown;
 }): CollectionReportEntry[] {
+  const classifyingRun = coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
   return buildCollectionReport({
-    collectionFacts: coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null)?.collection_facts ?? null,
+    collectionFacts: classifyingRun?.collection_facts ?? null,
+    collectionFactsAsOf: classifyingRun?.last_at ?? null,
+    collectionFactsRunId: classifyingRun?.run_id ?? null,
+    latestStreamFacts: input.latestStreamFacts ?? null,
     localCoverage: input.localDeviceBacked === true ? (input.localCoverage ?? null) : null,
     manifestStreams: input.manifestStreams,
     pendingDetailGaps: input.pendingDetailGaps ?? [],
@@ -2603,6 +2841,7 @@ function selectAttentionEvidence(input: {
       ownerAction: ownerActionForEvidence(picked.owner_action),
       reasonCode: picked.reason_code,
       responseContract: picked.response_contract,
+      runId: picked.run_id,
       sensitivity: picked.sensitivity,
       notificationState: pickedNotificationState(picked),
     };
@@ -2616,6 +2855,7 @@ function selectAttentionEvidence(input: {
       ownerAction: null,
       reasonCode: input.lastErrorCode ?? "needs_human_attention",
       responseContract: null,
+      runId: null,
       notificationState: null,
     };
   }
@@ -3438,6 +3678,12 @@ interface ConnectorSummaryProjectionDeps {
     status?: string | null
   ) => Promise<SchedulerRunHistoryRecord | null>;
   readonly includeRunSummaries: ConnectorRunSummaryInclusion;
+  /**
+   * Durable per-stream latest-attempt evidence per connection, read from the
+   * connector-summary read model in ONE batched query for the whole list
+   * render — never per-connection history walking on the hot path.
+   */
+  readonly latestStreamFactsByInstanceId: ReadonlyMap<string, ReadonlyMap<string, LatestStreamFactRecord>>;
   readonly listRunSummariesForConnector: (
     connectorId: string,
     status?: string | null
@@ -3565,6 +3811,7 @@ async function loadRetainedSizeProjectionSnapshot(): Promise<RetainedSizeProject
 
 function buildRenderedVerdictForSummary(input: {
   readonly collectionReport: readonly CollectionReportEntry[];
+  readonly attentionRecords: readonly AttentionRecord[];
   readonly connectionHealth: ConnectionHealthSnapshot;
   readonly freshness: Freshness;
   readonly hasRecoveredDetailGaps: boolean;
@@ -3594,6 +3841,12 @@ function buildRenderedVerdictForSummary(input: {
     lastRefreshedAt: input.freshness.captured_at ?? null,
     observedAt: input.observedAt,
   });
+  const structuredAttention = selectAttentionEvidence({
+    attentionRecords: input.attentionRecords,
+    humanAttentionNeeded: false,
+    lastErrorCode: null,
+    nowIso: input.observedAt,
+  });
   // Wave 10a (owner review, 2026-07-09): `reattach_schedule` (the
   // previously-declared-but-never-emitted "Resume schedule" action) is
   // emitted INSIDE `synthesizeConnectorVerdict`'s single synthesis pass —
@@ -3605,6 +3858,7 @@ function buildRenderedVerdictForSummary(input: {
     mode: scheduleModeFrom(scheduleApiShape(input.schedule)),
   };
   return synthesizeConnectorVerdict({
+    attention: structuredAttention,
     snapshot: input.connectionHealth,
     report: input.collectionReport,
     manifestStreams: input.manifestStreams,
@@ -3659,6 +3913,12 @@ interface ConnectorSummarySynthesisInput {
   readonly instance: ConnectorInstanceRow;
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
+  /**
+   * Durable per-stream latest-attempt evidence for THIS connection from the
+   * connector-summary read model, or `null` when none exists. Connection-
+   * scoped by construction (keyed by connector_instance_id upstream).
+   */
+  readonly latestStreamFacts: ReadonlyMap<string, LatestStreamFactRecord> | null;
   readonly live: RecordProjection;
   readonly localCoverage: Awaited<ReturnType<typeof getConnectorLocalCoverageAxis>>;
   readonly manifest: ConnectorManifest;
@@ -3683,6 +3943,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     instance,
     lastRun,
     lastSuccessfulRun,
+    latestStreamFacts,
     live,
     localCoverage,
     manifest,
@@ -3740,6 +4001,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const collectionReport = projectCollectionReport({
     lastRun,
     lastSuccessfulRun,
+    latestStreamFacts,
     connectionHealth: initialConnectionHealth,
     localCoverage,
     localDeviceBacked,
@@ -3749,6 +4011,11 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     terminalDetailGapsByStream: detailGaps.terminalByStream,
     refreshPolicy,
   });
+  // `refineConnectionHealthWithCollectionReport` owns both report-derived
+  // overrides: the required-unknown coverage refusal and the proof-age
+  // freshness anchor (oldest required-stream proof). The owner-facing
+  // `freshness` payload field keeps reporting record recency; only the
+  // health projection ages against the proof anchor.
   const connectionHealth = refineConnectionHealthWithCollectionReport(
     healthInput,
     initialConnectionHealth,
@@ -3757,6 +4024,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const recoveredCount = detailGaps.recovered;
   const renderedVerdict = buildRenderedVerdictForSummary({
     collectionReport,
+    attentionRecords: attention.records,
     connectionHealth,
     freshness,
     hasRecoveredDetailGaps: recoveredCount !== null && recoveredCount > 0,
@@ -3817,7 +4085,11 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     revoked_at: instance.revokedAt ?? null,
     streams: (manifest.streams || []).map((stream) => stream.name),
     stream_count: live.byStream.size,
-    stream_records: projectStreamRecordSummaries(live.byStream),
+    stream_records: projectStreamRecordSummariesWithDeclaredZeros(
+      live.byStream,
+      manifest.streams,
+      live.retainedSizeReliable
+    ),
     status: instance.status ?? null,
     total_records: live.totalRecords,
     total_retained_bytes: live.retainedBytes?.total_bytes ?? null,
@@ -4059,6 +4331,7 @@ async function projectConnectorSummaryForInstance(
     instance,
     lastRun,
     lastSuccessfulRun,
+    latestStreamFacts: deps.latestStreamFactsByInstanceId.get(connectorInstanceId) ?? null,
     live,
     localCoverage,
     manifest,
@@ -4079,13 +4352,21 @@ async function loadConnectorSummaryProjectionDeps(
   } = {}
 ): Promise<ConnectorSummaryProjectionDeps> {
   const schedulerStore = getDefaultSchedulerStore();
-  const [connectorRows, retainedSizeSnapshot, activeRuns] = await Promise.all([
+  const [connectorRows, retainedSizeSnapshot, activeRuns, summaryEvidenceRows] = await Promise.all([
     listRegisteredConnectorRows(),
     options.includeRetainedSizeSnapshot ? loadRetainedSizeProjectionSnapshot() : Promise.resolve(undefined),
     Promise.resolve()
       .then(() => schedulerStore.listActiveRuns())
       .catch(() => []),
+    // Latest-attempt stream facts: one batched read-model query for every
+    // connection in this render. A read failure degrades to no stored facts
+    // (streams the classifying run did not attempt read unknown — fail
+    // closed), never to a projection error.
+    Promise.resolve()
+      .then(() => listConnectorSummaryEvidence())
+      .catch(() => []),
   ]);
+  const latestStreamFactsByInstanceId = buildLatestStreamFactsIndex(summaryEvidenceRows as readonly Row[]);
   const activeRunsByInstanceId = new Map<string, ActiveRunRecord>();
   for (const activeRun of activeRuns) {
     if (activeRun.connector_instance_id) {
@@ -4107,6 +4388,7 @@ async function loadConnectorSummaryProjectionDeps(
     controller,
     getLatestRunHistoryForConnection: (connectorInstanceId, status = null) =>
       Promise.resolve(schedulerStore.getLatestRunHistoryForConnection(connectorInstanceId, status)).catch(() => null),
+    latestStreamFactsByInstanceId,
     listRunSummariesForConnector: createConnectorRunSummariesReader(),
     includeRunSummaries: options.includeRunSummaries ?? true,
     manifestsByConnectorId,
@@ -4114,6 +4396,55 @@ async function loadConnectorSummaryProjectionDeps(
     runtimeOk: controller != null,
     sharedBrowserSurfaceReader,
   };
+}
+
+/** Untyped read-model row shape crossing the module boundary. */
+type Row = Record<string, unknown>;
+
+/**
+ * Parse the read model's per-connection latest-attempt fact maps into typed
+ * records. Defensive at every field: a malformed entry is dropped (reads
+ * unknown downstream — fail closed), never a fabricated fact. Connection
+ * scoping is inherent: each map is keyed by its own row's
+ * connector_instance_id, so stored evidence can never cross connections.
+ */
+function buildLatestStreamFactsIndex(rows: readonly Row[]): Map<string, ReadonlyMap<string, LatestStreamFactRecord>> {
+  const index = new Map<string, ReadonlyMap<string, LatestStreamFactRecord>>();
+  for (const row of rows) {
+    const instanceId = typeof row?.connector_instance_id === "string" ? row.connector_instance_id : null;
+    if (!instanceId) {
+      continue;
+    }
+    const map = parseLatestStreamFactsMap(row?.stream_latest_facts);
+    if (map.size > 0) {
+      index.set(instanceId, map);
+    }
+  }
+  return index;
+}
+
+/** Parse one row's stored per-stream fact map; malformed entries are dropped. */
+function parseLatestStreamFactsMap(raw: unknown): Map<string, LatestStreamFactRecord> {
+  const map = new Map<string, LatestStreamFactRecord>();
+  if (!(raw && typeof raw === "object" && !Array.isArray(raw))) {
+    return map;
+  }
+  for (const [stream, entryRaw] of Object.entries(raw as Record<string, unknown>)) {
+    if (!entryRaw || typeof entryRaw !== "object" || Array.isArray(entryRaw)) {
+      continue;
+    }
+    const entry = entryRaw as Row;
+    const fact = readRuntimeCollectionFact(entry.fact);
+    if (!fact || fact.stream !== stream) {
+      continue;
+    }
+    map.set(stream, {
+      fact,
+      evidenceAsOf: typeof entry.evidence_as_of === "string" && entry.evidence_as_of ? entry.evidence_as_of : null,
+      runId: typeof entry.run_id === "string" && entry.run_id ? entry.run_id : null,
+    });
+  }
+  return map;
 }
 
 export function listConnectorSummaries(
@@ -4271,6 +4602,11 @@ export async function getConnectorDetail(
     schedule,
   };
   const initialConnectionHealth = projectConnectorSummaryConnectionHealth(healthInput);
+  // No stored latest-attempt facts on this connector-keyed catalog path BY
+  // DESIGN: it cannot resolve one connector_instance_id, and a connector-wide
+  // evidence pool could merge facts across sibling connections of the same
+  // connector. Connection-scoped surfaces flow through
+  // projectConnectorSummaryForInstance, which IS wired with the read model.
   const collectionReport = projectCollectionReport({
     lastRun,
     lastSuccessfulRun,
@@ -4290,6 +4626,7 @@ export async function getConnectorDetail(
   const detailLocalDeviceBacked = outbox.heartbeats.length > 0;
   const renderedVerdict = buildRenderedVerdictForSummary({
     collectionReport,
+    attentionRecords: attention.records,
     connectionHealth,
     freshness,
     hasRecoveredDetailGaps: detailRecoveredCount !== null && detailRecoveredCount > 0,

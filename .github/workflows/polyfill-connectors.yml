@@ -10,11 +10,13 @@ on:
     branches: [main]
     paths:
       - "packages/polyfill-connectors/**"
+      - "reference-implementation/manifests/**"
       - ".github/workflows/polyfill-connectors.yml"
       - "pnpm-lock.yaml"
   pull_request:
     paths:
       - "packages/polyfill-connectors/**"
+      - "reference-implementation/manifests/**"
       - ".github/workflows/polyfill-connectors.yml"
       - "pnpm-lock.yaml"
   workflow_dispatch: {}

@@ -941,6 +941,49 @@ test('getConnectorSummaryForRoute scopes retained records to the resolved connec
   assert.equal(scoped.connector_instance_id, WORK_INSTANCE_ID);
   assert.equal(scoped.connector_id, CONNECTOR_ID);
   assert.equal(scoped.total_records, 1, 'scoped route must not include sibling connection records');
+  // `files` is a manifest-declared stream with no retained rows for this
+  // connection. Because `rebuildRetainedSize()` already proved this
+  // connection's retained-size projection clean, the exact-zero-stream-counts
+  // join synthesizes it as a genuine, exact zero rather than leaving it absent.
+  assert.deepEqual(scoped.stream_records, [
+    {
+      stream: 'files',
+      record_count: 0,
+      last_updated: null,
+    },
+    {
+      stream: 'messages',
+      record_count: 1,
+      last_updated: null,
+    },
+  ]);
+}));
+
+test('getConnectorSummaryForRoute leaves a declared zero-record stream absent when retained-size evidence is dirty', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+  seedRecord({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    stream: 'messages',
+    key: 'work_msg',
+    data: { id: 'work_msg', text: 'work scoped message' },
+    emittedAt: '2026-05-20T12:10:00.000Z',
+    version: 1,
+  });
+  await rebuildRetainedSize();
+  // Simulate a write landing after rebuild but before reconcile catches up:
+  // the connection's retained-size row is mid-flight dirty.
+  getDb()
+    .prepare('UPDATE retained_size_connection SET dirty = 1 WHERE connector_instance_id = ?')
+    .run(WORK_INSTANCE_ID);
+
+  const scoped = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
+
+  assert.ok(scoped, 'a known connection id resolves to a summary');
+  assert.equal(scoped.total_records, 1);
+  // `files` has no retained rows and the connection's retained-size projection
+  // is NOT proven clean (dirty=1), so it must stay absent — never a fabricated
+  // zero — exactly like today's behavior for unmeasured streams.
   assert.deepEqual(scoped.stream_records, [
     {
       stream: 'messages',
@@ -948,6 +991,23 @@ test('getConnectorSummaryForRoute scopes retained records to the resolved connec
       last_updated: null,
     },
   ]);
+}));
+
+test('getConnectorSummaryForRoute leaves declared streams absent when retained-size has never been computed', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+  // No records seeded, no rebuildRetainedSize() call: the connection has no
+  // retained_size_connection row at all (never ingested, never rebuilt).
+
+  const scoped = await getConnectorSummaryForRoute(WORK_INSTANCE_ID);
+
+  assert.ok(scoped, 'a known connection id resolves to a summary');
+  assert.equal(scoped.total_records, 0);
+  // With no retained-size evidence at all, every declared stream (messages,
+  // files) stays absent from stream_records rather than reading as a
+  // synthesized zero — absence remains the "unavailable" signal the console
+  // already relies on.
+  assert.deepEqual(scoped.stream_records, []);
 }));
 
 test('getConnectorSummaryForRoute allows connector_id fallback only when unambiguous', withTmpDb(async () => {

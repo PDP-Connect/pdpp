@@ -136,7 +136,10 @@ test("ensureChatGptSession continues when the operator completes login during th
     assert.equal(result, true);
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.kind, "manual_action");
-    assert.match(requests[0]?.message ?? "", /Cloudflare challenge/u);
+    // Owner-facing copy is the standardized sign-in handoff message
+    // (repair-owner-action-handoff); the Cloudflare specifics now travel as
+    // maintainer diagnostics, not owner interaction copy.
+    assert.match(requests[0]?.message ?? "", /could not finish sign-in automatically/u);
   });
 });
 

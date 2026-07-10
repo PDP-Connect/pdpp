@@ -284,3 +284,20 @@ test("emitStatementDetailCoverage: emits nothing when statements are out of scop
   await emitStatementDetailCoverage(deps, [{ kind: "hydrated", id: "STMT-1" }]);
   assert.equal(coverageOf(messages), undefined, "statement coverage must not emit outside requested scope");
 });
+
+test("emitStatementDetailCoverage: a steady-state run with zero statement rows still emits considered 0 / covered 0", async () => {
+  const { deps, messages } = makeHarness();
+  await emitStatementDetailCoverage(deps, []);
+
+  const coverage = coverageOf(messages);
+  assert.deepEqual(coverage, {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    state_stream: "statements",
+    stream: "statements",
+    required_keys: [],
+    hydrated_keys: [],
+    considered: 0,
+    covered: 0,
+  });
+});

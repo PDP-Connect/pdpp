@@ -177,9 +177,15 @@ test("ensureUsaaSession emits manual_action when USAA login navigation trips HTT
     assert.deepEqual(gotoCalls, [LOGIN_URL, DASHBOARD_URL]);
     assert.equal(interactions.requests.length, 1);
     assert.equal(interactions.requests[0]?.kind, "manual_action");
-    assert.match(interactions.requests[0]?.message ?? "", /ERR_HTTP2_PROTOCOL_ERROR/);
-    assert.match(interactions.requests[0]?.message ?? "", /PDPP_USAA_HEADLESS=0/);
-    assert.doesNotMatch(interactions.requests[0]?.message ?? "", /test-user|test-password/);
+    assert.match(
+      interactions.requests[0]?.message ?? "",
+      /USAA could not finish sign-in automatically; open the browser to continue\. PDPP resumes when sign-in succeeds\./
+    );
+    assert.doesNotMatch(interactions.requests[0]?.message ?? "", /url=|inputs=|body-preview=/);
+    assert.doesNotMatch(
+      interactions.requests[0]?.message ?? "",
+      /PDPP_USAA_HEADLESS|automated browser mode|respond success|cancel this interaction|rerun|xvfb-run|headless/i
+    );
   });
 });
 
@@ -292,11 +298,20 @@ test("ensureUsaaSession classifies delayed USAA source-unavailable modal after m
         page,
         sendInteraction: interactions.sendInteraction,
       }),
-      /USAA login stalled after Next click \(source_unavailable: USAA reported its login system is currently unavailable after Next click/
+      /USAA login stalled after Next click \(url=.*inputs=.*body-preview=.*\); manual action did not establish a session/
     );
     // The stall now routes through the same manual-recovery interaction as a
     // failed navigation, instead of failing with no owner-visible signal.
     assert.equal(interactions.requests.length, 1);
     assert.equal(interactions.requests[0]?.kind, "manual_action");
+    assert.match(
+      interactions.requests[0]?.message ?? "",
+      /USAA could not finish sign-in automatically; open the browser to continue\. PDPP resumes when sign-in succeeds\./
+    );
+    assert.doesNotMatch(interactions.requests[0]?.message ?? "", /url=|inputs=|body-preview=/);
+    assert.doesNotMatch(
+      interactions.requests[0]?.message ?? "",
+      /PDPP_USAA_HEADLESS|automated browser mode|respond success|cancel this interaction|rerun|xvfb-run|headless/i
+    );
   });
 });

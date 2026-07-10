@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildCollectionReport, projectCollectionReport } from '../server/ref-control.ts';
+import {
+  buildCollectionReport,
+  projectCollectionReport,
+  rollupCollectionReportCoverageOverride,
+} from '../server/ref-control.ts';
 
 // Pure unit tests for the Tranche C control-plane projection
 // (`define-connector-progress-evidence-contract`, task 2.2b / 2.4 / 2.6).
@@ -734,5 +738,254 @@ test('entries are sorted by stream name (stable owner-facing order)', () => {
   assert.deepEqual(
     entries.map((e) => e.stream),
     ['alpha', 'mu', 'zeta']
+  );
+});
+
+// ─── `required` flag on the report entry ──────────────────────────────────────
+
+test('required flag: manifest-declared stream defaults required=true; a fact-only undeclared stream is required=false', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [
+        fact({ stream: 'transactions', collected: 5, considered: 5 }),
+        fact({ stream: 'extra', collected: 1, considered: null }),
+      ],
+    },
+    manifestStreams: [{ name: 'transactions' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  assert.equal(entryFor(entries, 'transactions').required, true);
+  assert.equal(entryFor(entries, 'extra').required, false, 'undeclared fact-only stream must not be load-bearing');
+});
+
+test('required flag: an explicit required:false manifest stream is not required', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: { streams: [fact({ stream: 'reactions', collected: 0, considered: null })] },
+    manifestStreams: [{ name: 'reactions', required: false }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  assert.equal(entryFor(entries, 'reactions').required, false);
+});
+
+// ─── Durable latest-attempt evidence (design.md "Per-Stream Evidence
+//     Carry-Forward" / requirement "Per-stream coverage SHALL derive from
+//     durable latest-attempt evidence") ──────────────────────────────────────
+//
+// `buildCollectionReport`'s `collectionFacts` is the CLASSIFYING run's own
+// fact block; `latestStreamFacts` is the durable per-stream latest-attempt
+// map from the connector-summary read model (raw fact + proof time + run id,
+// connection-scoped). A run that did not attempt a stream must not erase
+// that stream's prior evidence, and must not fabricate evidence for it
+// either; the classifying run's own facts always overlay the store.
+
+/** A manifest declaring `messages` as a checkpoint_window-proven stream. */
+const CHECKPOINT_MESSAGES_MANIFEST = [
+  { name: 'messages', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' },
+];
+
+/** Stored latest-attempt facts: `buildCollectionReport`'s `latestStreamFacts` shape. */
+function storedFacts(streams, { asOf = '2026-05-01T00:00:00.000Z', runId = 'run_old' } = {}) {
+  return new Map(streams.map((f) => [f.stream, { fact: f, evidenceAsOf: asOf, runId }]));
+}
+
+test('carry-forward: scoped run preserves prior proof for an omitted required stream', () => {
+  // Classifying run's scope did not attempt `messages` at all (no fact for it).
+  // An older terminal block proved it complete via a committed checkpoint.
+  const entries = buildCollectionReport({
+    collectionFacts: { streams: [] },
+    collectionFactsAsOf: '2026-06-01T00:00:00.000Z',
+    latestStreamFacts: storedFacts(
+      [fact({ stream: 'messages', collected: 500, considered: null, checkpoint: 'committed' })],
+      { asOf: '2026-05-01T00:00:00.000Z' }
+    ),
+    manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'messages');
+  assert.equal(entry.coverage_condition, 'complete', 'carried resolved evidence proves the stream complete');
+  assert.equal(entry.required, true);
+  assert.equal(entry.evidence_as_of, '2026-05-01T00:00:00.000Z', 'proof age is the SOURCE block\'s own timestamp');
+  assert.equal(rollupCollectionReportCoverageOverride('complete', entries), null);
+});
+
+test('carry-forward: never-measured omitted required stream still blocks Healthy', () => {
+  // No carry block has ANY resolved evidence for `messages` — it stays unknown.
+  const entries = buildCollectionReport({
+    collectionFacts: { streams: [] },
+    collectionFactsAsOf: '2026-06-01T00:00:00.000Z',
+    latestStreamFacts: storedFacts([fact({ stream: 'other', collected: 1, considered: 1 })]),
+    manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'messages');
+  assert.equal(entry.coverage_condition, 'unknown');
+  assert.equal(entry.required, true);
+  assert.equal(entry.evidence_as_of, null, 'no resolved evidence anywhere -> no proof age either');
+  assert.equal(
+    rollupCollectionReportCoverageOverride('complete', entries),
+    'unknown',
+    'a required stream resting unknown refuses the clean-success promotion'
+  );
+});
+
+test('carry-forward: an attempted-but-unresolved classifying fact blocks carry (conservative — stays unknown)', () => {
+  // The classifying block DID attempt `messages` but left it unresolved
+  // (not_staged, no skip, no denominator). An older block proved it
+  // complete, but the classifying run's own unresolved attempt must win —
+  // carrying stale proof over an honest "we tried and can't yet prove it"
+  // would be dishonest.
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'messages', collected: 10, considered: null, checkpoint: 'not_staged' })],
+    },
+    collectionFactsAsOf: '2026-06-01T00:00:00.000Z',
+    latestStreamFacts: storedFacts([
+      fact({ stream: 'messages', collected: 500, considered: null, checkpoint: 'committed' }),
+    ]),
+    manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'messages');
+  assert.equal(entry.coverage_condition, 'unknown', 'the classifying run own unresolved attempt is not overridden');
+  assert.equal(entry.checkpoint, 'not_staged');
+  assert.equal(entry.evidence_as_of, '2026-06-01T00:00:00.000Z', 'proof age is the CLASSIFYING run\'s own time, not the older block');
+});
+
+test('carry-forward: manifest-deferred stream stays accepted policy regardless of carry evidence', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: { streams: [] },
+    manifestStreams: [{ name: 'drafts', coverage_policy: 'deferred', required: false }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'drafts');
+  assert.equal(entry.coverage_condition, 'deferred');
+  assert.equal(entry.required, false);
+  assert.equal(rollupCollectionReportCoverageOverride('complete', entries), null);
+});
+
+test("stored evidence: a stored state_stream child inherits from its own run's stored parent, not the classifying block", () => {
+  // `messages` (parent, checkpoint_window) is committed in an OLDER block; the
+  // child `message_reactions` in that SAME older block is not_staged with no
+  // skip/gap — the read-side state_stream inheritance should pick up the
+  // parent's committed checkpoint from THAT block. The classifying block has
+  // neither stream (both carried).
+  const CHILD_MANIFEST = [
+    { name: 'messages', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' },
+    {
+      name: 'message_reactions',
+      coverage_strategy: 'checkpoint_window',
+      freshness_strategy: 'scheduled_window',
+      state_stream: 'messages',
+    },
+  ];
+  const entries = buildCollectionReport({
+    collectionFacts: { streams: [] },
+    latestStreamFacts: storedFacts([
+      fact({ stream: 'messages', collected: 500, considered: null, checkpoint: 'committed' }),
+      fact({ stream: 'message_reactions', collected: 0, considered: null, checkpoint: 'not_staged' }),
+    ]),
+    manifestStreams: CHILD_MANIFEST,
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const child = entryFor(entries, 'message_reactions');
+  assert.equal(child.coverage_condition, 'complete', 'child inherits the parent checkpoint from its OWN carried block');
+  assert.equal(child.checkpoint, 'committed');
+});
+
+test('carry-forward: a carried fact zeroes its stale run-local pending_detail_gaps; only the durable store count is authoritative', () => {
+  // The older block's fact reports pending_detail_gaps: 3 — a stale run-local
+  // number from that old run. The durable gap store (pendingDetailGaps input)
+  // reports zero pending rows for this stream today. The carried entry must
+  // read the DURABLE zero, not the stale 3 (which would fabricate a
+  // retryable_gap that no longer exists).
+  const entries = buildCollectionReport({
+    collectionFacts: { streams: [] },
+    latestStreamFacts: storedFacts([
+      fact({
+        stream: 'messages',
+        collected: 500,
+        considered: null,
+        checkpoint: 'committed',
+        pending_detail_gaps: 3,
+      }),
+    ]),
+    manifestStreams: CHECKPOINT_MESSAGES_MANIFEST,
+    pendingDetailGaps: [],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'messages');
+  assert.equal(entry.pending_detail_gaps, 0, 'stale carried pending_detail_gaps must be zeroed');
+  assert.equal(entry.coverage_condition, 'complete', 'no retryable_gap fabricated from stale carried count');
+});
+
+test('carry-forward: worst-wins is preserved — a terminal_gap entry alongside a required-unknown entry keeps terminal_gap', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'lost', collected: 0, skipped: { reason: 'connector_panicked' } })],
+    },
+    manifestStreams: [{ name: 'lost' }, { name: 'messages', coverage_strategy: 'checkpoint_window' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  assert.equal(entryFor(entries, 'lost').coverage_condition, 'terminal_gap');
+  assert.equal(entryFor(entries, 'messages').coverage_condition, 'unknown');
+  assert.equal(entryFor(entries, 'messages').required, true);
+  assert.equal(
+    rollupCollectionReportCoverageOverride('complete', entries),
+    'terminal_gap',
+    'the degrading terminal_gap axis wins over the required-unknown refusal — never upgraded'
+  );
+});
+
+// A required-unknown entry must NEVER upgrade an axis pass 1 already ranks as
+// a real degrading condition — `unknown` is not "worse" than
+// terminal_gap/retryable_gap/gaps/partial on any ranking, so replacing one of
+// those with `unknown` would be a false upgrade, not a worst-wins refusal.
+// Parameterized over every degrading axis so this cannot regress silently.
+for (const currentAxis of ['terminal_gap', 'retryable_gap', 'gaps', 'partial']) {
+  test(`carry-forward: required-unknown entry must NOT upgrade a degrading currentAxis (${currentAxis})`, () => {
+    const report = [
+      { stream: 'other', collected: 0, considered: 'unknown', covered: 'unknown', checkpoint: 'unknown', pending_detail_gaps: 0, pending_detail_gaps_is_floor: false, required: true, skipped: null, coverage_condition: 'unknown', coverage_strategy: null, forward_disposition: 'unmeasured', freshness_strategy: null },
+    ];
+    assert.equal(
+      rollupCollectionReportCoverageOverride(currentAxis, report),
+      null,
+      `a required-unknown entry must leave a degrading currentAxis (${currentAxis}) untouched, never upgrade it to unknown`
+    );
+  });
+}
+
+test('carry-forward: an undeclared fact-only stream resting unknown does NOT trigger the required-unknown override', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: { streams: [fact({ stream: 'extra', collected: 3, considered: null })] },
+    manifestStreams: [],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'extra');
+  assert.equal(entry.coverage_condition, 'unknown');
+  assert.equal(entry.required, false, 'no manifest entry -> not required -> cannot block Healthy');
+  assert.equal(
+    rollupCollectionReportCoverageOverride('complete', entries),
+    null,
+    'an undeclared unknown stream must not override a clean connection axis'
   );
 });

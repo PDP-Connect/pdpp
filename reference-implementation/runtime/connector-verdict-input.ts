@@ -19,6 +19,7 @@
  */
 
 import {
+  type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
   type ConnectionRefreshEvidence,
   type CoverageAxis,
@@ -124,13 +125,26 @@ export function buildStreamRollups(
     // stream denominator. Keep those rows visible in inspection, but do not let
     // non-terminal per-run incompleteness turn a complete, fresh connector
     // amber. Terminal/lost evidence remains load-bearing.
+    //
+    // `unknown` is EXCLUDED from this demotion (design.md "Connection Rollup
+    // Honesty"): a required-but-unmeasured stream (no resolved coverage
+    // evidence at all — not a sampled-run precision gap) must keep its
+    // worst-wins vote so the connection cannot render Healthy underneath it.
+    // By the time this runs, `snapshot.axes.coverage` has already been
+    // refined by `rollupCollectionReportCoverageOverride`, so a required
+    // `unknown` entry means the connection-level axis is ALSO `unknown` —
+    // this guard exists so a future caller that skips that refinement (or a
+    // non-required `unknown` entry riding alongside an otherwise-complete
+    // axis) still cannot demote a genuinely unmeasured required stream to
+    // grey-but-optional.
     const connectionCompleteReportGap =
       snapshot.axes.coverage === "complete" &&
       entry.pending_detail_gaps === 0 &&
       entry.coverage_condition !== "complete" &&
       entry.coverage_condition !== "terminal_gap" &&
       entry.coverage_condition !== "unsupported" &&
-      entry.coverage_condition !== "unavailable";
+      entry.coverage_condition !== "unavailable" &&
+      entry.coverage_condition !== "unknown";
     const effectivePriority = connectionCompleteReportGap ? "optional" : priority;
     return {
       stream_id: entry.stream,
@@ -208,6 +222,7 @@ export function buildProgressEvidence(input: {
  * liveness signal is threaded once one exists.
  */
 export function synthesizeConnectorVerdict(input: {
+  readonly attention?: ConnectionAttentionEvidence | null;
   readonly snapshot: ConnectionHealthSnapshot;
   readonly report: readonly CollectionReportEntryLike[];
   readonly manifestStreams: readonly ManifestStreamLike[];
@@ -224,6 +239,7 @@ export function synthesizeConnectorVerdict(input: {
     input.refresh,
     input.runtimeOk ?? true,
     input.progress,
-    input.scheduleEvidence ?? null
+    input.scheduleEvidence ?? null,
+    input.attention ?? null
   );
 }

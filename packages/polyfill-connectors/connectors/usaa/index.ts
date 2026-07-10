@@ -31,6 +31,7 @@ import {
 } from "../../src/browser-artifact-response.ts";
 import {
   type BrowserCollectContext,
+  type DetailGapMessage,
   type EmittedMessage,
   emitDetailCoverage,
   type InteractionRequest,
@@ -726,20 +727,26 @@ export async function emitStatementRecords(
  * Emit the per-run `statements` detail-coverage evidence: a redacted, pending
  * DETAIL_GAP for each statement-document row whose PDF is not present this run,
  * then one DETAIL_COVERAGE whose `required_keys` is the real denominator (the
- * statement-document rows the run saw on the documents index). A run with no
- * statement-document candidates emits nothing — there is no real denominator to
- * report. The denominator never includes disclosures/agreements (index-only by
- * design) and never carries account/title text — only opaque statement id
- * hashes. See statement-coverage.ts for the contract.
+ * statement-document rows the run saw on the documents index). The denominator
+ * never includes disclosures/agreements (index-only by design) and never
+ * carries account/title text — only opaque statement id hashes. See
+ * statement-coverage.ts for the contract.
+ *
+ * Always emits when called — including a steady-state run that enumerated the
+ * documents index and found zero statement-document candidates (considered: 0,
+ * covered: 0, empty key sets). The caller only invokes this once the index
+ * enumeration has actually completed (`runStatementsStream`'s scrape try/catch
+ * short-circuits to a SKIP_RESULT and never reaches this function on a failed
+ * scrape — see index.ts's `runStatementsStream`), so "zero candidates here"
+ * always means "the run measured the denominator and it was zero," never
+ * "enumeration never happened." Suppressing on zero would leave the stream
+ * permanently unmeasured on an every-run-empty account.
  */
 export async function emitStatementCoverage(
   deps: EmitDeps,
   coverageRows: readonly StatementCoverageRow[]
 ): Promise<void> {
   const result = computeStatementCoverage(coverageRows);
-  if (result.candidateCount === 0) {
-    return;
-  }
   for (const gap of result.gaps) {
     await deps.emit(gap);
   }
@@ -1595,6 +1602,172 @@ export async function emitCsvTransactions(
   return { dataRows, latest, usableCount: txns.length };
 }
 
+/**
+ * Per-account outcome of the transactions detail pass, mirroring chase's
+ * `AccountDetailOutcome` in spirit: one entry per transaction-eligible
+ * account this run considered, classifying how (or whether) it was
+ * covered. `kind` decides both the DETAIL_COVERAGE `hydrated_keys`
+ * membership and whether a retryable DETAIL_GAP is owed:
+ *   - `hydrated`: the CSV export downloaded and parsed with usable rows
+ *     (fresh coverage of this account's ledger for the window).
+ *   - `no_activity`: the source gave a real, source-limited "nothing here"
+ *     answer — either the export dialog explicitly reported "no
+ *     transactions" (`exportEmpty`) or the export downloaded a headers-only
+ *     CSV with zero data rows (a dormant account's steady state). Both
+ *     count as covered, never as a failure.
+ *   - `gap`: the export ladder was exhausted without a download, or the
+ *     downloaded CSV had data rows but none parsed to a usable transaction
+ *     (header mismatch / unparseable rows) — genuinely unreached this run,
+ *     retryable.
+ * Accounts skipped because the session died mid-run are NOT recorded here
+ * at all (see `runTransactionsStream`): they were never reached, so
+ * `required_keys` only ever lists accounts the run actually attempted,
+ * keeping the denominator honest for a partial-run cutoff.
+ */
+export type AccountTransactionOutcome =
+  | { accountId: string; kind: "gap"; reason: DetailGapMessage["reason"]; errorClass: string }
+  | { accountId: string; kind: "hydrated" | "no_activity" };
+
+/** Build the retryable DETAIL_GAP for a USAA transaction account whose CSV
+ *  export failed this run — the ladder produced no download, or the CSV had
+ *  data rows but none parsed usable (a headers-only CSV is NOT a gap; see
+ *  `classifyCsvTransactionResult`). `record_key` is the account id — the
+ *  next run's detail pass retries exactly this account. Mirrors chase's
+ *  `buildAccountDetailGap` (reference_only, retryable, pending) so the
+ *  runtime persists one resumable gap per failed key and the per-account
+ *  coverage stays honest. */
+export function buildAccountTransactionDetailGap(outcome: {
+  accountId: string;
+  errorClass: string;
+  reason: DetailGapMessage["reason"];
+}): DetailGapMessage {
+  return {
+    type: "DETAIL_GAP",
+    stream: "transactions",
+    parent_stream: "accounts",
+    record_key: outcome.accountId,
+    status: "pending",
+    reason: outcome.reason,
+    detail_locator: {
+      kind: "usaa.account",
+      account_id: outcome.accountId,
+    },
+    retryable: true,
+    reference_only: true,
+    detail: { class: outcome.errorClass },
+    last_error: { class: outcome.errorClass },
+  };
+}
+
+/**
+ * Emit the per-run DETAIL_COVERAGE for the account -> transactions detail
+ * fan-out, mirroring chase's `emitTransactionsDetailCoverage`. `outcomes` is
+ * built from the accounts this run actually attempted (session-dead
+ * cutoffs are excluded), so it is a real, honest denominator:
+ *   - `required_keys`: every transaction-eligible account attempted.
+ *   - `hydrated_keys`: accounts reached, including source-limited
+ *     no-activity ones (won't-backfill is coverage, never a broken signal).
+ *   - `gap_keys`: accounts whose export failed transiently; each also
+ *     carries a pending DETAIL_GAP so the runtime's coverage invariant is
+ *     satisfied and the next run retries them.
+ *
+ * `enumerationComplete` disambiguates the two ways `outcomes` can be empty:
+ *   - `true`: the account loop ran to completion (never cut short by a
+ *     session death) — zero outcomes here means the run genuinely enumerated
+ *     zero transaction-eligible accounts, a real measured denominator. Emits
+ *     considered: 0 / covered: 0 with empty key sets rather than staying
+ *     silent, so an account with no checking/savings/credit-card accounts
+ *     stays measured instead of permanently unreported.
+ *   - `false`: the session died before any account was attempted (or mid-run,
+ *     before this stream's denominator was fully walked) — the denominator is
+ *     genuinely unknown this run, so nothing is emitted rather than inventing
+ *     a zero.
+ * Only emitted when transactions was requested. `state_stream: "accounts"`
+ * mirrors chase: the accounts cursor commit is gated on this stream's detail
+ * coverage being honestly accounted for (hydrated or a same-run DETAIL_GAP),
+ * never silently advanced past an unreached account.
+ */
+export async function emitTransactionsDetailCoverage(
+  deps: EmitDeps,
+  outcomes: readonly AccountTransactionOutcome[],
+  enumerationComplete: boolean
+): Promise<void> {
+  // A partial sweep's `outcomes` (whatever accounts were reached before a
+  // session death) is never the true denominator, even when non-empty — so
+  // suppress unconditionally on `!enumerationComplete`, not only when
+  // `outcomes` happens to also be empty.
+  if (!enumerationComplete) {
+    return;
+  }
+  const requiredKeys = outcomes.map((o) => o.accountId);
+  const hydratedKeys = outcomes
+    .filter((o) => o.kind === "hydrated" || o.kind === "no_activity")
+    .map((o) => o.accountId);
+  const gapKeys = outcomes.filter((o) => o.kind === "gap").map((o) => o.accountId);
+  await emitDetailCoverage(deps, {
+    stream: "transactions",
+    stateStream: "accounts",
+    requiredKeys,
+    hydratedKeys,
+    gapKeys,
+    considered: outcomes.length,
+    covered: hydratedKeys.length,
+  });
+}
+
+export interface AccountTransactionResult {
+  last_date: string | null;
+  outcome: AccountTransactionOutcome;
+}
+
+/**
+ * Classify a downloaded-and-parsed CSV into the account's per-run detail
+ * outcome + cursor decision. Pure — exported so the coverage classification
+ * is testable without driving the Playwright export flow. The distinction
+ * that matters (`csvResult` comes straight from `emitCsvTransactions`):
+ *   - `usableCount > 0`: real transactions parsed → `hydrated`; the cursor
+ *     advances to the latest parsed date (or the window start).
+ *   - `usableCount === 0 && dataRows === 0`: the export produced a
+ *     headers-only CSV — the source genuinely had no transactions for the
+ *     window. A dormant account exports exactly this every run, so it is
+ *     the same source-limited answer as the explicit "nothing to export"
+ *     dialog → `no_activity` (covered), NEVER a gap. Classifying it as a
+ *     gap would pin a pending retryable DETAIL_GAP on a healthy dormant
+ *     account forever (permanent Degraded).
+ *   - `usableCount === 0 && dataRows > 0`: data rows were present but none
+ *     parsed to a usable transaction (header mismatch / unparseable rows)
+ *     → genuine parse trouble, a retryable `gap` so a parser fix can
+ *     recover it next run. (`emitCsvTransactions` already emitted the
+ *     matching `csv_no_usable_transactions` SKIP_RESULT.)
+ * In both zero-usable cases `last_date` stays at the prior watermark
+ * (possibly null → the caller writes no cursor entry), preserving the
+ * pre-coverage behavior of never advancing the cursor on a run that parsed
+ * nothing.
+ */
+export function classifyCsvTransactionResult(
+  accountId: string,
+  priorLastDate: string | null,
+  usedSince: string | null,
+  csvResult: { dataRows: number; latest: string | null; usableCount: number }
+): AccountTransactionResult {
+  if (csvResult.usableCount > 0) {
+    return {
+      last_date: csvResult.latest || usedSince || null,
+      outcome: { accountId, kind: "hydrated" },
+    };
+  }
+  if (csvResult.dataRows === 0) {
+    return {
+      last_date: priorLastDate,
+      outcome: { accountId, kind: "no_activity" },
+    };
+  }
+  return {
+    last_date: priorLastDate,
+    outcome: { accountId, kind: "gap", reason: "temporary_unavailable", errorClass: "csv_no_usable_transactions" },
+  };
+}
+
 async function processAccountTransactions(
   deps: EmitDeps,
   context: BrowserContext,
@@ -1608,7 +1781,8 @@ async function processAccountTransactions(
   accountOrdinal: number,
   accountTotal: number,
   fingerprintCursor?: FingerprintCursor
-): Promise<{ last_date: string | null } | null> {
+): Promise<AccountTransactionResult | null> {
+  const accountId = a.account_id_raw || a.last_four || "unknown";
   const desiredSince = priorLastDate
     ? new Date(Date.parse(priorLastDate) - INCREMENTAL_OVERLAP_MS).toISOString().slice(0, 10)
     : (sinceDateCfg ?? seventeenMonthsAgo);
@@ -1634,10 +1808,16 @@ async function processAccountTransactions(
   }
   if (!csvPath) {
     if (exportEmpty) {
-      return { last_date: priorLastDate || usedSince || null };
+      return {
+        last_date: priorLastDate || usedSince || null,
+        outcome: { accountId, kind: "no_activity" },
+      };
     }
     await emitExportFailure(deps, a, lastDiag);
-    return null;
+    return {
+      last_date: priorLastDate,
+      outcome: { accountId, kind: "gap", reason: "temporary_unavailable", errorClass: "export_no_download" },
+    };
   }
   const csvResult = await emitCsvTransactions(
     deps,
@@ -1648,10 +1828,7 @@ async function processAccountTransactions(
     accountTotal,
     fingerprintCursor
   );
-  if (csvResult.usableCount === 0) {
-    return priorLastDate ? { last_date: priorLastDate } : null;
-  }
-  return { last_date: csvResult.latest || usedSince || null };
+  return classifyCsvTransactionResult(accountId, priorLastDate, usedSince, csvResult);
 }
 
 async function runTransactionsStream(
@@ -1673,6 +1850,7 @@ async function runTransactionsStream(
   const transactionsCursor: TransactionsStreamCursor = { ...priorStateForTxns };
 
   const transactionAccounts = accounts.filter((a) => TRANSACTION_ACCOUNT_TYPE_RE.test(a.account_type));
+  const outcomes: AccountTransactionOutcome[] = [];
   for (let i = 0; i < transactionAccounts.length; i++) {
     const a = transactionAccounts[i];
     if (!a) {
@@ -1689,7 +1867,7 @@ async function runTransactionsStream(
     const accountKey = a.account_id_raw || "";
     const perAccState = priorStateForTxns[accountKey];
     const priorLastDate = perAccState?.last_date ?? null;
-    const updated = await processAccountTransactions(
+    const result = await processAccountTransactions(
       deps,
       context,
       page,
@@ -1703,16 +1881,34 @@ async function runTransactionsStream(
       transactionAccounts.length,
       fingerprintCursor
     );
-    if (!updated) {
+    if (!result) {
+      // Session died mid-attempt: the account was never reached, so it is
+      // excluded from `outcomes` entirely (see AccountTransactionOutcome
+      // doc) rather than recorded as a gap.
       continue;
     }
-    transactionsCursor[accountKey || a.last_four || "unknown"] = updated;
+    outcomes.push(result.outcome);
+    if (result.outcome.kind === "gap") {
+      await deps.emit(buildAccountTransactionDetailGap(result.outcome));
+    }
+    if (result.last_date === null) {
+      // No cursor advance to record this account (e.g. a gap with no
+      // prior watermark) — preserve prior behavior of leaving the cursor
+      // untouched rather than writing a null watermark.
+      continue;
+    }
+    transactionsCursor[accountKey || a.last_four || "unknown"] = { last_date: result.last_date };
     await deps.emit({
       type: "STATE",
       stream: "transactions",
       cursor: withTransactionFingerprints(transactionsCursor, fingerprintCursor),
     });
   }
+  // The loop above only `break`s on a session death; reaching here without
+  // one means every transaction-eligible account was attempted (including
+  // the zero-eligible-accounts case, where the loop body never ran at all),
+  // so the denominator this run enumerated is genuinely complete.
+  await emitTransactionsDetailCoverage(deps, outcomes, !streamState.sessionDeadMidRun);
   return transactionsCursor;
 }
 

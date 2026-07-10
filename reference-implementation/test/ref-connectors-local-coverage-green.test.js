@@ -296,6 +296,18 @@ test(
       3,
       'retained support streams remain visible instead of collapsing into the source total',
     );
+    // `sessions` and `attachments` are manifest-declared streams with NO
+    // retained records in this fixture. The retained-size projection was
+    // rebuilt (proven fresh/clean) above, so the exact-zero-stream-counts join
+    // synthesizes a genuine `0` for them instead of leaving them absent — the
+    // console can show "0 records" for `sessions` even though its coverage is
+    // proven complete purely from `coverage_diagnostics`, not retained rows.
+    assert.equal(
+      retainedByStream.sessions,
+      0,
+      'a declared stream proven covered via local diagnostics still gets an exact retained-size zero',
+    );
+    assert.equal(retainedByStream.attachments, 0, 'co-emitted zero-record declared streams also synthesize exact zero');
   }),
 );
 

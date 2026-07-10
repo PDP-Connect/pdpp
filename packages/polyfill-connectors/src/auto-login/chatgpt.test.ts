@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { InteractionResponse } from "../connector-runtime.ts";
 import {
+  CHATGPT_BROWSER_LOGIN_ASSISTANCE_MESSAGE,
   CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE,
   CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE,
   CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE,
@@ -98,7 +99,7 @@ test("isLikelyChatGptPushApprovalText requires supporting push-approval copy", (
 test("ChatGPT push approval copy separates external approval from browser control", () => {
   assert.match(CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE, /continue automatically/i);
   assert.doesNotMatch(CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE, /streaming companion|run interaction controls/i);
-  assert.match(CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE, /click Continue here/i);
+  assert.match(CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE, /open the ChatGPT app to approve it/i);
 });
 
 test("chatGptPushApprovalAssistance emits nonblocking external approval shape", () => {
@@ -460,7 +461,7 @@ test("ChatGPT manual auth repair can use the secure browser without storing a pa
 
       assert.equal(ok, true);
       assert.deepEqual(assistanceMessages, [
-        "Open the browser session and finish ChatGPT login. PDPP will continue automatically after ChatGPT confirms the session.",
+        "ChatGPT could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.",
       ]);
 
       const inactivePage = {
@@ -492,6 +493,90 @@ test("ChatGPT manual auth repair can use the secure browser without storing a pa
           sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
         }),
         /chatgpt_session_required/u
+      );
+    }
+  );
+});
+
+test("ChatGPT fallback keeps owner copy concise while preserving diagnostic evidence separately", async () => {
+  await withEnvValues(
+    {
+      CHATGPT_PASSWORD: "stored password",
+      CHATGPT_USERNAME: "owner@example.test",
+      PDPP_CHATGPT_BROWSER_LOGIN_TIMEOUT_MS: "1",
+      PDPP_RUN_AUTOMATION_MODE: "assisted",
+      PDPP_RUN_TRIGGER_KIND: "manual",
+    },
+    async () => {
+      const assistanceMessages: string[] = [];
+      const diagnosticMessages: string[] = [];
+      const page = {
+        evaluate: (fn: (...args: never[]) => unknown) => {
+          const source = String(fn);
+          if (source.includes("/api/auth/session")) {
+            return Promise.resolve(null);
+          }
+          if (source.includes("querySelectorAll")) {
+            return Promise.resolve({
+              dom_logged_in: false,
+              has_login_or_signup: true,
+              has_sidebar: false,
+              has_user_menu: false,
+            });
+          }
+          return Promise.resolve(false);
+        },
+        getByRole: () => {
+          const locator = {
+            click: () => Promise.reject(new Error("not visible")),
+            first() {
+              return locator;
+            },
+            waitFor: () => Promise.reject(new Error("not visible")),
+          };
+          return locator;
+        },
+        goto: () => Promise.resolve(null),
+        locator: () => {
+          const locator = {
+            count: () => Promise.resolve(0),
+            fill: () => Promise.resolve(),
+            first() {
+              return locator;
+            },
+            waitFor: () => Promise.reject(new Error("not visible")),
+          };
+          return locator;
+        },
+        url: () => "https://chatgpt.com/",
+        waitForTimeout: async () => undefined,
+      };
+
+      await assert.rejects(
+        ensureChatGptSession({
+          assist: (req) => {
+            assistanceMessages.push(req.message);
+            return Promise.resolve("assist_1");
+          },
+          completeAssistance: (_id, _status, extra) => {
+            if (extra?.message) {
+              diagnosticMessages.push(extra.message);
+            }
+            return Promise.resolve();
+          },
+          context: {} as never,
+          page: page as never,
+          progress: () => Promise.resolve(),
+          sendInteraction: (req) => Promise.resolve(response({ request_id: req.request_id ?? "interaction_1" })),
+        }),
+        /chatgpt_login_unexpected_ui/u
+      );
+
+      assert.deepEqual(assistanceMessages, [CHATGPT_BROWSER_LOGIN_ASSISTANCE_MESSAGE]);
+      assert.match(diagnosticMessages.join("\n"), /Cloudflare challenge confirmed|ChatGPT login inputs were not found/);
+      assert.doesNotMatch(
+        assistanceMessages[0] ?? "",
+        /PDPP_CHATGPT_HEADLESS|Cloudflare challenge|streaming companion|rerun/i
       );
     }
   );

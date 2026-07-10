@@ -892,6 +892,8 @@ export interface ConnectionAttentionEvidence {
   readonly ownerAction: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
   readonly reasonCode: string | null;
   readonly responseContract: "response_required" | "none" | null;
+  /** Causative run id for structured attention, when known. */
+  readonly runId: string | null;
   /**
    * Caller has already filtered with `attention.isHealthRelevant`. Marked
    * here for documentation; the projection trusts the filter.

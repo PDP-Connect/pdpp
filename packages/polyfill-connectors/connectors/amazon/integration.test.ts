@@ -739,10 +739,26 @@ test("emitOrderItemsCoverage: policy-skipped detail reports optional_skip_keys, 
   assert.equal(msg.gap_keys, undefined, "a deliberate skip must never read as a degraded gap");
 });
 
-test("emitOrderItemsCoverage: an empty run emits nothing rather than a hollow coverage report", async () => {
+test("emitOrderItemsCoverage: a steady-state run with zero required orders still emits considered 0 / covered 0", async () => {
   const { deps, protocolMessages } = makeRecordingDeps();
+  // The caller (`collect()`) only reaches emitOrderItemsCoverage after the
+  // year sweep runs to completion without throwing, so an empty
+  // OrderItemsCoverage here always means "the sweep completed and swept zero
+  // orders across every in-scope year" — a real, measured zero denominator,
+  // not "the sweep never ran." Suppressing this would leave the stream
+  // permanently unmeasured on an account with no in-scope years.
   await emitOrderItemsCoverage(deps, newOrderItemsCoverage());
-  assert.equal(findDetailCoverage(protocolMessages), undefined, "no considered orders → no coverage message");
+
+  const msg = findDetailCoverage(protocolMessages);
+  assert.ok(msg, "a zero-required run still emits DETAIL_COVERAGE");
+  assert.equal(msg.stream, "order_items");
+  assert.equal(msg.state_stream, "orders");
+  assert.deepEqual(msg.required_keys, []);
+  assert.deepEqual(msg.hydrated_keys, []);
+  assert.equal(msg.considered, 0);
+  assert.equal(msg.covered, 0);
+  assert.equal(msg.gap_keys, undefined);
+  assert.equal(msg.optional_skip_keys, undefined);
 });
 
 test("processListOrder: a hydrated detail records the order id in required + hydrated", async () => {
@@ -1487,11 +1503,18 @@ test("a policy-skipped run (PDPP_AMAZON_SKIP_DETAIL) emits optional skips and ze
   assert.equal(cov.covered, 2, "policy skips are covered, not counted as gaps");
 });
 
-test("a run with zero considered orders emits neither DETAIL_COVERAGE nor DETAIL_GAP", async () => {
+test("a run with zero considered orders still emits a zero-required DETAIL_COVERAGE, but no DETAIL_GAP", async () => {
   const coverage = newOrderItemsCoverage();
   const { deps, protocolMessages } = makeRecordingDeps({ orderItemsCoverage: coverage });
-  // No order processed: the accumulator is empty.
+  // No order processed: the accumulator is empty, but the year sweep still
+  // ran to completion (this call site is only reached after it does), so the
+  // zero denominator was genuinely measured and must be reported.
   await emitOrderItemsCoverage(deps, coverage);
-  assert.equal(findDetailCoverage(protocolMessages), undefined, "no considered orders → no coverage");
-  assert.equal(findDetailGaps(protocolMessages).length, 0, "and no gaps either");
+  const cov = findDetailCoverage(protocolMessages);
+  assert.ok(cov, "a swept-to-zero run still emits DETAIL_COVERAGE");
+  assert.equal(cov.considered, 0);
+  assert.equal(cov.covered, 0);
+  assert.deepEqual(cov.required_keys, []);
+  assert.deepEqual(cov.hydrated_keys, []);
+  assert.equal(findDetailGaps(protocolMessages).length, 0, "zero considered orders produce no gaps");
 });

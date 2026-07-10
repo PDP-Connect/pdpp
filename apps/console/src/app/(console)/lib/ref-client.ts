@@ -746,6 +746,11 @@ export interface RefActionRemediation {
   target: RefActionRemediationTarget;
 }
 
+export interface RefRequiredActionTarget {
+  kind: "sync";
+  run_id: string;
+}
+
 export type RefOwnerActionSurfaceKind =
   | "browser_session"
   | "local_device"
@@ -779,6 +784,7 @@ export interface RefRequiredAction {
   remediation?: RefActionRemediation;
   satisfied_when: RefSatisfactionContract;
   surface?: RefOwnerActionSurface;
+  target?: RefRequiredActionTarget;
   terminal: boolean;
   urgency: RefActionUrgency;
 }

@@ -34,7 +34,13 @@ export interface StreamSummary {
   last_updated: string | null;
   name: string;
   object: "stream";
-  record_count: number;
+  /**
+   * Retained-record count, or `null` when the count is unavailable. The
+   * server synthesizes exact zeros only when the retained-size projection is
+   * proven fresh and clean, so a declared stream with no row is an
+   * unreliable count — rendered as unavailable, never fabricated as 0.
+   */
+  record_count: number | null;
 }
 
 export interface StreamRecord {

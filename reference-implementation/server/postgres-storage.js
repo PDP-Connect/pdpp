@@ -1399,6 +1399,21 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         ADD COLUMN IF NOT EXISTS retained_bytes_json JSONB NOT NULL DEFAULT '{"record_json_bytes":0,"record_changes_json_bytes":0,"blob_bytes":0,"total_bytes":0}'::jsonb;
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS total_retained_bytes BIGINT NOT NULL DEFAULT 0;
+      -- Durable per-stream latest-attempt evidence: raw runtime facts from the
+      -- newest terminal run that attempted each stream, keyed by stream, plus
+      -- the highest terminal spine event_seq folded into the map. NULL seq =
+      -- never folded (pre-change row); the reconcile pass backfills it from
+      -- terminal events. Raw facts only — coverage is derived on read.
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS stream_latest_facts_json JSONB;
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS stream_facts_event_seq BIGINT;
+      -- Terminal-run events are the fold source for per-stream evidence; the
+      -- partial index keeps the fold's max-seq and delta reads off the full
+      -- spine.
+      CREATE INDEX IF NOT EXISTS idx_pg_spine_events_terminal_seq
+        ON spine_events(event_seq)
+        WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled');
 
       -- Outbound event subscriptions (RI extension). Client subscriptions are
       -- grant-scoped; trusted owner-agent subscriptions are owner-scoped.

@@ -32,6 +32,7 @@
 
 import {
   CONNECTION_CONDITION_REASONS,
+  type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
   type ConnectionRefreshEvidence,
   type CoverageAxis,
@@ -171,6 +172,11 @@ export interface ActionRemediation {
   readonly target: ActionRemediationTarget;
 }
 
+export interface RequiredActionTarget {
+  readonly kind: "sync";
+  readonly run_id: string;
+}
+
 /**
  * The one unified satisfaction contract (design D3). A single discriminated union the
  * self-heal watcher evaluates for EVERY owner-actionable kind — never per-kind bespoke
@@ -199,6 +205,8 @@ export interface RequiredAction {
   readonly satisfied_when: SatisfactionContract;
   /** Bounded product surface this owner action opens. */
   readonly surface?: OwnerActionSurface;
+  /** Optional exact sync target for owner actions backed by a validated run id. */
+  readonly target?: RequiredActionTarget;
   /**
    * DERIVED from the forward disposition — `terminal === (forward_disposition ===
    * "terminal")`. Never an independent value (design D2 / invariant 4).
@@ -407,8 +415,10 @@ function amberLabel(
   disposition: ForwardDisposition,
   toneInputs: readonly { axis: string; tone: VerdictTone }[]
 ): VerdictLabel {
-  const stateIsBroken = snapshot.state !== "idle" && TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
-  const dispositionIsBroken = disposition !== "owner_refresh_due" && TONE_RANK[dispositionTone(disposition)] >= TONE_RANK.amber;
+  const stateIsBroken =
+    snapshot.state !== "idle" && TONE_RANK[baseStateTone(snapshot.state, snapshot.last_success_at)] >= TONE_RANK.amber;
+  const dispositionIsBroken =
+    disposition !== "owner_refresh_due" && TONE_RANK[dispositionTone(disposition)] >= TONE_RANK.amber;
   const hasDegradingAxis = toneInputs.some(
     (input) => DEGRADING_AXES.has(input.axis) && TONE_RANK[input.tone] >= TONE_RANK.amber
   );
@@ -703,6 +713,13 @@ function hasOpenAttention(snapshot: ConnectionHealthSnapshot): boolean {
   return snapshot.axes.attention !== "none";
 }
 
+function exactSyncTargetFromAttention(attention: ConnectionAttentionEvidence | null): RequiredActionTarget | null {
+  if (attention === null || attention.runId === null) {
+    return null;
+  }
+  return { kind: "sync", run_id: attention.runId };
+}
+
 function hasOwnerAction(actions: readonly RequiredAction[]): boolean {
   return actions.some((action) => action.audience === "owner" && action.satisfied_when.kind !== "none");
 }
@@ -880,7 +897,8 @@ function buildRequiredActions(
   refresh: ConnectionRefreshEvidence | null,
   disposition: ForwardDisposition,
   progress: ProgressEvidence | null,
-  scheduleEvidence: ScheduleEvidence | null
+  scheduleEvidence: ScheduleEvidence | null,
+  attention: ConnectionAttentionEvidence | null
 ): RequiredAction[] {
   const terminal = disposition === "terminal";
   const actions: RequiredAction[] = [];
@@ -897,6 +915,31 @@ function buildRequiredActions(
       cta: terminalCoverageCta(snapshot, disposition),
       surface: { kind: "maintainer" },
       terminal: true,
+      satisfied_when: { kind: "none" },
+    });
+  }
+
+  // Resting unmeasured required stream(s) beneath an otherwise-succeeded,
+  // non-credential-failed connection (design.md "Required-Stream Coverage Rollup").
+  // The rollup already refused to promote the connection axis to `complete`
+  // for this shape (`rollupCollectionReportCoverageOverride`,
+  // `server/ref-control.ts`), so `disposition` reads `unmeasured` here — this
+  // is a maintainer-status action naming the specific streams that lack
+  // resolved coverage evidence, so the owner state resolves to
+  // `blocked_maintainer` instead of a fabricated owner CTA. Gated on
+  // `collectionSucceededIsTrue` (`CollectionSucceeded` condition status
+  // `true`) so a never-run connection — which has no collection to have
+  // "succeeded with a gap" — stays a plain "Not measured" state with no
+  // invented defect claim.
+  if (disposition === "unmeasured" && latestCollectionSucceeded(snapshot) && !hasCredentialFailure(snapshot)) {
+    actions.push({
+      kind: "code_fix",
+      audience: "maintainer",
+      urgency: "soon",
+      affects: unmeasuredRequiredStreamIds(streams),
+      cta: "Coverage for this source's streams is not being measured; a connector update is needed",
+      surface: { kind: "maintainer" },
+      terminal: false,
       satisfied_when: { kind: "none" },
     });
   }
@@ -923,6 +966,7 @@ function buildRequiredActions(
 
   // Open structured attention (OTP / manual action / re-consent) — owner-satisfiable.
   if (hasOpenAttention(snapshot) && !hasCredentialFailure(snapshot)) {
+    const target = exactSyncTargetFromAttention(attention);
     actions.push({
       kind: "add_info",
       audience: "owner",
@@ -931,6 +975,7 @@ function buildRequiredActions(
       cta: "Complete the requested action",
       surface: { kind: "provider_interaction" },
       terminal,
+      ...(target ? { target } : {}),
       satisfied_when: { kind: "attention_resolved" },
     });
   }
@@ -991,11 +1036,7 @@ function buildRequiredActions(
   // outbox) always outranks a merely-paused schedule — this is exactly why
   // action derivation must have one owner: the same `actions.length === 0`
   // gate the later branches use naturally keeps them silent once this fires.
-  if (
-    scheduleEvidence?.mode === "scheduled-disabled" &&
-    scheduleEvidence.hasPriorSuccess &&
-    actions.length === 0
-  ) {
+  if (scheduleEvidence?.mode === "scheduled-disabled" && scheduleEvidence.hasPriorSuccess && actions.length === 0) {
     actions.push({
       kind: "reattach_schedule",
       audience: "owner",
@@ -1103,6 +1144,11 @@ function terminalStreamIds(streams: readonly StreamRollup[]): string[] {
   return streams
     .filter((s) => s.coverage === "terminal_gap" || s.coverage === "unsupported" || s.coverage === "unavailable")
     .map((s) => s.stream_id);
+}
+
+/** Required streams resting at unresolved (`unknown`) coverage — the unmeasured-required set (design.md "Required-Stream Coverage Rollup"). */
+function unmeasuredRequiredStreamIds(streams: readonly StreamRollup[]): string[] {
+  return streams.filter((s) => s.priority === "required" && s.coverage === "unknown").map((s) => s.stream_id);
 }
 
 function resumableStreamIds(streams: readonly StreamRollup[]): string[] {
@@ -1815,7 +1861,8 @@ export function synthesizeRenderedVerdict(
   refresh: ConnectionRefreshEvidence | null,
   runtime_ok: boolean,
   progress: ProgressEvidence | null = null,
-  scheduleEvidence: ScheduleEvidence | null = null
+  scheduleEvidence: ScheduleEvidence | null = null,
+  attention: ConnectionAttentionEvidence | null = null
 ): RenderedVerdict {
   // ── tone: worst-wins over base(state) + every axis ──
   const disposition = connectionDisposition(snapshot, streams, refresh);
@@ -1833,7 +1880,7 @@ export function synthesizeRenderedVerdict(
   const pill: VerdictPill = { tone, label: labelForPill(tone, snapshot, disposition, toneInputs) };
 
   // ── required actions (terminality derived from the sole oracle) ──
-  const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress, scheduleEvidence);
+  const actions = buildRequiredActions(snapshot, streams, refresh, disposition, progress, scheduleEvidence, attention);
 
   // ── channel: computed AFTER tone in the same pass; runtime fault caps at calm ──
   let channel = computeChannel(actions);

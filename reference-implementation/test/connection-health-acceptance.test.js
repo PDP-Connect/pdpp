@@ -29,7 +29,10 @@ import test from 'node:test';
 
 import { createAttention, transition } from '../runtime/attention.ts';
 import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connection-health-policy.ts';
-import { projectConnectorSummaryConnectionHealth } from '../server/ref-control.ts';
+import {
+  projectConnectorSummaryConnectionHealth,
+  refineConnectionHealthWithCollectionReport,
+} from '../server/ref-control.ts';
 
 const NOW = '2026-05-19T12:00:00.000Z';
 const RUN_AT = '2026-05-19T11:59:00.000Z';
@@ -130,6 +133,22 @@ function openOtpAttention() {
     owner_action: 'provide_value',
     response_contract: 'response_required',
     sensitivity: 'non_secret',
+    action_target: 'dashboard',
+    now: '2026-05-19T11:50:00.000Z',
+  });
+}
+
+function secretOtpAttention() {
+  return createAttention({
+    id: 'att_secret_otp',
+    dedupe_key: 'codex:secret-otp',
+    connection_id: 'codex',
+    run_id: 'run_secret_otp',
+    reason_code: 'otp_required',
+    progress_posture: 'blocked',
+    owner_action: 'provide_value',
+    response_contract: 'response_required',
+    sensitivity: 'secret',
     action_target: 'dashboard',
     now: '2026-05-19T11:50:00.000Z',
   });
@@ -386,6 +405,23 @@ test('acceptance 7.1: structured open attention drives needs_attention with stru
   assert.equal(snap.next_action?.source, 'structured');
   assert.equal(snap.next_action?.attention_id, 'att_otp');
   assert.equal(snap.next_action?.action_target, 'dashboard');
+  assert.equal(snap.axes.attention, 'open');
+});
+
+test('acceptance 7.1: secret structured attention keeps next_action.action_target suppressed', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [secretOtpAttention()],
+    freshness: FRESH,
+    lastRun: failedRun(),
+    lastSuccessfulRun: null,
+    nowIso: NOW,
+    schedule: null,
+  });
+  assertHeadline(snap, 'needs_attention');
+  assert.equal(snap.reason_code, 'otp_required');
+  assert.equal(snap.next_action?.source, 'structured');
+  assert.equal(snap.next_action?.attention_id, 'att_secret_otp');
+  assert.equal(snap.next_action?.action_target, null);
   assert.equal(snap.axes.attention, 'open');
 });
 
@@ -1160,4 +1196,140 @@ test('§10-C control: source_unavailable login outage does NOT manufacture a cre
   assert.notEqual(snap.next_action?.kind, 'reauth');
   assert.equal(snap.axes.coverage, 'retryable_gap');
   assert.equal(snap.forward_disposition, 'resumable');
+});
+
+// ─── Per-Stream Evidence Carry-Forward: proof-age freshness anchor ─────────
+//
+// design.md "Connection Rollup Honesty" / "Per-Stream Evidence Carry-Forward":
+// carrying a stream's coverage proof forward preserves WHETHER it is proven,
+// but not WHEN. A narrow scoped run's own terminal timestamp anchors the
+// connection's freshness axis by default, so a stream carried forward from
+// an OLD run could otherwise ride a falsely-Fresh headline. The connection's
+// Healthy gate must instead be anchored to the OLDEST required-stream proof
+// it actually relies on: `refineConnectionHealthWithCollectionReport`
+// re-derives freshness with `oldestRequiredProofAt(report)` as the anchor
+// whenever it is older than the run-derived anchor already in
+// `healthInput.freshness`, via `clampFreshnessToOldestProof`.
+//
+// A manifest with `maximum_staleness_seconds` set makes freshness a pure
+// function of `(captured_at, now)` — no wall-clock dependency — matching the
+// synthetic-evidence style the rest of this suite already uses.
+const STALENESS_REFRESH_POLICY = { maximum_staleness_seconds: 3600 }; // 1 hour
+
+function collectionReportEntry(overrides = {}) {
+  return {
+    stream: 's1',
+    collected: 10,
+    considered: 10,
+    covered: 'unknown',
+    checkpoint: 'committed',
+    pending_detail_gaps: 0,
+    pending_detail_gaps_is_floor: false,
+    required: true,
+    skipped: null,
+    coverage_condition: 'complete',
+    coverage_strategy: null,
+    forward_disposition: 'complete',
+    freshness_strategy: null,
+    evidence_as_of: NOW,
+    ...overrides,
+  };
+}
+
+/** Baseline healthy/complete/fresh snapshot + matching `healthInput`, as `refineConnectionHealthWithCollectionReport` expects. */
+function baselineHealthyRefineInputs(nowIso) {
+  const run = succeededRun({ finished_at: nowIso, last_at: nowIso, started_at: nowIso });
+  const healthInput = {
+    freshness: { status: 'current', captured_at: nowIso },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    schedule: { enabled: true },
+    refreshPolicy: STALENESS_REFRESH_POLICY,
+    nowIso,
+  };
+  const initialConnectionHealth = projectConnectorSummaryConnectionHealth(healthInput);
+  return { healthInput, initialConnectionHealth };
+}
+
+test('proof-age anchor: an old omitted-stream proof anchors freshness to stale even under a brand-new scoped run', () => {
+  const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
+  assert.equal(initialConnectionHealth.state, 'healthy', 'premise: the run-only projection is healthy/fresh');
+
+  // messages' only proof is 3 hours old (older than the 1-hour staleness
+  // window); the classifying run itself is brand new (NOW).
+  const oldProofAt = '2026-05-19T09:00:00.000Z';
+  const report = [
+    collectionReportEntry({ stream: 'messages', required: true, evidence_as_of: oldProofAt }),
+    collectionReportEntry({ stream: 'files', required: true, evidence_as_of: NOW }),
+  ];
+
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, report);
+  assert.notEqual(refined.axes.freshness, 'fresh', 'the oldest required proof anchors freshness, not the newest run');
+  assert.equal(refined.axes.freshness, 'stale');
+  assert.notEqual(refined.state, 'healthy', 'a stale-anchored connection must not render Healthy');
+});
+
+test('proof-age anchor: a recent omitted-stream proof preserves Healthy (no false degrade)', () => {
+  const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
+
+  // messages' carried proof is only 5 minutes old — well within the 1-hour
+  // staleness window — so the connection may still render Healthy.
+  const recentProofAt = '2026-05-19T11:55:00.000Z';
+  const report = [
+    collectionReportEntry({ stream: 'messages', required: true, evidence_as_of: recentProofAt }),
+    collectionReportEntry({ stream: 'files', required: true, evidence_as_of: NOW }),
+  ];
+
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, report);
+  assert.equal(refined.axes.freshness, 'fresh', 'recent proof age does not degrade freshness');
+  assert.equal(refined.state, 'healthy', 'recent full-scope proof + recent scoped run stays Healthy');
+});
+
+test('proof-age anchor: a required stream with NO evidence at all (window exceeded) blocks Healthy via coverage, never silently green', () => {
+  const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
+
+  // `messages` carries no evidence_as_of at all — its only proof fell outside
+  // the carry-forward window (the run-count cap is an I/O bound, not a
+  // correctness boundary: exceeding it degrades to unknown, never silent
+  // green). The coverage rollup override — not the freshness anchor — is
+  // what blocks Healthy here, since `oldestRequiredProofAt` only considers
+  // streams that DO carry evidence.
+  const report = [
+    collectionReportEntry({
+      stream: 'messages',
+      required: true,
+      coverage_condition: 'unknown',
+      forward_disposition: 'unmeasured',
+      evidence_as_of: null,
+    }),
+    collectionReportEntry({ stream: 'files', required: true, evidence_as_of: NOW }),
+  ];
+
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, report);
+  assert.equal(refined.axes.coverage, 'unknown', 'the count-cap-exceeded stream degrades coverage to unknown');
+  assert.notEqual(refined.state, 'healthy', 'no-evidence required stream blocks Healthy, never silently greened');
+});
+
+test('proof-age anchor: accepted-policy and non-required streams never anchor the freshness override', () => {
+  const { healthInput, initialConnectionHealth } = baselineHealthyRefineInputs(NOW);
+
+  const veryOldProofAt = '2026-01-01T00:00:00.000Z';
+  const report = [
+    // Non-required stream with an ancient proof: must NOT anchor freshness.
+    collectionReportEntry({ stream: 'optional_stream', required: false, evidence_as_of: veryOldProofAt }),
+    // Accepted-policy (deferred) required-false stream with an ancient proof: must NOT anchor freshness either.
+    collectionReportEntry({
+      stream: 'drafts',
+      required: false,
+      coverage_condition: 'deferred',
+      forward_disposition: 'complete',
+      evidence_as_of: veryOldProofAt,
+    }),
+    collectionReportEntry({ stream: 'files', required: true, evidence_as_of: NOW }),
+  ];
+
+  const refined = refineConnectionHealthWithCollectionReport(healthInput, initialConnectionHealth, report);
+  assert.equal(refined.axes.freshness, 'fresh', 'accepted-policy/non-required proof age must not anchor the connection');
+  assert.equal(refined.state, 'healthy');
 });
