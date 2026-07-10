@@ -2,9 +2,12 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  BiomeToolchainError,
+  MAX_ALLOWED_COMPLEXITY,
   PROJECT_ROOT,
   measureMass,
   normalizeFileList,
+  resolveVerifiedBiomeBinary,
   sortMassObject,
   splitFilesArgument,
   withTotal,
@@ -32,6 +35,22 @@ function normalizeBaseline(raw) {
     return sortMassObject(raw);
   }
   return {};
+}
+
+function normalizeBaselineMeta(raw) {
+  if (raw && typeof raw === "object" && raw.meta && typeof raw.meta === "object") {
+    return raw.meta;
+  }
+  return null;
+}
+
+export async function resolveCurrentFingerprint({ rootDir = PROJECT_ROOT, resolveBiome = resolveVerifiedBiomeBinary } = {}) {
+  const { version } = await resolveBiome({ rootDir });
+  return { biomeVersion: version, maxAllowedComplexity: MAX_ALLOWED_COMPLEXITY };
+}
+
+function fingerprintsMatch(a, b) {
+  return Boolean(a) && Boolean(b) && a.biomeVersion === b.biomeVersion && a.maxAllowedComplexity === b.maxAllowedComplexity;
 }
 
 function validateJustifications(raw) {
@@ -84,6 +103,10 @@ function selectFilesForCheck({ all, files, baseline, measured }) {
   return normalizeFileList(files);
 }
 
+export function writeBaselineFile(baselinePath, files, meta) {
+  return writeFile(baselinePath, `${JSON.stringify({ ...withTotal(files), meta }, null, 2)}\n`);
+}
+
 export async function runMassRatchet({
   all = false,
   files = [],
@@ -91,9 +114,22 @@ export async function runMassRatchet({
   justificationsPath = JUSTIFICATIONS_PATH,
   measure = measureMass,
   writeBaseline = true,
+  resolveFingerprint = resolveCurrentFingerprint,
 } = {}) {
-  const baseline = normalizeBaseline(await readJsonFile(baselinePath, { files: {}, total: 0 }));
+  const rawBaseline = await readJsonFile(baselinePath, { files: {}, total: 0, meta: null });
+  const baseline = normalizeBaseline(rawBaseline);
+  const baselineMeta = normalizeBaselineMeta(rawBaseline);
   const justifications = validateJustifications(await readJsonFile(justificationsPath, {}));
+  const currentFingerprint = await resolveFingerprint();
+
+  if (!fingerprintsMatch(baselineMeta, currentFingerprint)) {
+    throw new BiomeToolchainError(
+      `Mass baseline fingerprint mismatch: baseline was recorded under ${JSON.stringify(baselineMeta)}, but the current toolchain is ${JSON.stringify(
+        currentFingerprint
+      )}. Regenerate the baseline (scripts/quality-ratchet/regenerate-mass-baseline.mjs) before checking.`
+    );
+  }
+
   const measureInput = all ? { files: null } : { files: normalizeFileList(files) };
   const measuredResult = await measure(measureInput);
   const measured = sortMassObject(measuredResult.files ?? measuredResult);
@@ -124,7 +160,7 @@ export async function runMassRatchet({
   }
 
   if (tightened.length > 0 && writeBaseline) {
-    await writeFile(baselinePath, `${JSON.stringify(withTotal(nextBaseline), null, 2)}\n`);
+    await writeBaselineFile(baselinePath, nextBaseline, currentFingerprint);
   }
 
   return {

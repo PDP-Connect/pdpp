@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,6 +10,8 @@ export const SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx"]);
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = path.resolve(SCRIPT_DIR, "../..");
+
+export class BiomeToolchainError extends Error {}
 
 function toPosix(value) {
   return value.split(path.sep).join("/");
@@ -88,33 +90,64 @@ function runCommand(command, args, options = {}) {
 }
 
 function diagnosticPathToRepoPath(rawPath, rootDir) {
-  const withoutLocation = rawPath.replace(/:\d+:\d+$/, "");
-  const resolved = path.isAbsolute(withoutLocation) ? withoutLocation : path.resolve(rootDir, withoutLocation);
+  const resolved = path.isAbsolute(rawPath) ? rawPath : path.resolve(rootDir, rawPath);
   return normalizeRepoPath(resolved, rootDir);
 }
 
-export function parseBiomeMassOutput(output, rootDir = PROJECT_ROOT) {
-  const massByFile = new Map();
-  let currentFile = null;
+const COMPLEXITY_CATEGORY = "lint/complexity/noExcessiveCognitiveComplexity";
+const COMPLEXITY_MESSAGE_PATTERN = /\bExcessive complexity of (\d+) detected\b/;
 
-  for (const line of output.split(/\r?\n/)) {
-    const header = line.match(/^(.+?):\d+:\d+\s+lint\/complexity\/noExcessiveCognitiveComplexity\b/);
-    if (header) {
-      currentFile = diagnosticPathToRepoPath(header[1], rootDir);
-      continue;
-    }
-
-    const complexity = line.match(/\bExcessive complexity of (\d+) detected\b/);
-    if (!(currentFile && complexity)) {
-      continue;
-    }
-
-    const score = Number.parseInt(complexity[1], 10);
-    const excess = Math.max(0, score - MAX_ALLOWED_COMPLEXITY);
-    massByFile.set(currentFile, (massByFile.get(currentFile) ?? 0) + excess);
+export function parseBiomeJsonReport(rawOutput, rootDir = PROJECT_ROOT) {
+  let report;
+  try {
+    report = JSON.parse(rawOutput);
+  } catch (error) {
+    throw new BiomeToolchainError(`Biome --reporter=json output was not valid JSON: ${error.message}`);
   }
 
-  return sortMassObject(Object.fromEntries(massByFile));
+  if (!report || typeof report.summary !== "object" || !Array.isArray(report.diagnostics)) {
+    throw new BiomeToolchainError("Biome --reporter=json output did not contain the expected summary/diagnostics shape.");
+  }
+
+  const massByFile = new Map();
+  let parseableErrorCount = 0;
+
+  for (const diagnostic of report.diagnostics) {
+    if (diagnostic?.severity !== "error") {
+      continue;
+    }
+
+    if (diagnostic.category !== COMPLEXITY_CATEGORY) {
+      throw new BiomeToolchainError(
+        `Biome reported an error diagnostic outside ${COMPLEXITY_CATEGORY}, which the mass ratchet cannot safely ignore: ${JSON.stringify(diagnostic)}`
+      );
+    }
+
+    const match = typeof diagnostic.message === "string" ? diagnostic.message.match(COMPLEXITY_MESSAGE_PATTERN) : null;
+    const rawPath = diagnostic.location?.path;
+    if (!(match && typeof rawPath === "string")) {
+      throw new BiomeToolchainError(
+        `Biome reported a ${COMPLEXITY_CATEGORY} diagnostic without a parseable complexity score or path: ${JSON.stringify(diagnostic)}`
+      );
+    }
+
+    const score = Number.parseInt(match[1], 10);
+    const excess = Math.max(0, score - MAX_ALLOWED_COMPLEXITY);
+    const file = diagnosticPathToRepoPath(rawPath, rootDir);
+    massByFile.set(file, (massByFile.get(file) ?? 0) + excess);
+    parseableErrorCount += 1;
+  }
+
+  if (parseableErrorCount !== report.summary.errors) {
+    throw new BiomeToolchainError(
+      `Biome summary.errors (${report.summary.errors}) does not match the number of parseable ${COMPLEXITY_CATEGORY} error diagnostics (${parseableErrorCount}); refusing to trust a partially-parsed report.`
+    );
+  }
+
+  return {
+    files: sortMassObject(Object.fromEntries(massByFile)),
+    errorCount: report.summary.errors,
+  };
 }
 
 export function sortMassObject(files) {
@@ -129,6 +162,63 @@ export function withTotal(files) {
   const sorted = sortMassObject(files);
   const total = Object.values(sorted).reduce((sum, mass) => sum + mass, 0);
   return { files: sorted, total };
+}
+
+export function resolveBiomeBinaryPath(rootDir = PROJECT_ROOT) {
+  return path.join(rootDir, "node_modules", ".bin", "biome");
+}
+
+export async function readPinnedBiomeVersion(rootDir = PROJECT_ROOT) {
+  const packageJsonPath = path.join(rootDir, "package.json");
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new BiomeToolchainError(`Cannot verify Biome toolchain: ${packageJsonPath} does not exist.`);
+    }
+    throw error;
+  }
+
+  const pinned = manifest.devDependencies?.["@biomejs/biome"] ?? manifest.dependencies?.["@biomejs/biome"];
+  if (typeof pinned !== "string" || pinned.trim().length === 0) {
+    throw new BiomeToolchainError(`Cannot verify Biome toolchain: no "@biomejs/biome" dependency declared in ${packageJsonPath}.`);
+  }
+  return pinned.trim();
+}
+
+function parseBiomeVersionOutput(output) {
+  const match = output.match(/Version:\s*([0-9][^\s]*)/);
+  return match ? match[1].trim() : null;
+}
+
+export async function resolveVerifiedBiomeBinary({ rootDir = PROJECT_ROOT } = {}) {
+  const binaryPath = resolveBiomeBinaryPath(rootDir);
+  try {
+    await stat(binaryPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new BiomeToolchainError(
+        `Mass ratchet requires the workspace-local Biome binary at ${binaryPath}, which is missing. Run pnpm install (never npx or a global Biome) before measuring.`
+      );
+    }
+    throw error;
+  }
+
+  const pinnedVersion = await readPinnedBiomeVersion(rootDir);
+  const versionResult = await runCommand(binaryPath, ["--version"], { cwd: rootDir });
+  const resolvedVersion = parseBiomeVersionOutput(`${versionResult.stdout}\n${versionResult.stderr}`);
+
+  if (versionResult.status !== 0 || !resolvedVersion) {
+    throw new BiomeToolchainError(`Could not determine the version reported by ${binaryPath}.`);
+  }
+  if (resolvedVersion !== pinnedVersion) {
+    throw new BiomeToolchainError(
+      `Biome version mismatch: ${binaryPath} reports ${resolvedVersion}, but package.json pins ${pinnedVersion}. Run pnpm install and retry.`
+    );
+  }
+
+  return { binaryPath, version: resolvedVersion };
 }
 
 function resolveMeasurePaths(files, rootDir) {
@@ -155,11 +245,18 @@ async function existingPaths(paths) {
   return checks.filter(Boolean);
 }
 
-export async function measureMass({ files = null, rootDir = PROJECT_ROOT, commandCwd = PROJECT_ROOT } = {}) {
+export async function measureMass({
+  files = null,
+  rootDir = PROJECT_ROOT,
+  commandCwd = PROJECT_ROOT,
+  resolveBiome = resolveVerifiedBiomeBinary,
+} = {}) {
   const paths = await existingPaths(resolveMeasurePaths(files, rootDir));
   if (paths.length === 0) {
     return withTotal({});
   }
+
+  const { binaryPath } = await resolveBiome({ rootDir });
 
   const tempDir = await mkdtemp(path.join(tmpdir(), "pdpp-mass-ratchet-"));
   const configPath = path.join(tempDir, "biome.mass.json");
@@ -167,16 +264,26 @@ export async function measureMass({ files = null, rootDir = PROJECT_ROOT, comman
   try {
     await writeFile(configPath, `${JSON.stringify(buildBiomeConfig(), null, 2)}\n`);
     const result = await runCommand(
-      "npx",
-      ["biome", "lint", "--config-path", configPath, "--max-diagnostics=none", "--colors=off", ...paths],
+      binaryPath,
+      ["lint", "--config-path", configPath, "--max-diagnostics=none", "--reporter=json", ...paths],
       { cwd: commandCwd }
     );
 
-    const output = `${result.stderr}\n${result.stdout}`;
-    const filesWithMass = parseBiomeMassOutput(output, rootDir);
+    if (result.status === null || result.status > 1) {
+      throw new BiomeToolchainError(
+        `Biome exited abnormally (status=${result.status === null ? "null (signal)" : result.status}):\n${result.stderr.trim()}`
+      );
+    }
 
-    if (result.status !== 0 && Object.keys(filesWithMass).length === 0 && /configuration|No files were processed/i.test(output)) {
-      throw new Error(`Biome mass measurement failed:\n${output.trim()}`);
+    const { files: filesWithMass, errorCount } = parseBiomeJsonReport(result.stdout, rootDir);
+
+    if (result.status === 0 && errorCount > 0) {
+      throw new BiomeToolchainError(
+        `Biome exited 0 but its report claims ${errorCount} error(s); the exit status and report are inconsistent.`
+      );
+    }
+    if (result.status === 1 && errorCount === 0) {
+      throw new BiomeToolchainError("Biome exited 1 but its report claims zero errors; the exit status and report are inconsistent.");
     }
 
     return withTotal(filesWithMass);
