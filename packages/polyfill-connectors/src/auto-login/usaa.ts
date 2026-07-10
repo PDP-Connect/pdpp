@@ -22,7 +22,14 @@ const TEXT_CODE_PROMPT = /Text security code/i;
 const OTP_INPUT_SELECTOR = 'input[autocomplete="one-time-code"], input[name*="code" i], input[placeholder*="code" i]';
 const OTP_RETRY_TEXT = /retry|invalid|incorrect|expired|try again/i;
 const LOGIN_NAVIGATION_INTERVENTION_ERROR = /page\.goto: net::ERR_(HTTP2_PROTOCOL_ERROR|CONNECTION_RESET|FAILED)\b/i;
-const USAA_SOURCE_UNAVAILABLE_TEXT = /unable to complete your request|system is currently unavailable|try again later/i;
+// Deliberately narrow: only phrases that specifically assert the *provider's
+// own system* is down. "try again later" alone is common boilerplate on
+// challenge, lockout, and rate-limit pages too (which need a real owner
+// action, not a suppressed retry) — it must not by itself classify as
+// source_unavailable. Matches (with common wording variants) only the two
+// phrases that unambiguously identify USAA's generic system-outage page.
+const USAA_SOURCE_UNAVAILABLE_TEXT =
+  /unable to complete (your|this) request|(our |the )?system is (currently )?unavailable/i;
 const MAX_OTP_ATTEMPTS = 3;
 const MANUAL_LOGIN_MESSAGE =
   "USAA could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
@@ -230,6 +237,16 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
       .locator("body")
       .innerText()
       .catch((): string => "");
+    if (classifyUsaaLoginStepFailure(body) === "source_unavailable") {
+      // USAA's own login system reported itself unavailable. This is a
+      // provider-side condition, not something the owner can fix by
+      // operating a browser — sending them into one would show the exact
+      // same unavailable page. Throw a retryable source_unavailable error
+      // so it flows through the runtime's existing retryable/backoff seam
+      // (see USAA_RETRYABLE_PATTERN + buildSessionEstablishTerminalError)
+      // instead of requesting manual_action.
+      throw new Error("source_unavailable: USAA reported its login system is currently unavailable after Next click.");
+    }
     const inputs = await page
       .evaluate((): InputProbe[] => {
         const els = document.querySelectorAll("input");
@@ -277,6 +294,15 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
     .locator("body")
     .innerText()
     .catch((): string => "");
+  if (classifyUsaaLoginStepFailure(finalText) === "source_unavailable") {
+    // Same provider-outage condition as the memberId-step check above, but
+    // observed after password submission instead. Classify the same way so
+    // this also flows through the retryable seam instead of a generic,
+    // non-retryable diagnostic.
+    throw new Error(
+      "source_unavailable: USAA reported its login system is currently unavailable after password submit."
+    );
+  }
   const inputs = await page
     .evaluate((): InputProbe[] => {
       const els = document.querySelectorAll("input");
