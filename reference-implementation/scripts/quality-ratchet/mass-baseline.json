@@ -35,7 +35,7 @@
     "runtime/scheduler.ts": 35,
     "runtime/scheduler/dispatch-governor.ts": 36,
     "runtime/scheduler/pre-run-gate.ts": 8,
-    "runtime/scheduler/run-executor.ts": 113,
+    "runtime/scheduler/run-executor.ts": 101,
     "runtime/static-secret-setup-status.ts": 14,
     "runtime/stderr-tail.ts": 9,
     "runtime/terminal-reason.ts": 3,
@@ -194,7 +194,7 @@
     "server/version-disposition.ts": 6,
     "server/web-push-notifications.js": 9
   },
-  "total": 9232,
+  "total": 9220,
   "meta": {
     "biomeVersion": "2.4.12",
     "maxAllowedComplexity": 5

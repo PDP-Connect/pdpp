@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import Database from "better-sqlite3";
+import { Pool } from "pg";
 
 import { closeDb, getDb, initDb } from "../server/db.js";
+import {
+  closePostgresStorage,
+  initPostgresStorage,
+  postgresQuery,
+} from "../server/postgres-storage.js";
 import {
   createPostgresBrowserSurfaceLeaseStore,
   createSqliteBrowserSurfaceLeaseStore,
@@ -53,6 +60,8 @@ function teardown() {
   closeDb();
 }
 
+const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+
 test("persists and reloads browser surfaces and leases as domain objects", async () => {
   const store = setup();
   try {
@@ -63,6 +72,7 @@ test("persists and reloads browser surfaces and leases as domain objects", async
     });
     const persistedLease = lease({
       account_key: "owner@example.com",
+      surface_subject_id: "owner@example.com",
     });
 
     await store.upsertSurface(persistedSurface);
@@ -72,6 +82,28 @@ test("persists and reloads browser surfaces and leases as domain objects", async
     assert.deepEqual(await store.getLease("lease_1"), persistedLease);
     assert.deepEqual(await store.listSurfaces(), [persistedSurface]);
     assert.deepEqual(await store.listNonTerminalLeases(), [persistedLease]);
+  } finally {
+    teardown();
+  }
+});
+
+test("persists terminal deferred retained leases with retained_capacity_reserved and excludes them from non-terminal listings", async () => {
+  const store = setup();
+  try {
+    const deferredLease = lease({
+      lease_id: "lease_retained_deferred",
+      surface_id: undefined,
+      run_id: "run_retained_deferred",
+      status: "deferred",
+      leased_at: undefined,
+      released_at: "2026-05-12T12:01:00.000Z",
+      wait_reason: "retained_capacity_reserved",
+    });
+
+    await store.upsertLease(deferredLease);
+
+    assert.deepEqual(await store.getLease("lease_retained_deferred"), deferredLease);
+    assert.deepEqual(await store.listNonTerminalLeases(), []);
   } finally {
     teardown();
   }
@@ -270,6 +302,7 @@ test("SQLite migration widens browser-surface lease enum constraints in existing
       .get().sql;
     assert.match(schema, /'starting_surface'/);
     assert.match(schema, /'surface_start_failed'/);
+    assert.match(schema, /'retained_capacity_reserved'/);
 
     getDb().prepare(`
       INSERT INTO browser_surface_leases(
@@ -323,13 +356,186 @@ test("SQLite migration widens browser-surface lease enum constraints in existing
         'surface_readiness_timeout'
       )
     `).run();
+    getDb().prepare(`
+      INSERT INTO browser_surface_leases(
+        lease_id,
+        connector_id,
+        profile_key,
+        run_id,
+        status,
+        priority_class,
+        requested_at,
+        expires_at,
+        fencing_token,
+        wait_reason
+      )
+      VALUES (
+        'lease_retained_reserved',
+        'chatgpt',
+        'chatgpt-retained',
+        'run_retained_reserved',
+        'deferred',
+        'scheduled_refresh',
+        '2026-05-12T12:00:03.000Z',
+        '2026-05-12T12:05:03.000Z',
+        4,
+        'retained_capacity_reserved'
+      )
+    `).run();
 
     const rows = getDb().prepare("SELECT lease_id FROM browser_surface_leases ORDER BY lease_id").all();
     assert.deepEqual(rows.map((row) => row.lease_id), [
+      "lease_retained_reserved",
       "lease_start_failed",
       "lease_starting",
       "legacy_waiting",
     ]);
+  } finally {
+    closeDb();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite migration preserves surface_subject_id when retained_capacity_reserved is the only missing reason", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdpp-browser-surface-lease-subject-"));
+  const dbPath = join(dir, "legacy.sqlite");
+  const legacy = new Database(dbPath);
+  try {
+    legacy.exec(`
+      CREATE TABLE browser_surfaces (
+        surface_id TEXT PRIMARY KEY,
+        backend TEXT NOT NULL,
+        profile_key TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        surface_subject_id TEXT,
+        account_key TEXT,
+        cdp_url TEXT NOT NULL,
+        stream_base_url TEXT NOT NULL,
+        health TEXT NOT NULL,
+        container_id TEXT,
+        active_lease_id TEXT,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL,
+        CHECK (backend IN ('neko')),
+        CHECK (health IN ('starting', 'ready', 'unhealthy', 'stopping'))
+      );
+
+      CREATE TABLE browser_surface_leases (
+        lease_id        TEXT PRIMARY KEY,
+        surface_id      TEXT,
+        connector_id    TEXT NOT NULL,
+        profile_key     TEXT NOT NULL,
+        surface_subject_id TEXT,
+        account_key     TEXT,
+        run_id          TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        priority_class  TEXT NOT NULL,
+        requested_at    TEXT NOT NULL,
+        leased_at       TEXT,
+        released_at     TEXT,
+        expires_at      TEXT NOT NULL,
+        fencing_token   INTEGER NOT NULL,
+        wait_reason     TEXT,
+        CHECK (status IN (
+          'waiting_for_browser_surface',
+          'starting_surface',
+          'leased',
+          'released',
+          'expired',
+          'deferred',
+          'cancelled',
+          'surface_failed'
+        )),
+        CHECK (priority_class IN ('owner_interactive', 'scheduled_refresh')),
+        CHECK (wait_reason IS NULL OR wait_reason IN (
+          'capacity_full',
+          'surface_starting',
+          'surface_unhealthy',
+          'surface_start_failed',
+          'surface_readiness_timeout',
+          'incompatible_static_profile',
+          'launch_precondition_failed',
+          'lease_wait_timeout'
+        ))
+      );
+
+      INSERT INTO browser_surface_leases(
+        lease_id,
+        connector_id,
+        profile_key,
+        surface_subject_id,
+        run_id,
+        status,
+        priority_class,
+        requested_at,
+        expires_at,
+        fencing_token,
+        wait_reason
+      )
+      VALUES (
+        'legacy_subject',
+        'chatgpt',
+        'chatgpt',
+        'subject-sentinel',
+        'run_legacy_subject',
+        'leased',
+        'owner_interactive',
+        '2026-05-12T12:00:00.000Z',
+        '2026-05-12T12:05:00.000Z',
+        1,
+        NULL
+      );
+    `);
+  } finally {
+    legacy.close();
+  }
+
+  try {
+    initDb(dbPath);
+    const schema = getDb()
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'browser_surface_leases'")
+      .get().sql;
+    assert.match(schema, /'starting_surface'/);
+    assert.match(schema, /'surface_start_failed'/);
+    assert.match(schema, /'retained_capacity_reserved'/);
+
+    const migrated = getDb()
+      .prepare("SELECT surface_subject_id, wait_reason FROM browser_surface_leases WHERE lease_id = ?")
+      .get("legacy_subject");
+    assert.equal(migrated.surface_subject_id, "subject-sentinel");
+    assert.equal(migrated.wait_reason, null);
+
+    getDb().prepare(`
+      INSERT INTO browser_surface_leases(
+        lease_id,
+        connector_id,
+        profile_key,
+        run_id,
+        status,
+        priority_class,
+        requested_at,
+        expires_at,
+        fencing_token,
+        wait_reason
+      )
+      VALUES (
+        'lease_retained_reserved_subject',
+        'chatgpt',
+        'chatgpt-retained',
+        'run_retained_reserved_subject',
+        'deferred',
+        'scheduled_refresh',
+        '2026-05-12T12:00:01.000Z',
+        '2026-05-12T12:05:01.000Z',
+        2,
+        'retained_capacity_reserved'
+      )
+    `).run();
+
+    const retained = getDb()
+      .prepare("SELECT wait_reason FROM browser_surface_leases WHERE lease_id = ?")
+      .get("lease_retained_reserved_subject");
+    assert.equal(retained.wait_reason, "retained_capacity_reserved");
   } finally {
     closeDb();
     rmSync(dir, { recursive: true, force: true });
@@ -386,6 +592,157 @@ test("Postgres store maps dynamic surface metadata with the same persistence sha
   ]);
   assert.deepEqual(await store.getSurface("surface_dynamic_pg"), dynamicSurface);
 });
+
+test("Postgres browser_surface_leases DDL admits retained_capacity_reserved in create and startup constraint refresh", () => {
+  const source = readFileSync(new URL("../server/postgres-storage.js", import.meta.url), "utf8");
+  const occurrences = source.match(/'retained_capacity_reserved'/g) ?? [];
+  assert.equal(occurrences.length, 2);
+
+  const createStart = source.indexOf("CREATE TABLE IF NOT EXISTS browser_surface_leases");
+  const createEnd = source.indexOf("CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_one_non_terminal_run");
+  assert.ok(createStart >= 0 && createEnd > createStart);
+  assert.match(source.slice(createStart, createEnd), /'retained_capacity_reserved'/);
+
+  const refreshStart = source.indexOf("ALTER TABLE browser_surface_leases");
+  const refreshEnd = source.indexOf("CREATE TABLE IF NOT EXISTS scheduler_run_history");
+  assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
+  assert.match(source.slice(refreshStart, refreshEnd), /'retained_capacity_reserved'/);
+});
+
+if (!POSTGRES_URL) {
+  test(
+    "Postgres browser-surface lease upgrade preserves surface_subject_id and admits retained_capacity_reserved (skipped: PDPP_TEST_POSTGRES_URL unset)",
+    { skip: true },
+    () => {},
+  );
+} else {
+  test("Postgres browser-surface lease upgrade preserves surface_subject_id and admits retained_capacity_reserved", async () => {
+    const admin = new Pool({ connectionString: POSTGRES_URL });
+    try {
+      await admin.query("DROP TABLE IF EXISTS browser_surface_leases");
+      await admin.query("DROP TABLE IF EXISTS browser_surfaces");
+      await admin.query(`
+        CREATE TABLE browser_surface_leases (
+          lease_id TEXT PRIMARY KEY,
+          surface_id TEXT,
+          connector_id TEXT NOT NULL,
+          profile_key TEXT NOT NULL,
+          surface_subject_id TEXT,
+          account_key TEXT,
+          run_id TEXT NOT NULL,
+          status TEXT NOT NULL CONSTRAINT browser_surface_leases_status_check CHECK (status IN (
+            'waiting_for_browser_surface',
+            'starting_surface',
+            'leased',
+            'released',
+            'expired',
+            'deferred',
+            'cancelled',
+            'surface_failed'
+          )),
+          priority_class TEXT NOT NULL CHECK (priority_class IN ('owner_interactive', 'scheduled_refresh')),
+          requested_at TEXT NOT NULL,
+          leased_at TEXT,
+          released_at TEXT,
+          expires_at TEXT NOT NULL,
+          fencing_token INTEGER NOT NULL,
+          wait_reason TEXT CONSTRAINT browser_surface_leases_wait_reason_check CHECK (
+            wait_reason IS NULL OR wait_reason IN (
+              'capacity_full',
+              'surface_starting',
+              'surface_unhealthy',
+              'surface_start_failed',
+              'surface_readiness_timeout',
+              'incompatible_static_profile',
+              'launch_precondition_failed',
+              'lease_wait_timeout'
+            )
+          )
+        );
+
+        INSERT INTO browser_surface_leases(
+          lease_id,
+          connector_id,
+          profile_key,
+          surface_subject_id,
+          run_id,
+          status,
+          priority_class,
+          requested_at,
+          expires_at,
+          fencing_token,
+          wait_reason
+        )
+        VALUES (
+          'legacy_pg_subject',
+          'chatgpt',
+          'chatgpt',
+          'subject-sentinel',
+          'run_pg_legacy_subject',
+          'leased',
+          'owner_interactive',
+          '2026-05-12T12:00:00.000Z',
+          '2026-05-12T12:05:00.000Z',
+          1,
+          NULL
+        );
+      `);
+
+      await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+      try {
+        const legacyRow = (
+          await postgresQuery(
+            "SELECT surface_subject_id, wait_reason FROM browser_surface_leases WHERE lease_id = $1",
+            ["legacy_pg_subject"],
+          )
+        ).rows[0];
+        assert.equal(legacyRow.surface_subject_id, "subject-sentinel");
+        assert.equal(legacyRow.wait_reason, null);
+
+        await postgresQuery(`
+          INSERT INTO browser_surface_leases(
+            lease_id,
+            connector_id,
+            profile_key,
+            run_id,
+            status,
+            priority_class,
+            requested_at,
+            expires_at,
+            fencing_token,
+            wait_reason
+          )
+          VALUES (
+            'lease_retained_reserved_pg',
+            'chatgpt',
+            'chatgpt-retained',
+            'run_pg_retained_reserved',
+            'deferred',
+            'scheduled_refresh',
+            '2026-05-12T12:00:01.000Z',
+            '2026-05-12T12:05:01.000Z',
+            2,
+            'retained_capacity_reserved'
+          )
+        `);
+
+        const retainedRow = (
+          await postgresQuery(
+            "SELECT wait_reason FROM browser_surface_leases WHERE lease_id = $1",
+            ["lease_retained_reserved_pg"],
+          )
+        ).rows[0];
+        assert.equal(retainedRow.wait_reason, "retained_capacity_reserved");
+      } finally {
+        await closePostgresStorage();
+      }
+    } finally {
+      await admin.query("DROP TABLE IF EXISTS browser_surface_leases");
+      await admin.query("DROP TABLE IF EXISTS browser_surfaces");
+      await admin.end();
+    }
+  });
+}
 
 test("Postgres repair clears active surface pointers not backed by non-terminal leases", async () => {
   const queries = [];

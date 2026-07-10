@@ -762,6 +762,84 @@ test("restart reconciliation defers expired queued leases", () => {
   assert.equal(result.deferred[0]?.wait_reason, "lease_wait_timeout");
 });
 
+test("boot reconciliation deterministically keeps capacity-1 retained demand in priority/FIFO order and terminalizes the rest", () => {
+  // A retained connection can be acquired, queue, and the process restart
+  // before it ever materializes a surface — so rehydrated non-terminal leases
+  // can include retained leases still in waiting_for_browser_surface. If boot
+  // reconcile requeued them as-is without re-checking the reserve, the manager
+  // would come back up already overcommitted (more retained demand than
+  // surfaceCap - 1), and the excess would only be caught later, one at a time,
+  // whenever #pumpQueue happened to consider it — non-deterministic on
+  // rehydration/iteration order. Reconcile must apply the same reserve check
+  // #resolveNewLease uses, in the same priority/FIFO order #pumpQueue would
+  // serve these leases, so exactly `surfaceCap - 1` retained demand survives
+  // and the rest terminalizes with retained_capacity_reserved right here.
+  const { leases } = manager({
+    config: { surfaceCap: 3 },
+    initialSurfaces: [retainedSurface({ surface_id: "surface_retained_a", profile_key: "chatgpt:acct-a" })],
+    initialLeases: [
+      {
+        lease_id: "lease_retained_a",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt:acct-a",
+        surface_subject_id: "acct-a",
+        run_id: "run_a",
+        status: "leased",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T11:59:00.000Z",
+        expires_at: "2026-05-12T12:05:00.000Z",
+        fencing_token: 1,
+        leased_at: "2026-05-12T11:59:01.000Z",
+        surface_id: "surface_retained_a",
+        retained: true,
+      },
+      // Two more retained leases persisted queued (never materialized a
+      // surface before restart). Priority/FIFO order: B (owner_interactive,
+      // earlier) wins the one remaining reserve slot; C (scheduled_refresh,
+      // later) must terminalize.
+      {
+        lease_id: "lease_retained_c",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt:acct-c",
+        surface_subject_id: "acct-c",
+        run_id: "run_c",
+        status: "waiting_for_browser_surface",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T11:59:03.000Z",
+        expires_at: "2026-05-12T12:05:03.000Z",
+        fencing_token: 3,
+        wait_reason: "capacity_full",
+        retained: true,
+      },
+      {
+        lease_id: "lease_retained_b",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt:acct-b",
+        surface_subject_id: "acct-b",
+        run_id: "run_b",
+        status: "waiting_for_browser_surface",
+        priority_class: "owner_interactive",
+        requested_at: "2026-05-12T11:59:02.000Z",
+        expires_at: "2026-05-12T12:05:02.000Z",
+        fencing_token: 2,
+        wait_reason: "capacity_full",
+        retained: true,
+      },
+    ],
+  });
+
+  const result = leases.reconcileAfterRestart({ promoteQueued: false });
+
+  assert.deepEqual(result.queued.map((lease) => lease.lease_id), ["lease_retained_b"]);
+  assert.equal(result.deferred.length, 1);
+  assert.equal(result.deferred[0]?.lease_id, "lease_retained_c");
+  assert.equal(result.deferred[0]?.wait_reason, "retained_capacity_reserved");
+
+  assert.equal(leases.getLease("lease_retained_b")?.status, "waiting_for_browser_surface");
+  assert.equal(leases.getLease("lease_retained_c")?.status, "deferred");
+  assert.equal(leases.getLease("lease_retained_c")?.wait_reason, "retained_capacity_reserved");
+});
+
 test("dynamic boot drops leases for persisted static surfaces filtered from initial state", () => {
   const { leases } = manager({
     config: { surfaceMode: "dynamic" },
@@ -1014,4 +1092,335 @@ test("reconcileSurfacesWithAllocator does nothing in static mode", async () => {
   assert.equal(result.downgraded.length, 0);
   // Static surface preserved.
   assert.equal(leases.getSurface("neko-static")?.health, "ready");
+});
+
+// ─── Credential-boundary surface process retention ─────────────────────────
+// A retained surface is a credential boundary (its provider auth lives in the
+// live browser process). It SHALL survive routine idle-TTL and capacity-pressure
+// reap, but only while healthy, and its lease is still released after each run.
+
+function retainedSurface(overrides: Partial<BrowserSurface> = {}): BrowserSurface {
+  return {
+    surface_id: "surface_retained",
+    backend: "neko",
+    profile_key: "chatgpt:acct-a",
+    connector_id: "chatgpt",
+    cdp_url: "http://neko:9222",
+    stream_base_url: "http://neko:8080",
+    health: "ready",
+    created_at: "2026-05-12T11:00:00.000Z",
+    last_used_at: "2026-05-12T11:00:00.000Z",
+    retained: true,
+    ...overrides,
+  };
+}
+
+test("retention: idle cleanup does NOT stop a retained surface past idle TTL", async () => {
+  const { leases, advance } = manager({ initialSurfaces: [retainedSurface()] });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  allocator.setSurface(retainedSurface());
+
+  // Age well past the 300s idle TTL.
+  advance(10 * 60 * 1000);
+  const result = await leases.cleanupIdleSurfaces(allocator);
+
+  assert.equal(allocator.stopRequests.length, 0);
+  assert.equal(result.stopped.length, 0);
+  assert.equal(leases.getSurface("surface_retained")?.health, "ready");
+});
+
+test("retention: idle cleanup still stops an ordinary surface past idle TTL", async () => {
+  const ordinary = retainedSurface({ surface_id: "surface_ordinary", profile_key: "chase", connector_id: "chase" });
+  const { retained: _retained, ...ordinarySurface } = ordinary;
+  const { leases, advance } = manager({ initialSurfaces: [ordinarySurface] });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  allocator.setSurface(ordinarySurface);
+
+  advance(10 * 60 * 1000);
+  const result = await leases.cleanupIdleSurfaces(allocator);
+
+  assert.equal(allocator.stopRequests.length, 1);
+  assert.equal(allocator.stopRequests[0]?.reason, "idle_ttl");
+  assert.equal(result.stopped[0]?.surface_id, "surface_ordinary");
+  assert.equal(leases.getSurface("surface_ordinary"), undefined);
+});
+
+test("retention: capacity-pressure reclaim never selects a retained surface", () => {
+  // Only a retained surface is idle; a new incompatible connection presses capacity.
+  const { leases } = manager({ config: { surfaceCap: 1 }, initialSurfaces: [retainedSurface()] });
+
+  const queued = leases.acquire({ connectorId: "chase", runId: "run_chase", profileKey: "chase" });
+  const planned = leases.planCapacityPressureReclaim(queued.lease.lease_id);
+
+  assert.equal(queued.lease.status, "waiting_for_browser_surface");
+  assert.equal(queued.lease.wait_reason, "capacity_full");
+  // Retained surface must NOT be offered as a reclaim victim; the waiter stays queued.
+  assert.equal(planned, undefined);
+  assert.equal(leases.getSurface("surface_retained")?.health, "ready");
+});
+
+test("retention: capacity-pressure reclaim still selects the oldest idle ordinary surface, skipping retained", () => {
+  const retained = retainedSurface({ last_used_at: "2026-05-12T10:00:00.000Z" }); // older, but retained
+  const ordinaryOld = retainedSurface({
+    surface_id: "surface_ord_old",
+    profile_key: "reddit",
+    connector_id: "reddit",
+    last_used_at: "2026-05-12T10:30:00.000Z",
+  });
+  const { retained: _r1, ...ordinaryOldSurface } = ordinaryOld;
+  const { leases } = manager({ config: { surfaceCap: 2 }, initialSurfaces: [retained, ordinaryOldSurface] });
+
+  const queued = leases.acquire({ connectorId: "amazon", runId: "run_amazon", profileKey: "amazon" });
+  const planned = leases.planCapacityPressureReclaim(queued.lease.lease_id);
+
+  // Even though the retained surface is the oldest by last_used_at, reclaim skips
+  // it and picks the ordinary surface.
+  assert.equal(planned?.surface_id, "surface_ord_old");
+});
+
+test("retention: a retained surface releases its lease and is reacquired without a new surface", () => {
+  const { leases } = manager({ initialSurfaces: [retainedSurface()] });
+
+  const first = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_1",
+    profileKey: "chatgpt:acct-a",
+    retainSurfaceProcess: true,
+  });
+  assert.equal(first.lease.status, "leased");
+  assert.equal(first.surface?.surface_id, "surface_retained");
+  assert.equal(first.surface?.retained, true);
+
+  const released = leases.release({ leaseId: first.lease.lease_id, fencingToken: first.lease.fencing_token });
+  assert.equal(released.released, true);
+  // Surface remains, still retained, no active lease — reusable.
+  assert.equal(leases.getSurface("surface_retained")?.retained, true);
+  assert.equal(leases.getSurface("surface_retained")?.active_lease_id, undefined);
+
+  const second = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_2",
+    profileKey: "chatgpt:acct-a",
+    retainSurfaceProcess: true,
+  });
+  assert.equal(second.lease.status, "leased");
+  assert.equal(second.surface?.surface_id, "surface_retained");
+  // No new surface was created.
+  assert.equal(leases.listSurfaces().length, 1);
+});
+
+test("retention: a proven-dead retained surface is still recycled by invalidateSurface", () => {
+  const { leases } = manager({ initialSurfaces: [retainedSurface()] });
+
+  const leased = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_dead",
+    profileKey: "chatgpt:acct-a",
+    retainSurfaceProcess: true,
+  });
+  assert.equal(leased.lease.status, "leased");
+
+  const invalidated = leases.invalidateSurface("surface_retained", {
+    reason: "surface_unhealthy",
+    releaseLease: true,
+  });
+
+  // Retention exempts only healthy surfaces: a dead CDP surface is still evicted.
+  assert.equal(invalidated.surface?.surface_id, "surface_retained");
+  assert.equal(leases.getSurface("surface_retained"), undefined);
+  assert.equal(invalidated.lease?.status, "surface_failed");
+});
+
+test("retention: acquire without the flag does NOT create a retained surface", () => {
+  const { leases } = manager({ config: { surfaceCap: 2 } });
+
+  const optedIn = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_opt",
+    profileKey: "chatgpt:acct-a",
+    retainSurfaceProcess: true,
+  });
+  const notOptedIn = leases.acquire({ connectorId: "chase", runId: "run_plain", profileKey: "chase" });
+
+  assert.equal(leases.getSurface(optedIn.lease.surface_id ?? "")?.retained, true);
+  assert.equal(leases.getSurface(notOptedIn.lease.surface_id ?? "")?.retained, undefined);
+});
+
+test("retention: two same-connector ChatGPT connections keep independent retained surfaces", () => {
+  const { leases } = manager({ config: { surfaceCap: 5 } });
+
+  const a = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_a",
+    profileKey: "chatgpt:acct-a",
+    surfaceSubjectId: "acct-a",
+    retainSurfaceProcess: true,
+  });
+  const b = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_b",
+    profileKey: "chatgpt:acct-b",
+    surfaceSubjectId: "acct-b",
+    retainSurfaceProcess: true,
+  });
+
+  assert.notEqual(a.lease.surface_id, b.lease.surface_id);
+  assert.equal(leases.getSurface(a.lease.surface_id ?? "")?.retained, true);
+  assert.equal(leases.getSurface(b.lease.surface_id ?? "")?.retained, true);
+
+  // An ordinary connection under capacity pressure must not reclaim either
+  // retained surface. cap=3 is the live invariant: two retained ChatGPT surfaces
+  // plus one fair transient slot.
+  const tight = manager({ config: { surfaceCap: 3 } });
+  tight.leases.acquire({
+    connectorId: "chatgpt",
+    runId: "ra",
+    profileKey: "chatgpt:acct-a",
+    surfaceSubjectId: "acct-a",
+    retainSurfaceProcess: true,
+  });
+  tight.leases.acquire({
+    connectorId: "chatgpt",
+    runId: "rb",
+    profileKey: "chatgpt:acct-b",
+    surfaceSubjectId: "acct-b",
+    retainSurfaceProcess: true,
+  });
+  // Fill the one fair transient slot with an ordinary connection, then a second
+  // ordinary connection presses capacity — it must NOT reclaim a retained surface.
+  tight.leases.acquire({ connectorId: "chase", runId: "rc", profileKey: "chase" });
+  const waiter = tight.leases.acquire({ connectorId: "reddit", runId: "rd", profileKey: "reddit" });
+  assert.equal(waiter.lease.status, "waiting_for_browser_surface");
+  assert.equal(tight.leases.planCapacityPressureReclaim(waiter.lease.lease_id), undefined);
+});
+
+test("retention: creating a retained surface that would consume the fair-slot reserve is terminally deferred", () => {
+  // cap=3 → at most 2 retained surfaces (reserve = 1 transient slot). A third
+  // retained connection must NOT be able to create a surface; it fails with a
+  // typed terminal deferral, not an indefinite capacity_full queue. This is the
+  // true-demand enforcement: it fires the moment a configured retained
+  // connection first materializes, regardless of prior observed surfaces.
+  const { leases } = manager({ config: { surfaceCap: 3 } });
+  for (const subject of ["acct-a", "acct-b"]) {
+    const res = leases.acquire({
+      connectorId: "chatgpt",
+      runId: `run_${subject}`,
+      profileKey: `chatgpt:${subject}`,
+      surfaceSubjectId: subject,
+      retainSurfaceProcess: true,
+    });
+    assert.equal(res.lease.status, "starting_surface", `${subject} should get a surface`);
+  }
+  const third = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_acct-c",
+    profileKey: "chatgpt:acct-c",
+    surfaceSubjectId: "acct-c",
+    retainSurfaceProcess: true,
+  });
+  assert.equal(third.lease.status, "deferred");
+  assert.equal(third.lease.wait_reason, "retained_capacity_reserved");
+  // A non-retained connection can still take the reserved transient slot.
+  const ordinary = leases.acquire({ connectorId: "chase", runId: "run_chase", profileKey: "chase" });
+  assert.equal(ordinary.lease.status, "starting_surface");
+});
+
+test("retention: a second queued retained lease terminally defers at acquire against demand, not just materialized surfaces", async () => {
+  // Race this closes: reserve enforcement that only counts materialized
+  // retained SURFACES is blind to a retained lease that is queued but has not
+  // yet created a surface. An idle ordinary surface and one active ordinary
+  // surface occupy two of three cap slots, so when retained B acquires it
+  // queues on ordinary capacity_full (only one retained surface — A — exists)
+  // rather than hitting the reserve check by surface count alone. A
+  // surface-only count would then let a third retained lease C ALSO look like
+  // it has reserve headroom (still just one retained surface), so both B and C
+  // would sit queued expecting the one reserved slot the invariant promises
+  // only one of them can ever have. Counting nonterminal retained DEMAND
+  // (surfaces + other queued retained leases) must catch this the moment C
+  // acquires, before it ever enters the queue.
+  const { leases } = manager({ config: { surfaceCap: 3 } });
+  const allocator = new FakeBrowserSurfaceAllocator();
+
+  const idleOrdinary = leases.acquire({ connectorId: "chase", runId: "run_chase_1", profileKey: "chase:1", accountKey: "1" });
+  assert.equal(idleOrdinary.lease.status, "starting_surface");
+  assert.ok(idleOrdinary.lease.surface_id);
+  await leases.ensureStartingSurfaceReady({ leaseId: idleOrdinary.lease.lease_id, allocator });
+  allocator.setReady(idleOrdinary.lease.surface_id!);
+  const readyIdleOrdinary = await leases.ensureStartingSurfaceReady({ leaseId: idleOrdinary.lease.lease_id, allocator });
+  assert.equal(readyIdleOrdinary.lease.status, "leased");
+  leases.release({ leaseId: readyIdleOrdinary.lease.lease_id, fencingToken: readyIdleOrdinary.lease.fencing_token });
+  // idleOrdinary's surface is now idle-but-present (still consumes cap) with
+  // profile chase:1 — reclaimable by capacity pressure, but not by a same-
+  // profile acquire from any of the leases below.
+
+  const activeOrdinary = leases.acquire({ connectorId: "chase", runId: "run_chase_2", profileKey: "chase:2", accountKey: "2" });
+  assert.equal(activeOrdinary.lease.status, "starting_surface");
+
+  // Cap (3) is not yet exhausted by the two ordinary surfaces, so retained A
+  // gets a surface: 2 ordinary + A = 3 active, cap reached.
+  const a = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_a",
+    profileKey: "chatgpt:acct-a",
+    surfaceSubjectId: "acct-a",
+    retainSurfaceProcess: true,
+  });
+  assert.equal(a.lease.status, "starting_surface");
+
+  // Retained B: reserve check counts 1 retained surface (A) → 1+1 > 2 is false,
+  // so B is NOT reserve-blocked. But capacity is full (3/3), so B queues on
+  // ordinary capacity_full — this is the uncounted-demand gap.
+  const b = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_b",
+    profileKey: "chatgpt:acct-b",
+    surfaceSubjectId: "acct-b",
+    retainSurfaceProcess: true,
+  });
+  assert.equal(b.lease.status, "waiting_for_browser_surface");
+  assert.equal(b.lease.wait_reason, "capacity_full");
+
+  // Retained C: with demand counting, B's queued retained lease now counts as
+  // demand (1 surface + 1 queued = 2) → 2+1 > 2 is true → C terminally defers
+  // immediately, without ever entering the queue.
+  const c = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_c",
+    profileKey: "chatgpt:acct-c",
+    surfaceSubjectId: "acct-c",
+    retainSurfaceProcess: true,
+  });
+  assert.equal(c.lease.status, "deferred");
+  assert.equal(c.lease.wait_reason, "retained_capacity_reserved");
+
+  // B is still legitimately queued — it must still be promotable once a
+  // transient slot genuinely frees, since it is the ONE retained lease the
+  // reserve allows. Reclaim the idle ordinary surface to free that slot.
+  const planned = leases.planCapacityPressureReclaim(b.lease.lease_id);
+  assert.equal(planned?.surface_id, idleOrdinary.lease.surface_id);
+  const reclaimed = leases.completeCapacityPressureReclaim(planned!.surface_id);
+  assert.equal(reclaimed.promoted?.run_id, "run_b", "the sole reserve-eligible retained lease must still be promotable");
+  assert.equal(leases.getLease(b.lease.lease_id)?.status, "starting_surface");
+
+  // C remains terminally deferred; it must not be resurrected by B's promotion.
+  assert.equal(leases.getLease(c.lease.lease_id)?.status, "deferred");
+});
+
+test("retention: reused surface rehydrated without the flag is re-healed on the retained connection's next lease", () => {
+  // Simulate a restart: the surface row rehydrated WITHOUT `retained` (the
+  // persistence row does not carry it). The retained connection's next run must
+  // re-mark it before any reap can consider it.
+  const rehydrated = retainedSurface();
+  const { retained: _dropped, ...withoutFlag } = rehydrated;
+  const { leases } = manager({ initialSurfaces: [withoutFlag] });
+  assert.equal(leases.getSurface("surface_retained")?.retained, undefined);
+
+  const leased = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_reheal",
+    profileKey: "chatgpt:acct-a",
+    retainSurfaceProcess: true,
+  });
+  assert.equal(leased.lease.status, "leased");
+  assert.equal(leases.getSurface("surface_retained")?.retained, true);
 });

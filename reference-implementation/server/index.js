@@ -209,6 +209,7 @@ import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
 import { BrowserSurfaceLeaseManager } from '@opendatalabs/remote-surface/leases';
 import { parseNekoBrowserSurfaceRuntimeConfig } from '../runtime/browser-surface-leases.ts';
+import { connectorRetainsSurfaceProcess } from '../runtime/browser-surface/retained-surface-connectors.ts';
 import { NekoSurfaceAllocatorClient } from '../runtime/neko-surface-allocator.ts';
 import { createDefaultBrowserSurfaceReadinessProbe } from '../runtime/browser-surface-readiness.ts';
 import { getDefaultBrowserSurfaceLeaseStore } from './stores/browser-surface-lease-store.ts';
@@ -5321,6 +5322,33 @@ export async function startServer(opts = {}) {
   };
 }
 
+// Deterministically re-derive credential-boundary retention on rehydrated
+// surfaces at boot, BEFORE the lease manager can run any idle-cleanup or
+// capacity-reclaim. `retained` is not a persisted column; it is a pure function
+// of the surface's connector via the RI retention registry. Fail-closed: a
+// surface whose connector is not registered stays non-retained.
+function rederiveRetainedSurfaces(surfaces) {
+  return surfaces.map((surface) =>
+    connectorRetainsSurfaceProcess(surface.connector_id) ? { ...surface, retained: true } : surface
+  );
+}
+
+// Same re-derivation, for rehydrated NON-TERMINAL LEASES. A queued
+// (waiting_for_browser_surface) or starting_surface ChatGPT lease that has not
+// yet materialized a surface carries no surface row for
+// rederiveRetainedSurfaces to mark — without this, that lease rehydrates as an
+// ordinary (non-retained) lease, and once it does materialize a surface (via
+// #resolveNewLease / queue promotion) that surface would be created without
+// the retained flag, making it evictable by routine idle-TTL or
+// capacity-pressure reap. `retained` is not a persisted lease column either;
+// it is re-derived the same way, by connector_id, fail-closed for an
+// unregistered connector.
+function rederiveRetainedLeases(leases) {
+  return leases.map((lease) =>
+    connectorRetainsSurfaceProcess(lease.connector_id) ? { ...lease, retained: true } : lease
+  );
+}
+
 export async function resolveNekoBrowserSurfaceControllerOptions({
   env = process.env,
   getBrowserSurfaceLeaseStore = getDefaultBrowserSurfaceLeaseStore,
@@ -5334,10 +5362,21 @@ export async function resolveNekoBrowserSurfaceControllerOptions({
   }
 
   await browserSurfaceLeaseStore.repairStaleSurfaceActiveLeases();
+  // The per-connection fair-slot invariant is enforced in the lease manager at
+  // retained-surface CREATION time (typed retained_capacity_reserved), NOT by
+  // counting these rehydrated surfaces — observed surfaces are not demand.
+  const rehydratedSurfaces = rederiveRetainedSurfaces(await browserSurfaceLeaseStore.listSurfaces());
+  // Re-derive retention on rehydrated NON-TERMINAL LEASES too, not only
+  // surfaces: a queued/starting ChatGPT lease with no surface row yet would
+  // otherwise rehydrate non-retained and later materialize an evictable
+  // surface. Both re-derivations must run before the manager is constructed,
+  // so no idle-cleanup or capacity-reclaim can ever see a retaining
+  // lease/surface without the flag.
+  const rehydratedLeases = rederiveRetainedLeases(await browserSurfaceLeaseStore.listNonTerminalLeases());
   const browserSurfaceLeaseManager = new BrowserSurfaceLeaseManager({
     config: runtimeConfig.leaseConfig,
-    initialSurfaces: await browserSurfaceLeaseStore.listSurfaces(),
-    initialLeases: await browserSurfaceLeaseStore.listNonTerminalLeases(),
+    initialSurfaces: rehydratedSurfaces,
+    initialLeases: rehydratedLeases,
   });
   const options = {
     browserSurfaceLeaseManager,

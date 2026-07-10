@@ -234,6 +234,79 @@ test('T2c: scheduled managed connector retries runtime-retryable terminal known 
   }
 });
 
+test('T2d: a definitive session_required failure is NOT retried even with maxRetries>0 (no three-attempt burst)', async () => {
+  // Regression for the live steady-state burst: a scheduled ChatGPT run that
+  // fails with session_required must stop after ONE attempt. The gap here is
+  // deliberately shaped so the GENERIC retry classifier would retry it — it
+  // carries no `retryable: false` marker and no non-retryable failure/terminal
+  // reason — so the ONLY thing preventing a burst is the owner-auth-repair gate
+  // added to routeScheduledManagedRun. Removing that gate makes this fail with
+  // controllerCalls.length === 3.
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-authburst-'));
+  try {
+    const connectorPath = writeDummyConnector(tmpDir);
+    const connectorInstanceId = 'cin_chatgpt_personal';
+    const needsHuman = new Set();
+    const completedRuns = [];
+    const controllerCalls = [];
+    const sessionGap = {
+      kind: 'run_failed',
+      reason: 'connector_reported_failed',
+      stream: null,
+      severity: 'actionable',
+      // session_required message → managedRunRequiresOwnerAuthRepair === true.
+      message:
+        'chatgpt_preprogress_failure: session_required: ChatGPT session is not active.',
+      // No recovery_hint.retryable marker → the generic classifier does NOT see
+      // this as non-retryable on its own.
+    };
+
+    const scheduler = createScheduler({
+      connectors: [{
+        connectorId: 'chatgpt',
+        connectorInstanceId,
+        connectorPath,
+        manifest: BACKGROUND_SAFE_MANIFEST,
+        intervalMs: 25,
+        maxRetries: 2,
+        ownerToken: 'owner-token',
+      }],
+      isNeedsHuman: (_connectorId, instanceId) => needsHuman.has(instanceId),
+      markNeedsHuman: (_connectorId, instanceId) => needsHuman.add(instanceId),
+      onInteraction: async () => ({ accepted: true, status: 'cancelled' }),
+      onRunComplete: (record) => completedRuns.push(record),
+      rsUrl: 'http://localhost.invalid',
+      runManagedConnectorViaController: async () => {
+        controllerCalls.push(Date.now());
+        return {
+          run_id: `run-session-required-${controllerCalls.length}`,
+          status: 'failed',
+          trace_id: 'trace-session-required',
+          known_gaps: [sessionGap],
+          // No connector_error.retryable:false — the classifier would retry.
+          connector_error: { message: String(sessionGap.message) },
+        };
+      },
+    });
+
+    try {
+      scheduler.start();
+      await waitFor(() => completedRuns.length >= 1, 5000);
+      scheduler.stop();
+
+      const authAttempts = controllerCalls.length;
+      assert.equal(authAttempts, 1, 'definitive session_required must not retry within a tick (no burst)');
+      assert.equal(completedRuns[0].status, 'failed');
+      assert.equal(completedRuns[0].attempt, 1, 'terminal record should be the first and only attempt');
+      assert.equal(needsHuman.has(connectorInstanceId), true, 'owner repair must be flagged');
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('T2b: scheduled managed-connector recovery dispatch preserves recoveryOnly', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-'));
   try {
@@ -663,6 +736,11 @@ test('T7b: auth-required managed scheduled failure marks needs-human and suppres
       assert.equal(needsHuman.has(connectorInstanceId), true, 'existing needs-human gate should be marked');
       assert.equal(completedRuns[1].status, 'skipped');
       assert.match(completedRuns[1].error || '', /needs_human_attention/u);
+      // Same-connection repair (4.8): the failure, the needs-human gate, and the
+      // suppressed follow-up tick all key on the SAME connector_instance_id — no
+      // duplicate connection is created to carry the repair.
+      const instanceIds = new Set(completedRuns.map((r) => r.connectorInstanceId || r.connectorId));
+      assert.deepEqual([...instanceIds], [connectorInstanceId], 'repair stays on the same connection id');
     } finally {
       scheduler.stop();
     }

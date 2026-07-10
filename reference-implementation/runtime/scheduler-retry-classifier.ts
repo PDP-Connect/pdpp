@@ -77,8 +77,60 @@ const NON_RETRYABLE_TERMINAL_REASONS: ReadonlySet<TerminalReason> = new Set<Term
   "permission_error",
 ]);
 
-function shouldRetryRunFailure(err: RunConnectorError | null | undefined): boolean {
+// A run failure that requires owner auth repair (browser session_required, an
+// expired/rejected login, a `manual_action_required` gap) is definitive, not
+// transient: retrying it within the same scheduled tick re-submits the same
+// doomed run and produces the observed three-attempt burst. This detection lives
+// on the retry classifier — the single boundary that decides retryability — so
+// callers do not each re-implement a retry gate.
+const OWNER_AUTH_REPAIR_ACTIONS: ReadonlySet<string> = new Set(["manual_action_required", "refresh_credentials"]);
+const OWNER_AUTH_REPAIR_MESSAGE_RE =
+  /(?:^|[^a-z0-9])(?:401|403|auth_missing|credentials?_required|credential_rejected|invalid_token|manual_action_required|reauth|session_expired|session_failed|session_required|unauthorized|forbidden)(?:$|[^a-z0-9])/iu;
+
+function plainObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function stringField(source: Record<string, unknown> | null, key: string): string | null {
+  const value = source?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+// An owner-auth action (from a gap's `recovery_hint.action` or `reason`).
+function isOwnerAuthAction(value: string | null): boolean {
+  return value !== null && OWNER_AUTH_REPAIR_ACTIONS.has(value);
+}
+
+// A free-text field whose content matches the owner-auth message pattern.
+function matchesOwnerAuthMessage(value: string | null | undefined): boolean {
+  return typeof value === "string" && OWNER_AUTH_REPAIR_MESSAGE_RE.test(value);
+}
+
+function hasRetryableRunFailureContext(err: RunConnectorError | null | undefined): err is RunConnectorError {
+  return Boolean(err) && !runRequiresOwnerAuthRepair(err);
+}
+
+function knownGapRequiresOwnerAuthRepair(gap: Record<string, unknown>): boolean {
+  return (
+    isOwnerAuthAction(stringField(plainObject(gap.recovery_hint), "action")) ||
+    isOwnerAuthAction(stringField(gap, "reason")) ||
+    matchesOwnerAuthMessage(stringField(gap, "message"))
+  );
+}
+
+function runRequiresOwnerAuthRepair(err: RunConnectorError | null | undefined): boolean {
   if (!err) {
+    return false;
+  }
+  const gapHit = (err.known_gaps ?? []).some((gap) => {
+    const record = plainObject(gap);
+    return record !== null && knownGapRequiresOwnerAuthRepair(record);
+  });
+  return gapHit || matchesOwnerAuthMessage(err.connector_error?.message) || matchesOwnerAuthMessage(err.failure_reason);
+}
+
+function shouldRetryRunFailure(err: RunConnectorError | null | undefined): boolean {
+  if (!hasRetryableRunFailureContext(err)) {
     return false;
   }
   if (!isRetryableHttpStatus(err.response_status)) {
@@ -117,6 +169,7 @@ export {
   isTerminalGrantFailure,
   NON_RETRYABLE_FAILURE_REASONS,
   NON_RETRYABLE_TERMINAL_REASONS,
+  runRequiresOwnerAuthRepair,
   shouldRetryRunFailure,
   TERMINAL_GRANT_FAILURE_REASONS,
 };

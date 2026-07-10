@@ -29,7 +29,6 @@ import {
   type RunTriggerKind,
 } from "../run-automation-policy.ts";
 import type {
-  ConnectorError,
   ConnectorSchedule,
   GetStateHandler,
   InteractionHandler,
@@ -46,7 +45,11 @@ import type {
   SchedulerOptions,
   SetStateHandler,
 } from "../scheduler-domain-types.ts";
-import { type RunConnectorError, shouldRetryRunFailure } from "../scheduler-retry-classifier.ts";
+import {
+  type RunConnectorError,
+  runRequiresOwnerAuthRepair,
+  shouldRetryRunFailure,
+} from "../scheduler-retry-classifier.ts";
 
 // ─── Dep types ───────────────────────────────────────────────────────────────
 
@@ -502,58 +505,6 @@ const BROWSER_SURFACE_UNAVAILABLE_STATUSES = new Set([
   "surface_failed",
 ]);
 
-const OWNER_AUTH_REPAIR_ACTIONS = new Set(["manual_action_required", "refresh_credentials"]);
-const OWNER_AUTH_REPAIR_MESSAGE_RE =
-  /(?:^|[^a-z0-9])(?:401|403|auth_missing|credentials?_required|credential_rejected|invalid_token|manual_action_required|reauth|session_expired|session_failed|session_required|unauthorized|forbidden)(?:$|[^a-z0-9])/iu;
-
-function knownGapRecoveryAction(gap: Record<string, unknown>): string | null {
-  const recoveryHint = gap.recovery_hint;
-  if (!recoveryHint || typeof recoveryHint !== "object" || Array.isArray(recoveryHint)) {
-    return null;
-  }
-  const action = (recoveryHint as { action?: unknown }).action;
-  return typeof action === "string" && action.trim() ? action.trim() : null;
-}
-
-function knownGapReason(gap: Record<string, unknown>): string | null {
-  const reason = gap.reason;
-  return typeof reason === "string" && reason.trim() ? reason.trim() : null;
-}
-
-function knownGapMessage(gap: Record<string, unknown>): string | null {
-  const message = gap.message;
-  return typeof message === "string" && message.trim() ? message.trim() : null;
-}
-
-function managedRunRequiresOwnerAuthRepair(run: {
-  readonly connector_error?: ConnectorError | null;
-  readonly failure_reason?: string | null;
-  readonly known_gaps?: readonly Record<string, unknown>[] | null;
-}): boolean {
-  for (const gap of run.known_gaps ?? []) {
-    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-      continue;
-    }
-    const action = knownGapRecoveryAction(gap);
-    if (action && OWNER_AUTH_REPAIR_ACTIONS.has(action)) {
-      return true;
-    }
-    const reason = knownGapReason(gap);
-    if (reason && OWNER_AUTH_REPAIR_ACTIONS.has(reason)) {
-      return true;
-    }
-    const message = knownGapMessage(gap);
-    if (message && OWNER_AUTH_REPAIR_MESSAGE_RE.test(message)) {
-      return true;
-    }
-  }
-  const message = run.connector_error?.message;
-  if (typeof message === "string" && OWNER_AUTH_REPAIR_MESSAGE_RE.test(message)) {
-    return true;
-  }
-  return typeof run.failure_reason === "string" && OWNER_AUTH_REPAIR_MESSAGE_RE.test(run.failure_reason);
-}
-
 function controllerRunNowDeferReason(err: unknown): string | null {
   const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
   if (code === "run_already_active") {
@@ -992,7 +943,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
       }
 
       persistLastRunTime(connectorId, connectorInstanceId, Date.now());
-      if (runNowResult.status !== "succeeded" && managedRunRequiresOwnerAuthRepair(runNowResult)) {
+      if (runNowResult.status !== "succeeded" && runRequiresOwnerAuthRepair(runNowResult)) {
         markNeedsHuman(connectorId, connectorInstanceId);
       }
       return recordAndNotify(buildManagedRunTerminalRecord(connectorId, connectorInstanceId, startedAt, runNowResult, attempt));

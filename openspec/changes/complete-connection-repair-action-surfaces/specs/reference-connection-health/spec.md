@@ -115,13 +115,17 @@ Owner-console surfaces that classify connection status or owner actionability SH
 
 Owner surfaces that render a repair link for a required action SHALL use the rendered action's owner-action surface when it is present. They SHALL NOT choose between static-secret credential capture, browser-session repair, provider interaction, or local-device recovery from connector-level manifest capability alone. A surface MAY keep a compatibility fallback for older reference payloads that do not include the action surface.
 
+A rendered `reauth` action's satisfaction contract SHALL match its repair mechanism. Only a `stored_credential` reauth has an owner-supplied credential to observe, so it alone SHALL be satisfied by that credential becoming present and unrejected. Every other reauth surface — `browser_session` today, and any future non-stored-credential repair mechanism — has no stored credential for the reference to observe, so it SHALL be satisfied by a confirming run succeeding instead. The reference SHALL NOT require a stored credential to satisfy a browser-session (or other non-stored-credential) repair, which would leave a credential-less connection permanently unsatisfiable.
+
 #### Scenario: Repair link uses the rendered action surface
 
 **WHEN** a rendered required action has `kind=reauth` and an owner-action surface of `stored_credential`
-**THEN** the owner console SHALL route the action to stored credential update/capture for the existing connection.
+**THEN** the owner console SHALL route the action to stored credential update/capture for the existing connection
+**AND** the action's satisfaction contract SHALL require the stored credential to become present and unrejected.
 
 **WHEN** a rendered required action has `kind=reauth` and an owner-action surface of `browser_session`
-**THEN** the owner console SHALL route the action to browser-session repair for the existing connection.
+**THEN** the owner console SHALL route the action to browser-session repair for the existing connection
+**AND** the action's satisfaction contract SHALL be a confirming run succeeding, not stored-credential presence.
 
 #### Scenario: Current browser repair stream is actionable
 

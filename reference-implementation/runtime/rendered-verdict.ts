@@ -903,15 +903,21 @@ function buildRequiredActions(
 
   // Failed credential — owner is the sole resolution. Owner-satisfiable reauth.
   if (hasCredentialFailure(snapshot)) {
+    const surface = credentialRepairSurface(snapshot);
     actions.push({
       kind: "reauth",
       audience: "owner",
       urgency: "now",
       affects: [],
       cta: "Reconnect this account",
-      surface: credentialRepairSurface(snapshot),
+      surface,
       terminal,
-      satisfied_when: { kind: "credential_present_and_unrejected" },
+      // The satisfaction contract must match the repair mechanism. A
+      // browser-session repair may have NO stored credential — the owner
+      // re-establishes the live session — so it is satisfied by a confirming run
+      // succeeding, not by a stored credential becoming present. Only a
+      // stored-credential repair is satisfied by the credential itself.
+      satisfied_when: reauthSatisfaction(surface),
     });
   }
 
@@ -1077,6 +1083,20 @@ function credentialRepairSurface(snapshot: ConnectionHealthSnapshot): OwnerActio
     (item) => item.type === "CredentialsValid" && item.status === "false" && item.current
   );
   return condition?.remediation?.surface ?? { kind: "stored_credential" };
+}
+
+// The satisfaction contract for a `reauth` action, keyed to its repair surface.
+// Only a `stored_credential` repair has an owner-supplied credential to check,
+// so it alone is satisfied by that credential becoming present and unrejected.
+// Every other reauth surface (browser_session today; any future non-stored-
+// credential mechanism) has no stored credential to observe — the owner
+// re-establishes access some other way — so it is proven by a confirming run
+// succeeding instead.
+function reauthSatisfaction(surface: OwnerActionSurface): SatisfactionContract {
+  if (surface.kind === "stored_credential") {
+    return { kind: "credential_present_and_unrejected" };
+  }
+  return { kind: "confirming_run_succeeded" };
 }
 
 function terminalStreamIds(streams: readonly StreamRollup[]): string[] {

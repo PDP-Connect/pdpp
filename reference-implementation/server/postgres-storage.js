@@ -979,7 +979,8 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
           'surface_readiness_timeout',
           'incompatible_static_profile',
           'launch_precondition_failed',
-          'lease_wait_timeout'
+          'lease_wait_timeout',
+          'retained_capacity_reserved'
         ))
       );
 
@@ -1035,7 +1036,8 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
           'surface_readiness_timeout',
           'incompatible_static_profile',
           'launch_precondition_failed',
-          'lease_wait_timeout'
+          'lease_wait_timeout',
+          'retained_capacity_reserved'
         ));
 
       CREATE TABLE IF NOT EXISTS scheduler_run_history (

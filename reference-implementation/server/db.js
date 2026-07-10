@@ -682,7 +682,8 @@ CREATE TABLE IF NOT EXISTS browser_surface_leases (
     'surface_readiness_timeout',
     'incompatible_static_profile',
     'launch_precondition_failed',
-    'lease_wait_timeout'
+    'lease_wait_timeout',
+    'retained_capacity_reserved'
   )),
   FOREIGN KEY (surface_id) REFERENCES browser_surfaces(surface_id)
 );
@@ -1452,7 +1453,11 @@ function migrateBrowserSurfaceLeaseEnumChecks(raw) {
     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'browser_surface_leases'"
   ).get();
   const createSql = typeof row?.sql === 'string' ? row.sql : '';
-  if (createSql.includes("'starting_surface'") && createSql.includes("'surface_start_failed'")) {
+  if (
+    createSql.includes("'starting_surface'") &&
+    createSql.includes("'surface_start_failed'") &&
+    createSql.includes("'retained_capacity_reserved'")
+  ) {
     return;
   }
 
@@ -1496,7 +1501,8 @@ CREATE TABLE browser_surface_leases_new (
     'surface_readiness_timeout',
     'incompatible_static_profile',
     'launch_precondition_failed',
-    'lease_wait_timeout'
+    'lease_wait_timeout',
+    'retained_capacity_reserved'
   )),
   FOREIGN KEY (surface_id) REFERENCES browser_surfaces(surface_id)
 );
@@ -1523,7 +1529,7 @@ SELECT
   surface_id,
   connector_id,
   profile_key,
-  NULL AS surface_subject_id,
+  surface_subject_id,
   account_key,
   run_id,
   status,

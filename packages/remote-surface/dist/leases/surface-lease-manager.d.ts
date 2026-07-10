@@ -1,6 +1,6 @@
 export declare const BROWSER_SURFACE_BACKEND_NEKO: "neko";
 export declare const BROWSER_SURFACE_LEASE_STATUSES: readonly ["waiting_for_browser_surface", "starting_surface", "leased", "released", "expired", "deferred", "cancelled", "surface_failed"];
-export declare const BROWSER_SURFACE_WAIT_REASONS: readonly ["capacity_full", "surface_starting", "surface_unhealthy", "surface_start_failed", "surface_readiness_timeout", "incompatible_static_profile", "launch_precondition_failed", "lease_wait_timeout"];
+export declare const BROWSER_SURFACE_WAIT_REASONS: readonly ["capacity_full", "surface_starting", "surface_unhealthy", "surface_start_failed", "surface_readiness_timeout", "incompatible_static_profile", "launch_precondition_failed", "lease_wait_timeout", "retained_capacity_reserved"];
 export declare const BROWSER_SURFACE_PRIORITY_CLASSES: readonly ["owner_interactive", "scheduled_refresh"];
 export declare const TERMINAL_BROWSER_SURFACE_LEASE_STATUSES: readonly ["released", "expired", "deferred", "cancelled", "surface_failed"];
 export declare const DEFAULT_NEKO_LEASE_WAIT_TIMEOUT_MS: number;
@@ -28,6 +28,20 @@ export interface BrowserSurface {
     readonly active_lease_id?: string;
     readonly container_id?: string;
     readonly allocator_metadata?: Readonly<Record<string, string>>;
+    /**
+     * A retained surface is a credential boundary: its caller's provider auth is
+     * held in the live browser process, not durable browser storage. Routine
+     * idle-TTL cleanup and capacity-pressure reclaim SHALL NOT stop a retained
+     * surface's process. Retention exempts only a healthy surface — a proven-dead
+     * surface is still recycled via `invalidateSurface`, and the lease is still
+     * released after each run so the surface stays reusable rather than permanently
+     * leased.
+     *
+     * This flag is generic: the caller decides which surfaces are retained and
+     * passes `retainProcess` on the acquire request. The lease layer never inspects
+     * connector identity or manifests.
+     */
+    readonly retained?: boolean;
 }
 export interface BrowserSurfaceLease {
     readonly lease_id: string;
@@ -45,6 +59,12 @@ export interface BrowserSurfaceLease {
     readonly released_at?: string;
     readonly surface_id?: string;
     readonly wait_reason?: BrowserSurfaceWaitReason;
+    /**
+     * Carried from the acquire request so a surface created for this lease — at
+     * initial resolve or later queue promotion — is marked retained. See
+     * `BrowserSurface.retained`.
+     */
+    readonly retained?: boolean;
 }
 export interface BrowserSurfaceProjection {
     readonly pending_run_id: string;
@@ -82,6 +102,12 @@ export interface AcquireBrowserSurfaceLeaseRequest {
     readonly accountKey?: string;
     readonly surfaceSubjectId?: string;
     readonly priorityClass?: BrowserSurfacePriorityClass;
+    /**
+     * Mark the surface created for this lease as a credential-boundary retained
+     * surface (see `BrowserSurface.retained`). The caller decides retention; the
+     * lease layer reads a boolean, never a connector id or manifest.
+     */
+    readonly retainSurfaceProcess?: boolean;
 }
 export interface AcquireSurfaceLeaseRequest {
     readonly sessionId: string;

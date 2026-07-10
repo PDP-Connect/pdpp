@@ -26,6 +26,7 @@ import {
   currentAdaptiveLaneRunContext,
 } from "../../src/adaptive-lane.ts";
 import { CHATGPT_STORED_CREDENTIAL_REJECTED_MESSAGE, ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
+import { browserConfigPreservationFor } from "../../src/browser-surface-policy.ts";
 import {
   type BrowserCollectContext,
   buildDetailCoverageMessage,
@@ -3969,7 +3970,10 @@ if (isMainModule(import.meta.url)) {
     name: "chatgpt",
     validateRecord,
     normalizeTerminalError: normalizeChatGptTerminalError,
-    browser: { preservePageOnFailure: true, preservePageOnSuccess: true, profileName: "chatgpt" },
+    // Page-preservation flags come from the shared browser-surface policy so the
+    // page-level (child) and process-level (reference lease caller) retention
+    // facts stay a single source of truth. `profileName` stays connector-local.
+    browser: { ...browserConfigPreservationFor("chatgpt"), profileName: "chatgpt" },
     async ensureSession({ assist, capture, checkpoint, completeAssistance, context, page, progress, sendInteraction }) {
       await ensureChatGptSession({
         assist,

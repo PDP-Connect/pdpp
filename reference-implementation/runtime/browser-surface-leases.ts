@@ -12,6 +12,7 @@ import {
 } from "@opendatalabs/remote-surface/leases";
 
 import { canonicalConnectorKey } from "../server/connector-key.js";
+import { connectorRetainsSurfaceProcess } from "./browser-surface/retained-surface-connectors.ts";
 
 export const DEFAULT_NEKO_READINESS_TIMEOUT_MS = 120_000;
 
@@ -181,9 +182,11 @@ export function parseNekoBrowserSurfaceRuntimeConfig(
     return { leaseConfig };
   }
   enforceDynamicModeInvariants(shape);
+  const dynamic = parseDynamicRuntimeConfig(env);
+  assertRetainedManagedConnectorReserve(shape.surfaceCap, shape.managedConnectorIds);
   return {
     leaseConfig,
-    dynamic: parseDynamicRuntimeConfig(env),
+    dynamic,
   };
 }
 
@@ -199,6 +202,38 @@ function splitCsv(value: string | undefined): string[] {
         .filter(Boolean)
     ),
   ];
+}
+
+function assertRetainedManagedConnectorReserve(
+  surfaceCap: number,
+  managedConnectorIds: readonly string[]
+): void {
+  const retainedManagedConnectorCount = countRetainedManagedConnectors(managedConnectorIds);
+  if (retainedManagedConnectorCount === 0 || surfaceCap > retainedManagedConnectorCount) {
+    return;
+  }
+  // Fair-slot invariant. Credential-boundary connectors (ChatGPT) retain their
+  // surface process across routine idle/capacity reap, so each retained managed
+  // connector permanently holds at least one slot. The cap MUST leave at least
+  // one transient slot for non-retained scheduled work, or the other connectors
+  // could never acquire a surface. This is an explicit operating invariant, not
+  // an operator tuning suggestion: fail config closed rather than deadlock at
+  // runtime. Per-connection retained demand is enforced by the lease manager
+  // against live surfaces and queued requests, including restart reconciliation.
+  throw new Error(
+    `PDPP_NEKO_SURFACE_CAP (${surfaceCap}) must exceed the number of retained credential-boundary managed connectors ` +
+      `(${retainedManagedConnectorCount}) so at least one transient surface slot remains for non-retained scheduled work`
+  );
+}
+
+function countRetainedManagedConnectors(managedConnectorIds: readonly string[]): number {
+  const retained = new Set<string>();
+  for (const connectorId of managedConnectorIds) {
+    if (connectorRetainsSurfaceProcess(connectorId)) {
+      retained.add(canonicalConnectorKey(connectorId) ?? connectorId);
+    }
+  }
+  return retained.size;
 }
 
 function managedConnectorAliases(connectorId: string): string[] {

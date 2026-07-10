@@ -629,6 +629,8 @@ test('surface: reauth carries the stored_credential surface from the credential 
   );
   const reauth = v.required_actions.find((a) => a.kind === 'reauth');
   assert.equal(reauth?.surface?.kind, 'stored_credential');
+  // Stored-credential repair is satisfied by the credential becoming present.
+  assert.equal(reauth?.satisfied_when?.kind, 'credential_present_and_unrejected');
 });
 
 test('surface: reauth carries the browser_session surface for a session-required failure', () => {
@@ -644,6 +646,52 @@ test('surface: reauth carries the browser_session surface for a session-required
   );
   const reauth = v.required_actions.find((a) => a.kind === 'reauth');
   assert.equal(reauth?.surface?.kind, 'browser_session');
+});
+
+test('surface: a browser_session reauth is satisfied by a confirming run, NOT a stored credential', () => {
+  // Regression: a browser-session repair may have NO stored credential — the owner
+  // re-establishes the live session. Using credential_present_and_unrejected would
+  // make the action UNSATISFIABLE (no credential can ever become present), leaving
+  // the connection stuck in repair forever. It must use confirming_run_succeeded.
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'blocked',
+      axes: { attention: 'none' },
+      conditions: [credentialConditionWithSurface('browser_session')],
+    }),
+    [stream()],
+    null,
+    true
+  );
+  const reauth = v.required_actions.find((a) => a.kind === 'reauth');
+  assert.equal(reauth?.surface?.kind, 'browser_session');
+  assert.equal(reauth?.satisfied_when?.kind, 'confirming_run_succeeded');
+  assert.notEqual(
+    reauth?.satisfied_when?.kind,
+    'credential_present_and_unrejected',
+    'browser-session repair must not require a stored credential to satisfy'
+  );
+});
+
+test('surface: a browser_session reauth never routes to stored-credential capture (no provider-page password path)', () => {
+  // Regression for complete-connection-repair-action-surfaces: a session_required
+  // failure must route the owner to browser-session repair, never to a
+  // stored-credential capture surface. If it routed to stored_credential, the
+  // owner console would present a password field for a page-based login — the
+  // exact "silently store provider-page password" hazard the spec forbids.
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'blocked',
+      axes: { attention: 'none' },
+      conditions: [credentialConditionWithSurface('browser_session')],
+    }),
+    [stream()],
+    null,
+    true
+  );
+  const reauth = v.required_actions.find((a) => a.kind === 'reauth');
+  assert.equal(reauth?.surface?.kind, 'browser_session');
+  assert.notEqual(reauth?.surface?.kind, 'stored_credential', 'browser-session repair must not route to credential capture');
 });
 
 test('surface: reauth falls back to stored_credential when the condition carries no surface', () => {

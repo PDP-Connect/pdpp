@@ -18,6 +18,7 @@ export const BROWSER_SURFACE_WAIT_REASONS = [
     "incompatible_static_profile",
     "launch_precondition_failed",
     "lease_wait_timeout",
+    "retained_capacity_reserved",
 ];
 export const BROWSER_SURFACE_PRIORITY_CLASSES = ["owner_interactive", "scheduled_refresh"];
 export const TERMINAL_BROWSER_SURFACE_LEASE_STATUSES = [
@@ -270,6 +271,7 @@ export class BrowserSurfaceLeaseManager {
             fencing_token: this.#nextFencingToken(),
             ...(request.accountKey ? { account_key: request.accountKey } : {}),
             ...(request.surfaceSubjectId ? { surface_subject_id: request.surfaceSubjectId } : {}),
+            ...(request.retainSurfaceProcess ? { retained: true } : {}),
         };
         const lease = this.#resolveNewLease(baseLease, now);
         this.#leases.set(lease.lease_id, lease);
@@ -445,18 +447,58 @@ export class BrowserSurfaceLeaseManager {
             activeLeased: [],
             promoted: [],
         };
-        for (const lease of [...this.#leases.values()]) {
-            if (isTerminalBrowserSurfaceLeaseStatus(lease.status)) {
+        // Process queued (waiting_for_browser_surface) leases in priority/FIFO
+        // order — the same order #pumpQueue would serve them in — rather than raw
+        // Map insertion order, so that when rehydrated retained demand exceeds the
+        // fair-slot reserve, the leases kept queued are deterministically the ones
+        // that would actually win the reserve, and excess retained demand
+        // terminalizes deterministically rather than by rehydration/iteration
+        // order.
+        const waitingLeaseIds = new Set([...this.#leases.values()]
+            .filter((lease) => lease.status === "waiting_for_browser_surface")
+            .sort((a, b) => this.#comparePriorityFifo(a, b))
+            .map((lease) => lease.lease_id));
+        // Track retained slots granted to higher-priority queued leases already
+        // decided in this pass. A lower-priority still-undecided retained lease
+        // must not count as demand against a higher-priority one being evaluated —
+        // only surfaces that already exist and leases already granted a slot in
+        // this ordering are real reserved demand.
+        let retainedGrantedInPass = 0;
+        for (const leaseId of waitingLeaseIds) {
+            const lease = this.#leases.get(leaseId);
+            if (!lease || isTerminalBrowserSurfaceLeaseStatus(lease.status)) {
                 continue;
             }
-            if (lease.status === "waiting_for_browser_surface") {
-                const reconciled = this.#reconcileWaitingLease(lease);
-                if (reconciled.status === "waiting_for_browser_surface") {
-                    result.queued.push(reconciled);
-                }
-                else if (reconciled.status === "deferred") {
+            const reconciled = this.#reconcileWaitingLease(lease);
+            if (reconciled.status !== "waiting_for_browser_surface") {
+                if (reconciled.status === "deferred") {
                     result.deferred.push(reconciled);
                 }
+                continue;
+            }
+            // Deterministic fair-slot reserve at restart: a rehydrated retained
+            // lease that is still queued (never materialized a surface before
+            // restart) must be re-checked against total nonterminal retained demand
+            // in the same priority/FIFO order #pumpQueue would serve it, so at most
+            // `surfaceCap - 1` retained demand survives reconcile. Excess retained
+            // demand terminalizes here, through the same result.deferred path any
+            // other reconcile deferral uses, rather than being left to race
+            // #pumpQueue's promotion-time guard later in this same call.
+            if (this.#config.surfaceMode === "dynamic" &&
+                reconciled.retained &&
+                this.#retainedSurfaceCount() + retainedGrantedInPass + 1 > this.#config.surfaceCap - 1) {
+                const deferred = this.#terminalLease(reconciled, "deferred", "retained_capacity_reserved");
+                this.#leases.set(deferred.lease_id, deferred);
+                result.deferred.push(deferred);
+                continue;
+            }
+            if (reconciled.retained) {
+                retainedGrantedInPass += 1;
+            }
+            result.queued.push(reconciled);
+        }
+        for (const lease of [...this.#leases.values()].filter((lease) => !waitingLeaseIds.has(lease.lease_id))) {
+            if (isTerminalBrowserSurfaceLeaseStatus(lease.status)) {
                 continue;
             }
             if (lease.status === "starting_surface") {
@@ -626,6 +668,10 @@ export class BrowserSurfaceLeaseManager {
         const expiredIdle = [...this.#surfaces.values()].filter((surface) => surface.backend === "neko" &&
             surface.health === "ready" &&
             !surface.active_lease_id &&
+            // Retained surfaces are credential boundaries: ageing past the idle TTL
+            // is expected and MUST NOT stop them, because a fresh process loses the
+            // provider API session held in the live browser process.
+            !surface.retained &&
             nowMs - Date.parse(surface.last_used_at) >= this.#config.idleTtlMs);
         const stopped = [];
         for (const surface of expiredIdle) {
@@ -661,6 +707,10 @@ export class BrowserSurfaceLeaseManager {
             .filter((surface) => surface.backend === "neko" &&
             surface.health === "ready" &&
             !surface.active_lease_id &&
+            // Never reclaim a retained credential-boundary surface to free capacity.
+            // When only retained surfaces are idle this returns undefined and the
+            // waiting lease stays queued (capacity_full) rather than losing auth.
+            !surface.retained &&
             !this.#isSurfaceCompatibleWithLease(surface, lease))
             .sort((a, b) => Date.parse(a.last_used_at) - Date.parse(b.last_used_at))[0];
     }
@@ -681,6 +731,21 @@ export class BrowserSurfaceLeaseManager {
         const idle = this.#findReadyIdleSurface(lease.profile_key, lease.surface_subject_id);
         if (idle) {
             return this.#leaseSurface(lease, idle, now);
+        }
+        if (this.#config.surfaceMode === "dynamic" && lease.retained && this.#retainedCreationWouldExhaustReserve()) {
+            // Fair-slot reserve. A retained credential-boundary surface never releases
+            // its slot to routine reap, so retained surfaces must never occupy all of
+            // capacity — at least one transient slot must remain acquirable by
+            // non-retained scheduled work. Enforce at creation time against total
+            // nonterminal retained DEMAND — materialized surfaces plus any other
+            // retained lease already queued and not yet materialized — not just
+            // observed surfaces, so two retained leases racing into the queue before
+            // either has a surface cannot both slip past this check and only be
+            // caught one at a time later at promotion. This lease is not yet in
+            // #leases (added by the caller after this returns), so no self-exclusion
+            // is needed here. Fail with a typed terminal deferral, not an indefinite
+            // capacity_full queue that would silently never resolve.
+            return this.#terminalLease(lease, "deferred", "retained_capacity_reserved");
         }
         if (this.#activeSurfaceCount() >= this.#config.surfaceCap) {
             return { ...lease, wait_reason: "capacity_full" };
@@ -747,11 +812,32 @@ export class BrowserSurfaceLeaseManager {
             surface_id: surface.surface_id,
             fencing_token: this.#nextFencingToken(),
         };
-        this.#surfaces.set(surface.surface_id, { ...surface, active_lease_id: leased.lease_id, last_used_at: now });
+        // Keep the surface marked retained whenever a retaining caller leases it.
+        // The RI re-derives retention deterministically at boot (before any reap can
+        // run), so this is a secondary safety net, not the primary rehydration path:
+        // it also covers a surface that lost the flag mid-process for any reason.
+        this.#surfaces.set(surface.surface_id, {
+            ...surface,
+            active_lease_id: leased.lease_id,
+            last_used_at: now,
+            ...(lease.retained ? { retained: true } : {}),
+        });
         return leased;
     }
     #promoteWaitingLeaseToStarting(lease) {
         if (this.#config.surfaceMode !== "dynamic" || this.#activeSurfaceCount() >= this.#config.surfaceCap) {
+            return undefined;
+        }
+        if (lease.retained && this.#retainedCreationWouldExhaustReserve(lease.lease_id)) {
+            // Fail-closed guard: by construction this should be unreachable. Retained
+            // demand (materialized surfaces plus other queued retained leases) is
+            // reserved against at acquire time (#resolveNewLease) and, in
+            // priority/FIFO order, at restart reconciliation
+            // (reconcileAfterRestart's queued-lease pass), so a retained lease that
+            // reached "waiting_for_browser_surface" already had reserve headroom
+            // counted against all other nonterminal retained demand at the time it
+            // was queued. Kept as defense-in-depth so a reserve-violating surface is
+            // never created even if that invariant breaks.
             return undefined;
         }
         const now = this.#isoNow();
@@ -778,6 +864,7 @@ export class BrowserSurfaceLeaseManager {
             last_used_at: now,
             ...(lease.account_key ? { account_key: lease.account_key } : {}),
             ...(lease.surface_subject_id ? { surface_subject_id: lease.surface_subject_id } : {}),
+            ...(lease.retained ? { retained: true } : {}),
         };
     }
     #mergeAllocatorSurface(current, allocated) {
@@ -840,6 +927,49 @@ export class BrowserSurfaceLeaseManager {
     }
     #activeSurfaceCount() {
         return [...this.#surfaces.values()].filter((surface) => this.#surfaceConsumesCapacity(surface)).length;
+    }
+    /** Count of materialized retained surfaces that consume capacity. */
+    #retainedSurfaceCount() {
+        return [...this.#surfaces.values()].filter((surface) => surface.retained === true && this.#surfaceConsumesCapacity(surface)).length;
+    }
+    /**
+     * Count of nonterminal retained DEMAND, not just materialized surfaces: a
+     * retained surface that consumes capacity counts once, and a retained lease
+     * that has not yet materialized a surface (still `waiting_for_browser_surface`)
+     * also counts once. This prevents the race where two retained leases queue on
+     * ordinary `capacity_full` before either has a surface — counting surfaces
+     * alone would let both look like zero reserve pressure and both later be
+     * promoted past the reserve one at a time. A lease that already has a surface
+     * (`starting_surface` / `leased`) is represented by that surface and is not
+     * double-counted here. `excludeLeaseId` omits the lease currently being
+     * evaluated for promotion so it does not reserve against itself.
+     *
+     * NOTE: this counts ALL nonterminal queued retained leases regardless of
+     * priority order, which is correct for a single ad hoc check (e.g. "would
+     * creating/promoting THIS ONE lease exhaust the reserve, given everything
+     * else already queued"). It is deliberately NOT used to decide relative
+     * ordering among several undecided queued leases at once — see the boot
+     * reconcile pass in `reconcileAfterRestart`, which instead walks queued
+     * retained leases in priority/FIFO order and tracks a running
+     * already-granted count, because using this method there would make every
+     * lower-priority queued lease look like demand against a higher-priority
+     * one being evaluated, before either has been decided.
+     */
+    #retainedDemandCount(excludeLeaseId) {
+        const fromQueuedLeases = [...this.#leases.values()].filter((lease) => lease.lease_id !== excludeLeaseId &&
+            lease.retained === true &&
+            lease.status === "waiting_for_browser_surface").length;
+        return this.#retainedSurfaceCount() + fromQueuedLeases;
+    }
+    /**
+     * True when creating (or promoting) one more retained surface would leave no
+     * transient slot for non-retained work — i.e. retained demand would occupy at
+     * least `surfaceCap` slots, or equivalently the new retained demand count
+     * would not leave `>= 1` slot free of retention. The fair-slot reserve is
+     * exactly one transient slot, so retained demand is capped at `surfaceCap - 1`.
+     */
+    #retainedCreationWouldExhaustReserve(excludeLeaseId) {
+        return this.#retainedDemandCount(excludeLeaseId) + 1 > this.#config.surfaceCap - 1;
     }
     #surfaceConsumesCapacity(surface) {
         if (surface.backend !== "neko" || surface.health === "stopping") {

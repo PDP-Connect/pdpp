@@ -28,6 +28,7 @@ import {
 } from "../browser-surface-readiness.ts";
 import type { ConnectorManifest, RunNowOptions, RunNowResult } from "../run-contracts.ts";
 import { readBrowserSurfaceProfileKey } from "./profile-key.ts";
+import { connectorRetainsSurfaceProcess } from "./retained-surface-connectors.ts";
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -970,6 +971,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       runId,
       profileKey,
       ...(surfaceSubjectId ? { surfaceSubjectId } : {}),
+      retainSurfaceProcess: connectorRetainsSurfaceProcess(connectorId),
       priorityClass,
     });
     await persistBrowserSurfaceLeaseMutation(leaseResult.lease, leaseResult.surface);
