@@ -75,7 +75,7 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | rules | full_inventory | device_heartbeat | — | true | — | — |
 | prompts | snapshot_import_receipt | device_heartbeat | — | true | — | — |
 | skills | snapshot_import_receipt | device_heartbeat | — | true | — | — |
-| history | snapshot_import_receipt | device_heartbeat | — | true | — | — |
+| history | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | session_index | snapshot_import_receipt | device_heartbeat | inventory_only | false | — | — |
 | coverage_diagnostics | snapshot_import_receipt | device_heartbeat | — | true | — | — |
 | logs | snapshot_import_receipt | device_heartbeat | deferred | false | — | — |
