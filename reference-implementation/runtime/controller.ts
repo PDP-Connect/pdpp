@@ -737,6 +737,23 @@ function boundedLaunchFailureMessage(message: string): string {
   return message.length > LAUNCH_FAILURE_MESSAGE_MAX ? `${message.slice(0, LAUNCH_FAILURE_MESSAGE_MAX)}…` : message;
 }
 
+/**
+ * Stable, machine-actionable code the connector-runtime source boundary
+ * (`packages/polyfill-connectors/src/browser-launch.ts`'s
+ * `connectOverCdpWithRetry`) attaches when it exhausts every bounded attempt
+ * of the narrow CDP attach-session race. Carried through
+ * `TerminalError.code` → `DONE.error.code` → `connector_error.code`. The
+ * managed-surface lifecycle reads ONLY this typed field — it never
+ * re-parses `connector_error.message` to re-derive the same disposition.
+ */
+const BROWSER_SURFACE_ATTACH_EXHAUSTED_CODE = "browser_surface_attach_exhausted";
+
+function isBrowserSurfaceAttachExhausted(
+  connectorError: { readonly code?: string | null } | null | undefined
+): boolean {
+  return connectorError?.code === BROWSER_SURFACE_ATTACH_EXHAUSTED_CODE;
+}
+
 function buildRunSource(connectorId: string): { kind: "connector"; id: string } {
   return { kind: "connector", id: connectorId };
 }
@@ -3163,6 +3180,36 @@ export function createController(opts: ControllerOptions = {}): Controller {
       )
       .then(async (result) => {
         runResult = result;
+        // A managed dynamic surface can pass pre-flight readiness and still
+        // wedge before the connector reaches any record/progress. The
+        // connector-runtime source boundary (browser-launch.ts's
+        // connectOverCdpWithRetry) is the only place that classifies THIS
+        // narrow attach-session race; it tags the exhausted-budget failure
+        // with a stable connector_error.code
+        // (`browser_surface_attach_exhausted`), carried through DONE.error
+        // untouched. Consume ONLY that typed code here — never re-parse
+        // connector_error.message. No-op for a static/operator-owned
+        // surface (see recycleAttachExhaustedManagedSurfaceAfterRun's guard).
+        if (
+          browserSurfaceLease &&
+          result?.status === "failed" &&
+          (result.records_emitted ?? 0) === 0 &&
+          isBrowserSurfaceAttachExhausted(result?.connector_error)
+        ) {
+          // A stable, runtime-authored detail string — not the raw
+          // connector_error.message. That untrusted text is already
+          // persisted, bounded, once on the run's own terminal event
+          // (connector_error_message); it must not be duplicated
+          // unbounded into this event too.
+          await browserSurface.recycleAttachExhaustedManagedSurfaceAfterRun({
+            connectorId,
+            lease: browserSurfaceLease,
+            probeCode: BROWSER_SURFACE_ATTACH_EXHAUSTED_CODE,
+            probeDetail: "browser-profile attach-session race exhausted its retry budget (connector_error.code)",
+            runId,
+            traceContext,
+          });
+        }
         if (
           usedStaticSecret &&
           result?.connector_error?.code === "credential_rejected" &&

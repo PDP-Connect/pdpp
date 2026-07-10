@@ -270,15 +270,58 @@ const TRACE_TIMESTAMP_UNSAFE = /[:.]/g;
  * A failure that the runtime should convert to a terminal DONE rather than
  * let it bubble as an unhandled rejection. Carries an explicit `retryable`
  * bit so the outer catch doesn't have to heuristically pattern-match the
- * message.
+ * message. The optional `code` carries a stable, infrastructure-set
+ * machine-actionable code (e.g. `browser_surface_attach_exhausted`) through
+ * to `DONE.error.code` — see `emitFailed`'s composition with a connector's
+ * `normalizeTerminalError` for how this survives connector overrides.
  */
 class TerminalError extends Error {
+  readonly code?: string;
   readonly retryable: boolean;
-  constructor(message: string, retryable = false) {
+  constructor(message: string, retryable = false, code?: string) {
     super(message);
     this.name = "TerminalError";
     this.retryable = retryable;
+    if (code !== undefined) {
+      this.code = code;
+    }
   }
+}
+
+/**
+ * Compose a stable, infrastructure-set terminal-error `code` (e.g.
+ * `browser_surface_attach_exhausted`, thrown by the runtime itself via
+ * `TerminalError.code` — never a connector-authored message-parse result)
+ * with whatever a connector's `normalizeTerminalError` returns.
+ *
+ * Every current connector normalizer (e.g. ChatGPT's
+ * `normalizeChatGptTerminalError`) destructures only `{ message, retryable }`
+ * and returns a fresh object, so an incoming infrastructure code is silently
+ * dropped unless something restores it. That is data loss, not a deliberate
+ * override — a connector never had the chance to see or reject the code it
+ * never destructured.
+ *
+ * Precedence: if the connector's normalizer output ALREADY carries its own
+ * `code` (e.g. ChatGPT's explicit `credential_rejected`), that choice is
+ * deliberate and wins outright. The infrastructure code only backfills a
+ * `code` field the normalized result left empty.
+ *
+ * Exported and pure so this composition rule is unit-testable without
+ * driving the full `runConnector` process/stdio wiring.
+ */
+export function composeNormalizedTerminalError({
+  message,
+  retryable,
+  code,
+  normalizeTerminalError,
+}: {
+  message: string;
+  retryable: boolean;
+  code?: string | undefined;
+  normalizeTerminalError: NormalizeTerminalError;
+}): TerminalErrorDetails {
+  const normalized = normalizeTerminalError({ message, retryable, ...(code ? { code } : {}) });
+  return code && !normalized.code ? { ...normalized, code } : normalized;
 }
 
 /** Returns true if the scope's time_range excludes this record's date value. */
@@ -579,9 +622,10 @@ export function runConnector(config: RunConnectorConfig): void {
   const emitFailed = (
     message: string,
     retryable = false,
-    records_emitted = observedCounters?.totalEmitted ?? 0
+    records_emitted = observedCounters?.totalEmitted ?? 0,
+    code?: string
   ): void => {
-    const terminalError = normalizeTerminalError({ message, retryable });
+    const terminalError = composeNormalizedTerminalError({ message, retryable, code, normalizeTerminalError });
     // Fire-and-forget. emit() resolves after stdout drains; we're about to
     // exit(1) anyway, so we don't need to block. If it rejects (the write
     // fails), the process is dying either way.
@@ -721,7 +765,7 @@ export function runConnector(config: RunConnectorConfig): void {
   // unexpected throws (where we pattern-match the message).
   run().catch((err: unknown) => {
     if (err instanceof TerminalError) {
-      emitFailed(err.message, err.retryable);
+      emitFailed(err.message, err.retryable, undefined, err.code);
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -1532,7 +1576,8 @@ export function decorateBrowserManualAction(
  * see `acquireIsolatedBrowser` for the failure semantics.
  */
 async function acquireBrowser(browser: BrowserConfig, name: string): Promise<AcquiredBrowser> {
-  const { acquireBrowserForConnector, HeadedBrowserUnavailableError } = await import("./browser-launch.ts");
+  const { acquireBrowserForConnector, CdpAttachSessionRaceExhaustedError, HeadedBrowserUnavailableError } =
+    await import("./browser-launch.ts");
   const visibility = resolveBrowserRuntimeVisibility(browser, name);
   const { headless, profileName } = visibility;
   // Streaming env vars are present iff the controller wired up Mode-A
@@ -1563,7 +1608,14 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
       // Surface the stable code in the terminal-error message so the
       // controller's run-failed copy can render the deployment-config
       // error state rather than a generic browser failure.
-      throw new TerminalError(`[${err.code}] ${err.message}`, false);
+      throw new TerminalError(`[${err.code}] ${err.message}`, false, err.code);
+    }
+    if (err instanceof CdpAttachSessionRaceExhaustedError) {
+      // The narrow attach-session race (see browser-launch.ts) exhausted its
+      // bounded retry budget. Carry the stable code so the reference
+      // runtime's managed-surface lifecycle can decide the leased dynamic
+      // surface itself needs recycling, without re-parsing this message.
+      throw new TerminalError(`could not open browser profile: ${err.message}`, true, err.code);
     }
     const message = err instanceof Error ? err.message : String(err);
     throw new TerminalError(`could not open browser profile: ${message}`, false);

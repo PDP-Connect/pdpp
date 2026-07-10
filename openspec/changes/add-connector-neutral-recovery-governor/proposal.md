@@ -43,10 +43,20 @@ or to explain the state to the owner without vague "Checking" copy.
 
 - `polyfill-runtime`: defines connector-neutral recovery admission for durable
   detail-gap work and its relationship to provider pacing, run caps, retry
-  budgets, and source-pressure cooldowns.
+  budgets, and source-pressure cooldowns. Also defines the connector-runtime
+  source boundary's typed `browser_surface_attach_exhausted` code contract:
+  the single place that classifies the narrow CDP attach-session race and
+  carries a stable code through `DONE.error.code`, surviving connector
+  `normalizeTerminalError` overrides.
 - `reference-connection-health`: defines owner-facing projection requirements
   for recovery state and for eliminating indefinite "Checking" as an
   actionability bucket.
+- `reference-implementation-runtime`: defines the controller's managed-surface
+  lifecycle response to a typed `connector_error.code ===
+  "browser_surface_attach_exhausted"` on a pre-progress dynamic-surface
+  failure — recycle the surface within the existing retry budget, never by
+  re-parsing message text, and never touching a static/operator-owned
+  surface.
 
 ## Impact
 

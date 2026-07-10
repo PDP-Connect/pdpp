@@ -147,6 +147,23 @@ export interface BrowserSurfaceManager {
   ): Promise<void>;
   /** Expire timed-out waiters and promote queued leases. */
   expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]>;
+  /**
+   * Recycle a managed dynamic surface after a run's terminal connector
+   * error carries the typed attach-exhausted disposition (readiness
+   * passed, then the surface wedged before any record/progress, and the
+   * connector-runtime source boundary exhausted its bounded attach-race
+   * retry budget). No-op for a static/operator-owned surface or a lease
+   * with no surface. Call before releaseLease so the next acquire cannot
+   * re-lease the same surface.
+   */
+  recycleAttachExhaustedManagedSurfaceAfterRun(input: {
+    readonly connectorId: string;
+    readonly lease: BrowserSurfaceLease | null;
+    readonly probeCode: string;
+    readonly probeDetail: string;
+    readonly runId: string;
+    readonly traceContext: SpineTraceContext;
+  }): Promise<void>;
   /** Promote boot-time queued leases after the listener is up. */
   promoteBrowserSurfaceLeasesAfterBoot(): Promise<void>;
   /** Reconcile leases against the allocator and persisted active runs after a restart. */
@@ -328,6 +345,50 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
   }
 
+  /**
+   * Typed post-run counterpart to `run.browser_surface_probe_failed`. Unlike
+   * `run.browser_surface_lost`, this carries no `interaction_id`/`kind` —
+   * there is no interaction here; the surface was recycled because the run's
+   * terminal connector error carried the typed attach-exhausted
+   * disposition, not from a mid-wait interaction probe. Fabricating
+   * interaction fields on the interaction-specific event would misrepresent
+   * what happened, so this is a distinct, narrower event.
+   */
+  async function emitBrowserSurfaceInvalidatedEvent(input: {
+    readonly connectorId: string;
+    readonly lease: BrowserSurfaceLease;
+    readonly probeCode: string;
+    readonly probeDetail: string;
+    readonly runId: string;
+    readonly traceContext: SpineTraceContext;
+  }): Promise<void> {
+    try {
+      await emitSpineEvent({
+        event_type: "run.browser_surface_invalidated",
+        trace_id: input.traceContext.trace_id,
+        scenario_id: input.traceContext.scenario_id,
+        actor_type: "runtime",
+        actor_id: input.connectorId,
+        object_type: "run",
+        object_id: input.runId,
+        status: "surface_failed",
+        run_id: input.runId,
+        data: {
+          source: buildRunSource(input.connectorId),
+          browser_surface: projectBrowserSurfaceLease(input.lease),
+          browser_surface_probe: {
+            ok: false,
+            code: input.probeCode,
+            detail: input.probeDetail,
+          },
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] failed to emit run.browser_surface_invalidated for ${input.runId}: ${message}`);
+    }
+  }
+
   async function emitAndPersistReconciledLeases(
     leases: readonly BrowserSurfaceLease[],
     eventType: string,
@@ -417,6 +478,46 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       await persistInvalidatedBrowserSurface(invalidated.surface);
     }
     await stopAllocatorSurfaceAfterProbeFailure(surfaceId, probeCode);
+  }
+
+  /**
+   * A managed surface can pass pre-flight readiness (`run.browser_surface_ready`)
+   * and still wedge mid-run: the allocator/CDP-metadata endpoints keep
+   * answering, but the connector's attach-session work fails before any
+   * record or progress. Unlike a probe failure, nothing re-probes this
+   * surface proactively — the connector-runtime source boundary
+   * (`connectOverCdpWithRetry`) is the one that discovers its bounded
+   * attach-race retry budget is exhausted, and tags that fact with a stable
+   * `connector_error.code`. This is the post-run counterpart to
+   * `invalidateBrowserSurfaceAfterProbeFailure`: same eviction/allocator-stop
+   * mechanism, triggered from a different (post-run, typed-code) signal.
+   *
+   * Only a `dynamic`-mode surface is recycled. A `static` (operator-owned)
+   * surface is not ours to destroy — the run still gets the existing
+   * `retry_by_runtime` classification and retry budget, but the surface
+   * itself is left alone so it fails safely rather than destructively.
+   */
+  async function recycleAttachExhaustedManagedSurfaceAfterRun(input: {
+    readonly connectorId: string;
+    readonly lease: BrowserSurfaceLease | null;
+    readonly probeCode: string;
+    readonly probeDetail: string;
+    readonly runId: string;
+    readonly traceContext: SpineTraceContext;
+  }): Promise<void> {
+    const { connectorId, lease, probeCode, probeDetail, runId, traceContext } = input;
+    if (!(lease && lease.surface_id && shouldRetryReadinessFailure())) {
+      return;
+    }
+    await invalidateBrowserSurfaceAfterProbeFailure(lease, probeCode);
+    await emitBrowserSurfaceInvalidatedEvent({
+      connectorId,
+      lease,
+      probeCode,
+      probeDetail,
+      runId,
+      traceContext,
+    });
   }
 
   // ─── Readiness probing ────────────────────────────────────────────────────
@@ -1205,6 +1306,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     emitLeaseEvent: emitBrowserSurfaceLeaseEvent,
     expireBrowserSurfaceWaits,
     promoteBrowserSurfaceLeasesAfterBoot,
+    recycleAttachExhaustedManagedSurfaceAfterRun,
     reconcileBrowserSurfaceLeasesAfterBoot,
     releaseLease,
     wrapInteractionHandlerWithSurfaceLossDetection,

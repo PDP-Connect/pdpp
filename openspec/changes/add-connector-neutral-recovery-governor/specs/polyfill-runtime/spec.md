@@ -111,6 +111,30 @@ challenge, session, and deterministic DOM failures before retrying.
 - **AND** successful attempts SHALL NOT by themselves authorize automatic
   speed-up beyond the configured browser policy.
 
+### Requirement: The connector-runtime source boundary SHALL carry a stable attach-exhaustion code through DONE.error.code, not just message text
+
+A managed browser surface can pass pre-flight readiness (`run.browser_surface_ready`, verified in `reference-implementation-runtime`) and still wedge mid-run: the allocator and CDP HTTP metadata endpoints keep answering, but the underlying browser session is dead, so `connectOverCDP`'s auto-attach races Patchright's floated `setRequestInterception` against a transient n.eko target teardown (`Network.setCacheDisabled ... session closed`). `connectOverCdpWithRetry` (`packages/polyfill-connectors/src/browser-launch.ts`) already retries this narrow, well-understood race with a bounded attempt budget. The connector runtime SHALL carry a stable, machine-actionable `code` (`browser_surface_attach_exhausted`) on the `TerminalError` it raises when that budget is exhausted, through `DONE.error.code`, so downstream layers never have to re-parse the connector error's message text to learn the same fact.
+
+This code SHALL survive a connector's own `normalizeTerminalError` override even when that override only destructures `{ message, retryable }` and returns a fresh object with no `code` — that is data loss, not a deliberate choice, because the connector never had the chance to see or reject a code it never destructured. A connector's own deliberate `code` (e.g. `credential_rejected`) on the normalized result SHALL still take precedence; the infrastructure code only backfills a `code` field the normalizer left empty.
+
+#### Scenario: connectOverCdpWithRetry tags exhaustion of the narrow attach-session race
+
+- **WHEN** `connectOverCdpWithRetry` exhausts its bounded `maxAttempts` retrying the narrow CDP attach-session race (`isCdpAttachSessionRaceError`)
+- **THEN** it SHALL throw a typed error carrying `code: "browser_surface_attach_exhausted"`
+- **AND** a different failure (auth, unreachable endpoint, real browser crash) SHALL be rethrown with its original identity, untagged.
+
+#### Scenario: The typed code reaches DONE.error.code
+
+- **WHEN** the connector runtime's `acquireBrowser` catches the typed attach-exhaustion error from `connectOverCdpWithRetry`
+- **THEN** it SHALL construct its `TerminalError` with that same stable `code`
+- **AND** the terminal `DONE.error` the connector emits SHALL carry that `code` unless a connector's own `normalizeTerminalError` explicitly set a different `code`.
+
+#### Scenario: A connector-supplied normalizeTerminalError cannot silently drop the code
+
+- **WHEN** a connector's `normalizeTerminalError` destructures only `{ message, retryable }` and returns a fresh object with no `code` (the current shape of every connector normalizer, including ChatGPT's)
+- **THEN** the runtime SHALL backfill the infrastructure `code` onto the normalized result before emitting `DONE.error`
+- **AND** a connector-chosen `code` already present on the normalized result SHALL NOT be overwritten.
+
 ### Requirement: Recovery progress SHALL be observable without exposing record payloads
 
 The runtime SHALL expose owner-only recovery progress as counts, floors, timing,

@@ -99,10 +99,28 @@ interface UsableDevtoolsPageTarget {
   readonly webSocketDebuggerUrl: string;
 }
 
+interface DevtoolsPageGetFrameTreeResult {
+  readonly frameTree?: {
+    readonly frame?: unknown;
+  };
+}
+
+export interface BrowserSurfaceReadinessWebSocketLike {
+  addEventListener(
+    type: "open" | "message" | "error" | "close",
+    listener: (event: { readonly data?: unknown }) => void
+  ): void;
+  close(): void;
+  send(data: string): void;
+}
+
+export type BrowserSurfaceReadinessWebSocketFactory = (url: string) => BrowserSurfaceReadinessWebSocketLike;
+
 type TargetListProjectionResult =
   | {
       readonly ok: true;
       readonly pageTargetCount: number;
+      readonly pageTarget: UsableDevtoolsPageTarget;
     }
   | {
       readonly failure: BrowserSurfaceReadinessProbeFailure;
@@ -114,6 +132,7 @@ export const DEFAULT_MID_WAIT_SURFACE_LOSS_POLL_INTERVAL_MS = 10_000;
 
 export interface CreateDefaultBrowserSurfaceReadinessProbeOptions {
   readonly fetchImpl?: typeof fetch;
+  readonly webSocketFactory?: BrowserSurfaceReadinessWebSocketFactory;
   readonly timeoutMs?: number;
 }
 
@@ -207,9 +226,10 @@ export function createMidWaitSurfaceLossDetector(
  * HTTP base (the same shape `chrome --remote-debugging-port` exposes and
  * the same shape `n.eko` proxies through its `/cdp` mount). It performs:
  *
- *   GET <cdp_url>/json/version          → proves DevTools is live + reachable.
- *   GET <cdp_url>/json/list             → proves at least one page target exists.
- *   PUT <cdp_url>/json/new?about:blank  → proves Chromium can create a target.
+ *   GET    <cdp_url>/json/version       → proves DevTools is live + reachable.
+ *   GET    <cdp_url>/json/list          → proves at least one page target exists.
+ *   WS cmd <page-target>.webSocket...   → proves an existing page target
+ *                                        accepts a semantic CDP command.
  *
  * Both must succeed within `timeoutMs` and the response shapes must match
  * the documented DevTools contract. Anything else is fail-closed.
@@ -218,13 +238,22 @@ export function createDefaultBrowserSurfaceReadinessProbe(
   options: CreateDefaultBrowserSurfaceReadinessProbeOptions = {}
 ): BrowserSurfaceReadinessProbe {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const webSocketFactory =
+    options.webSocketFactory ??
+    ((url: string) => {
+      const WebSocketCtor = globalThis.WebSocket;
+      if (typeof WebSocketCtor !== "function") {
+        throw new Error("browser surface readiness probe requires a WebSocket factory");
+      }
+      return new WebSocketCtor(url);
+    });
   const timeoutMs = options.timeoutMs ?? DEFAULT_BROWSER_SURFACE_READINESS_PROBE_TIMEOUT_MS;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
     throw new Error("browser surface readiness probe timeoutMs must be a positive integer");
   }
   return {
     probe(surface) {
-      return probeBrowserSurfaceReadinessOverHttp(surface, fetchImpl, timeoutMs);
+      return probeBrowserSurfaceReadinessOverHttp(surface, fetchImpl, webSocketFactory, timeoutMs);
     },
   };
 }
@@ -232,6 +261,7 @@ export function createDefaultBrowserSurfaceReadinessProbe(
 export async function probeBrowserSurfaceReadinessOverHttp(
   surface: BrowserSurface,
   fetchImpl: typeof fetch,
+  webSocketFactory: BrowserSurfaceReadinessWebSocketFactory,
   timeoutMs: number
 ): Promise<BrowserSurfaceReadinessProbeResult> {
   const notReady = validateSurfaceShape(surface);
@@ -267,9 +297,13 @@ export async function probeBrowserSurfaceReadinessOverHttp(
     return targetListProjection.failure;
   }
 
-  const targetCreateResult = await createAndCloseSmokeTarget(baseUrl, fetchImpl, timeoutMs);
-  if (!targetCreateResult.ok) {
-    return targetCreateResult.failure;
+  const targetCommandResult = await probeSemanticPageTarget(
+    targetListProjection.pageTarget,
+    webSocketFactory,
+    timeoutMs
+  );
+  if (!targetCommandResult.ok) {
+    return targetCommandResult.failure;
   }
 
   const browserVersion = typeof versionPayload.Browser === "string" ? versionPayload.Browser : undefined;
@@ -341,6 +375,20 @@ function isUsablePageTarget(entry: unknown): entry is UsableDevtoolsPageTarget {
   return true;
 }
 
+function isValidFrameTreeResult(result: unknown): result is DevtoolsPageGetFrameTreeResult {
+  if (!result || typeof result !== "object") {
+    return false;
+  }
+  const candidate = result as DevtoolsPageGetFrameTreeResult;
+  if (!candidate.frameTree || typeof candidate.frameTree !== "object") {
+    return false;
+  }
+  if (!candidate.frameTree.frame || typeof candidate.frameTree.frame !== "object") {
+    return false;
+  }
+  return true;
+}
+
 function projectUsablePageTargetCount(baseUrl: string, targets: unknown): TargetListProjectionResult {
   if (!Array.isArray(targets)) {
     return {
@@ -368,41 +416,134 @@ function projectUsablePageTargetCount(baseUrl: string, targets: unknown): Target
     };
   }
 
-  return { ok: true, pageTargetCount: pageTargets.length };
+  return { ok: true, pageTargetCount: pageTargets.length, pageTarget: pageTargets[0]! };
 }
 
-async function createAndCloseSmokeTarget(
-  baseUrl: string,
-  fetchImpl: typeof fetch,
+async function probeSemanticPageTarget(
+  target: UsableDevtoolsPageTarget,
+  webSocketFactory: BrowserSurfaceReadinessWebSocketFactory,
   timeoutMs: number
 ): Promise<FetchOk | FetchErr> {
-  const createResult = await fetchJsonWithBudget(`${baseUrl}json/new?about:blank`, fetchImpl, timeoutMs, {
-    method: "PUT",
-  });
-  if (!createResult.ok) {
-    return createResult;
-  }
-  const createdTarget = createResult.payload;
-  if (!isUsablePageTarget(createdTarget)) {
-    return {
-      ok: false,
-      failure: {
-        ok: false,
-        code: "browser_surface_page_stale",
-        detail: `cdp_url ${baseUrl}json/new?about:blank did not return a usable page target`,
-      },
-    };
-  }
+  let socket: BrowserSurfaceReadinessWebSocketLike | null = null;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const commandId = 1;
+  const detailPrefix = `page target ${target.id}`;
 
-  const closeResult = await fetchOkWithBudget(
-    `${baseUrl}json/close/${encodeURIComponent(createdTarget.id)}`,
-    fetchImpl,
-    timeoutMs
-  );
-  if (!closeResult.ok) {
-    return closeResult;
-  }
-  return { ok: true, payload: createdTarget };
+  const finish = (result: FetchOk | FetchErr): FetchOk | FetchErr => {
+    if (settled) {
+      return result;
+    }
+    settled = true;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    try {
+      socket?.close();
+    } catch {
+      // Best-effort cleanup. The readiness result is already decided.
+    }
+    return result;
+  };
+
+  return await new Promise<FetchOk | FetchErr>((resolve) => {
+    const fail = (code: BrowserSurfaceReadinessProbeCode, detail: string) => {
+      resolve(
+        finish({
+          ok: false,
+          failure: {
+            ok: false,
+            code,
+            detail,
+          },
+        })
+      );
+    };
+
+    const succeed = () => {
+      resolve(finish({ ok: true, payload: null }));
+    };
+
+    try {
+      socket = webSocketFactory(target.webSocketDebuggerUrl);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      fail("browser_surface_cdp_unreachable", `${detailPrefix} websocket open failed: ${message}`);
+      return;
+    }
+
+    timer = setTimeout(() => {
+      fail("browser_surface_probe_timeout", `${detailPrefix} Page.getFrameTree exceeded ${String(timeoutMs)}ms budget`);
+    }, timeoutMs);
+
+    const onOpen = () => {
+      if (settled || socket === null) {
+        return;
+      }
+      try {
+        socket.send(JSON.stringify({ id: commandId, method: "Page.getFrameTree" }));
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        fail("browser_surface_cdp_disconnected", `${detailPrefix} failed to send Page.getFrameTree: ${message}`);
+      }
+    };
+
+    const onMessage = (event: { readonly data?: unknown }) => {
+      if (settled) {
+        return;
+      }
+      const raw = typeof event.data === "string" ? event.data : String(event.data);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        fail("browser_surface_cdp_disconnected", `${detailPrefix} returned malformed JSON: ${message}`);
+        return;
+      }
+      if (!parsed || typeof parsed !== "object") {
+        fail("browser_surface_cdp_disconnected", `${detailPrefix} returned a non-object CDP response`);
+        return;
+      }
+      const response = parsed as {
+        readonly id?: unknown;
+        readonly error?: unknown;
+        readonly result?: unknown;
+      };
+      if (response.id !== commandId) {
+        return;
+      }
+      if (response.error !== undefined) {
+        fail("browser_surface_cdp_disconnected", `${detailPrefix} returned an error for Page.getFrameTree`);
+        return;
+      }
+      if (!isValidFrameTreeResult(response.result)) {
+        fail("browser_surface_cdp_disconnected", `${detailPrefix} returned no valid Page.getFrameTree result`);
+        return;
+      }
+      succeed();
+    };
+
+    const onError = () => {
+      if (settled) {
+        return;
+      }
+      fail("browser_surface_cdp_unreachable", `${detailPrefix} websocket error before Page.getFrameTree completed`);
+    };
+
+    const onClose = () => {
+      if (settled) {
+        return;
+      }
+      fail("browser_surface_cdp_disconnected", `${detailPrefix} websocket closed before Page.getFrameTree completed`);
+    };
+
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError);
+    socket.addEventListener("close", onClose);
+  });
 }
 
 interface FetchOk {
@@ -473,55 +614,6 @@ async function fetchJsonWithBudget(
       };
     }
     return { ok: true, payload };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function fetchOkWithBudget(
-  url: string,
-  fetchImpl: typeof fetch,
-  timeoutMs: number,
-  init: RequestInit = {}
-): Promise<FetchOk | FetchErr> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    let response: Response;
-    try {
-      response = await fetchImpl(url, { ...init, signal: controller.signal });
-    } catch (cause) {
-      if (controller.signal.aborted) {
-        return {
-          ok: false,
-          failure: {
-            ok: false,
-            code: "browser_surface_probe_timeout",
-            detail: `GET ${url} exceeded ${String(timeoutMs)}ms budget`,
-          },
-        };
-      }
-      const message = cause instanceof Error ? cause.message : String(cause);
-      return {
-        ok: false,
-        failure: {
-          ok: false,
-          code: "browser_surface_cdp_unreachable",
-          detail: `GET ${url} failed: ${message}`,
-        },
-      };
-    }
-    if (!response.ok) {
-      return {
-        ok: false,
-        failure: {
-          ok: false,
-          code: "browser_surface_cdp_disconnected",
-          detail: `GET ${url} returned HTTP ${String(response.status)}`,
-        },
-      };
-    }
-    return { ok: true, payload: null };
   } finally {
     clearTimeout(timer);
   }

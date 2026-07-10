@@ -319,6 +319,59 @@ the UI shows queued/catching-up state with remaining floor counts, and repeated
 no-progress item failures are captured as connector evidence rather than owner
 busywork.
 
+### D12. Managed-surface attach-exhaustion is a typed source-boundary code, not a message-text classification
+
+A live incident exposed a distinct failure shape from the pre-flight readiness
+probe: a managed dynamic surface passes readiness (`run.browser_surface_ready`)
+and is handed to the connector, but the connector's attach-session work then
+fails before any record/progress. The narrow root cause
+(`packages/polyfill-connectors/src/browser-launch.ts`'s documented CDP
+attach-session race between Patchright's auto-attach and n.eko's transient
+target teardown) already has a bounded, well-tested retry —
+`connectOverCdpWithRetry`. Three live runs in a row exhausted that retry and
+kept re-leasing the same wedged surface because nothing told the managed-surface
+lifecycle the surface itself, not just the run, needed recycling.
+
+The first draft of this fix classified the failure by re-parsing
+`connector_error.message` a second time in the reference runtime (duplicating
+the existing task 2.8 classifier) and additionally risked worsening the
+underlying race: the readiness probe's own smoke-target step
+(`create-then-close /json/new` + `/json/close`) is exactly the kind of
+transient target churn `browser-launch.ts` documents as triggering the race.
+Both of those are corrected here:
+
+- **Single-owned, typed classification at the source.** Only
+  `connectOverCdpWithRetry` (the boundary that actually knows the bounded
+  retry budget was exhausted on this narrow race) tags the failure, via a
+  stable `code` (`browser_surface_attach_exhausted`) carried through
+  `TerminalError` → `DONE.error.code` → `connector_error.code`. The
+  reference-implementation controller (`reference-implementation-runtime`
+  capability) consumes ONLY that typed code — it never re-parses
+  `connector_error.message`. A connector's own `normalizeTerminalError` can
+  still deliberately choose a different `code` (e.g. `credential_rejected`);
+  the infrastructure code only backfills a `code` field a normalizer left
+  empty, which is the generic, connector-agnostic composition every
+  connector's terminal-error path already goes through.
+- **Prevention is a separate, non-mutating probe change.** The pre-flight
+  readiness probe's smoke-target creation/teardown (`createAndCloseSmokeTarget`,
+  a `/json/new` + `/json/close` HTTP round trip) is replaced with a bounded,
+  non-mutating `Page.getFrameTree` command sent over a direct WebSocket
+  connection to an existing usable page target's `webSocketDebuggerUrl`
+  (`reference-implementation/runtime/browser-surface-readiness.ts`), so the
+  readiness check itself stops being a plausible trigger for the race it
+  exists to guard against. The probe still validates `json/version` and
+  `json/list` over HTTP first; only the final validation stage changed from
+  mutating-HTTP to non-mutating-WebSocket. Landed by an isolated lane and
+  cherry-picked into this change (task 2.11a).
+- **Capability split.** The connector-runtime typed-code contract
+  (`connectOverCdpWithRetry`, `TerminalError.code`, `normalizeTerminalError`
+  composition) belongs to `polyfill-runtime` — it is about the connector
+  execution boundary. The controller/managed-surface lifecycle response
+  (recycle a dynamic surface, never a static one, within the existing retry
+  budget, typed event ordering) is a durable reference-implementation runtime
+  behavior and belongs to `reference-implementation-runtime`, not
+  `polyfill-runtime`.
+
 ## Risks / Trade-offs
 
 - **Risk: Browser recovery policy is under-specified.** Mitigation: use a

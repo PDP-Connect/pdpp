@@ -5,6 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   acquireBrowserForConnector,
+  CDP_ATTACH_SESSION_RACE_EXHAUSTED_CODE,
+  CdpAttachSessionRaceExhaustedError,
   closeRemoteCdpPageTargets,
   configuredBrowserChannel,
   connectOverCdpWithRetry,
@@ -539,7 +541,9 @@ test("connectOverCdpWithRetry rides out a transient session-closed race then suc
   assert.deepEqual(delays, [7, 7], "slept the configured delay between each retry");
 });
 
-test("connectOverCdpWithRetry rethrows the race error after exhausting the attempt budget", async () => {
+test("connectOverCdpWithRetry rethrows a typed CdpAttachSessionRaceExhaustedError after exhausting the attempt budget", async () => {
+  // This IS the source boundary the reference runtime must key off of: the
+  // typed .code, not message-text pattern-matching downstream.
   let attempts = 0;
   let slept = 0;
   await assert.rejects(
@@ -559,13 +563,38 @@ test("connectOverCdpWithRetry rethrows the race error after exhausting the attem
         },
       }),
     (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match((err as Error).message, /session closed/i);
+      assert.ok(err instanceof CdpAttachSessionRaceExhaustedError);
+      assert.equal(err.code, CDP_ATTACH_SESSION_RACE_EXHAUSTED_CODE);
+      assert.equal(err.code, "browser_surface_attach_exhausted");
+      assert.match(err.message, /session closed/i, "original race message preserved for diagnostics");
+      assert.ok(err.cause instanceof Error, "original error preserved as cause");
       return true;
     }
   );
   assert.equal(attempts, 3, "tried the full budget");
   assert.equal(slept, 2, "slept between attempts but not after the final failure");
+});
+
+test("connectOverCdpWithRetry does NOT tag a non-race error with the exhausted code, even after retries would have applied", async () => {
+  // Guards the negative direction: an unrelated failure (that happens to
+  // fail on the first attempt, so there IS no retry) must never acquire the
+  // typed code — only the narrow race, only on budget exhaustion.
+  await assert.rejects(
+    () =>
+      connectOverCdpWithRetry<string>({
+        connect: () => Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:9223")),
+        profileName: "amazon",
+        redactedUrl: "http://neko/",
+        maxAttempts: 3,
+        runAttempt: directAttempt,
+        sleep: () => Promise.resolve(),
+      }),
+    (err: unknown) => {
+      assert.ok(!(err instanceof CdpAttachSessionRaceExhaustedError));
+      assert.equal((err as { code?: unknown })?.code, undefined);
+      return true;
+    }
+  );
 });
 
 test("connectOverCdpWithRetry fails fast on a non-race error (no retry, no sleep)", async () => {

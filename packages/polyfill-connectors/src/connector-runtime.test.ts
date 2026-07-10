@@ -9,6 +9,7 @@ import {
   captureBrowserPage,
   closeBrowserContextPagesExcept,
   closeBrowserPage,
+  composeNormalizedTerminalError,
   decorateBrowserManualAction,
   emitDetailCoverage,
   emitDetailGap,
@@ -1129,4 +1130,93 @@ test("emitDetailGap forwards a gap with optional parent_stream and list_cursor v
     buildDetailGap(params),
     "emitDetailGap must emit precisely what buildDetailGap builds, including optional fields"
   );
+});
+
+// ─── composeNormalizedTerminalError: stable infrastructure codes must ──────
+// survive connector-supplied normalizeTerminalError overrides ──────────────
+//
+// Every current connector's normalizeTerminalError (e.g. ChatGPT's) only
+// destructures `{ message, retryable }` and returns a fresh object, so an
+// incoming infrastructure code (thrown by the runtime itself, e.g.
+// TerminalError.code from the browser-launch attach-race exhaustion) would
+// be silently dropped without this composition step. This must hold
+// generically for ANY connector's normalizer, not be special-cased per
+// connector.
+
+test("composeNormalizedTerminalError backfills an infrastructure code the connector normalizer dropped", () => {
+  // Simulates the real shape: a normalizer that only destructures
+  // { message, retryable } (as every current connector normalizer does).
+  const normalizeTerminalError = ({ message, retryable }: { message: string; retryable: boolean }) => ({
+    message: `wrapped: ${message}`,
+    retryable,
+  });
+  const result = composeNormalizedTerminalError({
+    message: "could not open browser profile: session closed",
+    retryable: true,
+    code: "browser_surface_attach_exhausted",
+    normalizeTerminalError,
+  });
+  assert.equal(result.code, "browser_surface_attach_exhausted");
+  assert.equal(result.message, "wrapped: could not open browser profile: session closed");
+  assert.equal(result.retryable, true);
+});
+
+test("composeNormalizedTerminalError lets a connector's deliberate code override the infrastructure code", () => {
+  const normalizeTerminalError = () => ({
+    message: "credential rejected",
+    code: "credential_rejected",
+    retryable: false,
+  });
+  const result = composeNormalizedTerminalError({
+    message: "could not open browser profile: session closed",
+    retryable: true,
+    code: "browser_surface_attach_exhausted",
+    normalizeTerminalError,
+  });
+  assert.equal(
+    result.code,
+    "credential_rejected",
+    "a connector-chosen code is a deliberate override, not data loss to backfill"
+  );
+});
+
+test("composeNormalizedTerminalError is a no-op when there is no infrastructure code", () => {
+  const normalizeTerminalError = ({ message, retryable }: { message: string; retryable: boolean }) => ({
+    message,
+    retryable,
+  });
+  const result = composeNormalizedTerminalError({
+    message: "some connector error",
+    retryable: false,
+    normalizeTerminalError,
+  });
+  assert.equal(result.code, undefined);
+});
+
+test("the identity default normalizeTerminalError (no connector override) passes the infrastructure code through unchanged", () => {
+  const identity = <T>(error: T): T => error;
+  const result = composeNormalizedTerminalError({
+    message: "could not open browser profile: session closed",
+    retryable: true,
+    code: "browser_surface_attach_exhausted",
+    normalizeTerminalError: identity,
+  });
+  assert.equal(result.code, "browser_surface_attach_exhausted");
+});
+
+test("ChatGPT's real normalizeChatGptTerminalError (which destructures only message/retryable) still surfaces browser_surface_attach_exhausted via composeNormalizedTerminalError", async () => {
+  // Proves the fix through a REAL connector-configured normalizer, not just
+  // a synthetic stand-in. `normalizeChatGptTerminalError`'s default branch
+  // (no auth/manual-action match) returns { message, retryable } with no
+  // `code` — exactly the drop shape this test guards against.
+  const { normalizeChatGptTerminalError } = await import("../connectors/chatgpt/index.ts");
+  const result = composeNormalizedTerminalError({
+    message:
+      "could not open browser profile: Protocol error (Network.setCacheDisabled): Internal server error, session closed.",
+    retryable: true,
+    code: "browser_surface_attach_exhausted",
+    normalizeTerminalError: normalizeChatGptTerminalError,
+  });
+  assert.equal(result.code, "browser_surface_attach_exhausted");
+  assert.match(result.message, /runtime_exception/, "ChatGPT's own message wrapping is preserved");
 });

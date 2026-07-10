@@ -1250,6 +1250,62 @@ test('Collection Profile conformance', async (t) => {
     }
   });
 
+  await t.test('connector_error.code survives to connector_error_code on the terminal run.failed event', async () => {
+    // Proves the DONE.error.code -> connector_error.code -> spine
+    // connector_error_code wire is intact end-to-end. The managed-surface
+    // lifecycle (reference-implementation-runtime capability) reads this
+    // typed code — never connector_error.message — to decide whether a
+    // managed dynamic surface needs recycling. This is a plain connector
+    // DONE.error.code (not the browser-launch attach-race path, which is
+    // exercised in packages/polyfill-connectors); it only proves the
+    // runtime's generic code passthrough, independent of any specific code
+    // value.
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort, {
+      ...MINIMAL_MANIFEST,
+      connector_id: 'chatgpt',
+    });
+
+    const { connectorPath, cleanup } = createTestConnector([
+      {
+        type: 'DONE',
+        status: 'failed',
+        records_emitted: 0,
+        error: {
+          message: 'could not open browser profile: attach-session race exhausted its retry budget',
+          code: 'browser_surface_attach_exhausted',
+          retryable: true,
+        },
+      },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.connector_error?.code, 'browser_surface_attach_exhausted');
+
+      const asUrl = `http://localhost:${asPort}`;
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const failedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.failed');
+      assert.equal(failedEvent.data.connector_error_code, 'browser_surface_attach_exhausted');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
   await t.test('loadSyncState includes connector_instance_id when provided', async () => {
     const connectorId = 'instance_state_connector';
     const connectorInstanceId = 'cin_instance_state_work';

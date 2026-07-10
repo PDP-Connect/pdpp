@@ -267,6 +267,38 @@ export function isCdpAttachSessionRaceError(err: unknown): boolean {
   return CDP_ATTACH_RACE_METHOD_RE.test(message) && CDP_ATTACH_RACE_SESSION_CLOSED_RE.test(message);
 }
 
+/**
+ * Stable, machine-actionable code carried on the error thrown by
+ * `connectOverCdpWithRetry` when it exhausts every bounded attempt of the
+ * narrow attach-session race (`isCdpAttachSessionRaceError`). This is the
+ * ONLY source boundary that knows the retry budget was exhausted for THIS
+ * specific race — not a rate limit, not a credential failure, not a real
+ * browser crash. Downstream layers (the connector runtime's terminal error,
+ * the reference runtime's connector_error.code, the managed-surface
+ * lifecycle) MUST key off this typed code and MUST NOT re-derive the same
+ * disposition by re-parsing error message text.
+ */
+export const CDP_ATTACH_SESSION_RACE_EXHAUSTED_CODE = "browser_surface_attach_exhausted";
+
+/**
+ * Error subclass thrown when `connectOverCdpWithRetry` gives up after
+ * exhausting `maxAttempts` on the narrow attach-session race. Carries the
+ * stable `code` so callers can pattern-match on a typed property instead of
+ * the underlying race error's message text (which remains available via
+ * `cause` for logs/diagnostics only).
+ */
+export class CdpAttachSessionRaceExhaustedError extends Error {
+  readonly code: typeof CDP_ATTACH_SESSION_RACE_EXHAUSTED_CODE;
+
+  constructor(lastError: unknown) {
+    const lastMessage = lastError instanceof Error ? lastError.message : String(lastError);
+    super(`remote CDP attach exhausted its retry budget on the attach-session race: ${lastMessage}`);
+    this.name = "CdpAttachSessionRaceExhaustedError";
+    this.code = CDP_ATTACH_SESSION_RACE_EXHAUSTED_CODE;
+    this.cause = lastError;
+  }
+}
+
 const REMOTE_CDP_ATTACH_MAX_ATTEMPTS = 4;
 const REMOTE_CDP_ATTACH_RETRY_DELAY_MS = 500;
 // After `connectOverCDP` resolves, the floated `setRequestInterception(true)`
@@ -459,8 +491,16 @@ export async function connectOverCdpWithRetry<TBrowser>({
       return await runAttempt<TBrowser>({ connect, ...(disconnect ? { disconnect } : {}) });
     } catch (err) {
       lastErr = err;
-      if (!isCdpAttachSessionRaceError(err) || attempt === maxAttempts) {
+      if (!isCdpAttachSessionRaceError(err)) {
+        // A different failure entirely (auth, unreachable endpoint, real
+        // browser crash) — fail fast with its original identity, untagged.
         throw err;
+      }
+      if (attempt === maxAttempts) {
+        // The ONLY point that knows the bounded retry budget was exhausted
+        // specifically on this narrow race. Tag it here so no downstream
+        // layer has to re-parse message text to learn the same fact.
+        throw new CdpAttachSessionRaceExhaustedError(err);
       }
       process.stderr.write(
         "[browser-launch] remote CDP attach hit transient session-closed race " +
