@@ -1781,6 +1781,8 @@ export async function emitTransactionsDetailCoverage(
       requiredKeys,
       hydratedKeys,
       gapKeys,
+      considered: outcomes.length,
+      covered: hydratedKeys.length,
     })
   );
 }

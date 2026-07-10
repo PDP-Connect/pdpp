@@ -145,6 +145,8 @@ test("emitTransactionsDetailCoverage: all accounts hydrated -> complete coverage
     stream: "transactions",
     required_keys: ["ACC-1", "ACC-2"],
     hydrated_keys: ["ACC-1", "ACC-2"],
+    considered: 2,
+    covered: 2,
   });
 });
 
@@ -162,6 +164,8 @@ test("emitTransactionsDetailCoverage: a source-limited no-activity account is HY
   // the source had nothing. It must be hydrated, NOT a gap.
   assert.deepEqual(coverage.required_keys, ["ACC-1", "ACC-2"]);
   assert.deepEqual(coverage.hydrated_keys, ["ACC-1", "ACC-2"]);
+  assert.equal(coverage.considered, 2, "the run still accounted for both considered accounts");
+  assert.equal(coverage.covered, 2, "no-activity counts as covered, not collected-only");
   assert.equal(coverage.gap_keys, undefined, "no-activity must not appear in gap_keys");
 });
 
@@ -178,6 +182,8 @@ test("emitTransactionsDetailCoverage: a transient QFX failure makes the run part
   assert.deepEqual(coverage.required_keys, ["ACC-1", "ACC-2"]);
   assert.deepEqual(coverage.hydrated_keys, ["ACC-1"]);
   assert.deepEqual(coverage.gap_keys, ["ACC-2"], "the failed account is reported as a gap, not silently complete");
+  assert.equal(coverage.considered, 2, "the run considered both accounts");
+  assert.equal(coverage.covered, 1, "a failed account is not counted as covered");
 });
 
 // ─── emitTransactionsDetailCoverage: denominator-known guard ─────────────
@@ -225,6 +231,8 @@ test("emitTransactionsDetailCoverage: required_keys is the union of hydrated + g
     [...accountedFor].sort(),
     "every required account is either hydrated or a gap — no key silently dropped"
   );
+  assert.equal(coverage.considered, 3, "the run considered every emitted outcome");
+  assert.equal(coverage.covered, 2, "only hydrated + no-activity outcomes are covered");
 });
 
 // ─── emitStatementDetailCoverage: metadata covered, PDF detail optional ──

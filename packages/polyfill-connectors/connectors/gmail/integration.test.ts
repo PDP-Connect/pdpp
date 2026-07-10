@@ -1196,6 +1196,8 @@ test("buildAttachmentDetailCoverageMessage: emits complete zero-attachment cover
     state_stream: "messages",
     required_keys: [],
     hydrated_keys: [],
+    considered: 0,
+    covered: 0,
   });
 });
 
@@ -1327,6 +1329,8 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
       hydratedKeys: coverage.hydratedKeys,
       gapKeys: coverage.gapKeys,
       optionalSkipKeys: coverage.optionalSkipKeys,
+      considered: coverage.requiredKeys.length,
+      covered: coverage.hydratedKeys.length + coverage.optionalSkipKeys.length,
     }),
     {
       type: "DETAIL_COVERAGE",
@@ -1337,6 +1341,8 @@ test("emitMessagesPass: accumulates honest coverage across hydrated, gap, and sk
       hydrated_keys: ["ok:1"],
       gap_keys: ["bad:1"],
       optional_skip_keys: ["big:1"],
+      considered: 3,
+      covered: 2,
     }
   );
 

@@ -386,6 +386,31 @@ test('a manual run with browser-profile + collection_facts on the spine (no sche
   assert.notEqual(siblingMessages?.collected, 1145, 'sibling must not inherit the manual run collected count');
 }));
 
+test('a manual run with explicit considered/covered stays complete even when collected is 0', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances({ sourceKind: 'manual' });
+
+  await seedManualRunWithCollectionFacts({
+    connectorInstanceId: WORK_INSTANCE_ID,
+    runId: 'run_zero_collected_complete',
+    occurredAt: '2026-05-20T12:06:00.000Z',
+    streams: [
+      { stream: 'messages', collected: 0, considered: 1, covered: 1, checkpoint: 'committed', pending_detail_gaps: 0, skipped: null },
+    ],
+  });
+
+  const summaries = await listConnectorSummaries();
+  const work = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === WORK_INSTANCE_ID,
+  );
+  assert.ok(work, 'the zero-emission connection projects a source-list summary');
+  const reportByStream = collectionReportByStream(work.collection_report);
+  assert.equal(reportByStream.messages.collected, 0, 'no records were emitted');
+  assert.equal(reportByStream.messages.considered, 1, 'the denominator stays explicit');
+  assert.equal(reportByStream.messages.covered, 1, 'the explicit numerator keeps the stream complete');
+  assert.equal(reportByStream.messages.coverage_condition, 'complete');
+}));
+
 test('a connection-id run without browser profile feeds only the addressed account summary', withTmpDb(async () => {
   seedConnector();
   await seedInstances({ sourceKind: 'manual' });

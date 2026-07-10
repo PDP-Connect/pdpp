@@ -733,6 +733,8 @@ export async function emitOrderItemsCoverage(deps: EmitDeps, coverage: OrderItem
     hydratedKeys: coverage.hydrated,
     gapKeys: coverage.gap,
     optionalSkipKeys: coverage.optionalSkip,
+    considered: coverage.required.length,
+    covered: coverage.hydrated.length + coverage.optionalSkip.length,
   });
 }
 

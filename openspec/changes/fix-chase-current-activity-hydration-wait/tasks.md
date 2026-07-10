@@ -60,6 +60,8 @@
 - [x] 5.2 Run polyfill-connectors typecheck from the worktree.
 - [x] 5.3 Run `openspec validate fix-chase-current-activity-hydration-wait --strict`.
 - [x] 5.4 Run `git diff --check`.
-- [ ] 5.5 Deploy and verify a live Chase retry no longer emits
-  `selectors_pending` from a wait/read ordering mismatch. Owner-only;
-  planned as part of this same closeout, not yet performed.
+- [x] 5.5 Deploy and verify a live Chase retry no longer emits
+  `selectors_pending` from a wait/read ordering mismatch. Owner-only; verified
+  on `run_1783649510772` with deployed revision `v0.19.3-49-g09422c80b`,
+  `run.completed` succeeded, zero `selectors_pending`, zero stream gaps, and
+  `current_activity batch_ingested/state_advanced` succeeded.

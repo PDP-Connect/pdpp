@@ -42,6 +42,8 @@ test("fully hydrated run: required === hydrated, no gaps", () => {
   assert.equal(result.candidateCount, 2);
   assert.deepEqual(result.coverage.requiredKeys, ["s1", "s2"]);
   assert.deepEqual(result.coverage.hydratedKeys, ["s1", "s2"]);
+  assert.equal(result.coverage.considered, 2);
+  assert.equal(result.coverage.covered, 2);
   assert.equal(result.coverage.gapKeys, undefined, "no gap_keys when fully hydrated");
   assert.equal(result.gaps.length, 0);
   assert.equal(result.coverage.stream, STATEMENTS_STREAM);
@@ -52,6 +54,8 @@ test("partial run: un-hydrated candidate becomes a gap with a matching DETAIL_GA
   const result = computeStatementCoverage([candidate("s1", HYDRATED), candidate("s2", NULL_POINTERS)]);
   assert.deepEqual(result.coverage.requiredKeys, ["s1", "s2"]);
   assert.deepEqual(result.coverage.hydratedKeys, ["s1"]);
+  assert.equal(result.coverage.considered, 2);
+  assert.equal(result.coverage.covered, 1);
   assert.deepEqual(result.coverage.gapKeys, ["s2"]);
   assert.equal(result.gaps.length, 1);
   assert.equal(result.gaps[0]?.record_key, "s2");

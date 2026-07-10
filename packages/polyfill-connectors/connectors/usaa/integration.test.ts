@@ -269,6 +269,8 @@ test("emitStatementRecords: fully hydrated statement run emits DETAIL_COVERAGE w
   assert.equal(coverage.state_stream, "statements");
   assert.deepEqual([...coverage.required_keys].sort(), ["S0", "S1"]);
   assert.deepEqual([...coverage.hydrated_keys].sort(), ["S0", "S1"]);
+  assert.equal(coverage.considered, 2);
+  assert.equal(coverage.covered, 2);
   assert.equal(coverage.gap_keys, undefined, "no gap_keys when every PDF is present");
   assert.equal(statementGaps(messages).length, 0, "no DETAIL_GAP when fully hydrated");
 });
@@ -285,6 +287,8 @@ test("emitStatementRecords: a failed statement PDF surfaces a DETAIL_GAP + gap_k
   assert.ok(coverage && coverage.type === "DETAIL_COVERAGE");
   assert.deepEqual([...coverage.required_keys].sort(), ["MISS", "OK"]);
   assert.deepEqual(coverage.hydrated_keys, ["OK"]);
+  assert.equal(coverage.considered, 2);
+  assert.equal(coverage.covered, 1);
   assert.deepEqual(coverage.gap_keys, ["MISS"]);
 
   const gaps = statementGaps(messages);

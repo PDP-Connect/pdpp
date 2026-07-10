@@ -74,6 +74,11 @@ that message into `parent_detail_accounting` stream coverage evidence.
 coverage evidence mechanism. Connectors without list+detail lanes SHALL provide
 coverage evidence through another accepted stream evidence strategy.
 
+When the connector's local accumulator can prove the denominator and numerator
+from explicit runtime outcomes, the message SHALL include `considered` and
+`covered`. The connector SHALL NOT treat `required_keys` alone as sufficient to
+prove completeness when those counts are available.
+
 #### Scenario: detail coverage normalizes into parent-detail accounting
 
 **WHEN** a list+detail run emits `DETAIL_COVERAGE`
@@ -89,6 +94,15 @@ counts needed to classify completeness.
 **AND** it SHALL still provide coverage evidence through another accepted
 strategy such as `full_inventory`, `checkpoint_window`, or
 `snapshot_import_receipt`.
+
+#### Scenario: accounted zero-emission run still reports complete coverage
+
+**WHEN** a list+detail run explicitly accounts for a required key with
+`hydrated_keys` containing that key and `collected` remaining 0
+**AND** the connector reports `considered` and `covered` for that run
+**THEN** the collection report SHALL classify the stream as complete
+**AND** the projection SHALL NOT fall back to a false partial based on
+`collected` alone.
 
 ## ADDED Requirements
 

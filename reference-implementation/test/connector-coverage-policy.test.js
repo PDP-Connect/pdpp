@@ -46,6 +46,14 @@ test('parent-detail accounting still requires an accounted-for covered count', (
   );
 
   assert.equal(
+    deriveStreamCoverageCondition(fact({ collected: 0, considered: 1, covered: 1 }), {
+      coverage_strategy: 'parent_detail_accounting',
+      freshness_strategy: 'scheduled_window',
+    }),
+    'complete',
+  );
+
+  assert.equal(
     deriveStreamCoverageCondition(fact({ covered: 100 }), {
       coverage_strategy: 'parent_detail_accounting',
       freshness_strategy: 'scheduled_window',

@@ -32,6 +32,7 @@
 - [x] 4.4 Add a generated inventory report showing every declared stream has a coverage and freshness posture.
 - [x] 4.5 Emit WhatsApp attachment `DETAIL_COVERAGE` from parsed media inventory so parent-detail stream rows do not remain unmeasured.
 - [x] 4.6 Mark Slack `unsupported_in_mode` streams as non-required accepted-absent streams so historical no-skip facts do not project as resting unknown coverage.
+- [x] 4.7 Make parent-detail producers that already know their run-time denominator and numerator emit explicit `considered` and `covered` counts so steady-state zero-emission runs still project complete.
 
 ## 5. Acceptance Checks
 

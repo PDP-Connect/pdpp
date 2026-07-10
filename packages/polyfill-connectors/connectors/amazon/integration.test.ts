@@ -697,6 +697,8 @@ test("emitOrderItemsCoverage: a fully hydrated run emits required=hydrated, no g
   assert.equal(msg.state_stream, "orders", "coverage is anchored by the list/parent stream cursor");
   assert.deepEqual(msg.required_keys, ["a", "b"]);
   assert.deepEqual(msg.hydrated_keys, ["a", "b"]);
+  assert.equal(msg.considered, 2, "the run considered both orders");
+  assert.equal(msg.covered, 2, "hydrated orders are counted as covered");
   // Empty optional sets are omitted by the shared builder — a clean run carries
   // no gap/skip noise.
   assert.equal(msg.gap_keys, undefined);
@@ -1419,6 +1421,8 @@ test("every coverage gap_key is backed by exactly one pending DETAIL_GAP with th
   assert.ok(cov, "expected a run-level DETAIL_COVERAGE");
   assert.deepEqual(cov.gap_keys, ["ord-gap-1", "ord-gap-2"], "coverage reports both degraded orders as gaps");
   assert.deepEqual(cov.hydrated_keys, ["ord-ok-1"], "the hydrated order is not a gap");
+  assert.equal(cov.considered, 3, "all three orders were considered");
+  assert.equal(cov.covered, 1, "only the hydrated order counted as covered");
 
   const gaps = findDetailGaps(protocolMessages);
   const gapKeys = gaps.map((g) => g.record_key);
@@ -1479,6 +1483,8 @@ test("a policy-skipped run (PDPP_AMAZON_SKIP_DETAIL) emits optional skips and ze
   assert.ok(cov);
   assert.deepEqual(cov.optional_skip_keys, ["ord-skip-a", "ord-skip-b"], "skips ride optional_skip_keys, not gap_keys");
   assert.equal(cov.gap_keys, undefined, "a skip-only run carries no gap_keys");
+  assert.equal(cov.considered, 2, "both skipped orders were still considered");
+  assert.equal(cov.covered, 2, "policy skips are covered, not counted as gaps");
 });
 
 test("a run with zero considered orders emits neither DETAIL_COVERAGE nor DETAIL_GAP", async () => {

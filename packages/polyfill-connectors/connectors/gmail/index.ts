@@ -412,6 +412,8 @@ export function buildAttachmentDetailCoverageMessage(coverage: AttachmentDetailC
     hydratedKeys: coverage.hydratedKeys,
     gapKeys: coverage.gapKeys,
     optionalSkipKeys: coverage.optionalSkipKeys,
+    considered: coverage.requiredKeys.length,
+    covered: coverage.hydratedKeys.length + coverage.optionalSkipKeys.length,
   });
 }
 

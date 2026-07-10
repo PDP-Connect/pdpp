@@ -8,17 +8,17 @@
 // DETAIL_COVERAGE report can honestly distinguish a complete run (every
 // candidate PDF present) from a partial one (some PDFs missing this run).
 //
-// Denominator (required_keys): statement-document rows only. USAA's document
-// index mixes statements with agreements / disclosures / notices; those are
-// index-only by design (no PDF detail is expected for them), so they are NOT
-// detail candidates and are excluded from the denominator rather than counted
-// as perpetual gaps. The same `shouldParseStatementTitle` predicate the
-// transaction-parse path uses decides candidacy, so coverage and parsing agree
-// on what a "statement" is.
+// Denominator (required_keys / considered): statement-document rows only. USAA's
+// document index mixes statements with agreements / disclosures / notices;
+// those are index-only by design (no PDF detail is expected for them), so they
+// are NOT detail candidates and are excluded from the denominator rather than
+// counted as perpetual gaps. The same `shouldParseStatementTitle` predicate
+// the transaction-parse path uses decides candidacy, so coverage and parsing
+// agree on what a "statement" is.
 //
-// Numerator (hydrated_keys): candidates whose resolved body carries a present,
-// content-addressed PDF pointer this run — a fresh download OR a carried-forward
-// prior pointer (the bytes a prior run stored still exist; see
+// Numerator (hydrated_keys / covered): candidates whose resolved body carries a
+// present, content-addressed PDF pointer this run — a fresh download OR a
+// carried-forward prior pointer (the bytes a prior run stored still exist; see
 // statement-hydration-carry-forward.ts). `isHydrated()` is the shared predicate
 // for "artifact present", so coverage never disagrees with the emitted body.
 //
@@ -135,6 +135,8 @@ export function computeStatementCoverage(rows: readonly StatementCoverageRow[]):
       stateStream: STATEMENTS_STREAM,
       requiredKeys,
       hydratedKeys,
+      considered: requiredKeys.length,
+      covered: hydratedKeys.length,
       ...(gapKeys.length ? { gapKeys } : {}),
     },
     gaps: gapKeys.map((id) => buildStatementDetailGap(id)),
