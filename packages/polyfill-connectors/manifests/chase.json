@@ -790,7 +790,7 @@
           ]
         }
       },
-      "coverage_strategy": "singleton_presence",
+      "coverage_strategy": "parent_detail_accounting",
       "freshness_strategy": "manual_as_of"
     }
   ]

@@ -186,12 +186,34 @@ test("emitTransactionsDetailCoverage: a transient QFX failure makes the run part
   assert.equal(coverage.covered, 1, "a failed account is not counted as covered");
 });
 
-// ─── emitTransactionsDetailCoverage: denominator-known guard ─────────────
+// ─── emitTransactionsDetailCoverage: known-zero vs unknown-scope ─────────
 
-test("emitTransactionsDetailCoverage: emits nothing when no accounts were considered (denominator unknown)", async () => {
+test("emitTransactionsDetailCoverage: zero outcomes still emits an explicit considered:0/covered:0 report (known-zero, not unmeasured)", async () => {
+  // emitTransactionsDetailCoverage's only caller, runTransactionsAndBalances,
+  // is only ever reached after discoverAccounts() finds at least one account
+  // (a zero-accounts-at-source enumeration returns early via
+  // emitNoAccountsDiagnostic before this call chain — see
+  // runTransactionsAndBalances's doc comment in index.ts). So an empty
+  // `outcomes` here always means a real resource filter narrowed a genuine,
+  // non-empty enumeration to zero eligible accounts: a proven 0/0, not an
+  // unknown denominator. Suppressing this case would leave a real, completed
+  // scoped run permanently unmeasured — the same defect class fixed for
+  // Chase `balances` (packages/polyfill-connectors/connectors/chase/index.ts,
+  // accountDetailCoverageKeys).
   const { deps, messages } = makeHarness();
   await emitTransactionsDetailCoverage(deps, []);
-  assert.equal(coverageOf(messages), undefined, "no coverage for an empty denominator — never infer complete");
+
+  const coverage = coverageOf(messages);
+  assert.deepEqual(coverage, {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    state_stream: "accounts",
+    stream: "transactions",
+    required_keys: [],
+    hydrated_keys: [],
+    considered: 0,
+    covered: 0,
+  });
 });
 
 test("emitTransactionsDetailCoverage: emits nothing when transactions are out of scope", async () => {

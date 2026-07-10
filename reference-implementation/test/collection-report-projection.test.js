@@ -652,7 +652,7 @@ test('empty in-scope universe -> empty report (no invented entries)', () => {
 });
 
 // ─── succeeded-run coverage: staged checkpoint proves full_inventory /
-//     singleton_presence streams (YNAB category_groups, Chase balances) ─────────
+//     singleton_presence streams (YNAB category_groups) ───────────────────────
 //
 // These pin the fix for the live coverage omission: a succeeded run that emits
 // records for a `full_inventory` or `singleton_presence` stream but leaves its
@@ -694,35 +694,103 @@ test('YNAB category_groups (full_inventory): committed checkpoint -> complete af
   assert.equal(entry.forward_disposition, 'complete');
 });
 
-test('Chase balances (singleton_presence): not_staged checkpoint -> unknown / unmeasured (the pre-fix bug)', () => {
+// ─── Chase balances (parent_detail_accounting) ─────────────────────────────
+//
+// `balances` was originally a bare `singleton_presence` stream whose only
+// proof was a self-staged STATE checkpoint gated on "at least one balance
+// record emitted this run". That left the stream permanently unmeasured on
+// any run where every considered account was source-limited `no_activity`
+// (Chase's no-activity confirmation page never serves a QFX response, so
+// there is no LEDGERBAL/AVAILBAL block to read) — a real, common case, not a
+// connector bug (live run_1783705924457: accounts/transactions/statements all
+// committed while balances rested `not_staged` with considered/covered null).
+// `balances` now adopts the same `parent_detail_accounting` evidence as
+// `transactions`: a per-run DETAIL_COVERAGE over the `accounts` denominator,
+// where a `no_activity` account is honest hydrated coverage of the balances
+// pass (reached, nothing to report), never a gap. These pin the projection
+// consequence of that fix.
+
+test('Chase balances (parent_detail_accounting): zero balance records but considered==covered (all no_activity) -> complete, not unmeasured (the live regression)', () => {
   const entries = buildCollectionReport({
     collectionFacts: {
-      streams: [fact({ stream: 'balances', collected: 3, considered: null, checkpoint: 'not_staged' })],
+      streams: [fact({ stream: 'balances', collected: 0, considered: 2, covered: 2, checkpoint: 'committed' })],
     },
-    manifestStreams: [{ name: 'balances', coverage_strategy: 'singleton_presence', freshness_strategy: 'manual_as_of' }],
+    manifestStreams: [{ name: 'balances', coverage_strategy: 'parent_detail_accounting', freshness_strategy: 'manual_as_of' }],
     freshness: 'fresh',
     attentionOpen: false,
     refresh: null,
   });
   const entry = entryFor(entries, 'balances');
-  assert.equal(entry.coverage_strategy, 'singleton_presence');
+  assert.equal(entry.collected, 0, 'no balance records were emitted this run');
+  assert.equal(entry.considered, 2);
+  assert.equal(entry.coverage_strategy, 'parent_detail_accounting');
+  assert.equal(entry.coverage_condition, 'complete');
+  assert.equal(entry.forward_disposition, 'complete');
+});
+
+test('Chase balances (parent_detail_accounting): zero eligible accounts after a completed enumeration (considered 0 / covered 0) -> complete, not unmeasured', () => {
+  // A real resource-filtered scoped run whose account enumeration succeeded
+  // but matched zero eligible accounts still owes an explicit 0/0 report
+  // (emitBalancesDetailCoverage no longer suppresses on outcomes.length ===
+  // 0). This must resolve complete exactly like the USAA/Chase-statements
+  // zero-candidate steady-state case, not rest unknown for lack of a
+  // numeric denominator > 0.
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'balances', collected: 0, considered: 0, covered: 0, checkpoint: 'committed' })],
+    },
+    manifestStreams: [{ name: 'balances', coverage_strategy: 'parent_detail_accounting', freshness_strategy: 'manual_as_of' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'balances');
+  assert.equal(entry.considered, 0);
+  assert.equal(entry.coverage_condition, 'complete');
+  assert.equal(entry.forward_disposition, 'complete');
+});
+
+test('Chase balances (parent_detail_accounting): no DETAIL_COVERAGE emitted (no considered denominator) -> unknown / unmeasured', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'balances', collected: 0, considered: null, covered: null, checkpoint: 'not_staged' })],
+    },
+    manifestStreams: [{ name: 'balances', coverage_strategy: 'parent_detail_accounting', freshness_strategy: 'manual_as_of' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'balances');
+  assert.equal(entry.coverage_strategy, 'parent_detail_accounting');
   assert.equal(entry.coverage_condition, 'unknown');
   assert.equal(entry.forward_disposition, 'unmeasured');
 });
 
-test('Chase balances (singleton_presence): committed checkpoint -> complete after a succeeded run', () => {
+test('Chase balances (parent_detail_accounting): a QFX gap on one account -> partial, not complete', () => {
   const entries = buildCollectionReport({
     collectionFacts: {
-      streams: [fact({ stream: 'balances', collected: 3, considered: null, checkpoint: 'committed' })],
+      streams: [fact({ stream: 'balances', collected: 1, considered: 2, covered: 1, checkpoint: 'committed' })],
     },
-    manifestStreams: [{ name: 'balances', coverage_strategy: 'singleton_presence', freshness_strategy: 'manual_as_of' }],
+    manifestStreams: [{ name: 'balances', coverage_strategy: 'parent_detail_accounting', freshness_strategy: 'manual_as_of' }],
     freshness: 'fresh',
     attentionOpen: false,
     refresh: null,
   });
   const entry = entryFor(entries, 'balances');
-  assert.equal(entry.considered, 'unknown');
-  assert.equal(entry.coverage_strategy, 'singleton_presence');
+  assert.equal(entry.coverage_condition, 'partial');
+});
+
+test('Chase balances (parent_detail_accounting): all accounts hydrated with a balance -> complete', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'balances', collected: 2, considered: 2, covered: 2, checkpoint: 'committed' })],
+    },
+    manifestStreams: [{ name: 'balances', coverage_strategy: 'parent_detail_accounting', freshness_strategy: 'manual_as_of' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'balances');
   assert.equal(entry.coverage_condition, 'complete');
   assert.equal(entry.forward_disposition, 'complete');
 });

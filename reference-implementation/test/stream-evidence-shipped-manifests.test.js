@@ -56,7 +56,7 @@ function condition(entries, stream) {
 // classify them complete.
 const CHECKPOINT_PROOF_CASES = {
   amazon: ['orders'],
-  chase: ['balances', 'current_activity'],
+  chase: ['current_activity'],
   chatgpt: ['custom_gpts', 'custom_instructions', 'memories', 'shared_conversations'],
   github: ['user', 'user_stats'],
   gmail: ['messages', 'threads', 'labels'],
@@ -78,7 +78,7 @@ const CHECKPOINT_PROOF_CASES = {
 };
 
 const ACCOUNTED_PROOF_CASES = {
-  chase: ['statements', 'transactions'],
+  chase: ['statements', 'transactions', 'balances'],
   usaa: ['statements', 'transactions'],
 };
 
@@ -103,6 +103,17 @@ for (const [connectorId, streams] of Object.entries(ACCOUNTED_PROOF_CASES)) {
 test('shipped usaa manifest: a zero-candidate steady-state run (considered 0 / covered 0) classifies complete, not unmeasured', () => {
   const entries = report('usaa', [accountedFact('statements', 0), accountedFact('transactions', 0)]);
   assert.equal(condition(entries, 'statements'), 'complete');
+  assert.equal(condition(entries, 'transactions'), 'complete');
+});
+
+test('shipped chase manifest: every considered account no_activity this run (zero balance records, considered==covered) classifies complete, not unmeasured (the 2026-07-10 live regression)', () => {
+  const entries = report('chase', [accountedFact('balances', 2)]);
+  assert.equal(condition(entries, 'balances'), 'complete');
+});
+
+test('shipped chase manifest: zero eligible accounts after a completed enumeration classifies BOTH balances and transactions complete, not unmeasured (the systemic account-detail known-zero fix)', () => {
+  const entries = report('chase', [accountedFact('balances', 0), accountedFact('transactions', 0)]);
+  assert.equal(condition(entries, 'balances'), 'complete');
   assert.equal(condition(entries, 'transactions'), 'complete');
 });
 

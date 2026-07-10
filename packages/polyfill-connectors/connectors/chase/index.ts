@@ -1524,25 +1524,72 @@ export async function emitTransactionsStateIfAny(deps: EmitDeps): Promise<void> 
 }
 
 /**
- * Emit the `balances` STATE presence checkpoint iff at least one balance was
- * emitted this run. `balances` is a `singleton_presence` stream — append-only
- * point-in-time ledger snapshots with no incremental cursor to advance — so the
- * checkpoint is a bare `{ fetched_at }` presence marker (mirroring
- * `current_activity`). Without staging it, a succeeded run leaves `balances` at
- * `checkpoint:not_staged`, and the `singleton_presence` strategy cannot prove
- * coverage, so the stream projects unmeasured despite retained records. Gated on
- * an actual emit so an empty balances run does not stamp a hollow presence
- * checkpoint over nothing.
+ * Shared `AccountDetailOutcome[]` -> DETAIL_COVERAGE key-set derivation for
+ * both account-detail producers riding the QFX pass (`transactions`,
+ * `balances`). `hydrated` (reached, including a no-balance-block QFX for the
+ * balances axis) and `no_activity` (reached, source had nothing to serve)
+ * both count as accounted-for; only a `gap` (transient QFX download/parse
+ * failure) is unaccounted. `considered`/`covered` are always the full
+ * outcome/hydrated counts — including 0/0 when `outcomes` is empty, which
+ * both callers only ever receive after a completed, non-empty account
+ * enumeration (see `runTransactionsAndBalances`'s doc comment), never for an
+ * unknown/session-dead scope.
  */
-export async function emitBalancesStateIfAny(deps: EmitDeps, balanceEmitted: boolean): Promise<void> {
-  if (!(deps.wantsBalances && balanceEmitted)) {
+function accountDetailCoverageKeys(outcomes: readonly AccountDetailOutcome[]): {
+  requiredKeys: string[];
+  hydratedKeys: string[];
+  gapKeys: string[];
+} {
+  return {
+    requiredKeys: outcomes.map((o) => o.accountId),
+    hydratedKeys: outcomes.filter((o) => o.kind !== "gap").map((o) => o.accountId),
+    gapKeys: outcomes.filter((o) => o.kind === "gap").map((o) => o.accountId),
+  };
+}
+
+/**
+ * Emit the per-run DETAIL_COVERAGE for the account -> balances detail
+ * fan-out, using the same `AccountDetailOutcome[]` and key derivation
+ * (`accountDetailCoverageKeys`) as `emitTransactionsDetailCoverage` — both
+ * ride the same per-account QFX pass, so a `hydrated` account (balance
+ * emitted, or QFX parsed with no balance block per `extractBalance`'s null
+ * path — rare but possible) or a `no_activity` account (Chase's no-activity
+ * confirmation page never serves a QFX response, so there is no
+ * LEDGERBAL/AVAILBAL block to read this run, regardless of prior runs) are
+ * both real coverage of this run's balance pass, never a gap. Only a `gap`
+ * (transient QFX failure) is unaccounted.
+ *
+ * Only emitted when balances and accounts are both in scope. Unlike
+ * `emitTransactionsDetailCoverage`, this does NOT require `wantsTransactions`:
+ * the QFX detail pass runs whenever either transactions or balances is in
+ * scope, so a balances-only scoped run still produces `outcomes` and owes
+ * balances coverage independent of transactions.
+ *
+ * Deliberately does NOT suppress on `outcomes.length === 0` — see
+ * `accountDetailCoverageKeys` and `runTransactionsAndBalances`'s doc comment
+ * for why an empty `outcomes` here always means a real resource filter
+ * narrowed a genuine, non-empty account enumeration to zero eligible
+ * accounts (a proven 0/0), never an unknown/session-dead scope.
+ */
+export async function emitBalancesDetailCoverage(
+  deps: EmitDeps,
+  outcomes: readonly AccountDetailOutcome[]
+): Promise<void> {
+  if (!(deps.wantsBalances && deps.wantsAccounts)) {
     return;
   }
-  await deps.emit({
-    type: "STATE",
-    stream: "balances",
-    cursor: { fetched_at: deps.emittedAt },
-  });
+  const { requiredKeys, hydratedKeys, gapKeys } = accountDetailCoverageKeys(outcomes);
+  await deps.emit(
+    buildDetailCoverageMessage({
+      stream: "balances",
+      stateStream: "accounts",
+      requiredKeys,
+      hydratedKeys,
+      gapKeys,
+      considered: outcomes.length,
+      covered: hydratedKeys.length,
+    })
+  );
 }
 
 export async function emitNoActivityProgress(
@@ -1768,24 +1815,22 @@ export function buildAccountDetailGap(outcome: {
  *   - `gap_keys`: accounts whose QFX failed transiently; each also carries a
  *     pending DETAIL_GAP so the runtime's coverage invariant is satisfied and
  *     the next run retries them.
- * Only emitted when the denominator is genuinely known: transactions AND
- * accounts are both in scope (the runtime validates `stream` / `state_stream`
- * against requested scope) and at least one account was considered. When the
- * denominator is unknown the connector emits nothing rather than invent a
- * `complete` projection.
+ * Only emitted when transactions AND accounts are both in scope. Deliberately
+ * does NOT suppress on `outcomes.length === 0` — see
+ * `runTransactionsAndBalances`'s doc comment: this function's only caller
+ * only ever reaches it after a completed, non-empty account enumeration, so
+ * an empty `outcomes` here always means a real resource filter narrowed a
+ * genuine enumeration to zero eligible accounts (a proven 0/0), never an
+ * unknown denominator.
  */
 export async function emitTransactionsDetailCoverage(
   deps: EmitDeps,
   outcomes: readonly AccountDetailOutcome[]
 ): Promise<void> {
-  if (!(deps.wantsTransactions && deps.wantsAccounts) || outcomes.length === 0) {
+  if (!(deps.wantsTransactions && deps.wantsAccounts)) {
     return;
   }
-  const requiredKeys = outcomes.map((o) => o.accountId);
-  const hydratedKeys = outcomes
-    .filter((o) => o.kind === "hydrated" || o.kind === "no_activity")
-    .map((o) => o.accountId);
-  const gapKeys = outcomes.filter((o) => o.kind === "gap").map((o) => o.accountId);
+  const { requiredKeys, hydratedKeys, gapKeys } = accountDetailCoverageKeys(outcomes);
   await deps.emit(
     buildDetailCoverageMessage({
       stream: "transactions",
@@ -1874,7 +1919,18 @@ export async function recoverServedAccountGaps(
   }
 }
 
-async function runTransactionsAndBalances(
+/**
+ * Drive the per-account QFX detail pass and declare transactions + balances
+ * coverage. `filteredAccounts` is only ever empty here as a genuine,
+ * known-zero result: the caller returns early via `emitNoAccountsDiagnostic`
+ * BEFORE reaching this function when `discoverAccounts()` itself found zero
+ * accounts (session-dead/broken-enumeration, unknown scope), so an empty
+ * `filteredAccounts` reaching this function always means a real resource
+ * filter narrowed a genuine non-empty enumeration to zero eligible accounts
+ * — exported so that distinction is provable at this exact caller boundary,
+ * not just inside the unit-level DETAIL_COVERAGE builders.
+ */
+export async function runTransactionsAndBalances(
   deps: EmitDeps,
   page: Page,
   filteredAccounts: readonly ChaseAccount[]
@@ -1900,10 +1956,7 @@ async function runTransactionsAndBalances(
   // Amazon/ChatGPT ordering (recovery pass → coverage).
   await recoverServedAccountGaps(deps, outcomes);
   await emitTransactionsDetailCoverage(deps, outcomes);
-  // Stage the balances presence checkpoint when any balance was emitted so a
-  // succeeded run does not leave `balances` at `checkpoint:not_staged`.
-  const balanceEmitted = outcomes.some((o) => o.kind !== "gap" && o.balanceEmitted === true);
-  await emitBalancesStateIfAny(deps, balanceEmitted);
+  await emitBalancesDetailCoverage(deps, outcomes);
 }
 
 /**

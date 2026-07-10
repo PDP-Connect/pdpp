@@ -34,7 +34,7 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | transactions | parent_detail_accounting | manual_as_of | — | true | — | — |
 | current_activity | checkpoint_window | manual_as_of | — | true | — | — |
 | statements | parent_detail_accounting | manual_as_of | — | true | — | — |
-| balances | singleton_presence | manual_as_of | — | true | — | — |
+| balances | parent_detail_accounting | manual_as_of | — | true | — | — |
 
 ## polyfill/chatgpt
 
