@@ -195,19 +195,36 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
   }
 }
 
+/**
+ * Snapshot the dashboard overview DOM for `current_activity`.
+ *
+ * Parse-first: the serialized DOM bytes are read and parsed immediately,
+ * because the parser's own verdict on those exact bytes is the only
+ * authoritative readiness signal — a separate locator wait can disagree with
+ * what `page.content()` actually yields. The row-selector wait below is only
+ * a bounded retry trigger for the still-hydrating case, not a proof; after it
+ * resolves (or times out) the content is re-read and re-parsed, and
+ * `rowSurfaceReady` always reflects that final parse, never the locator alone.
+ * Zero rows after the fallback does not prove a provider empty state — it
+ * still routes to `selectors_pending` in the caller.
+ */
 export async function snapshotDashboardHtmlForCurrentActivity(
-  page: CurrentActivitySnapshotPage
+  page: CurrentActivitySnapshotPage,
+  referenceDateIso: string
 ): Promise<{ html: string; rowSurfaceReady: boolean }> {
-  const rowSurfaceReady = await page
+  const immediateHtml = await page.content().catch((): string => "");
+  if (parseCurrentActivityDom(immediateHtml, referenceDateIso).length > 0) {
+    return { html: immediateHtml, rowSurfaceReady: true };
+  }
+
+  await page
     .locator(CHASE_CURRENT_ACTIVITY_ROW_SELECTOR)
     .first()
     .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
-    .then(
-      () => true,
-      () => false
-    );
+    .catch((): undefined => undefined);
 
   const html = await page.content().catch((): string => "");
+  const rowSurfaceReady = parseCurrentActivityDom(html, referenceDateIso).length > 0;
   return { html, rowSurfaceReady };
 }
 
@@ -2292,7 +2309,7 @@ if (isMainModule(import.meta.url)) {
         // the bytes here so current_activity can be parsed even when later
         // phases (downloads, statements) leave the page elsewhere.
         const dashboardHtmlForCurrentActivity = deps.wantsCurrentActivity
-          ? await snapshotDashboardHtmlForCurrentActivity(page)
+          ? await snapshotDashboardHtmlForCurrentActivity(page, deps.emittedAt.slice(0, 10))
           : { html: "", rowSurfaceReady: false };
         if (deps.wantsCurrentActivity && !dashboardHtmlForCurrentActivity.rowSurfaceReady) {
           await progress("Chase dashboard recent-activity rows did not appear before snapshot");

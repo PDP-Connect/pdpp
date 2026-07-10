@@ -674,9 +674,43 @@ test("runCurrentActivity: single account + broken-surface HTML → selectors_pen
   );
 });
 
-test("snapshotDashboardHtmlForCurrentActivity: waits for recent-activity rows before reading HTML", async () => {
+const REFERENCE_DATE_ISO = "2026-07-10";
+
+test("snapshotDashboardHtmlForCurrentActivity: parseable HTML on first read is accepted without waiting on the locator", async () => {
+  // A live run proved the row-wait locator can time out for its full budget
+  // even when page.content() was already parseable the moment the wait
+  // began — the locator and the parser can disagree. The locator must never
+  // be consulted when the immediate parse already yields rows.
+  let locatorCalled = false;
+  const page = {
+    locator(selector: string) {
+      locatorCalled = true;
+      assert.equal(selector, CHASE_CURRENT_ACTIVITY_ROW_SELECTOR);
+      return {
+        first() {
+          return {
+            waitFor() {
+              return Promise.reject(new Error("locator must not be consulted when the immediate parse has rows"));
+            },
+          };
+        },
+      };
+    },
+    content() {
+      return Promise.resolve(readFileSync(join(FIXTURE_DIR, "current-activity-dashboard-overview-real.html"), "utf8"));
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
+
+  assert.equal(locatorCalled, false, "the row-wait locator must not be consulted when content() is already parseable");
+  assert.equal(snapshot.rowSurfaceReady, true);
+  assert.match(snapshot.html, /mds-activity-table__row/);
+});
+
+test("snapshotDashboardHtmlForCurrentActivity: empty first read falls back to the bounded row-wait, then re-parses", async () => {
   let waited = false;
-  let contentReadAfterWait = false;
+  let secondReadRequested = false;
   const page = {
     locator(selector: string) {
       assert.equal(selector, CHASE_CURRENT_ACTIVITY_ROW_SELECTOR);
@@ -694,16 +728,54 @@ test("snapshotDashboardHtmlForCurrentActivity: waits for recent-activity rows be
       };
     },
     content() {
-      contentReadAfterWait = waited;
+      if (!waited) {
+        secondReadRequested = false;
+        return Promise.resolve(readFileSync(join(FIXTURE_DIR, "current-activity-download-form-no-rows.html"), "utf8"));
+      }
+      secondReadRequested = true;
       return Promise.resolve(readFileSync(join(FIXTURE_DIR, "current-activity-dashboard-overview-real.html"), "utf8"));
     },
   };
 
-  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page);
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
 
-  assert.equal(snapshot.rowSurfaceReady, true);
-  assert.equal(contentReadAfterWait, true, "dashboard HTML must be read only after the row-surface wait resolves");
+  assert.equal(waited, true, "must fall back to the row-wait when the immediate parse yields zero rows");
+  assert.equal(secondReadRequested, true, "must re-read content() after the wait resolves");
+  assert.equal(
+    snapshot.rowSurfaceReady,
+    true,
+    "rowSurfaceReady must reflect the re-parsed html, not just the wait resolving"
+  );
   assert.match(snapshot.html, /mds-activity-table__row/);
+});
+
+test("snapshotDashboardHtmlForCurrentActivity: rowSurfaceReady is false when the wait resolves but the re-parsed html still has zero rows", async () => {
+  // Proves rowSurfaceReady tracks the PARSED result, not merely whether the
+  // locator promise resolved — a locator resolving attached() does not
+  // guarantee parseCurrentActivityDom finds rows in whatever page.content()
+  // returns afterward (e.g. a different row shape or a race).
+  const page = {
+    locator(selector: string) {
+      assert.equal(selector, CHASE_CURRENT_ACTIVITY_ROW_SELECTOR);
+      return {
+        first() {
+          return {
+            waitFor() {
+              return Promise.resolve();
+            },
+          };
+        },
+      };
+    },
+    content() {
+      return Promise.resolve(readFileSync(join(FIXTURE_DIR, "current-activity-download-form-no-rows.html"), "utf8"));
+    },
+  };
+
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
+
+  assert.equal(snapshot.rowSurfaceReady, false);
+  assert.match(snapshot.html, /Download account activity/);
 });
 
 test("snapshotDashboardHtmlForCurrentActivity: falls through when recent-activity rows never appear", async () => {
@@ -725,7 +797,7 @@ test("snapshotDashboardHtmlForCurrentActivity: falls through when recent-activit
     },
   };
 
-  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page);
+  const snapshot = await snapshotDashboardHtmlForCurrentActivity(page, REFERENCE_DATE_ISO);
 
   assert.equal(snapshot.rowSurfaceReady, false);
   assert.match(snapshot.html, /Download account activity/);
