@@ -56,6 +56,36 @@ function pickPage(context: BrowserContext): Page {
   return pages[0] || null;
 }
 
+async function resolveBrowserContext(browser: Browser): Promise<BrowserContext> {
+  let context = pickContext(browser);
+  if (!context && typeof browser?.newContext === "function") {
+    context = await browser.newContext();
+  }
+  if (context) {
+    return context;
+  }
+  const err: CodedError = new Error("n.eko browser client could not resolve a browser context");
+  err.code = "neko_browser_client_context_missing";
+  throw err;
+}
+
+async function resolvePage(context: BrowserContext): Promise<Page> {
+  let page = pickPage(context);
+  if (!page && typeof context.newPage === "function") {
+    page = await context.newPage();
+  }
+  if (page) {
+    return page;
+  }
+  const err: CodedError = new Error("n.eko browser client could not resolve a page");
+  err.code = "neko_browser_client_page_missing";
+  throw err;
+}
+
+function isDuplicateBindingRegistration(err: unknown): boolean {
+  return BINDING_ALREADY_REGISTERED_RE.test(String((err as { message?: unknown })?.message || ""));
+}
+
 export function createNekoBrowserClient({
   cdpHttpUrl,
   chromiumImpl = chromium,
@@ -80,25 +110,8 @@ export function createNekoBrowserClient({
     }
 
     browser = await chromiumImpl.connectOverCDP(cdpHttpUrl);
-    context = pickContext(browser);
-    if (!context && typeof browser?.newContext === "function") {
-      context = await browser.newContext();
-    }
-    if (!context) {
-      const err: CodedError = new Error("n.eko browser client could not resolve a browser context");
-      err.code = "neko_browser_client_context_missing";
-      throw err;
-    }
-
-    page = pickPage(context);
-    if (!page && typeof context.newPage === "function") {
-      page = await context.newPage();
-    }
-    if (!page) {
-      const err: CodedError = new Error("n.eko browser client could not resolve a page");
-      err.code = "neko_browser_client_page_missing";
-      throw err;
-    }
+    context = await resolveBrowserContext(browser);
+    page = await resolvePage(context);
   }
 
   async function ensurePage(): Promise<Page> {
@@ -134,7 +147,7 @@ export function createNekoBrowserClient({
       try {
         await context.exposeBinding(name, handler);
       } catch (err) {
-        if (!BINDING_ALREADY_REGISTERED_RE.test(String((err as { message?: unknown })?.message || ""))) {
+        if (!isDuplicateBindingRegistration(err)) {
           throw err;
         }
       }

@@ -63,20 +63,16 @@ export function validateProgressProviderBudget(providerBudget) {
 
 const COLLECTION_RATE_BACKOFF_REASONS = new Set(['retry_after', 'throttle']);
 
-export function validateProgressCollectionRate(collectionRate) {
-  if (!collectionRate || typeof collectionRate !== 'object' || Array.isArray(collectionRate)) {
-    throw new Error('Connector emitted invalid PROGRESS.collection_rate: expected object');
-  }
-  if (collectionRate.object !== 'collection_rate') {
-    throw new Error('Connector emitted invalid PROGRESS.collection_rate.object');
-  }
+function validateCollectionRateRequiredNumbers(collectionRate) {
   for (const fieldName of ['ceiling_interval_ms', 'ceiling_rate_per_min', 'current_interval_ms', 'effective_rate_per_min']) {
     const value = collectionRate[fieldName];
     if (!Number.isFinite(value) || value < 0) {
       throw new Error(`Connector emitted invalid PROGRESS.collection_rate.${fieldName}: expected non-negative number`);
     }
   }
-  const lastBackoff = collectionRate.last_backoff;
+}
+
+function validateCollectionRateLastBackoff(lastBackoff) {
   if (lastBackoff != null) {
     if (!lastBackoff || typeof lastBackoff !== 'object' || Array.isArray(lastBackoff)) {
       throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff: expected object or null');
@@ -88,4 +84,15 @@ export function validateProgressCollectionRate(collectionRate) {
       throw new Error('Connector emitted invalid PROGRESS.collection_rate.last_backoff.reason');
     }
   }
+}
+
+export function validateProgressCollectionRate(collectionRate) {
+  if (!collectionRate || typeof collectionRate !== 'object' || Array.isArray(collectionRate)) {
+    throw new Error('Connector emitted invalid PROGRESS.collection_rate: expected object');
+  }
+  if (collectionRate.object !== 'collection_rate') {
+    throw new Error('Connector emitted invalid PROGRESS.collection_rate.object');
+  }
+  validateCollectionRateRequiredNumbers(collectionRate);
+  validateCollectionRateLastBackoff(collectionRate.last_backoff);
 }

@@ -1,5 +1,0 @@
-# hone work hm-dispatch-guards-oracle-0001 — post rung 'byte-identity'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/index.js
-# expect: empty — this packet changes tests only (valid pre-commit: runtime/index.js is NOT in the touchset, so it must match HEAD); also proves every red-then-green rung restored its seed (restructured 2026-07-02 per run-2)
-# exit: 0  duration: 0s  verdict: PASS
-

@@ -1,5 +1,0 @@
-# hone work pl1-canonical-sort-entry-validate-0008 — post-r1 rung 'typecheck'
-# command: cd "$REPO_ROOT" && npx tsc --noEmit
-# expect: 0 errors
-# exit: 0  duration: 4s  verdict: PASS
-

@@ -1107,7 +1107,7 @@ test("live semantic probe rejects owner actions that are absent from the exact s
             {
               connection_id: "cin_local",
               connector_id: "claude-code",
-              display_name: "peregrine Claude Code",
+              display_name: "laptop Claude Code",
               rendered_verdict: {
                 channel: "attention",
                 forward_statement: "The local collector has failed uploads.",
@@ -1133,7 +1133,7 @@ test("live semantic probe rejects owner actions that are absent from the exact s
     if (href.endsWith("/dashboard")) {
       return response(
         200,
-        "<main><section>peregrine Claude Code needs you. See what to do.</section></main>"
+        "<main><section>laptop Claude Code needs you. See what to do.</section></main>"
       );
     }
     if (href.endsWith("/dashboard/records/cin_local")) {
@@ -1173,7 +1173,7 @@ test("live semantic probe accepts owner actions visible on dashboard and exact s
             {
               connection_id: "cin_local",
               connector_id: "claude-code",
-              display_name: "peregrine Claude Code",
+              display_name: "laptop Claude Code",
               rendered_verdict: {
                 channel: "attention",
                 forward_statement: "The local collector has failed uploads.",
@@ -1205,13 +1205,13 @@ test("live semantic probe accepts owner actions visible on dashboard and exact s
     if (href.endsWith("/dashboard")) {
       return response(
         200,
-        "<main><section>peregrine Claude Code needs you. See what to do.</section></main>"
+        "<main><section>laptop Claude Code needs you. See what to do.</section></main>"
       );
     }
     if (href.endsWith("/dashboard/records/cin_local")) {
       return response(
         200,
-        "<main><h1>peregrine Claude Code</h1><section>Recover local collector uploads</section><section>Preview recovery</section></main>"
+        "<main><h1>laptop Claude Code</h1><section>Recover local collector uploads</section><section>Preview recovery</section></main>"
       );
     }
     return response(200, defaultLiveOwnerPageHtml(url));

@@ -418,7 +418,7 @@ test("P3 Load-more trail: second page ACCUMULATES (page 1 stays, page 2 appended
   // REWIND of the trail head (cursor = the page-1 → page-2 cursor, rewindToFirstPage),
   // so it is pinned to the SAME original snapshot as page 2 (snapshotSeq, not
   // emitted_at). This is the fix for the "records above disappear" bug — the prior
-  // single-`cursor` REPLACE is gone, and the corrected snapshot pin (Codex HOLD).
+  // single-`cursor` REPLACE is gone, and the corrected snapshot pin (review HOLD).
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   // Distinct, non-overlapping, strictly-descending pages via absolute day offsets:
   // page 1 is the newest band, page 2 a strictly-older band (no calendar overflow).

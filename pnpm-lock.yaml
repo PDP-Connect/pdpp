@@ -58,8 +58,8 @@ importers:
         specifier: 1.6.32
         version: 1.6.32
       '@opendatalabs/remote-surface':
-        specifier: workspace:*
-        version: link:../../packages/remote-surface
+        specifier: ^0.3.0
+        version: 0.3.0
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand
@@ -169,9 +169,6 @@ importers:
       '@demodesk/neko':
         specifier: 1.6.32
         version: 1.6.32
-      '@opendatalabs/remote-surface':
-        specifier: workspace:*
-        version: link:../../packages/remote-surface
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand
@@ -458,34 +455,6 @@ importers:
         specifier: 7.6.0
         version: 7.6.0
 
-  packages/remote-surface:
-    dependencies:
-      transformation-matrix:
-        specifier: ^3.1.0
-        version: 3.1.0
-    devDependencies:
-      '@biomejs/biome':
-        specifier: 2.4.12
-        version: 2.4.12
-      '@playwright/test':
-        specifier: ^1.59.1
-        version: 1.61.1
-      '@types/ws':
-        specifier: ^8.18.1
-        version: 8.18.1
-      patchright:
-        specifier: ^1.59.4
-        version: 1.59.4
-      tsx:
-        specifier: ^4.21.0
-        version: 4.21.0
-      ultracite:
-        specifier: 7.6.0
-        version: 7.6.0
-      ws:
-        specifier: ^8.20.0
-        version: 8.20.0
-
   reference-implementation:
     dependencies:
       '@fastify/formbody':
@@ -494,9 +463,6 @@ importers:
       '@huggingface/transformers':
         specifier: ^4.2.0
         version: 4.2.0
-      '@opendatalabs/remote-surface':
-        specifier: workspace:*
-        version: link:../packages/remote-surface
       '@pdpp/mcp-server':
         specifier: workspace:*
         version: link:../packages/mcp-server
@@ -543,6 +509,10 @@ importers:
       ultracite:
         specifier: 7.6.0
         version: 7.6.0
+    optionalDependencies:
+      '@opendatalabs/remote-surface':
+        specifier: ^0.3.0
+        version: 0.3.0
 
 packages:
 
@@ -1584,6 +1554,10 @@ packages:
 
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
+
+  '@opendatalabs/remote-surface@0.3.0':
+    resolution: {integrity: sha512-CgN25tfIqoyEPPwApp4ujC27ueUVpCbP4AVHA25AuT6+qJ6MzmSA4wvGRmH2AxbIl5kf+WkOVCioGZs2R6/G0A==}
+    engines: {node: '>=24'}
 
   '@orama/orama@3.1.18':
     resolution: {integrity: sha512-a61ljmRVVyG5MC/698C8/FfFDw5a8LOIvyOLW5fztgUXqUpc1jOfQzOitSCbge657OgXXThmY3Tk8fpiDb4UcA==}
@@ -7228,6 +7202,10 @@ snapshots:
 
   '@open-draft/until@2.1.0': {}
 
+  '@opendatalabs/remote-surface@0.3.0':
+    dependencies:
+      transformation-matrix: 3.1.0
+
   '@orama/orama@3.1.18': {}
 
   '@oxc-parser/binding-android-arm-eabi@0.124.0':
@@ -7367,6 +7345,7 @@ snapshots:
   '@playwright/test@1.61.1':
     dependencies:
       playwright: 1.61.1
+    optional: true
 
   '@pnpm/config.env-replace@1.1.0': {}
 
@@ -10957,7 +10936,8 @@ snapshots:
 
   playwright-core@1.59.1: {}
 
-  playwright-core@1.61.1: {}
+  playwright-core@1.61.1:
+    optional: true
 
   playwright@1.59.1:
     dependencies:
@@ -10970,6 +10950,7 @@ snapshots:
       playwright-core: 1.61.1
     optionalDependencies:
       fsevents: 2.3.2
+    optional: true
 
   postcss-selector-parser@7.1.1:
     dependencies:

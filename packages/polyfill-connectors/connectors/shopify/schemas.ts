@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Shopify (Shop app) stream records. Shape-check-before-emit
- * per docs/connector-authoring-guide.md §3.
+ * per docs/reference/connector-authoring-guide.md §3.
  *
  * GROUND-TRUTH CAVEAT (same posture as connectors/loom/schemas.ts):
  * shopify/index.ts does NOT yet emit any RECORD — it is a browser scaffold that

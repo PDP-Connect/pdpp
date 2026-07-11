@@ -17,8 +17,8 @@ The consequence that shaped the normative text: eligibility for a `changes_since
 
 ## Normative surface (pointers, not restatement)
 
-- Stream semantics (`append_only`, `mutable_state`), internal version history, the snapshot model, and the tombstone envelope: [spec-core Section 4](./spec-core#record-model).
-- The `changes_since` / `next_changes_since` token space, its separation from `cursor` / `next_cursor`, session-horizon anchoring across pages, projection-safe eligibility, and cursor expiry (HTTP 410 `cursor_expired`, full re-sync): [spec-core Section 8](./spec-core#list-records).
+- Stream semantics (`append_only`, `mutable_state`), internal version history, the snapshot model, and the tombstone envelope: [spec-core Section 4](spec-core.md#record-model).
+- The `changes_since` / `next_changes_since` token space, its separation from `cursor` / `next_cursor`, session-horizon anchoring across pages, projection-safe eligibility, and cursor expiry (HTTP 410 `cursor_expired`, full re-sync): [spec-core Section 8](spec-core.md#list-records).
 
 ## Why not canonical `{stream}_changes` streams
 

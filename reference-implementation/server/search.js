@@ -341,6 +341,44 @@ async function rebuildLexicalInsertEntries(usePostgres, { connectorId, resolvedC
   }
 }
 
+/**
+ * Parse one records page into the lexical rows it contributes. The returned
+ * counters are page deltas: corrupt JSON still advances the cursor and scan
+ * count, but contributes no index rows.
+ *
+ * @returns {{
+ *   entries: Array<{recordKey: string, field: string, text: string}>,
+ *   lastId: number,
+ *   scannedRecords: number,
+ *   indexEntries: number,
+ * }}
+ */
+function parseLexicalIndexRecordsPage(rows, declaredFields) {
+  let lastId = 0;
+  let scannedRecords = 0;
+  const entries = [];
+
+  for (const row of rows) {
+    lastId = Number(row.id);
+    scannedRecords += 1;
+    let data;
+    try {
+      data = row.record_json ? JSON.parse(row.record_json) : null;
+    } catch {
+      // Skip corrupt rows — the index just won't have them; the source
+      // record stays intact for whoever needs to repair it.
+      continue;
+    }
+    for (const field of declaredFields) {
+      const value = data?.[field];
+      if (typeof value !== 'string' || value.length === 0) continue;
+      entries.push({ recordKey: row.record_key, field, text: value });
+    }
+  }
+
+  return { entries, lastId, scannedRecords, indexEntries: entries.length };
+}
+
 async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, stream, declaredFields, recordsToScan = null, progressJob = null, signal = null }) {
   const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
   const usePostgres = isPostgresStorageBackend();
@@ -369,32 +407,17 @@ async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, 
       limit: PAGE,
     });
     if (rows.length === 0) break;
-    const entries = [];
-    for (const row of rows) {
-      lastId = Number(row.id);
-      scanned += 1;
-      let data;
-      try {
-        data = row.record_json ? JSON.parse(row.record_json) : null;
-      } catch {
-        // Skip corrupt rows — the index just won't have them; the source
-        // record stays intact for whoever needs to repair it.
-        continue;
-      }
-      for (const field of declaredFields) {
-        const value = data?.[field];
-        if (typeof value !== 'string' || value.length === 0) continue;
-        entries.push({ recordKey: row.record_key, field, text: value });
-      }
-    }
-    if (entries.length > 0) {
+    const page = parseLexicalIndexRecordsPage(rows, declaredFields);
+    lastId = page.lastId;
+    scanned += page.scannedRecords;
+    if (page.entries.length > 0) {
       await rebuildLexicalInsertEntries(usePostgres, {
         connectorId,
         resolvedConnectorInstanceId,
         stream,
-        entries,
+        entries: page.entries,
       });
-      indexed += entries.length;
+      indexed += page.indexEntries;
     }
     if (progressJob) {
       progressJob = updateLexicalBackfillJob(progressJob, {
@@ -648,6 +671,65 @@ async function backfillLexicalStream({ connectorId, connectorInstanceId, mStream
   return progressJob;
 }
 
+// Backfill every manifest stream for one connector instance, then remove any
+// indexed streams no longer named by that manifest. The pass owns its complete
+// effectful lifecycle and returns the accumulated progress job to its caller.
+async function backfillLexicalConnectorInstance(
+  connectorId,
+  connectorInstanceId,
+  manifestStreams,
+  progressJob,
+  log,
+  signal,
+) {
+  // Track which streams we visited so we can detect "previously participated,
+  // no longer participates" — those need their stale index rows and meta
+  // fingerprint dropped.
+  const visitedStreams = new Set();
+
+  for (const mStream of manifestStreams) {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error('lexical backfill aborted');
+    }
+    const stream = mStream?.name;
+    if (typeof stream !== 'string' || stream.length === 0) continue;
+    visitedStreams.add(stream);
+
+    progressJob = await backfillLexicalStream({
+      connectorId,
+      connectorInstanceId,
+      mStream,
+      stream,
+      progressJob,
+      log,
+      signal,
+    });
+  }
+  progressJob = updateLexicalBackfillJob(progressJob, {
+    stream: null,
+    phase: 'cleanup',
+    recordsScanned: 0,
+    recordsTotal: null,
+    indexedRows: 0,
+  });
+
+  // Streams that previously had a meta row but are no longer in the
+  // manifest at all (entire stream removed). Same cleanup as the
+  // "no-longer-participating" case above.
+  // REVIEWED-BOUNDED: lexical_search_meta is keyed by (connector_instance_id, stream)
+  // and the stream count per connector is a small enumeration bounded by the
+  // manifest, well below the @max_rows=1024 declared in the artifact.
+  const orphanRows = await lexicalMetaListStreamsForConnector({ connectorInstanceId });
+  for (const row of orphanRows) {
+    if (visitedStreams.has(row.stream)) continue;
+    log(`[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
+        `no longer in manifest — dropping stale index + meta`);
+    await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream: row.stream });
+  }
+
+  return progressJob;
+}
+
 export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}, signal = null } = {}) {
   if (!manifest?.connector_id || !Array.isArray(manifest?.streams)) return;
   activeLexicalBackfillCount += 1;
@@ -677,50 +759,14 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
     });
 
     for (const connectorInstanceId of connectorInstanceIds) {
-      // Track which streams we visited so we can detect "previously
-      // participated, no longer participates" — those need their stale index
-      // rows and meta fingerprint dropped.
-      const visitedStreams = new Set();
-
-      for (const mStream of manifest.streams) {
-        if (signal?.aborted) {
-          throw signal.reason instanceof Error ? signal.reason : new Error('lexical backfill aborted');
-        }
-        const stream = mStream?.name;
-        if (typeof stream !== 'string' || stream.length === 0) continue;
-        visitedStreams.add(stream);
-
-        progressJob = await backfillLexicalStream({
-          connectorId,
-          connectorInstanceId,
-          mStream,
-          stream,
-          progressJob,
-          log,
-          signal,
-        });
-      }
-      progressJob = updateLexicalBackfillJob(progressJob, {
-        stream: null,
-        phase: 'cleanup',
-        recordsScanned: 0,
-        recordsTotal: null,
-        indexedRows: 0,
-      });
-
-      // Streams that previously had a meta row but are no longer in the
-      // manifest at all (entire stream removed). Same cleanup as the
-      // "no-longer-participating" case above.
-      // REVIEWED-BOUNDED: lexical_search_meta is keyed by (connector_instance_id, stream)
-      // and the stream count per connector is a small enumeration bounded by the
-      // manifest, well below the @max_rows=1024 declared in the artifact.
-      const orphanRows = await lexicalMetaListStreamsForConnector({ connectorInstanceId });
-      for (const row of orphanRows) {
-        if (visitedStreams.has(row.stream)) continue;
-        log(`[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
-            `no longer in manifest — dropping stale index + meta`);
-        await lexicalIndexAndMetaDeleteByStream({ connectorId, connectorInstanceId, stream: row.stream });
-      }
+      progressJob = await backfillLexicalConnectorInstance(
+        connectorId,
+        connectorInstanceId,
+        manifest.streams,
+        progressJob,
+        log,
+        signal,
+      );
     }
   } finally {
     activeLexicalBackfillCount = Math.max(0, activeLexicalBackfillCount - 1);
@@ -730,65 +776,48 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
 
 // ─── Public-route entry point ──────────────────────────────────────────────
 
-/**
- * The single helper the GET /v1/search route delegates to.
- *
- * Inputs: `req` (Fastify-style), `opts` (server opts including
- * lexicalRetrievalCapability), `tokenInfo` (from requireToken).
- *
- * Returns { envelope, disclosureData } so the route can emit the
- * disclosure.served spine event with consistent shape across modes.
- *
- * Throws errors with `code` set to `invalid_request`, `grant_stream_not_allowed`,
- * etc.; the route's existing rejectQuery / handleError paths shape them into
- * PDPP error envelopes.
- *
- * Per-mode behavior:
- *   - Client token: single grant + manifest. streams[] entries not in the
- *     grant are a hard error (grant_stream_not_allowed).
- *   - Owner token: cross-connector fan-out across every owner-visible
- *     connector. streams[] is a soft filter; an unknown stream name yields
- *     zero hits, not an error. No public connector_id parameter.
- */
-export async function runLexicalSearch({
-  req,
-  opts,
+function deriveLexicalSearchInvocationContext({ isOwner, tokenInfo, getOwnerSubjectId }) {
+  if (!isOwner) {
+    return {
+      actor: {
+        kind: 'client',
+        subject_id: tokenInfo.subject_id ?? null,
+        client_id: tokenInfo.client_id ?? null,
+        grant_id: tokenInfo.grant_id ?? null,
+        grant: tokenInfo.grant ?? { streams: [] },
+      },
+      ownerSubjectId: null,
+    };
+  }
+
+  // Resolve the owner subject id once so cross-binding fan-in helpers can
+  // enumerate every owner-visible connection without piping the value
+  // through each per-connector adapter call. Hosts SHOULD provide
+  // `getOwnerSubjectId` explicitly; we fall back to the default owner
+  // subject for tests that do not wire it.
+  const actor = { kind: 'owner', subject_id: tokenInfo.subject_id ?? null };
+  const ownerSubjectId = typeof getOwnerSubjectId === 'function'
+    ? getOwnerSubjectId()
+    : OWNER_AUTH_DEFAULT_SUBJECT_ID;
+
+  return { actor, ownerSubjectId };
+}
+
+// Native dependencies wire the operation against the existing FTS5 / SQLite
+// snapshot helpers. The operation owns the public-contract slice (allowlist,
+// advertisement gate, mode planning, cursor format, slice math, envelope,
+// disclosure data); this adapter keeps the native backend semantics together.
+function createLexicalSearchNativeDependencies({
+  advertisement,
+  ownerSubjectId,
   tokenInfo,
   resolveOwnerVisibleConnectorIds,
   resolveOwnerScopeForConnector,
   resolveOwnerManifestFromScope,
   buildOwnerReadGrantForManifest,
   resolveGrantManifest,
-  getOwnerSubjectId,
 }) {
-  const isOwner = tokenInfo.pdpp_token_kind === 'owner';
-  const advertisement = resolveLexicalRetrievalAdvertisement(opts);
-  const actor = isOwner
-    ? { kind: 'owner', subject_id: tokenInfo.subject_id ?? null }
-    : {
-        kind: 'client',
-        subject_id: tokenInfo.subject_id ?? null,
-        client_id: tokenInfo.client_id ?? null,
-        grant_id: tokenInfo.grant_id ?? null,
-        grant: tokenInfo.grant ?? { streams: [] },
-      };
-
-  // Native dependencies wire the operation against the existing FTS5 /
-  // SQLite snapshot helpers. The operation owns the public-contract slice
-  // (allowlist, advertisement gate, mode planning, cursor format, slice math,
-  // envelope, disclosure data); these helpers keep their backend-specific
-  // semantics untouched.
-  // Resolve the owner subject id once so cross-binding fan-in helpers can
-  // enumerate every owner-visible connection without piping the value
-  // through each per-connector adapter call. Hosts SHOULD provide
-  // `getOwnerSubjectId` explicitly; we fall back to the default owner
-  // subject for tests that do not wire it.
-  const ownerSubjectId = isOwner
-    ? (typeof getOwnerSubjectId === 'function'
-        ? getOwnerSubjectId()
-        : OWNER_AUTH_DEFAULT_SUBJECT_ID)
-    : null;
-  const dependencies = {
+  return {
     getAdvertisement: () => advertisement,
     listOwnerVisibleConnectorIds: () => resolveOwnerVisibleConnectorIds(),
     listOwnerVisibleBindings: async () => {
@@ -950,6 +979,56 @@ export async function runLexicalSearch({
         : recordPath;
     },
   };
+}
+
+/**
+ * The single helper the GET /v1/search route delegates to.
+ *
+ * Inputs: `req` (Fastify-style), `opts` (server opts including
+ * lexicalRetrievalCapability), `tokenInfo` (from requireToken).
+ *
+ * Returns { envelope, disclosureData } so the route can emit the
+ * disclosure.served spine event with consistent shape across modes.
+ *
+ * Throws errors with `code` set to `invalid_request`, `grant_stream_not_allowed`,
+ * etc.; the route's existing rejectQuery / handleError paths shape them into
+ * PDPP error envelopes.
+ *
+ * Per-mode behavior:
+ *   - Client token: single grant + manifest. streams[] entries not in the
+ *     grant are a hard error (grant_stream_not_allowed).
+ *   - Owner token: cross-connector fan-out across every owner-visible
+ *     connector. streams[] is a soft filter; an unknown stream name yields
+ *     zero hits, not an error. No public connector_id parameter.
+ */
+export async function runLexicalSearch({
+  req,
+  opts,
+  tokenInfo,
+  resolveOwnerVisibleConnectorIds,
+  resolveOwnerScopeForConnector,
+  resolveOwnerManifestFromScope,
+  buildOwnerReadGrantForManifest,
+  resolveGrantManifest,
+  getOwnerSubjectId,
+}) {
+  const isOwner = tokenInfo.pdpp_token_kind === 'owner';
+  const advertisement = resolveLexicalRetrievalAdvertisement(opts);
+  const { actor, ownerSubjectId } = deriveLexicalSearchInvocationContext({
+    isOwner,
+    tokenInfo,
+    getOwnerSubjectId,
+  });
+  const dependencies = createLexicalSearchNativeDependencies({
+    advertisement,
+    ownerSubjectId,
+    tokenInfo,
+    resolveOwnerVisibleConnectorIds,
+    resolveOwnerScopeForConnector,
+    resolveOwnerManifestFromScope,
+    buildOwnerReadGrantForManifest,
+    resolveGrantManifest,
+  });
 
   let result;
   try {
@@ -1116,58 +1195,99 @@ function buildCandidateRecordKeys({ connectorInstanceId, streamName, streamGrant
   return allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters });
 }
 
+function decideSearchPlanStreamEligibility({ manifestStream, grantStreams, streamsFilter, compiledFilter, resolvedConnectorInstanceId }) {
+  const declaredFields = manifestStream?.query?.search?.lexical_fields;
+  if (!Array.isArray(declaredFields) || declaredFields.length === 0) return null;
+
+  const streamName = manifestStream.name;
+  const isRequestedStream = !streamsFilter || streamsFilter.includes(streamName);
+  if (!isRequestedStream) return null;
+
+  const streamGrant = grantStreams.find((candidate) => candidate.name === streamName);
+  if (!streamGrant) return null;
+
+  const hasConnectionPin = typeof streamGrant.connection_id === 'string' && streamGrant.connection_id.length > 0;
+  const isPinnedToAnotherConnection = hasConnectionPin
+    && resolvedConnectorInstanceId
+    && streamGrant.connection_id !== resolvedConnectorInstanceId;
+  if (isPinnedToAnotherConnection) return null;
+
+  const grantedFields = Array.isArray(streamGrant.fields) && streamGrant.fields.length > 0
+    ? new Set(streamGrant.fields)
+    : null;
+  const searchableFields = grantedFields
+    ? declaredFields.filter((field) => grantedFields.has(field))
+    : declaredFields.slice();
+  if (searchableFields.length === 0) return null;
+
+  const compiledFilters = compiledFilter?.streamName === streamName ? compiledFilter.filters : [];
+  return {
+    streamGrant,
+    compiledFilters,
+    planEntry: {
+      streamName,
+      ...(resolvedConnectorInstanceId ? { connectorInstanceId: resolvedConnectorInstanceId } : {}),
+      searchableFields,
+    },
+  };
+}
+
+function applySearchPlanCandidateScan({ planEntry, connectorInstanceId, streamGrant, manifestStream, compiledFilters }) {
+  const shouldScanCandidates = needsCandidateRecordScan(streamGrant, compiledFilters);
+  if (!connectorInstanceId || !shouldScanCandidates) return planEntry;
+
+  const candidateRecordKeys = !isPostgresStorageBackend()
+    ? buildCandidateRecordKeys({
+      connectorInstanceId,
+      streamName: planEntry.streamName,
+      streamGrant,
+      manifestStream,
+      compiledFilters,
+    })
+    : null;
+  const postgresCandidateFilter = isPostgresStorageBackend()
+    ? { streamGrant, manifestStream, compiledFilters }
+    : null;
+
+  return {
+    ...planEntry,
+    ...(candidateRecordKeys ? { candidateRecordKeys } : {}),
+    ...(postgresCandidateFilter ? { postgresCandidateFilter } : {}),
+  };
+}
+
+function buildSearchPlanEntryForGrant({ manifestStream, grantStreams, streamsFilter, compiledFilter, resolvedConnectorInstanceId }) {
+  const eligibility = decideSearchPlanStreamEligibility({
+    manifestStream,
+    grantStreams,
+    streamsFilter,
+    compiledFilter,
+    resolvedConnectorInstanceId,
+  });
+  if (!eligibility) return null;
+
+  return applySearchPlanCandidateScan({
+    ...eligibility,
+    manifestStream,
+    connectorInstanceId: resolvedConnectorInstanceId,
+  });
+}
+
 export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null, connectorInstanceId = null }) {
   if (!manifest?.streams || !grant?.streams) return [];
   const resolvedConnectorInstanceId = connectorId
     ? resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId || manifest?.storage_binding?.connector_instance_id || manifest?.connector_instance_id)
     : null;
   const plan = [];
-  for (const mStream of manifest.streams) {
-    const declared = mStream?.query?.search?.lexical_fields;
-    if (!Array.isArray(declared) || declared.length === 0) continue;
-    if (streamsFilter && !streamsFilter.includes(mStream.name)) continue;
-
-    const streamGrant = grant.streams.find((s) => s.name === mStream.name);
-    if (!streamGrant) continue;
-    if (
-      typeof streamGrant.connection_id === 'string'
-      && streamGrant.connection_id.length > 0
-      && resolvedConnectorInstanceId
-      && streamGrant.connection_id !== resolvedConnectorInstanceId
-    ) {
-      continue;
-    }
-
-    const grantedFields = Array.isArray(streamGrant.fields) && streamGrant.fields.length > 0
-      ? new Set(streamGrant.fields)
-      : null;
-    const searchable = grantedFields
-      ? declared.filter((f) => grantedFields.has(f))
-      : declared.slice();
-    if (searchable.length === 0) continue;
-
-    const filters = compiledFilter?.streamName === mStream.name ? compiledFilter.filters : [];
-    const shouldScanCandidates = needsCandidateRecordScan(streamGrant, filters);
-    const candidateRecordKeys = resolvedConnectorInstanceId && shouldScanCandidates && !isPostgresStorageBackend()
-      ? buildCandidateRecordKeys({
-        connectorInstanceId: resolvedConnectorInstanceId,
-        streamName: mStream.name,
-        streamGrant,
-        manifestStream: mStream,
-        compiledFilters: filters,
-      })
-      : null;
-    const postgresCandidateFilter = resolvedConnectorInstanceId && shouldScanCandidates && isPostgresStorageBackend()
-      ? { streamGrant, manifestStream: mStream, compiledFilters: filters }
-      : null;
-
-    plan.push({
-      streamName: mStream.name,
-      ...(resolvedConnectorInstanceId ? { connectorInstanceId: resolvedConnectorInstanceId } : {}),
-      searchableFields: searchable,
-      ...(candidateRecordKeys ? { candidateRecordKeys } : {}),
-      ...(postgresCandidateFilter ? { postgresCandidateFilter } : {}),
+  for (const manifestStream of manifest.streams) {
+    const planEntry = buildSearchPlanEntryForGrant({
+      manifestStream,
+      grantStreams: grant.streams,
+      streamsFilter,
+      compiledFilter,
+      resolvedConnectorInstanceId,
     });
+    if (planEntry) plan.push(planEntry);
   }
   return plan;
 }
@@ -1396,79 +1516,159 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
     : runFtsQueryForConnectorSqlite(branchArgs);
 }
 
+// Both FTS backends can return several field matches for a record. Keep the
+// collapse decision in one explicit mutation seam so backend query adapters
+// only supply their raw row values and score convention.
+function applyFtsHitMatch({ collapsed, connectorId, connectorInstanceId, stream, recordKey, emittedAt, recordJson, field, score, snippetText, allowsSnippets }) {
+  const key = `${stream}:${recordKey}`;
+  const existing = collapsed.get(key);
+  if (existing) {
+    updateCollapsedFtsHit(existing, { field, score, snippetText, allowsSnippets });
+    return;
+  }
+  collapsed.set(key, makeCollapsedFtsHit({ connectorId, connectorInstanceId, stream, recordKey, emittedAt, recordJson, field, score, snippetText, allowsSnippets }));
+}
+
+function updateCollapsedFtsHit(hit, { field, score, snippetText, allowsSnippets }) {
+  if (!hit.matchedFields.includes(field)) {
+    hit.matchedFields.push(field);
+  }
+  if (!(score < hit.score)) return;
+  hit.score = score;
+  if (allowsSnippets && snippetText) {
+    hit.snippet = { field, text: snippetText };
+  }
+}
+
+function makeCollapsedFtsHit({ connectorId, connectorInstanceId, stream, recordKey, emittedAt, recordJson, field, score, snippetText, allowsSnippets }) {
+  return {
+    connectorId,
+    connectorInstanceId,
+    stream,
+    recordKey,
+    emittedAt,
+    authoredAt: authoredTimestampFromRecordJson(recordJson),
+    matchedFields: [field],
+    ...(allowsSnippets && snippetText ? { snippet: { field, text: snippetText } } : {}),
+    score,
+  };
+}
+
+async function resolvePostgresPlanEntryCandidateRecordKeys({ connectorInstanceId, entry }) {
+  if (Array.isArray(entry.candidateRecordKeys)) return entry.candidateRecordKeys;
+  if (!entry.postgresCandidateFilter) return null;
+  return buildPostgresCandidateRecordKeys({
+    connectorInstanceId,
+    streamName: entry.streamName,
+    ...entry.postgresCandidateFilter,
+  });
+}
+
+async function queryPostgresFtsPlanEntry({ connectorId, connectorInstanceId, entry, q, candidateWindowLimit }) {
+  const candidateRecordKeys = await resolvePostgresPlanEntryCandidateRecordKeys({ connectorInstanceId, entry });
+  if (Array.isArray(candidateRecordKeys) && candidateRecordKeys.length === 0) return null;
+  const rows = await postgresLexicalSearch({
+    connectorId,
+    connectorInstanceId,
+    stream: entry.streamName,
+    searchableFields: entry.searchableFields,
+    q,
+    // Request the inner candidate-CTE size; `postgresLexicalSearch` clamps
+    // the returned rows to <=100, so `candidateWindowLimit` (the effective
+    // cap) is what bounds `rows.length`.
+    limit: postgresLexicalCandidateLimit(),
+    recordKeys: candidateRecordKeys,
+  });
+  return {
+    rows: Array.isArray(candidateRecordKeys)
+      ? rows.filter((row) => candidateRecordKeys.includes(row.record_key))
+      : rows,
+    truncated: rows.length >= candidateWindowLimit,
+  };
+}
+
 // Postgres backend branch of `runFtsQueryForConnector`. Consumes the already
 // grant-scoped plan entries (candidate record keys / postgres candidate filter
 // are computed upstream) and returns the same
 // `{ hits, rankedCandidateCount, truncated, candidateWindowLimit }` shape.
 async function runFtsQueryForConnectorPostgres({ connectorId, resolvedConnectorInstanceId, planEntries, q, allowsSnippets }) {
   let truncated = false;
-  {
-    const candidateWindowLimit = postgresEffectiveCandidateWindowLimit();
-    const collapsed = new Map();
-    for (const entry of planEntries) {
-      const candidateRecordKeys = Array.isArray(entry.candidateRecordKeys)
-        ? entry.candidateRecordKeys
-        : entry.postgresCandidateFilter
-          ? await buildPostgresCandidateRecordKeys({
-            connectorInstanceId: resolvedConnectorInstanceId,
-            streamName: entry.streamName,
-            ...entry.postgresCandidateFilter,
-          })
-          : null;
-      if (Array.isArray(candidateRecordKeys) && candidateRecordKeys.length === 0) continue;
-      const rows = await postgresLexicalSearch({
+  const candidateWindowLimit = postgresEffectiveCandidateWindowLimit();
+  const collapsed = new Map();
+  for (const entry of planEntries) {
+    const queryResult = await queryPostgresFtsPlanEntry({
+      connectorId,
+      connectorInstanceId: resolvedConnectorInstanceId,
+      entry,
+      q,
+      candidateWindowLimit,
+    });
+    if (!queryResult) continue;
+    if (queryResult.truncated) truncated = true;
+    for (const row of queryResult.rows) {
+      applyFtsHitMatch({
+        collapsed,
         connectorId,
         connectorInstanceId: resolvedConnectorInstanceId,
         stream: entry.streamName,
-        searchableFields: entry.searchableFields,
-        q,
-        // Request the inner candidate-CTE size; `postgresLexicalSearch` clamps
-        // the returned rows to <=100, so `candidateWindowLimit` (the effective
-        // cap) is what bounds `rows.length`.
-        limit: postgresLexicalCandidateLimit(),
-        recordKeys: candidateRecordKeys,
+        recordKey: row.record_key,
+        emittedAt: row.emitted_at,
+        recordJson: row.record_json,
+        field: row.field,
+        score: -Number(row.score || 0),
+        snippetText: row.snippet_text,
+        allowsSnippets,
       });
-      if (rows.length >= candidateWindowLimit) truncated = true;
-      for (const row of rows) {
-        if (
-          Array.isArray(candidateRecordKeys)
-          && !candidateRecordKeys.includes(row.record_key)
-        ) {
-          continue;
-        }
-        const key = `${entry.streamName}:${row.record_key}`;
-        const score = -Number(row.score || 0);
-        const existing = collapsed.get(key);
-        if (existing) {
-          if (!existing.matchedFields.includes(row.field)) {
-            existing.matchedFields.push(row.field);
-          }
-          if (score < existing.score) {
-            existing.score = score;
-            if (allowsSnippets && row.snippet_text) {
-              existing.snippet = { field: row.field, text: row.snippet_text };
-            }
-          }
-        } else {
-          collapsed.set(key, {
-            connectorId,
-            connectorInstanceId: resolvedConnectorInstanceId,
-            stream: entry.streamName,
-            recordKey: row.record_key,
-            emittedAt: row.emitted_at,
-            authoredAt: authoredTimestampFromRecordJson(row.record_json),
-            matchedFields: [row.field],
-            ...(allowsSnippets && row.snippet_text
-              ? { snippet: { field: row.field, text: row.snippet_text } }
-              : {}),
-            score,
-          });
-        }
-      }
     }
-    const hits = Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
-    return { hits, rankedCandidateCount: hits.length, truncated, candidateWindowLimit };
   }
+  const hits = Array.from(collapsed.values()).sort((a, b) => a.score - b.score);
+  return { hits, rankedCandidateCount: hits.length, truncated, candidateWindowLimit };
+}
+
+function querySqliteFtsPlanEntry({ connectorInstanceId, entry, field, ftsQuery, allowsSnippets }) {
+  // bm25(lexical_search_index) returns smaller values for better matches
+  // (negative-leaning). The public score exposes that implementation-relative
+  // ordering honestly rather than normalizing it.
+  const snippetExpr = allowsSnippets
+    ? `snippet(lexical_search_index, 5, '<mark>', '</mark>', '…', 48)`
+    : `NULL`;
+  const recordKeyConstraint = Array.isArray(entry.candidateRecordKeys)
+    ? `AND r.record_key IN (${entry.candidateRecordKeys.map(() => '?').join(',')})`
+    : '';
+  // REVIEWED-DYNAMIC: FTS query has conditional snippet/candidate predicates;
+  // SQL composed at call time; the bounded candidate window
+  // (SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT) is interpolated as a numeric
+  // literal.
+  const sql = `
+        SELECT
+          lsi.record_key                          AS record_key,
+          ${snippetExpr}                          AS snippet_text,
+          bm25(lexical_search_index)              AS score,
+          r.emitted_at                            AS emitted_at,
+          r.record_json                           AS record_json,
+          r.deleted                               AS deleted
+        FROM lexical_search_index lsi
+        JOIN records r
+          ON r.connector_instance_id = lsi.connector_instance_id
+         AND r.stream       = lsi.stream
+         AND r.record_key   = lsi.record_key
+        WHERE lsi.connector_instance_id = ?
+          AND lsi.stream       = ?
+          AND lsi.field        = ?
+          AND lsi.text MATCH   ?
+          AND r.deleted = 0
+          ${recordKeyConstraint}
+        ORDER BY score ASC
+        LIMIT ${SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT}
+      `;
+  const rows = [];
+  for (const row of iterateDynamicSqlAcknowledged(
+    sql,
+    [connectorInstanceId, entry.streamName, field, ftsQuery, ...(entry.candidateRecordKeys || [])],
+  )) {
+    rows.push(row);
+  }
+  return rows;
 }
 
 // SQLite backend branch of `runFtsQueryForConnector`. Consumes the already
@@ -1492,77 +1692,28 @@ function runFtsQueryForConnectorSqlite({ connectorId, resolvedConnectorInstanceI
   for (const entry of planEntries) {
     if (Array.isArray(entry.candidateRecordKeys) && entry.candidateRecordKeys.length === 0) continue;
     for (const field of entry.searchableFields) {
-      // bm25(lexical_search_index) returns smaller values for better matches
-      // (negative-leaning). The public score exposes that implementation-
-      // relative ordering honestly rather than normalizing it.
-      const snippetExpr = allowsSnippets
-        ? `snippet(lexical_search_index, 5, '<mark>', '</mark>', '…', 48)`
-        : `NULL`;
-      const recordKeyConstraint = Array.isArray(entry.candidateRecordKeys)
-        ? `AND r.record_key IN (${entry.candidateRecordKeys.map(() => '?').join(',')})`
-        : '';
-      // REVIEWED-DYNAMIC: FTS query has conditional snippet/candidate
-      // predicates; SQL composed at call time; the bounded candidate window
-      // (SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT) is interpolated as a numeric
-      // literal.
-      const sql = `
-        SELECT
-          lsi.record_key                          AS record_key,
-          ${snippetExpr}                          AS snippet_text,
-          bm25(lexical_search_index)              AS score,
-          r.emitted_at                            AS emitted_at,
-          r.record_json                           AS record_json,
-          r.deleted                               AS deleted
-        FROM lexical_search_index lsi
-        JOIN records r
-          ON r.connector_instance_id = lsi.connector_instance_id
-         AND r.stream       = lsi.stream
-         AND r.record_key   = lsi.record_key
-        WHERE lsi.connector_instance_id = ?
-          AND lsi.stream       = ?
-          AND lsi.field        = ?
-          AND lsi.text MATCH   ?
-          AND r.deleted = 0
-          ${recordKeyConstraint}
-        ORDER BY score ASC
-        LIMIT ${SQLITE_LEXICAL_CANDIDATE_WINDOW_LIMIT}
-      `;
-      const rows = [];
-      for (const row of iterateDynamicSqlAcknowledged(
-        sql,
-        [resolvedConnectorInstanceId, entry.streamName, field, ftsQuery, ...(entry.candidateRecordKeys || [])],
-      )) {
-        rows.push(row);
-      }
+      const rows = querySqliteFtsPlanEntry({
+        connectorInstanceId: resolvedConnectorInstanceId,
+        entry,
+        field,
+        ftsQuery,
+        allowsSnippets,
+      });
       if (rows.length >= candidateWindowLimit) truncated = true;
       for (const row of rows) {
-        const key = `${entry.streamName}:${row.record_key}`;
-        const existing = collapsed.get(key);
-        if (existing) {
-          if (!existing.matchedFields.includes(field)) {
-            existing.matchedFields.push(field);
-          }
-          if (row.score < existing.score) {
-            existing.score = row.score;
-            if (allowsSnippets && row.snippet_text) {
-              existing.snippet = { field, text: row.snippet_text };
-            }
-          }
-        } else {
-          collapsed.set(key, {
-            connectorId,
-            connectorInstanceId: resolvedConnectorInstanceId,
-            stream: entry.streamName,
-            recordKey: row.record_key,
-            emittedAt: row.emitted_at,
-            authoredAt: authoredTimestampFromRecordJson(row.record_json),
-            matchedFields: [field],
-            ...(allowsSnippets && row.snippet_text
-              ? { snippet: { field, text: row.snippet_text } }
-              : {}),
-            score: Number(row.score),
-          });
-        }
+        applyFtsHitMatch({
+          collapsed,
+          connectorId,
+          connectorInstanceId: resolvedConnectorInstanceId,
+          stream: entry.streamName,
+          recordKey: row.record_key,
+          emittedAt: row.emitted_at,
+          recordJson: row.record_json,
+          field,
+          score: Number(row.score),
+          snippetText: row.snippet_text,
+          allowsSnippets,
+        });
       }
     }
   }

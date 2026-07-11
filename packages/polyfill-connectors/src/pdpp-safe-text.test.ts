@@ -6,7 +6,7 @@
  * .nullable() works as expected. The branded type is nominally
  * distinct (verified at compile time + runtime).
  *
- * Design contract: docs/binary-content-invariant-design-brief.md §4.3.
+ * Design contract: docs/reference/binary-content-invariant-design-brief.md §4.3.
  */
 
 import assert from "node:assert/strict";

@@ -1,5 +1,0 @@
-# hone work t1b-consent-ui-requested-stream-item-0005 — baseline rung 'exact-move'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/routes/as-consent-ui-helpers.ts
-# expect: callback body byte-identical modulo indentation + the explicit ui param; markup strings unchanged byte-for-byte
-# exit: 0  duration: 0s  verdict: PASS
-

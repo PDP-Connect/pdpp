@@ -1,7 +1,7 @@
 # Polyfill connector registry
 
 When adding or changing a connector manifest, follow the repo-level
-[connector authoring guide](../../docs/connector-authoring-guide.md). The guide
+[connector authoring guide](../../docs/reference/connector-authoring-guide.md). The guide
 is enforced by manifest-honesty tests for search affordances and presentation
 roles; do not land readable owner-visible fields without the matching semantics.
 
@@ -39,7 +39,7 @@ These connectors fetch via the platform's public HTTP API using a long-lived tok
 
 These connectors drive a Playwright session against a persistent browser profile. Session expiry is handled by `src/auto-login/<platform>.js` helpers that drive re-login + 2FA via `INTERACTION`. **None of these are first-run portable without some friction** — the upstream platforms have anti-bot surfaces that treat fresh IPs and cold profiles as higher-risk by design.
 
-All browser-scrape connectors use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile at `~/.pdpp/profiles/<name>/`, full patchright stealth). See `docs/connector-authoring-guide.md`. The legacy shared daemon and shared `~/.pdpp/browser-profile/` were retired 2026-04-25 (`openspec/changes/retire-browser-daemon`).
+All browser-scrape connectors use `acquireIsolatedBrowser({ profileName: '<name>' })` (per-connector on-disk profile at `~/.pdpp/profiles/<name>/`, full patchright stealth). See `docs/reference/connector-authoring-guide.md`. The legacy shared daemon and shared `~/.pdpp/browser-profile/` were retired 2026-04-25.
 
 First-run-portability notes are platform-specific and worth reading before handing the connector to a new user:
 
@@ -113,12 +113,10 @@ Required conventions: `flushAndExit` helper, `resourceSet` filter, tombstones on
 
 ## Spec surface documented
 
-See `openspec/changes/add-polyfill-connector-system/specs/polyfill-runtime/spec.md` for the 5 runtime requirements we formalized: resources-filter enforcement, filesystem binding, tombstones, INTERACTION on missing credentials, flushAndExit.
+The 5 runtime requirements are formalized: resources-filter enforcement, filesystem binding, tombstones, INTERACTION on missing credentials, flushAndExit.
 
 ## Open questions (3)
 
 - Connector configuration surface — manifest-declared `credentials_schema` + `options_schema`
 - RS storage topology — unified vs per-connector DBs
 - Credential storage — vault interface
-
-See `openspec/changes/add-polyfill-connector-system/design-notes/*-open-question.md`.

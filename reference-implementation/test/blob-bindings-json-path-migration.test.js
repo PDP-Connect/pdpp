@@ -11,7 +11,7 @@
  *   - CHECK constraint rejects malformed json_path values
  *   - sha256 UNIQUE index is in place
  *
- * Design contract: docs/binary-content-invariant-design-brief.md §4.6.
+ * Design contract: docs/reference/binary-content-invariant-design-brief.md §4.6.
  */
 
 import test from 'node:test';

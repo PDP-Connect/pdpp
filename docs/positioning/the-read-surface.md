@@ -43,8 +43,7 @@ surface" per L1061)
 
 - Full-text search, aggregation, nested/OR filters, multi-hop expansion — **not in
   v0.1** (spec-core L1069; §11). The reference implementation ships search and aggregate
-  as extensions; do not present them as Core capabilities (see
-  `docs/research/spec-readiness-audit-2026-06-24.md` for the RI-superset inventory).
+  as extensions; do not present them as Core capabilities.
 - Request-time filters do **not** narrow grant scope (§11, L1475): filtering what you
   read ≠ consent narrowing. Don't blur these.
 - No claim that one half "leads." Branding emphasis is deliberately undecided [owner];
@@ -64,7 +63,5 @@ capability listed above is normative and implemented.
 - `apps/site/content/docs/spec-core.md` §8 (L891–1292: the interface), §11 (scope/
   exclusions), L1061 (durable base query surface), L1069 (search exclusion), L1079
   (projection-aware sync rule).
-- `docs/research/spec-readiness-audit-2026-06-24.md` — verified live-vs-deferred split;
-  RI extension surface.
 - Related: [pdpp-and-oauth](pdpp-and-oauth.md), [pdpp-and-dti](pdpp-and-dti.md),
   [why-grants-are-durable](why-grants-are-durable.md).

@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Oura stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * Ground truth: the `sleepRecord` / `readinessRecord` / `activityRecord`
  * builders in index.ts. Schemas mirror the *emitted* shape:

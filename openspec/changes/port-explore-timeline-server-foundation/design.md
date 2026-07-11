@@ -12,7 +12,7 @@ deploy branch, so the live fast feed runs on un-merged server code. This change
 ports that layer onto `main` verbatim in contract.
 
 The bucket-aggregate over-time-chart endpoint depends on this layer (the
-expression index and the substrate's scope plumbing). Per the Codex gate, when a
+expression index and the substrate's scope plumbing). Per the independent-review gate, when a
 migration is discovered necessary the build stops and re-gates; it was, so the
 foundation lands first as its own change and the bucket endpoint builds on it
 later. **No bucket-aggregate requirement appears in this change.**

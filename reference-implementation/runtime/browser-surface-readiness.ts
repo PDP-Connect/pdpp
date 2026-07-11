@@ -173,38 +173,59 @@ export function createMidWaitSurfaceLossDetector(
     resolveFailure = resolve;
   });
 
+  function resolveSurfaceLoss(failure: BrowserSurfaceReadinessProbeFailure): void {
+    if (cancelled) {
+      return;
+    }
+    resolveFailure(failure);
+  }
+
+  function handlePollResult(result: BrowserSurfaceReadinessProbeResult): void {
+    if (cancelled) {
+      return;
+    }
+    if (result.ok) {
+      scheduleNextPoll();
+    } else {
+      resolveSurfaceLoss(result);
+    }
+  }
+
+  function pollErrorToFailure(err: unknown): BrowserSurfaceReadinessProbeFailure {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      code: "browser_surface_cdp_unreachable",
+      detail: `mid-wait surface poll threw: ${message}`,
+    };
+  }
+
+  function handlePollError(err: unknown): void {
+    if (cancelled) {
+      return;
+    }
+    resolveSurfaceLoss(pollErrorToFailure(err));
+  }
+
+  function runScheduledPoll(): void {
+    if (cancelled) {
+      return;
+    }
+    probe.probe(surface).then(handlePollResult).catch(handlePollError);
+  }
+
   function scheduleNextPoll(): void {
     if (cancelled) {
       return;
     }
-    timerId = setTimeout(() => {
-      if (cancelled) {
-        return;
-      }
-      probe
-        .probe(surface)
-        .then((result) => {
-          if (cancelled) {
-            return;
-          }
-          if (result.ok) {
-            scheduleNextPoll();
-          } else {
-            resolveFailure(result);
-          }
-        })
-        .catch((err: unknown) => {
-          if (cancelled) {
-            return;
-          }
-          const message = err instanceof Error ? err.message : String(err);
-          resolveFailure({
-            ok: false,
-            code: "browser_surface_cdp_unreachable",
-            detail: `mid-wait surface poll threw: ${message}`,
-          });
-        });
-    }, pollIntervalMs);
+    timerId = setTimeout(runScheduledPoll, pollIntervalMs);
+  }
+
+  function clearScheduledPoll(): void {
+    if (timerId !== null) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
   }
 
   scheduleNextPoll();
@@ -213,10 +234,7 @@ export function createMidWaitSurfaceLossDetector(
     lossPromise,
     cancel() {
       cancelled = true;
-      if (timerId !== null) {
-        clearTimeout(timerId);
-        timerId = null;
-      }
+      clearScheduledPoll();
     },
   };
 }

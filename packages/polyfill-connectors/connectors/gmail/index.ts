@@ -707,7 +707,7 @@ export function resolveGmailAddressFromEnv(env: NodeJS.ProcessEnv = process.env)
  * account/domain* connected, so we keep the domain and the first character of
  * the local-part and mask the rest:
  *
- *   "the owner.nunamaker@gmail.com"  ->  "t***@gmail.com"
+ *   "taylor.rivera@example.com"  ->  "t***@example.com"
  *   "x@example.com"            ->  "***@example.com"
  *
  * If the value does not look like an `local@domain` address (no `@`, or an

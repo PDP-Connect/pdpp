@@ -7,7 +7,9 @@ These examples are illustrative sequences built from the current draft. They are
 
 - [spec-core.md](spec-core.md)
 - [spec-collection-profile.md](spec-collection-profile.md)
-- [spec-data-query-api.md](spec-data-query-api.md)
+
+(`spec-data-query-api.md` is superseded; its surviving normative content lives in
+[spec-core.md](spec-core.md) — see the authority map in the README.)
 
 Two explicit limits apply in this file:
 
@@ -33,7 +35,7 @@ This is the logical content carried in the OAuth authorization request. `client_
   "authorization_details": [
     {
       "type": "https://pdpp.org/data-access",
-      "connector_id": "https://registry.pdpp.org/connectors/spotify",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
       "purpose_code": "https://pdpp.org/purpose/personalization",
       "purpose_description": "Recommend concerts based on your listening history",
       "access_mode": "single_use",
@@ -102,7 +104,7 @@ The AS validates the request against the connector manifest and issues an immuta
   "issued_at": "2026-04-11T15:00:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "concerts_app" },
-  "connector_id": "https://registry.pdpp.org/connectors/spotify",
+  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/spotify" },
   "manifest_version": "2.0.0",
   "purpose_code": "https://pdpp.org/purpose/personalization",
   "purpose_description": "Recommend concerts based on your listening history",
@@ -190,7 +192,7 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   "authorization_details": [
     {
       "type": "https://pdpp.org/data-access",
-      "connector_id": "https://registry.pdpp.org/connectors/chatgpt",
+      "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/chatgpt" },
       "purpose_code": "https://pdpp.org/purpose/agent_context",
       "purpose_description": "Provide context to your personal AI agent",
       "access_mode": "continuous",
@@ -211,7 +213,7 @@ A personal AI agent wants ongoing access to the user's ChatGPT data.
   "issued_at": "2026-04-11T15:10:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "my_agent" },
-  "connector_id": "https://registry.pdpp.org/connectors/chatgpt",
+  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/chatgpt" },
   "manifest_version": "2.0.0",
   "purpose_code": "https://pdpp.org/purpose/agent_context",
   "purpose_description": "Provide context to your personal AI agent",
@@ -403,7 +405,7 @@ A sleep analysis app receives a one-time grant with a retention declaration.
   "issued_at": "2026-04-11T15:20:00Z",
   "subject": { "id": "user_abc" },
   "client": { "client_id": "sleep_app" },
-  "connector_id": "https://registry.pdpp.org/connectors/oura",
+  "source": { "kind": "connector", "id": "https://registry.pdpp.org/connectors/oura" },
   "manifest_version": "1.0.0",
   "purpose_code": "https://pdpp.org/purpose/analytics",
   "purpose_description": "Analyze your sleep patterns",

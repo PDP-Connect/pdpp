@@ -1,5 +1,0 @@
-# hone work df-surface-sendtestevent-202-body-0002 — baseline rung 'diff-scope'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- test/client-event-subscriptions-e2e.test.js server/routes/rs-mutation.ts
-# expect: only test/client-event-subscriptions-e2e.test.js changed; rs-mutation.ts byte-identical at commit
-# exit: 0  duration: 0s  verdict: PASS
-

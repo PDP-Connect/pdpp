@@ -84,5 +84,4 @@ later analysis:
 ## References
 
 - `apps/site/content/docs/spec-core.md` — grant fields (§6), grant integrity / "signable" (L1383), continuous-access token guidance (L1379), retention parallel to OAuth scope compliance (L606), GNAP/RFC 9396 comparison.
-- `docs/research/pdpp-consent-artifact-persistence-and-sharing-brief-2026-06-23.md` — full evidence base, including FHIR / Open Banking / GDPR citations.
 - RFC 9396 (Rich Authorization Requests); RFC 6749 (OAuth 2.0); RFC 7662 (Token Introspection); RFC 6750 (Bearer Token Usage).

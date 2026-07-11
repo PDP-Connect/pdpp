@@ -1,6 +1,0 @@
-# hone work hm-await-order-state-flush-0002a — baseline rung 'red-then-green-state-flush-order'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-state-flush.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/await flushBatch(msg.stream);/flushBatch(msg.stream);/' runtime/index.js || exit 1; rc=0; node --test test/runtime-msg-order-state-flush.test.js || rc=1; git checkout -- runtime/index.js; [ "$rc" -eq 1 ]; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent, exit 0). Post: the rung seeds the dropped-await mutation (runtime/index.js:2980; sed target verified unique 2026-07-02), runs the oracle capturing rc BEFORE restoring the file, restores, and exits 0 ONLY IF the seeded run FAILED — the failing node --test output is fully visible in the receipt (the run-5 masking class is closed: a trailing git checkout can no longer launder a green exit), and the engine deterministically requires the failure line to name 'STATE arm: stream-A ingest POST completes before run.state_staged is emitted' (a failure of the wrong test is not the seeded red)
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

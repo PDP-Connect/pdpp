@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Strava stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * Ground truth: the `toActivityRecord` builder in index.ts. Schema mirrors the
  * emitted shape:

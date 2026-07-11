@@ -20,7 +20,7 @@ This change treats `docs/inbox/the owner-feedback-6-18-26.md` as discovery evide
 
 ### 2026-07-03 owner request and audit findings
 
-The 2026-07-03 owner review and three read-only audits (`tmp/workstreams/ui-url-brand-0703-report.md`, `ui-jump-0703-report.md`, `ui-owner-access-0703-report.md`) settle several decisions the earlier iterations had explicitly parked, and add a durable-contract change the change did not previously cover:
+The 2026-07-03 owner review and three read-only audits (URL/brand, jump navigation, and owner-access) settle several decisions the earlier iterations had explicitly parked, and add a durable-contract change the change did not previously cover:
 
 - Adopt a canonical clean owner-route topology and retire `/dashboard` as an owner-visible prefix. Root console is `/`, and sections are clean top-level nouns: `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, with deployment/admin surfaces under clean top-level nouns as well. `/dashboard/*` is not preserved as compatibility behavior; owner-facing links and generated actions SHALL use the clean routes directly.
 - Finish the owner-noun rename in every surface: Runs becomes Syncs, Traces becomes Audit, and the already-shipped Records→Sources label rename is completed to a matching route.
@@ -54,5 +54,5 @@ Modified:
 - No product code changes are authorized by this proposal alone.
 - Future owner-console changes that affect navigation, source setup, source state, record inspection, recovery, grant/read presentation, or evidence surfaces must map to the journey ledger and acceptance gates in this change.
 - Existing console UI work may need to be reverted, replaced, or re-sequenced if it improves local copy while preserving the wrong product model.
-- The `/dashboard` prefix removal changes the owner-visible route topology named normatively in `reference-surface-topology`; the spec delta modifies the affected requirements so they express owner-control-plane intent without pinning or preserving the `/dashboard` literal. `docs/voice-and-framing.md` §2–§3 (which cited `/dashboard/**`) must be reconciled to the new topology when the route work lands.
+- The `/dashboard` prefix removal changes the owner-visible route topology named normatively in `reference-surface-topology`; the spec delta modifies the affected requirements so they express owner-control-plane intent without pinning or preserving the `/dashboard` literal. `docs/reference/voice-and-framing.md` §2–§3 (which cited `/dashboard/**`) must be reconciled to the new topology when the route work lands.
 - Owner-access label edit and per-token drilldown require small additive reference-implementation contracts (RFC 7592 client-name update, a per-client token listing/revoke, and an optional grant-package count). Label-only polish (timestamp consistency, bearer preview/collapse, read-ladder relabel, package discovery link) needs no contract change and can land first.

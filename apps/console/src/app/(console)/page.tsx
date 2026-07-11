@@ -1,7 +1,7 @@
 /**
  * Dashboard home — the Ink Carbon "Standing" (Overview) view.
  *
- * Reskinned per docs/design/ink-carbon: a computed hero (one truth, calm |
+ * Reskinned per docs/design-system/ink-carbon: a computed hero (one truth, calm |
  * alarm | decide) over the owner's three questions — what can act as you, who
  * can read parts of you, what's been read — plus "anything wrong".
  *

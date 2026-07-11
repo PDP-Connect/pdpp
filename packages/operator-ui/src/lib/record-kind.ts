@@ -173,7 +173,7 @@ function classifyByDeclaredTypes(fieldTypes: DeclaredFieldTypes): RecordKind | n
  * implies: a declared `amount` role is money; a declared `event-time` role is an
  * event. Anything else with a title/secondary/actor is `titled`.
  *
- * `actor` does NOT imply `message` (Codex end-review blocker, 2026-06-22): an
+ * `actor` does NOT imply `message` (end-review blocker, 2026-06-22): an
  * `actor` role means "authored / attributed by", which is equally true of a music
  * TRACK (artist), a pull request (author), and a chat turn. There is no declared
  * signal that a record is CONVERSATIONAL, so claiming `message` from `actor` alone

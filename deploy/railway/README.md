@@ -196,9 +196,6 @@ backend on the operator's Railway account.
 
 ## Related
 
-- [`proposal.md`](../../openspec/changes/add-railway-core-deploy-target/proposal.md),
-  [`design.md`](../../openspec/changes/add-railway-core-deploy-target/design.md),
-  [`tasks.md`](../../openspec/changes/add-railway-core-deploy-target/tasks.md)
 - [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs)
 - [`scripts/check-railway-deploy-env.mjs`](../../scripts/check-railway-deploy-env.mjs)
 - [`scripts/check-railway-ghcr-public.mjs`](../../scripts/check-railway-ghcr-public.mjs)

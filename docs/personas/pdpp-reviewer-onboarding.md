@@ -68,29 +68,29 @@ PDPP is an authorization and disclosure protocol for personal data. It sits on O
 
 ## 5. The state of the review
 
-### The central observation (ChatGPT memo, confirmed)
+### The central observation (from review, confirmed)
 
 PDPP's **promise surface is wider than its enforcement surface**. The spec uses the same field table, same JSON envelope, and same consent surface for two categories of things that behave very differently:
 
 - **Protocol-enforced:** streams, fields, views, resources, time_range, access mode, revocation of future access. The resource server actually enforces these. A violation is catchable by the protocol.
 - **Policy-declared / attributed:** purpose codes, retention, client_claims, AI training flag. These are honor-system commitments that the protocol cannot make true.
 
-Both belong in PDPP. Neither is wrong. The problem is that the spec does not visibly distinguish them, so a reader cannot tell from the document which fields carry which weight. The historical ChatGPT review memo (`docs/archive/2026-04-inbox-retired/pdpp_memo_chatgpt.txt`) recommends adding an "enforcement status" column to every field table and making the distinction normative in the consent surface rendering. This is the highest-leverage editorial fix currently on the table, but it should be treated as the current center of gravity, not as the only live question in the project.
+Both belong in PDPP. Neither is wrong. The problem is that the spec does not visibly distinguish them, so a reader cannot tell from the document which fields carry which weight. A historical review recommends adding an "enforcement status" column to every field table and making the distinction normative in the consent surface rendering. This is the highest-leverage editorial fix currently on the table, but it should be treated as the current center of gravity, not as the only live question in the project.
 
 ### The load-bearing primitive question — still open
 
 Two candidates for PDPP's center of gravity remain live, but they may be layered rather than exclusive.
 
-1. **The enforcement/declaration typing discipline** (ChatGPT's reframe). PDPP's novelty is that it *classifies* consent-surface fields by what the protocol can actually make true, and refuses to let declarations masquerade as enforcement.
+1. **The enforcement/declaration typing discipline** (the review's reframe). PDPP's novelty is that it *classifies* consent-surface fields by what the protocol can actually make true, and refuses to let declarations masquerade as enforcement.
 2. **The attribution split** (earlier framing). PDPP's novelty is that it makes the rendering of enforced vs. client-committed claims a normative obligation on the consent surface, not a UI guideline.
 
-These are related but not the same. The first is an editorial discipline on the spec. The second is a normative constraint on implementations and may be one manifestation of the first rather than a rival theory of the protocol. Prior-art research (`docs/research/attribution-split-prior-art.md`) found no existing protocol that mandates attribution rendering normatively — HAIP comes closest for identity, but not for data-handling commitments. The three documented failure modes of prior attempts (P3P, TCF, Apple nutrition labels) are: "SHOULD display" eroding to "pretend to display," self-declaration without audit, and no enforcement counterpart.
+These are related but not the same. The first is an editorial discipline on the spec. The second is a normative constraint on implementations and may be one manifestation of the first rather than a rival theory of the protocol. Prior-art research found no existing protocol that mandates attribution rendering normatively — HAIP comes closest for identity, but not for data-handling commitments. The three documented failure modes of prior attempts (P3P, TCF, Apple nutrition labels) are: "SHOULD display" eroding to "pretend to display," self-declaration without audit, and no enforcement counterpart.
 
 The live question is therefore not "which one must survive," but "which one should be presented as primary in the draft, and how directly should the second be derived from it."
 
 ### What both inbox memos converge on
 
-Two independent historical memos — one from Gemini 3.1 Pro (`docs/archive/2026-04-inbox-retired/pdpp_memo.txt`) and one from ChatGPT 5.4 (`docs/archive/2026-04-inbox-retired/pdpp_memo_chatgpt.txt`) — were reviewed in this conversation. They are complementary, not redundant. Gemini pushes outward (scope, absorption from a competing spec called GDPP, day-2 operational realities, regulator positioning). ChatGPT pushes inward (honesty about what is actually enforced, conformance discipline, promise-surface containment). Both converge on:
+Two independent historical memos were reviewed in this conversation. They are complementary, not redundant. One pushes outward (scope, absorption from a competing spec called GDPP, day-2 operational realities, regulator positioning). The other pushes inward (honesty about what is actually enforced, conformance discipline, promise-surface containment). Both converge on:
 
 - A real projection-leak bug was identified in `reference-implementation/server/records.js` where `changes_since` leaked hidden-field changes through the projection filter.
 - Revocation and erasure are currently conflated and need to be separated.
@@ -109,13 +109,13 @@ PDPP already has one split (Core vs. Collection Profile). Whether additional pro
 
 The memos correctly identified a real bug in the older `changes_since` path: it selected rows by version > cursor and projected afterward, which leaked hidden-field-only changes. That specific implementation is no longer current. The live repo now uses a journaled `record_changes` history plus projection-aware snapshot comparison in `reference-implementation/server/records.js`, and the reference-implementation tests cover unauthorized-only change suppression, authorized changes, tombstones, and cursor expiry.
 
-The important continuity point is not "the bug is still open," but "this is the privacy property reviewers should verify in the live code." The `changed_fields` proposal in Gemini's memo should therefore be read as historical implementation guidance for an open bug, not as the canonical design forever.
+The important continuity point is not "the bug is still open," but "this is the privacy property reviewers should verify in the live code." The `changed_fields` proposal in the review memos should therefore be read as historical implementation guidance for an open bug, not as the canonical design forever.
 
 ### What is not first, but is still live
 
 These are not cleanup tasks and they are not dismissed. They are simply not the first editorial move.
 
-- Day-2 operational realities from Gemini's memo (continuous sync session decay, OTA connector updates) — real concerns that likely belong in the Collection Profile rather than Core.
+- Day-2 operational realities raised in review (continuous sync session decay, OTA connector updates) — real concerns that likely belong in the Collection Profile rather than Core.
 - Joint/third-party data classes absorbed from GDPP — promising, but should ride on top of the enforcement-status discipline so the spec is explicit about what kind of field `data_class` actually is.
 - Freshness / staleness metadata — probably one of the most valuable next additions after the enforcement-status pass, because it changes what implementations can honestly communicate to clients.
 - Connector trust, provenance, and update posture — foundational to Collection Profile credibility, even if not yet a v0.1 wire-level requirement.
@@ -129,22 +129,17 @@ These are not cleanup tasks and they are not dismissed. They are simply not the 
 
 **Canonical locations (active):**
 
-- `spec-*.md` at repo root — the current spec documents. `spec-core.md` is primary. Others: `spec-architecture.md`, `spec-auth-design.md`, `spec-change-tracking.md`, `spec-collection-profile.md`, `spec-connector-ecosystem.md`, `spec-data-query-api.md`, `spec-deferred.md`, `spec-dti-alignment.md`, `spec-reference-implementation-examples.md`.
+- `spec-*.md` at repo root — the current spec documents. `spec-core.md` is primary. Others: `spec-architecture.md`, `spec-auth-design.md`, `spec-change-tracking.md`, `spec-collection-profile.md`, `spec-connector-ecosystem.md`, `spec-data-query-api.md`, `spec-deferred.md`, `spec-reference-implementation-examples.md`.
 - `apps/web/` — Next.js + Fumadocs canonical site. Routes: `/docs` (spec rendering), `/design` (design system), `/` (illustrated landing). Uses shared brand package.
 - `packages/pdpp-brand/` — shared design tokens and chrome. Files: `base.css`, `app.css`, `docs.css`, `chrome.js`.
 - `reference-implementation/` — the real implementation. `reference-implementation/server/{auth,db,records,index}.js`, `reference-implementation/runtime/index.js`, `reference-implementation/manifests/{github,spotify,reddit}.json`, `reference-implementation/connectors/`. This is the reference the owner wants implementers to read.
-- `docs/` — working documents. `docs/personas/` holds persona documents, `docs/research/` holds durable research outputs, and `docs/archive/` holds superseded planning notes, including the retired inbox/outbox/tmp material from April 2026.
+- `docs/` — working documents. `docs/personas/` holds persona documents and `docs/research/` holds durable research outputs.
 - `openspec/` — durable project architecture and change-planning layer for the reference implementation. Use this for current implementation-boundary and execution decisions.
-- `demo_archived/` — archived older Next.js app. `demo_archived/CONSTITUTION.md` still contains authoritative design philosophy for the reference but is no longer an active build target.
 
 **Steering files — load these before acting:**
 
-- `.claude/working-state.md` — current evaluation lens (HONESTY / DEPTH / AUDIENCES / leverage) and steering constraints. Refreshed by a hook on every prompt.
-- `demo_archived/CONSTITUTION.md` — five design principles, surface temperature rules, trust model rendering rules.
 - `docs/personas/standards-editor-reviewer.md` — the authority on your persona.
 - `docs/research/attribution-split-prior-art.md` — the authority on whether the trust model is novel and what the failure modes of prior attempts are.
-- `docs/archive/2026-04-inbox-retired/pdpp_memo.txt` — Gemini 3.1 Pro historical review memo.
-- `docs/archive/2026-04-inbox-retired/pdpp_memo_chatgpt.txt` — ChatGPT 5.4 historical review memo (more important of the two).
 - `openspec/specs/reference-implementation-governance/spec.md` — governance boundary for how OpenSpec, root specs, and code/tests relate.
 - `openspec/specs/reference-implementation-architecture/spec.md` — durable architecture and boundary rules for the reference implementation.
 
@@ -154,11 +149,11 @@ These are not cleanup tasks and they are not dismissed. They are simply not the 
 
 These are load-bearing and the owner does not want them reopened. Ground your work on top of them.
 
-- **`client_display` is entity-scoped (top-level), `client_claims` is request-scoped (inside `authorization_details`).** Decided via three-model consensus. ChatGPT's correction was decisive.
+- **`client_display` is entity-scoped (top-level), `client_claims` is request-scoped (inside `authorization_details`).** Decided via independent review consensus.
 - **Stream `display.detail` is manifest-authored, never client-authored.** The authorship principle protects trust.
 - **"Stop calling it a demo, start calling it a reference."** It is a system to inspect and build from, not a walkthrough.
 - **Rendering rules for the trust model:** three layers (protocol facts rendered authoritatively, manifest-authored descriptions rendered authoritatively, client-authored claims rendered with "[client name] says:" attribution and italic disclaimer).
-- **Design system and brand tokens are locked.** The consent card has been through SLVP multi-model review and has an earned quality bar. Do not rewrite it on your own initiative.
+- **Design system and brand tokens are locked.** The consent card has been through SLVP independent review and has an earned quality bar. Do not rewrite it on your own initiative.
 - **Core/Collection Profile split is correct.** Collection mechanics live in the companion document. Do not mix collection back into Core.
 
 ---
@@ -168,12 +163,11 @@ These are load-bearing and the owner does not want them reopened. Ground your wo
 1. Read this memo in full.
 2. Load `docs/personas/standards-editor-reviewer.md` and adopt the persona.
 3. Load `docs/research/attribution-split-prior-art.md` so you know what is and is not novel.
-4. Read `.claude/working-state.md` for the current steering constraints.
-5. Read `spec-core.md` end to end. This is the artifact under review. Do not skim. Mark places where the enforcement-status distinction is ambiguous.
-6. Skim the two historical memos in `docs/archive/2026-04-inbox-retired/` to see the critiques already on the table, then use `openspec/` for the current project-level architecture and change context.
-7. Look at `reference-implementation/server/records.js` specifically — the `queryRecords` function and its `changes_since` path — to see the confirmed projection-leak bug in context.
-8. Only then, engage the owner. When you do, lead with framing, not mechanics.
-9. Once framing is stable enough, help translate it into concrete spec deltas. Good next moves include field-table labeling, consent-surface requirements, revocation-vs-erasure text, and conformance tightening around `changes_since`.
+4. Read `spec-core.md` end to end. This is the artifact under review. Do not skim. Mark places where the enforcement-status distinction is ambiguous.
+5. Use `openspec/` for the current project-level architecture and change context.
+6. Look at `reference-implementation/server/records.js` specifically — the `queryRecords` function and its `changes_since` path — to see the confirmed projection-leak bug in context.
+7. Only then, engage the owner. When you do, lead with framing, not mechanics.
+8. Once framing is stable enough, help translate it into concrete spec deltas. Good next moves include field-table labeling, consent-surface requirements, revocation-vs-erasure text, and conformance tightening around `changes_since`.
 
 Do not write code in your first session unless the owner explicitly asks for it. The framing conversation is not done and the current state of that conversation is the most important thing for you to preserve.
 

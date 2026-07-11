@@ -138,7 +138,7 @@ function formatNeutralNumber(n: number): string {
 }
 
 // NOTE: the field-name role heuristic lists (TITLE_FIELDS / BODY_FIELDS / etc.) were
-// REMOVED in the Codex end-review fix. The SLVP render path no longer guesses a slot
+// REMOVED in the end-review fix. The SLVP render path no longer guesses a slot
 // from field names: a typed slot is filled ONLY from a manifest-DECLARED role, and an
 // undeclared record (or undeclared slot) renders the honest generic key/value card.
 
@@ -190,7 +190,7 @@ function genericValue(v: unknown): string | undefined {
   // De-noise EMPTY collections (e.g. `cc: []`, `tool_calls: {}`): an empty array/object
   // carries no information, so it must not pollute the generic key/value table (it was
   // surfacing as `Cc: []`). This is value-SHAPE readability filtering of honest declared
-  // data — NOT title promotion or field-name guessing (Codex record-presentation gate).
+  // data — NOT title promotion or field-name guessing (record-presentation gate).
   if (Array.isArray(v) && v.length === 0) {
     return;
   }
@@ -210,7 +210,7 @@ const TIME_FMT = new Intl.DateTimeFormat("en-US", {
 
 /**
  * Format the time value of the DECLARED `event-time` field. Never guesses the time
- * from `start`/`end`/`when` field names (Codex end-review P0: event time is the
+ * from `start`/`end`/`when` field names (end-review P0: event time is the
  * declared event-time role, not a name guess). Returns undefined when the field is
  * not a parseable instant.
  */
@@ -229,7 +229,7 @@ function buildMoneyPreview(
   roles?: DeclaredFieldRoles
 ): RecordPreview | null {
   // The amount SLOT is filled by a declared `amount` ROLE — never because a field
-  // is currency-TYPED (Codex constraint #3: a currency does not become the amount
+  // is currency-TYPED (review constraint #3: a currency does not become the amount
   // because it is currency). TYPE then gates the FORMATTING of that declared field.
   const amountField = roles ? fieldForRole(roles, "amount") : undefined;
   const amt = amountField ? extractAmountForField(data, amountField, fieldTypes) : undefined;
@@ -251,7 +251,7 @@ function buildMoneyPreview(
 }
 
 // The role-backed typed builders fill EVERY slot from a DECLARED role only — no
-// `?? firstString(...)` heuristic fallback for undeclared slots (Codex end-review P0:
+// `?? firstString(...)` heuristic fallback for undeclared slots (end-review P0:
 // a partial declaration must not re-enable field-name guessing for the rest of the
 // card). A slot with no declared role stays absent; the generic key/value table (via
 // buildGenericPreview's `fields`) still shows the undeclared fields. When a builder
@@ -431,7 +431,7 @@ export function buildRecordPreview(
   if (!data) {
     return null;
   }
-  // THE SLVP HONESTY GATE (design.md §5.4; Codex end-review P0): a TYPED card slot
+  // THE SLVP HONESTY GATE (design.md §5.4; end-review P0): a TYPED card slot
   // (title / body / actor / amount / media) renders ONLY from a manifest-DECLARED
   // role. When a stream declares NO roles, render the honest generic key/value card
   // REGARDLESS of the heuristic `kind` — a stream named `messages`/`transactions`/
@@ -443,7 +443,7 @@ export function buildRecordPreview(
   }
   // Roles are declared → a role-backed typed card. EVERY slot is filled from a
   // declared role only (the typed builders no longer guess undeclared slots from
-  // field names — Codex end-review P0: a partial declaration must not re-enable the
+  // field names — end-review P0: a partial declaration must not re-enable the
   // heuristic). reader / location / activity have no role-backed form, so they
   // render the honest generic card rather than guessing stats/coordinates/body. If a
   // role-backed builder can form no meaningful slot, fall to the generic card (never

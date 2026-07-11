@@ -27,7 +27,7 @@ async function jsonOf(response: Response): Promise<Record<string, unknown>> {
 
 test("console .well-known skills route serves the catalog with forwarded origin", async () => {
   const response = await callSkillsRoute(["index.json"], {
-    "x-forwarded-host": "pdpp.vivid.fish",
+    "x-forwarded-host": "pdpp.example.com",
     "x-forwarded-proto": "https",
   });
   assert.equal(response.status, 200);
@@ -38,11 +38,11 @@ test("console .well-known skills route serves the catalog with forwarded origin"
   const skills = body.skills as Array<{ files: Array<{ url: string }> }>;
   assert.equal(skills.length, 2);
   assert.ok(
-    skills[0]?.files.some((file) => file.url === "https://pdpp.vivid.fish/.well-known/skills/pdpp-data-access/SKILL.md")
+    skills[0]?.files.some((file) => file.url === "https://pdpp.example.com/.well-known/skills/pdpp-data-access/SKILL.md")
   );
   assert.ok(
     skills.some((skill) =>
-      skill.files.some((file) => file.url === "https://pdpp.vivid.fish/.well-known/skills/pdpp-owner-agent/SKILL.md")
+      skill.files.some((file) => file.url === "https://pdpp.example.com/.well-known/skills/pdpp-owner-agent/SKILL.md")
     )
   );
 });

@@ -9,7 +9,7 @@ Following the OAuth 2.0 pattern (RFC 6749 §3.1: "The way in which the authoriza
 
 ## Two boundaries, two token kinds
 
-spec-core Section 10 defines two token kinds at the resource server boundary: owner tokens and client tokens. Both use the RFC 6750 bearer format on the wire; the resource server distinguishes them by `pdpp_token_kind` in the introspection response, not by token syntax. The discriminator is extensible: a deployment may introduce additional kinds under the same field (the reference implementation adds an `mcp_package` kind for hosted MCP package tokens). Extension kinds are deployment behavior, not protocol requirements.
+spec-core Section 8 defines (and Section 10 restates) two token kinds at the resource server boundary: owner tokens and client tokens. Both use the RFC 6750 bearer format on the wire; the resource server distinguishes them by `pdpp_token_kind` in the introspection response, not by token syntax. The discriminator is extensible: a deployment may introduce additional kinds under the same field (the reference implementation adds an `mcp_package` kind for hosted MCP package tokens). Extension kinds are deployment behavior, not protocol requirements.
 
 ### Owner operations (ingest, state, grant management)
 

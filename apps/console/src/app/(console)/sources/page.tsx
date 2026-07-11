@@ -1,7 +1,7 @@
 /**
  * Sources — the Ink Carbon "loading dock" view.
  *
- * Reskinned per docs/design/ink-carbon/project/recordroom/rr-sources.jsx: a
+ * Reskinned per docs/design-system/ink-carbon/project/recordroom/rr-sources.jsx: a
  * master-detail over the owner's configured source instances. The left list is
  * health-flagged; the right "passport" (a Sheet) carries identity + a KV block
  * + foot actions; below it a stream manifest Table links every stream into

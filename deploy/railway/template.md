@@ -37,10 +37,10 @@ Current published template:
 | Field | Value |
 |---|---|
 | Template code | `pdpp-core-template-source` |
-| Template ID | `308f2589-788c-4a89-9cee-c0be761c4d91` |
-| Source project | `02d96ec4-6b4f-4bff-bad4-a34b06ad1f01` |
-| Scratch proof project | `6c8a03dd-5ab5-49be-bd8b-5a83f09b05e6` |
-| Scratch proof origin | `https://core-production-85b0.up.railway.app` |
+| Template ID | `<your-template-id>` |
+| Source project | `<your-project-id>` |
+| Scratch proof project | `<verification-project-id>` |
+| Scratch proof origin | `https://<your-app>.up.railway.app` |
 
 ## Source accessibility gate
 
@@ -175,7 +175,7 @@ only after the real template code has been installed and scratch-verified.
   `PDPP_RS_URL`.
 - Scratch deploy reached `SUCCESS` for `core` and `Postgres`.
 - `/.well-known/oauth-authorization-server` returned HTTP 200 with issuer
-  `https://core-production-85b0.up.railway.app`.
+  `https://<your-app>.up.railway.app`.
 - Anonymous `/dashboard` redirected to `/owner/login`.
 - Full MCP smoke seeded `railway-seed-artist-1` and `railway-seed-artist-2`,
   refused anonymous `/mcp` with 401, minted a scoped grant, and returned both

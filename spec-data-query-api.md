@@ -3,7 +3,7 @@
 Status: Superseded
 Date: 2026-03-28 (original); superseded 2026-04-12
 
-> **Note:** This document was written before Core Section 8 was expanded to normatively define the RS query interface. [Core Section 8 (Resource Server Interface)](/docs/spec-core#resource-server-interface) is authoritative for current query syntax, including the canonical `filter[{field}]` / `filter[{field}][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the `limit_clamped` warning behavior. This file is retained for historical reference and should not be used for implementation. Where it disagrees with Core Section 8, Core Section 8 prevails — in particular, the `limit`, `expand_limit`, search, and error-table sections below predate the current contract and are stale.
+> **Note:** This document was written before Core Section 8 was expanded to normatively define the RS query interface. [Core Section 8 (Resource Server Interface)](spec-core.md#resource-server-interface) is authoritative for current query syntax, including the canonical `filter[{field}]` / `filter[{field}][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the `limit_clamped` warning behavior. This file is retained for historical reference and should not be used for implementation. Where it disagrees with Core Section 8, Core Section 8 prevails — in particular, the `limit`, `expand_limit`, search, and error-table sections below predate the current contract and are stale.
 
 Companion to the Personal Data Portability Protocol (PDPP) core spec.
 
@@ -190,25 +190,27 @@ PDPP-Version: 2026-03-28
         "created_at": "2026-03-25T18:22:11Z"
       },
       "emitted_at": "2026-03-28T15:01:00Z",
-      "messages": {
-        "object": "list",
-        "url": "/v1/streams/messages/records?filter[conversation_id]=conv_01JQW8M2R7&order=asc",
-        "has_more": false,
-        "data": [
-          {
-            "object": "record",
-            "id": "msg_01JQW8P5B3",
-            "stream": "messages",
-            "data": {
+      "expanded": {
+        "messages": {
+          "object": "list",
+          "url": "/v1/streams/messages/records?filter[conversation_id]=conv_01JQW8M2R7&order=asc",
+          "has_more": false,
+          "data": [
+            {
+              "object": "record",
               "id": "msg_01JQW8P5B3",
-              "conversation_id": "conv_01JQW8M2R7",
-              "role": "user",
-              "content": "Plan a 3-day trip to Tokyo",
-              "created_at": "2026-03-25T18:23:02Z"
-            },
-            "emitted_at": "2026-03-28T15:01:00Z"
-          }
-        ]
+              "stream": "messages",
+              "data": {
+                "id": "msg_01JQW8P5B3",
+                "conversation_id": "conv_01JQW8M2R7",
+                "role": "user",
+                "content": "Plan a 3-day trip to Tokyo",
+                "created_at": "2026-03-25T18:23:02Z"
+              },
+              "emitted_at": "2026-03-28T15:01:00Z"
+            }
+          ]
+        }
       }
     }
   ]
@@ -243,7 +245,7 @@ A bare `blob_id` alone does not grant access — the app must have discovered th
 Content-Type: image/jpeg
 Content-Length: 2048000
 ETag: "a1b2c3..."
-Cache-Control: private, max-age=3600
+Cache-Control: private, no-store
 ```
 
 The server may return a `302` redirect to a short-lived signed URL for the actual blob storage.
@@ -265,7 +267,7 @@ Expansion hydrates foreign key relationships inline. It is bounded: expanded chi
 
 **Unexpanded (default):** A conversation record has `message_count: 42` but no messages inline.
 
-**Expanded:** The same record includes a `messages` list object with up to `expand_limit` records.
+**Expanded:** The same record includes a `messages` list object under the `expanded` key, with up to `expand_limit` records.
 
 This follows Stripe's pattern: foreign keys are string IDs by default, expanded into full objects on request.
 
@@ -287,29 +289,30 @@ Every non-2xx response returns a structured error:
 }
 ```
 
-### Error types
+### Error codes
 
-| Type | HTTP Status | When |
-|------|------------|------|
-| `invalid_request_error` | 400 | Malformed request, invalid cursor, unknown field |
-| `authentication_error` | 401 | Missing or invalid access token |
-| `permission_error` | 403 | Grant violation: stream not allowed, time range exceeded, grant expired/revoked |
-| `not_found_error` | 404 | Stream or record not found |
-| `rate_limit_error` | 429 | Too many requests. Includes `Retry-After` header. |
-| `api_error` | 500 | Internal server error |
-
-### Error codes (non-exhaustive)
-
-| Code | Type | Description |
-|------|------|-------------|
-| `invalid_cursor` | invalid_request | Cursor token is malformed or expired |
-| `unknown_field` | invalid_request | Requested field not in stream schema |
-| `unknown_expand` | invalid_request | Relation is not expandable |
-| `grant_stream_not_allowed` | permission | Stream not in grant |
-| `grant_time_range_exceeded` | permission | Request filters exceed grant's time_range |
-| `grant_expired` | permission | Grant has expired |
-| `grant_revoked` | permission | Grant has been revoked |
-| `invalid_api_version` | invalid_request | Unrecognized PDPP-Version header |
+| Code | HTTP Status | Type | Meaning |
+|------|------------|------|---------|
+| `invalid_cursor` | 400 | `invalid_request_error` | Cursor token is malformed or unrecognized. |
+| `invalid_request` | 400 | `invalid_request_error` | Malformed request parameter or mutually exclusive parameters. |
+| `invalid_record` | 400 | `invalid_request_error` | Record failed validation (e.g., invalid consent_time_field). |
+| `invalid_record_identity` | 400 | `invalid_request_error` | The `data` fields named by `primary_key` disagree with the `key` envelope field values. |
+| `invalid_expand` | 400 | `invalid_request_error` | Relation is not declared as expandable. |
+| `unknown_field` | 400 | `invalid_request_error` | Requested field not in stream schema. |
+| `unsupported_version` | 400 | `invalid_request_error` | `PDPP-Version` header specifies unsupported version, or grant references unsupported schema version. |
+| `authentication_error` | 401 | `authentication_error` | Missing or invalid access token. |
+| `field_not_granted` | 403 | `permission_error` | Filter targets a field outside the grant's authorized projection. |
+| `insufficient_scope` | 403 | `permission_error` | Expansion requests a stream not in the grant. |
+| `grant_stream_not_allowed` | 403 | `permission_error` | Stream not in grant. |
+| `grant_time_range_exceeded` | 403 | `permission_error` | Request filters exceed grant's `time_range`. |
+| `grant_expired` | 403 | `permission_error` | Grant has expired. |
+| `grant_revoked` | 403 | `permission_error` | Grant has been revoked. |
+| `grant_invalid` | 403 | `permission_error` | Grant references unsupported manifest version. |
+| `blob_not_found` | 404 | `not_found_error` | `blob_id` is unknown or stale. |
+| `not_found` | 404 | `not_found_error` | Stream or record not found. |
+| `cursor_expired` | 410 | `gone_error` | `changes_since` cursor is too old; full re-sync required. |
+| `rate_limit_exceeded` | 429 | `rate_limit_error` | Too many requests. Includes `Retry-After` header. |
+| `api_error` | 500 | `api_error` | Internal server error. |
 
 ---
 

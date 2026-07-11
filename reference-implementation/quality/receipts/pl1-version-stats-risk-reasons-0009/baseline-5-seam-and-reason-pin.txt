@@ -1,8 +1,0 @@
-# hone work pl1-version-stats-risk-reasons-0009 — baseline rung 'seam-and-reason-pin'
-# command: cd "$REPO_ROOT" && node -e 'const fs=require("fs");const s=fs.readFileSync("server/record-version-stats.js","utf8");const w=s.replace(/\s+/g," ");let rc=0;for(const r of ["projection_missing","projection_dirty"]){const ok=s.includes(r);console.log((ok?"PASS ":"FAIL ")+"risk reason preserved: "+r);if(!ok)rc=1;}if(!s.includes("function augmentRiskReasons")){console.log("baseline: helper not extracted; vacuous PASS for seam checks");process.exit(rc);}const seam=[["augmentRiskReasons(classification, projectionMissing, dirty) declared",/function augmentRiskReasons\( ?classification, ?projectionMissing, ?dirty,? ?\)/],["delegated with bare identifiers + Boolean(row.dirty) preserved",/const riskReasons = augmentRiskReasons\( ?classification, ?projectionMissing, ?Boolean\(row\.dirty\) ?\)/],["push order: missing before dirty",/riskReasons\.push\('projection_missing'\);[^]*riskReasons\.push\('projection_dirty'\)/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?"PASS ":"FAIL ")+c[0]);if(!ok)rc=1;}process.exit(rc);'
-# expect: exit 0, every line PASS. Both risk-reason strings preserved at baseline+post. Post: augmentRiskReasons declared with three explicit named params, delegated with bare identifiers passing Boolean(row.dirty) as the third arg, and the push order (projection_missing before projection_dirty) preserved.
-# exit: 0  duration: 0s  verdict: PASS
-
-PASS risk reason preserved: projection_missing
-PASS risk reason preserved: projection_dirty
-baseline: helper not extracted; vacuous PASS for seam checks

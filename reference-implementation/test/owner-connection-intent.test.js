@@ -333,11 +333,11 @@ test('owner-agent initiating Amazon gets browser runtime class plus static-secre
     assert.equal(body.setup_modality, 'static_secret');
     assert.equal(body.support_state, 'proof_gated');
     assert.equal(body.proof_gate, 'static_secret_live_proof_missing');
-    assert.match(body.runbook_path, /static-secret-connection-runbook\.md$/);
+    assert.equal(body.runbook_path, null);
     assert.equal(body.connection_active, false);
     assert.equal(body.next_step.kind, 'capture_static_secret');
     assert.equal(body.next_step.capture_endpoint, '/connect/static-secret/amazon');
-    assert.match(body.next_step.runbook_path, /static-secret-connection-runbook\.md$/);
+    assert.equal(body.next_step.runbook_path, undefined);
     assert.match(body.next_step.reason, /static provider secret|static-secret/i);
     // The route must NOT mint browser enrollment material. Amazon's current
     // setup contract captures the owner-provided credential first; the browser
@@ -422,7 +422,7 @@ test('a trusted owner agent initiates an Amazon SECOND account up to the owner-m
     assert.equal(body.connection_active, false);
     assert.equal(body.next_step.kind, 'capture_static_secret');
     assert.equal(body.next_step.capture_endpoint, '/connect/static-secret/amazon');
-    assert.match(body.next_step.runbook_path, /static-secret-connection-runbook\.md$/);
+    assert.equal(body.next_step.runbook_path, undefined);
     assert.match(body.next_step.reason, /static provider secret|static-secret/i);
     // It must NOT claim the agent can complete login/2FA by bearer authority.
     assert.notEqual(body.next_step.kind, 'enroll_browser_collector');

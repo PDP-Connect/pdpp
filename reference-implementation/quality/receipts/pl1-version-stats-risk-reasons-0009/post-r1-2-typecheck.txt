@@ -1,5 +1,0 @@
-# hone work pl1-version-stats-risk-reasons-0009 — post-r1 rung 'typecheck'
-# command: cd "$REPO_ROOT" && npx tsc --noEmit
-# expect: 0 errors
-# exit: 0  duration: 5s  verdict: PASS
-

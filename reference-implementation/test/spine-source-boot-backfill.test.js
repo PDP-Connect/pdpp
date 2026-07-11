@@ -1,19 +1,14 @@
 /**
  * Tests for the spine-source startup-backfill hardening.
  *
- * Proves:
- *   1. Normal Postgres startup performs only bounded schema DDL: it creates
- *      the source columns + index on a fresh DB, and on a subsequent boot it
- *      does NOT backfill source values into existing NULL rows (the unbounded
- *      per-row backfill is gone from the boot path).
- *   2. The explicit `backfill-spine-source` maintenance script is dry-run by
- *      default, resolves resolvable NULL rows in bounded batches under
- *      --apply, leaves genuinely-sourceless rows NULL, and is idempotent.
+ * Proves that normal Postgres startup performs only bounded schema DDL: it
+ * creates the source columns + index on a fresh DB, and on a subsequent boot
+ * it does NOT backfill source values into existing NULL rows (the unbounded
+ * per-row backfill is gone from the boot path). Also covers store-parity of
+ * the summary index DDL and source derivation in unfiltered summaries.
  *
  * Postgres-backed; gated on PDPP_TEST_POSTGRES_URL. Each test creates and
  * drops its own temporary database so the live proof DB is never mutated.
- *
- * Spec: openspec/changes/harden-startup-data-backfills
  */
 
 import assert from 'node:assert/strict';
@@ -29,7 +24,6 @@ import {
   getPostgresPool,
 } from '../server/postgres-storage.js';
 import { postgresListSpineCorrelations } from '../lib/postgres-spine.js';
-import { backfillSpineSource } from '../scripts/backfill-spine-source/backfill-spine-source.mjs';
 
 const { Pool } = pg;
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
@@ -198,81 +192,6 @@ if (!POSTGRES_URL) {
       );
       assert.equal(after.rows[0].source_kind, null, 'boot must not backfill source_kind');
       assert.equal(after.rows[0].source_id, null, 'boot must not backfill source_id');
-    });
-  });
-
-  test('backfill script: dry-run reports the split and writes nothing; apply converges; re-run is a no-op', async () => {
-    await withTempDb(async (url) => {
-      await initPostgresStorage({ backend: 'postgres', databaseUrl: url });
-      const bootPool = getPostgresPool();
-
-      // Two resolvable rows (runtime actor) + two genuinely-sourceless rows.
-      await insertEvent(bootPool, { eventId: 'r1', actorType: 'runtime', actorId: 'gmail' });
-      await insertEvent(bootPool, { eventId: 'r2', actorType: 'runtime', actorId: 'slack' });
-      await insertEvent(bootPool, { eventId: 's1', actorType: 'subject', actorId: 'owner' });
-      await insertEvent(bootPool, { eventId: 's2', actorType: 'client', actorId: 'app-1' });
-
-      // Use an independent pool for the script (mirrors operator invocation).
-      const pool = new Pool({ connectionString: url });
-      try {
-        // Dry-run: nothing written, correct split reported.
-        const dry = await backfillSpineSource({ pool, apply: false, batchSize: 1 });
-        assert.equal(dry.scanned, 4);
-        assert.equal(dry.resolved, 2);
-        assert.equal(dry.unresolvable, 2);
-        assert.equal(dry.written, 0);
-        assert.ok(dry.batches >= 4, 'batchSize=1 should page row-by-row');
-
-        const stillNull = await pool.query(
-          `SELECT count(*)::int AS n FROM spine_events WHERE source_kind IS NULL`,
-        );
-        assert.equal(stillNull.rows[0].n, 4, 'dry-run must not write');
-
-        // Apply: resolvable rows filled, sourceless left NULL.
-        const applied = await backfillSpineSource({ pool, apply: true, batchSize: 2 });
-        assert.equal(applied.resolved, 2);
-        assert.equal(applied.unresolvable, 2);
-        assert.equal(applied.written, 2);
-
-        const r1 = await pool.query(
-          `SELECT source_kind, source_id FROM spine_events WHERE event_id = 'r1'`,
-        );
-        assert.equal(r1.rows[0].source_kind, 'connector');
-        assert.equal(r1.rows[0].source_id, 'gmail');
-
-        const sourceless = await pool.query(
-          `SELECT count(*)::int AS n FROM spine_events
-             WHERE event_id IN ('s1','s2') AND source_kind IS NULL`,
-        );
-        assert.equal(sourceless.rows[0].n, 2, 'sourceless rows stay NULL');
-
-        // Re-run: no resolvable rows remain → no writes.
-        const second = await backfillSpineSource({ pool, apply: true, batchSize: 10 });
-        assert.equal(second.resolved, 0);
-        assert.equal(second.written, 0);
-        assert.equal(second.unresolvable, 2, 'sourceless tail still scanned but never written');
-      } finally {
-        await pool.end();
-      }
-    });
-  });
-
-  test('backfill script also mirrors source into data_json for resolved rows', async () => {
-    await withTempDb(async (url) => {
-      await initPostgresStorage({ backend: 'postgres', databaseUrl: url });
-      const bootPool = getPostgresPool();
-      await insertEvent(bootPool, { eventId: 'm1', actorType: 'runtime', actorId: 'oura' });
-
-      const pool = new Pool({ connectionString: url });
-      try {
-        await backfillSpineSource({ pool, apply: true, batchSize: 10 });
-        const r = await pool.query(
-          `SELECT data_json FROM spine_events WHERE event_id = 'm1'`,
-        );
-        assert.deepEqual(r.rows[0].data_json.source, { kind: 'connector', id: 'oura' });
-      } finally {
-        await pool.end();
-      }
     });
   });
 

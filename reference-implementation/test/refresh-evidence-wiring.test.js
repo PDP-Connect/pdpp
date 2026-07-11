@@ -9,11 +9,10 @@ import { projectConnectorSummaryConnectionHealth } from '../server/ref-control.t
 import { synthesizeRenderedVerdict } from '../runtime/rendered-verdict.ts';
 
 // Task 6.3 (Risk 1, highest-leverage): verify ConnectionRefreshEvidence actually
-// reaches the projection at RUNTIME for Amazon plus the manual/background-unsafe
-// connectors (Chase, Reddit, USAA) — traced end-to-end from the real committed
-// manifests, NOT just asserted from a synthetic policy — so `isManualRefreshOnly`
-// stays true and a stale manual account does NOT fall through to `complete` and
-// stay green.
+// reaches the projection at RUNTIME for amazon / chase / reddit / usaa — traced
+// end-to-end from the real committed manifests, NOT just asserted from a synthetic
+// policy — so `isManualRefreshOnly` is true for them and a stale manual account does
+// NOT fall through to `complete`; stale surfaces as an amber refresh advisory.
 //
 // The runtime path is:
 //   manifest.capabilities.refresh_policy

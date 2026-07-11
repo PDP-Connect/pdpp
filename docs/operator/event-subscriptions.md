@@ -228,14 +228,15 @@ human-typed terminal.
   create a new subscription.
 - **Public callback URL returns nothing / the TLS proxy is on another host.**
   When the receiver binds `0.0.0.0` behind a separate TLS proxy (for example
-  `pdpp-events.vivid.fish` → Traefik on another LAN host → this workstation),
+  `pdpp-events.example.com` → a reverse proxy on another LAN host → this
+  workstation),
   a failing public health check can mean either the receiver is down *or* the
   proxy host itself is unreachable. Isolate the two legs without a browser:
 
   ```sh
   # 1. Is the receiver answering on the interface the proxy forwards to?
-  #    (replace 192.168.1.180 with this workstation's LAN IP)
-  node -e 'require("http").get("http://192.168.1.180:8765/health",r=>{let b="";r.on("data",c=>b+=c);r.on("end",()=>console.log(r.statusCode,b))}).on("error",e=>console.log("ERR",e.code))'
+  #    (replace 192.0.2.10 with this workstation's LAN IP)
+  node -e 'require("http").get("http://192.0.2.10:8765/health",r=>{let b="";r.on("data",c=>b+=c);r.on("end",()=>console.log(r.statusCode,b))}).on("error",e=>console.log("ERR",e.code))'
 
   # 2. Can this host even reach the proxy host? An ARP "FAILED" line means the
   #    proxy host is offline/disconnected, not that the route is misconfigured.
@@ -243,7 +244,7 @@ human-typed terminal.
   ```
 
   If leg 1 returns `200` but leg 2 shows `FAILED`/no ARP entry, the receiver
-  and Traefik route config are fine — the proxy host is down. Bring it back up
+  and reverse-proxy route config are fine — the proxy host is down. Bring it back up
   (or wait for it) before retrying the public `…/health` check. No
   subscription, secret, or receiver change is needed.
 

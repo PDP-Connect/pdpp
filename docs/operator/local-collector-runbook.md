@@ -26,7 +26,7 @@ State is authoritative on the server. Before each connector pass the runner fetc
 
 ## Prerequisites
 
-- A PDPP reference deployment reachable at a stable URL (e.g. `http://server.local:7662` or `https://peregrine-dev.vivid.fish`). See `reference-implementation/docs/migrate-storage.md` and the Docker compose under `reference-implementation/docker/` for the deployment side.
+- A PDPP reference deployment reachable at a stable URL (e.g. `http://server.local:7662` or `https://your-pdpp-host.example.com`). See `reference-implementation/docs/migrate-storage.md` and the Docker compose under `reference-implementation/docker/` for the deployment side.
 - Owner session for that deployment so you can mint enrollment codes from `/dashboard/device-exporters`.
 - Node.js 22.14+ and npm on the host that owns the data.
 - `@pdpp/local-collector` installed globally, or
@@ -38,7 +38,7 @@ State is authoritative on the server. Before each connector pass the runner fetc
   trusting its output as operator evidence. If the install reports version
   `0.0.0`, it resolved the retired bootstrap placeholder — upgrade to the
   current published release. See
-  `docs/local-collector.md`§"Deployment Posture: Published vs Dev".
+  `docs/reference/local-collector.md`§"Deployment Posture: Published vs Dev".
 
 ## Step 1 &mdash; Confirm collector runtime capabilities
 
@@ -85,7 +85,7 @@ On the host with the data, paste the command the dashboard rendered. Example:
 
 ```bash
 npx -y @pdpp/local-collector enroll \
-  --base-url https://peregrine-dev.vivid.fish \
+  --base-url https://your-pdpp-host.example.com \
   --code <one-time-code> \
   --device-label "the owner's laptop"
 ```
@@ -113,7 +113,7 @@ PDPP_LOCAL_DEVICE_ID=dev_... \
 PDPP_LOCAL_DEVICE_TOKEN=dvtk_... \
 PDPP_CONNECTION_ID=si_... \
   npx -y @pdpp/local-collector run \
-    --base-url https://peregrine-dev.vivid.fish \
+    --base-url https://your-pdpp-host.example.com \
     --connector claude_code
 ```
 
@@ -129,7 +129,7 @@ Swap `--connector claude_code` for `codex` to ingest Codex CLI history/skills/et
 
 Run the same command on a schedule (cron, systemd timer, ad-hoc) to keep the lane fresh. Because durable backlog wins over source scanning, running more often than a slow lane can drain is safe: extra invocations drain backlog and exit rather than piling on duplicate scans.
 
-> **Persistent state, not `/tmp`.** The durable outbox (`PDPP_COLLECTOR_QUEUE`, default under the package's `.pdpp-data/`) is what carries undrained backlog between runs and makes the backlog guard above work. Keep it — and any captured `run`/`doctor` JSON or `PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR` dump — on a persistent, disk-backed directory (`$XDG_STATE_HOME`/`~/.local/state` on Linux, `~/Library/Application Support` on macOS). On hosts where `/tmp` is a RAM-backed `tmpfs`, pointing the outbox or a large captured summary at `/tmp` consumes memory and loses the backlog on reboot, which defeats the guard and forces a full re-scan. See `docs/local-collector.md`§"Persistent State And Scratch Paths".
+> **Persistent state, not `/tmp`.** The durable outbox (`PDPP_COLLECTOR_QUEUE`, default under the package's `.pdpp-data/`) is what carries undrained backlog between runs and makes the backlog guard above work. Keep it — and any captured `run`/`doctor` JSON or `PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR` dump — on a persistent, disk-backed directory (`$XDG_STATE_HOME`/`~/.local/state` on Linux, `~/Library/Application Support` on macOS). On hosts where `/tmp` is a RAM-backed `tmpfs`, pointing the outbox or a large captured summary at `/tmp` consumes memory and loses the backlog on reboot, which defeats the guard and forces a full re-scan. See `docs/reference/local-collector.md`§"Persistent State And Scratch Paths".
 
 ## Step 5 &mdash; Verify on the dashboard
 
@@ -176,8 +176,7 @@ know about) count against completeness.
 
 If a connector reports a store as `deferred`, that is a deliberate "we know it's
 there, we have not yet decided how to surface it safely" signal &mdash; not a
-bug. The current deferred set is documented in
-`openspec/changes/complete-local-agent-collectors/design-notes/stream-contracts.md`.
+bug.
 
 **Requesting the coverage diagnostic.** Coverage rides on the
 `coverage_diagnostics` stream in `START.scope.streams`. The standard Step 4
@@ -294,4 +293,4 @@ existing `PDPP_LOCAL_DEVICE_ID`, `PDPP_LOCAL_DEVICE_TOKEN`, and
 re-enroll each host from `/dashboard/device-exporters`; old device credentials
 are scoped to the old database.
 
-For the consolidated public docs, see `docs/local-collector.md`.
+For the consolidated public docs, see `docs/reference/local-collector.md`.

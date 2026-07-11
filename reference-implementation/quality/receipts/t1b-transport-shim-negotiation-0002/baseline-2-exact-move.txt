@@ -1,5 +1,0 @@
-# hone work t1b-transport-shim-negotiation-0002 — baseline rung 'exact-move'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/transport.js
-# expect: callback bodies byte-identical modulo indentation and the two header-param substitutions; no logic edits, no reordering
-# exit: 0  duration: 0s  verdict: PASS
-

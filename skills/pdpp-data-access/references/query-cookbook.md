@@ -158,7 +158,6 @@ If your records call returns no `blob_ref` field at all, the issue is one of:
 
 - The grant doesn't cover the `blob_ref` field on this stream — re-request the grant including that field.
 - The record's `hydration_status` is `deferred`, `failed`, `too_large`, `unavailable`, or `blocked`. The metadata row is real; the bytes are not. Surface the status to the user honestly rather than retrying.
-- The connector for this stream has not yet been migrated to emit `blob_ref` (see [openspec/changes/hydrate-first-party-blob-streams](../../../../openspec/changes/hydrate-first-party-blob-streams/) for the hydration audit). Today, only Gmail `attachments` ships hydration.
 
 ### Cookbook example: fetch a recent attachment end-to-end
 

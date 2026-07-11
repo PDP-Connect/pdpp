@@ -1,5 +1,0 @@
-# hone work df-negctl-cdp-input-map-0005 — baseline rung 'validation-verdict'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/streaming/cdp-companion.js
-# expect: EMPTY diff when the verdict is skipped(validated-non-defect) — record the rationale in outcome.skip_reason/lesson; if the diff is non-empty, differential-probe receipts (old-vs-new CDP command lists for every type-and-action pair including dblclick sequence, touchEnd empty touchPoints, printable vs rawKeyDown, VK pairing) MUST be pasted into outcome.evidence_receipts
-# exit: 0  duration: 0s  verdict: PASS
-

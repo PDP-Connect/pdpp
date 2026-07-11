@@ -60,6 +60,5 @@ layer that can precede or drive a transfer. They are complementary, not competit
 
 ## References
 
-- `docs/research/pdpp-consent-artifact-persistence-and-sharing-brief-2026-06-23.md` (DTI/PDPP boundary).
 - `apps/site/content/docs/spec-core.md` — Appendix B (Relationship to the Data Transfer Project), record model (§4), connector manifest.
 - DTI: https://dtinit.org/ ; DTP "what is it": https://dtinit.org/docs/dtp-what-is-it ; repo: https://github.com/dtinit/data-transfer-project

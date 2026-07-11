@@ -25,7 +25,7 @@ const DO_NOT_PASTE_TOKENS_COPY = /Do not paste tokens\./;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
 
 test("console agent skill catalog lists the served skills and files", async () => {
-  const catalog = await buildAgentSkillCatalog("https://pdpp.vivid.fish/");
+  const catalog = await buildAgentSkillCatalog("https://pdpp.example.com/");
   assert.equal(catalog.object, "agent_skill_catalog");
   assert.equal(catalog.skills.length, 2);
 
@@ -43,7 +43,7 @@ test("console agent skill catalog lists the served skills and files", async () =
   );
 
   for (const file of skill.files) {
-    assert.ok(file.url.startsWith("https://pdpp.vivid.fish/.well-known/skills/"));
+    assert.ok(file.url.startsWith("https://pdpp.example.com/.well-known/skills/"));
     assert.ok(file.bytes > 0);
     assert.match(file.sha256, SHA256_HEX);
   }

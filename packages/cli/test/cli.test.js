@@ -79,7 +79,7 @@ test('connect validates provider URLs before any network flow', async () => {
 
   assert.equal(code, 64);
   assert.match(stderr, /Invalid provider URL/);
-  assert.equal(normalizeProviderUrl('peregrine-dev.vivid.fish'), 'https://peregrine-dev.vivid.fish');
+  assert.equal(normalizeProviderUrl('pdpp.example.com'), 'https://pdpp.example.com');
 });
 
 test('connect discovers metadata, polls approval, verifies schema, and stores project-local credentials', async () => {

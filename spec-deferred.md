@@ -11,7 +11,7 @@ This document mixes three kinds of entries, now split into three sections:
 - **Decided (recorded for history)**: concerns that were raised during design and review and were resolved by adopting an explicit v0.1 design constraint. These are recorded here for the rationale trail, not because they are still open.
 - **Implementation TODOs (v0.2 candidates)**: concrete, scoped work items that don't require resolving a semantic design question first.
 
-Dated batch attributions (`Newly deferred (...)`, `Finding (Codex)`, `Finding (Gemini)`, etc.) are preserved inside each entry as originally written.
+Dated batch attributions (`Newly deferred (...)`, `Finding (independent review)`, etc.) are preserved inside each entry as originally written.
 
 ---
 
@@ -142,7 +142,7 @@ Many of the March 2026 naming and semantic-precision corrections identified duri
 
 The main still-live issue from that pass is not terminology but default posture: whether v0.1 remains too permissive when selectors are omitted.
 
-**Finding (Codex):** Omitting selectors means "all available data", `necessity` defaults to `required`, `"name": "*"` means all streams. These defaults favor maximum data collection.
+**Finding (independent review):** Omitting selectors means "all available data", `necessity` defaults to `required`, `"name": "*"` means all streams. These defaults favor maximum data collection.
 
 **Semantic question:** Should the spec default to maximum or minimum data? Open Banking defaults to minimum (you must explicitly list permissions). OAuth defaults to maximum (scopes grant broad access). For personal data portability, the Open Banking approach (explicit, minimal) is more defensible.
 
@@ -163,10 +163,10 @@ These concerns were raised during design and review and were resolved by adoptin
 
 _Previously deferred (carried forward): concerns that constrain semantic choices._
 
-**Finding (Codex):** The grant has no `issuer`, `subject`, `audience`, or signature. Without these, grants can be forged, replayed, or misrouted.
+**Finding (independent review):** The grant has no `issuer`, `subject`, `audience`, or signature. Without these, grants can be forged, replayed, or misrouted.
 
 **Semantic implication:** The grant object needs to be *signable*. This means:
-- Avoid mutable fields in the grant (Codex flagged `status` — it's runtime state, not part of the consent)
+- Avoid mutable fields in the grant (review flagged `status` — it's runtime state, not part of the consent)
 - The grant should be a snapshot of what was consented, not a live object
 - Fields like `profile` that reference external state (the manifest) should be expanded at consent time, not resolved at runtime — already done in the spec
 
@@ -176,7 +176,7 @@ _Previously deferred (carried forward): concerns that constrain semantic choices
 
 _Previously deferred (carried forward): concerns that constrain semantic choices._
 
-**Finding (Codex):** A wildcard consent can be misread as a live pointer that grows with future manifest changes. That would make a grant silently widen over time.
+**Finding (independent review):** A wildcard consent can be misread as a live pointer that grows with future manifest changes. That would make a grant silently widen over time.
 
 **Semantic implication:** A grant should represent a fixed set of consented access, not a pointer that grows. The only defensible v0.1 behavior is expansion at consent time into an explicit list of stream names. New streams introduced by later manifest versions require re-consent.
 
@@ -186,7 +186,7 @@ _Previously deferred (carried forward): concerns that constrain semantic choices
 
 _Previously deferred (carried forward): concerns that constrain semantic choices._
 
-**Finding (Codex):** Free-form purpose text alone is not enough for localization, audit, or policy.
+**Finding (independent review):** Free-form purpose text alone is not enough for localization, audit, or policy.
 
 **Semantic implication:** In PDPP, purpose is best understood primarily as a structured policy declaration. `purpose_code` supports consent display, audit, registration policy, and limited protocol rules. It should not be described as generic downstream-use enforcement at the RS layer. Only explicitly named cases such as `ai_training` should carry protocol-level consent requirements.
 
@@ -196,7 +196,7 @@ _Previously deferred (carried forward): concerns that constrain semantic choices
 
 _Previously deferred (carried forward): concerns that constrain semantic choices._
 
-**Finding (Gemini):** `retention` with `on_expiry: "delete"` is a policy expectation, not a DRM mechanism. There's no enforcement.
+**Finding (independent review):** `retention` with `on_expiry: "delete"` is a policy expectation, not a DRM mechanism. There's no enforcement.
 
 **Semantic implication:** The spec should be honest about what `retention` means: it is a structured policy declaration and policy commitment the recipient agrees to as part of the grant, enforceable through legal/contractual means and potentially through trust-registry verification, but not technically enforced by the protocol.
 
@@ -212,7 +212,7 @@ Earlier drafts of spec-core defined a top-level `connector_id` scalar (and the r
 
 _Previously deferred (carried forward): concerns that affect implementation but not semantics. Retired 2026-07-06: implemented._
 
-**Finding (Codex):** Personal data is often graphs + binaries (conversations→messages→attachments, albums→photos). No stream dependency model, no blob/file transport.
+**Finding (independent review):** Personal data is often graphs + binaries (conversations→messages→attachments, albums→photos). No stream dependency model, no blob/file transport.
 
 **Resolution:** The gap is closed. spec-core Section 7 defines `relationships` (the declared foreign-key graph), Section 8 defines `expand[]` / `expand_limit` for declaration-driven relation expansion, and Section 4 defines `blob_ref` (binary data) and `resource_ref` (cross-stream pointers). Implemented in the reference (record expansion helpers, read-route expand handling, blob read operation). The shipped design uses manifest-declared `relationships` rather than this entry's proposed `depends_on`, and binary transport is a stored reference with authorized fetch rather than a BLOB message type. Remaining open sliver: expansion depth is fixed at 1; multi-hop expansion is not defined.
 
@@ -220,9 +220,9 @@ _Previously deferred (carried forward): concerns that affect implementation but 
 
 _Previously deferred (carried forward): concerns that affect implementation but not semantics. Retired 2026-07-06: implemented._
 
-**Finding (Gemini):** The BROWSER JSONL protocol is too dangerous (script injection) and too small (missing most Playwright features). Suggested alternative: expose a CDP WebSocket URL in the START message and let connectors use standard CDP clients.
+**Finding (independent review):** The BROWSER JSONL protocol is too dangerous (script injection) and too small (missing most Playwright features). Suggested alternative: expose a CDP WebSocket URL in the START message and let connectors use standard CDP clients.
 
-**Finding (Codex):** `evaluate` makes portability and security worse. Either define a real browser capability layer or keep it out of the portable core spec.
+**Finding (independent review):** `evaluate` makes portability and security worse. Either define a real browser capability layer or keep it out of the portable core spec.
 
 **Resolution:** Both asks are adopted. The manifest declares `runtime_requirements` (Collection Profile Section 2), and browser automation is the standard `browser_automation` binding carrying `{ interface: "cdp", ws_url }`: connectors drive a runtime-managed browser through standard CDP clients rather than a bespoke JSONL browser protocol. Implemented in the reference (manifest validation, runtime binding matching, CDP adapter). The JSONL `evaluate` mechanism stays out of the portable core.
 
@@ -267,7 +267,7 @@ STATE has no version or migration mechanism in the Collection Profile or the ref
 
 _Previously deferred (carried forward): concerns that affect implementation but not semantics._
 
-**Finding (Gemini):** No way to cancel a running collection (e.g., on grant revocation). Need a CANCEL message.
+**Finding (independent review):** No way to cancel a running collection (e.g., on grant revocation). Need a CANCEL message.
 
 **Action:** The v0.1 fallback is implemented, not planned: the runtime terminates the connector process, with graceful termination escalating to SIGKILL. The open item is a protocol-level CANCEL message with acknowledgment and partial-result semantics; candidate for v0.2.
 
@@ -275,6 +275,6 @@ _Previously deferred (carried forward): concerns that affect implementation but 
 
 _Previously deferred (carried forward): concerns that affect implementation but not semantics._
 
-**Finding (Gemini):** No way to report partial failures (1 of 1000 records failed). Currently all-or-nothing.
+**Finding (independent review):** No way to report partial failures (1 of 1000 records failed). Currently all-or-nothing.
 
 **Action:** Add RECORD_ERROR or error field on RECORD in v0.2.

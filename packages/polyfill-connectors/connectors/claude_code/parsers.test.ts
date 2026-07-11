@@ -267,12 +267,12 @@ test("buildSlashCommandRecord: nested idPath + fallback base", () => {
 // ─── applyProjectDirScope / parseCsvEnv ──────────────────────────────────
 
 test("applyProjectDirScope: include narrows by substring match", () => {
-  const got = applyProjectDirScope(["a-pdpp", "b-vana", "c-other"], ["pdpp", "vana"], []);
-  assert.deepEqual(got, ["a-pdpp", "b-vana"]);
+  const got = applyProjectDirScope(["a-pdpp", "b-acme", "c-other"], ["pdpp", "acme"], []);
+  assert.deepEqual(got, ["a-pdpp", "b-acme"]);
 });
 
 test("applyProjectDirScope: exclude removes by substring match", () => {
-  const got = applyProjectDirScope(["a-pdpp", "b-vana", "c-other"], [], ["vana"]);
+  const got = applyProjectDirScope(["a-pdpp", "b-acme", "c-other"], [], ["acme"]);
   assert.deepEqual(got, ["a-pdpp", "c-other"]);
 });
 

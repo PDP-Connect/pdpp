@@ -1,5 +1,0 @@
-# hone work t1b-retained-size-top-row-values-0010 — baseline rung 'typecheck'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit
-# expect: 0 errors
-# exit: 0  duration: 4s  verdict: PASS
-

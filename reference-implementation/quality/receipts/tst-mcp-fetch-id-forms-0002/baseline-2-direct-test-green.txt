@@ -1,6 +1,0 @@
-# hone work tst-mcp-fetch-id-forms-0002 — baseline rung 'direct-test-green'
-# command: cd "$REPO_ROOT/../packages/mcp-server" && sh -c 'if [ -f test/fetch-id-form-contract.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/fetch-id-form-contract.test.js || rc=1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi'
-# expect: POST: the new test passes fully, no skips. BASELINE: prints 'BASELINE:' exit 0.
-# exit: 0  duration: 0s  verdict: PASS
-
-BASELINE: test not yet created

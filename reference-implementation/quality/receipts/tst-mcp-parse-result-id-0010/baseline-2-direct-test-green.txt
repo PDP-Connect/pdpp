@@ -1,7 +1,0 @@
-# hone work tst-mcp-parse-result-id-0010 — baseline rung 'direct-test-green'
-# command: cd "$REPO_ROOT/../packages/mcp-server" && sh -c 'if [ -f test/parse-record-result-id-oracle.test.js ]; then rc=0; timeout 300 node --test --test-force-exit test/parse-record-result-id-oracle.test.js 2>&1 || rc=1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi'
-# expect: POST: the id-grammar oracle passes fully, no skips. BASELINE: prints 'BASELINE:' exit 0.
-# timeout: 1800s (engine-default)
-# exit: 0  duration: 0s  verdict: PASS
-
-BASELINE: test not yet created

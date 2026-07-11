@@ -1,6 +1,0 @@
-# hone work df-evidence-package-schema-merge-oracle-0004 — baseline rung 'red-then-green-precedence'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/package-rs-client-merge-schema.test.js ]; then git diff --quiet -- server/package-rs-client.js && sed -i 's/{ ...sourceTag, ...item.source }/{ ...item.source, ...sourceTag }/' server/package-rs-client.js && node --test test/package-rs-client-merge-schema.test.js; git checkout -- server/package-rs-client.js; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS (source-tag precedence is pinned); guard confirmed the file was clean before seeding; checkout restores it — paste failing output
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

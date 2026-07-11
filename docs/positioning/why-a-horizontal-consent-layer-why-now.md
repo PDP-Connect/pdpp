@@ -56,5 +56,4 @@ what makes the rest credible to a skeptical technical audience.
 
 ## References
 
-- `docs/research/pdpp-consent-artifact-persistence-and-sharing-brief-2026-06-23.md` — FHIR / Open Banking / CDR / GDPR / RFC 9396 citations.
 - Related: [PDPP and OAuth 2.0](pdpp-and-oauth.md), [Why grants are durable](why-grants-are-durable.md).

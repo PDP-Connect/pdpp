@@ -70,7 +70,7 @@ const OWNER_CONNECTOR_TEMPLATE_ROW = {
     support_state: 'proof_gated',
     next_step_kind: 'enroll_browser_collector',
     proof_gate: 'browser_collector_live_proof_missing',
-    runbook_path: 'docs/operator/browser-collector-proof-runbook.md',
+    runbook_path: null,
     deployment_readiness: {},
   },
   stream_count: 2,

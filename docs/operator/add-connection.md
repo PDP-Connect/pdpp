@@ -137,9 +137,5 @@ connector-specific form knowledge.
   instance these connections live on.
 - [`docs/operator/local-collector-runbook.md`](local-collector-runbook.md) —
   the device-enrollment + collector run path for Claude Code / Codex.
-- [`docs/operator/static-secret-connection-runbook.md`](static-secret-connection-runbook.md)
-  — the owner-session draft → capture → first-ingest sequence for Gmail / GitHub.
-- [`docs/operator/browser-collector-proof-runbook.md`](browser-collector-proof-runbook.md)
-  — the owner-run browser-collector proof path.
 - `openspec/changes/complete-self-service-connection-onboarding/` — the change
   that defines the shared setup engine these surfaces consume.

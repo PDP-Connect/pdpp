@@ -3553,9 +3553,9 @@ function DocsSection() {
       </div>
 
       <div className="mt-12">
-        <SubLabel>Planning / docs primitives — DocsLayout, ArtifactLink, ProsePage, SourceLink</SubLabel>
+        <SubLabel>Docs primitives — DocsLayout, ArtifactLink, ProsePage, SourceLink</SubLabel>
         <p className="pdpp-caption mb-4 max-w-[64ch] text-muted-foreground">
-          Composite primitives used by <code className="font-mono">/planning</code> and intended for any future
+          Composite primitives used by <code className="font-mono">/docs</code> and intended for any future
           repo-as-docs surface. <code className="font-mono">DocsLayout</code> provides the 13rem sidebar + main grid.{" "}
           <code className="font-mono">ArtifactLink</code> is the canonical linked-row for markdown-backed indexes.{" "}
           <code className="font-mono">ProsePage</code> wraps raw markdown in a tinted reading surface using the{" "}
@@ -3583,7 +3583,7 @@ function DocsSection() {
               />
               <ArtifactLink
                 excerpt="Generalize the status primitive so run lifecycle and artifact authoring can coexist without a category error."
-                eyebrow="generalize-status-badge"
+                eyebrow="add-statement-content-fingerprint"
                 footer={<span className="font-mono">3/3 tasks</span>}
                 href="#"
                 meta={<StatusBadge status="complete" vocabulary={ARTIFACT_LIFECYCLE_VOCABULARY} />}
@@ -3597,7 +3597,7 @@ function DocsSection() {
             <SourceLink
               createdAt="2026-03-10T00:00:00Z"
               lastModified="2026-04-22T00:00:00Z"
-              repoRelativePath="openspec/changes/generalize-status-badge/proposal.md"
+              repoRelativePath="openspec/changes/add-statement-content-fingerprint/proposal.md"
             />
           </div>
 

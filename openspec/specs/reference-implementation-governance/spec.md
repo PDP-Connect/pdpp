@@ -676,7 +676,7 @@ Delegated worker lanes SHALL operate from an RI-owner-authored acceptance packet
 
 - **WHEN** multiple worker lanes are delegated
 - **THEN** their scopes SHALL be disjoint or explicitly ordered
-- **AND** each lane SHALL write a concise report under `tmp/workstreams/`
+- **AND** each lane SHALL write a concise report under the repository's untracked workstream-reports directory
 
 ### Requirement: Live-stack mutation SHALL use the owner mutex and closeout evidence
 
@@ -685,7 +685,7 @@ Any deployment, container restart, container recreate, database maintenance, or 
 #### Scenario: A live deployment starts
 
 - **WHEN** an agent deploys or restarts any part of the live reference stack
-- **THEN** it SHALL first record operator, start time, scope, expected duration, and boundaries in `tmp/workstreams/ri-owner-current-state.md`
+- **THEN** it SHALL first record operator, start time, scope, expected duration, and boundaries in the untracked operator state file
 - **AND** it SHALL check that no incompatible live-stack window is already open
 
 #### Scenario: Live verification creates draft source state

@@ -65,7 +65,7 @@ test("an unknown declared role degrades to the generic fallback (no crash, no gu
   // A manifest declaring x_pdpp_role:"bogus" surfaces role:"bogus" on the served
   // capability. declaredRolesFromCapabilities drops it (parseFieldRole → null),
   // so the field carries no declared role and the record takes the honest
-  // generic card — never a field-name guess (Codex constraint #2).
+  // generic card — never a field-name guess (review constraint #2).
   const metadata: StreamMetadata = {
     name: "widgets",
     field_capabilities: {
@@ -111,7 +111,7 @@ test("a stream with no declared roles yields the empty map → undeclared record
   assert.deepEqual(roles, {});
 
   // Two same-type text fields, no declared role → BOTH stay in the generic
-  // key/value table; neither is guessed as the title (Codex constraint #7).
+  // key/value table; neither is guessed as the title (review constraint #7).
   const preview = buildRecordPreview(
     "generic",
     { headline: "Quarterly update", note: "All systems nominal" },

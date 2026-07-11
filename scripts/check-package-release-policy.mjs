@@ -15,7 +15,7 @@ const expectedRepositoryUrl = 'git+https://github.com/vana-com/pdpp.git';
 const expectedNodeEngine = '>=22.14.0';
 
 // The release train publishes a single channel: 0.x versions on npm's default
-// `latest` dist-tag, released from `main` (see docs/package-release-policy.md).
+// `latest` dist-tag, released from `main` (see docs/reference/package-release-policy.md).
 // The `beta` dist-tag is retired; operator-facing install/exec instructions
 // reference publishable packages by plain name (or a pinned version). We forbid
 // the retired `@beta` tag on every publishable-package install command in the

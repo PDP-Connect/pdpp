@@ -67,4 +67,3 @@ outside input from distributed-trust researchers.
 ## References
 
 - `apps/site/content/docs/spec-core.md` — introspection / co-located equivalent (L1375), revocation cache window (L925/L1377), short-lived + refresh for continuous (L1379), grant integrity / "signable, deferred" (L1383).
-- `docs/research/pdpp-consent-artifact-persistence-and-sharing-brief-2026-06-23.md` — record-vs-credential framing, present-as-evidence vs. delegation-via-child-grant, server-anchored vs. holder-centric (W3C VC issuer/holder/verifier) distinction.

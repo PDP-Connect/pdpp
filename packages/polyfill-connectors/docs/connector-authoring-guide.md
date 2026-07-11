@@ -79,7 +79,7 @@ Native isolated launches use `acquireIsolatedBrowser({ profileName: '<connector>
 - Is isolated from other connectors (different profile dir = different fingerprint, different cookies, no cross-contamination).
 - Supports concurrent runs across connectors (each connector has its own browser process; no lockfile).
 
-The runtime router is the only connector-facing browser-launch primitive. The legacy shared browser daemon and shared profile launcher were retired 2026-04-25 (`openspec/changes/retire-browser-daemon`).
+The runtime router is the only connector-facing browser-launch primitive. The legacy shared browser daemon and shared profile launcher were retired 2026-04-25.
 
 Multi-account note: the runtime today defaults `profileName` to the connector name, which is single-account by design. When multi-account support ships, the convention will become `${connectorName}__${subjectId}` so two accounts on the same platform get independent profile directories.
 
@@ -92,7 +92,7 @@ Multi-account note: the runtime today defaults `profileName` to the connector na
 When deciding where a connector gets its data, prefer in this order:
 
 1. **Official API** — OAuth, API key, or equivalent. Stable, versioned, contract-respecting. Examples in this repo: `ynab` (PAT), `oura` (OAuth), `strava` (OAuth), `spotify` (OAuth API partial).
-2. **Archive / compliance export** — GDPR/CCPA "download your data" flows. High-latency but stable, complete, regulator-backed. Examples: `google_takeout`, `twitter_archive`. See `openspec/changes/add-polyfill-connector-system/design-notes/platform-archive-requests-open-question.md` for the open design questions around this surface.
+2. **Archive / compliance export** — GDPR/CCPA "download your data" flows. High-latency but stable, complete, regulator-backed. Examples: `google_takeout`, `twitter_archive`.
 3. **Structured web endpoints** — JSON-over-the-wire that the site's own SPA consumes. Reverse-engineerable; shape usually stable.
 4. **HTML scrape** — last resort. Locale-bound, A/B-test-bound, TOS-adjacent. Examples: `amazon`, `chase`, `usaa`.
 
@@ -343,7 +343,8 @@ There are four independent declaration axes under a stream's `query` block. They
 
 If a field *looks* useful for an affordance but you intentionally don't expose it — privacy-sensitive addresses, snapshot/accounting periods, operational job timing — add a justified entry to `src/query-affordance-allowlist.ts` with a one-line reason. The honesty test fails on a useful-but-undeclared field, and also fails on a stale allowlist entry (one whose affordance is actually declared, or whose field no longer exists). Silence is not an option; declare it or allowlist it.
 
-Prior art and the full rule set: `docs/research/connector-query-affordance-authoring-2026-06-26.md` and `docs/research/connector-authoring-semantics-prior-art-2026-06-24.md`.
+Prior art: search/filter/facet/role modeled as separate axes (Algolia, Elasticsearch, Plaid).
+
 
 ---
 
@@ -713,21 +714,13 @@ add per-connector dedup logic; trust the substrate.
 ### Current hydration status (2026-04-26)
 
 - ✅ **Shipped**: `gmail.attachments` (vertical slice).
-- ⏳ **Deferred follow-ups** with focused design notes under
-  `openspec/changes/hydrate-first-party-blob-streams/design-notes/`:
-  - `slack-blob-followup-2026-04-26.md` (slack `files`, `canvases`)
-  - `financial-statement-blob-followup-2026-04-26.md` (chase, usaa
-    `statements`)
-  - `commerce-receipt-blob-followup-2026-04-26.md` (amazon and other
-    commerce invoices)
-  - `assistant-artifact-blob-followup-2026-04-26.md` (chatgpt,
-    claude_code, codex, imessage, whatsapp)
-  - `source-host-blob-followup-2026-04-26.md` (github gists,
-    pr_artifacts)
-  - `social-media-blob-followup-2026-04-26.md` (reddit, meta,
-    twitter_archive, loom)
-- 📋 The full audit table is in
-  `blob-hydration-coverage-2026-04-25.md` in the same directory.
+- ⏳ **Deferred follow-ups**:
+  - slack `files`, `canvases`
+  - chase, usaa `statements`
+  - amazon and other commerce invoices
+  - chatgpt, claude_code, codex, imessage, whatsapp artifacts
+  - github gists, pr artifacts
+  - reddit, meta, twitter_archive, loom
 
 Pick from the deferred list before adding bytes to a connector that
 isn't on it; if your connector isn't covered, update the audit table

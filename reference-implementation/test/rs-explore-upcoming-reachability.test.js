@@ -6,7 +6,7 @@
  * with no way to reach members 33..188. count==reachability requires the future set
  * be walkable to its LAST member. This test pins that invariant.
  *
- * ACCEPTANCE (Codex-gated, Slice 1):
+ * ACCEPTANCE (review-gated, Slice 1):
  *   1. Page Upcoming to exhaustion via the upcoming composite cursor; EVERY future
  *      record is reachable exactly once (no dup, no skip) — incl. the last ("188th").
  *   2. Ties in semantic_time across partitions AND within one partition are handled
@@ -19,7 +19,7 @@
  * Runs on BOTH SQLite (in-memory) and Postgres (PDPP_TEST_POSTGRES_URL).
  * The Postgres path is skipped when the env var is absent.
  *
- * PG PLAN EVIDENCE (Codex acceptance #4, verified 2026-06-21 on a throwaway PG16
+ * PG PLAN EVIDENCE (verified 2026-06-21 on a throwaway PG16
  * with 5000 future rows in one partition): the ASC upcoming walk is served by a
  * BACKWARD scan of the DESC expression index `idx_pg_records_semantic_time`
  * (connector_instance_id, stream, COALESCE(NULLIF(semantic_time,''),emitted_at)
@@ -390,7 +390,7 @@ test('Upcoming bounded URL (sqlite): the next cursor is a short opaque handle, n
  * EXCLUDE scope ("is not" facet / `-con:`/`-stream:`) is applied SERVER-SIDE at
  * partition enumeration, so an excluded connection's records are absent from the
  * feed, the Upcoming projection, AND the exact upcoming_total — counts stay exact,
- * never client-side shrunk. This is the count-honest implementation Codex required.
+ * never client-side shrunk. This is the count-honest implementation the review required.
  * Shared across SQLite + Postgres so both storage paths (`NOT IN` / `<> ALL`) are
  * covered.
  */

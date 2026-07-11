@@ -12,16 +12,20 @@ import { homedir, tmpdir } from 'node:os';
 // loading .ts via tsx; the package's `verify` script runs with the
 // monorepo's tsx loader.
 import {
-  BUNDLED_CONNECTOR_IDS,
-  BUNDLED_CONNECTOR_VERSIONS,
-  BUNDLED_CONNECTORS,
   COLLECTOR_PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES,
   LocalDeviceOutbox,
   buildLocalDeviceOutboxId,
-  getBundledConnector,
 } from '../src/runner.ts';
 import {
+  // The concrete bundled-connector registry is assembled at the composition
+  // root (the bin) from connector-owned definitions; the src runtime is
+  // connector-agnostic. These imports moved here from `../src/runner.ts` when
+  // the collector was inverted to connector-defines-collector.
+  BUNDLED_CONNECTOR_IDS,
+  BUNDLED_CONNECTOR_VERSIONS,
+  BUNDLED_CONNECTORS,
+  getBundledConnector,
   buildConnectorSpec,
   buildLocalOutboxDoctor,
   classifyLocalCollectorDeploymentPosture,
@@ -76,6 +80,53 @@ test('bundled connectors registry contains claude_code and codex only', () => {
   assert.deepEqual([...BUNDLED_CONNECTOR_IDS].sort(), ['claude_code', 'codex']);
   assert.ok(BUNDLED_CONNECTORS.claude_code);
   assert.ok(BUNDLED_CONNECTORS.codex);
+});
+
+test('bundled registry is assembled from the connector-owned definitions (runtime names no connector)', async () => {
+  // Inversion invariant: the runtime does not author the connector list — the
+  // bin injects the connectors' own LOCAL_COLLECTOR_DEFINITIONS. The runnable
+  // registry must therefore be exactly those definitions, id-for-id, with each
+  // entry's default streams/bindings coming straight from its definition.
+  const { LOCAL_COLLECTOR_DEFINITIONS } = await import(
+    '../../polyfill-connectors/src/collector-registry.ts'
+  );
+  assert.deepEqual(
+    [...BUNDLED_CONNECTOR_IDS].sort(),
+    LOCAL_COLLECTOR_DEFINITIONS.map((d) => d.connector_id).sort()
+  );
+  for (const def of LOCAL_COLLECTOR_DEFINITIONS) {
+    const entry = getBundledConnector(def.connector_id);
+    assert.ok(entry, `entry for ${def.connector_id}`);
+    assert.deepEqual([...entry.streams], [...def.streams], `${def.connector_id} streams`);
+    assert.deepEqual(entry.bindings, def.bindings, `${def.connector_id} bindings`);
+  }
+});
+
+test('tsconfig packaging manifest bundles exactly the connectors in the definitions registry', async () => {
+  // The generic runtime names no connector, but the collector build still has
+  // to COMPILE the bundled connectors into dist so it can spawn them. That
+  // packaging list lives in tsconfig.build.json; this guard keeps it in
+  // lockstep with the connector-owned registry so the two never drift (a
+  // connector added to the registry but not compiled would fail to spawn from
+  // the tarball, and vice-versa).
+  const { LOCAL_COLLECTOR_DEFINITIONS } = await import(
+    '../../polyfill-connectors/src/collector-registry.ts'
+  );
+  // tsconfig.build.json is JSONC (tsc allows comments); strip `//` line
+  // comments before JSON.parse so this guard reads the same file tsc compiles.
+  const tsconfigText = await readFile(new URL('../tsconfig.build.json', import.meta.url), 'utf8');
+  const tsconfig = JSON.parse(
+    tsconfigText.replace(/^\s*\/\/.*$/gm, '')
+  );
+  const compiledConnectors = tsconfig.include
+    .map((entry) => /connectors\/([^/]+)\/\*\*/.exec(entry)?.[1])
+    .filter(Boolean)
+    .sort();
+  assert.deepEqual(
+    compiledConnectors,
+    LOCAL_COLLECTOR_DEFINITIONS.map((d) => d.entry).sort(),
+    'tsconfig.build.json must compile exactly the connectors declared in LOCAL_COLLECTOR_DEFINITIONS'
+  );
 });
 
 test('bundled connector entries declare filesystem binding as required', () => {
@@ -763,7 +814,7 @@ test('local collector status resolves the matching source-instance profile queue
       id: 'pending-row',
       kind: 'record_batch',
       payload: { private: 'not-rendered' },
-      sourceInstanceId: 'dsrc_peregrine',
+      sourceInstanceId: 'dsrc_laptop',
     });
   } finally {
     outbox.close();
@@ -775,7 +826,7 @@ test('local collector status resolves the matching source-instance profile queue
       'PDPP_COLLECTOR_CONNECTOR=claude_code',
       'PDPP_LOCAL_DEVICE_ID=device-1',
       'PDPP_LOCAL_DEVICE_TOKEN=token-1',
-      'PDPP_SOURCE_INSTANCE_ID=dsrc_peregrine',
+      'PDPP_SOURCE_INSTANCE_ID=dsrc_laptop',
       `PDPP_COLLECTOR_QUEUE=${queuePath}`,
       '',
     ].join('\n')
@@ -784,7 +835,7 @@ test('local collector status resolves the matching source-instance profile queue
   const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
   process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
   try {
-    const options = resolveInspectionOptions(parseArgs(['status', '--source-instance-id', 'dsrc_peregrine']));
+    const options = resolveInspectionOptions(parseArgs(['status', '--source-instance-id', 'dsrc_laptop']));
     const status = inspectLocalOutboxStatus(options, { deploymentPosture: PUBLISHED_POSTURE });
     assert.equal(status.db.exists, true);
     assert.equal(status.db.path, queuePath);
@@ -809,9 +860,9 @@ test('local collector recover dry-run loads the matching source-instance profile
       id: 'dead-letter-id',
       kind: 'record_batch',
       payload: { secret: 'dead-letter-payload' },
-      sourceInstanceId: 'dsrc_peregrine',
+      sourceInstanceId: 'dsrc_laptop',
     });
-    const [claim] = outbox.claimReady({ holder: 'worker-a', leaseMs: 60_000, sourceInstanceId: 'dsrc_peregrine' });
+    const [claim] = outbox.claimReady({ holder: 'worker-a', leaseMs: 60_000, sourceInstanceId: 'dsrc_laptop' });
     outbox.deadLetter({
       error: 'local device request failed: 502',
       holder: 'worker-a',
@@ -828,7 +879,7 @@ test('local collector recover dry-run loads the matching source-instance profile
       'PDPP_COLLECTOR_CONNECTOR=claude_code',
       'PDPP_LOCAL_DEVICE_ID=device-1',
       'PDPP_LOCAL_DEVICE_TOKEN=token-1',
-      'PDPP_SOURCE_INSTANCE_ID=dsrc_peregrine',
+      'PDPP_SOURCE_INSTANCE_ID=dsrc_laptop',
       `PDPP_COLLECTOR_QUEUE=${queuePath}`,
       '',
     ].join('\n')
@@ -837,11 +888,11 @@ test('local collector recover dry-run loads the matching source-instance profile
   const previous = process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR;
   process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
   try {
-    const lookup = findLocalCollectorProfiles({ sourceInstanceId: 'dsrc_peregrine' });
+    const lookup = findLocalCollectorProfiles({ sourceInstanceId: 'dsrc_laptop' });
     assert.equal(lookup.matches.length, 1);
     assert.equal(lookup.matches[0]?.name, 'claude_code');
 
-    const result = await recoverLocalCollector(parseArgs(['recover', '--source-instance-id', 'dsrc_peregrine']));
+    const result = await recoverLocalCollector(parseArgs(['recover', '--source-instance-id', 'dsrc_laptop']));
     assert.equal(result.object, 'local_collector_recovery');
     assert.equal(result.dry_run, true);
     assert.equal(result.profile.name, 'claude_code');
@@ -868,9 +919,9 @@ test('local collector recover respects explicit queue over the matching profile 
   const profileOutbox = new LocalDeviceOutbox({ path: profileQueuePath });
   const explicitOutbox = new LocalDeviceOutbox({ path: explicitQueuePath });
   try {
-    profileOutbox.enqueue({ id: 'profile-row', kind: 'record_batch', payload: {}, sourceInstanceId: 'dsrc_peregrine' });
-    explicitOutbox.enqueue({ id: 'explicit-row', kind: 'record_batch', payload: {}, sourceInstanceId: 'dsrc_peregrine' });
-    const [claim] = explicitOutbox.claimReady({ holder: 'worker-a', leaseMs: 60_000, sourceInstanceId: 'dsrc_peregrine' });
+    profileOutbox.enqueue({ id: 'profile-row', kind: 'record_batch', payload: {}, sourceInstanceId: 'dsrc_laptop' });
+    explicitOutbox.enqueue({ id: 'explicit-row', kind: 'record_batch', payload: {}, sourceInstanceId: 'dsrc_laptop' });
+    const [claim] = explicitOutbox.claimReady({ holder: 'worker-a', leaseMs: 60_000, sourceInstanceId: 'dsrc_laptop' });
     explicitOutbox.deadLetter({
       error: 'explicit queue error',
       holder: 'worker-a',
@@ -884,7 +935,7 @@ test('local collector recover respects explicit queue over the matching profile 
   await writeFile(
     join(profileDir, 'claude_code.env'),
     [
-      'PDPP_SOURCE_INSTANCE_ID=dsrc_peregrine',
+      'PDPP_SOURCE_INSTANCE_ID=dsrc_laptop',
       `PDPP_COLLECTOR_QUEUE=${profileQueuePath}`,
       '',
     ].join('\n')
@@ -894,7 +945,7 @@ test('local collector recover respects explicit queue over the matching profile 
   process.env.PDPP_LOCAL_COLLECTOR_PROFILE_DIR = profileDir;
   try {
     const result = await recoverLocalCollector(
-      parseArgs(['recover', '--source-instance-id', 'dsrc_peregrine', '--queue', explicitQueuePath])
+      parseArgs(['recover', '--source-instance-id', 'dsrc_laptop', '--queue', explicitQueuePath])
     );
     assert.equal(result.db.path, explicitQueuePath);
     assert.equal(result.retry_dead_letters?.matched, 1);
@@ -942,8 +993,8 @@ test('local collector recover apply keeps draining while the backlog shrinks', a
       version: '0.1.0-beta.7',
     },
     source: {
-      connection_id: 'dsrc_peregrine',
-      source_instance_id: 'dsrc_peregrine',
+      connection_id: 'dsrc_laptop',
+      source_instance_id: 'dsrc_laptop',
     },
   });
   const statuses = [status(24), status(24), status(12), status(0)];
@@ -953,7 +1004,7 @@ test('local collector recover apply keeps draining while the backlog shrinks', a
     parseArgs([
       'recover',
       '--source-instance-id',
-      'dsrc_peregrine',
+      'dsrc_laptop',
       '--queue',
       '/tmp/pdpp-test-collector.sqlite',
       '--apply',
@@ -1013,8 +1064,8 @@ test('local collector recover apply stops honestly when a drain pass makes no pr
       version: '0.1.0-beta.7',
     },
     source: {
-      connection_id: 'dsrc_peregrine',
-      source_instance_id: 'dsrc_peregrine',
+      connection_id: 'dsrc_laptop',
+      source_instance_id: 'dsrc_laptop',
     },
   });
   const statuses = [status(24), status(24), status(24)];
@@ -1023,7 +1074,7 @@ test('local collector recover apply stops honestly when a drain pass makes no pr
     parseArgs([
       'recover',
       '--source-instance-id',
-      'dsrc_peregrine',
+      'dsrc_laptop',
       '--queue',
       '/tmp/pdpp-test-collector.sqlite',
       '--apply',
@@ -1079,8 +1130,8 @@ test('local collector recover apply keeps draining after a fresh scan queues new
       version: '0.1.0-beta.7',
     },
     source: {
-      connection_id: 'dsrc_peregrine',
-      source_instance_id: 'dsrc_peregrine',
+      connection_id: 'dsrc_laptop',
+      source_instance_id: 'dsrc_laptop',
     },
   });
   const statuses = [
@@ -1097,7 +1148,7 @@ test('local collector recover apply keeps draining after a fresh scan queues new
     parseArgs([
       'recover',
       '--source-instance-id',
-      'dsrc_peregrine',
+      'dsrc_laptop',
       '--queue',
       '/tmp/pdpp-test-collector.sqlite',
       '--apply',

@@ -80,7 +80,7 @@ function parseArgs() {
     // "migrate-to-blobs" to extract legacy binary leaves to the blobs
     // table (lossless; produces records identical in shape to clean
     // ingest). See transformers.mjs setJsonbNulPolicy() and
-    // docs/binary-content-invariant-design-brief.md §4.7.
+    // docs/reference/binary-content-invariant-design-brief.md §4.7.
     jsonbNulPolicy: 'strict',
     // Path to the extraction ledger file. Each extracted JSON leaf
     // emits one JSONL line: {timestamp, connector_id, stream,
@@ -568,7 +568,7 @@ async function executeCommand({
         // the source table predates it. Legacy bindings semantically
         // correspond to '@record' (record-level, not tied to a specific
         // JSON Pointer in record_json). See
-        // docs/binary-content-invariant-design-brief.md §4.6.
+        // docs/reference/binary-content-invariant-design-brief.md §4.6.
         if (table.name === 'blob_bindings') {
           transformerOptions.synthesize = (sqliteRow, columnName) => {
             if (columnName === 'json_path') {
@@ -782,7 +782,7 @@ async function verifyCommand({ from, to, json, quiet, jsonbNulPolicy }) {
  *   3. Every blob_bindings.blob_id exists in `blobs`, and blobs.sha256 is
  *      consistent with the blob_id naming convention.
  *
- * See docs/binary-content-invariant-design-brief.md §4.9.
+ * See docs/reference/binary-content-invariant-design-brief.md §4.9.
  *
  * Returns the number of distinct invariant failures detected (0 = clean).
  */
@@ -806,7 +806,7 @@ async function verifyBinaryContentInvariant(pool, { json, quiet }) {
   // The full printable-text invariant (NUL + C0/C1 controls + DEL) is
   // enforced for NEW writes at the connector boundary via
   // pdppSafeText/safeTextPreview, not in this migration verifier.
-  // See docs/binary-content-invariant-design-brief.md §4.6a for why
+  // See docs/reference/binary-content-invariant-design-brief.md §4.6a for why
   // the migration scope is narrowed to U+0000.
   const r1 = await pool.query(`
     SELECT count(*)::int AS n
@@ -1025,7 +1025,7 @@ other forbidden control characters in JSONB string leaves):
                          JSONL line per extracted leaf. Redundant audit
                          trail — canonical state lives in blob_bindings.
 
-  See docs/binary-content-invariant-design-brief.md §4.7–§4.8.
+  See docs/reference/binary-content-invariant-design-brief.md §4.7–§4.8.
     `);
     process.exit(0);
   }

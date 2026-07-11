@@ -1,6 +1,0 @@
-# hone work auth-mutation-tests-0001 — baseline rung 'red-then-green-ttl-arithmetic'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/Date.now() + seconds/Date.now() - seconds/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming 'fresh pending consent: lookup succeeds with a future expires_at' — the mutation flips expiresInIso TTL arithmetic (server/auth.js:60-62; grep -cF 'Date.now() + seconds' server/auth.js == 1) so every issued pending consent / device code is born already expired and the fresh-lookup happy path observes null or a past expires_at; checkout restores it
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

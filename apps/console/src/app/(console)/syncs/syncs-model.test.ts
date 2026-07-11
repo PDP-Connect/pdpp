@@ -920,7 +920,7 @@ test("syncs overview shows ALL streams with no truncation", () => {
         connection_id: "cin_slack",
         connector_display_name: "Slack",
         connector_id: "slack",
-        display_name: "Vana Slack",
+        display_name: "Acme Slack",
         streams: ["a", "b", "c", "d", "e", "f", "g"],
       }),
     ],
@@ -1103,7 +1103,7 @@ test("all streams in a group are present with no truncation", () => {
       connector({
         connection_id: "cin_many",
         connector_id: "slack",
-        display_name: "Vana Slack",
+        display_name: "Acme Slack",
         streams: ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"],
       }),
     ],

@@ -1,5 +1,5 @@
 /* Recordroom — Sources (the loading dock). Master-detail layout for the
- * redesigned console. Ported from docs/design/ink-carbon/project/recordroom/
+ * redesigned console. Ported from docs/design-system/ink-carbon/project/recordroom/
  * sources.css and rebound to the real records surface. Token-driven only:
  * every color/length references a CSS var from @pdpp/brand/ink-carbon.css. The kit
  * primitives (.pdpp-sheet, .pdpp-kv, .pdpp-table, .pdpp-endorse, .pdpp-btn)

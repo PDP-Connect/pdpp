@@ -935,7 +935,7 @@ CREATE TABLE IF NOT EXISTS dataset_summary_stream_projection (
 -- record-level bindings that aren't tied to a specific field
 -- (current attachment-style writers). The CHECK constraint enforces
 -- the shape — every json_path is either '@record' or starts with '/'.
--- See docs/binary-content-invariant-design-brief.md §4.6.
+-- See docs/reference/binary-content-invariant-design-brief.md §4.6.
 CREATE TABLE IF NOT EXISTS blob_bindings (
   blob_id       TEXT NOT NULL,
   connector_id  TEXT NOT NULL,
@@ -3289,7 +3289,7 @@ function migrateSpineSourceColumns(raw, opts = {}) {
  * Idempotent: detects the new shape via PRAGMA table_info and skips when
  * the column is already present.
  *
- * See docs/binary-content-invariant-design-brief.md §4.6.
+ * See docs/reference/binary-content-invariant-design-brief.md §4.6.
  */
 function migrateBlobBindingsJsonPath(raw, opts = {}) {
   if (hasTableColumn(raw, 'blob_bindings', 'json_path')) {
@@ -3571,7 +3571,7 @@ export function initDb(path = ':memory:', opts = {}) {
   // blob_bindings gains a json_path column (RFC 6901 JSON Pointer or
   // '@record' pseudo-path). Required for lossless binary extraction
   // during sqlite→postgres migration; see
-  // docs/binary-content-invariant-design-brief.md §4.6. Legacy rows
+  // docs/reference/binary-content-invariant-design-brief.md §4.6. Legacy rows
   // backfill with '@record' (their existing record-level semantics).
   runWithSqliteBusyRetrySync(() => migrateBlobBindingsJsonPath(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorSyncStateInstanceColumns(raw, opts));

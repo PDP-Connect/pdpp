@@ -1,5 +1,0 @@
-# hone work df-surface-mcp-token-kinds-enum-0001 — baseline rung 'diff-scope'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff --stat -- packages/reference-contract reference-implementation/openapi reference-implementation/server reference-implementation/runtime
-# expect: changes ONLY under packages/reference-contract and reference-implementation/openapi; zero changed lines under server/ or runtime/
-# exit: 0  duration: 0s  verdict: PASS
-

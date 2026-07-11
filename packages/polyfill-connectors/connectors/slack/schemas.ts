@@ -15,7 +15,7 @@ import { z } from "zod";
 import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
-// Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+// Text-field classification (docs/reference/binary-content-invariant-design-brief.md §4.4):
 //   - Free-form text (message text, names, titles, body content) → pdppSafeText
 //   - Regex-validated structural strings (Slack IDs, timestamps) → z.string().regex(...)
 

@@ -32,5 +32,4 @@ position surfaces belong in OpenSpec change proposals, not here.
 
 ## Related
 
-- Evidence base: `docs/research/pdpp-consent-artifact-persistence-and-sharing-brief-2026-06-23.md`
 - Spec: `apps/site/content/docs/spec-core.md`

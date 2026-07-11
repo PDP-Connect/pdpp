@@ -11,7 +11,7 @@
  * standing-view-model.ts) and renders kit primitives. No data fetching, no
  * tone logic here — that lives in the view-model so it stays testable.
  *
- * Design source: docs/design/ink-carbon/project/recordroom/rr-overview.jsx.
+ * Design source: docs/design-system/ink-carbon/project/recordroom/rr-overview.jsx.
  */
 import { Endorse, Eyebrow, IcTimestamp, Monogram } from "@pdpp/brand-react";
 import "@pdpp/brand-react/components.css";

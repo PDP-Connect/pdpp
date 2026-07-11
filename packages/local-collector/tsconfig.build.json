@@ -16,8 +16,16 @@
   "include": [
     "bin/**/*.ts",
     "src/**/*.ts",
+    // Bundled filesystem-class connectors compiled into the tarball so the
+    // generic runtime can spawn them. This list is the collector's PACKAGING
+    // manifest (what ships), kept in lockstep with the connector-owned
+    // `LOCAL_COLLECTOR_DEFINITIONS` registry — a test
+    // (`bundled connector dist entries match the injected definitions`)
+    // asserts the two never drift. The runtime itself names no connector.
     "../polyfill-connectors/connectors/claude_code/**/*.ts",
     "../polyfill-connectors/connectors/codex/**/*.ts",
+    "../polyfill-connectors/src/collector-definition.ts",
+    "../polyfill-connectors/src/collector-registry.ts",
     "../polyfill-connectors/src/auth.ts",
     "../polyfill-connectors/src/browser-handoff.ts",
     "../polyfill-connectors/src/collector-build-info.ts",

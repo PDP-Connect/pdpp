@@ -10,7 +10,7 @@ import { z } from "zod";
 import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
-// Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+// Text-field classification (docs/reference/binary-content-invariant-design-brief.md §4.4):
 //   - titles, descriptions, bodies, names, logins, urls → pdppSafeText
 //   - Regex-validated structural strings (ISO dates) → z.string().regex(...)
 

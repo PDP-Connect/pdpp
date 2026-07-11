@@ -24,14 +24,14 @@ function makeRecordingFetch() {
             object: 'stream',
             name: 'orders',
             connection_id: 'cin_aaa',
-            display_name: 'peregrine Amazon',
+            display_name: 'laptop Amazon',
             connector_instance_id: 'cin_aaa',
           },
           {
             object: 'stream',
             name: 'orders',
             connection_id: 'cin_bbb',
-            display_name: 'vivid fish Amazon',
+            display_name: 'example org Amazon',
             connector_instance_id: 'cin_bbb',
           },
         ],
@@ -80,8 +80,8 @@ function makeRecordingFetch() {
                 "Record id 'o1' resolves to more than one connection under the caller's grant.",
               request_id: 'req-ambig-1',
               available_connections: [
-                { connection_id: 'cin_aaa', display_name: 'peregrine Amazon' },
-                { connection_id: 'cin_bbb', display_name: 'vivid fish Amazon' },
+                { connection_id: 'cin_aaa', display_name: 'laptop Amazon' },
+                { connection_id: 'cin_bbb', display_name: 'example org Amazon' },
               ],
               retry_with: {
                 field: 'connection_id',
@@ -105,8 +105,8 @@ function makeRecordingFetch() {
               message: "Blob 'blob-1' resolves to more than one connection under the caller's grant.",
               request_id: 'req-ambig-2',
               available_connections: [
-                { connection_id: 'cin_aaa', display_name: 'peregrine Amazon' },
-                { connection_id: 'cin_bbb', display_name: 'vivid fish Amazon' },
+                { connection_id: 'cin_aaa', display_name: 'laptop Amazon' },
+                { connection_id: 'cin_bbb', display_name: 'example org Amazon' },
               ],
               retry_with: {
                 field: 'connection_id',

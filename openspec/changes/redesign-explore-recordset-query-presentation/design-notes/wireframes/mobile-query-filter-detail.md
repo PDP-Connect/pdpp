@@ -15,7 +15,7 @@ a row TAP navigates to the full record-detail route (R4, pinned in Slice 3).
 │  ─────────────────────────│   indicator is pinned to the  │  ☑ YNAB              188  │   │  "refactor the upcoming…"   │   declared roles fill the
 │ [ Filter (2) ]   newest ▾ │   TOP of the visible feed,     │  ☐ Chase              12  │   │                             │   detail; undeclared → honest
 │  ─────────────────────────│   never scrolled above the     │   ⊘ is not (invert)       │←─ │  author                     │   generic key/value (no guess).
-│ Today                  32 │   fold while you scroll.        │                           │   │  peregrine Codex            │
+│ Today                  32 │   fold while you scroll.        │                           │   │  laptop Codex               │
 │ ┌─────────────────────────┐│                              │ Streams                   │   │                             │
 │ │● Codex / messages  2:14p││  ← whole row is the tap       │  ☐ messages           8  │   │  ▸ Raw JSON                 │
 │ │ "refactor the upcom…"   ││    target → full detail route │   ⊘ is not                │   │                             │

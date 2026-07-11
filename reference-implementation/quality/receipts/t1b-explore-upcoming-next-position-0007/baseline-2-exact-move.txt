@@ -1,5 +1,0 @@
-# hone work t1b-explore-upcoming-next-position-0007 — baseline rung 'exact-move'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/explore-timeline-substrate.ts
-# expect: branch bodies byte-identical modulo indentation, the push->return conversion, and the explicit lookups param; disjunction order unchanged
-# exit: 0  duration: 0s  verdict: PASS
-

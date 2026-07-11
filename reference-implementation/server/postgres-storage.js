@@ -1128,7 +1128,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       -- record_json leaf the blob replaces (e.g. '/output_preview') or the
       -- reserved pseudo-path '@record' for record-level bindings that
       -- aren't tied to a specific field. See
-      -- docs/binary-content-invariant-design-brief.md §4.6.
+      -- docs/reference/binary-content-invariant-design-brief.md §4.6.
       CREATE TABLE IF NOT EXISTS blob_bindings (
         blob_id TEXT NOT NULL,
         connector_id TEXT NOT NULL,
@@ -2840,7 +2840,7 @@ async function migratePostgresSpineSourceColumns(client) {
  *
  * Idempotent: skips when json_path is already present.
  *
- * See docs/binary-content-invariant-design-brief.md §4.6.
+ * See docs/reference/binary-content-invariant-design-brief.md §4.6.
  */
 async function migratePostgresBlobBindingsJsonPath(client) {
   const hasJsonPath = await hasPostgresColumn(client, 'blob_bindings', 'json_path');

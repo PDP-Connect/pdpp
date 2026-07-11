@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Pocket stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * DEPRECATED connector: Pocket shut down 2025-07-08 and the v3 API is gone
  * (see index.ts header). It is excluded from register-all and cannot run live.

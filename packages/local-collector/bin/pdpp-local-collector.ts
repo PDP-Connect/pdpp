@@ -34,10 +34,14 @@ import {
   CollectorUsageError,
 } from "../src/errors.ts";
 import {
-  BUNDLED_CONNECTOR_IDS,
+  type BundledConnectorEntry,
+  type BundledConnectorRegistry,
   COLLECTOR_PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES,
   type CollectorConnectorSpec,
+  bundledConnectorIds,
+  bundledConnectorVersions,
+  createBundledConnectorRegistry,
   deriveLocalCollectorLifecycleState,
   LocalDeviceOutbox,
   type LocalCollectorLifecycleState,
@@ -52,10 +56,36 @@ import {
   type LocalDeviceOutboxSummary,
   LocalDeviceRequestTimeoutError,
   enrollCollector,
-  getBundledConnector,
+  getBundledConnectorFrom,
   isMainModule,
   runCollectorConnector,
 } from "../src/runner.ts";
+import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/collector-registry.ts";
+
+/**
+ * The published local collector's connector registry.
+ *
+ * Composition root: the generic runtime knows no connectors; here we inject
+ * the connector-owned {@link LOCAL_COLLECTOR_DEFINITIONS} to obtain the
+ * runnable, id-keyed registry the CLI resolves `--connector <id>` against.
+ * Adding a filesystem-class connector to the bundle is a one-line change in
+ * `@pdpp/polyfill-connectors/collectors` — this file and the runtime do not
+ * change.
+ */
+export const BUNDLED_CONNECTORS: BundledConnectorRegistry =
+  createBundledConnectorRegistry(LOCAL_COLLECTOR_DEFINITIONS);
+
+/** Stable list of connector ids the published `pdpp-local-collector` accepts. */
+export const BUNDLED_CONNECTOR_IDS: readonly string[] = bundledConnectorIds(BUNDLED_CONNECTORS);
+
+/** Version each bundled connector reports on the runtime-capabilities payload. */
+export const BUNDLED_CONNECTOR_VERSIONS: Readonly<Record<string, string>> =
+  bundledConnectorVersions(BUNDLED_CONNECTORS);
+
+/** Lookup helper. Returns null when the id is not bundled. */
+export function getBundledConnector(connectorId: string): BundledConnectorEntry | null {
+  return getBundledConnectorFrom(BUNDLED_CONNECTORS, connectorId);
+}
 
 /**
  * Stream name the local source inventory emits coverage records on. Kept
@@ -81,7 +111,7 @@ const RECOVER_DEFAULT_MAX_DRAIN_PASSES = 20;
  * in-repo `package.json` by design. It is older than every real beta build, so
  * a host reporting it is either an unpinned `latest` install of the placeholder
  * or an in-repo manifest — neither is real published operator-host evidence.
- * See `docs/local-collector.md`§"Deployment Posture".
+ * See `docs/reference/local-collector.md`§"Deployment Posture".
  */
 const LOCAL_COLLECTOR_PLACEHOLDER_VERSION = "0.0.0";
 /**
@@ -188,7 +218,7 @@ export interface LocalCollectorDeploymentPosture {
  * Classify the running collector's deployment posture from its own resolved
  * module location plus the package manifest the CLI already reads. This is the
  * mechanical replacement for the documented manual `command -v` + `readlink -f`
- * + version cross-check ritual in `docs/local-collector.md`§"Deployment
+ * + version cross-check ritual in `docs/reference/local-collector.md`§"Deployment
  * Posture". Pure on `startUrl` so it is unit-testable against synthesized
  * published-like and repo-dist-like layouts.
  *
@@ -1046,7 +1076,7 @@ function deploymentPostureRemediation(posture: LocalCollectorDeploymentPosture):
       "fixes you need before re-pinning — `pnpm release:dist-tag-check` (release " +
       "owner) reports the live dist-tag posture; a `repo_dist_override` that is " +
       "ahead of the published build is dev evidence, not a build to downgrade to. " +
-      "See docs/local-collector.md §\"Deployment Posture: Published vs Dev\"."
+      "See docs/reference/local-collector.md §\"Deployment Posture: Published vs Dev\"."
   );
   return parts.join(" ");
 }

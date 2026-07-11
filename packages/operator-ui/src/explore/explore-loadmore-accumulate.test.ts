@@ -10,7 +10,7 @@
  * the assembler fetches page 1 + each trail cursor IN ORDER and CONCATENATES.
  *
  * THE SECOND BUG (docs/research/explore-loadmore-snapshot-pin-fix-2026-06-20.md,
- * caught by Codex): the trail accumulator re-fetched page 1 with `cursor=null` (a
+ * caught in review): the trail accumulator re-fetched page 1 with `cursor=null` (a
  * FRESH snapshot) and pinned it with an `emitted_at <= anchor` proxy. But emitted_at
  * is display-only; membership is anchored by `snapshotSeq` (ingest id). An
  * after-snapshot BACKFILL whose emitted_at lands inside page 1's window PASSES the
@@ -319,7 +319,7 @@ test("recent first load (empty trail): page 1 fetched with cursor=null, no rewin
 });
 
 test("recent Load-more: page 1 is REWOUND to the original snapshot — an after-snapshot backfill cannot displace an original row", async () => {
-  // THE CORRECTED FIX (Codex HOLD). The page-1 → page-2 cursor `cursor-p2` encodes
+  // THE CORRECTED FIX (review HOLD). The page-1 → page-2 cursor `cursor-p2` encodes
   // the ORIGINAL snapshot. Two contrasting responses prove the assembler pins page 1
   // by snapshotSeq (rewind), NOT by the emitted_at proxy:
   //

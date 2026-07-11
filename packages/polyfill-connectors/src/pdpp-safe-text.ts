@@ -18,7 +18,7 @@
  * or route it to the blobs table. `pdppSafeText` is the validation gate
  * that catches mistakes where a parser inlined binary content anyway.
  *
- * Design contract: docs/binary-content-invariant-design-brief.md §4.3.
+ * Design contract: docs/reference/binary-content-invariant-design-brief.md §4.3.
  */
 
 import { z } from "zod";

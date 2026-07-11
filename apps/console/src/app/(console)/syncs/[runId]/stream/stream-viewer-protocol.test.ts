@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  parseAttachedMessage,
   parseBackendReadyMessage,
   parseClipboardMessage,
   parseFrameMessage,
@@ -11,6 +10,7 @@ import {
   parseStreamErrorMessage,
   parseUrlChangedMessage,
 } from "@opendatalabs/remote-surface/protocol";
+import { parseAttachedMessage } from "./stream-viewer-protocol.ts";
 
 test("parseAttachedMessage validates scope and viewport shape", () => {
   assert.deepEqual(

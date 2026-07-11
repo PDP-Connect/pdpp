@@ -42,7 +42,7 @@ import { createSqliteConnectorInstanceStore } from '../server/stores/connector-i
 const COMPACT_SCHEMA_BYTE_BUDGET = 60_000; // full grant, all streams, compact view
 const STREAM_COMPACT_SCHEMA_BYTE_BUDGET = 6_000; // one stream, compact view (single connection)
 
-// Real-scale budget for a many-connection grant. Codex live-smoked the deployed
+// Real-scale budget for a many-connection grant. live-smoked in review the deployed
 // owner grant (2026-06-01) and measured `view=compact` at 93,785 bytes and
 // `view=compact&stream=messages` at 7,626 bytes — both over the budgets above.
 // The root cause was per-stream duplication of `granted_connections`: the RS
@@ -629,7 +629,7 @@ test('view=compact de-dups granted_connections to the connector level at 19-conn
       );
 
       // Non-vacuous: the body WITHOUT the lift (per-stream duplication, the
-      // pre-fix shape Codex live-smoked at 93,785 bytes) must be materially
+      // pre-fix shape live-smoked in review at 93,785 bytes) must be materially
       // larger — proving the saving is real and that a regression which
       // re-duplicates the list would blow the budget.
       const duplicatedBytes = bytesWithPerStreamDuplication(body);

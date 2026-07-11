@@ -1,11 +1,23 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 const SITE_DOCS = join(REPO_ROOT, "apps/site/content/docs");
+
+// The site's spec-*.md pages are GENERATED from the root spec-*.md (single
+// source) and are gitignored, so they may be absent on a fresh checkout. Run
+// the sync first so the comparison below runs against freshly-built output —
+// which also asserts the generator itself stays a faithful, drift-free
+// transform of the root specs.
+function syncSpecs() {
+  execFileSync("node", [join(REPO_ROOT, "apps/site/scripts/sync-spec-docs.mjs")], {
+    stdio: "inherit",
+  });
+}
 
 const SITE_ONLY_EXTENSIONS = new Set([
   "spec-ext-aggregation.md",
@@ -189,6 +201,7 @@ function checkPair(file) {
 }
 
 function main() {
+  syncSpecs();
   const rootSpecs = specFiles(REPO_ROOT);
   const siteSpecs = specFiles(SITE_DOCS);
   const rootSet = new Set(rootSpecs);

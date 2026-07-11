@@ -85,3 +85,12 @@ skills/*
 
 # Design-review screenshot evidence — kept on disk, never committed (binary bloat)
 design-evidence/**/*.png
+
+# root clutter guards (curation 2026-07-09)
+/*.png
+/*.log
+/tmp/
+/inbox/
+/screenshots-*/
+/perf-results/
+packages/local-collector/dist-collector/

@@ -59,4 +59,4 @@ support transcripts.
 
 For a full operator runbook, including Docker move guidance and troubleshooting
 for `403` after source migration and `409 collector_protocol_mismatch`, see
-[`docs/local-collector.md`](../../docs/local-collector.md).
+[`docs/reference/local-collector.md`](../../docs/local-collector.md).

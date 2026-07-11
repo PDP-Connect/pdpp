@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Uber stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * GROUND-TRUTH CAVEAT (same posture as connectors/loom/schemas.ts):
  * uber/index.ts does NOT yet emit any RECORD — it is a browser scaffold that

@@ -5,7 +5,7 @@
   "description": "PDPP protocol specs, reference implementation, docs site, and design workbench.",
   "type": "module",
   "scripts": {
-    "//dev": "Default contributor workflow (design.md §5): boots reference-implementation (AS :7662 / RS :7663) + apps/console. See scripts/dev.mjs.",
+    "//dev": "Default contributor workflow (design.md \u00a75): boots reference-implementation (AS :7662 / RS :7663) + apps/console. See scripts/dev.mjs.",
     "dev": "node scripts/dev.mjs",
     "dev:stop": "sh -c 'WEB_PORT=${PDPP_WEB_PORT:-3000}; fuser -k \"$WEB_PORT/tcp\" 3002/tcp 7662/tcp 7663/tcp 2>/dev/null; npx --yes kill-port 7662 7663 \"$WEB_PORT\" 3002 2>/dev/null; true'",
     "//build": "Default build/preview/start target is the operator console (apps/console), the live-runtime successor surface from the public-site/operator-console split. Public docs site uses site:build/site:start.",
@@ -44,8 +44,9 @@
     "agent-skill:sync": "node scripts/sync-agent-skill.mjs --write",
     "agent-skill:boundary-check": "node --test scripts/agent-skill-boundary.test.mjs",
     "spec:check": "node scripts/spec-check.mjs",
+    "openspec:archive-check": "node scripts/openspec-archive-check.mjs",
+    "openspec:archive-check:test": "node --test scripts/openspec-archive-check.test.mjs",
     "stream-debug:summary": "node scripts/stream-debug-summary.mjs",
-    "workstreams:status": "waspflow check",
     "reference-contract:generate": "pnpm --filter @pdpp/reference-contract run generate:all",
     "reference-contract:check-generated": "pnpm --filter @pdpp/reference-contract run check:generated",
     "cli:published-help": "node scripts/cli-acceptance-smoke.mjs published-help",
@@ -79,7 +80,7 @@
     "site:dev": "pnpm --dir apps/site dev",
     "site:build": "pnpm --dir apps/site build",
     "site:start": "pnpm --dir apps/site start",
-    "//dev:full": "Reference + console + site in parallel for cross-surface link verification (design.md §5).",
+    "//dev:full": "Reference + console + site in parallel for cross-surface link verification (design.md \u00a75).",
     "dev:full": "pnpm -r --parallel --stream --filter pdpp-reference-implementation --filter pdpp-console --filter pdpp-site run dev"
   },
   "keywords": [],

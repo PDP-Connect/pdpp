@@ -1,7 +1,0 @@
-# hone work tst2-dataset-summary-rebuild-race-0024 — baseline rung 'direct-test-green'
-# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/dataset-summary-rebuild-race-oracle.test.js ]; then export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0024_green; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/dataset-summary-rebuild-race-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; exit $rc; else echo "BASELINE: test not yet created"; exit 0; fi'
-# expect: POST: the new oracle passes under node --test --test-force-exit using an ephemeral Postgres database. BASELINE: guarded green while absent.
-# timeout: 1800s (engine-default)
-# exit: 0  duration: 0s  verdict: PASS
-
-BASELINE: test not yet created

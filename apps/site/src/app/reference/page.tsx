@@ -100,12 +100,6 @@ const referenceLinks = [
     href: "/docs/spec-architecture",
     body: "Protocol-facing architecture notes. Treat repo package topology as reference behavior unless specified by docs.",
   },
-  {
-    label: "Planning",
-    title: "OpenSpec change history",
-    href: "/planning",
-    body: "Project planning and active changes. Useful for review context, but not protocol authority.",
-  },
 ] as const;
 
 export default async function ReferencePage() {

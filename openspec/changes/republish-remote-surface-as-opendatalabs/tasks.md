@@ -39,7 +39,7 @@
 
 - [x] 4.1 Fill in `packages/remote-surface/package.json` with the resolved owner values: `"repository": { "type": "git", "url": "git+https://github.com/vana-com/remote-surface.git" }`, `"bugs": { "url": "https://github.com/vana-com/remote-surface/issues" }`, `"homepage": "https://github.com/vana-com/remote-surface#readme"`.
 - [x] 4.2 Add `keywords` (suggested seed: `remote-surface`, `browser`, `neko`, `cdp`, `streaming`, `clipboard`, `mobile-ime`, `webrtc`).
-- [ ] 4.3 Add `publishConfig.access: "public"`; add a commented `publishConfig.provenance: true` placeholder. (Deferred to §5.1: the merged `standardize-pdpp-package-publishing` release policy in `docs/package-release-policy.md` and `scripts/check-package-release-policy.mjs` forbids `publishConfig` on any package with `private: true`. While this package remains `private: true` (gated on §7.5), the manifest cannot carry `publishConfig` without failing `pnpm release:policy-check`. The §5.1 lane that teaches the checker about `@opendatalabs/remote-surface` SHALL re-add `publishConfig.access: "public"` at the same time it makes the package recognizable as publishable, so the manifest never carries `publishConfig` while still `private: true`. The earlier implementation landed `publishConfig.access: "public"` prematurely and was removed by the adjacent package-policy lane.)
+- [ ] 4.3 Add `publishConfig.access: "public"`; add a commented `publishConfig.provenance: true` placeholder. (Deferred to §5.1: the merged `standardize-pdpp-package-publishing` release policy in `docs/reference/package-release-policy.md` and `scripts/check-package-release-policy.mjs` forbids `publishConfig` on any package with `private: true`. While this package remains `private: true` (gated on §7.5), the manifest cannot carry `publishConfig` without failing `pnpm release:policy-check`. The §5.1 lane that teaches the checker about `@opendatalabs/remote-surface` SHALL re-add `publishConfig.access: "public"` at the same time it makes the package recognizable as publishable, so the manifest never carries `publishConfig` while still `private: true`. The earlier implementation landed `publishConfig.access: "public"` prematurely and was removed by the adjacent package-policy lane.)
 - [x] 4.4 Add `"engines": { "node": ">=24" }` for the 2026 Active LTS line.
 - [x] 4.5 Document the supported runtime contract (`Node >=24`, ESM-only, browser API surface) in the README "Supported runtime assumptions" paragraph.
 - [x] 4.6 Add `SECURITY.md` and a README "Reporting vulnerabilities" paragraph that route security reports to `security@vana.org`.
@@ -104,7 +104,7 @@ cd <repo-root>
 openspec validate republish-remote-surface-as-opendatalabs --strict
 openspec validate --all --strict
 # After §1 and §2 lanes execute (separate change-acceptance step):
-rg -n "@pdpp/remote-surface" --glob '!openspec/changes/archive/**'   # expect zero hits
+rg -n "@pdpp/remote-surface"   # expect zero hits
 rg -n "_ref|run_id|interaction_id" packages/remote-surface/dist --glob '!dist/reference/**'  # expect zero hits
 pnpm --filter @opendatalabs/remote-surface verify
 ```

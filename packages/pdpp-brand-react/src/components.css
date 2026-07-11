@@ -833,7 +833,7 @@
 
 /* ═══════════════════════════════════════════════════════════════════
    SYNCS — the Runs route reskin (syncs-view.tsx).
-   Ported from docs/design/ink-carbon/project/recordroom/syncs.css.
+   Ported from docs/design-system/ink-carbon/project/recordroom/syncs.css.
    Health-first: a failure is a CARD with an action, not a row. All
    state color via tokens (success/warning only), radius 0.
    ═══════════════════════════════════════════════════════════════════ */
@@ -1193,7 +1193,7 @@
 
 /* ═══════════════════════════════════════════════════════════════════
    STANDING — the Overview ("home as point of view") view.
-   Ported from docs/design/ink-carbon/project/recordroom/overview.css.
+   Ported from docs/design-system/ink-carbon/project/recordroom/overview.css.
    Strong hierarchy, one warm moment. All color via tokens.
    ═══════════════════════════════════════════════════════════════════ */
 .rr-stand {
@@ -1654,7 +1654,7 @@
 .rr-x {
   position: relative;
   display: grid;
-  /* D2 (Codex plan-check 2026-06-22): list-primary explorer. DEFAULT = 2 columns
+  /* D2 (review-gated 2026-06-22): list-primary explorer. DEFAULT = 2 columns
      (rail | feed); the feed claims the freed width and there is NO reserved-empty
      inspector column. The inspector is a 3rd column ONLY with `.has-selection`
      (a record peeked) — this removes both the dead canvas and the query-bar /
@@ -2049,7 +2049,7 @@
   font-variant-numeric: tabular-nums;
 }
 /* "in view" qualifier — a facet/day count is the LOADED-window count, never a
-   claimed total (item #8 / Codex day-count red line). The quiet qualifier makes
+   claimed total (item #8 / review red line: day counts). The quiet qualifier makes
    the bare number unmistakably "what's loaded", not "the total". */
 .rr-x-facet__inview {
   font-family: var(--font-mono);
@@ -3139,7 +3139,7 @@
   font-variant-numeric: tabular-nums;
 }
 /* "in view" qualifier on the day header — the count is records LOADED for the day,
-   not a true day total (Codex red line: a bare number reads like a total). */
+   not a true day total (review red line: a bare number reads like a total). */
 .rr-x-day__inview {
   font-size: 8.5px;
   letter-spacing: 0.04em;
@@ -3210,7 +3210,7 @@
 }
 /* ─── Burst (same-stream cluster) ───
    A burst is a (connection, stream) cluster that crossed BURST_THRESHOLD within a
-   day. SLVP preview-content-by-default (Codex plan-check 2026-06-22): it NEVER
+   day. SLVP preview-content-by-default (review-gated 2026-06-22): it NEVER
    renders as a content-less count header — it always shows its first PREVIEW_COUNT
    rows (rr-x-burst__rows), with the head as a quiet LEFT-ALIGNED summary line and
    an explicit "Show all M" toggle. The head + toggle mirror the muted/mono
@@ -4303,7 +4303,7 @@ a.rr-x-row {
      feed the owner has scrolled (the wireframe's "⟳ loading… (sticky TOP)").
      `fixed` takes it out of flow → ZERO layout shift when it appears/disappears,
      and it dims NOTHING — already-rendered records stay fully readable and
-     interactive (Codex red line: loading must not block readable records). */
+     interactive (review red line: loading must not block readable records). */
   .rr-x-progress {
     position: fixed;
     top: 0;

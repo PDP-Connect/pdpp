@@ -270,9 +270,7 @@ URLs. The shape:
   the PDPP API; do not invent one in the manifest or the connector.
 
 See `connector-authoring-guide.md` §12 for the full pattern, size
-policy, failure handling, and the current per-connector hydration
-status (only `gmail.attachments` is shipped today; others are tracked
-in `openspec/changes/hydrate-first-party-blob-streams/design-notes/`).
+policy, and failure handling.
 
 ## Why each of these exists
 

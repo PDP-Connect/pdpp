@@ -31,8 +31,9 @@ Substitute `<PDPP_REFERENCE_ORIGIN>` with the value you set in `.env.docker`.
 For a RunPod CPU Pod this is `https://<podid>-3002.proxy.runpod.net/mcp`.
 For a local Docker host this is typically `http://localhost:3002/mcp`.
 
-Use this URL in every MCP client setup step below — not `pdpp.vivid.fish/mcp`,
-which is the Vana development deployment and only serves data collected there.
+Use this URL in every MCP client setup step below — not some other operator's
+deployment (for example `pdpp.example.com/mcp`), which only serves data
+collected there.
 
 ## ChatGPT
 

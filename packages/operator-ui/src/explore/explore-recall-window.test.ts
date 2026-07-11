@@ -1,5 +1,5 @@
 /**
- * Lexical recall-window honesty (Codex Explore HOLD regression).
+ * Lexical recall-window honesty (Explore review HOLD regression).
  *
  * The server discloses recall on lexical search responses (per
  * `disclose-lexical-recall-windows`): `count` / `count_accuracy` and a
@@ -8,7 +8,7 @@
  * the result is a ranked SAMPLE — there may be matching records the ranker
  * never scored, so the cursor cannot page to the true end.
  *
- * THE BUG (Codex HOLD): the branch promoted EVERY non-hybrid lexical
+ * THE BUG (review HOLD): the branch promoted EVERY non-hybrid lexical
  * Most-relevant page to a `keyword_pageable` descriptor (completeness
  * "pageable"), which the canvas reads as exhaustive — it offers a deep cursor
  * Load-more and an exhaustive "Browse all matching records" door. Over a bounded

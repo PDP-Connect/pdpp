@@ -120,3 +120,14 @@ pre-push:
     - name: reference-implementation:typecheck
       glob: "reference-implementation/**/*.{ts,tsx}"
       run: pnpm --dir reference-implementation run typecheck
+
+    # Non-blocking OpenSpec archive-rot warning. Surfaces changes under
+    # openspec/changes/ that look archive-due (implementation done, or their
+    # referenced code already exists on main) but are still sitting active —
+    # the rot that accumulates because the owner-only post-merge closeout
+    # (live deploy, owner review) never gets ticked. This is a REMINDER, not a
+    # gate: the script exits 0, and the trailing `|| true` guarantees a script
+    # error can never block a push. Archiving is owner-only (see CONTRIBUTING),
+    # so failing the push here would be wrong.
+    - name: openspec:archive-rot-warning
+      run: node scripts/openspec-archive-check.mjs || true

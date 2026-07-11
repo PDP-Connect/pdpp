@@ -19,7 +19,7 @@ The protocol specifies:
 
 **Design axiom:** Connector manifests define the consent surface. Grants define actual consent. These are separate concerns and must not be conflated.
 
-Collection of data from source platforms is a separate concern addressed in the companion [PDPP Collection Profile](spec-collection-profile). The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved. Data may reach the personal server via connector-driven collection, regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5–8) are agnostic to the collection method.
+Collection of data from source platforms is a separate concern addressed in the companion [PDPP Collection Profile](spec-collection-profile.md). The core protocol is useful without it: a resource server holding pre-collected data can serve that data under grant enforcement with no collection machinery involved. Data may reach the personal server via connector-driven collection, regulatory data exports, manual import, or platform-native APIs. The consent and enforcement layers defined in this specification (Sections 5–8) are agnostic to the collection method.
 
 This specification does not depend on any specific network, token, ledger, infrastructure provider, hosted service, centralized registry lookup, or deployment of this repository. Any implementation satisfying the role conformance criteria in Section 9 is PDPP-compliant. URI identifiers name connectors, purposes, clients, and resources; they do not make the example registries in this document runtime dependencies. Consent integrity comes from the grant and the manifest metadata pinned into that grant.
 
@@ -73,7 +73,7 @@ These roles may be co-located in a single deployment (e.g., a personal server ac
 | **Authorization Server** | Issues and manages grants. Validates selection requests against connector manifests. Tracks grant lifecycle (active, expired, revoked). |
 | **Resource Server** | Stores records as flat relational streams. Serves records to clients filtered by grant parameters. |
 
-The [PDPP Collection Profile](spec-collection-profile) defines a third role:
+The [PDPP Collection Profile](spec-collection-profile.md) defines a third role:
 
 | Role | Responsibility |
 |------|---------------|
@@ -96,6 +96,12 @@ In many deployments, a single **personal server** fills all three roles. The spe
 | **Manifest** | A connector's declaration of the streams it can produce and the consent surface it exposes. |
 | **Selection Request** | A client's request for specific data, expressed as RFC 9396 `authorization_details`. |
 | **View** | A named field projection, composed from fields declared in the connector manifest schema. Views are the unit of consent for field-level access. Connector manifests MAY suggest views (advisory); the authorization server is authoritative for views used in consent UI and issued grants. |
+
+### Requirements Language {#requirements-language}
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in BCP 14 [RFC 2119] [RFC 8174] when, and only when, they appear in all capitals, as shown here.
+
+The companion [PDPP Collection Profile](spec-collection-profile.md) uses the same requirements language.
 
 ---
 
@@ -146,9 +152,9 @@ The grant and query API are the normative core. Collection is a companion mechan
 
 ---
 
-## 4. Record Model
+## 4. Record Model {#record-model}
 
-**Note:** This section defines portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. Source collection, connector execution, and storage-engine choices are out of scope here (see the [PDPP Collection Profile](spec-collection-profile)).
+**Note:** This section defines portable record envelopes, stream identity, primary keys, blob references, resource references, stream semantics, and incremental-sync metadata. Source collection, connector execution, and storage-engine choices are out of scope here (see the [PDPP Collection Profile](spec-collection-profile.md)).
 
 Personal data is represented as flat relational streams. This enables streaming, pagination, incremental sync, and compatibility with DTI canonical data models.
 
@@ -702,7 +708,7 @@ Retention is a structured policy declaration and policy commitment by the data r
 
 ## 7. Manifest Format {#manifest-format}
 
-**Note:** This section defines manifest syntax only. Connector runtime behavior (collection, state management, interaction) is defined in the [PDPP Collection Profile](spec-collection-profile).
+**Note:** This section defines manifest syntax only. Connector runtime behavior (collection, state management, interaction) is defined in the [PDPP Collection Profile](spec-collection-profile.md).
 
 Each connector publishes a manifest declaring its consent surface: what streams it produces, what fields those streams contain, and what selection parameters are applicable. The manifest is the source of truth for what can be consented to. What is actually consented to is determined by the grant. Grants constrain authorization and accessible results, but they do not redefine the source-level stream metadata returned by `GET /v1/streams/{stream}`.
 
@@ -807,10 +813,10 @@ Each connector publishes a manifest declaring its consent surface: what streams 
 | `streams[].description` | Optional short human-readable summary of the stream's contents (e.g., "Most-listened artists over time"). Not consent-surface metadata; see `streams[].display` for the fields the AS renders during consent. |
 | `streams[].display` | Optional consent-surface metadata. See [Stream display metadata](#stream-display). |
 | `streams[].semantics` | `append_only` or `mutable_state`. |
-| `streams[].schema` | JSON Schema for the record's `data` field. `primary_key` and `cursor_field` must reference fields declared here. |
+| `streams[].schema` | JSON Schema for the record's `data` field. `primary_key` and `cursor_field` MUST reference fields declared here. |
 | `streams[].primary_key` | Fields that uniquely identify a record within the stream. |
 | `streams[].cursor_field` | Field used for logical record ordering in cursor-based reads and incremental sync. List reads sort by `(cursor_field, primary_key)`, with null or absent cursor values sorting after present values. Cursor tokens encode logical sort position rather than storage row ids. |
-| `streams[].consent_time_field` | The temporal consent boundary: the field against which `time_range` is evaluated. Absent means `time_range` is not applicable to this stream. Must reference a field declared in the schema. |
+| `streams[].consent_time_field` | The temporal consent boundary: the field against which `time_range` is evaluated. Absent means `time_range` is not applicable to this stream. MUST reference a field declared in the schema. |
 | `streams[].selection` | Which selection parameters this stream supports (`fields`, `resources`). Time-range capability is derived from `consent_time_field` presence; absent means not time-range-capable. The AS MUST reject grants that request `time_range` on a stream without a `consent_time_field`, or that request an unsupported selection parameter. |
 | `streams[].views` | Named field projections the connector author suggests. Advisory; the AS is authoritative. Each view has `id`, `label`, and `fields` (top-level field names only). |
 | `streams[].relationships` | Declared foreign key relationships to other streams. Structural graph metadata only; does not by itself make a relation expandable in the read API. |
@@ -844,14 +850,14 @@ Streams MAY include a `display` object with human-readable metadata for the cons
 
 The `consent_time_field` is the field on each record that the resource server evaluates `time_range` against. It represents the stream's temporal consent boundary: when the user consents to "data from the last 6 months," the `consent_time_field` is the field that determines whether a given record falls within that window.
 
-The `consent_time_field` may be the same field as `cursor_field`, but they serve different purposes and must be declared separately:
+The `consent_time_field` may be the same field as `cursor_field`, but they serve different purposes and MUST be declared separately:
 
 - `cursor_field` governs incremental sync mechanics (which records to fetch since the last run).
 - `consent_time_field` governs consent-time filtering (which records fall within the authorized time window).
 
 For many `append_only` streams, both fields will be the same (e.g., `played_at` for play events). For some `mutable_state` streams they may differ: a playlists stream might use `source_updated_at` as the cursor (for efficient incremental sync) but `source_created_at` as the `consent_time_field` (because the user's consent to "playlists from the last 6 months" most naturally means playlists they created in that period, not playlists they edited).
 
-The `consent_time_field` must be rendered in human-readable consent UX. A grant with `time_range: { since: "2026-01-01" }` on the `playlists` stream should be presented as "playlists created on or after January 1, 2026," not just "playlists in time_range."
+The `consent_time_field` MUST be rendered in human-readable consent UX. A grant with `time_range: { since: "2026-01-01" }` on the `playlists` stream should be presented as "playlists created on or after January 1, 2026," not just "playlists in time_range."
 
 Streams that cannot define a stable `consent_time_field` simply omit it. The absence of `consent_time_field` is the normative signal that the stream does not support time-range filtering.
 
@@ -1093,7 +1099,7 @@ Expansion is declaration-driven. A relation is structurally present if listed un
 
 Page cursors are direction-bound: a client MUST follow a `next_cursor` with the same `order` value that produced it. To change direction, the client MUST restart pagination without a cursor. Resource servers MUST reject order-mismatched page cursors as `invalid_cursor`.
 
-**Incremental sync for mutable streams:** Pass `changes_since` to retrieve only records changed since a previous sync. The resource server returns changed records within the grant's authorized field projection. If a record was deleted, a tombstone entry is included. If the cursor has expired (HTTP 410 Gone with error code `cursor_expired`), the client must perform a full re-sync.
+**Incremental sync for mutable streams:** Pass `changes_since` to retrieve only records changed since a previous sync. The resource server returns changed records within the grant's authorized field projection. If a record was deleted, a tombstone entry is included. If the cursor has expired (HTTP 410 Gone with error code `cursor_expired`), the client MUST perform a full re-sync.
 
 Eligibility for `changes_since` MUST be computed on the grant-authorized projection, not on the unprojected record. Returning a record whose authorized projection is unchanged is a protocol violation because it leaks that hidden fields changed.
 
@@ -1165,7 +1171,7 @@ The resource server authorizes blob access by verifying that:
 2. The referencing record passes all grant filters.
 3. The `blob_ref` field is included in the grant's authorized field projection.
 
-A `blob_id` alone does not grant access. The client must have discovered the blob through an authorized record.
+A `blob_id` alone does not grant access. The client MUST have discovered the blob through an authorized record.
 
 **Direct response** MUST include:
 - `Content-Type` (IANA media type)
@@ -1365,7 +1371,7 @@ An implementation claiming PDPP Collection Profile support MUST additionally imp
 
 ### Connector conformance
 
-Connector conformance is defined in the [PDPP Collection Profile](spec-collection-profile).
+Connector conformance is defined in the [PDPP Collection Profile](spec-collection-profile.md).
 
 ### Client conformance
 
@@ -1407,7 +1413,7 @@ Large `authorization_details` payloads may exceed URL length limits. Production 
 
 ### Credential handling
 
-INTERACTION_RESPONSE messages in the Collection Profile may contain passwords and OTP codes. Runtimes MUST NOT log or persist credential data. See the [PDPP Collection Profile](spec-collection-profile) for details.
+INTERACTION_RESPONSE messages in the Collection Profile may contain passwords and OTP codes. Runtimes MUST NOT log or persist credential data. See the [PDPP Collection Profile](spec-collection-profile.md) for details.
 
 ### Connector trust
 
@@ -1495,7 +1501,7 @@ v0.1 grants narrow access only by stream selection, named view or field projecti
 
 **Request-time filters are not grant scope.** The `filter[{field}]` query parameters on `GET /v1/streams/{stream}/records` narrow the result set returned for a particular request but do not narrow the authorization scope of the underlying grant. A client authorized for a stream may request a filtered subset of that stream; the grant remains a grant to the stream as issued.
 
-**Derived subset streams (informative).** A stream MAY represent either a source-native collection or a connector-defined derived subset, provided its semantics are stable, versioned through the manifest, and human-reviewable in consent UI. Implementations that need semantically bounded consent in v0.1 SHOULD prefer named streams with human-readable semantics (e.g., a connector that exposes `amazon_messages` as a distinct stream) over ad hoc technical predicates. Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams must be statically declared in the manifest.
+**Derived subset streams (informative).** A stream MAY represent either a source-native collection or a connector-defined derived subset, provided its semantics are stable, versioned through the manifest, and human-reviewable in consent UI. Implementations that need semantically bounded consent in v0.1 SHOULD prefer named streams with human-readable semantics (e.g., a connector that exposes `amazon_messages` as a distinct stream) over ad hoc technical predicates. Stream names MUST NOT encode predicate logic or synthesize per-request subsets; derived streams MUST be statically declared in the manifest.
 
 The recommended future direction for this capability is manifest-declared parameterized subset templates with typed bound parameters and connector-defined consent display strings. See spec-deferred for the design constraints and open questions that must be resolved before specifying this.
 
@@ -1507,7 +1513,7 @@ PDPP capabilities beyond this specification (for example, search or aggregation 
 
 PDPP protocol changes are proposed through public repository pull requests. In this repository, non-trivial protocol, reference contract, or architecture changes are tracked with OpenSpec before implementation so reviewers can audit the rationale, tasks, and requirement deltas.
 
-Current active editors and maintainers are listed in `MAINTAINERS.md`. Specification text is made available under the Community Specification License 1.0 (SPDX: Community-Spec-1.0; see `LICENSE-specs`). Software packages, examples, and generated artifacts use Apache-2.0 unless a narrower file-local notice says otherwise.
+Current active editors and maintainers are listed in `MAINTAINERS.md`. This repository uses a three-license split: PDPP protocol specification text (all root `spec-*.md` files and their mirrored site pages) is made available under the Community Specification License 1.0 (SPDX: Community-Spec-1.0; see `LICENSE-specs`); software packages, examples, and generated artifacts use Apache-2.0 (see `LICENSE`) unless a narrower file-local notice says otherwise; and user-facing documentation prose outside the specification uses CC BY 4.0 (see `LICENSE-docs`).
 
 ---
 

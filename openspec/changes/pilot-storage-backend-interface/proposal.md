@@ -5,7 +5,7 @@
 The reference implementation maintains two storage engines (SQLite via
 `records.js`/`search.js`, Postgres via `postgres-records.js`/`postgres-search.js`)
 dispatched by `isPostgresStorageBackend()` branches scattered across the server.
-A full inventory (`tmp/workstreams/storage-backend-pilot-design-2026-06-18.md`)
+A full inventory
 classified all 187 such branches: 153 are `drift_to_remove` (the same conceptual
 storage operation implemented twice inline in shared orchestration), 21 are
 `adapter_selection_keep` (the legitimate backend-selection points, already the
@@ -68,7 +68,7 @@ branch-count reduction.
 6. No behavior change on either backend, proven by conformance not assertion.
 7. An independent adversarial audit confirms no behavior change and that no
    honest backend-specific logic was absorbed into the interface contract.
-8. Codex RI-owner reviews the diff and tests directly and signs off before merge.
+8. the independent reviewer RI-owner reviews the diff and tests directly and signs off before merge.
 
 ## Assumptions (owner-level; stop if either changes)
 

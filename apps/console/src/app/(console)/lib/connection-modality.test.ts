@@ -15,7 +15,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   BROWSER_BOUND_CONNECTORS,
-  BROWSER_BOUND_RUNBOOK_PATH,
   isBrowserBoundConnector,
   isBrowserSessionBoundConnection,
   isSupportedBrowserCollectorConnector,
@@ -26,7 +25,6 @@ import {
 
 const COLLECTOR_RUN_CONNECTORS_LITERAL_RE = /COLLECTOR_RUN_CONNECTORS\s*=\s*\[([^\]]*)\]/;
 const SURROUNDING_QUOTES_RE = /^["']|["']$/g;
-const RUNBOOK_DOC_HEADING_RE = /Browser-Collector Proof Runbook/;
 
 test("supported local-collector set is exactly claude_code and codex", () => {
   assert.deepEqual([...SUPPORTED_LOCAL_COLLECTOR_CONNECTORS], ["claude_code", "codex"]);
@@ -72,17 +70,6 @@ test("isSupportedBrowserCollectorConnector narrows only the generated manual bro
   assert.equal(isSupportedBrowserCollectorConnector(""), false);
   assert.equal(isSupportedBrowserCollectorConnector(null), false);
   assert.equal(isSupportedBrowserCollectorConnector(undefined), false);
-});
-
-test("the browser-bound runbook path resolves to a committed doc", async () => {
-  // This test file lives at apps/console/src/app/(console)/lib/; the repo root is
-  // six segments up (lib → dashboard → app → src → console → apps → root).
-  // Resolve the runbook path against it and confirm the doc the copy points at is
-  // real, not a dangling reference.
-  const repoRoot = new URL("../../../../../../", import.meta.url);
-  const runbookUrl = new URL(BROWSER_BOUND_RUNBOOK_PATH, repoRoot);
-  const contents = await readFile(fileURLToPath(runbookUrl), "utf8");
-  assert.match(contents, RUNBOOK_DOC_HEADING_RE);
 });
 
 // ─── browser-bound connector classification ───────────────────────────────
@@ -174,8 +161,4 @@ test("a browser-bound connector is never in the supported local-collector set", 
   for (const connectorId of BROWSER_BOUND_CONNECTORS) {
     assert.equal(isSupportedLocalCollectorConnector(connectorId), false);
   }
-});
-
-test("BROWSER_BOUND_RUNBOOK_PATH is the path the browser-bound modality surfaces", () => {
-  assert.equal(BROWSER_BOUND_RUNBOOK_PATH, "docs/operator/browser-collector-proof-runbook.md");
 });

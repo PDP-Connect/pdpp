@@ -1,5 +1,0 @@
-# hone work hm-await-order-state-flush-0002a — post rung 'byte-identity'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -- reference-implementation/runtime/index.js
-# expect: empty — this packet changes tests only (runtime/index.js is not in the touchset); also proves the red-then-green rung restored its seed
-# exit: 0  duration: 0s  verdict: PASS
-

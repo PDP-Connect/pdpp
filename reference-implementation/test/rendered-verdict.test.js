@@ -1540,7 +1540,7 @@ test('idle owner-paused with fresh data (no stale evidence yet) is amber/Needs r
   assert.equal(v.pill.label, 'Needs refresh');
 });
 
-test('golden: Vana Slack-shaped paused schedule + stale freshness + cancelled last run is amber/Needs refresh, not Healthy', () => {
+test('golden: Acme Slack-shaped paused schedule + stale freshness + cancelled last run is amber/Needs refresh, not Healthy', () => {
   // Owner paused the schedule (classifyOwnerPaused -> state: idle), freshness has
   // aged past the staleness window, and the last run was cancelled rather than
   // succeeded (no fresh CollectionSucceeded evidence). This must not render green,

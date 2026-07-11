@@ -492,6 +492,80 @@ export function createCdpCompanion({
     }
   }
 
+  function attachSocketListeners(socket, handlers, reject) {
+    // Both standard WebSocket (browser/native) and `ws` library expose
+    // `addEventListener` and `on` patterns. Prefer the standard one.
+    if (typeof socket.addEventListener === 'function') {
+      socket.addEventListener('open', handlers.onOpen);
+      socket.addEventListener('error', handlers.onError);
+      socket.addEventListener('close', handlers.onClose);
+      socket.addEventListener('message', handlers.onMessage);
+    } else if (typeof socket.on === 'function') {
+      socket.on('open', handlers.onOpen);
+      socket.on('error', handlers.onError);
+      socket.on('close', handlers.onClose);
+      socket.on('message', handlers.onMessage);
+    } else {
+      const e = new Error('Unsupported WebSocket implementation');
+      e.code = 'cdp_socket_unsupported';
+      reject(e);
+    }
+  }
+
+  function createOpenSocketHandlers(socket, openTimer, resolve, reject) {
+    const onOpen = () => {
+      clearTimeout(openTimer);
+      log('info', 'cdp_connected');
+      resolve();
+    };
+    const onError = (event) => {
+      clearTimeout(openTimer);
+      const message = event?.message || event?.error?.message || 'cdp websocket error';
+      const e = new Error(message);
+      e.code = 'cdp_socket_error';
+      if (ws === socket) rejectAllPending(e);
+      reject(e);
+    };
+    const onClose = () => {
+      clearTimeout(openTimer);
+      const e = new Error('CDP websocket closed');
+      e.code = 'cdp_closed';
+      if (ws === socket) rejectAllPending(e);
+      ws = null;
+      openPromise = null;
+    };
+    const onMessage = (event) => {
+      handleMessage(event && 'data' in event ? event.data : event);
+    };
+
+    return { onOpen, onError, onClose, onMessage };
+  }
+
+  function openCdpSocket(resolve, reject) {
+    let socket;
+    try {
+      socket = new WebSocketCtor(wsUrl);
+    } catch (err) {
+      const e = new Error(`Failed to connect to CDP: ${err?.message || err}`);
+      e.code = 'cdp_connect_failed';
+      reject(e);
+      return;
+    }
+    ws = socket;
+    const openTimer = setTimeout(() => {
+      const e = new Error(`CDP connection timed out after ${openTimeoutMs}ms`);
+      e.code = 'cdp_connect_timeout';
+      try {
+        socket.close();
+      } catch {
+        /* ignore */
+      }
+      reject(e);
+    }, openTimeoutMs);
+
+    attachSocketListeners(socket, createOpenSocketHandlers(socket, openTimer, resolve, reject), reject);
+  }
+
   function ensureOpen() {
     if (closed) {
       const err = new Error('Streaming companion is closed');
@@ -502,69 +576,7 @@ export function createCdpCompanion({
     if (openPromise) return openPromise;
 
     openPromise = new Promise((resolve, reject) => {
-      let socket;
-      try {
-        socket = new WebSocketCtor(wsUrl);
-      } catch (err) {
-        const e = new Error(`Failed to connect to CDP: ${err?.message || err}`);
-        e.code = 'cdp_connect_failed';
-        reject(e);
-        return;
-      }
-      ws = socket;
-      const openTimer = setTimeout(() => {
-        const e = new Error(`CDP connection timed out after ${openTimeoutMs}ms`);
-        e.code = 'cdp_connect_timeout';
-        try {
-          socket.close();
-        } catch {
-          /* ignore */
-        }
-        reject(e);
-      }, openTimeoutMs);
-
-      const onOpen = () => {
-        clearTimeout(openTimer);
-        log('info', 'cdp_connected');
-        resolve();
-      };
-      const onError = (event) => {
-        clearTimeout(openTimer);
-        const message = event?.message || event?.error?.message || 'cdp websocket error';
-        const e = new Error(message);
-        e.code = 'cdp_socket_error';
-        if (ws === socket) rejectAllPending(e);
-        reject(e);
-      };
-      const onClose = () => {
-        clearTimeout(openTimer);
-        const e = new Error('CDP websocket closed');
-        e.code = 'cdp_closed';
-        if (ws === socket) rejectAllPending(e);
-        ws = null;
-        openPromise = null;
-      };
-      const onMessage = (event) => {
-        handleMessage(event && 'data' in event ? event.data : event);
-      };
-
-      // Both standard WebSocket (browser/native) and `ws` library expose
-      // `addEventListener` and `on` patterns. Prefer the standard one.
-      if (typeof socket.addEventListener === 'function') {
-        socket.addEventListener('open', onOpen);
-        socket.addEventListener('error', onError);
-        socket.addEventListener('close', onClose);
-        socket.addEventListener('message', onMessage);
-      } else if (typeof socket.on === 'function') {
-        socket.on('open', onOpen);
-        socket.on('error', onError);
-        socket.on('close', onClose);
-        socket.on('message', onMessage);
-      } else {
-        const e = new Error('Unsupported WebSocket implementation');
-        e.code = 'cdp_socket_unsupported';
-        reject(e);
-      }
+      openCdpSocket(resolve, reject);
     }).catch((err) => {
       openPromise = null;
       throw err;
@@ -573,36 +585,47 @@ export function createCdpCompanion({
     return openPromise;
   }
 
+  function registerPendingCommand(method, resolve, reject) {
+    const id = nextId++;
+    const timer = setTimeout(() => {
+      if (pending.delete(id)) {
+        const e = new Error(`CDP command ${method} timed out`);
+        e.code = 'cdp_timeout';
+        reject(e);
+      }
+    }, commandTimeoutMs);
+    pending.set(id, { resolve, reject, timer });
+    return { id, timer };
+  }
+
+  function sendRegisteredCommand(socket, id, method, params, timer, reject) {
+    try {
+      socket.send(JSON.stringify({ id, method, params }));
+    } catch (err) {
+      pending.delete(id);
+      clearTimeout(timer);
+      const e = new Error(`Failed to send CDP command ${method}: ${err?.message || err}`);
+      e.code = 'cdp_send_failed';
+      reject(e);
+    }
+  }
+
+  function sendOpenCdpCommand(method, params) {
+    return new Promise((resolve, reject) => {
+      const socket = ws;
+      if (!socket || socket.readyState !== 1) {
+        const e = new Error('CDP websocket is not open');
+        e.code = 'cdp_not_open';
+        reject(e);
+        return;
+      }
+      const { id, timer } = registerPendingCommand(method, resolve, reject);
+      sendRegisteredCommand(socket, id, method, params, timer, reject);
+    });
+  }
+
   function send(method, params = {}) {
-    return ensureOpen().then(
-      () =>
-        new Promise((resolve, reject) => {
-          if (!ws || ws.readyState !== 1) {
-            const e = new Error('CDP websocket is not open');
-            e.code = 'cdp_not_open';
-            reject(e);
-            return;
-          }
-          const id = nextId++;
-          const timer = setTimeout(() => {
-            if (pending.delete(id)) {
-              const e = new Error(`CDP command ${method} timed out`);
-              e.code = 'cdp_timeout';
-              reject(e);
-            }
-          }, commandTimeoutMs);
-          pending.set(id, { resolve, reject, timer });
-          try {
-            ws.send(JSON.stringify({ id, method, params }));
-          } catch (err) {
-            pending.delete(id);
-            clearTimeout(timer);
-            const e = new Error(`Failed to send CDP command ${method}: ${err?.message || err}`);
-            e.code = 'cdp_send_failed';
-            reject(e);
-          }
-        }),
-    );
+    return ensureOpen().then(() => sendOpenCdpCommand(method, params));
   }
 
   async function start(viewport) {

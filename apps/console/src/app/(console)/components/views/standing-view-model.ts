@@ -8,7 +8,7 @@
  * the `StandingOverview` component renders. Keeping it pure makes the hero-tone
  * logic and the scope→human lexicon unit-testable without a browser.
  *
- * Design source: docs/design/ink-carbon/project/recordroom/rr-overview.jsx.
+ * Design source: docs/design-system/ink-carbon/project/recordroom/rr-overview.jsx.
  * The design used fictional fixtures; here every field binds to a real shape.
  */
 
@@ -331,7 +331,7 @@ export interface AttentionConnection {
    * connection identity (`connector_instance_id ?? connection_id`), NOT the
    * connector type. Routing by connector type lands on whichever connection
    * of that type is first, which is wrong when several accounts/devices share
-   * a type (e.g. three Claude Code devices: only peregrine is in attention).
+   * a type (e.g. three Claude Code devices: only one is in attention).
    */
   routeId: string;
   /** Owner-facing "what's wrong" line, from the verdict's forward statement. */

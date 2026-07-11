@@ -1,6 +1,0 @@
-# hone work rt-verdict-stream-rollups-oracle-0004 — baseline rung 'red-green-seeded-regression'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/connector-verdict-input.test.js ]; then node --test test/connector-verdict-input.test.js; else echo oracle-not-yet-authored; fi'
-# expect: baseline: oracle-not-yet-authored (file absent). During the work, run at three states: (a) with the streamPriority required-default transiently flipped (stream.required !== false -> === false): at least one FAIL; (b) with the pending_detail_gaps>0 clause transiently dropped from buildStreamRollups' retryable computation: at least one FAIL; (c) restored: all green. Paste both failing outputs into the receipts. Post (restored state): green, 0 fail
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

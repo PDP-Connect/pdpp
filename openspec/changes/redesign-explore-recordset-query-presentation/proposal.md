@@ -8,15 +8,13 @@ a count can promise more records than the UI can reach ("188 upcoming" surfaces 
 32); collapse/expand/load-more were not designed as one state machine; there are
 multiple search inputs and a confusing split between facet filters and typed operators
 with no way to invert a selection; and record cards pick which field to show by brittle
-field-name/stream-name heuristics, so arbitrary connectors render wrong. Owner feedback
-(captured in `docs/research/explore-experience-feedback-2026-06-21.md`) names all of
-these. A dual-owner strategy assessment (`tmp/workstreams/codex-explore-strategy-
-assessment.md`) concluded the diagnosis is right but two load-bearing abstractions must
-be made explicit before implementation: a canonical **RecordSet / reachability
-contract**, and a **manifest-authored record presentation recipe**. This change makes
-those explicit and threads the **count == reachability** invariant through every named
-set, grounded in prior art (`docs/research/explore-query-filter-ia-prior-art-2026-06-21.md`,
-`docs/research/explore-feed-interaction-dynamics-prior-art-2026-06-21.md`).
+field-name/stream-name heuristics, so arbitrary connectors render wrong. Owner feedback names all of
+these. A dual-owner strategy assessment concluded the diagnosis is right but two
+load-bearing abstractions must be made explicit before implementation: a canonical
+**RecordSet / reachability contract**, and a **manifest-authored record presentation
+recipe**. This change makes those explicit and threads the **count == reachability**
+invariant through every named set, grounded in prior art on explore query/filter IA
+and feed interaction dynamics.
 
 ## What Changes
 

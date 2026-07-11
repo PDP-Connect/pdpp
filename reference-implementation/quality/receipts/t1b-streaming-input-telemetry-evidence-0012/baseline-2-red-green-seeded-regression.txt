@@ -1,6 +1,0 @@
-# hone work t1b-streaming-input-telemetry-evidence-0012 — baseline rung 'red-green-seeded-regression'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/run-interaction-stream-input-telemetry.test.js ]; then node --test test/run-interaction-stream-input-telemetry.test.js; else echo oracle-not-yet-authored; fi'
-# expect: baseline: oracle-not-yet-authored (file absent). During the work: with the transient received/dispatched kind-string swap applied in routes.js at least one test FAILS — paste that failing run into the receipts, then restore. Post (restored state): green and git diff -- server/streaming/routes.js is empty
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

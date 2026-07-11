@@ -25,19 +25,9 @@ const nextConfig = {
   outputFileTracingRoot: path.join(__dirname, '../..'),
   // Runtime file reads outside the bundled output need explicit tracing
   // includes so Next copies them into the standalone deploy. Without these,
-  // /planning, /reference/coverage, the well-known agent-skill catalog, and
-  // /llms-full.txt 500 on Vercel because the markdown they read is absent.
+  // /reference/coverage, the well-known agent-skill catalog, and /llms-full.txt
+  // 500 on Vercel because the markdown they read is absent.
   outputFileTracingIncludes: {
-    '/planning': [
-      '../../openspec/**/*.md',
-      '../../pnpm-workspace.yaml',
-      '.generated/openspec-git-metadata.json',
-    ],
-    '/planning/**': [
-      '../../openspec/**/*.md',
-      '../../pnpm-workspace.yaml',
-      '.generated/openspec-git-metadata.json',
-    ],
     // resolveRepoRoot() looks for a directory containing both
     // pnpm-workspace.yaml and openspec/, so a stub openspec marker is needed
     // even for routes that only read docs/agent-skills.
@@ -141,16 +131,6 @@ const nextConfig = {
         source: '/reference-implementation',
         destination: '/docs/reference-implementation',
         permanent: true,
-      },
-      {
-        source: '/openspec',
-        destination: '/planning',
-        permanent: false,
-      },
-      {
-        source: '/openspec/:path*',
-        destination: '/planning/:path*',
-        permanent: false,
       },
       // Sandbox IA parity: sandbox/records/timeline redirects to sandbox/explore
       // now that the sandbox Explore canvas exists.

@@ -80,7 +80,7 @@ export const BURST_THRESHOLD = 10;
 /**
  * How many content rows a burst shows BY DEFAULT (the `preview` state).
  *
- * SLVP rule (Codex plan-check 2026-06-22, prior art Linear/Slack/Datadog): a
+ * SLVP rule (review-gated 2026-06-22, prior art Linear/Slack/Datadog): a
  * browse feed must never render a same-stream cluster as a ZERO-row count header.
  * A burst therefore always shows its first `PREVIEW_COUNT` records inline; the
  * remainder is reachable via an explicit "Show all M" action. This preserves

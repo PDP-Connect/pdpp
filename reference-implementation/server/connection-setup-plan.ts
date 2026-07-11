@@ -230,8 +230,6 @@ export const BROWSER_BOUND_CONNECTORS = [
 
 export type BrowserBoundConnector = (typeof BROWSER_BOUND_CONNECTORS)[number];
 
-export const BROWSER_BOUND_RUNBOOK_PATH = "docs/operator/browser-collector-proof-runbook.md";
-export const STATIC_SECRET_RUNBOOK_PATH = "docs/operator/static-secret-connection-runbook.md";
 export const PROVIDER_AUTH_RUNBOOK_PATH = "docs/operator/add-connection.md";
 
 // Connector keys for which the provider-authorization lifecycle (initiate +
@@ -583,7 +581,7 @@ function buildDeploymentReadiness(args: {
 
 export function unsupportedReason(modality: ConnectorIntentModality | ConnectorSetupModality): string {
   if (modality === "browser_bound") {
-    return "This connector is browser-bound. The browser-collector enrollment primitive (`browser_collector` source kind plus binding-aware enrollment) already ships, but end-to-end proof that a real owner-logged-in browser session ingests through that path is still gated. Follow `docs/operator/browser-collector-proof-runbook.md`; the setup plan stays proof-gated until that live proof lands.";
+    return "This connector is browser-bound. The browser-collector enrollment primitive (`browser_collector` source kind plus binding-aware enrollment) already ships, but end-to-end proof that a real owner-logged-in browser session ingests through that path is still gated. The setup plan stays proof-gated until that live proof lands.";
   }
   if (modality === "static_secret" || modality === "api_network") {
     return "This API/network connector authenticates with a static provider secret declared by its connector manifest; there is no OAuth authorization URL. Use the owner-session static-secret setup page to create a draft, capture the provider secret, and start first sync. The connection stays hidden until first ingest accepts records.";
@@ -718,7 +716,7 @@ function buildBrowserBoundSetupPlan(ctx: ConnectionSetupPlanContext): Connection
       status: "proof_gated",
     },
     proofGate: "browser_collector_live_proof_missing",
-    runbookPath: BROWSER_BOUND_RUNBOOK_PATH,
+    runbookPath: null,
     setupModality: ctx.setupModality,
     supportState: "proof_gated",
     validationMode: ctx.validationMode,
@@ -743,7 +741,7 @@ function buildStaticSecretSetupPlan(ctx: ConnectionSetupPlanContext): Connection
       status: liveProven ? "supported" : "proof_gated",
     },
     proofGate: liveProven ? null : "static_secret_live_proof_missing",
-    runbookPath: liveProven ? null : STATIC_SECRET_RUNBOOK_PATH,
+    runbookPath: null,
     setupModality: ctx.setupModality,
     supportState: liveProven ? "supported" : "proof_gated",
     validationMode: ctx.validationMode,

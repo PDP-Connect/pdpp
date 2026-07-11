@@ -64,8 +64,9 @@
       owner-logged-in Amazon browser session producing those records, scrubbed
       into a committed `fixtures/amazon/scrubbed/<runId>/` fixture — which cannot
       be produced honestly in a no-human worktree. The owner-run procedure and
-      the exact closing artifact are documented in
-      `docs/operator/browser-collector-proof-runbook.md`.
+      the exact closing artifact were documented in the operator runbook doc
+      (removed in LFDT curation; the setup plan stays proof-gated with no
+      runbook path — see `reference-implementation/server/connection-setup-plan.ts`).
       Lane `ri-browser-collector-proof-reduction-v2` further reduced the live
       gate's surface without faking support: (a) the runbook's source-kind
       verification step is now backed by a deterministic test

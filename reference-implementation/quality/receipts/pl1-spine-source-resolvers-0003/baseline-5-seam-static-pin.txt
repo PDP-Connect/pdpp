@@ -1,6 +1,0 @@
-# hone work pl1-spine-source-resolvers-0003 — baseline rung 'seam-static-pin'
-# command: cd "$REPO_ROOT" && node -e 'const fs=require("fs");const s=fs.readFileSync("server/connector-instance-utils.js","utf8");if(!s.includes("function resolveSpineSourceFromPayload")){console.log("baseline: resolvers not extracted; vacuous PASS");process.exit(0);}const w=s.replace(/\s+/g," ");let rc=0;const checks=[["resolveSpineSourceFromPayload(payload) declared",/function resolveSpineSourceFromPayload\( ?payload,? ?\)/],["resolveSpineSourceFromRow(row) declared",/function resolveSpineSourceFromRow\( ?row,? ?\)/],["payload delegation bare-identifier",/resolveSpineSourceFromPayload\( ?payload ?\)/],["row delegation bare-identifier",/resolveSpineSourceFromRow\( ?row ?\)/],["payload checked before row (priority preserved)",/if ?\( ?fromPayload ?\) ?return fromPayload;/]];for(const c of checks){const ok=c[1].test(w);console.log((ok?"PASS ":"FAIL ")+c[0]);if(!ok)rc=1;}process.exit(rc);'
-# expect: exit 0, every line PASS. Baseline (resolvers absent): vacuous PASS. Post: both resolvers declared with explicit single named params, both delegated with bare identifiers, and payload priority preserved via `if (fromPayload) return fromPayload`.
-# exit: 0  duration: 0s  verdict: PASS
-
-baseline: resolvers not extracted; vacuous PASS

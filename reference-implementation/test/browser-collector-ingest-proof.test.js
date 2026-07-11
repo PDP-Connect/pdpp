@@ -37,8 +37,9 @@ import { startServer } from '../server/index.js';
 // (`local-device-exporter-collection`: "Browser-bound connectors SHALL NOT
 // advertise a real next step without committed proof") therefore keeps the
 // owner-connection-intent `browser_bound` branch at `unsupported`. The live
-// proof and the resulting intent flip (tasks.md §3.5) are gated on the
-// owner-run runbook at `docs/operator/browser-collector-proof-runbook.md`.
+// proof and the resulting intent flip (tasks.md §3.5) are gated on an
+// owner-run live proof (the prior operator runbook doc was removed in LFDT
+// curation; the setup plan stays proof-gated with no runbook path).
 //
 // Concretely: passing this test is NECESSARY but NOT SUFFICIENT to close task
 // 14. It removes every server-side and record-shape unknown so the live proof

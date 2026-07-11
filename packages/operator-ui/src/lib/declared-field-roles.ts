@@ -14,7 +14,7 @@
  *     any field-name heuristic, so a manifest-declared title/body/actor/amount
  *     wins by declaration.
  *   - `EMPTY_DECLARED_FIELD_ROLES` — the default a stream resolves to when it
- *     declares NO roles. The `x_pdpp_role` vocabulary is LIVE (Codex-approved
+ *     declares NO roles. The `x_pdpp_role` vocabulary is LIVE (review-approved
  *     2026-06-21): a manifest declares it via `schema.properties[field].x_pdpp_role`,
  *     the server surfaces it as `field_capabilities[].role`, and the assembler's
  *     `declaredRolesFromCapabilities` parses it (via `parseFieldRole`) into a
@@ -75,7 +75,7 @@ export function hasDeclaredRoles(roles: DeclaredFieldRoles | null | undefined): 
  * The approved role vocabulary (design.md §5.3). Every value here has a live
  * renderer consumer: primary-title/secondary/actor (message + generic slots),
  * amount (money formatting), event-time (event-card body). `media-preview` and
- * `supporting-attribute` were PRUNED (Codex 97% 2026-06-22): both were inert —
+ * `supporting-attribute` were PRUNED (review-approved 2026-06-22): both were inert —
  * media is driven by the server-typed blobAffordance path (not a presentation
  * role), and supporting-attribute's only effect was the generic key/value
  * default. A role that parses but does nothing is an inert promise; if a future
@@ -93,7 +93,7 @@ const VALID_FIELD_ROLES: ReadonlySet<string> = new Set<FieldRole>([
 /**
  * Validate a raw declared role string against the approved vocabulary. An UNKNOWN
  * role returns null (the field then falls to the generic fallback, NOT a guess —
- * Codex constraint #2: unknown/absent roles degrade to the honest generic fallback,
+ * review constraint #2: unknown/absent roles degrade to the honest generic fallback,
  * never field-name guessing). Presentation-only; never affects retrieval semantics.
  */
 export function parseFieldRole(raw: unknown): FieldRole | null {

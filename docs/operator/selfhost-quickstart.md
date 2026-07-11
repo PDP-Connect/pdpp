@@ -203,8 +203,7 @@ The two pieces of state you care about:
   browser profile cache.
 
 A minimal SLVP backup is a `pg_dump` and a `docker run --volumes-from` tarball
-of `pdpp-home`. A dashboard backup UI is deferred; see
-`openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp` for the deferred slice.
+of `pdpp-home`. A dashboard backup UI is deferred.
 
 ---
 
@@ -382,9 +381,7 @@ future reader does not re-derive that they are intentionally absent.
   single-container image with process supervision, auto-generated secrets on
   first boot, and SQLite default — usable as a RunPod Pod template. Requires a
   new image shape and a release-tag cadence. RunPod Hub is a serverless worker
-  platform and is the wrong target for a persistent service. Tracked in the
-  design notes under
-  [`design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md`](../../design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md).
+  platform and is the wrong target for a persistent service.
 - **Full connector credential management UI.** The static-secret add form
   captures a first credential. Rotation, revoke, and per-connection credential
   inspection remain future owner-console work.
@@ -407,9 +404,5 @@ future reader does not re-derive that they are intentionally absent.
   running browser-backed connectors on a host with a visible Chromium.
 - [`docs/operator/dynamic-neko-operator-guide.md`](../dynamic-neko-operator-guide.md) —
   optional pooled-browser overlay (`n.eko`); not required for SLVP.
-- [`docs/voice-and-framing.md`](../voice-and-framing.md) — voice rules for
+- [`docs/reference/voice-and-framing.md`](../voice-and-framing.md) — voice rules for
   any operator-facing copy edits here.
-- [`design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md`](../../design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md) —
-  the design note this runbook implements.
-- [`openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp/`](../../openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp/) —
-  the OpenSpec change tracking this work (archived after landing).

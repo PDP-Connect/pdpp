@@ -1,6 +1,6 @@
 /**
  * Zod schemas for USAA stream records. Used for shape-check-before-emit
- * per docs/connector-authoring-guide.md §3: records that fail the schema
+ * per docs/reference/connector-authoring-guide.md §3: records that fail the schema
  * become SKIP_RESULT events instead of RECORD events, so the RS never
  * receives data that looks right but isn't.
  *

@@ -1,17 +1,17 @@
 # Tasks — Explore RecordSet / query / presentation redesign
 
 Sequenced as vertical slices (reachability first). Each slice: reproduce-the-bug test →
-(cursor/keyset/contract machinery) dual-owner Codex gate → deploy → verify live, on the
+(cursor/keyset/contract machinery) dual-review gate → deploy → verify live, on the
 deployed Explore lineage (branch `explore-slvp-high-fixes`, base `e87222ce`). Build does
-NOT start until Codex and Claude align this change is SLVP-ideal at >95% AND considers all
+NOT start until both independent reviews align this change is SLVP-ideal at >95% AND considers all
 owner feedback (the design-approval gate). Mark tasks honestly as work lands.
 
 ## 0. Design gate (before any build)
-- [x] 0.1 Codex adversarial review of this OpenSpec change (proposal/design/spec/tasks)
+- [x] 0.1 adversarial review of this OpenSpec change (proposal/design/spec/tasks)
       whose explicit job is to prove it is under-researched, AI-slop, or locally-clever-
-      not-SLVP. Verdict to `tmp/workstreams/codex-explore-recordset-design-review.md`
+      not-SLVP. Verdict recorded in the design-review workstream
       (HOLD, ~93%, 4 P0 + 2 P1 required edits).
-- [x] 0.2 Resolve every blocking finding; re-review until Codex + Claude both confirm
+- [x] 0.2 Resolve every blocking finding; re-review until both independent reviews confirm
       ≥95% SLVP-ideal AND all owner feedback considered. Record the confirmation.
       APPLIED (round 1, `c5d8b1bb`): P0#1 search-result-set honesty (spec: relevance_bounded/
       keyword_pageable/chronological classes + 2 scenarios; design §1.2). P0#2 lower_bound
@@ -24,23 +24,23 @@ owner feedback (the design-approval gate). Mark tasks honestly as work lands.
       evidence package is self-contained; cond-2 fixed proposal + design §5.3 role/type
       wording (TYPE gates formatting only; event-time/amount are declared slots, not
       type-promoted); editorial: matrix source claim softened.
-      CONFIRMED: Codex round-2 verdict = FULL LAND / IMPLEMENTATION APPROVED at `2a4c4fd6`
-      (owner-feedback 97%, SLVP 96%, Slice-1 readiness 97%); + Claude. Both ≥95% =
-      design implicitly approved per the owner's gate. See
-      `tmp/workstreams/codex-explore-recordset-design-review-round2.md` (Final Confirmation).
+      CONFIRMED: review round-2 verdict = FULL LAND / IMPLEMENTATION APPROVED at `2a4c4fd6`
+      (owner-feedback 97%, SLVP 96%, Slice-1 readiness 97%); + second review. Both ≥95% =
+      design implicitly approved per the owner's gate, per the round-2 design-review
+      Final Confirmation.
 - [x] 0.3 `openspec validate redesign-explore-recordset-query-presentation --strict` passes.
 
 ## 1. Slice 1 — count == reachability (highest-risk invariant)
 - [ ] 1.1 Define the RecordSet descriptor (scope, count-kind enum, reachability) in the
       reference operation/types; surface it on `GET /_ref/explore/records` for `data`,
       `upcoming`, and per-group sets. Reference-contract delta + regenerate artifacts.
-- [x] 1.2 Burst counts: made HONEST (Codex-gated 2026-06-21, option 2 of 2). The burst
+- [x] 1.2 Burst counts: made HONEST (review-gated 2026-06-21, option 2 of 2). The burst
       showed `burst.entries.length` with "show all ↓" — read as a COMPLETE
       (connection, stream, day) total but was only the LOADED count → same contract hole
       in miniature. FIX: label the count "N in view" with an "expand ↓" action (not
       "show all"), so it never implies a day-total the client can't prove;
       count==reachability holds (the number == what expand reveals; more arrive on feed
-      Load-more). Pinned by 2 acceptance invariants. FOLLOW-UP (Codex preferred SLVP,
+      Load-more). Pinned by 2 acceptance invariants. FOLLOW-UP (the independent reviewer preferred SLVP,
       DEFERRED, record true totals later): server per-burst true totals + a
       reachability handle for incomplete bursts. Not a Slice-1 blocker: the burst is now
       honest and the headline 188→32 reachability (Upcoming) is fixed.
@@ -55,7 +55,7 @@ owner feedback (the design-approval gate). Mark tasks honestly as work lands.
       walks the future projection to exhaustion. Self-contained in the explore operation +
       assembler + canvas; no cross-route records-page schema change. (Revisit drill_in if/
       when the records page accepts a future scope.)
-      CURSOR SHAPE (Codex-gated 2026-06-21): NOT a flat global ASC seek — `record_key` is
+      CURSOR SHAPE (review-gated 2026-06-21): NOT a flat global ASC seek — `record_key` is
       unique only WITHIN a partition, so a global `(semanticTime, record_key)` cursor would
       skip a same-pair row in another partition. Use an **Upcoming composite ASC cursor**
       mirroring the main feed's composite: `{ snapshotSeq, nowCeiling, partitions:
@@ -63,7 +63,7 @@ owner feedback (the design-approval gate). Mark tasks honestly as work lands.
       `upcoming_next_cursor` + `upcoming_has_more` (separate from the main `next_cursor`).
       Each partition page seeks from ITS OWN last position (`semExpr > t OR (semExpr = t AND
       record_key > k)`), merge ASC, cap, advance per-partition.
-      ACCEPTANCE BEFORE LAND (Codex): (1) page to exhaustion — 188th reachable, no dup/skip,
+      ACCEPTANCE BEFORE LAND (the independent reviewer): (1) page to exhaustion — 188th reachable, no dup/skip,
       both backends; (2) tied semantic_time across partitions AND within one partition;
       (3) post-snapshot future backfill excluded from the pinned traversal; (4) EXPLAIN PG
       first + cursor pages use the expression index, no Seq Scan + Sort; (5) `upcoming_total`
@@ -90,11 +90,11 @@ owner feedback (the design-approval gate). Mark tasks honestly as work lands.
       `explore-navigation.test.ts` +5 (ucursors trail rules + peek-keeps-trail fix);
       `explore-acceptance.test.ts` +2 (burst honesty + Upcoming pagination); burst-honesty
       invariants. Existing conformance + b1-b2-b3 + boundary stay green both backends.
-- [x] 1.7 Dual-owner gate + deploy DONE (2026-06-21). Codex gate = HOLD round 1 (2 fixes:
+- [x] 1.7 Dual-owner gate + deploy DONE (2026-06-21). Independent review = HOLD round 1 (2 fixes:
       bounded upcoming cursor via the server-side store; delimiter-safe JSON dedupe) → re-
-      review = LAND (`tmp/workstreams/codex-slice1-gate-verdict.md`). Deployed clean main
-      `475af118` via `COMPOSE_PROJECT_NAME=pdpp reference-stack up --build-app` from
-      `/home/user/.tmp/pdpp-deploy` (stack brought UP from down; all healthy;
+      review = LAND (the independent reviewer slice-1 gate verdict). Deployed clean main
+      `475af118` via `COMPOSE_PROJECT_NAME=pdpp reference-stack up --build-app` from a
+      dedicated deploy worktree (stack brought UP from down; all healthy;
       PDPP-Reference-Revision `v0.14.0-148-g475af118`; /dashboard/explore 307; deployed
       pdpp-reference-1 confirmed running the new code). LIVE DATA confirms the target: YNAB
       `month_categories` has EXACT 185 future records (month >= 2026-07-01) — the live "188".
@@ -131,7 +131,7 @@ owner feedback (the design-approval gate). Mark tasks honestly as work lands.
       SERVER-SIDE at partition enumeration (operation excludeConnectionIds/excludeStreams →
       substrate NOT IN / <> ALL), so the feed, Upcoming, counts, AND cursor all omit the
       excluded set — counts stay EXACT (orchestrator corrected the agent's first-pass
-      client-side post-filter, which shrank the upcoming total under exclusion = Codex red
+      client-side post-filter, which shrank the upcoming total under exclusion = the independent reviewer red
       line #2). Operator == chip proven; server-side exclusion proven on BOTH backends.
 - [x] 2.5 Facet counts = current-filtered-set count, exact-or-hidden ("in view" qualifier;
       cross-connection stream tally hidden; day-header count qualified "in view").
@@ -158,7 +158,7 @@ owner feedback (the design-approval gate). Mark tasks honestly as work lands.
       deferred to the comprehensive end-review (per the build plan).
 
 ## 4. Slice 4 — manifest-authored presentation
-- [x] 4.1 DECISION (Codex-gated 2026-06-21, `codex-slice4-vocab-verdict.md`): existing
+- [x] 4.1 DECISION (review-gated 2026-06-21): existing
       surfaces CANNOT express per-field ROLE (x_pdpp_type is TYPE not ROLE;
       display/views are stream-prose/field-sets). Option B chosen + APPROVED: add
       `x_pdpp_role` on schema.properties[field] (primary-title|secondary|event-time|actor|
@@ -192,7 +192,7 @@ owner feedback (the design-approval gate). Mark tasks honestly as work lands.
 - [x] 5.2 Mobile loading at the TOP of the visible feed: `.rr-x-progress` is position:fixed
       top:0 inside @media(max-width:860px) (out-of-flow → no layout shift); desktop stays
       absolute. The feed's only pending signal is aria-busy — NO opacity dim, NO
-      pointer-events block (Codex: readable records stay live).
+      pointer-events block (the independent reviewer: readable records stay live).
 - [x] 5.3 Operators/typeahead popover clamped within the viewport (pure CSS, SSR-safe):
       input-anchored left/right + max-width:100vw + max-height:min(280px,60vh) +
       overflow-y:auto. No JS measurement.

@@ -1,6 +1,0 @@
-# hone work df-evidence-package-schema-merge-oracle-0004 — baseline rung 'byte-identity'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && git diff --stat -- server/package-rs-client.js && if [ -f test/package-rs-client-merge-schema.test.js ]; then git status --short test/package-rs-client-merge-schema.test.js; else echo oracle-not-yet-authored; fi
-# expect: empty diff for server/package-rs-client.js at baseline and post; baseline additionally prints oracle-not-yet-authored (file absent); post: the new test file is the only addition in the touchset
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

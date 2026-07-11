@@ -1,6 +1,0 @@
-# hone work rt-verdict-stream-rollups-oracle-0004 — baseline rung 'red-then-green-required-default'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/connector-verdict-input.test.js ]; then git diff --quiet -- runtime/connector-verdict-input.ts && sed -i 's/stream.required !== false/stream.required === false/' runtime/connector-verdict-input.ts && node --test test/connector-verdict-input.test.js; git checkout -- runtime/connector-verdict-input.ts; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2 — engine-run mutation, df-0004 pattern): seeded run FAILS naming at least one streamPriority test (required-default / contradictory-manifest pins) — the mutation flips the required default (runtime/connector-verdict-input.ts:80; sed target verified unique 2026-07-02: grep -cF 'stream.required !== false' runtime/connector-verdict-input.ts == 1); guard confirmed the file was clean before seeding; checkout restores it — this receipt IS mandated failing run (a) that both run-2 REVISE verdicts said was missing
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

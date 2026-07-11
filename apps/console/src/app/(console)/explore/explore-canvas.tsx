@@ -2064,7 +2064,7 @@ function BurstRow({
   const rep = burst.entries[0];
   const loaded = burst.entries.length;
   const streamLabel = `${rep?.connectionDisplayName ?? rep?.connectorId ?? ""}${rep?.stream ? ` / ${rep.stream}` : ""}`;
-  // SLVP preview-content-by-default (Codex plan-check 2026-06-22): a burst is NEVER
+  // SLVP preview-content-by-default (review-gated 2026-06-22): a burst is NEVER
   // a content-less count header. It always renders its first PREVIEW_COUNT rows
   // (`burst.preview`); the remainder is reached via an explicit "Show all M" action.
   // count==reachability holds: the count is the LOADED count for this
@@ -2159,7 +2159,7 @@ function buildRemoveLastChipAction(
     // connection id and remove it by EXACT equality. (The previous substring match on
     // `lastChip.value`, the DISPLAY NAME, was an honesty bug: a name that is not a
     // substring of its id — e.g. "Chase - Personal" vs `cin_chase` — would leave the
-    // filter applied while the action claims to remove it. Codex end-review HOLD.)
+    // filter applied while the action claims to remove it. end-review HOLD.)
     const removedId = lastChip.id.startsWith("con:") ? lastChip.id.slice("con:".length) : null;
     href = buildHref(explorePath, {
       connectionIds: removedId ? s.connectionIds.filter((id) => id !== removedId) : s.connectionIds,
@@ -2438,7 +2438,7 @@ function FeedDays({
           <div className="rr-x-day" key={g.day || "undated"}>
             <div className="rr-x-day__head">
               <span className="rr-x-day__label">{g.label}</span>
-              {/* count==reachability (Codex red line): the day header counts records
+              {/* count==reachability (review red line): the day header counts records
                   LOADED for this day, not a true day total (which needs a server
                   per-day count). A bare number reads like a total, so it is qualified
                   "in view" — every counted record is reachable in this group. */}
@@ -3658,7 +3658,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
     [data.query, data.since, data.until, explorePath, selectedConnectionIds, selectedStreams]
   );
 
-  // D2 (Codex plan-check 2026-06-22): the inspector is a 3rd column ONLY when a
+  // D2 (review-gated 2026-06-22): the inspector is a 3rd column ONLY when a
   // record is selected/peeked. With no selection the grid is 2-col (rail | feed)
   // and the feed claims the freed width — no reserved-empty 420px inspector (the
   // dead-canvas + query-bar/inspector-overlap root cause). `data.peek != null` is
@@ -3695,7 +3695,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
               matching the prototype. Explore = the count ACTUALLY SHOWN — `visibleFeed`,
               AFTER client-side filters (has:image/has:link/is:folded/non-server-filterable
               fields). Using data.feed.length (the raw loaded set) would OVERSTATE reachable
-              rows when a client filter is active — a count==reachability violation (Codex
+              rows when a client filter is active — a count==reachability violation (review
               HOLD). Upcoming = the true future-dated total. Both honest, no new data. */}
           <div className="rr-x-views">
             <span className="rr-x-views__label">Views</span>

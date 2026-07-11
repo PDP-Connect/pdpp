@@ -1,6 +1,0 @@
-# hone work hm-awaited-order-oracle-0002 — baseline rung 'red-then-green-state-flush-order'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-order.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/await flushBatch(msg.stream);/flushBatch(msg.stream);/' runtime/index.js && node --test test/runtime-handle-msg-order.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2 — engine-run mutation, df-0004 pattern): seeded run FAILS naming the STATE flush-before-stage ordering test — the mutation drops the await on flushBatch(msg.stream) in the STATE arm (runtime/index.js:2986; sed target verified unique 2026-07-02: grep -cF 'await flushBatch(msg.stream);' runtime/index.js == 1), so with the ingest response delayed, run.state_staged is emitted before the stream-A ingest POST completes; guard confirmed the file was clean before seeding; checkout restores it — this receipt IS the failing seeded run the run-2 judge demanded
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

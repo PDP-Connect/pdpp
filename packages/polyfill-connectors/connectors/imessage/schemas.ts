@@ -1,6 +1,6 @@
 /**
  * Zod schemas for iMessage stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * Ground truth: the `emitRecord("messages", {...})` literal in index.ts,
  * built from a SQLite row of ~/Library/Messages/chat.db. There is no

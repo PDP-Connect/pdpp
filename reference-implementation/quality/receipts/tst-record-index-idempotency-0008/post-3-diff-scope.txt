@@ -1,6 +1,0 @@
-# hone work tst-record-index-idempotency-0008 — post rung 'diff-scope'
-# command: cd "$REPO_ROOT" && sh -c 'if [ -f test/postgres-record-index-idempotency-oracle.test.js ]; then git diff --stat -- server/postgres-storage.js; test -z "$(git diff --name-only -- server/postgres-storage.js)" && echo SRC-CLEAN || echo SRC-DIRTY; else echo "BASELINE SRC-CLEAN"; fi'
-# expect: prints SRC-CLEAN: server/postgres-storage.js byte-identical; only the new test file changed
-# exit: 0  duration: 0s  verdict: PASS
-
-SRC-CLEAN

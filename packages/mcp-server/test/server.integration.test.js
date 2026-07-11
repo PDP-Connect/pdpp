@@ -72,12 +72,12 @@ function makeFakeRs() {
       url: 'https://chatgpt.test/c/c1',
       connection_id: 'conn_chatgpt',
       connector_key: 'chatgpt',
-      display_name: 'ChatGPT - everyone@appears.blue',
+      display_name: 'ChatGPT - user@example.com',
     },
     emitted_at: '2026-04-19T07:16:43.755Z',
     connection_id: 'conn_chatgpt',
     connector_instance_id: 'conn_chatgpt',
-    display_name: 'ChatGPT - everyone@appears.blue',
+    display_name: 'ChatGPT - user@example.com',
   };
   const SLACK_MESSAGE_M1 = {
     id: 'm1',
@@ -87,7 +87,7 @@ function makeFakeRs() {
     emitted_at: '2026-06-09T00:00:00.000Z',
     connection_id: 'conn_slack',
     connector_key: 'slack',
-    display_name: 'Vana Slack',
+    display_name: 'Acme Slack',
   };
   const STREAM_META = { name: 'orders', record_count: 2 };
   const BLOB = Buffer.from([10, 20, 30, 40, 50]);
@@ -225,7 +225,7 @@ function makeFakeRs() {
               emitted_at: '2026-06-09T00:00:00.000Z',
               connection_id: 'conn_slack',
               connector_key: 'slack',
-              display_name: 'Vana Slack',
+              display_name: 'Acme Slack',
               snippet: { text: 'A Slack message without an explicit title.' },
             },
           ],
@@ -241,7 +241,7 @@ function makeFakeRs() {
               emitted_at: '2026-04-20T14:23:13.467Z',
               connection_id: 'conn_slack',
               connector_key: 'slack',
-              display_name: 'Vana Slack',
+              display_name: 'Acme Slack',
               snippet: { text: 'A nested Slack message without an explicit title.' },
             },
           ],
@@ -772,7 +772,7 @@ test('search fallback title uses authored timestamp before emitted_at', async ()
   });
 
   assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.results[0].title, 'Vana Slack / messages / 2026-04-20T14:23:13.467Z');
+  assert.equal(result.structuredContent.results[0].title, 'Acme Slack / messages / 2026-04-20T14:23:13.467Z');
   assert.equal(result.structuredContent.results[0].connector_key, 'slack');
 
   await client.close();
@@ -789,7 +789,7 @@ test('search fallback title uses nested authored timestamp before top-level emit
   });
 
   assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.results[0].title, 'Vana Slack / messages / 2026-04-08T16:57:06.018Z');
+  assert.equal(result.structuredContent.results[0].title, 'Acme Slack / messages / 2026-04-08T16:57:06.018Z');
 
   await client.close();
   await server.close();
@@ -857,7 +857,7 @@ test('fetch content text mirrors document JSON for hosts that hide structured ou
   assert.doesNotMatch(JSON.stringify(contentLadder), /pdpp:\/\/record\//);
   assert.equal(text.metadata.connection_id, 'conn_chatgpt');
   assert.equal(text.metadata.connector_key, 'chatgpt');
-  assert.equal(text.metadata.display_name, 'ChatGPT - everyone@appears.blue');
+  assert.equal(text.metadata.display_name, 'ChatGPT - user@example.com');
   assert.match(text.text, /Jeremy and I had a call with Redactable yesterday/);
 
   await client.close();
@@ -874,7 +874,7 @@ test('fetch fallback title uses source identity and authored timestamp', async (
   });
 
   assert.equal(result.isError, undefined);
-  assert.equal(result.structuredContent.title, 'Vana Slack / messages / 2026-04-20T14:23:13.467Z');
+  assert.equal(result.structuredContent.title, 'Acme Slack / messages / 2026-04-20T14:23:13.467Z');
   assert.equal(result.structuredContent.metadata.connector_key, 'slack');
 
   await client.close();

@@ -1,6 +1,6 @@
 /**
  * Zod schemas for iCal stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * Ground truth: `buildEventRecord` in parsers.ts (the only thing index.ts
  * passes to `emitRecord("events", ...)`). Schemas mirror the *emitted* shape,

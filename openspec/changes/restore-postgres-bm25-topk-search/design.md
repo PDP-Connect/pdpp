@@ -20,13 +20,6 @@ Community is AGPL-3.0. The reference therefore needs an optional backend path
 with explicit operator posture and a strong fallback to current native Postgres
 FTS.
 
-Research inputs:
-
-- `docs/research/pg-search-bm25-slvp-prior-art-2026-06-17.md`
-- `tmp/workstreams/pg-search-bm25-feasibility-worker-report.md`
-- `openspec/changes/accelerate-rs-search-postgres/design.md`
-- `openspec/changes/archive/2026-06-17-disclose-lexical-recall-windows/design.md`
-
 ## Goals / Non-Goals
 
 **Goals:**

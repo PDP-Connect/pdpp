@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Gmail stream records. Used for shape-check-before-emit
- * per docs/connector-authoring-guide.md §3: records that don't match the
+ * per docs/reference/connector-authoring-guide.md §3: records that don't match the
  * schema become SKIP_RESULT events instead of RECORD events, so the RS
  * never receives data that looks right but isn't.
  *
@@ -12,7 +12,7 @@ import { z } from "zod";
 import { pdppSafeText } from "../../src/pdpp-safe-text.ts";
 import { makeValidateRecord } from "../../src/schema-registry.ts";
 
-// Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+// Text-field classification (docs/reference/binary-content-invariant-design-brief.md §4.4):
 //   - Free-form human-readable text (subjects, body, snippet, names) → pdppSafeText
 //   - Regex-validated structural strings (message IDs, ISO dates) → z.string().regex(...)
 

@@ -31,7 +31,7 @@ test("connect command uses npx + package specifier", () => {
 });
 
 test("connect command can be rendered for a concrete provider URL", () => {
-  assert.equal(pdppCliConnectCommandFor("https://pdpp.vivid.fish"), "npx -y @pdpp/cli connect https://pdpp.vivid.fish");
+  assert.equal(pdppCliConnectCommandFor("https://pdpp.example.com"), "npx -y @pdpp/cli connect https://pdpp.example.com");
 });
 
 test("install command uses npx + --help", () => {

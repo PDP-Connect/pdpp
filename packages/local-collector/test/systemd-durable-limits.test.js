@@ -13,14 +13,14 @@ import { test } from 'node:test';
 // loses the load-bearing cgroup limits, so the durability guidance cannot
 // silently regress back to an uncapped example.
 //
-// See docs/local-collector.md §systemd and
+// See docs/reference/local-collector.md §systemd and
 // openspec/specs/reference-implementation-architecture/spec.md
 // "Reference local collector scheduling SHALL remain host-supervisor-owned".
 
-const DOC_URL = new URL('../../../docs/local-collector.md', import.meta.url);
+const DOC_URL = new URL('../../../docs/reference/local-collector.md', import.meta.url);
 
 /**
- * Extract the first fenced ```ini block in `docs/local-collector.md` that
+ * Extract the first fenced ```ini block in `docs/reference/local-collector.md` that
  * declares a `[Service]` section — that is the systemd service example
  * operators copy. Kept deliberately literal (a fence + section scan, no INI
  * dependency) so the test asserts the exact published shape.
@@ -31,7 +31,7 @@ async function loadSystemdServiceBlock() {
   const serviceBlock = iniBlocks.find((block) => block.includes('[Service]'));
   if (!serviceBlock) {
     throw new Error(
-      'docs/local-collector.md no longer contains an ```ini``` block with a [Service] section'
+      'docs/reference/local-collector.md no longer contains an ```ini``` block with a [Service] section'
     );
   }
   return serviceBlock;

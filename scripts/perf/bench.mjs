@@ -15,7 +15,7 @@
  *
  * Usage:
  *   node scripts/perf/bench.mjs                          # live, default samples
- *   PDPP_BASE=https://pdpp.vivid.fish node scripts/perf/bench.mjs
+ *   PDPP_BASE=https://pdpp.example.com node scripts/perf/bench.mjs
  *   PDPP_OWNER_TOKEN=... node scripts/perf/bench.mjs      # auth RS targets
  *   PDPP_BENCH_SAMPLES=30 node scripts/perf/bench.mjs
  *   node scripts/perf/bench.mjs --api-only | --pages-only
@@ -23,7 +23,7 @@
  *   node scripts/perf/bench.mjs --compare <prior-result.json>   # regression diff
  *
  * Env:
- *   PDPP_BASE              base URL (default https://pdpp.vivid.fish)
+ *   PDPP_BASE              base URL (default https://pdpp.example.com)
  *   PDPP_OWNER_TOKEN       bearer for RS /v1 targets (skips them if unset)
  *   PDPP_OWNER_PASSWORD    owner password for console page cookie auth (optional)
  *   PDPP_BENCH_SAMPLES     samples per target (default 12)
@@ -39,7 +39,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
 const RESULTS_DIR = join(REPO_ROOT, "perf-results");
 
-const BASE = (process.env.PDPP_BASE || "https://pdpp.vivid.fish").replace(/\/$/, "");
+const BASE = (process.env.PDPP_BASE || "https://pdpp.example.com").replace(/\/$/, "");
 const OWNER_TOKEN = process.env.PDPP_OWNER_TOKEN || "";
 const SAMPLES = Number(process.env.PDPP_BENCH_SAMPLES || 12);
 const WARMUP = Number(process.env.PDPP_BENCH_WARMUP || 2);

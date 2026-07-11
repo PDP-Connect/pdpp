@@ -20,7 +20,7 @@ manifest-declared semantic field) instead of when they were ingested.
 It also unblocks the **separate, later** bucket-aggregate PR (the indexed
 over-time-chart `date_trunc/strftime , COUNT(*) GROUP BY`), which depends on the
 `semantic_time` column, the expression index, and the substrate's multi-stream
-scope plumbing — none of which exist on `main` today. Per the Codex gate, a
+scope plumbing — none of which exist on `main` today. Per the implementation gate, a
 migration was discovered necessary, so the foundation must land first as its own
 change before the bucket endpoint can build on it. This change is the foundation
 port; it does **not** add the bucket-aggregate endpoint.

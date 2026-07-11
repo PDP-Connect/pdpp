@@ -1198,7 +1198,7 @@ test('n.eko viewport dispatch uses one native coordinate space for video and inp
       // mobile / hasTouch / userAgent are intentionally stripped by
       // viewportForCompanionBackend before reaching the companion's start.
       // The stealth-and-input-bouncing rationale lives in
-      // docs/neko-stealth-design-brief.md and the inline comment on
+      // docs/reference/neko-stealth-design-brief.md and the inline comment on
       // normalizeViewportForNeko in server/streaming/routes.js. The
       // assertions below reflect the post-strip contract.
       assert.deepEqual(startedViewports[0], {
@@ -1519,7 +1519,7 @@ test('input POST dispatches to the companion after attach and rejects bad input'
     // asserted mobile:true survived for the cdp backend; that was the
     // bug behind the soft-keyboard flicker and the UA/TLS inconsistency
     // Cloudflare Turnstile was detecting. See
-    // docs/neko-stealth-design-brief.md for the full rationale.
+    // docs/reference/neko-stealth-design-brief.md for the full rationale.
     assert.deepEqual(viewport.body.viewport, {
       width: 390,
       height: 844,

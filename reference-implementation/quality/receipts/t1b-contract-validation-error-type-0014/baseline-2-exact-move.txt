@@ -1,5 +1,0 @@
-# hone work t1b-contract-validation-error-type-0014 — baseline rung 'exact-move'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && git diff -U0 -- reference-implementation/server/contract-validation.js
-# expect: if-cascade byte-identical inside the new named fn; pdppErrorBody body otherwise untouched
-# exit: 0  duration: 0s  verdict: PASS
-

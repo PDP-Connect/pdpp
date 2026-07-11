@@ -42,7 +42,7 @@ export interface LocalDeviceClientOptions {
  * yet far below the host supervisor's 15-minute start timeout, so a
  * stalled server fails the run fast — durably, since the outbox keeps the
  * work — rather than holding a process slot and blocking the next
- * scheduled drain. See `docs/local-collector.md` and
+ * scheduled drain. See `docs/reference/local-collector.md` and
  * `systemd-durable-limits.test.js` for the `TimeoutStartSec=900` posture.
  */
 export const DEFAULT_LOCAL_DEVICE_REQUEST_TIMEOUT_MS = 120_000;

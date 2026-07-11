@@ -1,14 +1,11 @@
 # Design — Explore RecordSet, unified query, manifest-authored presentation
 
-Grounded in: `docs/research/explore-query-filter-ia-prior-art-2026-06-21.md`,
-`docs/research/explore-feed-interaction-dynamics-prior-art-2026-06-21.md`,
-`docs/research/explore-future-dated-records-prior-art-2026-06-21.md`,
-`docs/research/explore-now-boundary-pinning-prior-art-2026-06-21.md`,
-`docs/research/explore-timeline-legibility-stability-validation-2026-06-19.md`,
-`docs/research/explore-experience-feedback-2026-06-21.md`. Every design choice cites a
-prior-art exemplar; PDPP-specific inventions are flagged. The auditable interaction-by-
-interaction mapping (observed pattern → source → PDPP translation → anti-pattern →
-acceptance check) lives in `design-notes/prior-art-interaction-matrix.md`.
+Grounded in prior-art research on explore query/filter IA, feed interaction
+dynamics, future-dated records, now-boundary pinning, and timeline legibility and
+stability. Every design choice cites a prior-art exemplar; PDPP-specific inventions
+are flagged. The auditable interaction-by-interaction mapping records, for each
+choice, the observed pattern → source → PDPP translation → anti-pattern →
+acceptance check.
 
 ## 1. RecordSet — the central abstraction
 
@@ -34,7 +31,7 @@ exact count MUST be reachable through its declared reachability handle. A count 
 cannot be made reachable MUST be `hidden`, never faked, and the count is NEVER shrunk to
 match a smaller reachable window (the forbidden "188 → 32" resolution; owner-confirmed).
 
-**`lower_bound` discipline (normative, per Codex P0).** Default owner-facing numeric totals
+**`lower_bound` discipline (normative, per the independent reviewer P0).** Default owner-facing numeric totals
 — count chips, group totals, burst totals, facet numbers, the Upcoming pill — render ONLY
 from a RecordSet whose `count` is `exact`. A `lower_bound` MUST NOT be rendered as a plain
 numeric total, MUST NOT produce an "Open all N" action, and MUST NOT be silently shrunk
@@ -56,7 +53,7 @@ change (https://docs.datadoghq.com/logs/explorer/facets/).
 the same latent bug lives in day counts, burst counts, facet numbers, and search-pool
 sizes; RecordSet makes the invariant checkable everywhere.
 
-### 1.1 Server/client boundary (per Codex P0 — keep the contract from bloating)
+### 1.1 Server/client boundary (per the independent reviewer P0 — keep the contract from bloating)
 
 The reference read surface (`GET /_ref/explore/records`) is the source of truth for exact
 membership, `count`, and reachability of the **server-owned** RecordSets: the main merged-
@@ -69,7 +66,7 @@ loaded window: the visible day grouping, local burst presentation, and expanded/
 state. This keeps the contract carrying truth (counts/reachability) without coupling it to
 every UI grouping choice.
 
-### 1.2 Search-result-set classes (per Codex P0 — pins lexical honesty)
+### 1.2 Search-result-set classes (per the independent reviewer P0 — pins lexical honesty)
 
 Every result RecordSet is one of three classes; the class drives how it may be counted and
 presented (full matrix: `design-notes/prior-art-interaction-matrix.md`):
@@ -89,7 +86,7 @@ substitutes a `relevance_bounded` pool dressed as the exhaustive set. This is th
 honesty seam from the lexical/search work, now pinned so implementation can't regress to
 "sort the semantic pool by recency."
 
-## 2. Scope-preserving drill-in (the P0 Codex flagged)
+## 2. Scope-preserving drill-in (the P0 the independent reviewer flagged)
 
 "Open all N in <stream>" is NOT reachability unless the destination is scoped IDENTICALLY
 to the RecordSet that showed N. The drill-in MUST carry the full scope (sources, streams,
@@ -185,7 +182,7 @@ one title property (https://developers.notion.com/reference/property-object); sc
 declares `name`(title)/`description`(body) and exactly one `mainEntity`; JSON Schema
 `title`/`description` are display annotations. Roles are DECLARED, never inferred.
 
-**The two axes, stated precisely (per Codex P0 — this is the arbitrary-connector contract):**
+**The two axes, stated precisely (per the independent reviewer P0 — this is the arbitrary-connector contract):**
 
 - **TYPE (data class)** — what the value IS: `timestamp | currency | text | person |
   media/blob | url | geo` (today's `x_pdpp_type` → `field_capabilities[].type`). TYPE drives
@@ -217,7 +214,7 @@ record with subtotal/tax/total/refund has no amount slot, until the manifest dec
 field fills it. The one pre-wired mapping the design relies on is the existing semantic-time
 manifest binding that already feeds the merged timeline's event-time; any OTHER event-time
 or amount slot is a declaration/pairing, never a bare-type promotion. Three options for
-expressing the declaration, evaluated before any new vocabulary is added (per Codex):
+expressing the declaration, evaluated before any new vocabulary is added (per the independent reviewer):
 - **A. Reuse existing surfaces.** Use `display`/`views` + `field_capabilities[].type`:
   e.g. interpret the first `views[]` entry or a designated view as the card's field set,
   and the `primary_key`/a `text`+`primary`-typed field as the title. Pro: zero new
@@ -320,11 +317,11 @@ labeled last resort, or removed — decided in tasks).
 5. **Polish**: motion on the final model; mobile loading position; operators-popover
    bounds; typography/spacing; live owner-journey walkthrough.
 
-Each slice: reproduce-test → (risky machinery) Codex gate → deploy → verify live, on the
+Each slice: reproduce-test → (risky machinery) independent-review gate → deploy → verify live, on the
 deployed Explore lineage. Enter-to-submit and operators-popover-bounds are the only safe
 leaf fixes shippable independently of the model.
 
-## 10. PDPP-specific inventions (flagged, per Codex)
+## 10. PDPP-specific inventions (flagged, per the independent reviewer)
 
 - The RecordSet `count`-kind enum (`exact|lower_bound|not_counted|hidden`) as an explicit
   response descriptor — synthesized from Stripe's "don't promise an unreachable total" +

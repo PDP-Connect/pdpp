@@ -18,7 +18,7 @@ import {
   assessClipboardCapabilities,
   assessMobileKeyboardViewportResize,
   buildViewportPayload,
-  CdpSurfaceAdapter,
+  CdpClientSurface,
   type ClipboardCapabilities,
   type ClipboardDirectionPolicy,
   type ClipboardHelperMode,
@@ -57,7 +57,6 @@ import {
   computeStreamCaptureTargetForContext,
 } from "@opendatalabs/remote-surface/diagnostics";
 import {
-  parseAttachedMessage,
   parseBackendReadyMessage,
   parseClipboardMessage,
   parseFrameMessage,
@@ -101,6 +100,8 @@ import {
   type PlaygroundSeenRegistry,
 } from "./playground-event-dedupe.ts";
 import { classifyStreamReachFailure, type StreamReachProbeResult } from "./stream-reach-diagnostics.ts";
+import { createPdppCdpTransport } from "./stream-viewer-cdp-transport.ts";
+import { parseAttachedMessage } from "./stream-viewer-protocol.ts";
 import { sampleVideoSharpnessTelemetry } from "./stream-visual-quality.ts";
 import { STREAMING_UNAVAILABLE_TAG } from "./streaming-protocol.ts";
 
@@ -4077,7 +4078,7 @@ function BrowserSurface({
   const aspect = viewportInfo ? `${viewportInfo.width} / ${viewportInfo.height}` : "16 / 10";
   const imgRef = useRef<HTMLImageElement | null>(null);
   const softKeyboardInputRef = useRef<HTMLInputElement | null>(null);
-  const adapterRef = useRef<CdpSurfaceAdapter | null>(null);
+  const adapterRef = useRef<CdpClientSurface | null>(null);
   const viewportInfoRef = useRef(viewportInfo);
   const clipboardPolicyRef = useRef(clipboardPolicy);
   viewportInfoRef.current = viewportInfo;
@@ -4134,9 +4135,14 @@ function BrowserSurface({
     if (!node) {
       return;
     }
-    const adapter = new CdpSurfaceAdapter({
+    const adapter = new CdpClientSurface({
       client: {
-        sendInput: sendCdpInput,
+        cdp: createPdppCdpTransport(sendCdpInput),
+        mediaSink: {
+          onFrame() {
+            // Frames arrive on the console's existing SSE stream.
+          },
+        },
         getViewportInfo: () => viewportInfoRef.current,
         getFrameElement: () => imgRef.current,
         getClipboardPolicy: () => clipboardPolicyRef.current,

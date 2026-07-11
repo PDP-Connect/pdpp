@@ -11,7 +11,7 @@
 ## 1. Feedback And Discovery Synthesis
 
 - [x] 1.1 Read `docs/inbox/the owner-feedback-6-18-26.md` as discovery input, not a finite backlog.
-- [x] 1.2 Capture product-leadership and discovery prior art in `docs/research/product-leadership-aperture-and-discovery-2026-06-18.md`.
+- [x] 1.2 Capture product-leadership and discovery prior art in the research corpus.
 - [x] 1.3 Dispatch taxonomy, IA/model, prior-art, and technical-probe lanes with read-only scopes.
 - [x] 1.4 Reap all worker lanes and fold final findings into this change.
 - [x] 1.5 Produce a concise opportunity map that links feedback evidence to canonical journeys, canonical root codes, severity, and first implementation wave.
@@ -81,10 +81,10 @@
 
 ## 6. Delegation And Review
 
-- [x] 6.1 Use waspflow lanes for review, research, screenshots, and narrow implementation packets only after acceptance checks are written.
+- [x] 6.1 Delegate review, research, screenshots, and narrow implementation packets only after acceptance checks are written.
 - [x] 6.2 Run adversarial review on the master plan before implementation begins.
 - [ ] 6.3 Run adversarial review on each substantive implementation tranche before merge/deploy readiness.
-- [x] 6.4 Keep clawmeter and provider budget in the decision loop; use Claude lanes for breadth when OpenAI budget is hot.
+- [x] 6.4 Keep review capacity and budget in the decision loop; delegate for breadth when primary capacity is constrained.
 - [x] 6.5 Apply the rabbit-hole filter before dispatching implementation lanes; defer real but low-promise-impact defects unless they are tiny opportunistic fixes inside an accepted tranche.
 - [x] 6.6 Require every implementation tranche to pass the owner-spine alignment gate before merge readiness.
 
@@ -134,7 +134,7 @@
 
 ## 10. 2026-07-03 URL / Brand / Palette / Owner-Access Convergence
 
-Inputs: `tmp/workstreams/ui-url-brand-0703-report.md`, `ui-jump-0703-report.md`, `ui-owner-access-0703-report.md`. Sequencing rule: 10.A (label/presentation) may land first; 10.B (route topology) and 10.C (reference contracts) are durable-contract tranches and each carries its own journey + data-truth evidence. A later tranche SHALL NOT be used to defer completing an earlier one.
+Inputs: the 2026-07-03 owner URL/brand, jump-navigation, and owner-access audits. Sequencing rule: 10.A (label/presentation) may land first; 10.B (route topology) and 10.C (reference contracts) are durable-contract tranches and each carries its own journey + data-truth evidence. A later tranche SHALL NOT be used to defer completing an earlier one.
 
 ### 10.A Label, brand, and palette (presentation only)
 
@@ -154,7 +154,7 @@ Inputs: `tmp/workstreams/ui-url-brand-0703-report.md`, `ui-jump-0703-report.md`,
 - [x] 10.B.2 Do not preserve legacy `/dashboard/*` as compatibility behavior. (Done: `next.config.mjs` no longer redirects `/dashboard/*`; `proxy.ts`, return-target sanitization, web-push click validation, ntfy/manual-action links, and token actions use clean owner routes only.)
 - [x] 10.B.3 Move the console `routes.ts` `basePath` without changing the `/sandbox` mirror; rework the sandbox-route-parity test rather than breaking its premise. (Done: `makeRoutes` takes a segment override; `sandboxRoutes` keeps `/sandbox` + legacy segments unchanged; the command registry/palette take a `segments` param defaulting to clean console, sandbox passes `LEGACY_SEGMENTS` explicitly. Sandbox parity test premise strengthened — shared views now emit no `/dashboard` at all.)
 - [x] 10.B.4 Update owner-agent/CLI link generation and any owner-facing docs that print console URLs to the clean routes. (Runtime-generated interaction links now use `/syncs`; owner-token actions use `/deployment/tokens`; historical research/design notes may retain old paths as provenance, but canonical specs and active app code do not preserve `/dashboard`.)
-- [x] 10.B.5 Reconcile `docs/voice-and-framing.md` §2–§3 and the base `reference-surface-topology` requirements that reference `/dashboard/**` with the clean topology. (voice-and-framing §2 table + §3 taxonomy + §7 updated to clean routes. Base `reference-surface-topology/spec.md` fold is deferred to archive per OpenSpec lifecycle — the change delta already MODIFIES the load-bearing requirements and adds the canonical-clean-routes requirement; drive-by edits to the base spec are disallowed by AGENTS.md.)
+- [x] 10.B.5 Reconcile `docs/reference/voice-and-framing.md` §2–§3 and the base `reference-surface-topology` requirements that reference `/dashboard/**` with the clean topology. (voice-and-framing §2 table + §3 taxonomy + §7 updated to clean routes. Base `reference-surface-topology/spec.md` fold is deferred to archive per OpenSpec lifecycle — the change delta already MODIFIES the load-bearing requirements and adds the canonical-clean-routes requirement; drive-by edits to the base spec are disallowed by AGENTS.md.)
 - [x] 10.B.6 Provide tests proving legacy `/dashboard/*` is not preserved as redirect compatibility. (Done: `next-config-redirects.test.mjs` asserts removed `/dashboard` paths do not resolve and no redirect rule sources or targets the removed prefix.)
 
 ### 10.C Owner-access reference contracts (durable, additive)

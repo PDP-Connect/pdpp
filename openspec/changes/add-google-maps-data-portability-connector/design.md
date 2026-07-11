@@ -2,7 +2,7 @@
 
 The reference now has a Google Maps Timeline import connector for owner-provided files. That connector is useful, but it is not the source the owner asked for when he said "over api like Gmail." It cannot honestly be presented as a live Google Maps account connection.
 
-Research captured in `docs/research/google-maps-data-portability-api-timeline-2026-06-11.md` shows the current split:
+Research into the Google Data Portability API and Maps Timeline export shows the current split:
 
 - Google Data Portability API supports OAuth and time-based exports for several Maps resource groups.
 - The documented Maps scopes include places and contribution/activity resources, but not raw Google Maps Timeline points/segments.

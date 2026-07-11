@@ -66,7 +66,7 @@ function chatgptManifest(): ConnectorManifest {
           properties: {
             role: { type: "string", x_pdpp_role: "actor" },
             content: { type: "string", x_pdpp_role: "primary-title" },
-            // No event-time role on a message stream (Codex event-time check): the row
+            // No event-time role on a message stream (event-time check): the row
             // time comes from create_time via cursor_field/consent_time_field → displayAt,
             // not a presentation role. Mirrors the real chatgpt manifest.
             create_time: { type: "string" },
@@ -161,7 +161,7 @@ test("recent feed: a chatgpt/messages row renders a TITLED card (title=content, 
   // title is the CONTENT value — not a generic "Id: <record_key>" card. The kind is
   // `titled`, NOT `message`: an `actor` role is attribution (also on tracks/PRs), so it
   // does not by itself claim a conversation — that needs a declared message TYPE
-  // (Codex end-review blocker). The author still surfaces from the declared actor role.
+  // (end-review blocker). The author still surfaces from the declared actor role.
   assert.equal(
     entry.preview?.kind,
     "titled",
@@ -181,7 +181,7 @@ test("recent feed: a chatgpt/messages row renders a TITLED card (title=content, 
 
 test("recent feed: an UNDECLARED stream still takes the honest generic card (no role guessing)", async () => {
   // Same connector, but a manifest stream that declares NO x_pdpp_role. The record
-  // must NOT be guessed into a message card — it stays generic (Codex constraint #2/#7).
+  // must NOT be guessed into a message card — it stays generic (review constraint #2/#7).
   const undeclaredManifest = {
     connector_id: "https://registry.pdpp.org/connectors/chatgpt",
     connector_key: "chatgpt",

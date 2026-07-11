@@ -207,7 +207,7 @@ import { createScheduler } from '../runtime/scheduler.ts';
 import { SOURCE_PRESSURE_GAP_REASONS } from '../runtime/scheduler-source-pressure-cooldown.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
-import { BrowserSurfaceLeaseManager } from '@opendatalabs/remote-surface/leases';
+import { createOptionalBrowserSurfaceLeaseManager } from '../runtime/browser-surface/remote-surface-optional.ts';
 import {
   DEFAULT_NEKO_LEASE_SWEEP_INTERVAL_MS,
   parseNekoBrowserSurfaceRuntimeConfig,
@@ -5470,7 +5470,9 @@ export async function resolveNekoBrowserSurfaceControllerOptions({
   // so no idle-cleanup or capacity-reclaim can ever see a retaining
   // lease/surface without the flag.
   const rehydratedLeases = rederiveRetainedLeases(await browserSurfaceLeaseStore.listNonTerminalLeases());
-  const browserSurfaceLeaseManager = new BrowserSurfaceLeaseManager({
+  // Optional: null when @opendatalabs/remote-surface is not installed, which
+  // disables the browser-surface / streaming path rather than crashing boot.
+  const browserSurfaceLeaseManager = await createOptionalBrowserSurfaceLeaseManager({
     config: runtimeConfig.leaseConfig,
     initialSurfaces: rehydratedSurfaces,
     initialLeases: rehydratedLeases,

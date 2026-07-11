@@ -194,9 +194,9 @@ test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate th
       attentionConnections: [
         {
           connectorKey: "claude-code",
-          routeId: "ci_peregrine",
+          routeId: "ci_laptop",
           deviceLocal: true,
-          label: "peregrine Claude Code",
+          label: "laptop Claude Code",
           what: "The local collector has saved records on its host that did not upload to this server.",
           actionLabel: "Recover local collector uploads",
         },
@@ -205,8 +205,8 @@ test("hero ALARM for a DEVICE-LOCAL recovery: CTA NAVIGATES (does not restate th
   );
   assert.equal(alarm.tone, "alarm");
   assert.equal(alarm.kicker, "One thing needs you");
-  assert.equal(alarm.line.text, "peregrine Claude Code ");
-  assert.equal(alarm.cta?.href, HREFS.connection("ci_peregrine"));
+  assert.equal(alarm.line.text, "laptop Claude Code ");
+  assert.equal(alarm.cta?.href, HREFS.connection("ci_laptop"));
   assert.notEqual(alarm.cta?.href, HREFS.traces);
   // The CTA is a NAVIGATION label, NOT the restated device action.
   assert.equal(alarm.cta?.label, "See what to do");
@@ -240,9 +240,9 @@ test("hero ALARM with several attention connections → CTA routes to the syncs 
       attentionConnections: [
         {
           connectorKey: "claude-code",
-          routeId: "ci_peregrine",
+          routeId: "ci_laptop",
           deviceLocal: true,
-          label: "peregrine Claude Code",
+          label: "laptop Claude Code",
           what: "Check the collector.",
           actionLabel: "Check the collector",
         },
@@ -370,7 +370,7 @@ function verdict(
 
 test("attention truth: only attention-channel connections with an owner-satisfiable action count", () => {
   const connectors: RefConnectorSummary[] = [
-    connector({ connector_id: "claude-code", connection_id: "cin_peregrine", rendered_verdict: verdict({}) }), // ✓ attention + owner action
+    connector({ connector_id: "claude-code", connection_id: "cin_laptop", rendered_verdict: verdict({}) }), // ✓ attention + owner action
     connector({ connector_id: "calm-source", rendered_verdict: verdict({ channel: "calm" }) }), // ✗ calm
     connector({ connector_id: "ynab", rendered_verdict: null }), // ✗ no verdict (e.g. healthy)
     connector({
@@ -1055,7 +1055,7 @@ test("source issues fall back to legacy degraded health when rendered verdict is
 
 test("attention routeId targets the EXACT connection instance, not the connector type", () => {
   // The multi-account seam bug: three Claude Code devices share connector_id
-  // "claude-code"; only peregrine is in attention. Routing by connector_id would
+  // "claude-code"; only laptop is in attention. Routing by connector_id would
   // resolve to whichever connection is first (e.g. healthy Simon VM). The routeId
   // must be the connection identity (connector_instance_id ?? connection_id) so
   // the CTA lands on the connection that actually needs the owner.
@@ -1067,8 +1067,8 @@ test("attention routeId targets the EXACT connection instance, not the connector
     }), // healthy, first
     connector({
       connector_id: "claude-code",
-      connection_id: "cin_peregrine",
-      connector_instance_id: "ci_peregrine",
+      connection_id: "cin_laptop",
+      connector_instance_id: "ci_laptop",
       rendered_verdict: verdict({}),
     }), // the attention one
   ];
@@ -1076,11 +1076,11 @@ test("attention routeId targets the EXACT connection instance, not the connector
   assert.equal(attention.length, 1);
   // routeId is the instance id (preferred), which the records route resolves
   // exactly — NOT the shared connector_id "claude-code".
-  assert.equal(attention[0]?.routeId, "ci_peregrine");
+  assert.equal(attention[0]?.routeId, "ci_laptop");
   assert.notEqual(attention[0]?.routeId, "claude-code");
   // And the hero CTA href uses that exact-connection routeId.
   const hero = computeHero(baseInputs({ attentionConnections: attention }));
-  assert.equal(hero.cta?.href, HREFS.connection("ci_peregrine"));
+  assert.equal(hero.cta?.href, HREFS.connection("ci_laptop"));
 });
 
 test("hero ALARMs on a stale projection even with no failures", () => {

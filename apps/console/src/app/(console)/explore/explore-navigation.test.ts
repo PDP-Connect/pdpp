@@ -1,5 +1,5 @@
 /**
- * Explore navigation href rules — the ANCHOR-LEAK fix (Codex HOLD follow-up).
+ * Explore navigation href rules — the ANCHOR-LEAK fix (review HOLD follow-up).
  *
  * docs/research/explore-loadmore-snapshot-pin-fix-2026-06-20.md (Anchor leak fix):
  * a feed-defining navigation (query / search_sort / connection / stream / since /

@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Google Takeout stream records. Shape-check-before-emit
- * per docs/connector-authoring-guide.md §3: a record that doesn't match
+ * per docs/reference/connector-authoring-guide.md §3: a record that doesn't match
  * becomes a SKIP_RESULT instead of a RECORD, so the RS never receives
  * archive data that looks right but isn't.
  *

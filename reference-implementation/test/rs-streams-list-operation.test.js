@@ -104,7 +104,7 @@ test('rs.streams.list preserves connection identity fields populated by the host
       record_count: 12,
       last_updated: '2026-05-01T12:00:00Z',
       connection_id: 'cin_aaa',
-      display_name: 'peregrine Amazon',
+      display_name: 'laptop Amazon',
       connector_instance_id: 'cin_aaa',
     },
     {
@@ -113,7 +113,7 @@ test('rs.streams.list preserves connection identity fields populated by the host
       record_count: 7,
       last_updated: '2026-05-22T08:00:00Z',
       connection_id: 'cin_bbb',
-      display_name: 'vivid fish Amazon',
+      display_name: 'example org Amazon',
       connector_instance_id: 'cin_bbb',
     },
   ];
@@ -128,7 +128,7 @@ test('rs.streams.list preserves connection identity fields populated by the host
 
   assert.deepEqual(result.streams, summaries);
   const labels = result.streams.map((entry) => entry.display_name);
-  assert.deepEqual(labels, ['peregrine Amazon', 'vivid fish Amazon']);
+  assert.deepEqual(labels, ['laptop Amazon', 'example org Amazon']);
   const placeholderPattern = /^legacy$|^default_account$|legacy \(pre-header\)/;
   for (const entry of result.streams) {
     assert.equal(
@@ -175,7 +175,7 @@ test('rs.streams.list accepts an optional connection_id input without altering p
       record_count: 3,
       last_updated: null,
       connection_id: 'cin_aaa',
-      display_name: 'peregrine Amazon',
+      display_name: 'laptop Amazon',
     },
   ];
 

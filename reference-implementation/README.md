@@ -257,9 +257,7 @@ records. The response also carries two pairs of temporal bounds:
 mined from record payloads via each stream's manifest-declared
 `consent_time_field`, and `earliest_ingested_at` / `latest_ingested_at` are
 the substrate's own `emitted_at` bounds (when the runtime wrote each row).
-Plus a top-3 `top_connectors` list. Used by the operator-console hero band;
-see `openspec/changes/reference-implementation-program/design-notes/dashboard-hero-plan-2026-04-22.md`
-for the design rationale.
+Plus a top-3 `top_connectors` list. Used by the operator-console hero band.
 
 Time-bucketed aggregate reads are manifest-declared: a stream supports
 `group_by_time` only for fields listed in its connector manifest's
@@ -268,9 +266,7 @@ are not string `date` or `date-time` fields.
 
 ### Reference-only owner-auth placeholder
 
-The reference ships a minimal local-only owner-auth placeholder for the current owner/operator browser surfaces. It is **not** part of the PDPP protocol and is **not** a finished owner-auth product. See
-[`openspec/changes/reference-implementation-program/design-notes/owner-auth-placeholder-open-question-2026-04-22.md`](../openspec/changes/reference-implementation-program/design-notes/owner-auth-placeholder-open-question-2026-04-22.md)
-for scope and rationale.
+The reference ships a minimal local-only owner-auth placeholder for the current owner/operator browser surfaces. It is **not** part of the PDPP protocol and is **not** a finished owner-auth product.
 
 Environment variables:
 
@@ -402,12 +398,6 @@ For an end-to-end operator runbook (Docker host or RunPod CPU Pod, env vars,
 dashboard verification, MCP wiring), see
 [`docs/operator/selfhost-quickstart.md`](../docs/operator/selfhost-quickstart.md).
 
-For the current live MCP read-evidence smoke, see
-[`docs/research/mcp-read-evidence-live-smoke-2026-06-24.md`](../docs/research/mcp-read-evidence-live-smoke-2026-06-24.md).
-For the SLVP closeout retest and audit, see
-[`docs/research/mcp-slvp-closeout-chatgpt-retest-2026-06-24.md`](../docs/research/mcp-slvp-closeout-chatgpt-retest-2026-06-24.md)
-and
-[`docs/research/mcp-slvp-closeout-audit-2026-06-24.md`](../docs/research/mcp-slvp-closeout-audit-2026-06-24.md).
 The notes below are the topology reference; the quickstart is the procedure.
 
 The supported Docker path is a root-level Compose assembly for the live
@@ -613,7 +603,7 @@ When accessing Docker dev through a LAN IP or reverse proxy, add the browser
 hostnames to `PDPP_WEB_ALLOWED_DEV_ORIGINS` in `.env.docker`, for example:
 
 ```bash
-PDPP_WEB_ALLOWED_DEV_ORIGINS=peregrine-dev.vivid.fish,192.168.1.180
+PDPP_WEB_ALLOWED_DEV_ORIGINS=pdpp-dev.example.com,192.0.2.10
 ```
 
 Reverse proxies must also forward WebSocket upgrade traffic for

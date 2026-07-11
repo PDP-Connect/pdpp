@@ -19,6 +19,10 @@ Connectors abstract over the source platform's data access interface. The runtim
 
 This abstraction is intentional. Many platforms do not currently offer structured data portability APIs. The `browser_automation` binding enables connectors that drive a browser to collect data from a platform's web UI. As platforms adopt data portability standards or offer their own APIs, connector implementations can change without changing the consent surface, grant enforcement, or query API.
 
+### Requirements Language
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this profile are to be interpreted as described in the core spec's [Requirements Language](spec-core.md#requirements-language) (BCP 14 [RFC 2119] [RFC 8174]) when, and only when, they appear in all capitals.
+
 ---
 
 ## 1. Connector Manifest Extensions

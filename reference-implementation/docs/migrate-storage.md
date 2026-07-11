@@ -557,7 +557,7 @@ These are reconstructed by the PDPP runtime on first boot after migration:
 | `strict` (default) | Throw a descriptive error on the first offending value, naming the table, column, RFC 6901 JSON Pointer, and offset. The migration aborts before any partial write is committed for the failing table. | New/clean installs, CI, and any time you want to be loud about an unexpected binary leak. |
 | `migrate-to-blobs` | Extract the offending string's UTF-8 bytes into the `blobs` table (idempotent on sha256), set the leaf in `record_json` to `null`, and record the JSON Pointer in `blob_bindings.json_path`. **Lossless** — the bytes are recoverable from `blobs` via the standard content-addressed mechanism. Produces records structurally indistinguishable from a record emitted by a correctly-fixed connector. | **Recommended for migrating legacy SQLite DBs.** Use this when migrating data captured before the `safeTextPreview`/`pdppSafeText` rollout. |
 
-The previous `scrub` and `preserve-base64` policies have been removed. `scrub` was silent corruption; `preserve-base64` inlined binary back into JSONB (relocating rather than fixing the violation). Both contradicted the protocol invariant; see `docs/binary-content-invariant-design-brief.md` §4.2 for the full reasoning.
+The previous `scrub` and `preserve-base64` policies have been removed. `scrub` was silent corruption; `preserve-base64` inlined binary back into JSONB (relocating rather than fixing the violation). Both contradicted the protocol invariant; see `docs/reference/binary-content-invariant-design-brief.md` §4.2 for the full reasoning.
 
 **Extraction ledger.** With `migrate-to-blobs`, the migration writes one JSONL line per extracted leaf to `./pdpp-data/migration-extractions.jsonl` (override with `--ledger <path>`). Each line:
 
@@ -633,7 +633,7 @@ After migration, a `null` value in `record_json` may now mean **one of three thi
 
 `execute` automatically runs a verifier as its final step, asserting three invariants on the target Postgres DB:
 
-1. **No string leaf in any `record_json` contains forbidden codepoints** (U+0000, non-whitelisted C0/C1 controls, DEL). This is the binary-content invariant — see `docs/binary-content-invariant-design-brief.md` §4.1.
+1. **No string leaf in any `record_json` contains forbidden codepoints** (U+0000, non-whitelisted C0/C1 controls, DEL). This is the binary-content invariant — see `docs/reference/binary-content-invariant-design-brief.md` §4.1.
 2. **Every `blob_bindings` row with a JSON-Pointer `json_path` (i.e., not `@record`) references a leaf that is `null` in `records.record_json`.** A non-null leaf would mean the extraction missed a value or a write reintroduced it.
 3. **Every `blob_bindings.blob_id` exists in `blobs`.** Dangling bindings indicate a partial extraction.
 

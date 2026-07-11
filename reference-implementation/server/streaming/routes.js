@@ -41,7 +41,7 @@ import {
   normalizeReferenceWireViewportPayload,
   parseReferenceWireInputPayload,
   parseReferenceWireInputTelemetryCursor,
-} from '@opendatalabs/remote-surface/protocol';
+} from './protocol-wire.ts';
 import { emitSpineEvent } from '../../lib/spine.ts';
 import { createInputTelemetry } from './input-telemetry.ts';
 import { registerRemoteTelemetrySink } from './remote-telemetry-registry.ts';
@@ -253,7 +253,7 @@ function normalizeViewportForNeko(viewport) {
   //   1. Stealth: Emulation.setUserAgentOverride lies the UA but does NOT
   //      lie about TLS fingerprint, Client Hints (sec-ch-ua-platform), GPU
   //      profile, or process model. Cloudflare detects the inconsistency
-  //      instantly and re-challenges the user. See docs/neko-stealth-design-brief.md.
+  //      instantly and re-challenges the user. See docs/reference/neko-stealth-design-brief.md.
   //   2. Input bouncing: when mobile=true + hasTouch=true, Chromium
   //      dispatches synthetic TouchEvents in parallel with the real mouse
   //      events that n.eko forwards from the user's tap. The dual-channel

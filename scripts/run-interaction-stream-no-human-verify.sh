@@ -148,7 +148,7 @@ The checks above cover every no-human part of tasks 12.8, 13.5, 14.7,
 15.8, and 17.5. What remains is physical and cannot be self-certified:
 
   1. Public desktop smoke against the deployed origin:
-       PDPP_STREAM_SMOKE_URL=https://peregrine-dev.vivid.fish \
+       PDPP_STREAM_SMOKE_URL=https://pdpp-dev.example.com \
          pnpm docker:stream-smoke
        (recreate `reference` + `neko` together first; see the
         Manual Acceptance Checklist in

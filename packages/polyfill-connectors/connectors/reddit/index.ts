@@ -41,7 +41,7 @@
  *   fixtures/reddit/scrubbed/pilot-real-shape/records/<stream>.jsonl
  *   (synthetic-but-shape-real, PII-free). pilot-fixture.test.ts replays it
  *   through validateRecord to lock the emitted-record shape against drift.
- *   See docs/connector-authoring-guide.md §9.1.
+ *   See docs/reference/connector-authoring-guide.md §9.1.
  */
 
 import type { Page } from "playwright";

@@ -4,8 +4,7 @@
 **Target:** `apps/site/src/app/reference/page.tsx` (the `pdpp.dev/reference`
 deploy surface; today a "Deploy on Railway" hero button plus a
 "Self-host with Docker" link into the GitHub README).
-**Basis:** `design-notes/deploy-surface-parity-2026-06-10.md`,
-`docs/research/deploy-button-parity-prior-art-2026-06-10.md`.
+**Basis:** `docs/research/deploy-button-parity-prior-art-2026-06-10.md`.
 
 ## Principle
 

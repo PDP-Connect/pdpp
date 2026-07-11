@@ -697,7 +697,7 @@ const TEMPLATE_CATALOG = {
         support_state: 'proof_gated',
         next_step_kind: 'manual_runbook',
         proof_gate: 'browser_collector_live_proof_missing',
-        runbook_path: 'docs/operator/browser-collector-proof-runbook.md',
+        runbook_path: null,
         deployment_readiness: { state: 'not_applicable', blockers: [], guidance: null },
       },
       stream_count: 3,
@@ -732,7 +732,7 @@ const TEMPLATE_CATALOG = {
         support_state: 'proof_gated',
         next_step_kind: 'capture_static_secret',
         proof_gate: 'static_secret_live_proof_missing',
-        runbook_path: 'docs/operator/static-secret-connection-runbook.md',
+        runbook_path: null,
         deployment_readiness: { state: 'not_applicable', blockers: [], guidance: null },
       },
       stream_count: 2,
@@ -884,7 +884,7 @@ test('setup formats a proof-gated static-secret connector honestly', async () =>
         connection_active: false,
         deployment_readiness: { state: 'not_applicable', guidance: null, blockers: [] },
         proof_gate: 'static_secret_live_proof_missing',
-        runbook_path: 'docs/operator/static-secret-connection-runbook.md',
+        runbook_path: null,
         setup_modality: 'static_secret',
         support_state: 'proof_gated',
         validation: 'synchronous',
@@ -892,7 +892,6 @@ test('setup formats a proof-gated static-secret connector honestly', async () =>
           kind: 'capture_static_secret',
           reason: 'Open the owner-session static-secret setup page; provider secrets are not returned to agents.',
           capture_endpoint: '/connect/static-secret/gmail',
-          runbook_path: 'docs/operator/static-secret-connection-runbook.md',
         },
       },
     });
@@ -901,7 +900,7 @@ test('setup formats a proof-gated static-secret connector honestly', async () =>
     assert.match(captured.stdout, /status: proof-gated/);
     assert.match(captured.stdout, /Next step: capture_static_secret/);
     assert.match(captured.stdout, /capture endpoint: \/connect\/static-secret\/gmail/);
-    assert.match(captured.stdout, /runbook: docs\/operator\/static-secret-connection-runbook\.md/);
+    assert.doesNotMatch(captured.stdout, /runbook:/);
     // The CLI surfaces the synchronous validation mode without any secret.
     assert.match(captured.stdout, /credential validation: synchronous/);
     assert.doesNotMatch(captured.stdout, /provider-secret-value/);

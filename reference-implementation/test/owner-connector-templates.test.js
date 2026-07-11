@@ -178,7 +178,7 @@ test('owner-agent bearer lists connector templates with related connection summa
     assert.equal(amazon.setup_plan.support_state, 'proof_gated');
     assert.equal(amazon.setup_plan.next_step_kind, 'capture_static_secret');
     assert.equal(amazon.setup_plan.proof_gate, 'static_secret_live_proof_missing');
-    assert.equal(amazon.setup_plan.runbook_path, 'docs/operator/static-secret-connection-runbook.md');
+    assert.equal(amazon.setup_plan.runbook_path, null);
     assert.equal(amazon.connection_count, 1);
     assert.equal(amazon.connections[0].object, 'owner_connection_summary');
     assert.equal(amazon.connections[0].connection_id, 'cin_amazon_personal');

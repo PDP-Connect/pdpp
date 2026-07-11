@@ -179,7 +179,7 @@ const PEEK_HUMANIZED_LABEL_RE = /humanizeFieldLabel\(field\.name\)/;
 // The honest generic key/value card has design-system CSS (no inline guess card).
 const GENERIC_KV_CSS_RE = /\.rr-x-kv\s*\{/;
 // The assembler reads declared ROLES from field_capabilities[].role (the LIVE
-// x_pdpp_role vocabulary, Codex-approved 2026-06-21) into buildRecordPreview, so a
+// x_pdpp_role vocabulary, review-approved 2026-06-21) into buildRecordPreview, so a
 // declared title/body/amount renders a typed card with no field-name guess. The
 // role is parsed via parseFieldRole (unknown roles drop → generic fallback).
 const ASSEMBLER_ROLES_SEAM_RE =
@@ -193,7 +193,7 @@ const ASSEMBLER_PASSES_ROLES_RE = /buildRecordPreview\(kind, data, dtypes, drole
 const CANVAS_GENERIC_KV_LEAD_RE =
   /import \{ rowPrimary, rowSecondary \} from "@pdpp\/operator-ui\/lib\/record-preview";/;
 const CANVAS_GENERIC_TITLE_LINE_RE = /const primaryLine = rowPrimary\(entry\.preview \?\? null, entry\.recordId\);/;
-// RL1 hardening (Codex end-review P0): the row primary must NEVER fall back to
+// RL1 hardening (end-review P0): the row primary must NEVER fall back to
 // `entry.summary` (the timeline summary heuristic), even for retrieval/search rows.
 // Assert the old `searchSnippet`/`entry.summary`-as-primary path is GONE from FeedRow.
 const CANVAS_NO_SUMMARY_PRIMARY_RE = /const searchSnippet = entry\.retrievalMode \? entry\.summary/;
@@ -225,7 +225,7 @@ const ASSEMBLER_OLD_HYBRID_WARNING_RE = /hybrid_unavailable|Hybrid retrieval was
 //
 // All assertions are CSS/canvas source-scans (no rendering), matching the existing
 // reduced-motion precedent the loading-states work established (rr-x-progress /
-// rr-x-row__pending). The Codex red lines for Slice 5 (verdict §12): design-system
+// rr-x-row__pending). The review red lines for Slice 5 (verdict §12): design-system
 // tokens, reduced-motion gated, NO layout shift, loading never dims readable
 // records, operators popover within the viewport.
 
@@ -237,7 +237,7 @@ const MOBILE_PROGRESS_FIXED_RE =
 // The desktop base rule stays `position: absolute` (top of the canvas, not the
 // viewport) — the mobile rule is an override, not a global change.
 const DESKTOP_PROGRESS_ABSOLUTE_RE = /\.rr-x-progress \{\s*position: absolute;\s*top: 0;/;
-// (#2 / Codex red line) Loading must NOT dim or disable already-readable records.
+// (#2 / review red line) Loading must NOT dim or disable already-readable records.
 // The feed region carries aria-busy ONLY (feedAriaBusy), never an opacity dim or a
 // pointer-events block while pending. Pin the canvas comment + the absence of a dim.
 const FEED_NO_DIM_RE = /aria-busy=\{feedAriaBusy\(isPending\)\}/;
@@ -391,7 +391,7 @@ test("Slice 4: the LIVE FeedRow renders an honest generic row (first humanized k
     CANVAS_GENERIC_TITLE_LINE_RE,
     "the FeedRow primary must prefer a declared title/field, else fall back ONLY to the neutral record id"
   );
-  // RL1 (Codex end-review P0): the timeline `entry.summary` must NEVER be the row primary,
+  // RL1 (end-review P0): the timeline `entry.summary` must NEVER be the row primary,
   // not even for retrieval/search rows — that path is a heuristic the server does not mark
   // as a search excerpt. Assert the old `searchSnippet = entry.retrievalMode ? entry.summary`
   // primary fallback is GONE.
@@ -636,7 +636,7 @@ test("Slice 3: keyboard contract — Enter peeks, Cmd/Ctrl-Enter opens the full 
 test("Slice 3 (#3): the redundant feed-level 'inspect read request' disclosure is removed; copy-view-link remains", async () => {
   const src = await readFile(EXPLORE_CANVAS_FILE, "utf8");
   // The replacement ("copy view link") MUST exist before the redundant affordance
-  // is removed (Codex red line: remove only after the replacement is proven).
+  // is removed (review red line: remove only after the replacement is proven).
   assert.match(src, COPY_VIEW_LINK_RE, "the single share affordance 'copy view link' must remain in the canvas");
   assert.doesNotMatch(
     src,
@@ -707,7 +707,7 @@ test("Slice 5 (#2): the mobile loading indicator is pinned to the TOP of the vis
   );
 });
 
-test("Slice 5 (#2, Codex red line): loading does NOT dim or disable already-readable records", async () => {
+test("Slice 5 (#2, review red line): loading does NOT dim or disable already-readable records", async () => {
   const src = await readFile(EXPLORE_CANVAS_FILE, "utf8");
   // The feed region's only pending signal is aria-busy; it is never given an
   // opacity dim or a pointer-events block keyed on the pending state.
@@ -766,7 +766,7 @@ test("Slice 5 (#7): selection motion is a paint-only token transition (no layout
   );
 });
 
-// Codex red line (no NEW keyframe escapes the reduced-motion gate): every
+// review red line (no NEW keyframe escapes the reduced-motion gate): every
 // @keyframes the Explore canvas drives is paired with a no-preference media gate
 // AND a static fallback. We assert the THREE Explore keyframes (the two from the
 // loading-states slice + the new reveal) are all referenced only inside
@@ -822,7 +822,7 @@ test("Slice 5: every Explore animation reference sits inside a prefers-reduced-m
   }
 });
 
-// ─── D2 relayout: conditional inspector column (Codex-required 8.4) ────────────
+// ─── D2 relayout: conditional inspector column (review-required 8.4) ────────────
 //
 // The `.rr-x` DEFAULT grid is 2-col (rail | feed) — it must NOT reserve the 420px
 // inspector column. The 420px inspector track appears ONLY under `.rr-x.has-selection`
@@ -855,7 +855,7 @@ function baseRrxRuleBody(css: string): string {
   return m?.[2] ?? "";
 }
 
-test("Codex 8.4: the base .rr-x grid is 2-col (NO reserved 420px inspector); the 420px column appears only under .rr-x.has-selection", async () => {
+test("8.4: the base .rr-x grid is 2-col (NO reserved 420px inspector); the 420px column appears only under .rr-x.has-selection", async () => {
   const css = await readFile(COMPONENTS_CSS_FILE, "utf8");
 
   // The base .rr-x rule must declare a 2-column grid and must NOT carry the 420px
@@ -893,7 +893,7 @@ test("Codex 8.4: the base .rr-x grid is 2-col (NO reserved 420px inspector); the
   );
 });
 
-test("Codex 8.4 (wiring): the canvas adds .has-selection to the .rr-x root ONLY when a record is peeked (data.peek)", async () => {
+test("8.4 (wiring): the canvas adds .has-selection to the .rr-x root ONLY when a record is peeked (data.peek)", async () => {
   const src = await readFile(EXPLORE_CANVAS_FILE, "utf8");
   // Selection truth = data.peek != null, applied as the has-selection class.
   assert.match(
@@ -968,7 +968,7 @@ test("F3 Enter-hijack: the typeahead opens with no highlight and Enter on free t
   );
 });
 
-// ─── Zero-results "Remove source filter" escape action: HONEST id match (Codex HOLD) ──
+// ─── Zero-results "Remove source filter" escape action: HONEST id match (review HOLD) ──
 // The remove-source escape action must remove the connection by EXACT connection-id
 // equality (derived from the chip's `con:<id>` id), never by a substring match on the
 // chip's DISPLAY VALUE. A display name like "Chase - Personal" is not a substring of its
@@ -979,7 +979,7 @@ const ZERO_REMOVE_SOURCE_EXACT_ID_RE =
   /lastChip\.id\.slice\("con:"\.length\)[\s\S]*?connectionIds:\s*removedId\s*\?\s*s\.connectionIds\.filter\(\(id\)\s*=>\s*id\s*!==\s*removedId\)/;
 const ZERO_REMOVE_SOURCE_SUBSTRING_BUG_RE = /connectionIds\.filter\(\(id\)\s*=>\s*!id\.includes\(lastChip\.value/;
 
-test("zero-results remove-source escape removes the connection by EXACT id, not a display-name substring (Codex HOLD fix)", async () => {
+test("zero-results remove-source escape removes the connection by EXACT id, not a display-name substring (review HOLD fix)", async () => {
   const src = await readFile(EXPLORE_CANVAS_FILE, "utf8");
   assert.match(
     src,
@@ -993,7 +993,7 @@ test("zero-results remove-source escape removes the connection by EXACT id, not 
   );
 });
 
-// ─── VIEWS sidebar "Explore" count: count==reachability (Codex HOLD) ──────────
+// ─── VIEWS sidebar "Explore" count: count==reachability (review HOLD) ──────────
 // The VIEWS Explore count must render `visibleFeed.length` (the rows ACTUALLY shown,
 // after client-side filters like has:image/has:link/is:folded/non-server-filterable
 // fields), NOT `data.feed.length` (the raw loaded set). Using data.feed.length would
@@ -1003,7 +1003,7 @@ const VIEWS_EXPLORE_COUNT_USES_VISIBLEFEED_RE =
 const VIEWS_EXPLORE_COUNT_RAW_FEED_BUG_RE =
   /rr-x-views__name">Explore<\/span>\s*<span className="rr-x-views__count">\{data\.feed\.length/;
 
-test("VIEWS Explore count uses visibleFeed.length (shown), not data.feed.length (raw loaded) — count==reachability (Codex HOLD)", async () => {
+test("VIEWS Explore count uses visibleFeed.length (shown), not data.feed.length (raw loaded) — count==reachability (review HOLD)", async () => {
   const src = await readFile(EXPLORE_CANVAS_FILE, "utf8");
   assert.match(
     src,

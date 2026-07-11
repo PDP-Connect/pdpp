@@ -12,7 +12,7 @@ Two models were considered in March 2026 for how connectors interact with browse
 
 **Decision: no custom BROWSER message protocol.** Connectors need real browser power (bot challenges, SPA navigation, network interception, cookie extraction). A message protocol either reimplements the automation API or falls back to `evaluate` for everything hard. The JSONL protocol stays reserved for RECORD/STATE/INTERACTION/DONE; browser automation is a runtime capability declared in the manifest, not a protocol concern.
 
-The isolation path chosen instead was a standard browser endpoint: the [Collection Profile](spec-collection-profile) now specifies the `browser_automation` binding as a CDP WebSocket (`{ interface: "cdp", ws_url }`) that the runtime provides to the connector process. This gives process isolation and language independence without a bespoke proxy protocol.
+The isolation path chosen instead was a standard browser endpoint: the [Collection Profile](spec-collection-profile.md) now specifies the `browser_automation` binding as a CDP WebSocket (`{ interface: "cdp", ws_url }`) that the runtime provides to the connector process. This gives process isolation and language independence without a bespoke proxy protocol.
 
 ## Connector strategies
 
@@ -69,7 +69,7 @@ How connectors get data from sources:
 
 ## Runtime requirements summary
 
-The connector run protocol (JSONL over stdin/stdout) is universal. What varies is which bindings a connector declares in `runtime_requirements.bindings` and whether the runtime can satisfy them. The Collection Profile defines the standard bindings: `browser_automation` (CDP WebSocket), `browser_profile`, `filesystem`, `network`, `interactive`, and `loopback_listen`; extension bindings use namespaced identifiers. Binding matching happens before the connector process is spawned: if the runtime cannot satisfy a required binding, the run fails with a clear error. See [Collection Profile Section 1](spec-collection-profile) for descriptors and matching rules.
+The connector run protocol (JSONL over stdin/stdout) is universal. What varies is which bindings a connector declares in `runtime_requirements.bindings` and whether the runtime can satisfy them. The Collection Profile defines the standard bindings: `browser_automation` (CDP WebSocket), `browser_profile`, `filesystem`, `network`, `interactive`, and `loopback_listen`; extension bindings use namespaced identifiers. Binding matching happens before the connector process is spawned: if the runtime cannot satisfy a required binding, the run fails with a clear error. See [Collection Profile Section 1](spec-collection-profile.md) for descriptors and matching rules.
 
 ## Implications for the spec
 

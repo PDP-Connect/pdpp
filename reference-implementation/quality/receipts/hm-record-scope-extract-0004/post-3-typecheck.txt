@@ -1,5 +1,0 @@
-# hone work hm-record-scope-extract-0004 — post rung 'typecheck'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit
-# expect: 0 errors
-# exit: 0  duration: 5s  verdict: PASS
-

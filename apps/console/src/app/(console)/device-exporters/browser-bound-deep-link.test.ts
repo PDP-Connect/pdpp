@@ -29,14 +29,11 @@ function read(relPath: string): Promise<string> {
 const PAGE_PATH = "apps/console/src/app/(console)/device-exporters/page.tsx";
 
 const USES_CLASSIFIER = /\bisBrowserBoundConnector\b/;
-const USES_RUNBOOK_CONST = /\bBROWSER_BOUND_RUNBOOK_PATH\b/;
 const IMPORTS_FROM_MODALITY = /from "\.\.\/lib\/connection-modality\.ts"/;
 const DEFAULT_ONLY_LOCAL_COLLECTOR =
   /const defaultConnectorId = isSupportedLocalCollectorConnector\(requestedConnector\) \? requestedConnector : undefined/;
 const DOES_NOT_USE_SUPPORTED_BROWSER_CLASSIFIER = /\bisSupportedBrowserCollectorConnector\b/;
 const RENDERS_NOTICE = /browserBoundRequest\s*\?\s*<BrowserBoundEnrollmentNotice/;
-const RUNBOOK_TESTID = /data-testid="browser-bound-runbook-path"/;
-const RENDERS_RUNBOOK_CONST = /{BROWSER_BOUND_RUNBOOK_PATH}/;
 const PENDING_BROWSER_TITLE = /Dashboard browser setup is pending/;
 const PACKAGED_PENDING_COPY = /not packaged in this build yet/;
 const FORBIDDEN_MONOREPO_COPY = /PDPP monorepo checkout|generated monorepo commands|Manual browser setup/;
@@ -46,7 +43,6 @@ test("page classifies a browser-bound deep-link via the shared modality classifi
   // Browser-bound detection must still come from the shared setup classifier, but
   // the normal enrollment form only admits packaged local collectors.
   assert.match(src, USES_CLASSIFIER, "page must use the shared isBrowserBoundConnector classifier");
-  assert.match(src, USES_RUNBOOK_CONST, "page must use the shared runbook path constant");
   assert.match(src, IMPORTS_FROM_MODALITY, "browser-bound symbols must come from the shared source of truth");
   assert.doesNotMatch(
     src,
@@ -67,22 +63,18 @@ test("browser-bound deep-links stay out of the packaged local collector form", a
 test("browser-bound deep-link renders packaged-path-pending guidance, not monorepo commands", async () => {
   const src = await read(PAGE_PATH);
   assert.match(src, RENDERS_NOTICE, "page must render packaged-path-pending browser guidance");
-  assert.match(src, RUNBOOK_TESTID, "the notice must expose a stable hook for the runbook path");
-  assert.match(src, RENDERS_RUNBOOK_CONST, "the notice must render the shared runbook path constant");
   assert.match(src, PENDING_BROWSER_TITLE, "the notice must name the dashboard-browser setup boundary");
   assert.match(src, PACKAGED_PENDING_COPY, "the notice must say the owner-usable path is not packaged yet");
   assert.doesNotMatch(src, FORBIDDEN_MONOREPO_COPY, "normal dashboard copy must not send owners to monorepo commands");
 });
 
-test("unsupported browser-bound deep-link still renders an honest notice pointing at the runbook", async () => {
+test("unsupported browser-bound deep-link still renders an honest notice", async () => {
   const src = await read(PAGE_PATH);
   assert.match(
     src,
     RENDERS_NOTICE,
     "page must render the browser-bound notice when a browser-bound connector is requested"
   );
-  assert.match(src, RUNBOOK_TESTID, "the notice must expose a stable hook for the runbook path");
-  assert.match(src, RENDERS_RUNBOOK_CONST, "the notice must render the shared runbook path constant");
 });
 
 // ─── Add-connection landing framing ───────────────────────────────────────

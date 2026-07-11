@@ -2,60 +2,11 @@
 
 ## 1. Inputs
 
-Primary feedback:
-
-- `docs/inbox/the owner-feedback-6-18-26.md`
-
 Project context:
 
-- `design-notes/full-context-refresh.md`
-- `design-notes/owner-console-slvp-execution-plan-2026-06-16.md`
-- `design-notes/post-owner-journey-broader-work-ledger-2026-06-18.md`
-- `docs/voice-and-framing.md`
+- `docs/reference/voice-and-framing.md`
 
-Research and prior art:
-
-- `docs/research/product-leadership-aperture-and-discovery-2026-06-18.md`
-- `docs/research/control-plane-prior-art.md`
-- `docs/research/trace-surface-patterns.md`
-- `docs/research/reference-implementation-ux-prior-art.md`
-- `docs/research/sources-slvp-redesign-and-data-health-2026-06-11.md`
-- `docs/research/slvp-connector-health-FINAL-design-2026-06-15.md`
-- `docs/research/owner-console-product-gestalt-and-data-dignity-prior-art-2026-06-18.md`
-- `docs/research/owner-console-record-workbench-explore-prior-art-2026-06-18.md`
-- `docs/research/owner-console-add-data-connector-setup-prior-art-2026-06-18.md`
-- `docs/research/owner-console-source-inventory-and-detail-prior-art-2026-06-18.md`
-- `docs/research/owner-console-recovery-and-liveness-prior-art-2026-06-18.md`
-- `docs/research/owner-console-access-review-grants-clients-prior-art-2026-06-18.md`
-- `docs/research/owner-console-evidence-timelines-runs-traces-prior-art-2026-06-18.md`
-- `docs/research/owner-console-mobile-responsive-and-craft-prior-art-2026-06-18.md`
-- `docs/research/owner-console-copy-and-microcopy-prior-art-2026-06-18.md`
-- `docs/research/owner-console-fresh-non-owner-journey-prior-art-2026-06-18.md`
-- `docs/research/owner-console-slvp-prior-art-index-2026-06-18.md`
-
-Worker reports:
-
-- `tmp/workstreams/ui-url-brand-0703-report.md`
-- `tmp/workstreams/ui-jump-0703-report.md`
-- `tmp/workstreams/ui-owner-access-0703-report.md`
-- `tmp/workstreams/feedback-taxonomy-20260618.md`
-- `tmp/workstreams/feedback-ia-model-20260618.md`
-- `tmp/workstreams/feedback-prior-art-20260618.md`
-- `tmp/workstreams/feedback-technical-probes-20260618.md`
-- `tmp/workstreams/feedback-contract-matrix-20260618.md`
-- `tmp/workstreams/feedback-empathy-reconstruct-20260618.md`
-- `tmp/workstreams/feedback-critical-path-20260618.md`
-- `tmp/workstreams/feedback-adjacent-classes-20260618.md`
-- `tmp/workstreams/feedback-plan-redteam-20260618.md`
-- `tmp/workstreams/feedback-technical-contracts-20260618.md`
-
-Additional research:
-
-- `docs/research/explorer-workbench-and-access-transparency-prior-art-2026-06-18.md`
-
-Lane closeout:
-
-- `tmp/workstreams/owner-console-slvp-prior-art-ultracode-20260618.md`
+This design also drew on owner feedback, targeted prior-art research, and worker-lane reports captured during the redesign; those working artifacts were kept in the untracked workstream area and are not part of the tracked tree.
 
 OpenSpec design notes:
 
@@ -221,7 +172,7 @@ This corpus also adds a fresh-owner constraint: a motivated Docker/Railway owner
 
 ### Iteration 6: Voice And Framing Check
 
-The plan was checked against `docs/voice-and-framing.md`.
+The plan was checked against `docs/reference/voice-and-framing.md`.
 
 Decisions:
 
@@ -265,7 +216,7 @@ Everything else is a secondary surface until it supports one of those jobs.
 
 ### Iteration 9: Delegation Model
 
-Waspflow and Claude lanes are useful for breadth, but they are dangerous if they own acceptance. Workers produce reports, critique, implementation branches, screenshots, and red-team findings. The RI owner integrates, sets acceptance checks, and decides whether the result is SLVP ideal.
+Delegated review/implementation work is useful for breadth, but must not own acceptance. Contributors produce reports, critique, implementation branches, screenshots, and red-team findings. The maintainer integrates, sets acceptance checks, and decides whether the result meets the bar.
 
 ### Iteration 10: Live Source-Card Projection Defects
 
@@ -278,7 +229,7 @@ The 2026-07-01 owner review exposed defects that were plain in the live Sources/
 
 The correction belongs in the shared projections, not in connector-specific copy. The model now derives auth only from reauth evidence, stream counts from the same stream set the card renders, and one owner action from the server-owned verdict. The rendered-verdict stale annotation uses progress mode so disabled schedules use owner-run/manual language.
 
-Current clawmeter posture makes this especially important: conserve Codex/OpenAI for integration and signoff; use Claude lanes for broad synthesis and independent review.
+Resource posture makes this especially important: conserve integration-and-signoff capacity; use delegated review for broad synthesis and independent critique.
 
 ### Iteration 11: Owner Spine Synthesis
 
@@ -384,9 +335,8 @@ decisions.
 
 ### Iteration 17: 2026-07-03 Owner URL, Brand, Jump, And Owner-Access Decisions
 
-The 2026-07-03 owner review plus three read-only audits
-(`tmp/workstreams/ui-url-brand-0703-report.md`, `ui-jump-0703-report.md`,
-`ui-owner-access-0703-report.md`) resolve decisions the earlier iterations parked
+The 2026-07-03 owner review plus three read-only audits (URL/brand, jump
+navigation, and owner-access) resolve decisions the earlier iterations parked
 and add one durable-contract topology change. These are RI-owner decisions, not
 worker inferences.
 
@@ -530,7 +480,7 @@ applied twice while still missing a third path.
 
 ### Sources
 
-Sources are the primary collection object. A Source is a specific owner-configured data-producing instance: "Amazon - family account", "Claude Code on Peregrine", "Gmail - work", "WhatsApp import", or "GitHub PAT - the owner".
+Sources are the primary collection object. A Source is a specific owner-configured data-producing instance: "Amazon - family account", "Claude Code on laptop", "Gmail - work", "WhatsApp import", or "GitHub PAT - the owner".
 
 Sources own:
 
@@ -841,7 +791,7 @@ Tranche 9b — clean owner-route topology (durable route contract):
 - Keep the shared `routes.ts` `basePath` factory correct: the console basePath
   moves without changing the `/sandbox` mirror; the sandbox-route-parity test is
   reworked, not broken.
-- Reconcile `docs/voice-and-framing.md` §2–§3 and the base
+- Reconcile `docs/reference/voice-and-framing.md` §2–§3 and the base
   `reference-surface-topology` spec references to `/dashboard/**` with the new
   topology.
 
@@ -946,7 +896,7 @@ and requires no owner label review.
 
 ## 12. Delegation Plan
 
-Use waspflow for breadth and isolation, but do not outsource product judgment.
+Use delegation for breadth and isolation, but do not outsource product judgment.
 
 Standing worker roles:
 

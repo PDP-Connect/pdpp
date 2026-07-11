@@ -564,7 +564,7 @@ test('direct ephemeral servers omit owner-agent onboarding even when public-url 
 });
 
 test('owner-agent onboarding rebases to the forwarded public origin and never names an untrusted host', async () => {
-  const trustedOrigin = 'https://peregrine-dev.example';
+  const trustedOrigin = 'https://laptop-dev.example';
   const localOrigin = 'http://localhost:3000';
   const server = await startServer({
     quiet: true,
@@ -575,20 +575,20 @@ test('owner-agent onboarding rebases to the forwarded public origin and never na
     referenceOrigin: localOrigin,
     asPublicUrl: localOrigin,
     rsPublicUrl: localOrigin,
-    trustedMetadataHosts: ['peregrine-dev.example'],
+    trustedMetadataHosts: ['laptop-dev.example'],
   });
   const rsUrl = `http://localhost:${server.rsPort}`;
 
   try {
     // Trusted forwarded host: block is present and scoped to the trusted host.
     const trusted = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
-      headers: { 'x-forwarded-host': 'peregrine-dev.example', 'x-forwarded-proto': 'https' },
+      headers: { 'x-forwarded-host': 'laptop-dev.example', 'x-forwarded-proto': 'https' },
     });
     assert.equal(trusted.status, 200);
     assertOwnerAgentOnboardingBlock(trusted.body.pdpp_owner_agent_onboarding, { origin: trustedOrigin });
 
     const trustedRoot = await fetchJson(`${rsUrl}/`, {
-      headers: { 'x-forwarded-host': 'peregrine-dev.example', 'x-forwarded-proto': 'https' },
+      headers: { 'x-forwarded-host': 'laptop-dev.example', 'x-forwarded-proto': 'https' },
     });
     assert.equal(trustedRoot.status, 200);
     assertOwnerAgentOnboardingBlock(trustedRoot.body.pdpp_owner_agent_onboarding, { origin: trustedOrigin });
@@ -612,7 +612,7 @@ test('owner-agent onboarding rebases to the forwarded public origin and never na
 });
 
 test('proxied composed metadata rebases localhost defaults to the forwarded public origin', async () => {
-  const publicOrigin = 'https://peregrine-dev.example';
+  const publicOrigin = 'https://laptop-dev.example';
   const localOrigin = 'http://localhost:3000';
   const server = await startServer({
     quiet: true,
@@ -623,12 +623,12 @@ test('proxied composed metadata rebases localhost defaults to the forwarded publ
     referenceOrigin: localOrigin,
     asPublicUrl: localOrigin,
     rsPublicUrl: localOrigin,
-    trustedMetadataHosts: ['peregrine-dev.example'],
+    trustedMetadataHosts: ['laptop-dev.example'],
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const forwardedHeaders = {
-    'x-forwarded-host': 'peregrine-dev.example',
+    'x-forwarded-host': 'laptop-dev.example',
     'x-forwarded-proto': 'https',
   };
 
@@ -808,7 +808,7 @@ test('_ref CIMD document management creates, lists, rejects secrets, and deletes
 });
 
 test('operator-supplied DCR token remains advertised for public metadata', async () => {
-  const publicHost = 'peregrine-dev.example';
+  const publicHost = 'laptop-dev.example';
   const publicOrigin = `https://${publicHost}`;
   const server = await startServer({
     quiet: true,
@@ -1242,7 +1242,7 @@ test('default local reference startup advertises public self-registration', asyn
 });
 
 test('public forwarded host advertises self-registration and rejects bogus bearer tokens', async () => {
-  const publicHost = 'peregrine-dev.vivid.fish';
+  const publicHost = 'pdpp.example.com';
   const server = await startServer({
     quiet: true,
     asPort: 0,

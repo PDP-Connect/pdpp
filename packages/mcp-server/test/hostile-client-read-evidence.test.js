@@ -56,7 +56,7 @@ function hostileSearchFixture() {
               record_key: 'm-meta',
               connection_id: 'cin_slack',
               connector_key: 'slack',
-              display_name: 'Vana Slack',
+              display_name: 'Acme Slack',
               title: 'Slack metadata hit',
               field_windows: [
                 {
@@ -77,7 +77,7 @@ function hostileSearchFixture() {
             {
               record_uri: 'pdpp://record/cin_slack%2Fmessages%3Am1',
               connector_key: 'slack',
-              display_name: 'Vana Slack',
+              display_name: 'Acme Slack',
               evidence_excerpts: [
                 {
                   field_path: 'text',
@@ -101,7 +101,7 @@ function hostileSearchFixture() {
               connector_id: 'slack',
               connection_id: 'cin_slack',
               connector_instance_id: 'cin_slack',
-              display_name: 'Vana Slack',
+              display_name: 'Acme Slack',
               snippet: { field: 'text', text: '<mark>Hyperlane</mark>' },
               evidence_excerpts: [
                 {
@@ -136,7 +136,7 @@ function hostileSearchFixture() {
             record_key: 'm1',
             connection_id: 'cin_slack',
             connector_key: 'slack',
-            display_name: 'Vana Slack',
+            display_name: 'Acme Slack',
             match_windows: [
               {
                 field_path: 'text',
@@ -168,7 +168,7 @@ function hostileSearchFixture() {
       return jsonResponse({
         object: 'document',
         id: 'cin_slack/messages:m1',
-        title: 'Vana Slack / messages / m1',
+        title: 'Acme Slack / messages / m1',
         text: messageText,
         metadata: {
           connection_id: 'cin_slack',
@@ -467,7 +467,7 @@ function realEnvelopeSearchFixture() {
             record_key: 'm1',
             connection_id: 'cin_slack',
             connector_key: 'slack',
-            display_name: 'Vana Slack',
+            display_name: 'Acme Slack',
             snippet: { field: 'text', text: '…using <mark>Hyperlane</mark> or LayerZero?…' },
             evidence_excerpts: [
               {

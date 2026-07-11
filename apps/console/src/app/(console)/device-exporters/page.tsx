@@ -7,11 +7,7 @@ import Link from "next/link";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
 import { ServerUnreachable } from "../components/shell.tsx";
 import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
-import {
-  BROWSER_BOUND_RUNBOOK_PATH,
-  isBrowserBoundConnector,
-  isSupportedLocalCollectorConnector,
-} from "../lib/connection-modality.ts";
+import { isBrowserBoundConnector, isSupportedLocalCollectorConnector } from "../lib/connection-modality.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type DeviceExporter,
@@ -146,12 +142,8 @@ function BrowserBoundEnrollmentNotice({ connectorId }: { connectorId: string }) 
       title="Dashboard browser setup is pending"
     >
       <p className="pdpp-caption text-muted-foreground">
-        Existing collected data remains usable. Adding another account is waiting on the packaged browser setup flow
-        tracked by{" "}
-        <code className="pdpp-eyebrow font-mono text-foreground" data-testid="browser-bound-runbook-path">
-          {BROWSER_BOUND_RUNBOOK_PATH}
-        </code>
-        . See the full add-source list on the{" "}
+        Existing collected data remains usable. Adding another account is waiting on the packaged browser setup flow.
+        See the full add-source list on the{" "}
         <Link className="underline underline-offset-2 hover:text-foreground" href="/connect">
           Connect
         </Link>{" "}

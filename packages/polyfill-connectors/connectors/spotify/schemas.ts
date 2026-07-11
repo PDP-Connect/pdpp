@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Spotify stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * Ground truth: the four `emitRecord(...)` object literals in index.ts
  * (collectPlaylists, collectSavedTracks, collectTopArtists,

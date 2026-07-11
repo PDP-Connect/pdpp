@@ -30,7 +30,7 @@ services:
       # strict = adapter never issues Runtime.enable / Page.addScript / etc
       # against the user's tab. Required for Cloudflare Turnstile to pass —
       # any CDP touch on the page is detected by Turnstile's challenge JS.
-      # See docs/binary-content-invariant-design-brief.md for the layered
+      # See docs/reference/binary-content-invariant-design-brief.md for the layered
       # stealth design rationale and the fingerprint-probe.mjs investigation
       # that established Runtime.enable as the dominant detection vector.
       PDPP_NEKO_STEALTH_MODE: ${PDPP_NEKO_STEALTH_MODE:-strict}

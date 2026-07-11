@@ -8,7 +8,7 @@
 2. The license file and license posture.
 3. Whether the legacy reference-shaped server/lease APIs may continue to live in the default import path or must be quarantined behind an explicit subpath.
 
-`/tmp/pdpp-remote-surface-oss-polish-plan.md` enumerates the remaining release blockers and groups them into worker-safe lanes (A1–A7), owner-decision lanes (B1–B6), human UX lanes (C), and local-automation lanes (D). The owner has now answered the identity, scoping, and license questions in this change's proposal:
+An OSS-polish plan enumerates the remaining release blockers and groups them into worker-safe lanes (A1–A7), owner-decision lanes (B1–B6), human UX lanes (C), and local-automation lanes (D). The owner has now answered the identity, scoping, and license questions in this change's proposal:
 
 - Identity → `@opendatalabs/remote-surface`. PDPP is one consumer; the substrate is reusable.
 - Reference scope → PDPP/reference-only concepts (`_ref`, `run_id`, `interaction_id`) must not appear in the default external consumer surface; they move behind a clear `/reference` subpath.

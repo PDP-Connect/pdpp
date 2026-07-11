@@ -476,7 +476,7 @@ function metadataFieldNames(capabilities: readonly ExplorerFieldCapability[]): r
  *
  * This is the parallel of `declaredTypesFromCapabilities`, but for ROLE (which
  * field is the title vs body vs actor vs amount) rather than TYPE. The
- * `x_pdpp_role` vocabulary is LIVE (Codex-approved 2026-06-21): this is the
+ * `x_pdpp_role` vocabulary is LIVE (review-approved 2026-06-21): this is the
  * SINGLE place that reads declared roles off the stream's capabilities
  * (`field_capabilities[].role`, sourced from the manifest) into a
  * `DeclaredFieldRoles` map; `buildRecordPreview` consumes it, so typed cards
@@ -487,7 +487,7 @@ function metadataFieldNames(capabilities: readonly ExplorerFieldCapability[]): r
 export function declaredRolesFromCapabilities(capabilities: readonly ExplorerFieldCapability[]): DeclaredFieldRoles {
   // Read the declared ROLE off each field's capability (field_capabilities[].role,
   // sourced from the manifest's `x_pdpp_role`). Unknown roles are dropped by
-  // parseFieldRole so they degrade to the honest generic fallback (Codex #2), never
+  // parseFieldRole so they degrade to the honest generic fallback (review #2), never
   // a field-name guess. Empty when no field declares a role → undeclared records
   // take the generic key/value card. This is the SINGLE manifest→role seam.
   const entries: [string, FieldRole][] = [];
@@ -873,7 +873,7 @@ function mergedEntryKey(entry: ExplorerFeedEntry): string {
  *   `nextCursor` is the LAST fetched page's `next_cursor` (null when exhausted),
  *   so "Load more" appends it to the trail and advances to still-older records.
  *
- * Snapshot consistency (the crux — the CORRECTED fix after Codex HOLD):
+ * Snapshot consistency (the crux — the CORRECTED fix after review HOLD):
  *   Every cursor in the trail encodes the ORIGINAL snapshot anchor (`snapshotSeq`,
  *   the ingest sequence) captured at first-page time, so pages 2..N are all pinned
  *   to that one snapshot and never shift. Page 1 must share that SAME snapshot.
@@ -1619,7 +1619,7 @@ function lexicalRecall(page: SearchResultPage): SearchRecallMeta | null {
 }
 
 /**
- * THE RECALL HONESTY GATE (Codex Explore HOLD).
+ * THE RECALL HONESTY GATE (Explore review HOLD).
  *
  * A lexical page may be promoted to a `keyword_pageable` descriptor — which the
  * canvas treats as exhaustive ("Browse all matching records") — ONLY when the

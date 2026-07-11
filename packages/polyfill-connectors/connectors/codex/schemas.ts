@@ -1,13 +1,13 @@
 /**
  * Zod schemas for Codex stream records. Used for shape-check-before-emit
- * per docs/connector-authoring-guide.md §3: records that don't match the
+ * per docs/reference/connector-authoring-guide.md §3: records that don't match the
  * schema become SKIP_RESULT events instead of RECORD events, so the RS
  * never receives data that looks right but isn't.
  *
  * Codex emits from local files (state_5.sqlite, rollout JSONL), so most
  * assertions are about bounds and format discipline.
  *
- * Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+ * Text-field classification (docs/reference/binary-content-invariant-design-brief.md §4.4):
  *   - Free-form human-readable text → pdppSafeText (with .max as needed)
  *   - Regex-validated structural strings (IDs, timestamps) → z.string().regex(...)
  *   - The output_preview slot uses an explicit safeTextPreview() refine

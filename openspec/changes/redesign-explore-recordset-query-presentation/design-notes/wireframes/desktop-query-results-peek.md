@@ -42,7 +42,7 @@ IA + affordance placement + selection/focus + every count/reachability label, no
 │                                                     │  │ 2:14 pm · cin_…ece4       │   │    record-detail page.
 │                                                     │  │                          │   │
 │                                                     │  │ body: "refactor the…"    │←──┼── MANIFEST ROLE (Slice 4):
-│                                                     │  │ author: peregrine Codex  │   │    title/body/author come from
+│                                                     │  │ author: local device  │   │    title/body/author come from
 │                                                     │  │                          │   │    DECLARED roles, not a
 │                                                     │  │ ▸ Raw JSON               │   │    field-name guess. Undeclared
 │                                                     │  │ [open full record →]     │   │    stream → honest generic

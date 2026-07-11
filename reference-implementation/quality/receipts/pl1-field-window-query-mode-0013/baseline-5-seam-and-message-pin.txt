@@ -1,9 +1,0 @@
-# hone work pl1-field-window-query-mode-0013 — baseline rung 'seam-and-message-pin'
-# command: cd "$REPO_ROOT" && node -e 'const fs=require("fs");const s=fs.readFileSync("server/record-field-window.js","utf8");const w=s.replace(/\s+/g," ");let rc=0;const msgs=["before_chars and after_chars require q","q is exclusive with offset_chars","q must be a non-empty string"];for(const m of msgs){const ok=s.includes(m);console.log((ok?"PASS ":"FAIL ")+"message preserved: "+m);if(!ok)rc=1;}if(!s.includes("function buildQueryModeWindow")){console.log("baseline: helper not extracted; vacuous PASS for seam");process.exit(rc);}const seam=[["buildQueryModeWindow(params, boundedLimit, limitClamped) declared",/function buildQueryModeWindow\( ?params, ?boundedLimit, ?limitClamped,? ?\)/],["delegated with bare identifiers",/return buildQueryModeWindow\( ?params, ?boundedLimit, ?limitClamped ?\)/],["offset-mode early return preserved",/return \{ ?mode: 'offset', ?offset, ?limit: boundedLimit, ?limitClamped ?\}/]];for(const c of seam){const ok=c[1].test(w);console.log((ok?"PASS ":"FAIL ")+c[0]);if(!ok)rc=1;}process.exit(rc);'
-# expect: exit 0, every line PASS. All three invalid_window messages enforced at baseline+post. Post: buildQueryModeWindow declared with three explicit named params, delegated with bare identifiers, and the offset-mode early return preserved verbatim.
-# exit: 0  duration: 0s  verdict: PASS
-
-PASS message preserved: before_chars and after_chars require q
-PASS message preserved: q is exclusive with offset_chars
-PASS message preserved: q must be a non-empty string
-baseline: helper not extracted; vacuous PASS for seam

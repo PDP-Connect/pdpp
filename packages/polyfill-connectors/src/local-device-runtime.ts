@@ -62,9 +62,8 @@ export const LOCAL_DEVICE_CONNECTOR_PROFILES: Readonly<Record<string, LocalDevic
   // RECORDs, so spawning it in a headless/no-human context will fail at the
   // session probe — that is expected and is exactly the step the
   // browser-collector proof keeps owner-mediated. Registering the profile here
-  // is the deterministic monorepo-runner wiring the owner-run live proof needs
-  // (`docs/operator/browser-collector-proof-runbook.md`); it does NOT add a new
-  // browser transport, and it is intentionally absent from the published
+  // is the deterministic monorepo-runner wiring the owner-run live proof needs;
+  // it does NOT add a new browser transport, and it is intentionally absent from the published
   // `@pdpp/local-collector` bundle (see `src/runner.ts` — that registry stays
   // filesystem-class only so the publish stays browser-free). The
   // device-exporter ingest path it feeds is connector-agnostic; binding-aware

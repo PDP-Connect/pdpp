@@ -338,14 +338,14 @@ test("groupFeedDaysNoBursts: still buckets by day, preserving order", () => {
   );
 });
 
-// ─── Burst preview-content-by-default (D1 / Codex-required) ────────────────────
+// ─── Burst preview-content-by-default (D1 / review-required) ───────────────────
 //
-// SLVP rule (Codex plan-check 2026-06-22): a burst must NEVER render as a
+// SLVP rule (review-gated 2026-06-22): a burst must NEVER render as a
 // content-less count header. The grouping layer guarantees this by ALWAYS
 // populating `preview` with the first PREVIEW_COUNT entries; the renderer shows
 // `preview` even when collapsed. These tests pin that grouping+render contract.
 
-test("Codex 8.1: every burst's preview length == min(entries.length, PREVIEW_COUNT) and is > 0", () => {
+test("8.1: every burst's preview length == min(entries.length, PREVIEW_COUNT) and is > 0", () => {
   // Mix burst sizes: exactly threshold, just over, and far over PREVIEW_COUNT.
   const day = `${TODAY}T10:00:00Z`;
   const mk = (stream: string, n: number) =>
@@ -375,7 +375,7 @@ test("Codex 8.1: every burst's preview length == min(entries.length, PREVIEW_COU
   }
 });
 
-test("Codex 8.2: a day-group that crosses BURST_THRESHOLD still yields visible content rows by default (preview), not a header-only state", () => {
+test("8.2: a day-group that crosses BURST_THRESHOLD still yields visible content rows by default (preview), not a header-only state", () => {
   // Accumulation pushes one (connection, stream) past the threshold — the exact
   // load-more scenario that previously produced a zero-row collapsed burst.
   const day = `${TODAY}T10:00:00Z`;
@@ -395,7 +395,7 @@ test("Codex 8.2: a day-group that crosses BURST_THRESHOLD still yields visible c
   assert.equal(burst?.expanded, false, "default is the collapsed/preview state, not full expansion");
 });
 
-test("Codex 8.3: preview-reachability — the burst count label number == burst.entries.length (what 'Show all M' reaches), never a larger hidden total", () => {
+test("8.3: preview-reachability — the burst count label number == burst.entries.length (what 'Show all M' reaches), never a larger hidden total", () => {
   const day = `${TODAY}T10:00:00Z`;
   const loaded = BURST_THRESHOLD + 33;
   const feed = Array.from({ length: loaded }, (_, i) =>
@@ -478,7 +478,7 @@ test("burst order: three same-day bursts (newest members 23m/19m/31m ago) sort N
 });
 
 test("burst latestAt = NEWEST member even when burst members arrive shuffled (not pre-sorted)", () => {
-  // Codex end-review P0: latestAt must be the newest member INDEPENDENT of input
+  // End-review P0: latestAt must be the newest member INDEPENDENT of input
   // order — the grouping must not rely on the feed being pre-sorted descending.
   // Members deliberately out of order; the newest is 14:41, the oldest 14:32.
   const isos = [

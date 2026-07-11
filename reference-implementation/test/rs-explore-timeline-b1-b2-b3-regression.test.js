@@ -134,7 +134,7 @@ async function seedB2Records(suffix) {
 // REWIND: re-fetching page 1 with rewindToFirstPage MUST pin to the original
 // snapshot (snapshotSeq), so an after-snapshot backfill whose emitted_at lands
 // INSIDE page 1's window can never displace an original page-1 row. This is the
-// exact "Load more hides records above" class Codex caught in the console
+// exact "Load more hides records above" class caught in review in the console
 // accumulator (which used emitted_at <= snapshot_at as a membership proxy).
 async function assertRewindPinsOriginalPage1(deps, label) {
   const suffix = `${SUFFIX}_rw`;

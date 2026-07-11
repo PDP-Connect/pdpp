@@ -1,397 +1,141 @@
 # PDPP
 
-PDPP is a protocol and reference implementation for user-controlled, purpose-bound access to personal data.
+PDPP is a protocol for user-controlled, purpose-bound access to personal data.
+It defines how an owner authorizes a client to read a bounded, purpose-scoped
+slice of their data, and how a source — a native provider or a polyfill
+connector — is collected into a single queryable substrate.
 
-This repository contains three primary layers:
+This repository holds the normative protocol specification, a forkable
+reference implementation, and supporting documentation.
 
-- **Normative PDPP specs** at the repo root in `spec-*.md`
-- **Forkable reference implementation** in [`reference-implementation/`](reference-implementation/README.md)
-- **Public docs and illustrated surfaces** in `apps/site/`, and the **operator console** in `apps/console/`
+## Specification
 
-## Repository guide
+The protocol is defined by the `spec-*.md` files at the repository root. Not
+every root spec carries the same authority: each file states its own status in
+a header near the top, and that header governs. Two of them are the normative
+protocol; the rest are informative rationale, illustrative examples, or
+historical material superseded by the normative text. Where any downstream
+document, example, or superseded spec disagrees with the normative specs, the
+normative specs prevail.
 
-### Protocol specs
+**Normative** — the protocol itself. Read these to implement PDPP:
 
-The root `spec-*.md` files are the normative protocol documents.
+- [`spec-core.md`](spec-core.md) — core protocol: grants, sources, records, and the query surface (*Normative draft*). Core Section 8 is the authoritative definition of the resource-server query interface.
+- [`spec-collection-profile.md`](spec-collection-profile.md) — how a source is declared and collected; a companion profile to Core (*Companion profile draft*)
 
-Start with:
+**Informative** — rationale and context. These explain and situate the
+protocol but define no conformance requirements of their own:
 
-- [`spec-core.md`](spec-core.md)
-- [`spec-collection-profile.md`](spec-collection-profile.md)
-- [`spec-architecture.md`](spec-architecture.md)
-- [`spec-reference-implementation-examples.md`](spec-reference-implementation-examples.md)
+- [`spec-architecture.md`](spec-architecture.md) — the layered architecture and its boundaries (*Informative*)
+- [`spec-auth-design.md`](spec-auth-design.md) — authorization and consent design (*Informative*)
+- [`spec-connector-ecosystem.md`](spec-connector-ecosystem.md) — the connector model and runtime landscape (*Informative*)
+- [`spec-change-tracking.md`](spec-change-tracking.md) — change-tracking design; the normative surface lives in Core (*Informative*)
+- [`spec-deferred.md`](spec-deferred.md) — deferred and out-of-scope items (*Informative*)
 
-### Reference implementation
+**Illustrative** — worked examples, not a normative source for wire shapes:
 
-The current executable reference lives in [`reference-implementation/`](reference-implementation/README.md).
+- [`spec-reference-implementation-examples.md`](spec-reference-implementation-examples.md) — worked example sequences backing the reference implementation (*Illustrative*)
 
-It includes:
+**Superseded** — retained for history only, not for implementation:
 
-- authorization server and resource server
-- Collection Profile runtime
-- CLI
-- manifests and sample connector paths
-- black-box integration and conformance-style tests
+- [`spec-data-query-api.md`](spec-data-query-api.md) — the original read/query API design, *superseded* by Core Section 8. Retained for historical reference; do not implement from it.
 
-The reference currently proves one shared substrate with two honest realizations:
+Public source identity is normatively
+`source: { kind: "provider_native" | "connector", id: string }`. Older docs may
+call `source.id` a `provider_id` (native providers) or `connector_id` (polyfill
+connectors).
 
-- public source identity is `source: { kind: "provider_native" | "connector", id: string }`
+## Reference implementation
 
-Legacy docs may call `source.id` a `provider_id` for native providers or a `connector_id` for polyfill connectors.
+[`reference-implementation/`](reference-implementation/README.md) is one
+runnable implementation of the protocol — a forkable substrate, not the
+protocol itself. It provides an authorization server and resource server, the
+Collection Profile runtime, a CLI, sample connector manifests, and a black-box
+conformance-style test suite.
 
-### Website and console
-
-The public site and the operator console are two separate apps after the
-split (`openspec/changes/split-public-site-and-operator-console`).
-
-The **public site** lives in `apps/site/` and is deployable without any
-reference-implementation runtime. It renders:
-
-- `/docs` for protocol docs plus clearly labeled reference notes
-- `/reference` for the public reference-implementation explainer and coverage matrix
-- `/sandbox` for the mock-owner reference dashboard backed by deterministic fictional data
-- `/planning` for OpenSpec project planning artifacts
-- `/design` and `/palette` for local contributor workbench surfaces
-
-The **operator console** lives in `apps/console/` and is deployed alongside a
-self-hosted reference instance. It renders `/dashboard` for a running local or
-self-hosted reference instance and hosts the BFF/proxy to the AS/RS.
-
-The public site is a downstream consumer of the protocol and reference docs,
-not the implementation boundary itself, and never serves live owner state. The
-operator console is the live-instance operator surface, not protocol
-documentation.
-
-### CI mode and merge gate
-
-The main-branch merge gate can run in hosted GitHub Actions mode or local
-signoff mode. Use the repo switch rather than editing GitHub rulesets or
-workflow states directly:
+To run it from the repository root:
 
 ```bash
-pnpm ci:mode:status
-pnpm ci:mode:local
-pnpm ci:mode:hosted
-pnpm ci:signoff
-```
-
-Hosted mode is the default. Local mode is for infrastructure outages or
-local-only validation; it disables the GitHub Actions workflows and
-requires recorded verification evidence for the signed-off commit. See
-[`docs/ci-mode.md`](docs/ci-mode.md).
-
-## Quick start
-
-Run the default contributor stack (operator console + reference AS/RS):
-
-```bash
-pnpm dev
-```
-
-`pnpm dev` boots the reference AS/RS (`:7662` / `:7663`) plus the operator
-console (`apps/console`), the default workflow for work that touches reference
-behavior or the console. For the docs/marketing surface, run `pnpm site:dev`
-(boots `apps/site` only, mock-backed, no AS/RS). To boot reference + console +
-site together for cross-surface link checks, run `pnpm dev:full`. Semantic
-retrieval uses a local Transformers.js embedding model by default; the first
-semantic backfill may download model files into
-`reference-implementation/.cache/transformers` while the servers are already
-listening.
-
-Run the same live reference stack from public Docker images:
-
-```bash
-cp .env.docker.example .env.docker
-# edit .env.docker and set PDPP_OWNER_PASSWORD for a protected dashboard
-docker compose --env-file .env.docker pull
-pnpm docker:reference:quick
-```
-
-Owner sessions are finite signed cookies. The default placeholder session lasts
-7 days to avoid interrupting long-running personal dashboard operation; set
-`PDPP_OWNER_SESSION_TTL_SECONDS` to a positive number of seconds to shorten or
-extend that tradeoff for a deployment.
-
-To connect ChatGPT, Claude, or another remote MCP client to a self-hosted
-reference instance, use the hosted MCP runbook:
-[`docs/operator/hosted-mcp-setup.md`](docs/operator/hosted-mcp-setup.md).
-
-Then open `http://localhost:3002`. The Compose stack keeps the browser-facing
-origin on host `:3002` by default and runs the reference AS/RS internally as the same AS
-`:7662` / RS `:7663` process pair used by local development. Secrets belong in
-runtime env or `.env.docker`; they are not baked into the images.
-
-The `web` service waits for `reference` to be healthy before starting, so the
-first dashboard request never races the AS/RS listeners. "Healthy" means the AS
-is serving public OAuth metadata on `:7662` and the RS is serving protected
-resource metadata on `:7663`; the embedding-model download and semantic backfill
-continue in the background after the stack reports healthy and are intentionally
-not gated. Expect the first `up` to spend up to ~30s in `starting` while
-`reference` boots — `docker compose ps` shows the live state.
-
-Default public images:
-
-- `ghcr.io/vana-com/pdpp/reference:main`
-- `ghcr.io/vana-com/pdpp/web:main`
-
-`main` is a moving development tag refreshed by maintainers, not an every-commit
-publish guarantee. Release images are published as `latest`/version tags and
-`sha-*` tags. For durable
-self-hosting, prefer a pinned version, `sha-*` tag, or digest pin over a moving
-tag. To build from local source instead of pulling public images, run:
-
-```bash
-pnpm docker:reference:up
-```
-
-#### Postgres service (profile-gated)
-
-The Compose file ships an optional `postgres` service gated behind the
-`postgres` profile. It backs env-gated conformance/runtime proofs such as
-`reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`
-and
-`reference-implementation/test/consent-device-auth-conformance-postgres.test.js`,
-plus `reference-implementation/test/postgres-runtime-storage.test.js`. The
-default reference runtime uses SQLite; `reference` and `web` do **not** depend on
-this service unless Postgres runtime storage is explicitly selected.
-
-Postgres runtime mode is opt-in and fresh-storage only:
-
-```bash
-PDPP_STORAGE_BACKEND=postgres
-PDPP_DATABASE_URL=postgres://pdpp:pdpp@localhost:55432/pdpp_proof
-```
-
-This does not migrate an existing SQLite database. Leave
-`PDPP_STORAGE_BACKEND` unset for the default SQLite behavior.
-
-The expected image is `pgvector/pgvector:pg16`. Runtime bootstrap enables the
-`vector` extension on that path. If a custom Postgres image lacks pgvector, the
-reference falls back to grant-scoped JSONB vector storage as a degraded
-compatibility path, not the normal production configuration.
-
-The service binds to loopback only by default (`127.0.0.1:55432`) and ships
-with default `pdpp/pdpp` credentials, so it is reachable only from the host
-running Docker. LAN/WAN exposure requires deliberately overriding
-`PDPP_POSTGRES_BIND_HOST` **and** changing `PDPP_POSTGRES_USER` /
-`PDPP_POSTGRES_PASSWORD` to non-default values; do not do one without the
-other.
-
-```bash
-# Start just the proof service. Default host port is 55432 to avoid
-# colliding with operator-installed Postgres on 5432; override with
-# PDPP_POSTGRES_PORT in .env.docker. The default bind is 127.0.0.1 only.
-docker compose --profile postgres --env-file .env.docker up -d postgres
-
-# Run the env-gated Postgres proofs against it.
-PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/pdpp_proof \
-  node --test --test-force-exit \
-  reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js \
-  reference-implementation/test/consent-device-auth-conformance-postgres.test.js \
-  reference-implementation/test/postgres-runtime-storage.test.js
-
-# Stop and remove only the proof service when done.
-docker compose --profile postgres --env-file .env.docker stop postgres
-docker compose --profile postgres --env-file .env.docker rm -f postgres
-```
-
-A default `docker compose up` does not start the `postgres` service.
-
-For Docker-based development with hot reload:
-
-```bash
-pnpm docker:dev
-```
-
-That uses `docker-compose.dev.yml` to bind-mount the repo, run the reference
-server under Node watch mode, and run the operator console (`apps/console`) with
-Next dev behind host `:3002` by default. The `web` service (now publishing the
-console app) still listens on `:3000` internally; the service name is retained
-to preserve the existing compose override and `PDPP_WEB_*` env-var contracts.
-Use the default Compose command above or `pnpm docker:smoke` when you want the
-production-style Docker path instead.
-
-For host-based development with `pnpm run dev`, the launcher picks the first
-available web port starting at `3000`, exports it to both Next dev and the
-reference server, and prints the resulting browser-facing origin. Set
-`PDPP_WEB_PORT=3002` when you need a fixed port. The dev proxy auto-allows
-loopback, private LAN, link-local, and CGNAT IPv4 interface addresses reported
-by the OS. If you access the dev server through a custom DNS name or reverse
-proxy, set `PDPP_WEB_ALLOWED_DEV_ORIGINS` explicitly.
-
-Local repo shells do not put the workspace `pdpp` binary on PATH by default.
-When dashboard or docs copy shows a command such as
-`pdpp ref run timeline <run-id>`, run it from this repo as:
-
-```bash
-pnpm exec pdpp ref run timeline <run-id>
-```
-
-Use the bare `pdpp ...` spelling only after installing `@pdpp/cli` from npm or
-linking the workspace binary into your shell PATH.
-
-When accessing Docker dev through a LAN IP or reverse proxy, add the browser
-hostnames to `PDPP_WEB_ALLOWED_DEV_ORIGINS` in `.env.docker`, for example:
-
-```bash
-PDPP_WEB_ALLOWED_DEV_ORIGINS=pdpp-dev.example.test,192.168.0.2
-```
-
-Reverse proxies must also forward WebSocket upgrade traffic for
-`/_next/webpack-hmr`; otherwise the page loads but Next HMR cannot connect.
-
-#### Local collectors and browser-backed connectors in Docker
-
-Connectors like ChatGPT and USAA need a real browser the operator can see and
-click for login, OTP, or Cloudflare challenges. The provider/control-plane
-container cannot render a visible browser; those connectors must run in a
-**workspace local collector runner** on a host the operator can see, paired to
-the provider via device-scoped enrollment. See
-`openspec/changes/introduce-local-collector-runner/design.md` for the full
-design.
-
-The public `@pdpp/local-collector` package currently ships only the
-filesystem-class Claude Code and Codex collectors. Browser/Patchright-backed
-connectors remain in the monorepo runner until each has its own publishability
-review.
-
-```bash
-# Claude Code / Codex from any host with Node 22.14+:
-npx -y @pdpp/local-collector advertise
-npx -y @pdpp/local-collector enroll \
-  --base-url http://localhost:7662 \
-  --code <enrollment-code-from-provider>
-
-# Browser-backed connectors from a checkout of this repo on the operator's host:
 pnpm install
-pnpm exec pdpp collector advertise
-pnpm exec pdpp collector enroll \
-  --base-url http://localhost:7662 \
-  --code <enrollment-code-from-provider>
-
-# The collector prints a device id + token; persist them somewhere safe.
-PDPP_LOCAL_DEVICE_ID=<id> PDPP_LOCAL_DEVICE_TOKEN=<token> \
-PDPP_CONNECTION_ID=<source-instance> \
-pnpm exec pdpp collector run \
-  --base-url http://localhost:7662 \
-  --connector chatgpt
-```
-
-`pdpp collector ...` is a thin `@pdpp/cli` shim. In a monorepo checkout it
-prefers `packages/polyfill-connectors/bin/collector-runner.ts` so development
-and browser-backed connector work can use workspace-only dependencies. Outside
-the repo it resolves an installed `@pdpp/local-collector` package; until npm
-`latest` is intentionally promoted, install that package as
-`@pdpp/local-collector`.
-
-When a HEADED browser-backed connector is attempted inside the
-provider/control-plane container, headed acquisitions fail closed before
-spawn with `headed_browser_unavailable` — launching an invisible
-in-container Chromium for an interactive flow would silently hang on the
-operator's `auto-login` handshake. Headless container acquisitions are
-unaffected. The escape hatch for explicit X11/VNC debugging is
-`PDPP_ALLOW_HEADED_CONTAINER_BROWSER=1`, which emits a per-acquisition
-warning.
-
-Current Docker connector-support posture:
-
-| Connector(s) | Docker posture | Operator requirement | Current caveat |
-| --- | --- | --- | --- |
-| Gmail, GitHub | API-shaped; supported in Docker. | Add each account from the owner console (`/dashboard/records/add`); the static-secret form captures the provider credential into encrypted, connection-scoped storage. | Legacy source credential env vars remain a local development/operator fallback, not the normal multi-account setup path. Connector correctness is still subject to live upstream behavior and each connector's declared stream contract. |
-| YNAB, Notion, Oura, Strava | API-shaped; supported by the connector runtime, but not all have owner-console setup descriptors yet. | Use the owner console when the source card advertises "Add account"; otherwise use the documented compatibility env-var path until that connector's setup descriptor is promoted. | Some connectors are maintainer-verified live; others are code-ready and unverified — see `packages/polyfill-connectors/CONNECTORS.md`. |
-| Slack | Subprocess-shaped; **not supported in the stock reference image**. | Slack's connector spawns the `slackdump` binary, which is AGPL-3.0 and is intentionally **not** bundled. To run Slack in Docker, build a derived image that installs `slackdump` (or mount it in) and set `SLACKDUMP_BIN` to its in-container path. | Stock `ghcr.io/vana-com/pdpp/reference` images cannot run the Slack connector as published. |
-| OpenAI Codex CLI, Claude Code | Filesystem-only; supported in same-host Docker when host agent state is mounted read-only. | Point `PDPP_DOCKER_CLAUDE_CODE_HOME` and `PDPP_DOCKER_CODEX_HOME` at `${HOME}/.claude` and `${HOME}/.codex` (or any host directory holding those layouts). The compose file already mounts them read-only to `/imports/claude` and `/imports/codex` and sets `CLAUDE_CODE_HOME` / `CLAUDE_CODE_PROJECTS_DIR` / `CODEX_HOME` accordingly. | Default Compose seeds those host overrides to `./packages/polyfill-connectors/.pdpp-imports/{claude,codex}` (empty on a fresh checkout); the source-preflight will fail until the host paths are set. Multi-device collection belongs to the proposed `design-local-device-exporter-collection` topology. |
-| WhatsApp, Google Takeout, Twitter archive, Apple Health, iCal | Filesystem-only; supported in Docker via the `pdpp-home` named volume. | Drop extracted exports into the volume at `/root/.pdpp/imports/<connector>/`, or override the connector-specific `*_DIR` env var. iCal also accepts `ICAL_SUBSCRIPTION_URL` (pure HTTP, no mount needed). | Defaults already point at `~/.pdpp/imports/<connector>/` which the named volume covers; `docker cp` or a one-time bind-mount is the simplest way to seed the volume. |
-| iMessage | Filesystem-only; **not supported in Linux Docker**. | iMessage is hardcoded to `~/Library/Messages/chat.db` (macOS-format SQLite). | Effectively macOS-only; runs on the host, not in Linux containers. |
-| Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the workspace local collector runner on a visible-browser host. | Pair the workspace collector with `pnpm exec pdpp collector enroll`, then run connectors via `pnpm exec pdpp collector run`. | These connectors are not in `@pdpp/local-collector` yet. Inside the provider/control-plane container, headed-browser acquisitions fail closed with `headed_browser_unavailable` (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`); browser-backed connectors must run in a local runtime that advertises a `browser` binding. The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. |
-| Spotify, Pocket | Blocked upstream. | n/a | Spotify's OAuth app registration is frozen as of Feb 2026; Pocket sunset 2025-07-08. |
-
-CI builds Docker targets on pull requests and Docker-relevant `main` pushes
-without pushing images. semantic-release publishes from `main` whenever a
-release-worthy Conventional Commit lands; that release workflow publishes the
-npm packages plus GHCR `latest`/version tags for both Docker targets. Maintainers can manually refresh moving development
-image tags when needed and should make the first published GHCR packages public
-in GitHub's package settings if the registry creates them private.
-
-Run the reference implementation server:
-
-```bash
-pnpm reference-implementation:server
-```
-
-Inspect the reference CLI:
-
-```bash
+pnpm dev                               # reference AS/RS + operator console
+pnpm reference-implementation:server   # reference server only
 pnpm reference-implementation:cli --help
+pnpm reference-implementation:test     # reference implementation tests
 ```
 
-Run the reference implementation tests:
+For Docker, self-hosting, connector setup, and MCP-client wiring, see the
+[self-host quickstart](docs/operator/selfhost-quickstart.md) and the
+[reference implementation README](reference-implementation/README.md).
 
-```bash
-pnpm reference-implementation:test
-```
-
-## Releases
-
-The release train is a single channel: 0.x versions released from `main` to
-npm's default `latest` dist-tag (see `docs/package-release-policy.md`). Commit
-messages follow Conventional Commits: `fix:` creates a patch release and
-`feat:` creates a minor release. Breaking-change markers are reserved for the
-intentional 1.0 milestone; commits that do not follow the Conventional format
-do not release.
-
-Preview the next release locally:
-
-```bash
-GITHUB_TOKEN=$(gh auth token) pnpm release:dry-run
-```
-
-The release workflow validates generated reference-contract artifacts, verifies
-the reference implementation, typechecks the operator console app, publishes the
-npm package release train, builds both Docker image targets, creates the
-GitHub release and `v${version}` tag, then publishes:
-
-- `@pdpp/cli`
-- `@pdpp/local-collector`
-- `@pdpp/mcp-server`
-
-- `ghcr.io/vana-com/pdpp/reference:${version}`
-- `ghcr.io/vana-com/pdpp/reference:latest`
-- `ghcr.io/vana-com/pdpp/reference:sha-*`
-- matching `web` tags
-
-Release automation uses GitHub Actions credentials for GitHub releases and
-GHCR, and npm trusted publishing for public packages. It must not bundle
-`.env.local`, owner passwords, connector credentials, SQLite data, model cache
-files, or browser profiles into images.
+The public site (`apps/site/`) and operator console (`apps/console/`) are
+downstream surfaces that explain and front the reference implementation; they
+are not the protocol boundary. The durable boundary between them lives in the
+`reference-surface-topology` capability spec
+([`openspec/specs/reference-surface-topology/spec.md`](openspec/specs/reference-surface-topology/spec.md)).
 
 ## Authority order
 
-This repo uses a strict authority order:
+This repository uses a strict authority order:
 
-1. **Root PDPP specs** define normative protocol semantics.
-2. **Code and tests** define what the current reference implementation actually does.
-3. **OpenSpec** defines project-level architecture and change planning.
+1. **Root PDPP specs** (`spec-*.md`) define the protocol. The two normative
+   specs (`spec-core.md`, `spec-collection-profile.md`) define protocol
+   semantics; the other root specs are informative, illustrative, or
+   superseded, as each file's status header states.
+2. **Code and tests** define what the reference implementation actually does.
+3. **OpenSpec** (`openspec/`) defines project-level architecture and change
+   planning.
 
-Public web spec pages are downstream copies of the root specs. `pnpm spec:check`
-enforces parity, with only explicitly allowlisted web-only extension specs and
-reference-only root examples exempt from one-to-one pairing.
+Public web spec pages are downstream copies of the root specs; `pnpm spec:check`
+enforces parity. OpenSpec is intentionally project-scoped and does not replace
+or compete with the normative specs.
 
-OpenSpec in this repo is intentionally project-scoped. It does not replace or compete with the normative PDPP specs.
+## Participate
 
-## OpenSpec
+- **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md) — the spec-first
+  workflow, test expectations, and pull-request conventions.
+- **Maintainers:** [`MAINTAINERS.md`](MAINTAINERS.md) — active maintainers and
+  their scopes. Root specification maintainers act as editors for the current
+  draft.
+- **Changes:** non-trivial protocol, contract, or architecture changes are
+  proposed as OpenSpec changes before implementation. See
+  [`openspec/README.md`](openspec/README.md).
+- **Code of Conduct:** [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — the
+  Contributor Covenant, which all participants agree to uphold.
+- **Security:** [`SECURITY.md`](SECURITY.md) — how to report a vulnerability
+  privately.
 
-OpenSpec artifacts live in `openspec/`.
+## Governance & stewardship
 
-Current durable OpenSpec specs include:
+PDPP is developed in the open and is **proposed to LFDT Labs (Linux Foundation
+Decentralized Trust) as the lab _PDP-Connect_**. The goal is a neutral,
+vendor-independent home for the protocol specification and its reference
+implementation.
 
-- `reference-implementation-governance`
-- `reference-implementation-architecture`
+- **Maintainers.** The current maintainer roster and each maintainer's scope are
+  listed in [`MAINTAINERS.md`](MAINTAINERS.md). For the root protocol
+  specifications, active maintainers act as editors for the current draft.
+  Maintainer changes are proposed through public pull request.
+- **Spec-first change process.** Non-trivial protocol, contract, or architecture
+  changes are written up as OpenSpec changes and reviewed **before**
+  implementation, so the rationale, tasks, and requirement deltas are auditable
+  by reviewers, forkers, and a standards body. See
+  [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`openspec/README.md`](openspec/README.md).
+- **Open participation.** All changes to the protocol text, the reference
+  implementation, and the site go through public pull requests under the
+  Developer Certificate of Origin (see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
 
-Use OpenSpec here for:
+## License
 
-- reference-implementation architecture
-- project-level boundary decisions
-- multi-step implementation changes
+This repository uses a three-license split:
 
-Do not use it as a second copy of the PDPP protocol spec.
+- **Code, packaged software, and generated artifacts** — Apache-2.0
+  ([`LICENSE`](LICENSE), plus per-package `LICENSE` files such as
+  `reference-implementation/LICENSE`).
+- **Protocol specification text** (all root `spec-*.md` files and their
+  mirrored site pages) — Community Specification License 1.0
+  ([`LICENSE-specs`](LICENSE-specs)).
+- **User-facing documentation prose** outside the specification — CC BY 4.0
+  ([`LICENSE-docs`](LICENSE-docs)).
+
+Third-party files carrying their own file-local license notice are governed by
+that notice.

@@ -10,7 +10,7 @@ Conventions used below:
 - `$ENTRYPOINT` — the operator's reference instance origin (what the operator hands Daisy).
 - `$RS_URL`, `$AS_URL` — resolved from discovery, not assumed.
 - `read-owner-cred` — read `access_token` from
-  `~/applications/daisy/.pi/agent/pdpp-owner-agent.json` without printing it.
+  `~/.pdpp/owner-agent/pdpp-owner-agent.json` without printing it.
 
 Never print the bearer at any step. Status output is non-secret metadata only.
 
@@ -98,14 +98,14 @@ do not retry silently.
 
 The approved flow writes the owner credential to:
 
-`~/applications/daisy/.pi/agent/pdpp-owner-agent.json`
+`~/.pdpp/owner-agent/pdpp-owner-agent.json`
 
 The file is JSON, mode `0600`, and contains the bearer as `access_token`. Verify by
 reading it at call time and hitting compact schema — without echoing the token:
 
 ```bash
-TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
-SCHEMA_URL="$(jq -r '.schema_compact_endpoint // (.resource + "/v1/schema?view=compact")' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
+TOKEN="$(jq -r '.access_token' "$HOME/.pdpp/owner-agent/pdpp-owner-agent.json")"
+SCHEMA_URL="$(jq -r '.schema_compact_endpoint // (.resource + "/v1/schema?view=compact")' "$HOME/.pdpp/owner-agent/pdpp-owner-agent.json")"
 curl -fsS "$SCHEMA_URL" -H "Authorization: Bearer $TOKEN" | jq '.connectors[].name'
 unset TOKEN
 unset SCHEMA_URL
@@ -117,7 +117,7 @@ expiry, revocation handle. Never the bearer.
 Confirm the boundary holds (this should fail, and that is correct):
 
 ```bash
-TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
+TOKEN="$(jq -r '.access_token' "$HOME/.pdpp/owner-agent/pdpp-owner-agent.json")"
 curl -s -o /dev/null -w '%{http_code}\n' "$RS_URL/mcp" -H "Authorization: Bearer $TOKEN"
 unset TOKEN
 # Expect a rejection. /mcp is the grant-scoped client transport, not owner-agent REST.
@@ -134,7 +134,7 @@ unset TOKEN
    you do not re-list before every read:
 
    ```bash
-   TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
+   TOKEN="$(jq -r '.access_token' "$HOME/.pdpp/owner-agent/pdpp-owner-agent.json")"
    curl -fsS "$RS_URL/v1/streams" -H "Authorization: Bearer $TOKEN" \
      | jq '.data | map({name, connection_id})'
    unset TOKEN
@@ -158,7 +158,7 @@ following `blob_ref.fetch_url`.
 On every refresh, do not rescan. For each stream/connection, resume from the stored cursor:
 
 ```bash
-TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
+TOKEN="$(jq -r '.access_token' "$HOME/.pdpp/owner-agent/pdpp-owner-agent.json")"
 curl -fsS \
   "$RS_URL/v1/streams/<stream>/records?connector_id=<connector_id>&connection_id=<id>&changes_since=<stored-cursor>&limit=200" \
   -H "Authorization: Bearer $TOKEN" \
@@ -184,7 +184,7 @@ plane at `/v1/owner/*`. The full reference is `references/control-surface.md`; t
 one-shot, non-secret entrypoint is:
 
 ```bash
-pdpp owner-agent control --credential-file "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json"
+pdpp owner-agent control --credential-file "$HOME/.pdpp/owner-agent/pdpp-owner-agent.json"
 ```
 
 It prints the supported control actions (each with a typed `status`) and every configured
@@ -226,18 +226,19 @@ credential and tell the operator. Do not silently re-onboard.
 
 ## Prompt to give Daisy
 
-A concise, copy-pasteable first-run prompt for the public reference deployment at
-`https://pdpp.vivid.fish`. It encodes the entrypoint-first flow without leaking any secret:
+A concise, copy-pasteable first-run prompt for a reference deployment at
+`https://your-pdpp-host.example.com` (substitute your instance's origin). It encodes the
+entrypoint-first flow without leaking any secret:
 
 > You are my trusted owner agent for my PDPP reference instance at
-> `https://pdpp.vivid.fish`. Read
-> `https://pdpp.vivid.fish/.well-known/oauth-protected-resource` and find the
+> `https://your-pdpp-host.example.com`. Read
+> `https://your-pdpp-host.example.com/.well-known/oauth-protected-resource` and find the
 > `pdpp_owner_agent_onboarding` block. If it is absent, tell me onboarding is unavailable
 > and stop. Otherwise start owner-agent device authorization at its
 > `device_authorization_endpoint`, show me the `verification_uri_complete` (the
 > `/device?user_code=...` page) to approve in my browser, and wait. After I approve, poll
 > the `token_endpoint`, and store the issued credential at
-> `~/applications/daisy/.pi/agent/pdpp-owner-agent.json` with mode 0600. Never print the
+> `~/.pdpp/owner-agent/pdpp-owner-agent.json` with mode 0600. Never print the
 > bearer; confirm with non-secret status only (token kind, subject, expiry).
 >
 > From then on, read the credential from that file at call time without printing it. Pull

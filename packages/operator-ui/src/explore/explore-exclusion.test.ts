@@ -239,7 +239,7 @@ test("an id that is BOTH included and excluded resolves to include (coherent URL
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SEARCH-LENS exclusion (Codex end-review P0 #1).
+// SEARCH-LENS exclusion (end-review P0 #1).
 //
 // Exclusion was wired into the recent feed but NOT into search/time-range. These
 // regression tests exercise the REAL search assembly path (`loadSearchFeed` via
@@ -377,7 +377,7 @@ test("SEARCH post-exclusion descriptor/count is the POST-exclusion set (no overs
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TIME-RANGE-LENS exclusion (Codex end-review P0 #1).
+// TIME-RANGE-LENS exclusion (end-review P0 #1).
 //
 // `loadTimeRangeFeed` skips excluded connections (by either identity) and excluded
 // streams AT THE FETCH SOURCE: an excluded connection's summary is skipped before

@@ -1,13 +1,13 @@
 /**
  * Zod schemas for Claude Code stream records. Used for shape-check-before-emit
- * per docs/connector-authoring-guide.md §3: records that don't match the
+ * per docs/reference/connector-authoring-guide.md §3: records that don't match the
  * schema become SKIP_RESULT events instead of RECORD events.
  *
  * Claude Code's JSON is generally well-shaped (it's from the official CLI),
  * so most assertions are bounds and format discipline rather than cruft
  * detection.
  *
- * Text-field classification (docs/binary-content-invariant-design-brief.md §4.4):
+ * Text-field classification (docs/reference/binary-content-invariant-design-brief.md §4.4):
  *   - Free-form text → pdppSafeText (via stringMaxSchema, pathSchema, and direct uses)
  *   - Regex-validated structural strings (UUIDs, timestamps) → z.string().regex(...)
  *   - content_preview uses a bespoke safeTextPreview() refine for the

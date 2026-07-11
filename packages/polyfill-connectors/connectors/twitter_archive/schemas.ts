@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Twitter/X archive stream records. Shape-check-before-emit
- * per docs/connector-authoring-guide.md §3.
+ * per docs/reference/connector-authoring-guide.md §3.
  *
  * Ground truth: the `TweetOut` / `DMOut` interfaces in types.ts and the
  * `buildTweetRecord` / `buildDmRecord` builders in parsers.ts (exercised by

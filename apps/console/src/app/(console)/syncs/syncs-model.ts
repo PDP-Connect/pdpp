@@ -2,7 +2,7 @@
  * Syncs view-model — the pure mapping from real reference data to the
  * Recordroom "Syncs" surface (the reskin of the Runs route).
  *
- * The canonical design (docs/design/ink-carbon/project/recordroom/rr-syncs.jsx)
+ * The canonical design (docs/design-system/ink-carbon/project/recordroom/rr-syncs.jsx)
  * shows three regions:
  *   1. a health stat band (streams on schedule / need-your-hand),
  *   2. failure CARDS for connections in a non-healthy state, and

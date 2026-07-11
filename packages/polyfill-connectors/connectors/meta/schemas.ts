@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Instagram (Meta) stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * GROUND-TRUTH CAVEAT (same posture as connectors/loom and connectors/shopify):
  * meta/index.ts does NOT yet emit any RECORD — it is a browser scaffold that

@@ -2940,7 +2940,7 @@ test('sourceMetadata.display_name uses human-readable connection name, not raw c
 
 test('picker renders connector type and connection name as distinct semantic elements', async () => {
   // Acceptance target: the picker must make it clear that "Claude Code" is the
-  // connector *type* and "peregrine Claude Code" is the *connection name* —
+  // connector *type* and "laptop Claude Code" is the *connection name* —
   // not two competing ontologies. The HTML must carry separate elements with
   // class="hosted-ui-connector-type" and class="hosted-ui-connection-name"
   // so they can be styled and machine-read as distinct concepts.

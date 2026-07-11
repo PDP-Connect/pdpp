@@ -51,7 +51,6 @@
   "dependencies": {
     "@fastify/formbody": "^8.0.2",
     "@huggingface/transformers": "^4.2.0",
-    "@opendatalabs/remote-surface": "workspace:*",
     "@pdpp/mcp-server": "workspace:*",
     "@pdpp/reference-contract": "workspace:*",
     "better-sqlite3": "^12.9.0",
@@ -70,5 +69,8 @@
     "pino-pretty": "^13.0.0",
     "ultracite": "7.6.0"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "optionalDependencies": {
+    "@opendatalabs/remote-surface": "^0.3.0"
+  }
 }

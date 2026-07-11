@@ -1,7 +1,0 @@
-# hone work tst2-postgres-record-null-cursor-0028 — baseline rung 'red-then-green-mutant-kill'
-# command: cd "$REPO_ROOT" && if [ -f test/postgres-record-null-cursor-oracle.test.js ]; then src=test/helpers/postgres-record-read-driver.js; bak=/tmp/tst2_0028_record_cursor.bak; cp "$src" "$bak"; perl -0pi -e "s/OR \\(cursor_value IS NULL\\)//" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; export PGHOST=localhost PGPORT=55432 PGUSER=pdpp PGPASSWORD=pdpp; db=pdpp_hone_tst2_0028; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; createdb -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; rc=0; PDPP_TEST_POSTGRES_URL=postgres://pdpp:pdpp@localhost:55432/$db timeout 600 node --test --test-force-exit test/postgres-record-null-cursor-oracle.test.js || rc=1; dropdb --if-exists -h localhost -p 55432 -U pdpp $db >/dev/null 2>&1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: mutation oracle not yet created"; exit 0; fi
-# expect: POST removes the ASC transition into the null bucket; the focused paging oracle must kill it.
-# timeout: 1800s (engine-default)
-# exit: 0  duration: 0s  verdict: PASS
-
-BASELINE: mutation oracle not yet created

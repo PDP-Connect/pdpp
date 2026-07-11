@@ -6,8 +6,8 @@ Active maintainers:
 
 | Name | GitHub ID | Scope | Status | Contact |
 | --- | --- | --- | --- | --- |
-| the owner Nunamaker | `@owner` | Protocol specification, reference implementation, repository governance | Active | GitHub |
-| a person Kaz | `@annakaz` | Protocol specification and repository governance | Active | GitHub |
+| Tim Nunamaker | `@tnunamak` | Protocol specification, reference implementation, repository governance | Active | GitHub |
+| Anna Kaz | `@annakaz` | Protocol specification and repository governance | Active | GitHub |
 | Art Abal | `@artvana` | Protocol specification and repository governance | Active | GitHub |
 
 For root protocol specifications, active maintainers act as editors for the current draft. Maintainer changes are proposed through pull request and should update this file.

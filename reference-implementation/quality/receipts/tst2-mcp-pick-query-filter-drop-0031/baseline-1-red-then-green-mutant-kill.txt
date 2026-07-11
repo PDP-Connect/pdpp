@@ -1,7 +1,0 @@
-# hone work tst2-mcp-pick-query-filter-drop-0031 — baseline rung 'red-then-green-mutant-kill'
-# command: cd "$REPO_ROOT/../packages/mcp-server" && if [ -f test/pick-query-filter-drop-oracle.test.js ]; then src=src/tools.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0031_mcp_tools.bak; cp "$src" "$bak"; perl -0pi -e "s/if \\(key === \\x27filter\\x27\\) continue;/if (false && key === \\x27filter\\x27) continue;/" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/pick-query-filter-drop-oracle.test.js 2>&1 || rc=1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: pickQuery oracle not yet created"; exit 0; fi
-# expect: BASELINE guarded green while absent. POST disabling the filter skip must leak filter into the picked object and make the oracle print MUTANT KILLED after byte-clean restore.
-# timeout: 1800s (engine-default)
-# exit: 0  duration: 0s  verdict: PASS
-
-BASELINE: pickQuery oracle not yet created

@@ -40,7 +40,7 @@ export interface MountClientMetadataContext {
     created_at: string;
     updated_at: string;
   } | null>;
-  /** Resolve the public base URL for this AS (e.g. https://pdpp.vivid.fish). */
+  /** Resolve the public base URL for this AS (e.g. https://pdpp.example.com). */
   resolvePublicUrl(req: RouteRequest, explicit: unknown): string;
 }
 

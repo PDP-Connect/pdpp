@@ -1,9 +1,0 @@
-# hone work hm-interaction-lifecycle-extract-0009 — post rung 'guard-byte-identity'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && grep -c "INTERACTION while already waiting" runtime/index.js && grep -c "invalid INTERACTION_RESPONSE envelope" runtime/index.js && grep -c "Invalid INTERACTION_RESPONSE status" runtime/index.js && grep -c "omitted interactive" runtime/index.js
-# expect: 2 / 2 / 2 / 2 — all four guard strings present with UNCHANGED counts (measured baseline 2026-07-02: each appears twice in runtime/index.js), moved not rewritten
-# exit: 0  duration: 0s  verdict: PASS
-
-2
-2
-2
-2

@@ -67,7 +67,7 @@ test('doc-tag guard does not false-match a longer package name with the same pre
 test('doc-tag guard reports the offending file and line in its message', () => {
   const problems = findRetiredTagInstallDocReferences({
     packageNames: PUBLISHABLE,
-    docFiles: ['docs/local-collector.md'],
+    docFiles: ['docs/reference/local-collector.md'],
     readFile: () => 'npm i -g @pdpp/cli@beta',
   });
   assert.equal(problems.length, 1);

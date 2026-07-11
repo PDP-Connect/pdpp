@@ -33,7 +33,7 @@
 - [ ] 3.4 Typecheck / ultracite clean on touched files.
 - [ ] 3.5 Adversarial audit of adapters + harness assertions (no behavior change,
       no hidden backend-specific logic absorbed).
-- [ ] 3.6 Codex RI-owner direct diff/test review and sign-off.
+- [ ] 3.6 the independent reviewer RI-owner direct diff/test review and sign-off.
 
 ## 4. Acceptance gate
 

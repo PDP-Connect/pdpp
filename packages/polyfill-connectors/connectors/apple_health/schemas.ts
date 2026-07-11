@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Apple Health stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * Ground truth: `buildHealthRecord` (records) and `buildWorkoutRecord`
  * (workouts) in parsers.ts — the only things index.ts passes to

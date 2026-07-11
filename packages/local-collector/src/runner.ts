@@ -6,14 +6,18 @@
  * protocol message types) from the source-of-truth slice in
  * `@pdpp/polyfill-connectors/runner`.
  *
- * Filesystem-class connector entrypoints (Claude Code, Codex) are
- * registered in `BUNDLED_CONNECTORS` so `pdpp-local-collector` can
- * resolve `--connector claude_code` and `--connector codex` without an
- * arbitrary `--command <bin>` escape hatch.
+ * This runtime is connector-AGNOSTIC. It does not know which connectors
+ * support local collection or what streams they emit — a connector declares
+ * that itself via a {@link LocalCollectorDefinition}, and the collector's
+ * composition root (the `bin`) injects those definitions through
+ * {@link createBundledConnectorRegistry}. Correct direction of knowledge: the
+ * connector defines its collector; the runtime discovers definitions.
  *
- * Boundary: this module MUST NOT import `playwright`, `patchright`, or any
- * other browser-bound dependency. The `@pdpp/local-collector` publish
- * pipeline asserts that with a CI grep gate over the produced tarball.
+ * Boundary: this module MUST NOT import `playwright`, `patchright`, any other
+ * browser-bound dependency, OR any specific connector's code. Its only
+ * `@pdpp/polyfill-connectors` dependency is the generic runner-slice runtime
+ * substrate. The `@pdpp/local-collector` publish pipeline asserts the
+ * browser-free half with a CI grep gate over the produced tarball.
  *
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §1–§3.
  */
@@ -106,9 +110,11 @@ export {
  * Public package capability profile.
  *
  * The monorepo collector runtime may satisfy browser-bound development
- * connectors, but this published package intentionally bundles only
- * filesystem-class Claude Code and Codex entrypoints. Advertising `browser`
+ * connectors, but this published package intentionally advertises only the
+ * filesystem-class bindings its bundled connectors need. Advertising `browser`
  * here would overstate the package contract and weaken runtime placement.
+ * (Which connectors are bundled is the injected registry's business, not this
+ * runtime's — see {@link createBundledConnectorRegistry}.)
  */
 export const COLLECTOR_RUNTIME_CAPABILITIES: RuntimeCapabilityProfile = {
   id: POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES.id,
@@ -116,12 +122,36 @@ export const COLLECTOR_RUNTIME_CAPABILITIES: RuntimeCapabilityProfile = {
 };
 
 /**
- * Default arguments for each bundled filesystem-class connector.
+ * A connector's declaration of how it participates in local collection.
  *
- * These describe the *runtime invocation* of the connector child process
- * the collector spawns under `runCollectorConnector`. The published
- * `pdpp-local-collector` resolves entries here by `connector_id`; there is
- * no public `--command <bin>` escape hatch.
+ * The generic runtime accepts these — it does not author them. Each
+ * filesystem-class connector exports its own definition (see
+ * `@pdpp/polyfill-connectors/collectors`); the collector's composition root
+ * injects the set through {@link createBundledConnectorRegistry}.
+ */
+export interface LocalCollectorDefinition {
+  /** Runtime bindings the connector requires (e.g. `filesystem`). */
+  readonly bindings: Readonly<Record<string, { required: boolean }>>;
+  /** Stable connector id (matches the manifest + ingest envelope). */
+  readonly connector_id: string;
+  /**
+   * The connector's directory name under `connectors/`. The runtime resolves
+   * the spawnable entry from it (`connectors/<entry>/index.{js,ts}`); the
+   * definition stays a pure value and never carries a path.
+   */
+  readonly entry: string;
+  /** Default stream set; operators can override with `--streams`. */
+  readonly streams: readonly string[];
+}
+
+/**
+ * Runtime invocation of a bundled connector's child process.
+ *
+ * This is the resolved, runnable form of a {@link LocalCollectorDefinition}:
+ * the `command`/`args` the collector spawns under `runCollectorConnector`,
+ * plus the connector's declared bindings and default streams. The published
+ * `pdpp-local-collector` resolves entries by `connector_id`; there is no
+ * public `--command <bin>` escape hatch.
  *
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §3.
  */
@@ -138,107 +168,96 @@ export interface BundledConnectorEntry {
   readonly streams: readonly string[];
 }
 
-function bundledEntry(connectorPath: string): string {
-  const built = fileURLToPath(new URL(`../../polyfill-connectors/connectors/${connectorPath}/index.js`, import.meta.url));
+/** A frozen, id-keyed registry of runnable bundled connector entries. */
+export type BundledConnectorRegistry = Readonly<Record<string, BundledConnectorEntry>>;
+
+/**
+ * Resolve a connector's spawnable entry module from its `entry` directory
+ * name, preferring the built `.js` (published tarball / repo `dist/`) and
+ * falling back to the `.ts` source (monorepo `tsx` dev). Generic over the id:
+ * the runtime hardcodes no connector name here.
+ *
+ * The connector entry lives under the collector's own `dist/` tree, emitted
+ * next to this runner module — the collector build compiles the bundled
+ * connectors into `dist/polyfill-connectors/connectors/<entry>/`.
+ */
+export function resolveBundledConnectorEntry(entry: string): string {
+  const built = fileURLToPath(
+    new URL(`../../polyfill-connectors/connectors/${entry}/index.js`, import.meta.url)
+  );
   if (existsSync(built)) {
     return built;
   }
-  return fileURLToPath(new URL(`../../polyfill-connectors/connectors/${connectorPath}/index.ts`, import.meta.url));
+  return fileURLToPath(
+    new URL(`../../polyfill-connectors/connectors/${entry}/index.ts`, import.meta.url)
+  );
 }
 
 function commandForEntry(entry: string): "node" | "tsx" {
   return extname(entry) === ".ts" ? "tsx" : "node";
 }
 
-const POLYFILL_CLAUDE_CODE_ENTRY = bundledEntry("claude_code");
-const POLYFILL_CODEX_ENTRY = bundledEntry("codex");
-
-/**
- * Registry of filesystem-class connectors bundled with `@pdpp/local-collector`.
- *
- * Order matches the supported public path on a fresh host: Claude Code and
- * Codex transcripts. Browser-bound connectors are intentionally absent —
- * each will get its own publishability review before being added.
- */
-export const BUNDLED_CONNECTORS: Readonly<Record<string, BundledConnectorEntry>> = Object.freeze({
-  claude_code: Object.freeze({
-    connector_id: "claude_code",
-    command: commandForEntry(POLYFILL_CLAUDE_CODE_ENTRY),
-    args: Object.freeze([POLYFILL_CLAUDE_CODE_ENTRY]) as readonly string[],
-    bindings: Object.freeze({ filesystem: Object.freeze({ required: true }) }),
-    // Default stream set mirrors the full manifest-declared safe surface so
-    // an unscoped `run` exercises everything the connector knows how to
-    // account for — including `coverage_diagnostics`. Without the coverage
-    // stream, a healthy drained collector emits zero durable coverage
-    // evidence and the connection-health rollup can only ever project
-    // `coverage_unknown` (the run path writes no spine run). The inventory
-    // streams emit metadata only (path hash, size, mtime); deferred/excluded
-    // stores never read payload. See
-    // `docs/operator/local-collector-runbook.md`§"Coverage and excluded
-    // stores" and `openspec/changes/derive-local-collector-coverage-from-diagnostics`.
-    streams: Object.freeze([
-      "sessions",
-      "messages",
-      "attachments",
-      "memory_notes",
-      "skills",
-      "slash_commands",
-      "file_history",
-      "cache_inventory",
-      "coverage_diagnostics",
-      "debug_artifacts",
-      "downloads",
-      "backup_inventory",
-      "config_inventory",
-    ]) as readonly string[],
-  }),
-  codex: Object.freeze({
-    connector_id: "codex",
-    command: commandForEntry(POLYFILL_CODEX_ENTRY),
-    args: Object.freeze([POLYFILL_CODEX_ENTRY]) as readonly string[],
-    bindings: Object.freeze({ filesystem: Object.freeze({ required: true }) }),
-    // Mirrors the full manifest-declared safe surface (see the claude_code
-    // note above): `coverage_diagnostics` is what promotes a drained local
-    // collector off `coverage_unknown`, and the inventory streams emit
-    // metadata only.
-    streams: Object.freeze([
-      "sessions",
-      "messages",
-      "function_calls",
-      "rules",
-      "prompts",
-      "skills",
-      "history",
-      "session_index",
-      "logs",
-      "shell_snapshots",
-      "config_inventory",
-      "cache_inventory",
-      "coverage_diagnostics",
-    ]) as readonly string[],
-  }),
-});
-
-/** Stable list of connector ids the published `pdpp-local-collector` accepts. */
-export const BUNDLED_CONNECTOR_IDS: readonly string[] = Object.freeze(
-  Object.keys(BUNDLED_CONNECTORS)
-);
-
-/** Lookup helper. Returns null when the id is not bundled. */
-export function getBundledConnector(connectorId: string): BundledConnectorEntry | null {
-  return BUNDLED_CONNECTORS[connectorId] ?? null;
+/** Turn one injected {@link LocalCollectorDefinition} into a runnable entry. */
+function toBundledEntry(definition: LocalCollectorDefinition): BundledConnectorEntry {
+  const resolvedEntry = resolveBundledConnectorEntry(definition.entry);
+  return Object.freeze({
+    connector_id: definition.connector_id,
+    command: commandForEntry(resolvedEntry),
+    args: Object.freeze([resolvedEntry]) as readonly string[],
+    bindings: definition.bindings,
+    streams: Object.freeze([...definition.streams]) as readonly string[],
+  });
 }
 
 /**
- * Map of bundled connector versions reported to the dashboard's
+ * Build the id-keyed bundled-connector registry from injected definitions.
+ *
+ * This is the runtime's whole knowledge of "which connectors can run": it is
+ * empty until a composition root passes definitions in. The published
+ * collector's `bin` injects `LOCAL_COLLECTOR_DEFINITIONS` from
+ * `@pdpp/polyfill-connectors/collectors`; tests inject their own set.
+ */
+export function createBundledConnectorRegistry(
+  definitions: readonly LocalCollectorDefinition[]
+): BundledConnectorRegistry {
+  const registry: Record<string, BundledConnectorEntry> = {};
+  for (const definition of definitions) {
+    if (registry[definition.connector_id]) {
+      throw new Error(`duplicate local collector definition for connector_id "${definition.connector_id}"`);
+    }
+    registry[definition.connector_id] = toBundledEntry(definition);
+  }
+  return Object.freeze(registry);
+}
+
+/** Stable list of connector ids a registry accepts. */
+export function bundledConnectorIds(registry: BundledConnectorRegistry): readonly string[] {
+  return Object.freeze(Object.keys(registry));
+}
+
+/** Lookup helper. Returns null when the id is not in the registry. */
+export function getBundledConnectorFrom(
+  registry: BundledConnectorRegistry,
+  connectorId: string
+): BundledConnectorEntry | null {
+  return registry[connectorId] ?? null;
+}
+
+/**
+ * Version each bundled connector reports to the dashboard's
  * `runtime_capabilities` payload.
  *
- * Today these track the runner package version (single source for the
- * whole bundle, per design §3). The map keeps the API shape stable for
- * the dashboard so per-connector versioning can be added later without
- * a payload-shape migration.
+ * Today every bundled connector tracks the runner package version (single
+ * source for the whole bundle, per design §3). Derived from the registry so
+ * the map covers exactly the injected ids; the shape stays stable so
+ * per-connector versioning can be added later without a payload migration.
  */
-export const BUNDLED_CONNECTOR_VERSIONS: Readonly<Record<string, string>> = Object.freeze({
-  claude_code: PROTOCOL_VERSION,
-  codex: PROTOCOL_VERSION,
-});
+export function bundledConnectorVersions(
+  registry: BundledConnectorRegistry
+): Readonly<Record<string, string>> {
+  const versions: Record<string, string> = {};
+  for (const id of Object.keys(registry)) {
+    versions[id] = PROTOCOL_VERSION;
+  }
+  return Object.freeze(versions);
+}

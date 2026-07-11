@@ -1,10 +1,7 @@
 # @pdpp/mcp-server
 
 Local stdio and hosted Streamable HTTP [Model Context Protocol](https://modelcontextprotocol.io/)
-adapter for grant-scoped access to a [PDPP](https://pdpp.vivid.fish) resource server.
-
-For the current hosted-client evidence-ladder smoke, see
-[`docs/research/mcp-read-evidence-live-smoke-2026-06-24.md`](../../docs/research/mcp-read-evidence-live-smoke-2026-06-24.md).
+adapter for grant-scoped access to a [PDPP](https://github.com/vana-com/pdpp) resource server.
 
 The adapter is a thin client of the PDPP resource server (RS). It does not run connectors,
 issue grants, or replicate any RS authorization logic. Every data-bearing tool call is a
@@ -25,7 +22,7 @@ read surface; event-subscription management is not part of the recommended MCP t
 ## Publication status
 
 Published to npm as [`@pdpp/mcp-server`](https://www.npmjs.com/package/@pdpp/mcp-server).
-Follow the [package release policy](../../docs/package-release-policy.md) — a single
+Follow the [package release policy](../../docs/reference/package-release-policy.md) — a single
 release channel publishes 0.x versions to npm's default `latest` dist-tag.
 Matches the posture of `@pdpp/cli` and `@pdpp/local-collector`.
 

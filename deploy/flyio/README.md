@@ -195,8 +195,5 @@ you need to keep.
 
 ## Related
 
-- [`proposal.md`](../../openspec/changes/archive/2026-06-10-add-flyio-core-deploy-target/proposal.md)
-- [`design.md`](../../openspec/changes/archive/2026-06-10-add-flyio-core-deploy-target/design.md)
-- [`tasks.md`](../../openspec/changes/archive/2026-06-10-add-flyio-core-deploy-target/tasks.md)
 - [`scripts/check-flyio-deploy-env.mjs`](../../scripts/check-flyio-deploy-env.mjs)
 - [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs)

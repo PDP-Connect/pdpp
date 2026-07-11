@@ -26,6 +26,7 @@
   ],
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "prepare": "pnpm build",
     "prepack": "pnpm build",
     "test": "node --test --import tsx 'test/*.test.js'",
     "pack-install-run": "node scripts/pack-install-run.mjs",

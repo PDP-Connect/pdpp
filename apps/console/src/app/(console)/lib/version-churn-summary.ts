@@ -19,7 +19,7 @@
  * Voice note: version churn is *retained history* (rows in `record_changes`),
  * not current-data loss. Copy here must explain that distinction and stay in
  * operator voice — this is the owner's own instance state, not a hosted
- * service promise. See `docs/voice-and-framing.md`.
+ * service promise. See `docs/reference/voice-and-framing.md`.
  */
 import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type {
@@ -147,7 +147,7 @@ export function remediationForRow(row: RefRecordVersionStatsRow): RefRecordVersi
  * already the dry-run command or "review it"), so they are absent from this map.
  *
  * Operator voice (this is the owner's own instance state, not a hosted service):
- * see `docs/voice-and-framing.md`.
+ * see `docs/reference/voice-and-framing.md`.
  */
 const REMEDIATION_GUIDANCE: Readonly<Record<Exclude<RefRecordVersionRemediation, "none">, string>> = {
   content_fingerprint_pending:

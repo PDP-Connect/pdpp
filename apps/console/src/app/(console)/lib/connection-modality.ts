@@ -26,7 +26,6 @@
 
 import {
   BROWSER_BOUND_CONNECTORS as SHARED_BROWSER_BOUND_CONNECTORS,
-  BROWSER_BOUND_RUNBOOK_PATH as SHARED_BROWSER_BOUND_RUNBOOK_PATH,
   SUPPORTED_BROWSER_COLLECTOR_CONNECTORS as SHARED_SUPPORTED_BROWSER_COLLECTOR_CONNECTORS,
   SUPPORTED_LOCAL_COLLECTOR_CONNECTORS as SHARED_SUPPORTED_LOCAL_COLLECTOR_CONNECTORS,
   type SupportedBrowserCollectorConnector,
@@ -124,9 +123,6 @@ export function enrollmentKeyForCanonicalKey(canonicalKey: string): string {
 export function isBrowserBoundConnector(connectorId: string | null | undefined): boolean {
   return sharedIsBrowserBoundConnector(connectorId);
 }
-
-/** The browser-bound runbook path, surfaced verbatim by console guidance. */
-export const BROWSER_BOUND_RUNBOOK_PATH = SHARED_BROWSER_BOUND_RUNBOOK_PATH;
 
 /**
  * Connection source-binding kinds whose PRIMARY auth is an owner-authenticated

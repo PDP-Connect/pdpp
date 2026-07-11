@@ -1,6 +1,0 @@
-# hone work hm-dispatch-guards-oracle-0001 — baseline rung 'red-green-seeded-regression'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && sh -c 'if [ -f test/runtime-handle-msg-dispatch.test.js ]; then node --test test/runtime-handle-msg-dispatch.test.js; else echo oracle-not-yet-authored; fi'
-# expect: baseline: oracle-not-yet-authored (file absent). During the work: with the transient 'unknown message type' guard-string mutation applied in runtime/index.js at least one test FAILS, and the receipts MUST contain that captured failing run (non-zero exit, a failing test that names the mutated guard string) — run-1 was refused because only post-restore green output was visible; then restore. Post (restored state): green, 0 fail
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

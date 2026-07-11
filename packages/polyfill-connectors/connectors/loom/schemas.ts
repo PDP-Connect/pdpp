@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Loom stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * Ground-truth caveat: loom/index.ts does not yet emit any RECORD — the
  * Apollo-cache extraction and transcript-endpoint wiring are deferred to a

@@ -7,7 +7,7 @@
 //
 //   - the always-on policy check must stay offline and deterministic; and
 //   - the placeholder `latest` it detects is a leftover of the npm bootstrap
-//     (see docs/package-release-policy.md) that only a real stable release plus
+//     (see docs/reference/package-release-policy.md) that only a real stable release plus
 //     owner cleanup of the placeholder can clear.
 //
 // What it catches: a publishable package whose default `latest` dist-tag
@@ -164,7 +164,7 @@ async function main() {
   if (waiver) {
     process.stdout.write(
       `\nPDPP dist-tag posture WAIVED: ${hazards.length} known hazard(s) acknowledged.\nReason: ${waiver}\n` +
-        'Clear the waiver and run the owner promotion step in docs/package-release-policy.md to make this pass cleanly.\n',
+        'Clear the waiver and run the owner promotion step in docs/reference/package-release-policy.md to make this pass cleanly.\n',
     );
     process.exit(0);
   }
@@ -174,7 +174,7 @@ async function main() {
       hazards.map((hazard) => `- ${hazard.detail}`).join('\n') +
       '\n\nThe default install target is broken for operators. Either:\n' +
       '  1. promote the package to a real stable `latest` (owner release-readiness step in\n' +
-      '     docs/package-release-policy.md), or\n' +
+      '     docs/reference/package-release-policy.md), or\n' +
       '  2. set PDPP_RELEASE_DIST_TAG_WAIVER="<reason>" to acknowledge it explicitly.\n' +
       'Until then, a bare `npm install` of the package hands operators the empty placeholder.\n',
   );

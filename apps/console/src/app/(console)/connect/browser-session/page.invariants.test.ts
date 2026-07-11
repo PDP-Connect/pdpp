@@ -18,8 +18,7 @@ const LAUNCH_PANEL_FILE = `${HERE}[connectorId]/launch/launch-panel.tsx`;
 const LAUNCH_START_ROUTE_FILE = `${HERE}[connectorId]/launch/start/route.ts`;
 
 const SECURE_BROWSER_COPY_RE = /secure browser/;
-const OPERATOR_ARTIFACT_RE =
-  /BROWSER_BOUND_RUNBOOK_PATH|browser-collector runbook|docs\/operator\/browser-collector-proof-runbook\.md|\bneko\b|n\.eko|hosted Chromium/;
+const OPERATOR_ARTIFACT_RE = /browser-collector runbook|\bneko\b|n\.eko|hosted Chromium/;
 const SERVER_ACTION_TRANSPORT_RE = /startBrowserEnrollmentAction|from "\.\/actions\.ts"|<form action=\{[^}]+Action/;
 const POST_ROUTE_TRANSPORT_RE =
   /<form action=\{`\/connect\/browser-session\/\$\{encodeURIComponent\(connectorId\)\}\/start`\} method="post">/;

@@ -599,7 +599,7 @@ test('SQLite deleteConnection is all-or-nothing: a schedule/device/row failure A
     const store = createSqliteConnectorInstanceStore();
     const fixture = await seedAtomicFixture(store, 'cin_atomic');
 
-    // This is the failure mode Codex flagged: the record-purge DELETEs have
+    // This is the failure mode review flagged: the record-purge DELETEs have
     // ALREADY executed inside the cascade transaction, and THEN the
     // schedule/device/row cleanup fails. With the old two-transaction
     // construction the record purge would have committed independently, leaving

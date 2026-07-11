@@ -1075,7 +1075,7 @@ test("backfill mode: a failed historical attachment fetch is counted as a remain
 // while never echoing the full local-part.
 
 test("redactEmailForProgress: masks the local-part but keeps the domain", () => {
-  assert.equal(redactEmailForProgress("the owner.nunamaker@gmail.com"), "t***@gmail.com");
+  assert.equal(redactEmailForProgress("taylor.rivera@example.com"), "t***@example.com");
   assert.equal(redactEmailForProgress("alice@example.org"), "a***@example.org");
 });
 

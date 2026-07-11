@@ -7,7 +7,7 @@ The statement record body for both connectors carries statement identity plus co
 - Chase (`connectors/chase/index.ts:1324`): `id, account_id, title, date_delivered, account_reference, document_url, pdf_path, pdf_sha256, fetched_at`.
 - USAA (`connectors/usaa/index.ts:650`): `id, account_id, title, date_delivered, account_reference, document_url, pdf_sha256, pdf_path, fetched_at`.
 
-`pdf_sha256` is the sha256 of the **raw PDF bytes**, not the content. The read-only evidence lane (`tmp/workstreams/ri-version-rationality-evidence-v1-report.md`) established, at the byte level:
+`pdf_sha256` is the sha256 of the **raw PDF bytes**, not the content. A read-only evidence lane established, at the byte level:
 
 - Chase statement PDFs are RC4-encrypted (`pdfinfo`: `Encrypted: yes ... algorithm:RC4`). Two same-key blobs differ first at byte offset 35, inside the PDF encryption dictionary (per-download RC4 key material), and carry different `CreationDate`/`ModDate`. The decrypted text (`pdftotext`, empty password) and page count are identical. For all 4 comparable keys: distinct `pdf_sha256`, identical text sha, identical page count, zero text differences.
 - `pdf_path` and `document_url` embed the `pdf_sha256`, so all three blob-identity fields move together on every re-download with zero owner-visible content change.

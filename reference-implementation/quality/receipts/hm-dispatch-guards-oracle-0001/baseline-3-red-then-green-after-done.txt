@@ -1,6 +1,0 @@
-# hone work hm-dispatch-guards-oracle-0001 — baseline rung 'red-then-green-after-done'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-dispatch.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/} after DONE/} following DONE/' runtime/index.js && node --test test/runtime-handle-msg-dispatch.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming the after-DONE guard test — the mutation rewrites the generic doneMessage-prologue throw at runtime/index.js:2935 (sed target verified unique 2026-07-02: grep -c '} after DONE' runtime/index.js == 1; the invalid-JSONL-after-DONE string at :2933 is untouched, so exactly the 'Connector emitted RECORD after DONE' pin goes red); checkout restores it
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

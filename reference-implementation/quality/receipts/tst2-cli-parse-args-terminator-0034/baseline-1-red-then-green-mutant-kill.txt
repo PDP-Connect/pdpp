@@ -1,6 +1,0 @@
-# hone work tst2-cli-parse-args-terminator-0034 — baseline rung 'red-then-green-mutant-kill'
-# command: cd "$REPO_ROOT/../packages/cli" && if [ -f test/parse-args-terminator-oracle.test.js ]; then src=src/ref/args.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0034_cli_args.bak; cp "$src" "$bak"; perl -0pi -e "s/positionals\\.push\\(\\.\\.\\.argv\\.slice\\(i \\+ 1\\)\\);/positionals.push(...argv.slice(i));/" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/parse-args-terminator-oracle.test.js 2>&1 || rc=1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: parse args oracle not yet created"; exit 0; fi
-# expect: BASELINE guarded green while absent. POST including the -- terminator in positionals must fail the new parser oracle and print MUTANT KILLED after source restore.
-# exit: 0  duration: 0s  verdict: PASS
-
-BASELINE: parse args oracle not yet created

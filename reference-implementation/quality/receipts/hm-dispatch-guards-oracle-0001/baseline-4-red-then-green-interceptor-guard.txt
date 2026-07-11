@@ -1,6 +1,0 @@
-# hone work hm-dispatch-guards-oracle-0001 — baseline rung 'red-then-green-interceptor-guard'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-handle-msg-dispatch.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/emitted ${msg.type} while waiting for INTERACTION_RESPONSE/emitted ${msg.type} while awaiting INTERACTION_RESPONSE/' runtime/index.js && node --test test/runtime-handle-msg-dispatch.test.js; git checkout -- runtime/index.js; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming the second-INTERACTION interceptor test — the mutation rewrites the rl-interceptor guard string at runtime/index.js:3579 (sed target verified unique 2026-07-02: grep -cF 'emitted ${msg.type} while waiting for INTERACTION_RESPONSE' runtime/index.js == 1; the invalid-JSONL interceptor line at :3583 does not match), proving the oracle pins the wire-REACHABLE concurrency guard; checkout restores it
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

@@ -9,8 +9,8 @@
 //
 // Public facade (what runtime/index.js imports):
 //   Functions: boundString, boundStringList, boundGapString,
-//              boundConnectorErrorMessage, boundGapStringList, boundGapDiagnostics,
-//              boundConsideredCount, normalizeRecoveryHint, normalizeGapScope,
+//              boundConnectorErrorMessage, boundConsideredCount,
+//              normalizeRecoveryHint, normalizeGapScope,
 //              buildCollectionFacts, buildKnownGap
 //   Constants: VIOLATION_LIST_MAX, GAP_STRING_MAX, RECOVERY_ACTIONS
 //
@@ -40,6 +40,7 @@ const GAP_SEVERITIES = new Set(["actionable", "informational", "recoverable", "t
 const INFORMATIONAL_GAP_REASONS = new Set(["not_available_in_mode", "out_of_scope", "user_disabled"]);
 const TRANSIENT_GAP_REASONS = new Set([
   "http_429",
+  "manifest_stream_unresolved",
   "rate_limited",
   "retry_exhausted",
   "temporary_unavailable",
@@ -334,14 +335,14 @@ export function buildCollectionFacts({
       }
     }
   }
-  for (const [stream, stateStream] of manifestStateStreamByStream ?? []) {
+  for (const [stream, stateStream] of manifestStateStreamByStream || []) {
     if (!streamToStateStream.has(stream)) {
       streamToStateStream.set(stream, stateStream);
     }
   }
 
-  const committed = committedStateStreams instanceof Set ? committedStateStreams : new Set(committedStateStreams ?? []);
-  const stagedStateStreams = new Set(Object.keys(newState ?? {}));
+  const committed = committedStateStreams instanceof Set ? committedStateStreams : new Set(committedStateStreams || []);
+  const stagedStateStreams = new Set(Object.keys(newState || {}));
 
   const checkpointForStateStream = (stateStream: string): string => {
     if (!persistState) {
@@ -417,10 +418,10 @@ export function buildCollectionFacts({
   const streams = inScopeStreams.map((stream) => {
     const considered = declaredConsideredForStream(stream);
     const covered = declaredCoveredForStream(stream);
-    const stateStream = streamToStateStream.get(stream) ?? stream;
+    const stateStream = streamToStateStream.get(stream) || stream;
     return {
       stream,
-      collected: emittedByStream.get(stream) ?? 0,
+      collected: emittedByStream.get(stream) || 0,
       // Omit when unknown — absence reads as `unknown` downstream; never
       // inferred from collected count.
       ...(considered == null ? {} : { considered }),
@@ -454,7 +455,7 @@ function inferRecoveryAction(
   message: string | null,
   interactionKind: string | null = null
 ): string {
-  const text = `${reason ?? ""} ${message ?? ""} ${interactionKind ?? ""}`.toLowerCase();
+  const text = `${reason || ""} ${message || ""} ${interactionKind || ""}`.toLowerCase();
   if (RE_MANUAL.test(text)) {
     return "manual_action_required";
   }
@@ -489,13 +490,13 @@ export function normalizeRecoveryHint(
     interactionKind = null,
   }: { reason?: string | null; message?: string | null; interactionKind?: string | null } = {}
 ): { action: string; retryable: boolean } {
-  const inferredAction = inferRecoveryAction(reason ?? null, message ?? null, interactionKind ?? null);
+  const inferredAction = inferRecoveryAction(reason, message, interactionKind);
   if (typeof input === "string" && RECOVERY_ACTIONS.has(input)) {
     return { action: input, retryable: input === "retry_by_runtime" };
   }
   if (input && typeof input === "object" && !Array.isArray(input)) {
     const r = input as RecoveryHintInput;
-    const action = typeof r.action === "string" && RECOVERY_ACTIONS.has(r.action) ? r.action : inferredAction;
+    const action = RECOVERY_ACTIONS.has(r.action as string) ? (r.action as string) : inferredAction;
     return {
       action,
       retryable: typeof r.retryable === "boolean" ? r.retryable : action === "retry_by_runtime",
@@ -511,11 +512,13 @@ export function normalizeRecoveryHint(
 
 export function normalizeGapScope(msg: Record<string, unknown>): Record<string, unknown> | null {
   const scope: Record<string, unknown> = {};
-  const resourceIds = boundGapStringList((msg.resource_ids ?? msg.resources) as unknown);
+  const resourceIds = boundGapStringList((msg.resource_ids || msg.resources) as unknown);
   if (resourceIds) {
     scope.resource_ids = resourceIds;
-    const rawList = msg.resource_ids ?? msg.resources;
-    if (Array.isArray(rawList) && rawList.length > GAP_LIST_MAX) {
+    if (
+      Array.isArray(msg.resource_ids || msg.resources) &&
+      ((msg.resource_ids || msg.resources) as unknown[]).length > GAP_LIST_MAX
+    ) {
       scope.truncated = true;
     }
   }
@@ -569,11 +572,11 @@ function classifyKnownGapSeverity({
   if (TRANSIENT_GAP_REASONS.has(reason)) {
     return "transient";
   }
-  let action: string | null = null;
+  let action: unknown = null;
   if (typeof recoveryHint === "string") {
     action = recoveryHint;
   } else if (recoveryHint && typeof recoveryHint === "object") {
-    action = (recoveryHint as { action?: string }).action ?? null;
+    action = (recoveryHint as { action?: unknown }).action;
   }
   if (action === "retry_by_runtime") {
     return "transient";
@@ -610,7 +613,7 @@ export function buildKnownGap({
   unsupportedInDefaultScope = false,
   diagnostics = null,
 }: BuildKnownGapInput): Record<string, unknown> {
-  const safeReason = boundGapString(reason) ?? "unknown";
+  const safeReason = boundGapString(reason) || "unknown";
   const safeMessage = boundGapString(message);
   const normalizedSeverity = classifyKnownGapSeverity({
     kind,

@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  BROWSER_BOUND_RUNBOOK_PATH,
-  STATIC_SECRET_RUNBOOK_PATH,
   STATIC_SECRET_LIVE_PROVEN_CONNECTOR_KEYS,
   buildConnectionSetupPlan,
   classifyConnectorIntentModality,
@@ -136,7 +134,7 @@ test('setup planner keeps browser-bound connectors proof-gated before live proof
   assert.equal(amazon.ownerAgentIntent.status, 'proof_gated');
   assert.equal(amazon.ownerAgentIntent.nextStepKind, 'manual_runbook');
   assert.equal(amazon.proofGate, 'browser_collector_live_proof_missing');
-  assert.equal(amazon.runbookPath, BROWSER_BOUND_RUNBOOK_PATH);
+  assert.equal(amazon.runbookPath, null);
 
   const chase = buildConnectionSetupPlan({
     connectorKey: 'chase',
@@ -160,7 +158,7 @@ test('setup planner keeps unproven static-secret connectors proof-gated', () => 
   assert.equal(plan.ownerAgentIntent.status, 'proof_gated');
   assert.equal(plan.ownerAgentIntent.nextStepKind, 'capture_static_secret');
   assert.equal(plan.proofGate, 'static_secret_live_proof_missing');
-  assert.equal(plan.runbookPath, STATIC_SECRET_RUNBOOK_PATH);
+  assert.equal(plan.runbookPath, null);
 });
 
 test('setup planner marks live-proven static-secret connectors as supported', () => {

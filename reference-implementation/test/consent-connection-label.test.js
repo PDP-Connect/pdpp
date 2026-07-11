@@ -50,7 +50,7 @@ test('isPlaceholderConnectionLabel rejects absent, placeholder, URL, and bare-ty
 test('isPlaceholderConnectionLabel accepts owner-meaningful labels', () => {
   assert.equal(isPlaceholderConnectionLabel('gmail', 'Personal Gmail'), false);
   assert.equal(isPlaceholderConnectionLabel('amazon', 'Shared Amazon'), false);
-  assert.equal(isPlaceholderConnectionLabel('claude_code', 'peregrine Claude Code'), false);
+  assert.equal(isPlaceholderConnectionLabel('claude_code', 'laptop Claude Code'), false);
 });
 
 test('formatConnectorName humanizes the connector key', () => {

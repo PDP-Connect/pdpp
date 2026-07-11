@@ -97,7 +97,23 @@ interface ParsedNekoEnvShape {
   readonly surfaceMode: BrowserSurfaceMode;
 }
 
-function readNekoEnvShape(env: NodeJS.ProcessEnv): ParsedNekoEnvShape {
+interface RawNekoEnvShape {
+  readonly configuredStaticProfileKey: string | undefined;
+  readonly managedConnectorIds: readonly string[];
+  readonly managedConnectors: Set<string>;
+  readonly requestedSurfaceMode: BrowserSurfaceMode | undefined;
+  readonly staticCdpHttpUrl: string | undefined;
+  readonly staticStreamBaseUrl: string | undefined;
+  readonly surfaceCap: number;
+}
+
+interface ParsedNekoLeaseEnv {
+  readonly defaultPriorityClass: BrowserSurfacePriorityClass;
+  readonly idleTtlMs: number;
+  readonly leaseWaitTimeoutMs: number;
+}
+
+function readNekoEnvShape(env: NodeJS.ProcessEnv): RawNekoEnvShape {
   const managedConnectorIds = splitCsv(env.PDPP_NEKO_MANAGED_CONNECTORS);
   const managedConnectors = new Set(managedConnectorIds.flatMap(managedConnectorAliases));
   const requestedSurfaceMode = parseSurfaceMode(env.PDPP_NEKO_SURFACE_MODE);
@@ -106,30 +122,39 @@ function readNekoEnvShape(env: NodeJS.ProcessEnv): ParsedNekoEnvShape {
     "PDPP_NEKO_SURFACE_CAP",
     managedConnectors.size === 0 ? 0 : undefined
   );
-  if (managedConnectors.size > 0 && surfaceCap < 1) {
-    throw new Error("PDPP_NEKO_SURFACE_CAP must be an integer >= 1 when PDPP_NEKO_MANAGED_CONNECTORS is configured");
-  }
-
   const configuredStaticProfileKey = emptyToUndefined(env.PDPP_NEKO_STATIC_PROFILE_KEY);
-  const staticProfileKey =
-    requestedSurfaceMode === "dynamic"
-      ? configuredStaticProfileKey
-      : (configuredStaticProfileKey ?? defaultStaticProfileKey(managedConnectorIds));
-  if (requestedSurfaceMode !== "dynamic" && managedConnectors.size > 1 && !staticProfileKey) {
-    throw new Error("PDPP_NEKO_STATIC_PROFILE_KEY is required when multiple managed n.eko connectors are configured");
-  }
 
-  const surfaceMode: BrowserSurfaceMode = requestedSurfaceMode ?? (staticProfileKey ? "static" : "dynamic");
   return {
     managedConnectorIds,
     managedConnectors,
     requestedSurfaceMode,
     surfaceCap,
     configuredStaticProfileKey,
-    staticProfileKey,
-    surfaceMode,
     staticCdpHttpUrl: emptyToUndefined(env.PDPP_NEKO_CDP_HTTP_URL),
     staticStreamBaseUrl: emptyToUndefined(env.PDPP_NEKO_BASE_URL),
+  };
+}
+
+function enforceManagedSurfaceCapInvariant(shape: RawNekoEnvShape): void {
+  if (shape.managedConnectors.size > 0 && shape.surfaceCap < 1) {
+    throw new Error("PDPP_NEKO_SURFACE_CAP must be an integer >= 1 when PDPP_NEKO_MANAGED_CONNECTORS is configured");
+  }
+}
+
+function applyStaticProfileDefaults(shape: RawNekoEnvShape): ParsedNekoEnvShape {
+  const staticProfileKey =
+    shape.requestedSurfaceMode === "dynamic"
+      ? shape.configuredStaticProfileKey
+      : (shape.configuredStaticProfileKey ?? defaultStaticProfileKey(shape.managedConnectorIds));
+  if (shape.requestedSurfaceMode !== "dynamic" && shape.managedConnectors.size > 1 && !staticProfileKey) {
+    throw new Error("PDPP_NEKO_STATIC_PROFILE_KEY is required when multiple managed n.eko connectors are configured");
+  }
+
+  const surfaceMode: BrowserSurfaceMode = shape.requestedSurfaceMode ?? (staticProfileKey ? "static" : "dynamic");
+  return {
+    ...shape,
+    staticProfileKey,
+    surfaceMode,
   };
 }
 
@@ -162,10 +187,8 @@ function enforceDynamicModeInvariants(shape: ParsedNekoEnvShape): void {
   }
 }
 
-function buildLeaseConfig(shape: ParsedNekoEnvShape, env: NodeJS.ProcessEnv): BrowserSurfaceLeaseConfig {
+function readLeaseConfigEnv(env: NodeJS.ProcessEnv): ParsedNekoLeaseEnv {
   return {
-    managedConnectors: shape.managedConnectors,
-    surfaceCap: shape.surfaceCap,
     leaseWaitTimeoutMs: parseIntegerEnv(
       env.PDPP_NEKO_LEASE_WAIT_TIMEOUT_MS,
       "PDPP_NEKO_LEASE_WAIT_TIMEOUT_MS",
@@ -173,6 +196,16 @@ function buildLeaseConfig(shape: ParsedNekoEnvShape, env: NodeJS.ProcessEnv): Br
     ),
     idleTtlMs: parseIntegerEnv(env.PDPP_NEKO_IDLE_TTL_MS, "PDPP_NEKO_IDLE_TTL_MS", DEFAULT_NEKO_IDLE_TTL_MS),
     defaultPriorityClass: parsePriorityClass(env.PDPP_NEKO_DEFAULT_PRIORITY_CLASS),
+  };
+}
+
+function buildLeaseConfig(shape: ParsedNekoEnvShape, leaseEnv: ParsedNekoLeaseEnv): BrowserSurfaceLeaseConfig {
+  return {
+    managedConnectors: shape.managedConnectors,
+    surfaceCap: shape.surfaceCap,
+    leaseWaitTimeoutMs: leaseEnv.leaseWaitTimeoutMs,
+    idleTtlMs: leaseEnv.idleTtlMs,
+    defaultPriorityClass: leaseEnv.defaultPriorityClass,
     priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
     surfaceMode: shape.surfaceMode,
     ...(shape.staticProfileKey ? { staticProfileKey: shape.staticProfileKey } : {}),
@@ -184,9 +217,12 @@ function buildLeaseConfig(shape: ParsedNekoEnvShape, env: NodeJS.ProcessEnv): Br
 export function parseNekoBrowserSurfaceRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env
 ): NekoBrowserSurfaceRuntimeConfig {
-  const shape = readNekoEnvShape(env);
+  const rawShape = readNekoEnvShape(env);
+  enforceManagedSurfaceCapInvariant(rawShape);
+  const shape = applyStaticProfileDefaults(rawShape);
   enforceStaticModeInvariants(shape);
-  const leaseConfig = buildLeaseConfig(shape, env);
+  const leaseEnv = readLeaseConfigEnv(env);
+  const leaseConfig = buildLeaseConfig(shape, leaseEnv);
   const leaseSweepIntervalMs = parsePositiveIntegerEnv(
     env.PDPP_NEKO_LEASE_SWEEP_INTERVAL_MS,
     "PDPP_NEKO_LEASE_SWEEP_INTERVAL_MS",

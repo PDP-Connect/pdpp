@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Amazon stream records. Used for shape-check-before-emit
- * per docs/connector-authoring-guide.md §3: records that don't match the
+ * per docs/reference/connector-authoring-guide.md §3: records that don't match the
  * schema become SKIP_RESULT events instead of RECORD events, so the RS
  * never receives data that looks right but isn't.
  *

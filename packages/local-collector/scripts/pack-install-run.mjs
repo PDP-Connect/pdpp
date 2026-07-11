@@ -252,6 +252,10 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
     assert.ok((runOutput.recordsQueued ?? 0) > 0, `codex connector did not queue any records: ${runResult.stdout}`);
     assert.ok((runOutput.sentBatches ?? 0) > 0, `codex connector did not send any batches to the reference server: ${runResult.stdout}`);
 
+    // Records land under the bare canonical connector key (`codex`), NOT a
+    // `local-device:codex` storage prefix — connection isolation is carried by
+    // connector_instance_id. See reference-implementation/server/db.js and the
+    // canonicalize-connector-keys design (Decision 7).
     const persisted = getDb()
       .prepare(
         `SELECT COUNT(*) as n
@@ -259,7 +263,7 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
           WHERE connector_id = ?
             AND connector_instance_id = ?`
       )
-      .get(`local-device:${encodeURIComponent("codex")}`, enrollment.connector_instance_id);
+      .get("codex", enrollment.connector_instance_id);
     assert.ok(
       persisted.n > 0,
       `expected at least one persisted record for connector_instance ${enrollment.connector_instance_id}; got ${persisted.n}`

@@ -1,6 +1,0 @@
-# hone work auth-mutation-tests-0001 — baseline rung 'red-then-green-introspect-expiry'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/auth-expiry-enforcement.test.js ]; then git diff --quiet -- server/auth.js && sed -i 's/row.expires_at && new Date(row.expires_at) < new Date()/false/' server/auth.js && node --test test/auth-expiry-enforcement.test.js; git checkout -- server/auth.js; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent). Post: seeded run FAILS naming 'expired client token: introspect returns active false with inactive_reason grant_expired' — the mutation disables the RFC 7662 expiry branch (server/auth.js:5708; grep -cF 'row.expires_at && new Date(row.expires_at) < new Date()' server/auth.js == 1) so the rewound token introspects active:true; the pre-rewind active:true half of the test stays green, isolating the branch; checkout restores it
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

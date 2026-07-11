@@ -1,7 +1,0 @@
-# hone work tst2-read-core-fallback-identity-0032 — baseline rung 'red-then-green-mutant-kill'
-# command: cd "$REPO_ROOT/../packages/read-core" && if [ -f test/fallback-identity-oracle.test.js ]; then src=src/index.js; bak=$REPO_ROOT/.pdpp_hone_tst2_0032_read_core.bak; cp "$src" "$bak"; perl -0pi -e "s/fallback\\?\\.recordId,/undefined,/" "$src"; if cmp -s "$src" "$bak"; then cp "$bak" "$src"; rm -f "$bak"; echo "MUTATION NOT APPLIED"; exit 1; fi; rc=0; timeout 300 node --test --test-force-exit test/fallback-identity-oracle.test.js 2>&1 || rc=1; cp "$bak" "$src"; cmp -s "$src" "$bak" || { echo "RESTORE FAILED"; rm -f "$bak"; exit 1; }; rm -f "$bak"; if [ $rc -eq 1 ]; then echo "MUTANT KILLED"; exit 0; else echo "MUTANT SURVIVED"; exit 1; fi; else echo "BASELINE: fallback identity oracle not yet created"; exit 0; fi
-# expect: BASELINE guarded green while absent. POST removing fallback.recordId must prevent ladder creation or produce the wrong id, so the new oracle kills the mutant and source is restored byte-clean.
-# timeout: 1800s (engine-default)
-# exit: 0  duration: 0s  verdict: PASS
-
-BASELINE: fallback identity oracle not yet created

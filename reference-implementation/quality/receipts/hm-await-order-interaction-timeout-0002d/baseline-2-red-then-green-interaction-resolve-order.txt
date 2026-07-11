@@ -1,6 +1,0 @@
-# hone work hm-await-order-interaction-timeout-0002d — baseline rung 'red-then-green-interaction-resolve-order'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/runtime-msg-order-interaction-timeout.test.js ]; then git diff --quiet -- runtime/index.js && sed -i 's/await attentionWriter.resolveByRequestId(msg.request_id, responseStatus);/attentionWriter.resolveByRequestId(msg.request_id, responseStatus);/' runtime/index.js || exit 1; rc=0; node --test test/runtime-msg-order-interaction-timeout.test.js || rc=1; git checkout -- runtime/index.js; [ "$rc" -eq 1 ]; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent, exit 0). Post: the rung seeds the dropped-await mutation (runtime/index.js:3124; sed target verified unique 2026-07-02), runs the oracle capturing rc BEFORE restoring the file, restores, and exits 0 ONLY IF the seeded run FAILED — failing output visible in the receipt, and the engine requires the failure line to name 'INTERACTION arm: resolveByRequestId completes before the assistance resolution event and stdin response'
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored

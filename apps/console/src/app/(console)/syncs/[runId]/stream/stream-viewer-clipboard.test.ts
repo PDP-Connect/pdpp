@@ -37,7 +37,7 @@ const VIEWER_DIRECT_NEKO_CLIPBOARD_CALL_RE = /\b(?:pasteTextIntoNeko|copyRemoteS
 const VIEWER_CLIPBOARD_VIA_ADAPTER_RE =
   /if \(surface && surfaceState === "mounted"\) \{[\s\S]*pasted = await surface\.pasteText\(localText\)[\s\S]*if \(surface && surfaceState === "mounted"\) \{[\s\S]*dispatched = await surface\.copyRemoteSelection\(\)/;
 const CDP_NATIVE_PASTE_VIA_ADAPTER_RE =
-  /new CdpSurfaceAdapter\(\{[\s\S]*sendInput: sendCdpInput[\s\S]*getClipboardPolicy: \(\) => clipboardPolicyRef\.current/;
+  /new CdpClientSurface\(\{[\s\S]*cdp: createPdppCdpTransport\(sendCdpInput\)[\s\S]*getClipboardPolicy: \(\) => clipboardPolicyRef\.current/;
 const VIEWER_DIRECT_CDP_PASTE_POST_RE = /postInput\(\{ type: "paste", text \}\)/;
 
 test("mobile clipboard uses explicit copy and paste buttons with sheet fallback", async () => {

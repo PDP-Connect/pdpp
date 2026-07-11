@@ -1,6 +1,6 @@
 /**
  * Zod schemas for WhatsApp stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * Ground truth: the `emitRecord` calls in index.ts, backed by parser output
  * from parsers.ts. The emitted-record literals in index.ts are the source of

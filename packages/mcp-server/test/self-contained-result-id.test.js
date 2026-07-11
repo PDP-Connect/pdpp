@@ -27,8 +27,8 @@ const AMBIGUOUS_RECORD_ERROR = {
     code: 'ambiguous_connection',
     message: "Record id 'o1' resolves to more than one connection under the caller's grant.",
     available_connections: [
-      { connection_id: 'cin_aaa', display_name: 'peregrine Amazon' },
-      { connection_id: 'cin_bbb', display_name: 'vivid fish Amazon' },
+      { connection_id: 'cin_aaa', display_name: 'laptop Amazon' },
+      { connection_id: 'cin_bbb', display_name: 'example org Amazon' },
     ],
     retry_with: {
       field: 'connection_id',
@@ -62,8 +62,8 @@ function makeMultiSourceFetch() {
         meta: {
           package: {
             source_mix: [
-              { connection_id: 'cin_aaa', connector_key: 'amazon', display_name: 'peregrine Amazon', count: 1 },
-              { connection_id: 'cin_bbb', connector_key: 'amazon', display_name: 'vivid fish Amazon', count: 1 },
+              { connection_id: 'cin_aaa', connector_key: 'amazon', display_name: 'laptop Amazon', count: 1 },
+              { connection_id: 'cin_bbb', connector_key: 'amazon', display_name: 'example org Amazon', count: 1 },
             ],
           },
         },
@@ -71,19 +71,19 @@ function makeMultiSourceFetch() {
           {
             stream: 'orders',
             id: 'o1',
-            title: 'Order o1 (peregrine)',
+            title: 'Order o1 (laptop)',
             connection_id: 'cin_aaa',
             connector_key: 'amazon',
-            display_name: 'peregrine Amazon',
+            display_name: 'laptop Amazon',
             snippet: { text: 'Pasta maker, $89.' },
           },
           {
             stream: 'orders',
             id: 'o9',
-            title: 'Order o9 (vivid fish)',
+            title: 'Order o9 (example org)',
             connection_id: 'cin_bbb',
             connector_key: 'amazon',
-            display_name: 'vivid fish Amazon',
+            display_name: 'example org Amazon',
             snippet: { text: 'Pasta drying rack, $19.' },
           },
         ],
@@ -100,7 +100,7 @@ function makeMultiSourceFetch() {
       return jsonResponse({
         id: 'o1',
         stream: 'orders',
-        title: 'Order o1 (peregrine)',
+        title: 'Order o1 (laptop)',
         text: 'Pasta maker, $89.',
         connection_id: conn,
         connector_key: 'amazon',
@@ -186,7 +186,7 @@ test('search to fetch journey completes from content[] text alone with ONE handl
 
   const document = JSON.parse(fetchResult.content[0].text);
   assert.equal(document.id, 'cin_aaa/orders:o1', 'document id must echo the self-contained handle');
-  assert.equal(document.title, 'Order o1 (peregrine)');
+  assert.equal(document.title, 'Order o1 (laptop)');
   assert.equal(document.text, 'Pasta maker, $89.');
   assert.equal(document.metadata.connection_id, 'cin_aaa');
 

@@ -97,9 +97,9 @@ export const SEED_GMAIL_THREADS = [
   },
   {
     id: "g010",
-    subject: "Invite to join the Vana workspace",
-    from: "hi@vana.com",
-    from_name: "Vana",
+    subject: "Invite to join the Acme workspace",
+    from: "hi@acme.example",
+    from_name: "Acme",
     labels: ["inbox", "work"],
     received_at: daysAgo(9),
     thread_count: 1,

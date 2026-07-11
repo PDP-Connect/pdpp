@@ -1502,22 +1502,24 @@ function conditionIsTrue(
   return conditions.get(type)?.status === "true";
 }
 
+function isDegradingCondition(item: ConnectionHealthCondition): boolean {
+  if (item.status !== "false") {
+    return false;
+  }
+  if (item.type === "BacklogClear" && item.severity === "info") {
+    return false;
+  }
+  if (item.type === "ScheduleEligible" || item.type === "AttentionClear" || item.type === "RetryPolicyClear") {
+    return false;
+  }
+  if (item.type === "CredentialsValid") {
+    return false;
+  }
+  return item.severity === "warning" || item.severity === "error" || item.severity === "blocked";
+}
+
 function hasDegradingCondition(conditions: readonly ConnectionHealthCondition[]): boolean {
-  return conditions.some((item) => {
-    if (item.status !== "false") {
-      return false;
-    }
-    if (item.type === "BacklogClear" && item.severity === "info") {
-      return false;
-    }
-    if (item.type === "ScheduleEligible" || item.type === "AttentionClear" || item.type === "RetryPolicyClear") {
-      return false;
-    }
-    if (item.type === "CredentialsValid") {
-      return false;
-    }
-    return item.severity === "warning" || item.severity === "error" || item.severity === "blocked";
-  });
+  return conditions.some(isDegradingCondition);
 }
 
 function isHealthyConditionSet(conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>): boolean {

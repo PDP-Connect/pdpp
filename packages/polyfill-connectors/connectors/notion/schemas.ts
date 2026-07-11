@@ -1,6 +1,6 @@
 /**
  * Zod schemas for Notion stream records. Shape-check-before-emit per
- * docs/connector-authoring-guide.md §3.
+ * docs/reference/connector-authoring-guide.md §3.
  *
  * Ground truth: the `toPageRecord` / `toDatabaseRecord` builders in index.ts
  * (the only place RECORDs are constructed). Schemas mirror the *emitted*

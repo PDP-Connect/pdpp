@@ -243,8 +243,8 @@ test('classifyToolNames requires the exact normal read tool surface', () => {
 
 test('CLI helpers map credential cache path and detect missing read commands', () => {
   assert.equal(
-    cliCredentialCacheFile('/cache', 'https://pdpp.vivid.fish/'),
-    '/cache/clients/pdpp.vivid.fish.json',
+    cliCredentialCacheFile('/cache', 'https://pdpp.example.com/'),
+    '/cache/clients/pdpp.example.com.json',
   );
   const help = 'PDPP CLI\nUsage:\n  pdpp connect <provider-url>\n  pdpp token <provider-url>\n';
   assert.deepEqual(classifyCliHelp(help), { hasCliHelp: true, hasGrantScopedReadCommands: false });

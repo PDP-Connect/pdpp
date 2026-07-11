@@ -59,4 +59,3 @@ retention is local policy," or prescribe a rule).
 ## References
 
 - `apps/site/content/docs/spec-core.md` — grant fields (§6), standing authorization (L594), grant narrowing / revoke-and-reissue (L598), records from revoked grants (L602), retention (L606), auditability/transparency boundary (L1411–1417), view evolution (L872).
-- `docs/research/pdpp-consent-artifact-persistence-and-sharing-brief-2026-06-23.md` — FHIR / Open Banking / GDPR citations and the structural-vs-institutional mapping.

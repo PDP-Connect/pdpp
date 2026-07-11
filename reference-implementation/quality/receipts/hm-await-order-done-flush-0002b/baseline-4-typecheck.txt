@@ -1,5 +1,0 @@
-# hone work hm-await-order-done-flush-0002b — baseline rung 'typecheck'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && npx tsc --noEmit
-# expect: 0 errors
-# exit: 0  duration: 5s  verdict: PASS
-

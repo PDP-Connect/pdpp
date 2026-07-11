@@ -40,7 +40,7 @@ test("connect command uses npx + package specifier", () => {
 });
 
 test("connect command can be rendered for a concrete provider URL", () => {
-  assert.equal(pdppCliConnectCommandFor("https://pdpp.vivid.fish"), "npx -y @pdpp/cli connect https://pdpp.vivid.fish");
+  assert.equal(pdppCliConnectCommandFor("https://pdpp.example.com"), "npx -y @pdpp/cli connect https://pdpp.example.com");
 });
 
 test("install command uses npx + --help", () => {
@@ -206,17 +206,17 @@ test("substituteCommandTemplate resolves all three non-secret placeholders", () 
 test("substituteCommandTemplate resolves the connection-id placeholder", () => {
   const resolved = substituteCommandTemplate(
     "npx -y @pdpp/local-collector retry-dead-letters --connection-id <connection-id>",
-    { providerUrl: null, connectorId: null, connectionId: "cin_peregrine" }
+    { providerUrl: null, connectorId: null, connectionId: "cin_laptop" }
   );
-  assert.equal(resolved, "npx -y @pdpp/local-collector retry-dead-letters --connection-id cin_peregrine");
+  assert.equal(resolved, "npx -y @pdpp/local-collector retry-dead-letters --connection-id cin_laptop");
 });
 
 test("substituteCommandTemplate resolves the source-instance-id placeholder", () => {
   const resolved = substituteCommandTemplate(
     "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply",
-    { providerUrl: null, connectorId: null, connectionId: "cin_peregrine", sourceInstanceId: "dsrc_peregrine" }
+    { providerUrl: null, connectorId: null, connectionId: "cin_laptop", sourceInstanceId: "dsrc_laptop" }
   );
-  assert.equal(resolved, "npx -y @pdpp/local-collector recover --source-instance-id dsrc_peregrine --apply");
+  assert.equal(resolved, "npx -y @pdpp/local-collector recover --source-instance-id dsrc_laptop --apply");
 });
 
 test("substituteCommandTemplate FAILS CLOSED when a placeholder is unresolved", () => {

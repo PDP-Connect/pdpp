@@ -294,7 +294,7 @@ async function discoverYears(page: Page): Promise<number[]> {
 // ─── Per-order detail fetch ──────────────────────────────────────────────
 // Scrapes /gp/your-account/order-details?orderID=<ID> using Amazon's own
 // `data-component` attributes (English-in-code on every locale) rather
-// than regexing concatenated innerText. See docs/connector-authoring-guide.md
+// than regexing concatenated innerText. See docs/reference/connector-authoring-guide.md
 // §2 for why structure > text.
 //
 // DOM contract used (stable on Amazon across layouts since ≥2023):

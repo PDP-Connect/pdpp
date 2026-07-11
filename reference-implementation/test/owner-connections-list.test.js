@@ -425,15 +425,15 @@ async function enrollThroughBindingAwarePath(asUrl, { connectorId, localBindingN
   return enrollResp.body;
 }
 
-// Honesty proof for the browser-collector proof runbook
-// (docs/operator/browser-collector-proof-runbook.md). Step 2 / Step 4 tell the
-// owner to verify the enrolled Amazon connection is recorded as
-// `browser_collector` after the live run. `source_kind` is NOT exposed on the
-// device-exporter `source-instances` JSON, so the runbook directs the owner at
-// the owner-agent listing. This pins that the binding-aware enrollment path
-// surfaces `source_kind: "browser_collector"` end-to-end on
-// `GET /v1/owner/connections`, so the runbook's verification step is real and
-// no owner SQL is required. It does NOT flip Amazon's intent off `unsupported`.
+// Honesty proof for the owner-run browser-collector live-proof procedure (the
+// prior operator runbook doc was removed in LFDT curation). The procedure's
+// Step 2 / Step 4 tell the owner to verify the enrolled Amazon connection is
+// recorded as `browser_collector` after the live run. `source_kind` is NOT
+// exposed on the device-exporter `source-instances` JSON, so the owner is
+// directed at the owner-agent listing instead. This pins that the
+// binding-aware enrollment path surfaces `source_kind: "browser_collector"`
+// end-to-end on `GET /v1/owner/connections`, so that verification step is real
+// and no owner SQL is required. It does NOT flip Amazon's intent off `unsupported`.
 test('owner-agent bearer sees source_kind=browser_collector for an Amazon connection enrolled through the binding-aware path', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const manifest = await registerConnector(asUrl, loadManifest('amazon'));

@@ -345,6 +345,14 @@ export interface DecideBackoffDispatchValue {
   readonly transitions: readonly BackoffDispatchTransition[];
 }
 
+function shouldEmitBackoffTransition(
+  announcedReasonClass: string | undefined,
+  reasonClass: string,
+  persistedTransition: boolean
+): boolean {
+  return !(announcedReasonClass === reasonClass || persistedTransition);
+}
+
 /**
  * PURE dispatch-decision core. Reproduces the exact back-off/blocked branching
  * that `evaluateBackoffDispatch` used to inline, but reads/writes nothing:
@@ -363,23 +371,34 @@ export interface DecideBackoffDispatchValue {
  *   - backoffApplied && !reasonClass: no mutation, no transition (both cells `keep`).
  */
 export function decideBackoffDispatch(inputs: DecideBackoffDispatchInputs): DecideBackoffDispatchValue {
+  const reasonClass = inputs.reasonClass;
   const transitions: BackoffDispatchTransition[] = [];
   let eligible = inputs.eligible;
   let recoveryOnly = inputs.recoveryOnly;
   let announcedBackoffMutation: DedupCellMutation = "keep";
   let announcedBlockedMutation: DedupCellMutation = "keep";
 
-  if (inputs.backoffApplied && inputs.reasonClass) {
+  if (inputs.backoffApplied && reasonClass) {
     // Back-off skip + `back_off.started` transition marker, one per streak.
     announcedBackoffMutation = "set";
-    if (!(inputs.announcedBackoff === inputs.reasonClass || inputs.persistedBackoffStarted)) {
+    const shouldEmitBackoffStarted = shouldEmitBackoffTransition(
+      inputs.announcedBackoff,
+      reasonClass,
+      inputs.persistedBackoffStarted
+    );
+    if (shouldEmitBackoffStarted) {
       transitions.push({ kind: "backoff_started" });
     }
 
     if (inputs.blocked) {
       // One-shot `gave_up` (+ §10-F escalation) per (connector, reason_class) streak.
       announcedBlockedMutation = "set";
-      if (!(inputs.announcedBlocked === inputs.reasonClass || inputs.persistedGaveUp)) {
+      const shouldEmitGaveUp = shouldEmitBackoffTransition(
+        inputs.announcedBlocked,
+        reasonClass,
+        inputs.persistedGaveUp
+      );
+      if (shouldEmitGaveUp) {
         transitions.push({ kind: "gave_up" });
       }
       // Auto-dispatch is suppressed for blocked connectors (even recovery-only).

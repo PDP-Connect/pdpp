@@ -1,5 +1,0 @@
-# hone work rt-verdict-stream-rollups-oracle-0004 — post-r2 rung 'validation-verdict'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep && sh -c 'if [ -f reference-implementation/test/connector-verdict-input.test.js ]; then git diff -- reference-implementation/test/connector-verdict-input.test.js; else echo oracle-not-yet-authored; fi'
-# expect: baseline: oracle-not-yet-authored (file absent). Post: independent judge (different provider than maker) reviews the TEST diff only; question: do these assertions pin the documented policy (doc comments in connector-verdict-input.ts) rather than incidental output shape, and would they catch the two seeded regressions?
-# exit: 0  duration: 0s  verdict: PASS
-

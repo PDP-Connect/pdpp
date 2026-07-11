@@ -1,6 +1,0 @@
-# hone work t1b-streaming-input-telemetry-evidence-0012 — baseline rung 'red-then-green-kind-swap'
-# command: cd /home/tnunamak/.tmp/pdpp-cq-sweep/reference-implementation && if [ -f test/run-interaction-stream-input-telemetry.test.js ]; then git diff --quiet -- server/streaming/routes.js && sed -i "s/kind: 'wire.input.dispatched'/kind: 'wire.input.received'/" server/streaming/routes.js && node --test test/run-interaction-stream-input-telemetry.test.js; git checkout -- server/streaming/routes.js; else echo oracle-not-yet-authored; fi
-# expect: baseline: oracle-not-yet-authored (file absent). Post (restructured 2026-07-02 per run-2 — engine-run mutation, df-0004 pattern): seeded run FAILS naming the received-then-dispatched telemetry test — the mutation swaps the dispatched event's kind string at the wire-event construction site (server/streaming/routes.js:1018; sed target verified unique 2026-07-02: grep -cF "kind: 'wire.input.dispatched'" server/streaming/routes.js == 1 — the bare string also appears in a comment at :356, hence the kind:-prefixed target); guard confirmed routes.js clean before seeding; checkout restores it — this receipt IS the failing kind-swap run the run-2 judge demanded twice
-# exit: 0  duration: 0s  verdict: PASS
-
-oracle-not-yet-authored
