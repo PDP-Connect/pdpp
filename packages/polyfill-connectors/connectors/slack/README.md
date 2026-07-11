@@ -50,12 +50,15 @@ Slackdump writes the same logical message to multiple chunks within a single dum
 
 ## Streams emitted
 
-`workspace`, `channels`, `channel_memberships`, `users`, `messages`, `message_attachments`, `reactions`, `files`, `canvases`, `dm_read_states`.
+Read from the slackdump SQLite archive: `workspace`, `channels`, `channel_stats`, `channel_memberships`, `users`, `messages`, `message_attachments`, `reactions`, `files`, `canvases`.
 
-Declared but not realizable from a slackdump archive (see comments in `index.js`):
-- `stars` — slackdump defines CHUNK type 8 STARRED_ITEMS but archive mode doesn't populate it
-- `user_groups` — requires `usergroups.list`, not called in archive mode
-- `reminders` — requires `reminders.list`, not called in archive mode
+Read via direct Slack Web API calls (see `slack-api.ts`) using the same session credential slackdump uses — slackdump's own CLI doesn't call these methods, but the `xoxc` token + `d` cookie it's given can call them directly:
+- `stars` — `stars.list`
+- `user_groups` — `usergroups.list`
+- `reminders` — `reminders.list`
+- `dm_read_states` — `conversations.info`, scoped to `is_im`/`is_mpim` channels (per-channel call, not swept across the full channel inventory)
+
+See `openspec/changes/complete-slack-bundled-connector-coverage` for the evidence that these four methods are reachable with the connector's existing credential.
 
 ## Auth
 

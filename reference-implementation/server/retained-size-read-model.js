@@ -33,6 +33,32 @@ const VALID_TOP_MEASURES = new Set([
   'record_history_count',
   'blob_count',
 ]);
+const RETAINED_SIZE_MEASURE_FIELDS = [
+  'current_record_json_bytes',
+  'record_history_json_bytes',
+  'blob_bytes',
+  'record_count',
+  'record_history_count',
+  'blob_count',
+];
+const STREAM_FILTER_FIELDS = [
+  ['connectorInstanceId', 'connector_instance_id'],
+  ['connectorId', 'connector_id'],
+  ['stream', 'stream'],
+];
+const RECORD_FAMILY_FILTER_FIELDS = [
+  ['connectorInstanceId', 'connector_instance_id'],
+  ['stream', 'stream'],
+  ['recordFamily', 'record_family'],
+];
+const RETAINED_SIZE_DELTA_FIELDS = [
+  ['currentRecordJsonBytesDelta', 'current_record_json_bytes_delta'],
+  ['recordHistoryJsonBytesDelta', 'record_history_json_bytes_delta'],
+  ['blobBytesDelta', 'blob_bytes_delta'],
+  ['recordCountDelta', 'record_count_delta'],
+  ['recordHistoryCountDelta', 'record_history_count_delta'],
+  ['blobCountDelta', 'blob_count_delta'],
+];
 
 function nowIso() {
   return new Date().toISOString();
@@ -60,6 +86,37 @@ function emptyMeasures() {
     record_history_count: 0,
     blob_count: 0,
   };
+}
+
+function numericMeasures(row) {
+  const measures = {};
+  for (const field of RETAINED_SIZE_MEASURE_FIELDS) {
+    measures[field] = Number(row[field] || 0);
+  }
+  return measures;
+}
+
+function collectOptionalFilters(values, fields) {
+  const filters = [];
+  for (const [inputName, columnName] of fields) {
+    const value = values[inputName];
+    if (value) filters.push([columnName, value]);
+  }
+  return filters;
+}
+
+function postgresWhereClause(filters) {
+  return filters.length
+    ? `WHERE ${filters.map(([column], index) => `${column} = $${index + 1}`).join(' AND ')}`
+    : '';
+}
+
+function sqliteWhereClause(filters) {
+  return filters.length ? ` WHERE ${filters.map(([column]) => `${column} = ?`).join(' AND ')}` : '';
+}
+
+function filterValues(filters) {
+  return filters.map(([, value]) => value);
 }
 
 function totalBytesFromMeasures(m) {
@@ -120,21 +177,9 @@ function createRetainedSizePostgresStore() {
       return result.rows;
     },
     async listStreamRows({ connectorInstanceId, connectorId, stream } = {}) {
-      const params = [];
-      const clauses = [];
-      if (connectorInstanceId) {
-        params.push(connectorInstanceId);
-        clauses.push(`connector_instance_id = $${params.length}`);
-      }
-      if (connectorId) {
-        params.push(connectorId);
-        clauses.push(`connector_id = $${params.length}`);
-      }
-      if (stream) {
-        params.push(stream);
-        clauses.push(`stream = $${params.length}`);
-      }
-      const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+      const filters = collectOptionalFilters({ connectorInstanceId, connectorId, stream }, STREAM_FILTER_FIELDS);
+      const params = filterValues(filters);
+      const where = postgresWhereClause(filters);
       const result = await postgresQuery(
         `SELECT connector_instance_id, connector_id, stream,
                 current_record_json_bytes, record_history_json_bytes, blob_bytes,
@@ -148,21 +193,9 @@ function createRetainedSizePostgresStore() {
       return result.rows;
     },
     async listRecordFamilyRows({ connectorInstanceId, stream, recordFamily } = {}) {
-      const params = [];
-      const clauses = [];
-      if (connectorInstanceId) {
-        params.push(connectorInstanceId);
-        clauses.push(`connector_instance_id = $${params.length}`);
-      }
-      if (stream) {
-        params.push(stream);
-        clauses.push(`stream = $${params.length}`);
-      }
-      if (recordFamily) {
-        params.push(recordFamily);
-        clauses.push(`record_family = $${params.length}`);
-      }
-      const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+      const filters = collectOptionalFilters({ connectorInstanceId, stream, recordFamily }, RECORD_FAMILY_FILTER_FIELDS);
+      const params = filterValues(filters);
+      const where = postgresWhereClause(filters);
       const result = await postgresQuery(
         `SELECT connector_instance_id, connector_id, stream, record_family,
                 current_record_json_bytes, record_history_json_bytes, blob_bytes,
@@ -297,21 +330,9 @@ function createRetainedSizeSqliteStore() {
                         record_count, record_history_count, blob_count,
                         dirty, computed_at
                  FROM retained_size_stream`;
-      const where = [];
-      const params = [];
-      if (connectorInstanceId) {
-        where.push('connector_instance_id = ?');
-        params.push(connectorInstanceId);
-      }
-      if (connectorId) {
-        where.push('connector_id = ?');
-        params.push(connectorId);
-      }
-      if (stream) {
-        where.push('stream = ?');
-        params.push(stream);
-      }
-      if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+      const filters = collectOptionalFilters({ connectorInstanceId, connectorId, stream }, STREAM_FILTER_FIELDS);
+      const params = filterValues(filters);
+      sql += sqliteWhereClause(filters);
       sql += ' ORDER BY connector_instance_id ASC, stream ASC';
       return db.prepare(sql).all(...params);
     },
@@ -322,21 +343,9 @@ function createRetainedSizeSqliteStore() {
                         record_count, record_history_count, blob_count,
                         dirty, computed_at
                    FROM retained_size_record_family`;
-      const where = [];
-      const params = [];
-      if (connectorInstanceId) {
-        where.push('connector_instance_id = ?');
-        params.push(connectorInstanceId);
-      }
-      if (stream) {
-        where.push('stream = ?');
-        params.push(stream);
-      }
-      if (recordFamily) {
-        where.push('record_family = ?');
-        params.push(recordFamily);
-      }
-      if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+      const filters = collectOptionalFilters({ connectorInstanceId, stream, recordFamily }, RECORD_FAMILY_FILTER_FIELDS);
+      const params = filterValues(filters);
+      sql += sqliteWhereClause(filters);
       sql += ' ORDER BY connector_instance_id ASC, stream ASC, record_family ASC';
       return db.prepare(sql).all(...params);
     },
@@ -433,26 +442,12 @@ export async function getRetainedSizeGlobal() {
 }
 
 function shapeGlobalRow(row) {
-  if (!row) {
-    const at = nowIso();
-    const measures = emptyMeasures();
-    return {
-      grain: 'global',
-      ...measures,
-      total_retained_bytes: 0,
-      dirty: true,
-      computed_at: null,
-      metadata: { ...defaultMetadata(at), computed_at: null },
-    };
-  }
-  const measures = {
-    current_record_json_bytes: Number(row.current_record_json_bytes || 0),
-    record_history_json_bytes: Number(row.record_history_json_bytes || 0),
-    blob_bytes: Number(row.blob_bytes || 0),
-    record_count: Number(row.record_count || 0),
-    record_history_count: Number(row.record_history_count || 0),
-    blob_count: Number(row.blob_count || 0),
-  };
+  if (!row) return shapeMissingGlobalRow();
+  return shapePresentGlobalRow(row);
+}
+
+function shapePresentGlobalRow(row) {
+  const measures = numericMeasures(row);
   const metadata = parseMetadata(row.metadata_json) || defaultMetadata(row.computed_at || nowIso());
   return {
     grain: 'global',
@@ -461,6 +456,19 @@ function shapeGlobalRow(row) {
     dirty: Number(row.dirty || 0) !== 0,
     computed_at: row.computed_at || null,
     metadata: { ...metadata, computed_at: row.computed_at || metadata.computed_at || null },
+  };
+}
+
+function shapeMissingGlobalRow() {
+  const at = nowIso();
+  const measures = emptyMeasures();
+  return {
+    grain: 'global',
+    ...measures,
+    total_retained_bytes: 0,
+    dirty: true,
+    computed_at: null,
+    metadata: { ...defaultMetadata(at), computed_at: null },
   };
 }
 
@@ -476,14 +484,7 @@ export async function listRetainedSizeConnections({ connectorInstanceId } = {}) 
 }
 
 function shapeConnectionRow(row) {
-  const measures = {
-    current_record_json_bytes: Number(row.current_record_json_bytes || 0),
-    record_history_json_bytes: Number(row.record_history_json_bytes || 0),
-    blob_bytes: Number(row.blob_bytes || 0),
-    record_count: Number(row.record_count || 0),
-    record_history_count: Number(row.record_history_count || 0),
-    blob_count: Number(row.blob_count || 0),
-  };
+  const measures = numericMeasures(row);
   return {
     grain: 'connection',
     connector_instance_id: row.connector_instance_id,
@@ -514,14 +515,7 @@ export async function listRetainedSizeRecordFamilies({
 }
 
 function shapeStreamRow(row) {
-  const measures = {
-    current_record_json_bytes: Number(row.current_record_json_bytes || 0),
-    record_history_json_bytes: Number(row.record_history_json_bytes || 0),
-    blob_bytes: Number(row.blob_bytes || 0),
-    record_count: Number(row.record_count || 0),
-    record_history_count: Number(row.record_history_count || 0),
-    blob_count: Number(row.blob_count || 0),
-  };
+  const measures = numericMeasures(row);
   return {
     grain: 'stream',
     connector_instance_id: row.connector_instance_id,
@@ -579,31 +573,35 @@ export async function listRetainedSizeTop({ scope, measure, limit } = {}) {
 }
 
 function shapeTopRow(row) {
-  const measures = {
-    current_record_json_bytes: Number(row.current_record_json_bytes || 0),
-    record_history_json_bytes: Number(row.record_history_json_bytes || 0),
-    blob_bytes: Number(row.blob_bytes || 0),
-    record_count: Number(row.record_count || 0),
-    record_history_count: Number(row.record_history_count || 0),
-    blob_count: Number(row.blob_count || 0),
-  };
-  return {
+  const measures = numericMeasures(row);
+  const leadingFields = {
     grain: row.scope,
     scope: row.scope,
     measure: row.measure,
     rank: Number(row.rank || 0),
     grain_key: row.grain_key,
-    connector_instance_id: row.connector_instance_id || null,
-    connector_id: row.connector_id || null,
-    stream: row.stream || null,
-    record_key: row.record_key || null,
-    blob_id: row.blob_id || null,
-    ...measures,
-    total_retained_bytes: Number(row.total_retained_bytes || totalBytesFromMeasures(measures)),
-    dirty: Number(row.dirty || 0) !== 0,
-    computed_at: row.computed_at || null,
-    metadata: parseMetadata(row.metadata_json) || null,
   };
+  return {
+    ...leadingFields,
+    ...topRowIdentity(row),
+    ...measures,
+    total_retained_bytes: retainedTotalBytes(row, measures),
+    dirty: isDirtyRow(row),
+    computed_at: row.computed_at || null,
+    metadata: parsedMetadataOrNull(row.metadata_json),
+  };
+}
+
+function retainedTotalBytes(row, measures) {
+  return Number(row.total_retained_bytes || totalBytesFromMeasures(measures));
+}
+
+function isDirtyRow(row) {
+  return Number(row.dirty || 0) !== 0;
+}
+
+function parsedMetadataOrNull(value) {
+  return parseMetadata(value) || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -688,17 +686,15 @@ async function applyBlobDeltaPostgres(delta) {
 }
 
 function normalizedDelta(delta) {
-  return {
+  const normalized = {
     connector_instance_id: delta.connectorInstanceId || null,
     connector_id: delta.connectorId || null,
     stream: delta.stream || null,
-    current_record_json_bytes_delta: Number(delta.currentRecordJsonBytesDelta || 0),
-    record_history_json_bytes_delta: Number(delta.recordHistoryJsonBytesDelta || 0),
-    blob_bytes_delta: Number(delta.blobBytesDelta || 0),
-    record_count_delta: Number(delta.recordCountDelta || 0),
-    record_history_count_delta: Number(delta.recordHistoryCountDelta || 0),
-    blob_count_delta: Number(delta.blobCountDelta || 0),
   };
+  for (const [inputName, fieldName] of RETAINED_SIZE_DELTA_FIELDS) {
+    normalized[fieldName] = Number(delta[inputName] || 0);
+  }
+  return normalized;
 }
 
 function upsertStreamRowSqlite(rawDelta, computedAt) {
@@ -1310,52 +1306,57 @@ async function rebuildPostgres() {
 }
 
 function mergeAggregateRows(streamAgg, changesAgg, blobsAgg) {
-  const streamKey = (row) => `${row.connector_instance_id}\u0000${row.connector_id}\u0000${row.stream}`;
+  const streams = mergeStreamAggregateRows(streamAgg, changesAgg, blobsAgg);
+  const connections = aggregateConnectionRows(streams);
+  const global = aggregateMeasureRows(streams);
+  return { streams, connections, global };
+}
+
+function mergeStreamAggregateRows(streamAgg, changesAgg, blobsAgg) {
   const map = new Map();
   const ensure = (row) => {
-    const key = streamKey(row);
+    const key = `${row.connector_instance_id}\u0000${row.connector_id}\u0000${row.stream}`;
     let entry = map.get(key);
     if (!entry) {
       entry = {
         connector_instance_id: row.connector_instance_id,
         connector_id: row.connector_id,
         stream: row.stream,
-        current_record_json_bytes: 0,
-        record_history_json_bytes: 0,
-        blob_bytes: 0,
-        record_count: 0,
-        record_history_count: 0,
-        blob_count: 0,
+        ...emptyMeasures(),
       };
       map.set(key, entry);
     }
     return entry;
   };
   for (const row of streamAgg) {
-    const entry = ensure(row);
-    entry.current_record_json_bytes = Number(row.current_record_json_bytes || 0);
-    entry.record_count = Number(row.record_count || 0);
+    applyRecordAggregate(ensure(row), row);
   }
   for (const row of changesAgg) {
-    const entry = ensure(row);
-    entry.record_history_json_bytes = Number(row.record_history_json_bytes || 0);
-    entry.record_history_count = Number(row.record_history_count || 0);
+    applyRecordHistoryAggregate(ensure(row), row);
   }
   for (const row of blobsAgg) {
-    const entry = ensure(row);
-    entry.blob_bytes = Number(row.blob_bytes || 0);
-    entry.blob_count = Number(row.blob_count || 0);
+    applyBlobAggregate(ensure(row), row);
   }
-  const streams = [...map.values()];
+  return [...map.values()];
+}
+
+function applyRecordAggregate(entry, row) {
+  entry.current_record_json_bytes = Number(row.current_record_json_bytes || 0);
+  entry.record_count = Number(row.record_count || 0);
+}
+
+function applyRecordHistoryAggregate(entry, row) {
+  entry.record_history_json_bytes = Number(row.record_history_json_bytes || 0);
+  entry.record_history_count = Number(row.record_history_count || 0);
+}
+
+function applyBlobAggregate(entry, row) {
+  entry.blob_bytes = Number(row.blob_bytes || 0);
+  entry.blob_count = Number(row.blob_count || 0);
+}
+
+function aggregateConnectionRows(streams) {
   const connections = new Map();
-  const global = {
-    current_record_json_bytes: 0,
-    record_history_json_bytes: 0,
-    blob_bytes: 0,
-    record_count: 0,
-    record_history_count: 0,
-    blob_count: 0,
-  };
   for (const row of streams) {
     const key = row.connector_instance_id;
     let conn = connections.get(key);
@@ -1363,29 +1364,27 @@ function mergeAggregateRows(streamAgg, changesAgg, blobsAgg) {
       conn = {
         connector_instance_id: row.connector_instance_id,
         connector_id: row.connector_id,
-        current_record_json_bytes: 0,
-        record_history_json_bytes: 0,
-        blob_bytes: 0,
-        record_count: 0,
-        record_history_count: 0,
-        blob_count: 0,
+        ...emptyMeasures(),
       };
       connections.set(key, conn);
     }
-    conn.current_record_json_bytes += row.current_record_json_bytes;
-    conn.record_history_json_bytes += row.record_history_json_bytes;
-    conn.blob_bytes += row.blob_bytes;
-    conn.record_count += row.record_count;
-    conn.record_history_count += row.record_history_count;
-    conn.blob_count += row.blob_count;
-    global.current_record_json_bytes += row.current_record_json_bytes;
-    global.record_history_json_bytes += row.record_history_json_bytes;
-    global.blob_bytes += row.blob_bytes;
-    global.record_count += row.record_count;
-    global.record_history_count += row.record_history_count;
-    global.blob_count += row.blob_count;
+    addMeasures(conn, row);
   }
-  return { streams, connections: [...connections.values()], global };
+  return [...connections.values()];
+}
+
+function aggregateMeasureRows(rows) {
+  const aggregate = emptyMeasures();
+  for (const row of rows) {
+    addMeasures(aggregate, row);
+  }
+  return aggregate;
+}
+
+function addMeasures(target, source) {
+  for (const field of RETAINED_SIZE_MEASURE_FIELDS) {
+    target[field] += source[field];
+  }
 }
 
 function freshTopMetadata(computedAt) {
@@ -1398,25 +1397,30 @@ function freshTopMetadata(computedAt) {
   });
 }
 
-function topRowInsertValues(row, rank, scope, measure, computedAt, metadata) {
-  const measures = {
-    current_record_json_bytes: Number(row.current_record_json_bytes || 0),
-    record_history_json_bytes: Number(row.record_history_json_bytes || 0),
-    blob_bytes: Number(row.blob_bytes || 0),
-    record_count: Number(row.record_count || 0),
-    record_history_count: Number(row.record_history_count || 0),
-    blob_count: Number(row.blob_count || 0),
+function topRowIdentity(row) {
+  return {
+    connector_instance_id: row.connector_instance_id || null,
+    connector_id: row.connector_id || null,
+    stream: row.stream || null,
+    record_key: row.record_key || null,
+    blob_id: row.blob_id || null,
   };
+}
+
+function topRowInsertValues(row, rank, scope, measure, computedAt, metadata) {
+  const measures = numericMeasures(row);
+  const grainKey = row.grain_key;
+  const identity = topRowIdentity(row);
   return [
     scope,
     measure,
     rank,
-    row.grain_key,
-    row.connector_instance_id || null,
-    row.connector_id || null,
-    row.stream || null,
-    row.record_key || null,
-    row.blob_id || null,
+    grainKey,
+    identity.connector_instance_id,
+    identity.connector_id,
+    identity.stream,
+    identity.record_key,
+    identity.blob_id,
     measures.current_record_json_bytes,
     measures.record_history_json_bytes,
     measures.blob_bytes,
@@ -1656,14 +1660,8 @@ async function insertTopRowsPostgres(client, scope, measure, rows, computedAt) {
   const metadata = freshTopMetadata(computedAt);
   let rank = 1;
   for (const row of rows) {
-    const measures = {
-      current_record_json_bytes: Number(row.current_record_json_bytes || 0),
-      record_history_json_bytes: Number(row.record_history_json_bytes || 0),
-      blob_bytes: Number(row.blob_bytes || 0),
-      record_count: Number(row.record_count || 0),
-      record_history_count: Number(row.record_history_count || 0),
-      blob_count: Number(row.blob_count || 0),
-    };
+    const values = topRowInsertValues(row, rank, scope, measure, computedAt, metadata);
+    rank += 1;
     await client.query(
       `INSERT INTO retained_size_top_rows(
          scope, measure, rank, grain_key,
@@ -1674,26 +1672,7 @@ async function insertTopRowsPostgres(client, scope, measure, rows, computedAt) {
        )
        VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9,
               $10, $11, $12, $13, $14, $15, $16, 0, $17, $18::jsonb)`,
-      [
-        scope,
-        measure,
-        rank++,
-        row.grain_key,
-        row.connector_instance_id || null,
-        row.connector_id || null,
-        row.stream || null,
-        row.record_key || null,
-        row.blob_id || null,
-        measures.current_record_json_bytes,
-        measures.record_history_json_bytes,
-        measures.blob_bytes,
-        Number(row.total_retained_bytes || totalBytesFromMeasures(measures)),
-        measures.record_count,
-        measures.record_history_count,
-        measures.blob_count,
-        computedAt,
-        metadata,
-      ],
+      values,
     );
   }
 }
@@ -1893,48 +1872,7 @@ function reconcileDirtySqlite() {
     .all();
   const reconciled = { streams: 0, connections: 0 };
   for (const row of dirtyStreams) {
-    const recompute = db
-      .prepare(
-        `SELECT
-           (SELECT COUNT(*) FROM records WHERE connector_instance_id = ? AND stream = ? AND deleted = 0) AS record_count,
-           (SELECT COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) FROM records WHERE connector_instance_id = ? AND stream = ? AND deleted = 0) AS current_record_json_bytes,
-           (SELECT COUNT(*) FROM record_changes WHERE connector_instance_id = ? AND stream = ?) AS record_history_count,
-           (SELECT COALESCE(SUM(LENGTH(CAST(COALESCE(record_json, '') AS BLOB))), 0) FROM record_changes WHERE connector_instance_id = ? AND stream = ?) AS record_history_json_bytes,
-           (SELECT COUNT(*) FROM blob_bindings WHERE connector_instance_id = ? AND stream = ?) AS blob_count,
-           (SELECT COALESCE(SUM(blobs.size_bytes), 0)
-              FROM blob_bindings JOIN blobs ON blobs.blob_id = blob_bindings.blob_id
-             WHERE blob_bindings.connector_instance_id = ? AND blob_bindings.stream = ?) AS blob_bytes`,
-      )
-      .get(
-        row.connector_instance_id, row.stream,
-        row.connector_instance_id, row.stream,
-        row.connector_instance_id, row.stream,
-        row.connector_instance_id, row.stream,
-        row.connector_instance_id, row.stream,
-        row.connector_instance_id, row.stream,
-      );
-    db.prepare(
-      `UPDATE retained_size_stream SET
-         current_record_json_bytes = ?,
-         record_history_json_bytes = ?,
-         blob_bytes = ?,
-         record_count = ?,
-         record_history_count = ?,
-         blob_count = ?,
-         dirty = 0,
-         computed_at = ?
-       WHERE connector_instance_id = ? AND stream = ?`,
-    ).run(
-      Number(recompute.current_record_json_bytes || 0),
-      Number(recompute.record_history_json_bytes || 0),
-      Number(recompute.blob_bytes || 0),
-      Number(recompute.record_count || 0),
-      Number(recompute.record_history_count || 0),
-      Number(recompute.blob_count || 0),
-      nowIso(),
-      row.connector_instance_id,
-      row.stream,
-    );
+    reconcileDirtyStreamSqlite(db, row);
     reconciled.streams += 1;
   }
 
@@ -1946,46 +1884,84 @@ function reconcileDirtySqlite() {
     )
     .all();
   for (const row of dirtyConnections) {
-    const sums = db
-      .prepare(
-        `SELECT
-           COALESCE(SUM(current_record_json_bytes), 0) AS current_record_json_bytes,
-           COALESCE(SUM(record_history_json_bytes), 0) AS record_history_json_bytes,
-           COALESCE(SUM(blob_bytes), 0) AS blob_bytes,
-           COALESCE(SUM(record_count), 0) AS record_count,
-           COALESCE(SUM(record_history_count), 0) AS record_history_count,
-           COALESCE(SUM(blob_count), 0) AS blob_count
-         FROM retained_size_stream
-        WHERE connector_instance_id = ?`,
-      )
-      .get(row.connector_instance_id);
-    db.prepare(
-      `UPDATE retained_size_connection SET
-         current_record_json_bytes = ?,
-         record_history_json_bytes = ?,
-         blob_bytes = ?,
-         record_count = ?,
-         record_history_count = ?,
-         blob_count = ?,
-         dirty = 0,
-         computed_at = ?
-       WHERE connector_instance_id = ?`,
-    ).run(
-      Number(sums.current_record_json_bytes || 0),
-      Number(sums.record_history_json_bytes || 0),
-      Number(sums.blob_bytes || 0),
-      Number(sums.record_count || 0),
-      Number(sums.record_history_count || 0),
-      Number(sums.blob_count || 0),
-      nowIso(),
-      row.connector_instance_id,
-    );
+    reconcileDirtyConnectionSqlite(db, row);
     reconciled.connections += 1;
   }
 
   recomputeGlobalFromConnectionsSqlite();
   refreshRetainedSizeTopRowsSqlite(db, nowIso());
   return reconciled;
+}
+
+function reconcileDirtyStreamSqlite(db, row) {
+  const recompute = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM records WHERE connector_instance_id = ? AND stream = ? AND deleted = 0) AS record_count,
+         (SELECT COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) FROM records WHERE connector_instance_id = ? AND stream = ? AND deleted = 0) AS current_record_json_bytes,
+         (SELECT COUNT(*) FROM record_changes WHERE connector_instance_id = ? AND stream = ?) AS record_history_count,
+         (SELECT COALESCE(SUM(LENGTH(CAST(COALESCE(record_json, '') AS BLOB))), 0) FROM record_changes WHERE connector_instance_id = ? AND stream = ?) AS record_history_json_bytes,
+         (SELECT COUNT(*) FROM blob_bindings WHERE connector_instance_id = ? AND stream = ?) AS blob_count,
+         (SELECT COALESCE(SUM(blobs.size_bytes), 0)
+            FROM blob_bindings JOIN blobs ON blobs.blob_id = blob_bindings.blob_id
+           WHERE blob_bindings.connector_instance_id = ? AND blob_bindings.stream = ?) AS blob_bytes`,
+    )
+    .get(
+      row.connector_instance_id, row.stream,
+      row.connector_instance_id, row.stream,
+      row.connector_instance_id, row.stream,
+      row.connector_instance_id, row.stream,
+      row.connector_instance_id, row.stream,
+      row.connector_instance_id, row.stream,
+    );
+  db.prepare(
+    `UPDATE retained_size_stream SET
+       current_record_json_bytes = ?,
+       record_history_json_bytes = ?,
+       blob_bytes = ?,
+       record_count = ?,
+       record_history_count = ?,
+       blob_count = ?,
+       dirty = 0,
+       computed_at = ?
+     WHERE connector_instance_id = ? AND stream = ?`,
+  ).run(...reconciledStreamValues(recompute, row));
+}
+
+function reconcileDirtyConnectionSqlite(db, row) {
+  const sums = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(current_record_json_bytes), 0) AS current_record_json_bytes,
+         COALESCE(SUM(record_history_json_bytes), 0) AS record_history_json_bytes,
+         COALESCE(SUM(blob_bytes), 0) AS blob_bytes,
+         COALESCE(SUM(record_count), 0) AS record_count,
+         COALESCE(SUM(record_history_count), 0) AS record_history_count,
+         COALESCE(SUM(blob_count), 0) AS blob_count
+       FROM retained_size_stream
+      WHERE connector_instance_id = ?`,
+    )
+    .get(row.connector_instance_id);
+  db.prepare(
+    `UPDATE retained_size_connection SET
+       current_record_json_bytes = ?,
+       record_history_json_bytes = ?,
+       blob_bytes = ?,
+       record_count = ?,
+       record_history_count = ?,
+       blob_count = ?,
+       dirty = 0,
+       computed_at = ?
+     WHERE connector_instance_id = ?`,
+  ).run(...reconciledConnectionValues(sums, row));
+}
+
+function reconciledStreamValues(measures, row) {
+  return [...Object.values(numericMeasures(measures)), nowIso(), row.connector_instance_id, row.stream];
+}
+
+function reconciledConnectionValues(measures, row) {
+  return [...Object.values(numericMeasures(measures)), nowIso(), row.connector_instance_id];
 }
 
 function recomputeGlobalFromConnectionsSqlite() {
@@ -2002,7 +1978,7 @@ function recomputeGlobalFromConnectionsSqlite() {
        FROM retained_size_connection`,
     )
     .get();
-  const stillDirty = Number(sums.dirty || 0) !== 0;
+  const stillDirty = isDirtyRow(sums);
   const at = nowIso();
   getDb()
     .prepare(
@@ -2024,23 +2000,26 @@ function recomputeGlobalFromConnectionsSqlite() {
          computed_at = excluded.computed_at,
          metadata_json = excluded.metadata_json`,
     )
-    .run(
-      GLOBAL_KEY,
-      Number(sums.current_record_json_bytes || 0),
-      Number(sums.record_history_json_bytes || 0),
-      Number(sums.blob_bytes || 0),
-      Number(sums.record_count || 0),
-      Number(sums.record_history_count || 0),
-      Number(sums.blob_count || 0),
-      stillDirty ? 1 : 0,
-      at,
-      JSON.stringify({
-        state: stillDirty ? 'stale' : 'fresh',
-        stale_since: stillDirty ? at : null,
-        rebuild_status: 'idle',
-        last_error: stillDirty ? 'connection rows remain dirty after reconcile' : null,
-      }),
-    );
+    .run(...reconciledGlobalValues(sums, stillDirty, at));
+}
+
+function reconciledGlobalValues(sums, stillDirty, at) {
+  return [
+    GLOBAL_KEY,
+    ...Object.values(numericMeasures(sums)),
+    stillDirty ? 1 : 0,
+    at,
+    reconciledGlobalMetadata(stillDirty, at),
+  ];
+}
+
+function reconciledGlobalMetadata(stillDirty, at) {
+  return JSON.stringify({
+    state: stillDirty ? 'stale' : 'fresh',
+    stale_since: stillDirty ? at : null,
+    rebuild_status: 'idle',
+    last_error: stillDirty ? 'connection rows remain dirty after reconcile' : null,
+  });
 }
 
 async function reconcileDirtyPostgres() {
@@ -2051,42 +2030,7 @@ async function reconcileDirtyPostgres() {
       WHERE dirty <> 0`,
   );
   for (const row of dirtyStreams.rows) {
-    const recompute = await postgresQuery(
-      `SELECT
-         (SELECT COUNT(*) FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE)::bigint AS record_count,
-         (SELECT COALESCE(SUM(octet_length(record_json::text)), 0) FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE)::bigint AS current_record_json_bytes,
-         (SELECT COUNT(*) FROM record_changes WHERE connector_instance_id = $1 AND stream = $2)::bigint AS record_history_count,
-         (SELECT COALESCE(SUM(octet_length(COALESCE(record_json::text, ''))), 0) FROM record_changes WHERE connector_instance_id = $1 AND stream = $2)::bigint AS record_history_json_bytes,
-         (SELECT COUNT(*) FROM blob_bindings WHERE connector_instance_id = $1 AND stream = $2)::bigint AS blob_count,
-         (SELECT COALESCE(SUM(blobs.size_bytes), 0)
-            FROM blob_bindings JOIN blobs ON blobs.blob_id = blob_bindings.blob_id
-           WHERE blob_bindings.connector_instance_id = $1 AND blob_bindings.stream = $2)::bigint AS blob_bytes`,
-      [row.connector_instance_id, row.stream],
-    );
-    const r = recompute.rows[0] || {};
-    await postgresQuery(
-      `UPDATE retained_size_stream SET
-         current_record_json_bytes = $1,
-         record_history_json_bytes = $2,
-         blob_bytes = $3,
-         record_count = $4,
-         record_history_count = $5,
-         blob_count = $6,
-         dirty = 0,
-         computed_at = $7
-       WHERE connector_instance_id = $8 AND stream = $9`,
-      [
-        Number(r.current_record_json_bytes || 0),
-        Number(r.record_history_json_bytes || 0),
-        Number(r.blob_bytes || 0),
-        Number(r.record_count || 0),
-        Number(r.record_history_count || 0),
-        Number(r.blob_count || 0),
-        nowIso(),
-        row.connector_instance_id,
-        row.stream,
-      ],
-    );
+    await reconcileDirtyStreamPostgres(row);
     reconciled.streams += 1;
   }
   const dirtyConnections = await postgresQuery(
@@ -2095,41 +2039,7 @@ async function reconcileDirtyPostgres() {
       WHERE dirty <> 0`,
   );
   for (const row of dirtyConnections.rows) {
-    const sums = await postgresQuery(
-      `SELECT
-         COALESCE(SUM(current_record_json_bytes), 0)::bigint AS current_record_json_bytes,
-         COALESCE(SUM(record_history_json_bytes), 0)::bigint AS record_history_json_bytes,
-         COALESCE(SUM(blob_bytes), 0)::bigint AS blob_bytes,
-         COALESCE(SUM(record_count), 0)::bigint AS record_count,
-         COALESCE(SUM(record_history_count), 0)::bigint AS record_history_count,
-         COALESCE(SUM(blob_count), 0)::bigint AS blob_count
-       FROM retained_size_stream
-      WHERE connector_instance_id = $1`,
-      [row.connector_instance_id],
-    );
-    const s = sums.rows[0] || {};
-    await postgresQuery(
-      `UPDATE retained_size_connection SET
-         current_record_json_bytes = $1,
-         record_history_json_bytes = $2,
-         blob_bytes = $3,
-         record_count = $4,
-         record_history_count = $5,
-         blob_count = $6,
-         dirty = 0,
-         computed_at = $7
-       WHERE connector_instance_id = $8`,
-      [
-        Number(s.current_record_json_bytes || 0),
-        Number(s.record_history_json_bytes || 0),
-        Number(s.blob_bytes || 0),
-        Number(s.record_count || 0),
-        Number(s.record_history_count || 0),
-        Number(s.blob_count || 0),
-        nowIso(),
-        row.connector_instance_id,
-      ],
-    );
+    await reconcileDirtyConnectionPostgres(row);
     reconciled.connections += 1;
   }
   await recomputeGlobalFromConnectionsPostgres();
@@ -2137,6 +2047,62 @@ async function reconcileDirtyPostgres() {
     await refreshRetainedSizeTopRowsPostgres(client, nowIso());
   });
   return reconciled;
+}
+
+async function reconcileDirtyStreamPostgres(row) {
+  const recompute = await postgresQuery(
+    `SELECT
+       (SELECT COUNT(*) FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE)::bigint AS record_count,
+       (SELECT COALESCE(SUM(octet_length(record_json::text)), 0) FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE)::bigint AS current_record_json_bytes,
+       (SELECT COUNT(*) FROM record_changes WHERE connector_instance_id = $1 AND stream = $2)::bigint AS record_history_count,
+       (SELECT COALESCE(SUM(octet_length(COALESCE(record_json::text, ''))), 0) FROM record_changes WHERE connector_instance_id = $1 AND stream = $2)::bigint AS record_history_json_bytes,
+       (SELECT COUNT(*) FROM blob_bindings WHERE connector_instance_id = $1 AND stream = $2)::bigint AS blob_count,
+       (SELECT COALESCE(SUM(blobs.size_bytes), 0)
+          FROM blob_bindings JOIN blobs ON blobs.blob_id = blob_bindings.blob_id
+         WHERE blob_bindings.connector_instance_id = $1 AND blob_bindings.stream = $2)::bigint AS blob_bytes`,
+    [row.connector_instance_id, row.stream],
+  );
+  await postgresQuery(
+    `UPDATE retained_size_stream SET
+       current_record_json_bytes = $1,
+       record_history_json_bytes = $2,
+       blob_bytes = $3,
+       record_count = $4,
+       record_history_count = $5,
+       blob_count = $6,
+       dirty = 0,
+       computed_at = $7
+     WHERE connector_instance_id = $8 AND stream = $9`,
+    reconciledStreamValues(recompute.rows[0] || {}, row),
+  );
+}
+
+async function reconcileDirtyConnectionPostgres(row) {
+  const sums = await postgresQuery(
+    `SELECT
+       COALESCE(SUM(current_record_json_bytes), 0)::bigint AS current_record_json_bytes,
+       COALESCE(SUM(record_history_json_bytes), 0)::bigint AS record_history_json_bytes,
+       COALESCE(SUM(blob_bytes), 0)::bigint AS blob_bytes,
+       COALESCE(SUM(record_count), 0)::bigint AS record_count,
+       COALESCE(SUM(record_history_count), 0)::bigint AS record_history_count,
+       COALESCE(SUM(blob_count), 0)::bigint AS blob_count
+     FROM retained_size_stream
+    WHERE connector_instance_id = $1`,
+    [row.connector_instance_id],
+  );
+  await postgresQuery(
+    `UPDATE retained_size_connection SET
+       current_record_json_bytes = $1,
+       record_history_json_bytes = $2,
+       blob_bytes = $3,
+       record_count = $4,
+       record_history_count = $5,
+       blob_count = $6,
+       dirty = 0,
+       computed_at = $7
+     WHERE connector_instance_id = $8`,
+    reconciledConnectionValues(sums.rows[0] || {}, row),
+  );
 }
 
 async function recomputeGlobalFromConnectionsPostgres() {
@@ -2152,7 +2118,7 @@ async function recomputeGlobalFromConnectionsPostgres() {
      FROM retained_size_connection`,
   );
   const s = sums.rows[0] || {};
-  const stillDirty = Number(s.dirty || 0) !== 0;
+  const stillDirty = isDirtyRow(s);
   const at = nowIso();
   await postgresQuery(
     `INSERT INTO retained_size_global(
@@ -2172,23 +2138,7 @@ async function recomputeGlobalFromConnectionsPostgres() {
        dirty = EXCLUDED.dirty,
        computed_at = EXCLUDED.computed_at,
        metadata_json = EXCLUDED.metadata_json`,
-    [
-      GLOBAL_KEY,
-      Number(s.current_record_json_bytes || 0),
-      Number(s.record_history_json_bytes || 0),
-      Number(s.blob_bytes || 0),
-      Number(s.record_count || 0),
-      Number(s.record_history_count || 0),
-      Number(s.blob_count || 0),
-      stillDirty ? 1 : 0,
-      at,
-      JSON.stringify({
-        state: stillDirty ? 'stale' : 'fresh',
-        stale_since: stillDirty ? at : null,
-        rebuild_status: 'idle',
-        last_error: stillDirty ? 'connection rows remain dirty after reconcile' : null,
-      }),
-    ],
+    reconciledGlobalValues(s, stillDirty, at),
   );
 }
 

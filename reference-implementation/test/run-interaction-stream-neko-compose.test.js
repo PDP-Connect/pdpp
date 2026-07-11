@@ -87,7 +87,7 @@ test('ChatGPT large-history guardrails are wired into Docker runtime config', as
   }
 });
 
-test('USAA remains an owner-present managed n.eko connector, not background-safe', async () => {
+test('USAA remains an owner-present managed n.eko connector in the committed runtime config, not background-safe', async () => {
   const usaaManifest = JSON.parse(
     await readFile(`${REPO_ROOT}packages/polyfill-connectors/manifests/usaa.json`, 'utf8'),
   );
@@ -101,7 +101,7 @@ test('USAA remains an owner-present managed n.eko connector, not background-safe
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${USAA_CONNECTOR_ID}`));
 });
 
-test('Amazon remains an owner-present managed n.eko connector, not background-safe', async () => {
+test('Amazon remains manual-default and owner-present managed on n.eko, with owner opt-in background scheduling declared', async () => {
   const amazonManifest = JSON.parse(
     await readFile(`${REPO_ROOT}packages/polyfill-connectors/manifests/amazon.json`, 'utf8'),
   );
@@ -111,11 +111,15 @@ test('Amazon remains an owner-present managed n.eko connector, not background-sa
   assert.equal(amazonManifest.runtime_requirements.bindings.browser.required, true);
   assert.deepEqual(amazonManifest.capabilities.human_interaction, ['manual_action', 'otp']);
   assert.equal(amazonManifest.capabilities.refresh_policy.recommended_mode, 'manual');
-  assert.equal(amazonManifest.capabilities.refresh_policy.background_safe, false);
+  // background_safe:true only permits an explicit owner-created schedule; it
+  // does not auto-enroll (recommended_mode stays "manual"), so Amazon stays
+  // an owner-present managed n.eko connector by default.
+  assert.equal(amazonManifest.capabilities.refresh_policy.background_safe, true);
+  assert.equal(amazonManifest.capabilities.refresh_policy.assisted_after_owner_auth, true);
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${AMAZON_CONNECTOR_ID}`));
 });
 
-test('Reddit remains an owner-present managed n.eko connector, not background-safe', async () => {
+test('Reddit remains manual-default and owner-present managed on n.eko, with owner opt-in background scheduling declared', async () => {
   const redditManifest = JSON.parse(
     await readFile(`${REPO_ROOT}packages/polyfill-connectors/manifests/reddit.json`, 'utf8'),
   );
@@ -123,9 +127,14 @@ test('Reddit remains an owner-present managed n.eko connector, not background-sa
 
   assert.equal(redditManifest.connector_id, REDDIT_CONNECTOR_ID);
   assert.equal(redditManifest.runtime_requirements.bindings.browser.required, true);
-  assert.deepEqual(redditManifest.capabilities.human_interaction, ['credentials']);
+  // Reddit's own auto-login code documents the same class of friction as
+  // Amazon (2FA/OTP on first login, Cloudflare challenge fallback to
+  // manual_action) — human_interaction now declares that honestly instead
+  // of under-stating it as bare "credentials".
+  assert.deepEqual(redditManifest.capabilities.human_interaction, ['manual_action', 'otp']);
   assert.equal(redditManifest.capabilities.refresh_policy.recommended_mode, 'manual');
-  assert.equal(redditManifest.capabilities.refresh_policy.background_safe, false);
+  assert.equal(redditManifest.capabilities.refresh_policy.background_safe, true);
+  assert.equal(redditManifest.capabilities.refresh_policy.assisted_after_owner_auth, true);
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${REDDIT_CONNECTOR_ID}`));
 });
 

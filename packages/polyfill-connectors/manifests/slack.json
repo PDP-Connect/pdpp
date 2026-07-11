@@ -3,7 +3,7 @@
   "connector_id": "https://registry.pdpp.org/connectors/slack",
   "connector_key": "slack",
   "manifest_uri": "https://registry.pdpp.org/connectors/slack",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "display_name": "Slack",
   "runtime_requirements": {
     "bindings": {
@@ -1761,18 +1761,10 @@
     },
     {
       "name": "stars",
-      "description": "Messages, files, or channels the user has starred/saved. Slackdump archive mode does not persist starred_items today (chunk type 8 is defined but never populated); declared here so the manifest is Layer-2-complete. Emits SKIP_RESULT at runtime until slackdump or an API-layer fallback supplies the data.",
+      "description": "Messages, files, or channels the user has starred/saved. Collected via a direct stars.list call using the connector's existing session credential (slackdump's archive mode does not call this method, but the credential it already captures does).",
       "display": {
         "label": "Your starred and saved items",
-        "detail": "Messages, files, and channels you starred or saved in Slack. Not available from slackdump archives today; this stream is declared but will skip at runtime."
-      },
-      "availability": {
-        "state": "unsupported_in_mode",
-        "mode": "slackdump_archive",
-        "reason": "slackdump archive mode does not call stars.list",
-        "future_modes": [
-          "slack_api"
-        ]
+        "detail": "Messages, files, and channels you starred or saved in Slack."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -1855,25 +1847,15 @@
           ]
         }
       },
-      "required": false,
-      "coverage_policy": "deferred",
       "coverage_strategy": "full_inventory",
-      "freshness_strategy": "not_trackable"
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "user_groups",
-      "description": "Workspace user groups (@engineering, @design, etc.): handle, description, members. Slackdump archive mode does not call users.list.usergroups or usergroups.list; declared here for Layer-2 completeness. Emits SKIP_RESULT at runtime.",
+      "description": "Workspace user groups (@engineering, @design, etc.): handle, description, members. Collected via a direct usergroups.list call using the connector's existing session credential (slackdump's archive mode does not call this method, but the credential it already captures does).",
       "display": {
         "label": "Slack user groups",
-        "detail": "Group handles like @engineering, their names, descriptions, and membership. Not available from slackdump archives today; this stream is declared but will skip at runtime."
-      },
-      "availability": {
-        "state": "unsupported_in_mode",
-        "mode": "slackdump_archive",
-        "reason": "slackdump archive mode does not call usergroups.list",
-        "future_modes": [
-          "slack_api"
-        ]
+        "detail": "Group handles like @engineering, their names, descriptions, and membership."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -1998,25 +1980,15 @@
           ]
         }
       },
-      "required": false,
-      "coverage_policy": "deferred",
       "coverage_strategy": "full_inventory",
-      "freshness_strategy": "not_trackable"
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "reminders",
-      "description": "User-owned Slack reminders (reminders.list). Slackdump archive mode does not capture reminders; declared here for Layer-2 completeness. Emits SKIP_RESULT at runtime until an API-layer fallback supplies the data.",
+      "description": "User-owned Slack reminders. Collected via a direct reminders.list call using the connector's existing session credential (slackdump's archive mode does not call this method, but the credential it already captures does).",
       "display": {
         "label": "Your Slack reminders",
-        "detail": "Reminders you set in Slack: text, trigger time, target user or channel, completion state. Not available from slackdump archives today; this stream is declared but will skip at runtime."
-      },
-      "availability": {
-        "state": "unsupported_in_mode",
-        "mode": "slackdump_archive",
-        "reason": "slackdump archive mode does not call reminders.list",
-        "future_modes": [
-          "slack_api"
-        ]
+        "detail": "Reminders you set in Slack: text, trigger time, target user or channel, completion state."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -2121,25 +2093,15 @@
           ]
         }
       },
-      "required": false,
-      "coverage_policy": "deferred",
-      "coverage_strategy": "checkpoint_window",
-      "freshness_strategy": "not_trackable"
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     },
     {
       "name": "dm_read_states",
-      "description": "Per-DM last_read timestamps (conversations.info last_read / unread_count_display). Slackdump archive mode strips last_read fields from channel data; declared here for Layer-2 completeness. Emits SKIP_RESULT at runtime.",
+      "description": "Per-DM last_read timestamps (conversations.info last_read / unread_count_display). Collected via direct conversations.info calls scoped to DM/MPIM channels, using the connector's existing session credential (slackdump's archive mode strips these fields, but the credential it already captures can call the method directly).",
       "display": {
         "label": "DM read states",
-        "detail": "For each direct message or multi-party DM, the last message timestamp the user has read and the unread count. Not available from slackdump archives today; this stream is declared but will skip at runtime."
-      },
-      "availability": {
-        "state": "unsupported_in_mode",
-        "mode": "slackdump_archive",
-        "reason": "slackdump archive mode strips conversations.info read-state fields",
-        "future_modes": [
-          "slack_api"
-        ]
+        "detail": "For each direct message or multi-party DM, the last message timestamp the user has read and the unread count."
       },
       "semantics": "mutable_state",
       "schema": {
@@ -2233,10 +2195,8 @@
           ]
         }
       },
-      "required": false,
-      "coverage_policy": "deferred",
-      "coverage_strategy": "checkpoint_window",
-      "freshness_strategy": "not_trackable"
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
     }
   ],
   "profiles": [
@@ -2273,6 +2233,18 @@
         },
         {
           "name": "canvases"
+        },
+        {
+          "name": "stars"
+        },
+        {
+          "name": "user_groups"
+        },
+        {
+          "name": "reminders"
+        },
+        {
+          "name": "dm_read_states"
         }
       ]
     },

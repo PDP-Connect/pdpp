@@ -192,7 +192,10 @@ const DISPOSITION_TONE = {
 // reason the tone reached amber-or-worse is a not-actually-broken shape
 // (idle-with-prior-success state, stale freshness, owner_refresh_due
 // disposition); any coverage/attention/outbox axis, a broken state, or a
-// broken disposition keeps "Degraded".
+// broken disposition keeps "Degraded". An active run then further softens a
+// "Needs refresh" (never a "Degraded") verdict to "Syncing" (active-run
+// visibility fix) — active work dominates a routine nudge, never a genuine
+// defect.
 function expectedAmberLabel(snap, disposition, toneInputs) {
   const stateIsBroken = snap.state !== 'idle' && TONE_RANK[BASE_STATE_TONE[snap.state]] >= TONE_RANK.amber;
   const dispositionIsBroken =
@@ -200,7 +203,8 @@ function expectedAmberLabel(snap, disposition, toneInputs) {
   const hasDegradingAxis = toneInputs.some(
     (input) => ['coverage', 'attention', 'outbox'].includes(input.axis) && TONE_RANK[input.tone] >= TONE_RANK.amber
   );
-  return stateIsBroken || dispositionIsBroken || hasDegradingAxis ? 'Degraded' : 'Needs refresh';
+  const label = stateIsBroken || dispositionIsBroken || hasDegradingAxis ? 'Degraded' : 'Needs refresh';
+  return label === 'Needs refresh' && snap.badges.syncing ? 'Syncing' : label;
 }
 
 function assertAllInvariants(verdict, snap, runtimeOk) {
@@ -351,6 +355,62 @@ test('tone: stale owner-refresh-due is amber/advisory/Needs refresh, not Healthy
   assert.equal(v.channel, 'advisory');
   assert.ok(v.annotations.some((a) => a.kind === 'freshness'));
   assert.ok(v.required_actions.some((a) => a.kind === 'refresh_now'));
+});
+
+test('tone: an active, advancing run over stale/owner-refresh-due evidence renders Syncing, not Needs refresh, and offers no conflicting refresh_now action', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'stale' },
+    badges: { stale: true, syncing: true },
+    forward_disposition: 'owner_refresh_due',
+    last_success_at: '2026-05-15T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(snap, [stream()], MANUAL_REFRESH, true);
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Syncing');
+  assert.equal(v.channel, 'calm');
+  assert.deepEqual(
+    v.required_actions,
+    [],
+    'an active run must not co-occur with a refresh_now CTA for the same not-yet-refreshed data'
+  );
+  assert.equal(v.forward_statement, 'Refreshing now.');
+  assert.ok(
+    v.annotations.every((a) => !/refreshes when you run it|Up to date once you refresh/i.test(a.text)),
+    'annotation copy must not ask the owner to do what the active run is already doing'
+  );
+  assert.ok(
+    v.streams.every((row) => row.statement !== 'Up to date once you refresh.'),
+    'a per-stream row must not contradict the connection-level Syncing state by asking for a refresh already in flight'
+  );
+  assert.ok(
+    v.streams.every((row) => row.disposition !== 'owner_refresh_due' || row.statement === 'Refreshing now.'),
+    'an owner_refresh_due stream row must read Refreshing now while a run is actively syncing'
+  );
+});
+
+test('tone: an active run does not mask genuine open owner attention — attention still wins Degraded/attention/add_info', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { attention: 'open', freshness: 'stale' },
+    badges: { stale: true, syncing: true },
+    forward_disposition: 'owner_refresh_due',
+    last_success_at: '2026-05-15T00:00:00.000Z',
+  });
+  const v = synthesizeRenderedVerdict(
+    snap,
+    [stream({ attention_open: true })],
+    MANUAL_REFRESH,
+    true,
+    null,
+    null,
+    exactSyncAttention()
+  );
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'attention');
+  assert.equal(v.required_actions[0]?.kind, 'add_info');
+  assert.equal(v.forward_statement, 'Complete the requested action and collection resumes.');
 });
 
 test('connection-level terminal disposition is not erased by a retryable stream row', () => {
@@ -1298,6 +1358,7 @@ test('property: tone is worst-wins (never below base state) and (tone,channel) o
   const coverages = ['complete', 'partial', 'retryable_gap', 'terminal_gap', 'unknown'];
   const dispositions = ['complete', 'checking', 'resumable', 'owner_refresh_due', 'awaiting_owner', 'terminal', 'unmeasured'];
   const attentions = ['none', 'open'];
+  const syncingValues = [false, true];
 
   const channelByTone = new Map();
   let count = 0;
@@ -1306,33 +1367,48 @@ test('property: tone is worst-wins (never below base state) and (tone,channel) o
       for (const coverage of coverages) {
         for (const disposition of dispositions) {
           for (const attention of attentions) {
-            const conditions = attention === 'open' ? [credentialRejectedCondition()] : [];
-            const snap = snapshot({ state, axes: { freshness, coverage, attention }, forward_disposition: disposition, conditions });
-            const refresh = freshness === 'stale' ? MANUAL_REFRESH : null;
-            const v = synthesizeRenderedVerdict(
-              snap,
-              [stream({ coverage, gap_retryable: coverage === 'retryable_gap', attention_open: attention === 'open' })],
-              refresh,
-              true
-            );
-            // worst-wins: never below base state tone
-            assert.ok(
-              TONE_RANK[v.pill.tone] >= TONE_RANK[BASE_STATE_TONE[state]],
-              `tone>=base for ${state}/${freshness}/${coverage}`
-            );
-            // tone never read straight from label-of-state: label follows tone
-            // plus current activity evidence.
-            const expectedLabel =
-              v.pill.tone === 'grey' && snap.badges.syncing
-                ? 'Checking'
-                : v.pill.tone === 'amber'
-                  ? expectedAmberLabel(snap, v.detail.forward_disposition, v.trace.tone_inputs)
-                  : TONE_TO_LABEL[v.pill.tone];
-            assert.equal(v.pill.label, expectedLabel);
-            const set = channelByTone.get(v.pill.tone) ?? new Set();
-            set.add(v.channel);
-            channelByTone.set(v.pill.tone, set);
-            count += 1;
+            for (const syncing of syncingValues) {
+              const conditions = attention === 'open' ? [credentialRejectedCondition()] : [];
+              const snap = snapshot({
+                state,
+                axes: { freshness, coverage, attention },
+                badges: { syncing },
+                forward_disposition: disposition,
+                conditions,
+              });
+              const refresh = freshness === 'stale' ? MANUAL_REFRESH : null;
+              const v = synthesizeRenderedVerdict(
+                snap,
+                [stream({ coverage, gap_retryable: coverage === 'retryable_gap', attention_open: attention === 'open' })],
+                refresh,
+                true
+              );
+              // worst-wins: never below base state tone
+              assert.ok(
+                TONE_RANK[v.pill.tone] >= TONE_RANK[BASE_STATE_TONE[state]],
+                `tone>=base for ${state}/${freshness}/${coverage}/syncing=${syncing}`
+              );
+              // tone never read straight from label-of-state: label follows tone
+              // plus current activity evidence.
+              const expectedLabel =
+                v.pill.tone === 'grey' && snap.badges.syncing
+                  ? 'Checking'
+                  : v.pill.tone === 'amber'
+                    ? expectedAmberLabel(snap, v.detail.forward_disposition, v.trace.tone_inputs)
+                    : TONE_TO_LABEL[v.pill.tone];
+              assert.equal(v.pill.label, expectedLabel);
+              // active work never co-occurs with a conflicting refresh_now CTA.
+              if (syncing) {
+                assert.ok(
+                  !v.required_actions.some((a) => a.kind === 'refresh_now'),
+                  `active run must not offer refresh_now for ${state}/${freshness}/${disposition}`
+                );
+              }
+              const set = channelByTone.get(v.pill.tone) ?? new Set();
+              set.add(v.channel);
+              channelByTone.set(v.pill.tone, set);
+              count += 1;
+            }
           }
         }
       }

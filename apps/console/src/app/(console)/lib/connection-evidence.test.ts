@@ -144,6 +144,65 @@ test("retryable_gap copy reassures no owner action is needed yet (report 3)", ()
   assert.match(chip.title, RETRYABLE_REASSURANCE_RE);
 });
 
+const FORWARD_LOOKING_COLLECTION_COPY = /will collect|coming soon|not yet|owed later|\byet\b/i;
+const SETTLED_ACCEPTED_ABSENCE_COPY = /settled|accepted|declares|out of scope/i;
+const CONNECTOR_OR_STREAM_NAME_COPY = /\bgmail\b|\bchatgpt\b|\bslack\b|\bchase\b|\bamazon\b|\busaa\b/i;
+
+test("accepted-absence coverage copy reads as settled, not queued (connector-neutral)", () => {
+  // The manifest-declared accepted-absence policies (deferred / inventory_only /
+  // unavailable / unsupported) are a settled, non-degrading verdict — never a
+  // promise of future collection. "defers ... yet" previously read as queued
+  // work; the fix states plainly that the state is accepted and settled.
+  for (const axis of ["deferred", "inventory_only", "unavailable", "unsupported"] as const) {
+    const chip = formatCoverageAxis(axis);
+    assert.doesNotMatch(chip.title, FORWARD_LOOKING_COLLECTION_COPY, `${axis} title implies queued future work`);
+    assert.match(chip.title, SETTLED_ACCEPTED_ABSENCE_COPY, `${axis} title does not read as settled/accepted`);
+    assert.doesNotMatch(chip.title, CONNECTOR_OR_STREAM_NAME_COPY, `${axis} title names a specific connector`);
+    assert.equal(chip.tone, "neutral");
+  }
+});
+
+test("accepted-absence coverage is distinct from required missing evidence", () => {
+  // `unknown` is a required stream resting with no coverage proof — it MUST NOT
+  // read like a settled accepted-absence policy, and vice versa.
+  const unknownChip = formatCoverageAxis("unknown");
+  assert.doesNotMatch(unknownChip.title, SETTLED_ACCEPTED_ABSENCE_COPY);
+  for (const axis of ["deferred", "inventory_only", "unavailable", "unsupported"] as const) {
+    assert.notEqual(formatCoverageAxis(axis).title, unknownChip.title);
+  }
+});
+
+const DEFERRED_JARGON_RE = /\bdeferre?s?\b/i;
+
+test("the visible deferred pill reads optional/not-collected, not policy jargon (owner-gate revision)", () => {
+  // A tooltip-only fix does not resolve the live concern: the owner reads the
+  // pill's visible value/label, not its hover text. The underlying axis key
+  // stays "deferred" (durable manifest/runtime contract), but the
+  // product-facing value/label must not render that word — "deferred" reads
+  // as queued work to an owner scanning a stream row.
+  const chip = formatCoverageAxis("deferred");
+  assert.doesNotMatch(chip.value, DEFERRED_JARGON_RE, "visible value must not say deferred");
+  assert.doesNotMatch(chip.label, DEFERRED_JARGON_RE, "visible label must not say deferred");
+  assert.match(chip.value, /optional/i);
+  assert.match(chip.value, /not collected/i);
+  assert.equal(chip.label.startsWith("Coverage"), true);
+  assert.equal(chip.tone, "neutral");
+});
+
+test("inventory_only, unavailable, and unsupported visible labels are unchanged (not demonstrably misleading)", () => {
+  // Only the deferred pill's visible value/label was demonstrably misleading
+  // (read as queued work). The sibling accepted-absence labels already read
+  // as plain, settled facts ("inventory only", "unavailable", "unsupported")
+  // with no queued-work connotation, so their visible value/label are left
+  // untouched per the owner-gate scope; only their titles were sharpened.
+  assert.equal(formatCoverageAxis("inventory_only").value, "inventory only");
+  assert.equal(formatCoverageAxis("inventory_only").label, "Coverage · inventory only");
+  assert.equal(formatCoverageAxis("unavailable").value, "unavailable");
+  assert.equal(formatCoverageAxis("unavailable").label, "Coverage · unavailable");
+  assert.equal(formatCoverageAxis("unsupported").value, "unsupported");
+  assert.equal(formatCoverageAxis("unsupported").label, "Coverage · unsupported");
+});
+
 test("axis chips degrade safely when runtime axes are missing or novel", () => {
   // A novel outbox value is not a concrete verdict (stalled/active/idle), so for
   // a non-local connection it is suppressed like the absence-default `unknown`.

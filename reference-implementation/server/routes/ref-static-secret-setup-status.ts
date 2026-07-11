@@ -371,6 +371,140 @@ function firstQueryValue(value: unknown): string | null {
   return null;
 }
 
+interface ResolvedSetupStatusInstance {
+  readonly instance: ConnectorInstanceRow;
+  readonly namespace: ConnectorNamespace;
+  readonly store: ConnectorInstanceStore;
+}
+
+async function resolveSetupStatusInstance(
+  ctx: MountRefStaticSecretSetupStatusContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  connectorInstanceId: string
+): Promise<ResolvedSetupStatusInstance | null> {
+  const ownerSubjectId = ctx.getOwnerSubjectId(req);
+  // Resolve the connection allowing `draft` so a not-yet-ingested setup is
+  // visible to the owner; ownership is verified by the resolver. A foreign
+  // or unknown id surfaces as connector_instance_not_found (404).
+  const namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
+    ownerSubjectId,
+    allowDefaultAccount: false,
+    allowStatuses: ["active", "draft", "paused", "revoked"],
+    connectorInstanceId,
+  });
+  const store = ctx.createRequestConnectorInstanceStore();
+  const instance = await store.get(namespace.connectorInstanceId);
+  if (!instance) {
+    ctx.pdppError(res, 404, "connector_instance_not_found", `Connection '${connectorInstanceId}' does not exist.`);
+    return null;
+  }
+  return { instance, namespace, store };
+}
+
+async function readCredentialMetadata(
+  setupKind: ConnectionSetupKind,
+  credentialStore: ConnectorInstanceCredentialStore,
+  connectorInstanceId: string
+): Promise<CredentialMetadata | null> {
+  if (setupKind !== "static_secret") {
+    return null;
+  }
+  return credentialStore.getMetadata(connectorInstanceId);
+}
+
+async function readLatestAcquisitionBatch(
+  setupKind: ConnectionSetupKind,
+  acquisitionStore: AcquisitionBatchStore,
+  connectorInstanceId: string
+): Promise<AcquisitionBatch | null> {
+  if (setupKind !== "manual_upload") {
+    return null;
+  }
+  const acquisitionBatches = await acquisitionStore.listByConnection(connectorInstanceId, { limit: 1 });
+  return acquisitionBatches[0] ?? null;
+}
+
+function projectSetupStatus(
+  ctx: MountRefStaticSecretSetupStatusContext,
+  instance: ConnectorInstanceRow,
+  manifest: ConnectorManifestLike,
+  credentialMeta: CredentialMetadata | null,
+  activeRun: SetupStatusRun | null,
+  lastRun: SetupStatusRun | null,
+  latestBatch: AcquisitionBatch | null,
+  setupKind: ConnectionSetupKind
+) {
+  return projectConnectionSetupStatus({
+    instance: {
+      connectorInstanceId: instance.connectorInstanceId,
+      connectorId: ctx.canonicalConnectorKey(instance.connectorId) ?? instance.connectorId,
+      displayName: instance.displayName ?? null,
+      status: instance.status,
+      createdAt: instance.createdAt ?? null,
+      updatedAt: instance.updatedAt ?? null,
+      setupFields: setupFieldsFromBinding(instance.sourceBinding),
+    },
+    credential: credentialMeta
+      ? {
+          present: credentialMeta.present === true,
+          credentialKind: credentialMeta.credentialKind ?? null,
+          capturedAt: credentialMeta.capturedAt ?? null,
+          rotatedAt: credentialMeta.rotatedAt ?? null,
+        }
+      : null,
+    activeRun,
+    lastRun,
+    importReceipt: importReceiptFromBatch(latestBatch) ?? importReceiptFromBinding(setupKind, instance.sourceBinding),
+    identityFieldName: identityFieldName(manifest),
+    setupKind,
+    setupMaterial: setupMaterialFromBinding(setupKind, instance.sourceBinding, credentialMeta),
+  });
+}
+
+async function handleRefStaticSecretSetupStatus(
+  req: RouteRequest,
+  res: RouteResponse,
+  ctx: MountRefStaticSecretSetupStatusContext
+): Promise<void> {
+  const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
+  try {
+    const resolved = await resolveSetupStatusInstance(ctx, req, res, connectorInstanceId);
+    if (!resolved) {
+      return;
+    }
+    const { instance, namespace, store } = resolved;
+    const manifest = await ctx.resolveRegisteredConnectorManifest(instance.connectorId);
+    const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
+    const setupKind = setupKindForConnection(instance.sourceBinding, manifest);
+    const credentialMeta = await readCredentialMetadata(setupKind, credentialStore, namespace.connectorInstanceId);
+    const requestedRunId = firstQueryValue(req.query?.run_id);
+    const { activeRun, lastRun } = await resolveRunEvidence(
+      ctx,
+      store,
+      namespace.connectorInstanceId,
+      requestedRunId
+    );
+    const acquisitionStore = ctx.createRequestAcquisitionBatchStore();
+    const latestBatch = await readLatestAcquisitionBatch(setupKind, acquisitionStore, namespace.connectorInstanceId);
+
+    const status = projectSetupStatus(
+      ctx,
+      instance,
+      manifest,
+      credentialMeta,
+      activeRun,
+      lastRun,
+      latestBatch,
+      setupKind
+    );
+
+    res.status(200).json(status);
+  } catch (err) {
+    ctx.handleError(res, err);
+  }
+}
+
 // GET /_ref/connections/:connectorInstanceId/setup-status
 //
 // Owner-session-only. Projects the visible setup lifecycle for one connection
@@ -380,80 +514,6 @@ export function mountRefStaticSecretSetupStatus(app: AppLike, ctx: MountRefStati
   app.get(
     "/_ref/connections/:connectorInstanceId/setup-status",
     ctx.requireOwnerSession,
-    async (req: RouteRequest, res: RouteResponse) => {
-      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
-      try {
-        const ownerSubjectId = ctx.getOwnerSubjectId(req);
-        // Resolve the connection allowing `draft` so a not-yet-ingested setup is
-        // visible to the owner; ownership is verified by the resolver. A foreign
-        // or unknown id surfaces as connector_instance_not_found (404).
-        const namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
-          ownerSubjectId,
-          allowDefaultAccount: false,
-          allowStatuses: ["active", "draft", "paused", "revoked"],
-          connectorInstanceId,
-        });
-        const store = ctx.createRequestConnectorInstanceStore();
-        const instance = await store.get(namespace.connectorInstanceId);
-        if (!instance) {
-          ctx.pdppError(
-            res,
-            404,
-            "connector_instance_not_found",
-            `Connection '${connectorInstanceId}' does not exist.`
-          );
-          return;
-        }
-        const manifest = await ctx.resolveRegisteredConnectorManifest(instance.connectorId);
-        const credentialStore = ctx.createRequestConnectorInstanceCredentialStore();
-        const setupKind = setupKindForConnection(instance.sourceBinding, manifest);
-        const credentialMeta =
-          setupKind === "static_secret" ? await credentialStore.getMetadata(namespace.connectorInstanceId) : null;
-        const requestedRunId = firstQueryValue(req.query?.run_id);
-        const { activeRun, lastRun } = await resolveRunEvidence(
-          ctx,
-          store,
-          namespace.connectorInstanceId,
-          requestedRunId
-        );
-        const acquisitionStore = ctx.createRequestAcquisitionBatchStore();
-        const acquisitionBatches =
-          setupKind === "manual_upload"
-            ? await acquisitionStore.listByConnection(namespace.connectorInstanceId, { limit: 1 })
-            : [];
-        const latestBatch = acquisitionBatches[0] ?? null;
-
-        const status = projectConnectionSetupStatus({
-          instance: {
-            connectorInstanceId: instance.connectorInstanceId,
-            connectorId: ctx.canonicalConnectorKey(instance.connectorId) ?? instance.connectorId,
-            displayName: instance.displayName ?? null,
-            status: instance.status,
-            createdAt: instance.createdAt ?? null,
-            updatedAt: instance.updatedAt ?? null,
-            setupFields: setupFieldsFromBinding(instance.sourceBinding),
-          },
-          credential: credentialMeta
-            ? {
-                present: credentialMeta.present === true,
-                credentialKind: credentialMeta.credentialKind ?? null,
-                capturedAt: credentialMeta.capturedAt ?? null,
-                rotatedAt: credentialMeta.rotatedAt ?? null,
-              }
-            : null,
-          activeRun,
-          lastRun,
-          importReceipt:
-            importReceiptFromBatch(latestBatch) ?? importReceiptFromBinding(setupKind, instance.sourceBinding),
-          identityFieldName: identityFieldName(manifest),
-          setupKind,
-          setupMaterial: setupMaterialFromBinding(setupKind, instance.sourceBinding, credentialMeta),
-        });
-
-        res.status(200).json(status);
-      } catch (err) {
-        ctx.handleError(res, err);
-      }
-    }
+    (req: RouteRequest, res: RouteResponse) => handleRefStaticSecretSetupStatus(req, res, ctx)
   );
 }

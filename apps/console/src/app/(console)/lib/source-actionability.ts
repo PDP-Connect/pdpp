@@ -301,6 +301,14 @@ function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_ve
   if (verdict.pill.label === "Needs refresh") {
     return "needs a refresh";
   }
+  // "Syncing" means an active run is already doing the work a "Needs
+  // refresh" nudge would ask for (rendered-verdict.ts labelForPill's
+  // active-run softening) — it must not fall through to "is degraded" just
+  // because the underlying tone is still honestly amber. Bail out here so
+  // the caller's `isWorking` branch renders it as active progress instead.
+  if (verdict.pill.label === "Syncing") {
+    return null;
+  }
   if (verdict.pill.tone === "amber" || verdict.pill.label === "Degraded") {
     return "is degraded";
   }
@@ -311,7 +319,7 @@ function sourceIssueStatus(verdict: NonNullable<RefConnectorSummary["rendered_ve
 }
 
 function isWorking(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): boolean {
-  return verdict.pill.label === "Checking";
+  return verdict.pill.label === "Checking" || verdict.pill.label === "Syncing";
 }
 
 function isNotMeasured(verdict: NonNullable<RefConnectorSummary["rendered_verdict"]>): boolean {

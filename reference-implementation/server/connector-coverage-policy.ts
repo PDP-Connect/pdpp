@@ -206,6 +206,64 @@ export function mapSkipCoverageCondition(skip: RuntimeCollectionFactSkip): Cover
 }
 
 /**
+ * Classify a stream once no contradictory manifest, explicit skip, or pending
+ * recoverable detail gap takes precedence. At this point, coverage rests only
+ * on the considered denominator or a checkpoint-backed strategy boundary.
+ */
+function deriveGapFreeStreamCoverageCondition(
+  fact: RuntimeCollectionFact,
+  accepted: AcceptedCoveragePolicy | null,
+  strategy: CoverageEvidenceStrategy | null
+): CoverageAxis {
+  // Some stream strategies establish coverage by committing a bounded source
+  // window/inventory/snapshot/singleton boundary. For those streams,
+  // `collected` remains only the number of records emitted this run
+  // (typically changed records), not a coverage numerator. A committed
+  // checkpoint with no skip/gaps proves the stream boundary was covered even
+  // when unchanged records were suppressed and `collected < considered`.
+  if (
+    fact.considered !== null &&
+    strategyCanProveCoverageWithoutDenominator(strategy) &&
+    checkpointProvesCoverage(fact.checkpoint)
+  ) {
+    return accepted ?? "complete";
+  }
+
+  // A known considered denominator distinguishes `partial` from covered. The
+  // satisfying numerator is the connector-declared `covered` count when present
+  // (the in-boundary items the run accounted for: emitted +
+  // suppressed-because-unchanged), otherwise the raw `collected` count. The
+  // `covered` path is what lets a steady-state full-sync run — which
+  // re-enumerated its whole boundary and emitted nothing because every record
+  // was unchanged — read `complete` instead of a false `partial`. It cannot
+  // mask a dropped record: a weighed-but-dropped item is counted in neither
+  // `collected` nor `covered`, so a real shortfall still reads `partial`.
+  if (fact.considered !== null) {
+    const satisfied = fact.covered ?? fact.collected;
+    if (satisfied < fact.considered) {
+      return "partial";
+    }
+    // The numerator satisfies the considered denominator: covered. A declared
+    // accepted-coverage policy (e.g. `inventory_only`, `deferred`) is the more
+    // precise honest claim than a bare `complete`.
+    return accepted ?? "complete";
+  }
+
+  // No considered denominator: absence of evidence, NOT proof of completeness.
+  // A declared accepted-coverage policy is still precise (the manifest owes no
+  // further data). A declared coverage evidence strategy can also prove a
+  // bounded stream complete when the runtime committed that stream's boundary:
+  // the proof is the strategy + checkpoint, not `collected === considered`.
+  if (accepted !== null) {
+    return accepted;
+  }
+  if (strategyCanProveCoverageWithoutDenominator(strategy) && checkpointProvesCoverage(fact.checkpoint)) {
+    return "complete";
+  }
+  return "unknown";
+}
+
+/**
  * Derive one stream's coverage condition from its runtime fact entry plus the
  * stream's manifest policy. Precedence (first match wins), mirroring the
  * evidence order the contract requires:
@@ -254,50 +312,6 @@ export function deriveStreamCoverageCondition(
   if (fact.pending_detail_gaps > 0) {
     return "retryable_gap";
   }
-  // 4. Some stream strategies establish coverage by committing a bounded source
-  //    window/inventory/snapshot/singleton boundary. For those streams,
-  //    `collected` remains only the number of records emitted this run
-  //    (typically changed records), not a coverage numerator. A committed
-  //    checkpoint with no skip/gaps proves the stream boundary was covered even
-  //    when unchanged records were suppressed and `collected < considered`.
   const strategy = readCoverageEvidenceStrategy(manifestStream);
-  if (
-    fact.considered !== null &&
-    strategyCanProveCoverageWithoutDenominator(strategy) &&
-    checkpointProvesCoverage(fact.checkpoint)
-  ) {
-    return accepted ?? "complete";
-  }
-
-  // 5. A known considered denominator distinguishes `partial` from covered. The
-  //    satisfying numerator is the connector-declared `covered` count when present
-  //    (the in-boundary items the run accounted for: emitted +
-  //    suppressed-because-unchanged), otherwise the raw `collected` count. The
-  //    `covered` path is what lets a steady-state full-sync run — which
-  //    re-enumerated its whole boundary and emitted nothing because every record
-  //    was unchanged — read `complete` instead of a false `partial`. It cannot
-  //    mask a dropped record: a weighed-but-dropped item is counted in neither
-  //    `collected` nor `covered`, so a real shortfall still reads `partial`.
-  if (fact.considered !== null) {
-    const satisfied = fact.covered ?? fact.collected;
-    if (satisfied < fact.considered) {
-      return "partial";
-    }
-    // The numerator satisfies the considered denominator: covered. A declared
-    // accepted-coverage policy (e.g. `inventory_only`, `deferred`) is the more
-    // precise honest claim than a bare `complete`.
-    return accepted ?? "complete";
-  }
-  // 6. No considered denominator: absence of evidence, NOT proof of completeness.
-  //    A declared accepted-coverage policy is still precise (the manifest owes no
-  //    further data). A declared coverage evidence strategy can also prove a
-  //    bounded stream complete when the runtime committed that stream's boundary:
-  //    the proof is the strategy + checkpoint, not `collected === considered`.
-  if (accepted !== null) {
-    return accepted;
-  }
-  if (strategyCanProveCoverageWithoutDenominator(strategy) && checkpointProvesCoverage(fact.checkpoint)) {
-    return "complete";
-  }
-  return "unknown";
+  return deriveGapFreeStreamCoverageCondition(fact, accepted, strategy);
 }

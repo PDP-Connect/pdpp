@@ -346,20 +346,15 @@ function sanitizeReturnTo(input: unknown): string {
   if (typeof input !== "string" || !input) {
     return DEFAULT_RETURN_TO;
   }
-  // Must start with a single '/' and not '//' (protocol-relative) and not contain \\
-  if (!input.startsWith("/")) {
-    return DEFAULT_RETURN_TO;
-  }
-  if (input.startsWith("//")) {
-    return DEFAULT_RETURN_TO;
-  }
-  if (input.includes("\\")) {
-    return DEFAULT_RETURN_TO;
-  }
-  if (containsControlCharacter(input)) {
+  // Must start with a single '/' and not '//' (protocol-relative) and not contain \\.
+  if (!isSafeReturnToPath(input)) {
     return DEFAULT_RETURN_TO;
   }
   return input;
+}
+
+function isSafeReturnToPath(input: string): boolean {
+  return input.startsWith("/") && !input.startsWith("//") && !input.includes("\\") && !containsControlCharacter(input);
 }
 
 function deriveRequestOrigin(req: AuthRequest): string | null {
@@ -381,6 +376,10 @@ function deriveReturnToFromRequest(req: AuthRequest): string {
     return originalUrl;
   }
 
+  return deriveReturnToFromReferrer(req, originalUrl, referrer);
+}
+
+function deriveReturnToFromReferrer(req: AuthRequest, originalUrl: string, referrer: string): string {
   try {
     const referrerUrl = new URL(referrer);
     const currentOrigin = deriveRequestOrigin(req);
@@ -445,6 +444,317 @@ function buildSessionHelpers(controller: OwnerSessionController): SessionHelpers
   };
 }
 
+interface OwnerAuthRouteContext {
+  readonly csrfPairValid: (req: AuthRequest) => boolean;
+  readonly enabled: boolean;
+  readonly ensureCsrfToken: (req: AuthRequest, res: AuthResponse) => string;
+  readonly passwordMatches: (submitted: string) => boolean;
+  readonly providerName: string;
+  readonly resolvedSubjectId: string;
+  readonly rotateCsrfCookie: (req: AuthRequest, res: AuthResponse) => void;
+  readonly session: SessionHelpers;
+}
+
+function isJsonRequest(req: AuthRequest): boolean {
+  // Pure JSON callers (CLIs, server-to-server, dashboards using
+  // `fetch` with `Content-Type: application/json`) cannot be forged
+  // into a cross-origin browser POST without a CORS preflight, so
+  // we exempt them from CSRF and preserve existing JSON API
+  // behavior. The exemption is intentionally limited to exactly
+  // `application/json`: the reference's Fastify body parser only
+  // parses `application/json`, so accepting structured-syntax
+  // variants like `application/problem+json` for CSRF purposes
+  // would diverge from what the route handlers actually decode.
+  const contentType =
+    typeof (req.headers as Record<string, unknown>)["content-type"] === "string"
+      ? ((req.headers as Record<string, string>)["content-type"] as string).toLowerCase()
+      : "";
+  if (!contentType) {
+    return false;
+  }
+  const mediaType = contentType.split(";")[0]?.trim() ?? "";
+  return mediaType === "application/json";
+}
+
+function shouldRequireCsrf(req: AuthRequest): boolean {
+  // Every browser-submittable POST that is *not* JSON needs CSRF.
+  // That includes the obvious form encodings
+  // (`application/x-www-form-urlencoded`, `multipart/form-data`)
+  // *and* `text/plain`, which the HTML form spec accepts as a third
+  // valid `enctype` and which a browser can send cross-origin
+  // without a CORS preflight. Exempting only the two form encodings
+  // (the prior heuristic) left a `text/plain` bypass.
+  return !isJsonRequest(req);
+}
+
+function readValidCsrfCookie(req: AuthRequest, csrfSecret: OwnerCsrfSecret): string | null {
+  const fromCookie = readCsrfTokenFromCookieHeader(req.headers.cookie);
+  if (fromCookie && verifyOwnerCsrfToken(fromCookie, csrfSecret)) {
+    return fromCookie;
+  }
+  return null;
+}
+
+function appendCsrfTokenToRequest(req: AuthRequest, token: string): void {
+  const nextHeader = req.headers.cookie
+    ? `${req.headers.cookie}; ${OWNER_CSRF_COOKIE_NAME}=${token}`
+    : `${OWNER_CSRF_COOKIE_NAME}=${token}`;
+  (req as unknown as { headers: Record<string, string> }).headers.cookie = nextHeader;
+}
+
+function replyCsrfFailure(req: AuthRequest, res: AuthResponse, providerName: string): void {
+  if (wantsHtml(req)) {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.status(403).send(
+      renderHostedDocument({
+        title: `${providerName} — Request blocked`,
+        providerName,
+        body: [
+          renderPageIntro({
+            eyebrow: "Owner approval UI",
+            title: "Request blocked",
+            lede: "The form submission is missing a valid CSRF token. Reload the page and try again from a freshly rendered owner-hosted form.",
+          }),
+        ].join("\n"),
+      })
+    );
+    return;
+  }
+  res
+    .status(403)
+    .setHeader("Content-Type", "application/json")
+    .json({
+      error: {
+        type: "invalid_request",
+        code: "csrf_token_invalid",
+        message: "CSRF token missing or invalid for hosted owner form POST.",
+      },
+    });
+}
+
+function replyDisabledLogin(req: AuthRequest, res: AuthResponse, providerName: string): void {
+  if (wantsHtml(req)) {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.status(400).send(
+      renderOwnerAuthDisabledPage({
+        providerName,
+        themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
+      })
+    );
+    return;
+  }
+  res
+    .status(400)
+    .setHeader("Content-Type", "application/json")
+    .json({
+      error: {
+        type: "invalid_request",
+        code: "owner_auth_disabled",
+        message: "Owner placeholder auth is disabled on this reference instance.",
+      },
+    });
+}
+
+function replyLogoutCsrfFailure(req: AuthRequest, res: AuthResponse, providerName: string): void {
+  if (wantsHtml(req)) {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.status(403).send(
+      renderHostedDocument({
+        title: `${providerName} — Request blocked`,
+        providerName,
+        body: renderPageIntro({
+          eyebrow: "Owner approval UI",
+          title: "Request blocked",
+          lede: "The sign-out submission is missing a valid CSRF token. Reload the page and try again.",
+        }),
+      })
+    );
+    return;
+  }
+  res
+    .status(403)
+    .setHeader("Content-Type", "application/json")
+    .json({
+      error: {
+        type: "invalid_request",
+        code: "csrf_token_invalid",
+        message: "CSRF token missing or invalid for /owner/logout.",
+      },
+    });
+}
+
+function sendOwnerLoginPage(
+  res: AuthResponse,
+  providerName: string,
+  csrfToken: string,
+  returnTo: string,
+  status: number,
+  error: string | null,
+  themeChoice?: string
+): void {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.status(status).send(
+    renderLoginPage({
+      providerName,
+      error,
+      returnTo,
+      csrfToken,
+      ...(themeChoice === undefined ? {} : { themeChoice }),
+    })
+  );
+}
+
+function handleOwnerLoginGet(req: AuthRequest, res: AuthResponse, context: OwnerAuthRouteContext): void {
+  const hasExplicitReturnTo = typeof req.query?.return_to === "string" && req.query.return_to.length > 0;
+  const returnTo = readReturnToFromQuery(req);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+
+  if (!context.enabled) {
+    res.status(200).send(
+      renderOwnerAuthDisabledPage({
+        providerName: context.providerName,
+        themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
+      })
+    );
+    return;
+  }
+
+  const currentSession = context.session.readSession(req);
+  if (!currentSession) {
+    const csrfToken = context.ensureCsrfToken(req, res);
+    res.status(200).send(
+      renderLoginPage({
+        providerName: context.providerName,
+        error: null,
+        returnTo,
+        csrfToken,
+        themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
+      })
+    );
+    return;
+  }
+  if (hasExplicitReturnTo) {
+    res.redirect(returnTo);
+    return;
+  }
+  const csrfToken = context.ensureCsrfToken(req, res);
+  res.status(200).send(
+    renderSignedInOwnerPage({
+      providerName: context.providerName,
+      subjectId: context.resolvedSubjectId,
+      csrfToken,
+      themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
+    })
+  );
+}
+
+function handleOwnerLoginPost(req: AuthRequest, res: AuthResponse, context: OwnerAuthRouteContext): void {
+  const returnTo = readReturnToFromBodyOrQuery(req);
+
+  if (!context.enabled) {
+    replyDisabledLogin(req, res, context.providerName);
+    return;
+  }
+
+  // Enforce CSRF before any password check so attackers can't probe
+  // password validity over a forged cross-origin POST. We render the
+  // CSRF failure page rather than re-rendering the login form so we
+  // don't leak whether the password attempt would have succeeded.
+  //
+  // Pure JSON callers stay exempt for the same reason as the rest
+  // of the hosted-form CSRF surface: a cross-origin browser POST
+  // with `Content-Type: application/json` requires a CORS preflight
+  // and cannot be silently forged, so JSON `/owner/login` keeps
+  // its programmatic contract and reaches the password branch.
+  if (shouldRequireCsrf(req) && !context.csrfPairValid(req)) {
+    const csrfToken = context.ensureCsrfToken(req, res);
+    sendOwnerLoginPage(
+      res,
+      context.providerName,
+      csrfToken,
+      returnTo,
+      403,
+      "Session expired or form replay detected. Please try again.",
+      readHostedThemeChoiceFromCookieHeader(req.headers.cookie)
+    );
+    return;
+  }
+
+  const submitted = req.body && typeof req.body.password === "string" ? req.body.password : "";
+  if (!context.passwordMatches(submitted)) {
+    const csrfToken = context.ensureCsrfToken(req, res);
+    sendOwnerLoginPage(
+      res,
+      context.providerName,
+      csrfToken,
+      returnTo,
+      401,
+      "Incorrect password.",
+      readHostedThemeChoiceFromCookieHeader(req.headers.cookie)
+    );
+    return;
+  }
+  context.session.issueSession(res, req);
+  // Rotate the CSRF cookie on auth-state change so a token captured
+  // from a pre-login response cannot be reused after sign-in.
+  context.rotateCsrfCookie(req, res);
+  res.redirect(returnTo);
+}
+
+function handleOwnerLogout(req: AuthRequest, res: AuthResponse, context: OwnerAuthRouteContext): void {
+  // CSRF only applies when owner-auth is enabled. With placeholder
+  // auth disabled (no PDPP_OWNER_PASSWORD), there is no session
+  // and no CSRF surface to protect; preserve the prior open
+  // local-dev behavior so a form-encoded logout POST does not 403.
+  // Pure JSON callers stay exempt because they cannot be
+  // cross-origin-forged without a CORS preflight; every other
+  // browser-submittable POST (form-encoded, multipart, text/plain)
+  // requires a valid CSRF pair.
+  if (context.enabled && shouldRequireCsrf(req) && !context.csrfPairValid(req)) {
+    replyLogoutCsrfFailure(req, res, context.providerName);
+    return;
+  }
+  context.session.clearSession(res, req);
+  context.rotateCsrfCookie(req, res);
+  if (wantsHtml(req)) {
+    res.redirect("/owner/login");
+    return;
+  }
+  res.status(204).end();
+}
+
+function denyOwnerAccess(req: AuthRequest, res: AuthResponse): void {
+  if (wantsHtml(req)) {
+    const returnTo = encodeURIComponent(deriveReturnToFromRequest(req));
+    res.redirect(`/owner/login?return_to=${returnTo}`);
+    return;
+  }
+  res
+    .status(401)
+    .setHeader("Content-Type", "application/json")
+    .json({
+      error: {
+        type: "authentication_error",
+        code: "owner_session_required",
+        message:
+          "Owner session required. This is the reference implementation placeholder owner auth; sign in at /owner/login.",
+      },
+    });
+}
+
+function handleDisabledOwnerSession(
+  req: AuthRequest,
+  res: AuthResponse,
+  next: AuthNextFunction,
+  allowUnauthenticatedWhenDisabled: boolean
+): void {
+  if (allowUnauthenticatedWhenDisabled) {
+    next();
+    return;
+  }
+  denyOwnerAccess(req, res);
+}
+
 /**
  * Build the owner-auth placeholder. Returns an object with:
  *   - `enabled`: whether placeholder auth is active (password configured)
@@ -494,10 +804,10 @@ export function createOwnerAuthPlaceholder({
     if (!csrfSecret) {
       return "";
     }
-    const fromCookie = readCsrfTokenFromCookieHeader(req.headers.cookie);
     // Reuse the cookie value only if the signature still verifies; an
     // injected/forged cookie would fail verification and is rotated out.
-    if (fromCookie && verifyOwnerCsrfToken(fromCookie, csrfSecret)) {
+    const fromCookie = readValidCsrfCookie(req, csrfSecret);
+    if (fromCookie) {
       return fromCookie;
     }
     const token = issueOwnerCsrfToken(csrfSecret);
@@ -511,10 +821,7 @@ export function createOwnerAuthPlaceholder({
     );
     // Ensure subsequent reads in the same request see the freshly minted
     // token via the request cookie header.
-    const nextHeader = req.headers.cookie
-      ? `${req.headers.cookie}; ${OWNER_CSRF_COOKIE_NAME}=${token}`
-      : `${OWNER_CSRF_COOKIE_NAME}=${token}`;
-    (req as unknown as { headers: Record<string, string> }).headers.cookie = nextHeader;
+    appendCsrfTokenToRequest(req, token);
     return token;
   }
 
@@ -526,38 +833,6 @@ export function createOwnerAuthPlaceholder({
         sameSite,
       })
     );
-  }
-
-  function isJsonRequest(req: AuthRequest): boolean {
-    // Pure JSON callers (CLIs, server-to-server, dashboards using
-    // `fetch` with `Content-Type: application/json`) cannot be forged
-    // into a cross-origin browser POST without a CORS preflight, so
-    // we exempt them from CSRF and preserve existing JSON API
-    // behavior. The exemption is intentionally limited to exactly
-    // `application/json`: the reference's Fastify body parser only
-    // parses `application/json`, so accepting structured-syntax
-    // variants like `application/problem+json` for CSRF purposes
-    // would diverge from what the route handlers actually decode.
-    const contentType =
-      typeof (req.headers as Record<string, unknown>)["content-type"] === "string"
-        ? ((req.headers as Record<string, string>)["content-type"] as string).toLowerCase()
-        : "";
-    if (!contentType) {
-      return false;
-    }
-    const mediaType = contentType.split(";")[0]?.trim() ?? "";
-    return mediaType === "application/json";
-  }
-
-  function shouldRequireCsrf(req: AuthRequest): boolean {
-    // Every browser-submittable POST that is *not* JSON needs CSRF.
-    // That includes the obvious form encodings
-    // (`application/x-www-form-urlencoded`, `multipart/form-data`)
-    // *and* `text/plain`, which the HTML form spec accepts as a third
-    // valid `enctype` and which a browser can send cross-origin
-    // without a CORS preflight. Exempting only the two form encodings
-    // (the prior heuristic) left a `text/plain` bypass.
-    return !isJsonRequest(req);
   }
 
   function requireCsrf(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void {
@@ -576,33 +851,7 @@ export function createOwnerAuthPlaceholder({
         ? ((req.body as Record<string, unknown>)[OWNER_CSRF_FIELD_NAME] as string)
         : "") || "";
     if (!(csrfSecret && validateOwnerCsrfPair(cookieToken, formToken, csrfSecret))) {
-      if (wantsHtml(req)) {
-        res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.status(403).send(
-          renderHostedDocument({
-            title: `${providerName} — Request blocked`,
-            providerName,
-            body: [
-              renderPageIntro({
-                eyebrow: "Owner approval UI",
-                title: "Request blocked",
-                lede: "The form submission is missing a valid CSRF token. Reload the page and try again from a freshly rendered owner-hosted form.",
-              }),
-            ].join("\n"),
-          })
-        );
-        return;
-      }
-      res
-        .status(403)
-        .setHeader("Content-Type", "application/json")
-        .json({
-          error: {
-            type: "invalid_request",
-            code: "csrf_token_invalid",
-            message: "CSRF token missing or invalid for hosted owner form POST.",
-          },
-        });
+      replyCsrfFailure(req, res, providerName);
       return;
     }
     next();
@@ -632,198 +881,20 @@ export function createOwnerAuthPlaceholder({
     return timingSafeEqualString(submitted, password);
   }
 
-  function replyDisabledLogin(req: AuthRequest, res: AuthResponse): void {
-    if (wantsHtml(req)) {
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.status(400).send(
-        renderOwnerAuthDisabledPage({
-          providerName,
-          themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
-        })
-      );
-      return;
-    }
-    res
-      .status(400)
-      .setHeader("Content-Type", "application/json")
-      .json({
-        error: {
-          type: "invalid_request",
-          code: "owner_auth_disabled",
-          message: "Owner placeholder auth is disabled on this reference instance.",
-        },
-      });
-  }
-
-  function replyLogoutCsrfFailure(req: AuthRequest, res: AuthResponse): void {
-    if (wantsHtml(req)) {
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.status(403).send(
-        renderHostedDocument({
-          title: `${providerName} — Request blocked`,
-          providerName,
-          body: renderPageIntro({
-            eyebrow: "Owner approval UI",
-            title: "Request blocked",
-            lede: "The sign-out submission is missing a valid CSRF token. Reload the page and try again.",
-          }),
-        })
-      );
-      return;
-    }
-    res
-      .status(403)
-      .setHeader("Content-Type", "application/json")
-      .json({
-        error: {
-          type: "invalid_request",
-          code: "csrf_token_invalid",
-          message: "CSRF token missing or invalid for /owner/logout.",
-        },
-      });
-  }
-
   function attachRoutes(app: AuthAppLike): void {
-    app.get("/owner/login", (req, res) => {
-      const hasExplicitReturnTo = typeof req.query?.return_to === "string" && req.query.return_to.length > 0;
-      const returnTo = readReturnToFromQuery(req);
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-
-      if (!enabled) {
-        res.status(200).send(
-          renderOwnerAuthDisabledPage({
-            providerName,
-            themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
-          })
-        );
-        return;
-      }
-
-      const currentSession = session.readSession(req);
-      if (currentSession) {
-        if (hasExplicitReturnTo) {
-          res.redirect(returnTo);
-          return;
-        }
-        const csrfToken = ensureCsrfToken(req, res);
-        res.status(200).send(
-          renderSignedInOwnerPage({
-            providerName,
-            subjectId: resolvedSubjectId,
-            csrfToken,
-            themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
-          })
-        );
-        return;
-      }
-
-      const csrfToken = ensureCsrfToken(req, res);
-      res.status(200).send(
-        renderLoginPage({
-          providerName,
-          error: null,
-          returnTo,
-          csrfToken,
-          themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
-        })
-      );
-    });
-
-    app.post("/owner/login", (req, res) => {
-      const returnTo = readReturnToFromBodyOrQuery(req);
-
-      if (!enabled) {
-        replyDisabledLogin(req, res);
-        return;
-      }
-
-      // Enforce CSRF before any password check so attackers can't probe
-      // password validity over a forged cross-origin POST. We render the
-      // CSRF failure page rather than re-rendering the login form so we
-      // don't leak whether the password attempt would have succeeded.
-      //
-      // Pure JSON callers stay exempt for the same reason as the rest
-      // of the hosted-form CSRF surface: a cross-origin browser POST
-      // with `Content-Type: application/json` requires a CORS preflight
-      // and cannot be silently forged, so JSON `/owner/login` keeps
-      // its programmatic contract and reaches the password branch.
-      if (shouldRequireCsrf(req) && !csrfPairValid(req)) {
-        const csrfToken = ensureCsrfToken(req, res);
-        res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.status(403).send(
-          renderLoginPage({
-            providerName,
-            error: "Session expired or form replay detected. Please try again.",
-            returnTo,
-            csrfToken,
-            themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
-          })
-        );
-        return;
-      }
-
-      const submitted = req.body && typeof req.body.password === "string" ? req.body.password : "";
-      if (!passwordMatches(submitted)) {
-        const csrfToken = ensureCsrfToken(req, res);
-        res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.status(401).send(
-          renderLoginPage({
-            providerName,
-            error: "Incorrect password.",
-            returnTo,
-            csrfToken,
-            themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
-          })
-        );
-        return;
-      }
-      session.issueSession(res, req);
-      // Rotate the CSRF cookie on auth-state change so a token captured
-      // from a pre-login response cannot be reused after sign-in.
-      rotateCsrfCookie(req, res);
-      res.redirect(returnTo);
-    });
-
-    app.post("/owner/logout", (req, res) => {
-      // CSRF only applies when owner-auth is enabled. With placeholder
-      // auth disabled (no PDPP_OWNER_PASSWORD), there is no session
-      // and no CSRF surface to protect; preserve the prior open
-      // local-dev behavior so a form-encoded logout POST does not 403.
-      // Pure JSON callers stay exempt because they cannot be
-      // cross-origin-forged without a CORS preflight; every other
-      // browser-submittable POST (form-encoded, multipart, text/plain)
-      // requires a valid CSRF pair.
-      if (enabled && shouldRequireCsrf(req) && !csrfPairValid(req)) {
-        replyLogoutCsrfFailure(req, res);
-        return;
-      }
-      session.clearSession(res, req);
-      rotateCsrfCookie(req, res);
-      if (wantsHtml(req)) {
-        res.redirect("/owner/login");
-        return;
-      }
-      res.status(204).end();
-    });
-  }
-
-  function denyOwnerAccess(req: AuthRequest, res: AuthResponse): void {
-    if (wantsHtml(req)) {
-      const returnTo = encodeURIComponent(deriveReturnToFromRequest(req));
-      res.redirect(`/owner/login?return_to=${returnTo}`);
-      return;
-    }
-    res
-      .status(401)
-      .setHeader("Content-Type", "application/json")
-      .json({
-        error: {
-          type: "authentication_error",
-          code: "owner_session_required",
-          message:
-            "Owner session required. This is the reference implementation placeholder owner auth; sign in at /owner/login.",
-        },
-      });
+    const context: OwnerAuthRouteContext = {
+      csrfPairValid,
+      enabled,
+      ensureCsrfToken,
+      passwordMatches,
+      providerName,
+      resolvedSubjectId,
+      rotateCsrfCookie,
+      session,
+    };
+    app.get("/owner/login", (req, res) => handleOwnerLoginGet(req, res, context));
+    app.post("/owner/login", (req, res) => handleOwnerLoginPost(req, res, context));
+    app.post("/owner/logout", (req, res) => handleOwnerLogout(req, res, context));
   }
 
   function requireOwnerSession(req: AuthRequest, res: AuthResponse, next: AuthNextFunction): void {
@@ -835,11 +906,7 @@ export function createOwnerAuthPlaceholder({
       // Security audit S-1: an unset password must never silently open the
       // owner control plane on a hosted surface. The host's boot guard makes
       // hosted-without-password unreachable; this is defense in depth.
-      if (allowUnauthenticatedWhenDisabled) {
-        next();
-        return;
-      }
-      denyOwnerAccess(req, res);
+      handleDisabledOwnerSession(req, res, next, allowUnauthenticatedWhenDisabled);
       return;
     }
 

@@ -187,3 +187,21 @@ export function stravaPacingProfile(): ProviderPacingProfile {
 export function ynabPacingProfile(): ProviderPacingProfile {
   return { pacingMinIntervalMs: 20_000 };
 }
+
+/**
+ * Slack (direct Web API calls for `stars.list`, `usergroups.list`,
+ * `reminders.list`, `conversations.info`) — 3000ms (20 req/min). This governor
+ * covers ONLY the four gap streams the archive-based collection cannot reach
+ * (see openspec/changes/complete-slack-bundled-connector-coverage); it does not
+ * pace slackdump's own subprocess calls. Slack's tiered rate limits put
+ * `usergroups.list`/`reminders.list` at Tier 2 (20+ req/min = 3000ms) and
+ * `stars.list`/`conversations.info` at Tier 3 (50+ req/min, faster); 3000ms is
+ * set at the binding (slowest) Tier 2 floor across the four methods since one
+ * governor call site paces all of them, not per-method.
+ * Doc: https://docs.slack.dev/apis/web-api/rate-limits/,
+ * https://docs.slack.dev/reference/methods/usergroups.list,
+ * https://docs.slack.dev/reference/methods/reminders.list
+ */
+export function slackApiPacingProfile(): ProviderPacingProfile {
+  return { pacingMinIntervalMs: 3000 };
+}

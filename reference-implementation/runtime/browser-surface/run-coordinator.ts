@@ -101,6 +101,11 @@ interface ReclaimResolution {
   readonly lease: BrowserSurfaceLease;
 }
 
+interface AllocatorSurfaceReconciliation {
+  readonly downgraded: readonly BrowserSurface[];
+  readonly evicted: readonly BrowserSurface[];
+}
+
 // ─── Deps object ─────────────────────────────────────────────────────────────
 
 export interface BrowserSurfaceManagerDeps {
@@ -228,6 +233,32 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     return { kind: "connector", id: connectorId };
   }
 
+  function buildReadyProbePayload(result: Extract<BrowserSurfaceReadinessProbeResult, { ok: true }>): {
+    ok: true;
+    page_target_count: number;
+    browser_version?: string;
+  } {
+    return {
+      ok: true,
+      page_target_count: result.pageTargetCount,
+      ...(result.browserVersion ? { browser_version: result.browserVersion } : {}),
+    };
+  }
+
+  function findSurfaceForLease(lease: BrowserSurfaceLease): BrowserSurface | undefined {
+    if (!(browserSurfaceLeaseManager && lease.surface_id)) {
+      return undefined;
+    }
+    return browserSurfaceLeaseManager.getSurface(lease.surface_id);
+  }
+
+  function readinessTimeoutOptions(): { readonly readinessTimeoutMs?: number } {
+    if (browserSurfaceReadinessTimeoutMs === undefined) {
+      return {};
+    }
+    return { readinessTimeoutMs: browserSurfaceReadinessTimeoutMs };
+  }
+
   // ─── Event emission ────────────────────────────────────────────────────────
 
   async function emitBrowserSurfaceLeaseEvent(
@@ -280,11 +311,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
         data: {
           source: buildRunSource(connectorId),
           browser_surface: projectBrowserSurfaceLease(lease),
-          browser_surface_probe: {
-            ok: true,
-            page_target_count: result.pageTargetCount,
-            ...(result.browserVersion ? { browser_version: result.browserVersion } : {}),
-          },
+          browser_surface_probe: buildReadyProbePayload(result),
         },
       });
     } catch (err) {
@@ -612,22 +639,29 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     let current = lease;
     const allocator = browserSurfaceAllocator ?? UNCONFIGURED_BROWSER_SURFACE_ALLOCATOR;
     while (current.status === "starting_surface") {
-      const readyResult = await browserSurfaceLeaseManager.ensureStartingSurfaceReady({
-        leaseId: current.lease_id,
-        allocator,
-        ...(browserSurfaceReadinessTimeoutMs === undefined
-          ? {}
-          : { readinessTimeoutMs: browserSurfaceReadinessTimeoutMs }),
-      });
+      const readyResult = await ensureStartingBrowserSurfaceReady(browserSurfaceLeaseManager, current, allocator);
       current = readyResult.lease;
-      await persistBrowserSurfaceLeaseMutation(readyResult.lease, readyResult.surface);
       if (current.status !== "starting_surface") {
         return readyResult;
       }
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    const surface = current.surface_id ? browserSurfaceLeaseManager.getSurface(current.surface_id) : undefined;
+    const surface = findSurfaceForLease(current);
     return { lease: current, ...(surface ? { surface } : {}) };
+  }
+
+  async function ensureStartingBrowserSurfaceReady(
+    leaseManager: BrowserSurfaceLeaseManager,
+    lease: BrowserSurfaceLease,
+    allocator: BrowserSurfaceAllocator
+  ): Promise<{ lease: BrowserSurfaceLease; surface?: BrowserSurface }> {
+    const readyResult = await leaseManager.ensureStartingSurfaceReady({
+      leaseId: lease.lease_id,
+      allocator,
+      ...readinessTimeoutOptions(),
+    });
+    await persistBrowserSurfaceLeaseMutation(readyResult.lease, readyResult.surface);
+    return readyResult;
   }
 
   /**
@@ -697,6 +731,33 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     return { ok: result.ok };
   }
 
+  async function persistCapacityPressureReclaim(
+    lease: BrowserSurfaceLease,
+    reclaimed: ReturnType<BrowserSurfaceLeaseManager["completeCapacityPressureReclaim"]>
+  ): Promise<void> {
+    if (reclaimed.stopped) {
+      await persistBrowserSurfaceLeaseMutation(lease, reclaimed.stopped);
+    }
+    if (reclaimed.promoted) {
+      await persistBrowserSurfaceLeaseMutation(reclaimed.promoted, findSurfaceForLease(reclaimed.promoted));
+    }
+  }
+
+  function buildCapacityPressureReclaimResult(
+    lease: BrowserSurfaceLease,
+    reclaimed: ReturnType<BrowserSurfaceLeaseManager["completeCapacityPressureReclaim"]>
+  ): { lease: BrowserSurfaceLease; surface?: BrowserSurface; reclaimed: boolean } {
+    if (!reclaimed.promoted) {
+      return { lease, reclaimed: Boolean(reclaimed.stopped) };
+    }
+    const surface = findSurfaceForLease(reclaimed.promoted);
+    return {
+      lease: reclaimed.promoted,
+      ...(surface ? { surface } : {}),
+      reclaimed: true,
+    };
+  }
+
   async function reclaimCapacityAndPromoteLease(
     lease: BrowserSurfaceLease
   ): Promise<{ lease: BrowserSurfaceLease; surface?: BrowserSurface; reclaimed: boolean }> {
@@ -711,26 +772,9 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     if (!stopResult.ok) {
       return { lease, reclaimed: false };
     }
-
     const reclaimed = browserSurfaceLeaseManager.completeCapacityPressureReclaim(reclaimable.surface_id);
-    if (reclaimed.stopped) {
-      await persistBrowserSurfaceLeaseMutation(lease, reclaimed.stopped);
-    }
-    if (!reclaimed.promoted) {
-      return { lease, reclaimed: Boolean(reclaimed.stopped) };
-    }
-    await persistBrowserSurfaceLeaseMutation(
-      reclaimed.promoted,
-      reclaimed.promoted.surface_id ? browserSurfaceLeaseManager.getSurface(reclaimed.promoted.surface_id) : undefined
-    );
-    const surface = reclaimed.promoted.surface_id
-      ? browserSurfaceLeaseManager.getSurface(reclaimed.promoted.surface_id)
-      : undefined;
-    return {
-      lease: reclaimed.promoted,
-      ...(surface ? { surface } : {}),
-      reclaimed: true,
-    };
+    await persistCapacityPressureReclaim(lease, reclaimed);
+    return buildCapacityPressureReclaimResult(lease, reclaimed);
   }
 
   function promoteBrowserSurfaceLease(lease: BrowserSurfaceLease, reason: string): void {
@@ -743,33 +787,54 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
         runId: lease.run_id,
         priorityClass: lease.priority_class,
       },
-      async (err) => {
-        const deferredResult = browserSurfaceLeaseManager?.deferLeasedRun({
-          leaseId: lease.lease_id,
-          fencingToken: lease.fencing_token,
-        });
-        if (deferredResult?.lease) {
-          try {
-            await emitBrowserSurfaceLeaseEvent(
-              "run.browser_surface_deferred",
-              deferredResult.lease.connector_id,
-              deferredResult.lease.run_id,
-              createTraceContext(),
-              deferredResult.lease
-            );
-            await persistBrowserSurfaceLeaseMutation(deferredResult.lease, deferredResult.surface);
-          } catch {
-            // Deferred-lease emit/persist is best-effort; the outer warn below
-            // already captures the original promotion failure.
-          }
-        }
-        if (deferredResult?.promoted) {
-          await persistAndPromoteBrowserSurfaceLeases([deferredResult.promoted], `${reason} promotion failure`);
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        log.warn?.(`[controller] browser-surface lease ${lease.lease_id} promotion failed after ${reason}: ${message}`);
-      }
+      async (err) => handleBrowserSurfacePromotionFailure(lease, reason, err)
     );
+  }
+
+  async function emitAndPersistDeferredPromotionLease(
+    deferredResult: ReturnType<BrowserSurfaceLeaseManager["deferLeasedRun"]> | undefined
+  ): Promise<void> {
+    if (!deferredResult?.lease) {
+      return;
+    }
+    try {
+      await emitBrowserSurfaceLeaseEvent(
+        "run.browser_surface_deferred",
+        deferredResult.lease.connector_id,
+        deferredResult.lease.run_id,
+        createTraceContext(),
+        deferredResult.lease
+      );
+      await persistBrowserSurfaceLeaseMutation(deferredResult.lease, deferredResult.surface);
+    } catch {
+      // Deferred-lease emit/persist is best-effort; the outer warn below
+      // already captures the original promotion failure.
+    }
+  }
+
+  async function promoteLeaseDeferredAfterPromotionFailure(
+    deferredResult: ReturnType<BrowserSurfaceLeaseManager["deferLeasedRun"]> | undefined,
+    reason: string
+  ): Promise<void> {
+    if (!deferredResult?.promoted) {
+      return;
+    }
+    await persistAndPromoteBrowserSurfaceLeases([deferredResult.promoted], `${reason} promotion failure`);
+  }
+
+  async function handleBrowserSurfacePromotionFailure(
+    lease: BrowserSurfaceLease,
+    reason: string,
+    err: unknown
+  ): Promise<void> {
+    const deferredResult = browserSurfaceLeaseManager?.deferLeasedRun({
+      leaseId: lease.lease_id,
+      fencingToken: lease.fencing_token,
+    });
+    await emitAndPersistDeferredPromotionLease(deferredResult);
+    await promoteLeaseDeferredAfterPromotionFailure(deferredResult, reason);
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn?.(`[controller] browser-surface lease ${lease.lease_id} promotion failed after ${reason}: ${message}`);
   }
 
   async function persistAndPromoteBrowserSurfaceLeases(leases: BrowserSurfaceLease[], reason: string): Promise<void> {
@@ -813,6 +878,25 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
 
   // ─── Boot reconciliation ───────────────────────────────────────────────────
 
+  async function persistAllocatorSurfaceReconciliation(
+    allocatorReconcile: AllocatorSurfaceReconciliation
+  ): Promise<void> {
+    if (!browserSurfaceLeaseStore) {
+      return;
+    }
+    if (allocatorReconcile.evicted.length === 0 && allocatorReconcile.downgraded.length === 0) {
+      return;
+    }
+    await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
+      for (const surface of allocatorReconcile.evicted) {
+        await store.upsertSurface({ ...surface, health: "unhealthy" });
+      }
+      for (const surface of allocatorReconcile.downgraded) {
+        await store.upsertSurface(surface);
+      }
+    });
+  }
+
   async function reconcileBrowserSurfacesWithAllocatorAtBoot(): Promise<void> {
     // Before lease reconciliation, ask the allocator which dynamic surfaces
     // actually exist. A persistent surface row with health=ready from a prior
@@ -823,21 +907,8 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       return;
     }
     try {
-      const allocatorReconcile =
-        await browserSurfaceLeaseManager.reconcileSurfacesWithAllocator(browserSurfaceAllocator);
-      const hasPersistenceWork =
-        Boolean(browserSurfaceLeaseStore) &&
-        (allocatorReconcile.evicted.length > 0 || allocatorReconcile.downgraded.length > 0);
-      if (hasPersistenceWork && browserSurfaceLeaseStore) {
-        await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
-          for (const surface of allocatorReconcile.evicted) {
-            await store.upsertSurface({ ...surface, health: "unhealthy" });
-          }
-          for (const surface of allocatorReconcile.downgraded) {
-            await store.upsertSurface(surface);
-          }
-        });
-      }
+      const allocatorReconcile = await browserSurfaceLeaseManager.reconcileSurfacesWithAllocator(browserSurfaceAllocator);
+      await persistAllocatorSurfaceReconciliation(allocatorReconcile);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] allocator-aware surface reconciliation failed: ${message}`);
@@ -1362,13 +1433,105 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     }
   }
 
+  function isBrowserSurfaceInteraction(interaction: RuntimeInteraction): boolean {
+    return interaction.kind === "manual_action" || interaction.kind === "otp";
+  }
+
+  function findLeasedSurfaceForInteraction(
+    leaseManager: BrowserSurfaceLeaseManager,
+    runId: string
+  ): BrowserSurface | null {
+    const lease = leaseManager
+      .listLeases()
+      .find((candidate: BrowserSurfaceLease) => candidate.run_id === runId && candidate.status === "leased");
+    if (!lease?.surface_id) {
+      return null;
+    }
+    return leaseManager.getSurface(lease.surface_id) ?? null;
+  }
+
+  function midWaitSurfaceLossDetectorOptions(): { readonly pollIntervalMs?: number } {
+    if (browserSurfaceMidWaitPollIntervalMs === undefined) {
+      return {};
+    }
+    return { pollIntervalMs: browserSurfaceMidWaitPollIntervalMs };
+  }
+
+  function cancelPendingSurfaceInteraction(
+    runId: string,
+    interaction: RuntimeInteraction
+  ): InteractionResponse {
+    const currentEntry = activeRunInteractions.get(runId);
+    const cancelledResponse: InteractionResponse = {
+      type: "INTERACTION_RESPONSE",
+      request_id: interaction.request_id,
+      status: "cancelled",
+    };
+    if (currentEntry?.pending?.interaction_id === interaction.request_id) {
+      const pending = currentEntry.pending;
+      currentEntry.pending = null;
+      pending.resolve(cancelledResponse);
+    }
+    return cancelledResponse;
+  }
+
+  function handleBrowserSurfaceLossDuringInteraction(
+    failure: Extract<BrowserSurfaceReadinessProbeResult, { ok: false }>,
+    runId: string,
+    connectorId: string,
+    traceContext: SpineTraceContext,
+    interaction: RuntimeInteraction
+  ): InteractionResponse {
+    // Clear the pending interaction entry BEFORE resolving so any in-flight
+    // respondToInteraction call gets no_pending_interaction.
+    const cancelledResponse = cancelPendingSurfaceInteraction(runId, interaction);
+
+    // Best-effort fire-and-forget: emission failure must not resolve the
+    // interaction with an error.
+    emitBrowserSurfaceLostEvent({
+      connectorId,
+      interactionId: interaction.request_id,
+      interactionKind: interaction.kind,
+      probeCode: failure.code,
+      probeDetail: failure.detail,
+      runId,
+      traceContext,
+    }).catch(() => {
+      // Already logs internally.
+    });
+
+    return cancelledResponse;
+  }
+
+  function monitorBrowserSurfaceInteraction(
+    surface: BrowserSurface,
+    probe: BrowserSurfaceReadinessProbe,
+    runId: string,
+    connectorId: string,
+    traceContext: SpineTraceContext,
+    interaction: RuntimeInteraction,
+    handler: (interaction: unknown) => Promise<unknown>,
+    rawInteraction: unknown
+  ): Promise<unknown> {
+    const detector = createMidWaitSurfaceLossDetector(surface, probe, midWaitSurfaceLossDetectorOptions());
+    const responsePromise = Promise.resolve(handler(rawInteraction)).finally(() => {
+      detector.cancel();
+    });
+    const lostResponse = detector.lossPromise.then((failure) =>
+      handleBrowserSurfaceLossDuringInteraction(failure, runId, connectorId, traceContext, interaction)
+    );
+    return Promise.race([responsePromise, lostResponse]);
+  }
+
   function wrapInteractionHandlerWithSurfaceLossDetection(
     runId: string,
     connectorId: string,
     traceContext: SpineTraceContext,
     handler: (interaction: unknown) => Promise<unknown>
   ): (interaction: unknown) => Promise<unknown> {
-    if (!(browserSurfaceReadinessProbe && browserSurfaceLeaseManager)) {
+    const readinessProbe = browserSurfaceReadinessProbe;
+    const leaseManager = browserSurfaceLeaseManager;
+    if (!(readinessProbe && leaseManager)) {
       return handler;
     }
     return (rawInteraction: unknown) => {
@@ -1377,62 +1540,24 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       // Only monitor interactions where the browser surface is part of the
       // response path. Non-browser otp/credentials interactions fall through
       // below because they have no leased surface for this run.
-      if (!(interaction.kind === "manual_action" || interaction.kind === "otp")) {
+      if (!isBrowserSurfaceInteraction(interaction)) {
         return handler(rawInteraction);
       }
 
-      const lease = browserSurfaceLeaseManager
-        .listLeases()
-        .find((candidate: BrowserSurfaceLease) => candidate.run_id === runId && candidate.status === "leased");
-      const surface = lease?.surface_id ? browserSurfaceLeaseManager.getSurface(lease.surface_id) : null;
-
-      if (!(lease && surface)) {
+      const surface = findLeasedSurfaceForInteraction(leaseManager, runId);
+      if (!surface) {
         return handler(rawInteraction);
       }
-
-      const detector = createMidWaitSurfaceLossDetector(
+      return monitorBrowserSurfaceInteraction(
         surface,
-        browserSurfaceReadinessProbe,
-        browserSurfaceMidWaitPollIntervalMs === undefined ? {} : { pollIntervalMs: browserSurfaceMidWaitPollIntervalMs }
+        readinessProbe,
+        runId,
+        connectorId,
+        traceContext,
+        interaction,
+        handler,
+        rawInteraction
       );
-
-      const responsePromise = Promise.resolve(handler(rawInteraction)).finally(() => {
-        detector.cancel();
-      });
-
-      const lostResponse: Promise<unknown> = detector.lossPromise.then((failure) => {
-        // Clear the pending interaction entry BEFORE resolving so any
-        // in-flight respondToInteraction call gets no_pending_interaction.
-        const currentEntry = activeRunInteractions.get(runId);
-        const cancelledResponse = {
-          type: "INTERACTION_RESPONSE",
-          request_id: interaction.request_id,
-          status: "cancelled",
-        } as const;
-        if (currentEntry?.pending?.interaction_id === interaction.request_id) {
-          const pending = currentEntry.pending;
-          currentEntry.pending = null;
-          pending.resolve(cancelledResponse);
-        }
-
-        // Best-effort fire-and-forget: emission failure must not resolve the
-        // interaction with an error.
-        emitBrowserSurfaceLostEvent({
-          connectorId,
-          interactionId: interaction.request_id,
-          interactionKind: interaction.kind,
-          probeCode: failure.code,
-          probeDetail: failure.detail,
-          runId,
-          traceContext,
-        }).catch(() => {
-          // Already logs internally.
-        });
-
-        return cancelledResponse;
-      });
-
-      return Promise.race([responsePromise, lostResponse]);
     };
   }
 

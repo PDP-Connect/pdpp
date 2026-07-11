@@ -9,10 +9,14 @@ import {
   buildChannelMembershipRecord,
   buildChannelRecord,
   buildChannelStatsRecord,
+  buildDmReadStateRecord,
   buildFileRecord,
   buildMessageAttachmentRecords,
   buildMessageRecord,
   buildReactionRecords,
+  buildReminderRecord,
+  buildStarRecord,
+  buildUserGroupRecord,
   buildUserRecord,
   buildWorkspaceRecord,
   epochToIso,
@@ -23,6 +27,7 @@ import {
   toSlackTime,
   tsToIso,
 } from "./parsers.ts";
+import { dmReadStatesSchema, remindersSchema, starsSchema, userGroupsSchema } from "./schemas.ts";
 import type { CanvasRow, ChannelRow, MessageRow } from "./types.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -333,4 +338,111 @@ test("extractMessageTimeRange: missing scope → both null; present → passthro
     timeFrom: "2024-01-01T00:00:00",
     timeTo: "2024-12-31T23:59:59",
   });
+});
+
+// ─── Direct Slack Web API record builders ──────────────────────────────
+
+test("buildStarRecord: message star builds a stable composite id and passes schema validation", () => {
+  const rec = buildStarRecord({
+    type: "message",
+    channel: "C01",
+    message: { ts: "1714032849.123456", user: "U01" },
+    date_create: 1_714_032_900,
+  });
+  assert.equal(rec.id, "message:C01:1714032849.123456");
+  assert.equal(rec.item_type, "message");
+  assert.equal(rec.channel_id, "C01");
+  assert.equal(rec.message_ts, "1714032849.123456");
+  assert.equal(rec.target_id, "1714032849.123456");
+  assert.equal(rec.user_id, "U01");
+  assert.equal(rec.starred_at, epochToIso(1_714_032_900));
+  assert.doesNotThrow(() => starsSchema.parse(rec));
+});
+
+test("buildStarRecord: file star uses the file id as target_id", () => {
+  const rec = buildStarRecord({ type: "file", channel: "C01", file: { id: "F01" }, date_create: 1_700_000_000 });
+  assert.equal(rec.file_id, "F01");
+  assert.equal(rec.target_id, "F01");
+  assert.doesNotThrow(() => starsSchema.parse(rec));
+});
+
+test("buildStarRecord: same input produces the same id across runs (idempotent)", () => {
+  const item = { type: "message", channel: "C01", message: { ts: "1.1", user: "U01" }, date_create: 1 };
+  assert.equal(buildStarRecord(item).id, buildStarRecord(item).id);
+});
+
+test("buildUserGroupRecord: active group maps deleted=false and passes schema validation", () => {
+  const rec = buildUserGroupRecord({
+    id: "S01",
+    handle: "eng",
+    name: "Engineering",
+    description: "Engineering team",
+    users: ["U01", "U02"],
+    prefs: { channels: ["C01"] },
+    date_create: 1_700_000_000,
+    date_update: 1_710_000_000,
+    date_delete: 0,
+  });
+  assert.equal(rec.id, "S01");
+  assert.deepEqual(rec.member_ids, ["U01", "U02"]);
+  assert.deepEqual(rec.channel_ids, ["C01"]);
+  assert.equal(rec.deleted, false);
+  assert.doesNotThrow(() => userGroupsSchema.parse(rec));
+});
+
+test("buildUserGroupRecord: date_delete > 0 maps deleted=true", () => {
+  const rec = buildUserGroupRecord({ id: "S02", date_delete: 1_710_000_001 });
+  assert.equal(rec.deleted, true);
+  assert.doesNotThrow(() => userGroupsSchema.parse(rec));
+});
+
+test("buildUserGroupRecord: missing optional fields fall back to null and still validate", () => {
+  const rec = buildUserGroupRecord({ id: "S03" });
+  assert.equal(rec.member_ids, null);
+  assert.equal(rec.channel_ids, null);
+  assert.equal(rec.deleted, null);
+  assert.doesNotThrow(() => userGroupsSchema.parse(rec));
+});
+
+test("buildReminderRecord: incomplete reminder has null completed_at, passes schema validation", () => {
+  const rec = buildReminderRecord({ id: "Rm01", creator: "U01", user: "U01", text: "ping bob", time: 1_714_032_900 });
+  assert.equal(rec.scheduled_at, epochToIso(1_714_032_900));
+  assert.equal(rec.complete_ts, null);
+  assert.equal(rec.completed_at, null);
+  assert.doesNotThrow(() => remindersSchema.parse(rec));
+});
+
+test("buildReminderRecord: complete_ts=0 is treated as not completed (falsy)", () => {
+  const rec = buildReminderRecord({ id: "Rm02", complete_ts: 0 });
+  assert.equal(rec.completed_at, null);
+  assert.doesNotThrow(() => remindersSchema.parse(rec));
+});
+
+test("buildReminderRecord: completed reminder derives completed_at from complete_ts", () => {
+  const rec = buildReminderRecord({ id: "Rm03", complete_ts: 1_710_000_500 });
+  assert.equal(rec.completed_at, epochToIso(1_710_000_500));
+  assert.doesNotThrow(() => remindersSchema.parse(rec));
+});
+
+test("buildDmReadStateRecord: converts Slack ts last_read to ISO and passes schema validation", () => {
+  const rec = buildDmReadStateRecord(
+    { channelId: "D01", lastRead: "1714032849.123456", unreadCount: 2, unreadCountDisplay: 1 },
+    "2026-07-10T00:00:00.000Z"
+  );
+  assert.equal(rec.id, "D01");
+  assert.equal(rec.channel_id, "D01");
+  assert.equal(rec.last_read, tsToIso("1714032849.123456"));
+  assert.equal(rec.last_read_at, rec.last_read);
+  assert.equal(rec.unread_count, 2);
+  assert.equal(rec.fetched_at, "2026-07-10T00:00:00.000Z");
+  assert.doesNotThrow(() => dmReadStatesSchema.parse(rec));
+});
+
+test("buildDmReadStateRecord: null last_read (never-read DM) stays null, still validates", () => {
+  const rec = buildDmReadStateRecord(
+    { channelId: "D02", lastRead: null, unreadCount: 0, unreadCountDisplay: 0 },
+    "2026-07-10T00:00:00.000Z"
+  );
+  assert.equal(rec.last_read, null);
+  assert.doesNotThrow(() => dmReadStatesSchema.parse(rec));
 });

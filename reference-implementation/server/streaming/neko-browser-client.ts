@@ -86,6 +86,16 @@ function isDuplicateBindingRegistration(err: unknown): boolean {
   return BINDING_ALREADY_REGISTERED_RE.test(String((err as { message?: unknown })?.message || ""));
 }
 
+async function disconnectBrowser(browser: Browser): Promise<void> {
+  if (typeof browser.disconnect === "function") {
+    await browser.disconnect();
+    return;
+  }
+  if (typeof browser.close === "function") {
+    await browser.close();
+  }
+}
+
 export function createNekoBrowserClient({
   cdpHttpUrl,
   chromiumImpl = chromium,
@@ -170,13 +180,7 @@ export function createNekoBrowserClient({
       browser = null;
       context = null;
       page = null;
-      if (typeof activeBrowser.disconnect === "function") {
-        await activeBrowser.disconnect();
-        return;
-      }
-      if (typeof activeBrowser.close === "function") {
-        await activeBrowser.close();
-      }
+      await disconnectBrowser(activeBrowser);
     },
   };
 }

@@ -526,6 +526,58 @@ function schemaDocument(body) {
   return body;
 }
 
+function normalizeSchemaChildEnvelope(child, result) {
+  const childData = result.body?.data && typeof result.body.data === 'object'
+    ? result.body.data
+    : (result.body && typeof result.body === 'object' ? result.body : {});
+  const sourceTag = memberSourceTag(child.member);
+  const connectorItems = [];
+  const entries = [];
+  const connectors = Array.isArray(childData.connectors) ? childData.connectors : [];
+
+  if (connectors.length > 0) {
+    for (const connector of connectors) {
+      const connectorSource = connector?.source && typeof connector.source === 'object'
+        ? { ...sourceTag, ...connector.source }
+        : sourceTag;
+      connectorItems.push({ ...connector, source: connectorSource });
+      for (const stream of Array.isArray(connector?.streams) ? connector.streams : []) {
+        entries.push({
+          stream,
+          connections: Array.isArray(stream?.granted_connections) ? stream.granted_connections : [],
+        });
+      }
+    }
+  } else {
+    for (const stream of Array.isArray(childData.streams) ? childData.streams : []) {
+      entries.push({ stream, connections: [] });
+    }
+    for (const connection of Array.isArray(childData.granted_connections) ? childData.granted_connections : []) {
+      entries.push({ connections: [connection] });
+    }
+  }
+
+  return { connectorItems, entries, sourceTag, member: child.member };
+}
+
+function aggregateSchemaChildEnvelope(aggregate, envelope) {
+  for (const connectorItem of envelope.connectorItems) aggregate.connectorItems.push(connectorItem);
+  for (const entry of envelope.entries) {
+    if ('stream' in entry) {
+      const key = `${entry.stream?.name ?? ''}::${envelope.member.grant_id}::${envelope.member.connection_id ?? ''}`;
+      if (aggregate.seenStream.has(key)) continue;
+      aggregate.seenStream.add(key);
+      aggregate.streams.push({ ...entry.stream, source: envelope.sourceTag });
+    }
+    for (const connection of entry.connections) {
+      const key = `${connection?.connection_id ?? ''}::${envelope.member.grant_id}`;
+      if (aggregate.seenConnection.has(key)) continue;
+      aggregate.seenConnection.add(key);
+      aggregate.connections.push({ ...connection, source: envelope.sourceTag });
+    }
+  }
+}
+
 function mergeSchemaEnvelopes(children, results) {
   // The canonical /v1/schema response shape is
   //   { data: { object: 'schema', connectors: [{ object:'connector',
@@ -551,70 +603,25 @@ function mergeSchemaEnvelopes(children, results) {
   const baseBody = ok.body && typeof ok.body === 'object' ? { ...ok.body } : { data: {} };
   const data = baseBody.data && typeof baseBody.data === 'object' ? { ...baseBody.data } : {};
 
-  const allStreams = [];
-  const allConnections = [];
-  const allConnectorItems = [];
-  const seenStream = new Set();
-  const seenConnection = new Set();
+  const aggregate = {
+    streams: [],
+    connections: [],
+    connectorItems: [],
+    seenStream: new Set(),
+    seenConnection: new Set(),
+  };
 
   results.forEach((r, i) => {
     if (!r.ok) return;
-    const child = children[i];
-    const childData = r.body?.data && typeof r.body.data === 'object'
-      ? r.body.data
-      : (r.body && typeof r.body === 'object' ? r.body : {});
-
-    // Canonical shape: childData.connectors is an array of connector items
-    // each carrying its own streams[]. Older / hand-built shapes may put
-    // streams directly on `childData.streams`. Accept both.
-    const connectorItems = Array.isArray(childData.connectors) ? childData.connectors : [];
-    const sourceTag = memberSourceTag(child.member);
-
-    if (connectorItems.length > 0) {
-      for (const item of connectorItems) {
-        const connectorSource = item?.source && typeof item.source === 'object'
-          ? { ...sourceTag, ...item.source }
-          : sourceTag;
-        allConnectorItems.push({ ...item, source: connectorSource });
-        const itemStreams = Array.isArray(item?.streams) ? item.streams : [];
-        for (const s of itemStreams) {
-          const key = `${s?.name ?? ''}::${child.member.grant_id}::${child.member.connection_id ?? ''}`;
-          if (seenStream.has(key)) continue;
-          seenStream.add(key);
-          allStreams.push({ ...s, source: sourceTag });
-          const perStreamGranted = Array.isArray(s?.granted_connections) ? s.granted_connections : [];
-          for (const c of perStreamGranted) {
-            const ck = `${c?.connection_id ?? ''}::${child.member.grant_id}`;
-            if (seenConnection.has(ck)) continue;
-            seenConnection.add(ck);
-            allConnections.push({ ...c, source: sourceTag });
-          }
-        }
-      }
-    } else {
-      const flatStreams = Array.isArray(childData.streams) ? childData.streams : [];
-      for (const s of flatStreams) {
-        const key = `${s?.name ?? ''}::${child.member.grant_id}::${child.member.connection_id ?? ''}`;
-        if (seenStream.has(key)) continue;
-        seenStream.add(key);
-        allStreams.push({ ...s, source: sourceTag });
-      }
-      const flatGranted = Array.isArray(childData.granted_connections) ? childData.granted_connections : [];
-      for (const c of flatGranted) {
-        const ck = `${c?.connection_id ?? ''}::${child.member.grant_id}`;
-        if (seenConnection.has(ck)) continue;
-        seenConnection.add(ck);
-        allConnections.push({ ...c, source: sourceTag });
-      }
-    }
+    aggregateSchemaChildEnvelope(aggregate, normalizeSchemaChildEnvelope(children[i], r));
   });
 
-  data.streams = allStreams;
-  data.granted_connections = allConnections;
-  if (allConnectorItems.length > 0) {
-    data.connectors = allConnectorItems;
-    data.connector_count = allConnectorItems.length;
-    data.stream_count = allStreams.length;
+  data.streams = aggregate.streams;
+  data.granted_connections = aggregate.connections;
+  if (aggregate.connectorItems.length > 0) {
+    data.connectors = aggregate.connectorItems;
+    data.connector_count = aggregate.connectorItems.length;
+    data.stream_count = aggregate.streams.length;
   }
   data.package = {
     grant_package: true,

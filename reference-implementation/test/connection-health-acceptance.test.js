@@ -246,8 +246,9 @@ test('acceptance 7.1: owner-paused schedule projects idle even with failed last 
   assert.equal(snap.next_attempt_at, null, 'paused schedules emit no next_attempt');
 });
 
-// Reddit-shaped raw manifest refresh policy: manual + background-unsafe.
-const REDDIT_REFRESH_POLICY = {
+// Manual + background-unsafe raw manifest refresh policy (a connector that
+// cannot be background-scheduled even with explicit owner opt-in).
+const MANUAL_BACKGROUND_UNSAFE_REFRESH_POLICY = {
   recommended_mode: 'manual',
   maximum_staleness_seconds: 86400,
   background_safe: false,
@@ -264,16 +265,16 @@ const PAUSED_REFRESH_POLICY = {
 };
 
 test('acceptance 7.1: manual/background-unsafe connector that is complete+succeeded+stale projects idle advisory, not degraded', () => {
-  // Reddit-like: the raw manifest refresh_policy declares manual +
-  // background_safe:false, so stale data is an owner-action advisory the
-  // caller wiring (buildRefreshEvidence) recognizes end-to-end.
+  // The raw manifest refresh_policy declares manual + background_safe:false,
+  // so stale data is an owner-action advisory the caller wiring
+  // (buildRefreshEvidence) recognizes end-to-end.
   const run = succeededRun();
   const snap = projectConnectorSummaryConnectionHealth({
     freshness: STALE_FRESHNESS,
     lastRun: run,
     lastSuccessfulRun: run,
     outbox: { axis: 'idle' },
-    refreshPolicy: REDDIT_REFRESH_POLICY,
+    refreshPolicy: MANUAL_BACKGROUND_UNSAFE_REFRESH_POLICY,
     schedule: { enabled: true },
   });
   assertHeadline(snap, 'idle');
@@ -352,7 +353,7 @@ test('acceptance 7.1: a manual connector with incomplete coverage still degrades
     lastRun: run,
     lastSuccessfulRun: run,
     pendingDetailGaps: [{ reason: 'rate_limited', status: 'pending', stream: 'posts' }],
-    refreshPolicy: REDDIT_REFRESH_POLICY,
+    refreshPolicy: MANUAL_BACKGROUND_UNSAFE_REFRESH_POLICY,
     schedule: { enabled: true },
   });
   assertHeadline(snap, 'degraded');
@@ -363,7 +364,7 @@ test('acceptance 7.1: a manual connector whose last run failed still degrades ev
     freshness: STALE_FRESHNESS,
     lastRun: failedRun(),
     lastSuccessfulRun: null,
-    refreshPolicy: REDDIT_REFRESH_POLICY,
+    refreshPolicy: MANUAL_BACKGROUND_UNSAFE_REFRESH_POLICY,
     schedule: { enabled: true },
   });
   assertHeadline(snap, 'degraded');

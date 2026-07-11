@@ -1337,7 +1337,7 @@ async function reauthAfterSessionLapse(
     message: "Session lapsed during transactions; re-authenticating before retry",
   });
   try {
-    await ensureUsaaSession({ context, page, sendInteraction });
+    await ensureUsaaSession({ capture: deps.capture ?? null, context, page, sendInteraction });
     return true;
   } catch (reauthErr) {
     const reauthMsg = reauthErr instanceof Error ? reauthErr.message : String(reauthErr);
@@ -2453,15 +2453,18 @@ if (isMainModule(import.meta.url)) {
     // Allow explicit headless probes with PDPP_USAA_HEADLESS=1.
     browser: { profileName: "usaa", headless: process.env.PDPP_USAA_HEADLESS === "1" },
     async ensureSession({
+      capture,
       context,
       page,
       sendInteraction,
     }: {
+      capture?: EmitDeps["capture"];
       context: BrowserContext;
       page: Page;
       sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
     }): Promise<void> {
       await ensureUsaaSession({
+        capture: capture ?? null,
         context,
         page,
         sendInteraction,

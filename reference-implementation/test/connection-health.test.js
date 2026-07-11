@@ -833,11 +833,10 @@ test('stale: schedulable connector stale alone surfaces as axis+badge and degrad
 
 // ─── Manual / paused / background-unsafe connector freshness ──────────────
 // A connector whose manifest refresh policy declares it manual, paused, or
-// background-unsafe (e.g. Reddit: recommended_mode "manual",
-// background_safe false) cannot auto-refresh. Stale data for such a
-// connector is an owner-action / manual-refresh advisory, not a
-// degradation — but only when nothing else is wrong. Every real failure
-// still degrades or blocks exactly as for a schedulable connector.
+// background-unsafe cannot auto-refresh. Stale data for such a connector is
+// an owner-action / manual-refresh advisory, not a degradation — but only
+// when nothing else is wrong. Every real failure still degrades or blocks
+// exactly as for a schedulable connector.
 
 test('manual stale: background-unsafe complete+succeeded+stale is idle advisory, not degraded', () => {
   const snap = computeConnectionHealth(

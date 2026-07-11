@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
   TEST_ENV_DENYLIST,
@@ -13,6 +15,36 @@ async function closeServer(server) {
     new Promise((resolve) => server.asServer.close(resolve)),
     new Promise((resolve) => server.rsServer.close(resolve)),
   ]);
+}
+
+async function runNodeModule(script, env) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', script], {
+      cwd: fileURLToPath(new URL('..', import.meta.url)),
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('exit', (code, signal) => {
+      if (signal) {
+        reject(new Error(`child exited via signal ${signal}`));
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error(`child exited ${code}: ${stderr || stdout}`));
+        return;
+      }
+      resolve(stdout);
+    });
+  });
 }
 
 describe('run-tests env scrub', () => {
@@ -49,6 +81,53 @@ describe('run-tests env scrub', () => {
       PDPP_RUNTIME_QUIET: '0',
     });
     assert.equal(quietExplicit.PDPP_RUNTIME_QUIET, '0');
+  });
+
+  it('forces test workers off the shared AS/RS dev ports', () => {
+    const scrubbed = buildScrubbedTestEnv({
+      AS_PORT: '7662',
+      PATH: '/usr/bin',
+      RS_PORT: '7663',
+    });
+
+    assert.equal(scrubbed.AS_PORT, '0');
+    assert.equal(scrubbed.RS_PORT, '0');
+  });
+
+  it('scrubbed env lets a child server bind away from the shared AS/RS dev ports', async () => {
+    const scrubbed = buildScrubbedTestEnv({
+      AS_PORT: '7662',
+      PATH: '/usr/bin',
+      RS_PORT: '7663',
+    });
+    const serverModuleUrl = new URL('../server/index.js', import.meta.url).href;
+    const stdout = await runNodeModule(`
+      import { startServer } from ${JSON.stringify(serverModuleUrl)};
+
+      const server = await startServer({
+        dbPath: ':memory:',
+        quiet: true,
+      });
+      try {
+        console.log(JSON.stringify({
+          asPort: server.asPort,
+          rsPort: server.rsPort,
+        }));
+      } finally {
+        server.asServer.closeAllConnections();
+        server.rsServer.closeAllConnections();
+        await Promise.allSettled([
+          new Promise((resolve) => server.asServer.close(resolve)),
+          new Promise((resolve) => server.rsServer.close(resolve)),
+        ]);
+      }
+    `, scrubbed);
+
+    const { asPort, rsPort } = JSON.parse(stdout.trim());
+    assert.notEqual(asPort, 7662);
+    assert.notEqual(rsPort, 7663);
+    assert.ok(asPort > 0);
+    assert.ok(rsPort > 0);
   });
 
   it('direct node --test startServer ignores inherited owner-auth env unless options opt in', async () => {

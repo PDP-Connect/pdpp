@@ -52,9 +52,16 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
   },
   deferred: {
     dimension: "Coverage",
-    value: "deferred",
-    label: "Coverage · deferred",
-    title: "The manifest intentionally defers this coverage; no detail collection is owed yet.",
+    // The underlying axis key stays "deferred" (durable manifest/runtime
+    // contract — see AcceptedCoveragePolicy in connector-coverage-policy.ts).
+    // "Deferred" read as queued/pending work to owners, contradicting the
+    // settled, non-degrading semantics this axis actually carries. The
+    // visible value/label now say plainly that this stream is optional and
+    // not collected; the manifest-declaration detail moves to the title.
+    value: "optional, not collected",
+    label: "Coverage · optional, not collected",
+    title:
+      "The manifest declares this coverage out of scope. This is an accepted, settled state — not a queued task — and does not block connection health.",
     tone: "neutral",
   },
   partial: {
@@ -75,7 +82,8 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
     dimension: "Coverage",
     value: "inventory only",
     label: "Coverage · inventory only",
-    title: "The manifest only requires discovery/inventory evidence for this source.",
+    title:
+      "The manifest declares that only inventory/discovery evidence is ever required here, not full detail. This is a settled, complete state for this stream — not partial progress.",
     tone: "neutral",
   },
   retryable_gap: {
@@ -106,7 +114,8 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
     dimension: "Coverage",
     value: "unavailable",
     label: "Coverage · unavailable",
-    title: "The manifest accepts that this coverage is unavailable from the source.",
+    title:
+      "The manifest accepts that the source does not expose this coverage. This is a settled state, not a temporary gap awaiting a retry.",
     tone: "neutral",
   },
   unknown: {
@@ -120,7 +129,8 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
     dimension: "Coverage",
     value: "unsupported",
     label: "Coverage · unsupported",
-    title: "The manifest accepts that this coverage is not supported by the source or connector.",
+    title:
+      "The manifest accepts that the connector cannot collect this coverage. This is a settled state, not a temporary gap awaiting a retry.",
     tone: "neutral",
   },
 };

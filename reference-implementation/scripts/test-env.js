@@ -22,5 +22,10 @@ export function buildScrubbedTestEnv(sourceEnv = process.env) {
     scrubbed[key] = value;
   }
   scrubbed.PDPP_RUNTIME_QUIET = sourceEnv.PDPP_RUNTIME_QUIET || '1';
+  // Test workers must not inherit the reference server's fixed dev ports.
+  // Any call site that omits explicit ephemeral ports would otherwise bind
+  // 7662/7663 and race with other file workers.
+  scrubbed.AS_PORT = '0';
+  scrubbed.RS_PORT = '0';
   return scrubbed;
 }

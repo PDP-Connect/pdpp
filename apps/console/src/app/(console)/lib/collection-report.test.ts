@@ -370,3 +370,66 @@ test("owner action cue renders only when the stream action is owner-satisfiable"
   const resumable = formatStreamCollectionFacts(entry({ forward_disposition: "resumable" }));
   assert.equal(streamOwnerActionCueNeeded(resumable.disposition, true), false);
 });
+
+test("an accepted-absence coverage axis never degrades a stream's coverage tone", () => {
+  // A manifest-declared accepted-absence policy (deferred / inventory_only /
+  // unavailable / unsupported) is a settled, non-degrading coverage verdict:
+  // the coverage chip itself must stay neutral (never warning/danger) for
+  // every accepted-absence axis, regardless of the stream's separate forward
+  // disposition. (The row's overall `tone` also folds in the forward
+  // disposition and any pending gaps/skips, which can legitimately raise it —
+  // e.g. `forward_disposition: "complete"` reads success — so this test pins
+  // the coverage axis specifically, which is the signal that must not degrade.)
+  for (const axis of ["deferred", "inventory_only", "unavailable", "unsupported"] as const) {
+    const facts = formatStreamCollectionFacts(
+      entry({ coverage_condition: axis, forward_disposition: "unmeasured", collected: 0, considered: "unknown" })
+    );
+    assert.equal(facts.coverage.tone, "neutral", `${axis} coverage tone must stay neutral`);
+    assert.notEqual(facts.tone, "warning");
+    assert.notEqual(facts.tone, "danger");
+  }
+});
+
+test("the stream-row deferred pill reads optional/not-collected, not policy jargon", () => {
+  // formatStreamCollectionFacts reuses formatCoverageAxis verbatim, so the
+  // per-stream row must pick up the same visible fix as the connection-level
+  // chip — the owner reads this exact value on the source detail page.
+  const facts = formatStreamCollectionFacts(
+    entry({ coverage_condition: "deferred", forward_disposition: "unmeasured", collected: 0, considered: "unknown" })
+  );
+  assert.doesNotMatch(facts.coverage.value, /\bdeferre?s?\b/i);
+  assert.match(facts.coverage.value, /optional/i);
+  assert.match(facts.coverage.value, /not collected/i);
+});
+
+test("required missing evidence (unknown coverage) stays distinct from accepted absence", () => {
+  // A required stream with no coverage proof and no manifest accepted-absence
+  // declaration resolves to `unknown` — this must keep reading as missing
+  // evidence, never as a settled accepted-absence policy, so the two states
+  // remain distinguishable on the stream row after the copy-only fix.
+  const unmeasured = formatStreamCollectionFacts(
+    entry({ coverage_condition: "unknown", forward_disposition: "unmeasured", collected: 0, considered: "unknown" })
+  );
+  assert.equal(unmeasured.coverage.value, "unknown");
+  assert.notEqual(
+    unmeasured.coverage.title,
+    formatStreamCollectionFacts(entry({ coverage_condition: "deferred" })).coverage.title
+  );
+  assert.notEqual(
+    unmeasured.coverage.title,
+    formatStreamCollectionFacts(entry({ coverage_condition: "unavailable" })).coverage.title
+  );
+});
+
+test("active pending work (checking) stays distinct from accepted absence", () => {
+  // A stream mid-run reads `checking`, which is a different signal than a
+  // settled accepted-absence policy — neither implies the other.
+  const checking = formatStreamCollectionFacts(
+    entry({ coverage_condition: "unknown", forward_disposition: "checking", collected: 0, considered: "unknown" })
+  );
+  assert.equal(checking.disposition?.value, "checking");
+  for (const axis of ["deferred", "inventory_only", "unavailable", "unsupported"] as const) {
+    const accepted = formatStreamCollectionFacts(entry({ coverage_condition: axis, forward_disposition: "complete" }));
+    assert.notEqual(checking.disposition?.title, accepted.coverage.title);
+  }
+});

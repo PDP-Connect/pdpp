@@ -2323,53 +2323,85 @@ export function buildCollectionReport(input: {
   readonly refresh: ConnectionRefreshEvidence | null;
   readonly schedule?: { readonly enabled: boolean } | null;
 }): CollectionReportEntry[] {
+  const { inScope, ...entryIndexes } = indexCollectionReportInputs(input);
+  return [...inScope]
+    .map((stream) =>
+      buildCollectionReportEntry({
+        stream,
+        ...entryIndexes,
+        freshness: input.freshness,
+        attentionOpen: input.attentionOpen,
+        refresh: input.refresh,
+        schedule: input.schedule ?? null,
+      })
+    )
+    .sort((a, b) => a.stream.localeCompare(b.stream));
+}
+
+interface IndexedCollectionReportInputs {
+  readonly factByStream: ReadonlyMap<string, EffectiveStreamFact>;
+  readonly pendingGapCountByStream: ReadonlyMap<string, number>;
+  readonly terminalGapCountByStream: ReadonlyMap<string, number>;
+  readonly pendingGapReadHitLimit: boolean;
+  readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
+  readonly localCoverageConditionByStream: ReadonlyMap<string, CoverageAxis>;
+  readonly inScope: ReadonlySet<string>;
+}
+
+/**
+ * Normalize each source of per-stream evidence before any stream is assembled.
+ * First-observed facts and manifest declarations remain authoritative, while the
+ * in-scope union keeps missing evidence visible as an honest unknown entry.
+ */
+function indexCollectionReportInputs(input: {
+  readonly collectionFacts: RuntimeCollectionFacts | null;
+  readonly collectionFactsAsOf?: string | null;
+  readonly collectionFactsRunId?: string | null;
+  readonly latestStreamFacts?: ReadonlyMap<string, LatestStreamFactRecord> | null;
+  readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
+  readonly manifestStreams: readonly ManifestStream[];
+  readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
+  readonly pendingDetailGapsReadLimit?: number | null;
+  readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
+}): IndexedCollectionReportInputs {
   const factByStream = resolveEffectiveStreamFacts(input);
+  const manifestByStream = firstManifestStreamsByName(input.manifestStreams);
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
-  const pendingGapCountByStream = pendingDetailGapCountsByStream(pendingDetailGaps);
-  const terminalGapCountByStream = input.terminalDetailGapsByStream ?? new Map<string, number>();
   const pendingReadLimit =
     typeof input.pendingDetailGapsReadLimit === "number" &&
     Number.isFinite(input.pendingDetailGapsReadLimit) &&
     input.pendingDetailGapsReadLimit > 0
       ? Math.floor(input.pendingDetailGapsReadLimit)
       : null;
-  const pendingGapReadHitLimit = pendingReadLimit !== null && pendingDetailGaps.length >= pendingReadLimit;
+  const pendingGapCountByStream = pendingDetailGapCountsByStream(pendingDetailGaps);
+  const terminalGapCountByStream = input.terminalDetailGapsByStream ?? new Map<string, number>();
+  return {
+    factByStream,
+    pendingGapCountByStream,
+    terminalGapCountByStream,
+    pendingGapReadHitLimit: pendingReadLimit !== null && pendingDetailGaps.length >= pendingReadLimit,
+    manifestByStream,
+    localCoverageConditionByStream: localCoverageConditionsByStream(input.localCoverage, manifestByStream),
+    // In-scope universe: manifest streams ∪ fact-block streams. A zero-record or
+    // unreported stream is an honest entry, never silently dropped (dropping reads
+    // as "not owed" when it is "unknown").
+    inScope: new Set<string>([
+      ...manifestByStream.keys(),
+      ...factByStream.keys(),
+      ...pendingGapCountByStream.keys(),
+      ...terminalGapCountByStream.keys(),
+    ]),
+  };
+}
+
+function firstManifestStreamsByName(manifestStreams: readonly ManifestStream[]): ReadonlyMap<string, ManifestStream> {
   const manifestByStream = new Map<string, ManifestStream>();
-  for (const stream of input.manifestStreams) {
+  for (const stream of manifestStreams) {
     if (stream && typeof stream.name === "string" && stream.name && !manifestByStream.has(stream.name)) {
       manifestByStream.set(stream.name, stream);
     }
   }
-  const localCoverageConditionByStream = localCoverageConditionsByStream(input.localCoverage, manifestByStream);
-  // In-scope universe: manifest streams ∪ fact-block streams. A zero-record or
-  // unreported stream is an honest entry, never silently dropped (dropping reads
-  // as "not owed" when it is "unknown").
-  const inScope = new Set<string>([
-    ...manifestByStream.keys(),
-    ...factByStream.keys(),
-    ...pendingGapCountByStream.keys(),
-    ...terminalGapCountByStream.keys(),
-  ]);
-  const entries: CollectionReportEntry[] = [];
-  for (const stream of inScope) {
-    entries.push(
-      buildCollectionReportEntry({
-        stream,
-        factByStream,
-        pendingGapCountByStream,
-        terminalGapCountByStream,
-        pendingGapReadHitLimit,
-        manifestByStream,
-        localCoverageConditionByStream,
-        freshness: input.freshness,
-        attentionOpen: input.attentionOpen,
-        refresh: input.refresh,
-        schedule: input.schedule ?? null,
-      })
-    );
-  }
-  entries.sort((a, b) => a.stream.localeCompare(b.stream));
-  return entries;
+  return manifestByStream;
 }
 
 function buildCollectionReportEntry(input: {
@@ -2385,6 +2417,48 @@ function buildCollectionReportEntry(input: {
   readonly refresh: ConnectionRefreshEvidence | null;
   readonly schedule?: { readonly enabled: boolean } | null;
 }): CollectionReportEntry {
+  const { effective, effectiveFact, manifestStream, coverageCondition } = deriveCollectionReportEntryCoverage(input);
+  const forwardDisposition = deriveForwardDisposition({
+    coverage: coverageCondition,
+    gapRetryable: coverageCondition === "retryable_gap",
+    attentionOpen: input.attentionOpen,
+    freshness: input.freshness,
+    refresh: input.refresh,
+    schedule: input.schedule ?? null,
+  });
+  return {
+    stream: input.stream,
+    collected: effectiveFact.collected,
+    considered: effectiveFact.considered === null ? "unknown" : effectiveFact.considered,
+    covered: effectiveFact.covered === null ? "unknown" : effectiveFact.covered,
+    checkpoint: effectiveFact.checkpoint ?? "unknown",
+    pending_detail_gaps: effectiveFact.pending_detail_gaps,
+    pending_detail_gaps_is_floor: effectiveFact.pending_detail_gaps > 0 && input.pendingGapReadHitLimit,
+    skipped: effectiveFact.skipped,
+    coverage_condition: coverageCondition,
+    coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
+    evidence_as_of: effective?.evidenceAsOf ?? null,
+    forward_disposition: forwardDisposition,
+    freshness_strategy: readFreshnessEvidenceStrategy(manifestStream),
+    required: isRequiredStream(manifestStream),
+  };
+}
+
+interface CollectionReportEntryCoverage {
+  readonly effective: EffectiveStreamFact | undefined;
+  readonly effectiveFact: RuntimeCollectionFact;
+  readonly manifestStream: ManifestStream | undefined;
+  readonly coverageCondition: CoverageAxis;
+}
+
+function deriveCollectionReportEntryCoverage(input: {
+  readonly stream: string;
+  readonly factByStream: ReadonlyMap<string, EffectiveStreamFact>;
+  readonly pendingGapCountByStream: ReadonlyMap<string, number>;
+  readonly terminalGapCountByStream: ReadonlyMap<string, number>;
+  readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
+  readonly localCoverageConditionByStream: ReadonlyMap<string, CoverageAxis>;
+}): CollectionReportEntryCoverage {
   const effective = input.factByStream.get(input.stream);
   const hasRuntimeFact = effective !== undefined;
   const baseFact: RuntimeCollectionFact = effective?.fact ?? {
@@ -2413,33 +2487,14 @@ function buildCollectionReportEntry(input: {
       ? input.localCoverageConditionByStream.get(input.stream)
       : null;
   const terminalDetailGaps = input.terminalGapCountByStream.get(input.stream) ?? 0;
-  const coverageCondition =
-    terminalDetailGaps > 0
-      ? "terminal_gap"
-      : (localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream));
-  const forwardDisposition = deriveForwardDisposition({
-    coverage: coverageCondition,
-    gapRetryable: coverageCondition === "retryable_gap",
-    attentionOpen: input.attentionOpen,
-    freshness: input.freshness,
-    refresh: input.refresh,
-    schedule: input.schedule ?? null,
-  });
   return {
-    stream: input.stream,
-    collected: effectiveFact.collected,
-    considered: effectiveFact.considered === null ? "unknown" : effectiveFact.considered,
-    covered: effectiveFact.covered === null ? "unknown" : effectiveFact.covered,
-    checkpoint: effectiveFact.checkpoint ?? "unknown",
-    pending_detail_gaps: effectiveFact.pending_detail_gaps,
-    pending_detail_gaps_is_floor: effectiveFact.pending_detail_gaps > 0 && input.pendingGapReadHitLimit,
-    skipped: effectiveFact.skipped,
-    coverage_condition: coverageCondition,
-    coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
-    evidence_as_of: effective?.evidenceAsOf ?? null,
-    forward_disposition: forwardDisposition,
-    freshness_strategy: readFreshnessEvidenceStrategy(manifestStream),
-    required: isRequiredStream(manifestStream),
+    effective,
+    effectiveFact,
+    manifestStream,
+    coverageCondition:
+      terminalDetailGaps > 0
+        ? "terminal_gap"
+        : (localCoverageCondition ?? deriveStreamCoverageCondition(effectiveFact, manifestStream)),
   };
 }
 

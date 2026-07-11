@@ -80,19 +80,21 @@ function isSafeRouteTemplate(value, keyName) {
     && !value.includes('//');
 }
 
-export function sanitizeDetailGapMetadata(value, depth = 0, keyName = '') {
-  if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
-  if (typeof value === 'string') {
-    if (isSafeRouteTemplate(value, keyName)) return value;
-    if (/^https?:\/\//i.test(value) || URL_KEY_PATTERN.test(keyName)) return safeUrlSummary(value);
-    return value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH - 1)}…` : value;
-  }
-  if (depth >= MAX_DEPTH) return '[truncated]';
-  if (Array.isArray(value)) {
-    return value.slice(0, MAX_ARRAY_LENGTH).map((entry) => sanitizeDetailGapMetadata(entry, depth + 1, keyName));
-  }
-  if (typeof value !== 'object') return null;
+function isSimpleMetadataValue(value) {
+  return value == null || typeof value === 'boolean' || typeof value === 'number';
+}
 
+function sanitizeStringMetadata(value, keyName) {
+  if (isSafeRouteTemplate(value, keyName)) return value;
+  if (/^https?:\/\//i.test(value) || URL_KEY_PATTERN.test(keyName)) return safeUrlSummary(value);
+  return value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH - 1)}…` : value;
+}
+
+function sanitizeArrayMetadata(value, depth, keyName) {
+  return value.slice(0, MAX_ARRAY_LENGTH).map((entry) => sanitizeDetailGapMetadata(entry, depth + 1, keyName));
+}
+
+function sanitizeObjectMetadata(value, depth) {
   const out = {};
   for (const [key, entry] of Object.entries(value).slice(0, MAX_OBJECT_KEYS)) {
     if (SECRET_KEY_PATTERN.test(key)) {
@@ -102,6 +104,15 @@ export function sanitizeDetailGapMetadata(value, depth = 0, keyName = '') {
     out[key] = sanitizeDetailGapMetadata(entry, depth + 1, key);
   }
   return out;
+}
+
+export function sanitizeDetailGapMetadata(value, depth = 0, keyName = '') {
+  if (isSimpleMetadataValue(value)) return value;
+  if (typeof value === 'string') return sanitizeStringMetadata(value, keyName);
+  if (depth >= MAX_DEPTH) return '[truncated]';
+  if (Array.isArray(value)) return sanitizeArrayMetadata(value, depth, keyName);
+  if (typeof value !== 'object') return null;
+  return sanitizeObjectMetadata(value, depth);
 }
 
 function encodeJson(value) {
@@ -133,40 +144,49 @@ function deriveGapId(input, connectorInstanceId, grantId, stream, parentStream, 
   return input.gapId || hashIdentity([connectorInstanceId, grantId || '', stream, parentStream || '', identityKey]);
 }
 
+function normalizeGapMetadata(input, connectorId) {
+  return {
+    source: sanitizeDetailGapMetadata(input.source || { kind: 'connector', id: connectorId }),
+    detailLocator: sanitizeDetailGapMetadata(input.detailLocator ?? null),
+    listCursor: sanitizeDetailGapMetadata(input.listCursor ?? null),
+    scope: sanitizeDetailGapMetadata(input.scope ?? null),
+    lastError: sanitizeDetailGapMetadata(input.lastError ?? null),
+  };
+}
+
 function normalizeGapInput(input) {
   const { connectorId, connectorInstanceId, stream } = deriveGapIdentity(input);
-
-  const source = sanitizeDetailGapMetadata(input.source || { kind: 'connector', id: connectorId });
-  const detailLocator = sanitizeDetailGapMetadata(input.detailLocator ?? null);
-  const listCursor = sanitizeDetailGapMetadata(input.listCursor ?? null);
-  const scope = sanitizeDetailGapMetadata(input.scope ?? null);
-  const lastError = sanitizeDetailGapMetadata(input.lastError ?? null);
+  const metadata = normalizeGapMetadata(input, connectorId);
   const grantId = nonEmptyString(input.grantId);
   const parentStream = nonEmptyString(input.parentStream);
   const recordKey = input.recordKey == null ? null : String(input.recordKey);
   const reason = nonEmptyString(input.reason) || null;
   const now = input.now || nowIso();
-  const gapId = deriveGapId(input, connectorInstanceId, grantId, stream, parentStream, recordKey, detailLocator);
+  const gapId = deriveGapId(input, connectorInstanceId, grantId, stream, parentStream, recordKey, metadata.detailLocator);
 
   return {
     gapId,
     connectorId,
     connectorInstanceId,
     grantId,
-    source,
+    source: metadata.source,
     stream,
     parentStream,
     recordKey,
-    detailLocator,
-    listCursor,
-    scope,
+    detailLocator: metadata.detailLocator,
+    listCursor: metadata.listCursor,
+    scope: metadata.scope,
     reason,
-    lastError,
+    lastError: metadata.lastError,
     discoveredRunId: nonEmptyString(input.discoveredRunId),
     lastRunId: nonEmptyString(input.lastRunId) || nonEmptyString(input.discoveredRunId),
     nextAttemptAfter: nonEmptyString(input.nextAttemptAfter),
     now,
   };
+}
+
+function nullableGapRowValue(value) {
+  return value ?? null;
 }
 
 function rowToGap(row) {
@@ -175,23 +195,23 @@ function rowToGap(row) {
     gap_id: row.gap_id,
     connector_id: row.connector_id,
     connector_instance_id: row.connector_instance_id,
-    grant_id: row.grant_id ?? null,
+    grant_id: nullableGapRowValue(row.grant_id),
     source: parseJson(row.source_json),
     stream: row.stream,
-    parent_stream: row.parent_stream ?? null,
-    record_key: row.record_key ?? null,
+    parent_stream: nullableGapRowValue(row.parent_stream),
+    record_key: nullableGapRowValue(row.record_key),
     detail_locator: parseJson(row.detail_locator_json),
     list_cursor: parseJson(row.list_cursor_json),
     scope: parseJson(row.scope_json),
-    reason: row.reason ?? null,
+    reason: nullableGapRowValue(row.reason),
     status: row.status,
     attempt_count: row.attempt_count,
-    last_attempt_at: row.last_attempt_at ?? null,
-    next_attempt_after: row.next_attempt_after ?? null,
+    last_attempt_at: nullableGapRowValue(row.last_attempt_at),
+    next_attempt_after: nullableGapRowValue(row.next_attempt_after),
     last_error: parseJson(row.last_error_json),
-    discovered_run_id: row.discovered_run_id ?? null,
-    last_run_id: row.last_run_id ?? null,
-    recovered_run_id: row.recovered_run_id ?? null,
+    discovered_run_id: nullableGapRowValue(row.discovered_run_id),
+    last_run_id: nullableGapRowValue(row.last_run_id),
+    recovered_run_id: nullableGapRowValue(row.recovered_run_id),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -242,6 +262,49 @@ function normalizeGapMutationLimit(limit) {
   return Math.max(1, Math.min(Math.floor(n), 500));
 }
 
+function assertValidGapStatus(status) {
+  if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+}
+
+function optionalSqlPlaceholders(values) {
+  return values?.length ? values.map(() => '?').join(', ') : null;
+}
+
+function normalizePendingGapScope(rawInput, connectorId, grantId, streams, limit, now) {
+  const connectorInstanceId = nonEmptyString(rawInput?.connectorInstanceId) || defaultConnectorInstanceId(connectorId);
+  const eligibleAt = nonEmptyString(now) || nowIso();
+  const streamList = Array.isArray(streams)
+    ? streams.filter((stream) => typeof stream === 'string' && stream)
+    : null;
+  return {
+    connectorInstanceId,
+    connectorId,
+    grantId,
+    eligibleAt,
+    streamList,
+    limit: Math.max(1, Math.min(limit, 500)),
+  };
+}
+
+function normalizeGapStatusMutation(gapId, status, options) {
+  assertValidGapStatus(status);
+  const now = options.now || nowIso();
+  const attemptDelta = status === 'in_progress' ? 1 : 0;
+  const recoveredRunId = status === 'recovered' ? nonEmptyString(options.runId) : null;
+  const reason = nonEmptyString(options.reason);
+  return {
+    gapId,
+    status,
+    now,
+    attemptDelta,
+    recoveredRunId,
+    reason,
+    nextAttemptAfter: nonEmptyString(options.nextAttemptAfter),
+    lastErrorJson: encodeJson(sanitizeDetailGapMetadata(options.lastError ?? null)),
+    runId: nonEmptyString(options.runId),
+  };
+}
+
 function requeueReasonForQuarantinedGap(gap) {
   const previousReason = nonEmptyString(gap?.last_error?.reason);
   if (
@@ -278,7 +341,7 @@ function normalizeQuarantinedRequeueScope(connectorId, connectorInstanceId, opti
 }
 
 function sqliteQuarantinedRequeueRows(scope) {
-  const streamPlaceholders = scope.streams?.length ? scope.streams.map(() => '?').join(', ') : null;
+  const streamPlaceholders = optionalSqlPlaceholders(scope.streams);
   // REVIEWED-DYNAMIC: bounded repair selection for terminal quarantined
   // detail gaps. Only non-payload row metadata is read and the caller must
   // scope by one connector instance; terminal rows are never blanket-reset.
@@ -461,10 +524,8 @@ export function createSqliteConnectorDetailGapStore() {
     },
 
     async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100, now = nowIso() } = {}) {
-      const connectorInstanceId = nonEmptyString(arguments[0]?.connectorInstanceId) || defaultConnectorInstanceId(connectorId);
-      const eligibleAt = nonEmptyString(now) || nowIso();
-      const streamList = Array.isArray(streams) ? streams.filter((stream) => typeof stream === 'string' && stream) : null;
-      const streamPlaceholders = streamList?.length ? streamList.map(() => '?').join(', ') : null;
+      const scope = normalizePendingGapScope(arguments[0], connectorId, grantId, streams, limit, now);
+      const streamPlaceholders = optionalSqlPlaceholders(scope.streamList);
       // REVIEWED-DYNAMIC: bounded pending-gap recovery selection over the store-owned table.
       const rows = [...iterateDynamicSqlAcknowledged(`
         SELECT * FROM connector_detail_gaps
@@ -476,7 +537,7 @@ export function createSqliteConnectorDetailGapStore() {
           ${streamPlaceholders ? `AND stream IN (${streamPlaceholders})` : ''}
         ORDER BY created_at
         LIMIT ?
-      `, [connectorInstanceId, connectorId, grantId, grantId, eligibleAt, ...(streamList ?? []), Math.max(1, Math.min(limit, 500))])];
+      `, [scope.connectorInstanceId, scope.connectorId, scope.grantId, scope.grantId, scope.eligibleAt, ...(scope.streamList ?? []), scope.limit])];
       return rows.map(rowToGap);
     },
 
@@ -516,10 +577,10 @@ export function createSqliteConnectorDetailGapStore() {
     // the same connector-wide + reason scope the `pending` projection reads.
     // Throws on a malformed count so the caller can keep `recovered` `null`.
     async countGapsByStatusForConnector(connectorId, { status, reasons = null, connectorInstanceId = null } = {}) {
-      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      assertValidGapStatus(status);
       const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
       const reasonScope = normalizeReasonScope(reasons);
-      const reasonPlaceholders = reasonScope ? reasonScope.map(() => '?').join(', ') : null;
+      const reasonPlaceholders = optionalSqlPlaceholders(reasonScope);
       // REVIEWED-DYNAMIC: bounded reason-scoped count-by-status aggregate over
       // the store-owned detail-gap table; only a scalar count is returned.
       const row = firstSqliteRow(`
@@ -549,15 +610,11 @@ export function createSqliteConnectorDetailGapStore() {
     },
 
     async markGapStatus(gapId, status, options = {}) {
-      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
-      const now = options.now || nowIso();
-      const attemptDelta = status === 'in_progress' ? 1 : 0;
-      const recoveredRunId = status === 'recovered' ? nonEmptyString(options.runId) : null;
+      const mutation = normalizeGapStatusMutation(gapId, status, options);
       // `reason` is COALESCE-updated: only overwritten when the caller supplies
       // one (e.g. the quarantine path stamps `reason = 'quarantined'` so the
       // durable class the recovery-decision classifier reads matches the
       // terminal transition). Absent → the existing reason is preserved.
-      const reason = nonEmptyString(options.reason);
       // REVIEWED-DYNAMIC: status mutation for the store-owned detail-gap table.
       execDynamicSqlAcknowledged(`
         UPDATE connector_detail_gaps
@@ -572,17 +629,17 @@ export function createSqliteConnectorDetailGapStore() {
             updated_at = ?
         WHERE gap_id = ?
       `, [
-        status,
-        reason,
-        attemptDelta,
-        attemptDelta,
-        now,
-        nonEmptyString(options.nextAttemptAfter),
-        encodeJson(sanitizeDetailGapMetadata(options.lastError ?? null)),
-        nonEmptyString(options.runId),
-        recoveredRunId,
-        now,
-        gapId,
+        mutation.status,
+        mutation.reason,
+        mutation.attemptDelta,
+        mutation.attemptDelta,
+        mutation.now,
+        mutation.nextAttemptAfter,
+        mutation.lastErrorJson,
+        mutation.runId,
+        mutation.recoveredRunId,
+        mutation.now,
+        mutation.gapId,
       ]);
       // REVIEWED-DYNAMIC: single-row lookup for the store-owned detail-gap table.
       return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [gapId]));
@@ -741,7 +798,7 @@ export function createPostgresConnectorDetailGapStore() {
     },
 
     async countGapsByStatusForConnector(connectorId, { status, reasons = null, connectorInstanceId = null } = {}) {
-      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      assertValidGapStatus(status);
       const reasonScope = normalizeReasonScope(reasons);
       const scopedConnectorInstanceId = nonEmptyString(connectorInstanceId);
       // Bounded reason-scoped count-by-status aggregate (Postgres analogue of
@@ -773,14 +830,10 @@ export function createPostgresConnectorDetailGapStore() {
     },
 
     async markGapStatus(gapId, status, options = {}) {
-      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
-      const now = options.now || nowIso();
-      const attemptDelta = status === 'in_progress' ? 1 : 0;
-      const recoveredRunId = status === 'recovered' ? nonEmptyString(options.runId) : null;
+      const mutation = normalizeGapStatusMutation(gapId, status, options);
       // `reason` is COALESCE-updated (see the SQLite path): only overwritten
       // when supplied, so the quarantine transition can stamp the durable
       // `quarantined` class while ordinary status mutations preserve it.
-      const reason = nonEmptyString(options.reason);
       const result = await postgresQuery(`
         UPDATE connector_detail_gaps
         SET status = $1,
@@ -795,15 +848,15 @@ export function createPostgresConnectorDetailGapStore() {
         WHERE gap_id = $8
         RETURNING *
       `, [
-        status,
-        attemptDelta,
-        now,
-        nonEmptyString(options.nextAttemptAfter),
-        encodeJson(sanitizeDetailGapMetadata(options.lastError ?? null)),
-        nonEmptyString(options.runId),
-        recoveredRunId,
-        gapId,
-        reason,
+        mutation.status,
+        mutation.attemptDelta,
+        mutation.now,
+        mutation.nextAttemptAfter,
+        mutation.lastErrorJson,
+        mutation.runId,
+        mutation.recoveredRunId,
+        mutation.gapId,
+        mutation.reason,
       ]);
       return rowToGap(result.rows[0]);
     },

@@ -241,6 +241,23 @@ function cancelledRecord(record: AttentionRecord | null, now: string): Attention
   };
 }
 
+function transitionedRecord(
+  row: AttentionLifecycleRow,
+  attentionId: string,
+  to: string,
+  updatedAt: string
+): AttentionRecord {
+  const current = row.lifecycle;
+  if (TERMINAL_LIFECYCLES.has(current)) {
+    throw new Error(`transitionAttention: ${attentionId} is terminal (${current})`);
+  }
+  if (!ALLOWED_TRANSITIONS[current].has(to)) {
+    throw new Error(`transitionAttention: invalid transition ${current} -> ${to} for ${attentionId}`);
+  }
+  const record = rowToRecord(row) as AttentionRecord;
+  return { ...record, lifecycle: to as AttentionLifecycle, updated_at: updatedAt };
+}
+
 const VALID_NOTIFICATION_STATES = new Set(["acknowledged", "failed", "pending", "sent", "suppressed"]);
 
 function applyNotificationOutcomeToRecord(
@@ -441,15 +458,7 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
       if (!row) {
         return null;
       }
-      const current = row.lifecycle;
-      if (TERMINAL_LIFECYCLES.has(current)) {
-        throw new Error(`transitionAttention: ${id} is terminal (${current})`);
-      }
-      if (!ALLOWED_TRANSITIONS[current].has(to)) {
-        throw new Error(`transitionAttention: invalid transition ${current} -> ${to} for ${id}`);
-      }
-      const record = rowToRecord(row) as AttentionRecord;
-      const next: AttentionRecord = { ...record, lifecycle: to as AttentionLifecycle, updated_at: updatedAt };
+      const next = transitionedRecord(row, id, to, updatedAt);
       // REVIEWED-DYNAMIC: lifecycle mutation for the store-owned table.
       execDynamicSqlAcknowledged(
         `UPDATE connector_attention_records
@@ -672,15 +681,7 @@ export function createPostgresConnectorAttentionStore(): ConnectorAttentionStore
       if (!row) {
         return null;
       }
-      const current = row.lifecycle;
-      if (TERMINAL_LIFECYCLES.has(current)) {
-        throw new Error(`transitionAttention: ${id} is terminal (${current})`);
-      }
-      if (!ALLOWED_TRANSITIONS[current].has(to)) {
-        throw new Error(`transitionAttention: invalid transition ${current} -> ${to} for ${id}`);
-      }
-      const record = rowToRecord(row) as AttentionRecord;
-      const next: AttentionRecord = { ...record, lifecycle: to as AttentionLifecycle, updated_at: updatedAt };
+      const next = transitionedRecord(row, id, to, updatedAt);
       await postgresQuery(
         `UPDATE connector_attention_records
             SET lifecycle = $1, updated_at = $2, record_json = $3::jsonb

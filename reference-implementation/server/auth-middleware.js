@@ -39,18 +39,15 @@ function setProtectedResourceMetadataChallenge(res) {
 
 // ─── Auth-gate query context ─────────────────────────────────────────────────
 
-function inferAuthGateQueryContext(req) {
-  if (req.method !== 'GET') return null;
-
-  const segments = String(req.path || '')
-    .split('/')
-    .filter(Boolean)
-    .map((segment) => decodeURIComponent(segment));
-  if (segments[0] !== 'v1' || segments[1] !== 'streams') return null;
+function inferAuthGateQueryProjection(req) {
   const parsedLimit = typeof req.query?.limit === 'string' ? Number.parseInt(req.query.limit, 10) : null;
-  const inferredLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : null;
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : null;
   const hasChangesSince = typeof req.query?.changes_since === 'string' && req.query.changes_since.length > 0;
 
+  return { hasChangesSince, limit };
+}
+
+function projectAuthGateRouteContext(segments, req, queryProjection) {
   if (segments.length === 2) {
     return { queryShape: 'stream_list', streamId: null };
   }
@@ -71,8 +68,8 @@ function inferAuthGateQueryContext(req) {
       queryShape: 'record_list',
       streamId: segments[2],
       requestedRecordId: null,
-      hasChangesSince,
-      limit: inferredLimit,
+      hasChangesSince: queryProjection.hasChangesSince,
+      limit: queryProjection.limit,
     };
   }
   if (segments.length === 5 && segments[3] === 'records') {
@@ -80,6 +77,18 @@ function inferAuthGateQueryContext(req) {
   }
 
   return null;
+}
+
+function inferAuthGateQueryContext(req) {
+  if (req.method !== 'GET') return null;
+
+  const segments = String(req.path || '')
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => decodeURIComponent(segment));
+  if (segments[0] !== 'v1' || segments[1] !== 'streams') return null;
+  const queryProjection = inferAuthGateQueryProjection(req);
+  return projectAuthGateRouteContext(segments, req, queryProjection);
 }
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────

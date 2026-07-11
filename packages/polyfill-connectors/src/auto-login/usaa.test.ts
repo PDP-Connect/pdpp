@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserContext, Locator, Page } from "playwright";
-import { USAA_RETRYABLE_PATTERN } from "../../connectors/usaa/index.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
-import { buildSessionEstablishTerminalError } from "../connector-runtime.ts";
+import type { CaptureSession } from "../fixture-capture.ts";
 import { classifyUsaaLoginStepFailure, ensureUsaaSession } from "./usaa.ts";
 
 const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
@@ -342,43 +341,53 @@ test("classifyUsaaLoginStepFailure does not treat bare 'try again later' as sour
   );
 });
 
-test("ensureUsaaSession classifies delayed USAA source-unavailable modal after member-id submit as retryable, without manual_action", async () => {
-  // Live-fixture-derived: USAA has rendered the source-unavailable dialog
-  // after the logon form/footer, beyond the old 800-character
-  // pre-classification slice, right after the memberId "Next" click
-  // (password field never appeared). The provider itself said its login
-  // system was unavailable. Sending the owner into a browser cannot fix a
-  // provider outage — they see the identical page. The connector must
-  // classify this as `source_unavailable` and throw a retryable error
-  // directly, without ever emitting manual_action.
+test("ensureUsaaSession still routes a delayed USAA source-unavailable modal after member-id submit to genuine manual_action, with an owner-visible diagnostic note", async () => {
+  // Corrected 2026-07-10: this exact page (source-unavailable copy after the
+  // memberId "Next" click, password field never appearing) is the connector's
+  // dominant, weeks-long recurring failure mode per prior fixes' own commit
+  // messages — not an intermittent condition. classifyUsaaLoginStepFailure
+  // matching USAA's outage boilerplate does NOT prove the provider is down;
+  // it could equally be a persistent automation-side condition (stale/blocked
+  // profile, bot-detection challenge) that happens to render the same generic
+  // copy. Only a human completing login in the visible browser can tell the
+  // difference, so this must still route to manual_action — with the
+  // classification surfaced as an owner-visible note, not used to bypass the
+  // owner entirely.
   await withUsaaCredentials(async () => {
     const prefix = "Member Account Login ".repeat(80);
     const page = makePasswordStepFailurePage(
-      `${prefix}We are unable to complete your request. Our system is currently unavailable. Please try again later.`
+      `${prefix}We are unable to complete your request. Our system is currently unavailable. Please try again later.`,
+      "Log Off"
     );
-    const context = makeContext([[]]);
+    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
     const interactions = makeInteractionHarness();
 
-    await assert.rejects(
-      ensureUsaaSession({
-        context,
-        page,
-        sendInteraction: interactions.sendInteraction,
-      }),
-      /source_unavailable: USAA reported its login system is currently unavailable after Next click\./
+    const ok = await ensureUsaaSession({
+      context,
+      page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.equal(interactions.requests.length, 1);
+    assert.equal(interactions.requests[0]?.kind, "manual_action");
+    assert.match(
+      interactions.requests[0]?.message ?? "",
+      /USAA could not finish sign-in automatically; open the browser to continue\. PDPP resumes when sign-in succeeds\./
     );
-    // No owner interaction of any kind — this is a provider outage, not
-    // something manual browser operation can resolve.
-    assert.equal(interactions.requests.length, 0);
+    // The owner-visible note distinguishing this from an unrecognized stall.
+    assert.match(
+      interactions.requests[0]?.message ?? "",
+      /USAA's page reported its own system as unavailable, but this exact failure has recurred/
+    );
   });
 });
 
-test("ensureUsaaSession still routes a lockout/challenge page containing 'try again later' to genuine manual_action", async () => {
-  // Negative case for the source_unavailable classification: a page that
-  // says "try again later" without either strong provider-unavailable
-  // phrase (e.g. an account lockout or bot-challenge page) must NOT be
-  // suppressed as a retryable provider outage — it needs the real
-  // owner-facing manual_action path, same as any other unrecognized stall.
+test("ensureUsaaSession routes a lockout/challenge page containing 'try again later' to manual_action without the source-unavailable note", async () => {
+  // Contrast case: a page that says "try again later" without either strong
+  // provider-unavailable phrase (e.g. an account lockout or bot-challenge
+  // page) must still reach manual_action, but WITHOUT the source-unavailable
+  // diagnostic note — that note is specific to the narrower classification.
   await withUsaaCredentials(async () => {
     const prefix = "Member Account Login ".repeat(80);
     const page = makePasswordStepFailurePage(
@@ -401,25 +410,75 @@ test("ensureUsaaSession still routes a lockout/challenge page containing 'try ag
       interactions.requests[0]?.message ?? "",
       /USAA could not finish sign-in automatically; open the browser to continue\. PDPP resumes when sign-in succeeds\./
     );
+    assert.doesNotMatch(interactions.requests[0]?.message ?? "", /USAA's page reported its own system as unavailable/);
   });
 });
 
-test("the thrown source_unavailable error from ensureUsaaSession is classified retryable by the generic runtime seam", async () => {
-  // The two tests above prove the connector's *decision* (throw, don't
-  // manual_action). This proves the *consequence*: the exact message
-  // ensureUsaaSession throws — not a hand-typed approximation of it — is
-  // what the generic connector-runtime session-establishment wrapper
-  // (buildSessionEstablishTerminalError, the same function establishSession
-  // calls in connector-runtime.ts) turns into a retryable terminal error
-  // using the connector's own declared USAA_RETRYABLE_PATTERN. That is the
-  // seam that ultimately drives runtime retry/backoff instead of a
-  // credential-repair or code-defect classification.
+test("ensureUsaaSession captures DOM/screenshot evidence on the password-field stall when a capture session is provided", async () => {
+  // The missing discriminating evidence this whole investigation needed: a
+  // screenshot/DOM/aria snapshot of the actual page at the moment of
+  // failure. Wire `capture` through so the next occurrence produces that
+  // evidence automatically instead of requiring another round of inference.
   await withUsaaCredentials(async () => {
     const prefix = "Member Account Login ".repeat(80);
     const page = makePasswordStepFailurePage(
-      `${prefix}We are unable to complete your request. Our system is currently unavailable. Please try again later.`
+      `${prefix}We are unable to complete your request. Our system is currently unavailable. Please try again later.`,
+      "Log Off"
     );
-    const context = makeContext([[]]);
+    const context = makeContext([[], [makeCookie("UsaaMbWebMemberLoggedIn", "true")]]);
+    const interactions = makeInteractionHarness();
+    const captureCalls: Array<{ label: string }> = [];
+    const capture: CaptureSession = {
+      baseDir: "/tmp/fake-usaa-capture",
+      keepOnSuccess: false,
+      runId: "fake-run",
+      captureDom: (_page, label): Promise<void> => {
+        captureCalls.push({ label });
+        return Promise.resolve();
+      },
+      captureHttp: (): void => {
+        /* no-op */
+      },
+      finalize: (): void => {
+        /* no-op */
+      },
+      markSucceeded: (): void => {
+        /* no-op */
+      },
+      recordRecord: (): void => {
+        /* no-op */
+      },
+    };
+
+    const ok = await ensureUsaaSession({
+      capture,
+      context,
+      page,
+      sendInteraction: interactions.sendInteraction,
+    });
+
+    assert.equal(ok, true);
+    assert.deepEqual(
+      captureCalls.map((c) => c.label),
+      ["usaa-password-field-stall"]
+    );
+  });
+});
+
+test("ensureUsaaSession classifies USAA source-unavailable page rendered after password submit in the thrown diagnostic, without a false-certainty retryable claim", async () => {
+  // Same provider-outage-shaped condition, but observed later in the flow:
+  // memberId and password steps both proceed, and USAA renders the
+  // unavailable page instead of an authenticated dashboard or OTP challenge.
+  // Corrected 2026-07-10: this must NOT throw an untyped `source_unavailable:`
+  // message claiming proven-retryable provider downtime — that was the
+  // over-claim this fix reverts. The classification is folded into the
+  // existing diagnostic error as a label for logs/classification, not used to
+  // manufacture a false-certainty claim.
+  await withUsaaCredentials(async () => {
+    const context = makeContext([[], []]); // never establishes a logged-in cookie
+    const page = makePostPasswordSourceUnavailablePage(
+      "We are unable to complete your request. Our system is currently unavailable. Please try again later."
+    );
     const interactions = makeInteractionHarness();
 
     const thrown = await ensureUsaaSession({
@@ -433,34 +492,11 @@ test("the thrown source_unavailable error from ensureUsaaSession is classified r
       (err: unknown): Error => err as Error
     );
 
-    const terminal = buildSessionEstablishTerminalError("usaa", thrown.message, USAA_RETRYABLE_PATTERN);
-    assert.equal(terminal.retryable, true);
-    assert.equal(terminal.message, `usaa_session_failed: ${thrown.message}`);
-    assert.equal(interactions.requests.length, 0);
-  });
-});
-
-test("ensureUsaaSession classifies USAA source-unavailable page rendered after password submit as retryable, without manual_action or false success", async () => {
-  // Same provider-outage condition, but observed later in the flow: memberId
-  // and password steps both proceed, and USAA renders the unavailable page
-  // instead of an authenticated dashboard or OTP challenge. The connector's
-  // final fallthrough must classify this too, not just throw an untyped
-  // diagnostic that a downstream projection could misread as a code defect.
-  await withUsaaCredentials(async () => {
-    const context = makeContext([[], []]); // never establishes a logged-in cookie
-    const page = makePostPasswordSourceUnavailablePage(
-      "We are unable to complete your request. Our system is currently unavailable. Please try again later."
-    );
-    const interactions = makeInteractionHarness();
-
-    await assert.rejects(
-      ensureUsaaSession({
-        context,
-        page,
-        sendInteraction: interactions.sendInteraction,
-      }),
-      /source_unavailable: USAA reported its login system is currently unavailable after password submit\./
-    );
+    assert.match(thrown.message, /classification=source_unavailable/);
+    assert.match(thrown.message, /USAA login completed but no verified authenticated dashboard session was detected/);
+    assert.doesNotMatch(thrown.message, /^source_unavailable:/);
+    // This path never had a manual_action interaction before #294 either —
+    // preserved, not newly added.
     assert.equal(interactions.requests.length, 0);
   });
 });

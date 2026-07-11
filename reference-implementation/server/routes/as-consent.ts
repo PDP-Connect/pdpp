@@ -441,6 +441,27 @@ function pruneFlatNarrowingToApprovedSources(
   return Object.keys(pruned).length > 0 ? pruned : undefined;
 }
 
+function parseApprovedSourceIndexes(body: Readonly<Record<string, unknown>> | undefined): number[] | undefined {
+  const raw = body?.approved_source_indexes;
+  if (raw === undefined || raw === null) {
+    return;
+  }
+  const values = Array.isArray(raw) ? raw : [raw];
+  const indexes: number[] = [];
+  for (const value of values) {
+    const index = typeof value === "number" ? value : Number(value);
+    if (Number.isInteger(index)) {
+      indexes.push(index);
+    }
+  }
+  return indexes;
+}
+
+function isApproveAllConfirmed(body: Readonly<Record<string, unknown>> | undefined): boolean {
+  const confirm = body?.confirm_approve_all;
+  return confirm === true || confirm === "true" || confirm === "1" || confirm === "on";
+}
+
 function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | undefined): {
   approvedSourceIndexes?: number[];
   confirmedApproveAll?: boolean;
@@ -451,25 +472,16 @@ function parseBatchApproveSelection(body: Readonly<Record<string, unknown>> | un
     confirmedApproveAll?: boolean;
     sourceNarrowing?: Record<number, SourceNarrowing>;
   } = {};
-  const raw = body?.approved_source_indexes;
-  if (raw !== undefined && raw !== null) {
-    const values = Array.isArray(raw) ? raw : [raw];
-    const indexes: number[] = [];
-    for (const value of values) {
-      const index = typeof value === "number" ? value : Number(value);
-      if (Number.isInteger(index)) {
-        indexes.push(index);
-      }
-    }
-    out.approvedSourceIndexes = indexes;
+  const approvedSourceIndexes = parseApprovedSourceIndexes(body);
+  if (approvedSourceIndexes) {
+    out.approvedSourceIndexes = approvedSourceIndexes;
   }
-  const confirm = body?.confirm_approve_all;
-  if (confirm === true || confirm === "true" || confirm === "1" || confirm === "on") {
+  if (isApproveAllConfirmed(body)) {
     out.confirmedApproveAll = true;
   }
   const structured = parseStructuredSourceNarrowing(body?.source_narrowing);
   const flat = body ? parseFlatFormNarrowing(body) : undefined;
-  const narrowing = structured ?? pruneFlatNarrowingToApprovedSources(flat, out.approvedSourceIndexes);
+  const narrowing = structured ?? pruneFlatNarrowingToApprovedSources(flat, approvedSourceIndexes);
   if (narrowing) {
     out.sourceNarrowing = narrowing;
   }

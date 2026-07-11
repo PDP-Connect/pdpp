@@ -227,10 +227,10 @@ One row per declared manifest stream, across `packages/polyfill-connectors/manif
 | reactions | checkpoint_window | scheduled_window | — | true | messages | — |
 | files | checkpoint_window | scheduled_window | — | true | — | — |
 | canvases | full_inventory | scheduled_window | — | true | — | — |
-| stars | full_inventory | not_trackable | deferred | false | — | unsupported_in_mode |
-| user_groups | full_inventory | not_trackable | deferred | false | — | unsupported_in_mode |
-| reminders | checkpoint_window | not_trackable | deferred | false | — | unsupported_in_mode |
-| dm_read_states | checkpoint_window | not_trackable | deferred | false | — | unsupported_in_mode |
+| stars | full_inventory | scheduled_window | — | true | — | — |
+| user_groups | full_inventory | scheduled_window | — | true | — | — |
+| reminders | full_inventory | scheduled_window | — | true | — | — |
+| dm_read_states | full_inventory | scheduled_window | — | true | — | — |
 
 ## polyfill/spotify
 

@@ -4,6 +4,7 @@
 // in index.ts.
 
 import type { RecordData } from "../../src/connector-runtime.ts";
+import type { DmReadState } from "./slack-api.ts";
 import type {
   CanvasRow,
   ChannelCanvasMeta,
@@ -12,6 +13,9 @@ import type {
   FileRow,
   MessageRow,
   SlackDataBlob,
+  SlackReminder,
+  SlackStarItem,
+  SlackUserGroup,
   TimeRangeLike,
   UserRow,
   WorkspaceRow,
@@ -461,6 +465,84 @@ export function buildCanvasRecord(
     updated_at: epochToIso(updatedSec),
     permalink: d.permalink ?? null,
     url_private: d.url_private ?? r.url ?? null,
+  };
+}
+
+// ─── Direct Slack Web API record builders (stars/user_groups/reminders/dm_read_states) ──
+
+/**
+ * `stars.list` items carry no stable ID of their own — build a composite
+ * key from the starred entity's own identifiers so repeated runs produce
+ * the same `id` for the same star. Mirrors the manifest's declared
+ * `target_id`/`channel_id`/`message_ts`/`file_id` fields.
+ */
+export function buildStarRecord(item: SlackStarItem): RecordData {
+  const itemType = item.type ?? null;
+  const channelId = item.channel ?? null;
+  const messageTs = item.message?.ts ?? null;
+  const fileId = item.file?.id ?? null;
+  const targetId = fileId ?? messageTs ?? channelId;
+  const idParts = [itemType ?? "star", channelId ?? "", messageTs ?? "", fileId ?? ""].filter((p) => p !== "");
+  return {
+    id: idParts.join(":"),
+    item_type: itemType,
+    target_id: targetId,
+    channel_id: channelId,
+    message_ts: messageTs,
+    file_id: fileId,
+    user_id: item.message?.user ?? null,
+    starred_at: epochToIso(item.date_create),
+  };
+}
+
+export function buildUserGroupRecord(g: SlackUserGroup): RecordData {
+  return {
+    id: g.id,
+    team_id: g.team_id ?? null,
+    handle: g.handle ?? null,
+    name: g.name ?? null,
+    description: g.description ?? null,
+    is_external: g.is_external ?? null,
+    is_subteam: g.is_subteam ?? null,
+    member_ids: Array.isArray(g.users) ? g.users : null,
+    channel_ids: Array.isArray(g.prefs?.channels) ? g.prefs.channels : null,
+    created: g.date_create ?? null,
+    created_at: epochToIso(g.date_create),
+    updated: g.date_update ?? null,
+    deleted: typeof g.date_delete === "number" ? g.date_delete > 0 : null,
+  };
+}
+
+export function buildReminderRecord(r: SlackReminder): RecordData {
+  return {
+    id: r.id,
+    creator_id: r.creator ?? null,
+    user_id: r.user ?? null,
+    text: r.text ?? null,
+    recurring: r.recurring ?? null,
+    time: r.time ?? null,
+    scheduled_at: epochToIso(r.time),
+    complete_ts: r.complete_ts ?? null,
+    completed_at: r.complete_ts ? epochToIso(r.complete_ts) : null,
+  };
+}
+
+/**
+ * `conversations.info`'s `last_read` is a Slack "seconds.micros" ts string
+ * (same format as message `ts`), not ISO — the manifest declares
+ * `last_read`/`last_read_at` as `format: date-time`, so convert via
+ * `tsToIso` (mirrors how the `messages` stream derives `sent_at` from `ts`).
+ */
+export function buildDmReadStateRecord(state: DmReadState, emittedAt: string): RecordData {
+  const lastReadIso = tsToIso(state.lastRead);
+  return {
+    id: state.channelId,
+    channel_id: state.channelId,
+    last_read: lastReadIso,
+    last_read_at: lastReadIso,
+    unread_count: state.unreadCount,
+    unread_count_display: state.unreadCountDisplay,
+    fetched_at: emittedAt,
   };
 }
 

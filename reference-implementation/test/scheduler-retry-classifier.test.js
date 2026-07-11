@@ -110,6 +110,41 @@ test('shouldRetryRunFailure lets a non-fatal reason with a retryable status thro
   );
 });
 
+test('shouldRetryRunFailure retries a proven provider-unavailable session-establishment failure whose message contains "session_failed"', () => {
+  // buildSessionEstablishTerminalError prefixes EVERY session-establishment
+  // failure with `${name}_session_failed:`, retryable or not. A connector
+  // that proved a provider outage (USAA's source_unavailable classifier) and
+  // declared it retryable via its own retryablePattern must not have that
+  // explicit signal overridden by the "session_failed" substring, which the
+  // owner-auth message heuristic would otherwise treat as a login failure.
+  const err = {
+    connector_error: {
+      message:
+        'usaa_session_failed: source_unavailable: USAA reported its login system is currently unavailable after Next click.',
+      retryable: true,
+    },
+    failure_reason: null,
+    terminal_reason: null,
+    known_gaps: null,
+  };
+  assert.equal(shouldRetryRunFailure(err), true);
+});
+
+test('shouldRetryRunFailure still denies a real session_required/session_expired auth failure', () => {
+  assert.equal(
+    shouldRetryRunFailure({
+      connector_error: { message: 'usaa_session_failed: usaa_session_required', retryable: false },
+    }),
+    false,
+  );
+  assert.equal(
+    shouldRetryRunFailure({
+      connector_error: { message: 'chatgpt_session_expired' },
+    }),
+    false,
+  );
+});
+
 // ─── isTerminalGrantFailure ──────────────────────────────────────────────
 
 test('isTerminalGrantFailure is true only for the four terminal grant reasons', () => {

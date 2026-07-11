@@ -10,6 +10,16 @@
 import type { CollectionRateSnapshot } from "../runtime/connection-health.ts";
 import type { RuntimeCollectionFact, RuntimeCollectionFactSkip, RuntimeCollectionFacts } from "./ref-control.ts";
 
+const COLLECTION_RATE_NUMBER_FIELDS = [
+  "ceiling_interval_ms",
+  "ceiling_rate_per_min",
+  "current_interval_ms",
+  "effective_rate_per_min",
+] as const;
+
+type CollectionRateNumberField = (typeof COLLECTION_RATE_NUMBER_FIELDS)[number];
+type CollectionRateNumbers = Pick<CollectionRateSnapshot, CollectionRateNumberField>;
+
 export function readSafeNonNegativeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -87,6 +97,24 @@ export function readCollectionFactSkip(value: unknown): RuntimeCollectionFactSki
   return { reason, ...(recoveryAction ? { recovery_action: recoveryAction } : {}) };
 }
 
+function readCollectionRateNumbers(entry: Record<string, unknown>): CollectionRateNumbers | null {
+  const values = COLLECTION_RATE_NUMBER_FIELDS.map((field) => [field, entry[field]] as const);
+  if (values.some(([, value]) => typeof value !== "number")) {
+    return null;
+  }
+  return Object.fromEntries(values) as CollectionRateNumbers;
+}
+
+function readCollectionRateLastBackoff(entry: Record<string, unknown>): CollectionRateSnapshot["last_backoff"] {
+  if (entry.last_backoff == null) {
+    return null;
+  }
+  const backoff = entry.last_backoff as Record<string, unknown>;
+  const atIntervalMs = typeof backoff.at_interval_ms === "number" ? backoff.at_interval_ms : null;
+  const reason = typeof backoff.reason === "string" ? backoff.reason : null;
+  return atIntervalMs !== null && reason !== null ? { at_interval_ms: atIntervalMs, reason } : null;
+}
+
 /**
  * Parse and validate a raw `collection_rate` payload from a spine event's
  * `data_json`. Returns `null` for any shape that does not match the expected
@@ -101,26 +129,9 @@ export function parseCollectionRatePayload(raw: unknown): CollectionRateSnapshot
   if (r.object !== "collection_rate") {
     return null;
   }
-  const ceiling_interval_ms = typeof r.ceiling_interval_ms === "number" ? r.ceiling_interval_ms : null;
-  const ceiling_rate_per_min = typeof r.ceiling_rate_per_min === "number" ? r.ceiling_rate_per_min : null;
-  const current_interval_ms = typeof r.current_interval_ms === "number" ? r.current_interval_ms : null;
-  const effective_rate_per_min = typeof r.effective_rate_per_min === "number" ? r.effective_rate_per_min : null;
-  if (
-    ceiling_interval_ms === null ||
-    ceiling_rate_per_min === null ||
-    current_interval_ms === null ||
-    effective_rate_per_min === null
-  ) {
+  const numbers = readCollectionRateNumbers(r);
+  if (!numbers) {
     return null;
   }
-  let last_backoff: CollectionRateSnapshot["last_backoff"] = null;
-  if (r.last_backoff != null) {
-    const lb = r.last_backoff as Record<string, unknown>;
-    const at_interval_ms = typeof lb.at_interval_ms === "number" ? lb.at_interval_ms : null;
-    const reason = typeof lb.reason === "string" ? lb.reason : null;
-    if (at_interval_ms !== null && reason !== null) {
-      last_backoff = { at_interval_ms, reason };
-    }
-  }
-  return { ceiling_interval_ms, ceiling_rate_per_min, current_interval_ms, effective_rate_per_min, last_backoff };
+  return { ...numbers, last_backoff: readCollectionRateLastBackoff(r) };
 }

@@ -498,13 +498,17 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     throw new Error('createPlayground: controller with .getPendingInteraction() is required');
   }
 
-  function log(level, msg, data) {
-    if (!logger || typeof logger[level] !== 'function') return;
+  function callLogger(level, entry) {
     try {
-      logger[level]({ msg, ...(data || {}) });
+      logger[level](entry);
     } catch {
       /* logger errors must not break the playground path */
     }
+  }
+
+  function log(level, msg, data) {
+    if (!logger || typeof logger[level] !== 'function') return;
+    callLogger(level, { msg, ...(data || {}) });
   }
 
   function normalizeBackend(value) {
@@ -526,25 +530,37 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     ).trim();
   }
 
-  function resolveNekoCdpHttpUrl(baseUrl) {
-    const configured = String(
+  function configuredNekoCdpHttpUrl() {
+    return String(
       env.PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL ||
         env.PDPP_NEKO_CDP_HTTP_URL ||
         env.NEKO_CDP_HTTP_URL ||
         env.NEKO_CDP_ORIGIN ||
         '',
     ).trim();
-    if (configured) return configured;
-    try {
-      const parsed = new URL(baseUrl || resolveNekoBaseUrl());
-      if (parsed.hostname === 'neko') return 'http://neko:9223/';
-      if (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') {
-        return `${parsed.protocol}//${parsed.hostname}:9223/`;
-      }
-    } catch {
-      /* fall through: no safe inferred CDP URL */
+  }
+
+  function inferNekoCdpHttpUrl(parsed) {
+    if (parsed.hostname === 'neko') return 'http://neko:9223/';
+    if (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') {
+      return `${parsed.protocol}//${parsed.hostname}:9223/`;
     }
     return null;
+  }
+
+  function inferredNekoCdpHttpUrl(baseUrl) {
+    try {
+      return inferNekoCdpHttpUrl(new URL(baseUrl || resolveNekoBaseUrl()));
+    } catch {
+      /* fall through: no safe inferred CDP URL */
+      return null;
+    }
+  }
+
+  function resolveNekoCdpHttpUrl(baseUrl) {
+    const configured = configuredNekoCdpHttpUrl();
+    if (configured) return configured;
+    return inferredNekoCdpHttpUrl(baseUrl);
   }
 
   // Monotonic counter to ensure each call to makeIds() produces a unique
@@ -600,39 +616,51 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     }
   }
 
+  function registerNekoPlaygroundTarget(session, startUrl) {
+    const baseUrl = session.baseUrl || resolveNekoBaseUrl();
+    const cdpHttpUrl = session.cdpHttpUrl || resolveNekoCdpHttpUrl(baseUrl);
+    runTargetRegistry.register({
+      runId: session.runId,
+      interactionId: session.interactionId,
+      backend: 'neko',
+      base_url: baseUrl,
+      ...(cdpHttpUrl ? { cdp_http_url: cdpHttpUrl } : {}),
+      start_url: startUrl,
+      deviceId: PLAYGROUND_DEVICE_ID,
+      pageUrl: 'neko:playground',
+      pageTitle: 'n.eko Stream Playground',
+      reason: 'manual_action',
+    });
+    session.baseUrl = baseUrl;
+    session.cdpHttpUrl = cdpHttpUrl;
+  }
+
+  function isCdpBackedSession(session) {
+    return ['cdp', 'neko-remote-cdp'].includes(session.backend);
+  }
+
+  function registerCdpPlaygroundTarget(session) {
+    if (!isCdpBackedSession(session) || !session.wsUrl) {
+      return;
+    }
+    runTargetRegistry.register({
+      runId: session.runId,
+      interactionId: session.interactionId,
+      wsUrl: session.wsUrl,
+      deviceId: PLAYGROUND_DEVICE_ID,
+      pageUrl: 'data:text/html,playground',
+      pageTitle: 'Stream Playground',
+      reason: 'manual_action',
+    });
+  }
+
   function registerPlaygroundTarget(session) {
     const startUrl = buildTestPageUrl({ debug: session.debugCalibration === true });
     if (session.backend === 'neko') {
-      const baseUrl = session.baseUrl || resolveNekoBaseUrl();
-      const cdpHttpUrl = session.cdpHttpUrl || resolveNekoCdpHttpUrl(baseUrl);
-      runTargetRegistry.register({
-        runId: session.runId,
-        interactionId: session.interactionId,
-        backend: 'neko',
-        base_url: baseUrl,
-        ...(cdpHttpUrl ? { cdp_http_url: cdpHttpUrl } : {}),
-        start_url: startUrl,
-        deviceId: PLAYGROUND_DEVICE_ID,
-        pageUrl: 'neko:playground',
-        pageTitle: 'n.eko Stream Playground',
-        reason: 'manual_action',
-      });
-      session.baseUrl = baseUrl;
-      session.cdpHttpUrl = cdpHttpUrl;
+      registerNekoPlaygroundTarget(session, startUrl);
       return session;
     }
-
-    if ((session.backend === 'cdp' || session.backend === 'neko-remote-cdp') && session.wsUrl) {
-      runTargetRegistry.register({
-        runId: session.runId,
-        interactionId: session.interactionId,
-        wsUrl: session.wsUrl,
-        deviceId: PLAYGROUND_DEVICE_ID,
-        pageUrl: 'data:text/html,playground',
-        pageTitle: 'Stream Playground',
-        reason: 'manual_action',
-      });
-    }
+    registerCdpPlaygroundTarget(session);
     return session;
   }
 
@@ -666,26 +694,87 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     };
   }
 
+  function ignoreCleanupFailure() {
+    /* best-effort */
+  }
+
+  function tearDownBrowserAtExit() {
+    if (!cleanupBrowser) return;
+    try {
+      Promise.resolve(cleanupBrowser()).catch(ignoreCleanupFailure);
+    } catch {
+      /* best-effort */
+    }
+    cleanupBrowser = null;
+  }
+
   function registerExitHook() {
     if (exitHookRegistered) return;
     exitHookRegistered = true;
     // `exit` is synchronous; we kick off the close but do not await. The
     // OS will reap the patchright child either way once Node exits.
-    const tearDown = () => {
-      if (cleanupBrowser) {
-        try {
-          Promise.resolve(cleanupBrowser()).catch(() => {
-            /* best-effort */
-          });
-        } catch {
-          /* best-effort */
-        }
-        cleanupBrowser = null;
-      }
+    process.once('exit', tearDownBrowserAtExit);
+    process.once('SIGINT', tearDownBrowserAtExit);
+    process.once('SIGTERM', tearDownBrowserAtExit);
+  }
+
+  async function releasePlaygroundBrowser(isolated) {
+    await isolated.release().catch(ignoreCleanupFailure);
+    cleanupBrowser = null;
+  }
+
+  async function releaseRemoteCdpPlaygroundBrowser(page, isolated) {
+    await page.close().catch(ignoreCleanupFailure);
+    await releasePlaygroundBrowser(isolated);
+  }
+
+  async function navigatePlaygroundPage(page, debugCalibration, cleanup) {
+    try {
+      await page.goto(buildTestPageUrl({ debug: debugCalibration }), { waitUntil: 'load', timeout: 15_000 });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log('warn', 'playground_navigation_failed', { error: message });
+      await cleanup();
+      throw err;
+    }
+  }
+
+  function publishedCdpEndpointInputs() {
+    return {
+      host: process.env.PDPP_BROWSER_CDP_HOST?.trim(),
+      portRaw: process.env.PDPP_BROWSER_CDP_PORT?.trim(),
     };
-    process.once('exit', tearDown);
-    process.once('SIGINT', tearDown);
-    process.once('SIGTERM', tearDown);
+  }
+
+  function missingCdpEndpointMessage({ host, portRaw }, messages) {
+    if (!host) return messages.missing;
+    if (!portRaw) return messages.missing;
+    return null;
+  }
+
+  function isUsableCdpPort(port) {
+    return Number.isFinite(port) && port > 0;
+  }
+
+  function resolvePublishedCdpEndpoint(messages) {
+    const { host, portRaw } = publishedCdpEndpointInputs();
+    const missing = missingCdpEndpointMessage({ host, portRaw }, messages);
+    if (missing) return missing;
+    const port = Number.parseInt(portRaw, 10);
+    return isUsableCdpPort(port) ? { host, port } : messages.invalid(portRaw);
+  }
+
+  async function failAfterCleanup(cleanup, message) {
+    await cleanup();
+    throw new Error(message);
+  }
+
+  async function requirePublishedCdpEndpoint(cleanup, messages) {
+    const endpoint = resolvePublishedCdpEndpoint(messages);
+    if (typeof endpoint === 'string') {
+      return failAfterCleanup(cleanup, endpoint);
+    }
+    return endpoint;
   }
 
   /**
@@ -729,41 +818,15 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     // same id through to `registerPlaygroundTarget` below.
     const cdpIds = makeIds('cdp');
     await installRemoteTelemetryBinding(page, cdpIds.runId);
-    try {
-      await page.goto(buildTestPageUrl({ debug: debugCalibration }), { waitUntil: 'load', timeout: 15_000 });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log('warn', 'playground_navigation_failed', { error: message });
-      // Surface to the caller; the page-load helper will present the error.
-      await isolated.release().catch(() => {
-        /* best-effort */
-      });
-      cleanupBrowser = null;
-      throw err;
-    }
+    await navigatePlaygroundPage(page, debugCalibration, () => releasePlaygroundBrowser(isolated));
 
     // Pull the CDP host:port the launcher published into env vars. The
     // launcher writes them after a successful `streamingEnabled: true`
     // launch (see browser-launch.ts publishCdpEndpointToEnv).
-    const host = process.env.PDPP_BROWSER_CDP_HOST?.trim();
-    const portRaw = process.env.PDPP_BROWSER_CDP_PORT?.trim();
-    if (!(host && portRaw)) {
-      await isolated.release().catch(() => {
-        /* best-effort */
-      });
-      cleanupBrowser = null;
-      throw new Error(
-        'playground: launcher did not publish PDPP_BROWSER_CDP_HOST/PDPP_BROWSER_CDP_PORT; cannot resolve wsUrl',
-      );
-    }
-    const port = Number.parseInt(portRaw, 10);
-    if (!(Number.isFinite(port) && port > 0)) {
-      await isolated.release().catch(() => {
-        /* best-effort */
-      });
-      cleanupBrowser = null;
-      throw new Error(`playground: invalid PDPP_BROWSER_CDP_PORT: ${portRaw}`);
-    }
+    const { host, port } = await requirePublishedCdpEndpoint(() => releasePlaygroundBrowser(isolated), {
+      missing: 'playground: launcher did not publish PDPP_BROWSER_CDP_HOST/PDPP_BROWSER_CDP_PORT; cannot resolve wsUrl',
+      invalid: (portRaw) => `playground: invalid PDPP_BROWSER_CDP_PORT: ${portRaw}`,
+    });
 
     const wsUrl = await resolveWsUrlForExactPage(page, { host, port });
 
@@ -859,45 +922,18 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     // binding install fails we just lose Layer-D telemetry.
     const neRemoteCdpIds = makeIds('neko_remote_cdp');
     await installRemoteTelemetryBinding(page, neRemoteCdpIds.runId);
-    try {
-      await page.goto(buildTestPageUrl({ debug: debugCalibration }), { waitUntil: 'load', timeout: 15_000 });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log('warn', 'playground_navigation_failed', { error: message });
-      await page.close().catch(() => {
-        /* best-effort */
-      });
-      await isolated.release().catch(() => {
-        /* best-effort */
-      });
-      cleanupBrowser = null;
-      throw err;
-    }
+    await navigatePlaygroundPage(page, debugCalibration, () => releaseRemoteCdpPlaygroundBrowser(page, isolated));
 
     // `acquireBrowserForConnector` published these into process.env as
     // part of its remote-CDP-attach path. They're the host:port the
     // streaming companion will dial back through (cdp-proxy.py).
-    const host = process.env.PDPP_BROWSER_CDP_HOST?.trim();
-    const portRaw = process.env.PDPP_BROWSER_CDP_PORT?.trim();
-    if (!(host && portRaw)) {
-      await page.close().catch(() => {
-        /* best-effort */
-      });
-      await isolated.release().catch(() => {
-        /* best-effort */
-      });
-      cleanupBrowser = null;
-      throw new Error(
-        'playground neko-remote-cdp: launcher did not publish PDPP_BROWSER_CDP_HOST/PORT; cannot resolve wsUrl',
-      );
-    }
-    const port = Number.parseInt(portRaw, 10);
-    if (!(Number.isFinite(port) && port > 0)) {
-      await page.close().catch(() => {});
-      await isolated.release().catch(() => {});
-      cleanupBrowser = null;
-      throw new Error(`playground neko-remote-cdp: invalid PDPP_BROWSER_CDP_PORT: ${portRaw}`);
-    }
+    const { host, port } = await requirePublishedCdpEndpoint(
+      () => releaseRemoteCdpPlaygroundBrowser(page, isolated),
+      {
+        missing: 'playground neko-remote-cdp: launcher did not publish PDPP_BROWSER_CDP_HOST/PORT; cannot resolve wsUrl',
+        invalid: (portRaw) => `playground neko-remote-cdp: invalid PDPP_BROWSER_CDP_PORT: ${portRaw}`,
+      },
+    );
 
     const wsUrl = await resolveWsUrlForExactPage(page, { host, port });
     const { runId, interactionId } = neRemoteCdpIds;
@@ -913,6 +949,41 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
 
     log('info', 'playground_ready', { backend: 'neko-remote-cdp', runId, interactionId, wsUrl });
     return session;
+  }
+
+  function cachedSessionForBackend(backend, debugCalibration) {
+    if (backend === 'neko') return null;
+    const cached = cachedSessions.get(backend);
+    if (!cached) return null;
+    cached.debugCalibration = debugCalibration;
+    return cached;
+  }
+
+  function sessionFactoryForBackend(backend) {
+    return {
+      neko: createNekoPlaygroundSession,
+      'neko-remote-cdp': createNekoRemoteCdpPlaygroundSession,
+    }[backend] || createCdpPlaygroundSession;
+  }
+
+  function recordPlaygroundSession(session, backend, debugCalibration) {
+    session.debugCalibration = debugCalibration;
+    activeSessions.set(session.runId, session);
+    if (backend !== 'neko') {
+      cachedSessions.set(backend, session);
+    }
+  }
+
+  async function createAndTrackPlaygroundSession(backend, debugCalibration) {
+    const promise = sessionFactoryForBackend(backend)({ debugCalibration });
+    inFlights.set(backend, promise);
+    try {
+      const session = await promise;
+      recordPlaygroundSession(session, backend, debugCalibration);
+      return session;
+    } finally {
+      inFlights.delete(backend);
+    }
   }
 
   async function getOrCreatePlaygroundSession(options = {}) {
@@ -932,41 +1003,13 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
     // test where the previous asymmetric keying (write by runId, read by
     // backend) caused a stale entry to be returned only when two
     // sequential calls landed in the same Date.now() millisecond.
-    const isCacheable = backend !== 'neko';
-    const cached = isCacheable ? cachedSessions.get(backend) : null;
+    const cached = cachedSessionForBackend(backend, debugCalibration);
     if (cached) {
-      cached.debugCalibration = debugCalibration;
       return registerPlaygroundTarget(cached);
     }
     const existing = inFlights.get(backend);
     if (existing) return existing;
-
-    let factory;
-    if (backend === 'neko') {
-      factory = createNekoPlaygroundSession;
-    } else if (backend === 'neko-remote-cdp') {
-      factory = createNekoRemoteCdpPlaygroundSession;
-    } else {
-      factory = createCdpPlaygroundSession;
-    }
-    const promise = factory({ debugCalibration });
-    inFlights.set(backend, promise);
-    try {
-      const session = await promise;
-      // Every minted session is discoverable by runId via activeSessions,
-      // regardless of whether its backend caches for reuse. This separation
-      // ensures the controller shim can resolve any playground runId — the
-      // earlier code conflated cache-reuse and runId-resolution into one
-      // map and produced unreachable entries for `neko`.
-      session.debugCalibration = debugCalibration;
-      activeSessions.set(session.runId, session);
-      if (isCacheable) {
-        cachedSessions.set(backend, session);
-      }
-      return session;
-    } finally {
-      inFlights.delete(backend);
-    }
+    return createAndTrackPlaygroundSession(backend, debugCalibration);
   }
 
   return { getOrCreatePlaygroundSession };

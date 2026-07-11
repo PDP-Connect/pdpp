@@ -1,25 +1,26 @@
 #!/usr/bin/env node
 /**
- * PDPP Slack Connector (v0.3.0) — subprocess-wraps slackdump + reads its SQLite output.
+ * PDPP Slack Connector (v0.6.0) — subprocess-wraps slackdump + reads its SQLite output.
  *
- * v0.3 adds a `canvases` stream (derived from FILE MODE='quip' rows joined
- * with each channel's canvas metadata) and declares four additional streams
- * (`stars`, `user_groups`, `reminders`, `dm_read_states`) that are P1 Layer-2
- * gaps but are NOT realizable from a slackdump archive today:
+ * v0.3 added a `canvases` stream (derived from FILE MODE='quip' rows joined
+ * with each channel's canvas metadata). v0.6 adds direct Slack Web API
+ * calls (see `slack-api.ts`) for four streams slackdump's archive mode
+ * cannot produce:
  *
- *   - stars: slackdump defines CHUNK type 8 STARRED_ITEMS but archive mode
- *     never emits chunks of that type (stars.list requires an API call
- *     slackdump doesn't run for archive workflows).
- *   - user_groups: requires usergroups.list; slackdump archive does not call it.
- *   - reminders: requires reminders.list; slackdump archive does not call it.
- *   - dm_read_states: conversations.info last_read/unread_count_display is
- *     stripped from archived channel DATA blobs.
+ *   - stars: `stars.list` — slackdump defines CHUNK type 8 STARRED_ITEMS but
+ *     archive mode never emits chunks of that type.
+ *   - user_groups: `usergroups.list` — not called in archive mode.
+ *   - reminders: `reminders.list` — not called in archive mode.
+ *   - dm_read_states: `conversations.info` — archived channel DATA blobs
+ *     strip `last_read`/`unread_count_display`.
  *
- * These four streams emit SKIP_RESULT at runtime with reason "slackdump does
- * not archive this". They are declared in the manifest so Layer-2 consumers
- * can plan around them and so an API-layer fallback (future) can fill them
- * without a manifest change.
+ * All four are reachable with the SAME session credential (`SLACK_TOKEN`
+ * xoxc token + `SLACK_COOKIE` `d` cookie) already captured for slackdump —
+ * "slackdump's CLI doesn't call this" was never a source-availability
+ * claim. See openspec/changes/complete-slack-bundled-connector-coverage
+ * for the evidence trail.
  *
+
  * Slackdump is AGPL-3.0; we spawn it as a subprocess (arms-length) rather
  * than importing it as a Go library. PDPP's codebase is not covered by the
  * copyleft under FSF's own "mere aggregation" interpretation.
@@ -73,19 +74,25 @@ import {
   buildChannelMembershipRecord,
   buildChannelRecord,
   buildChannelStatsRecord,
+  buildDmReadStateRecord,
   buildFileRecord,
   buildMessageAttachmentRecords,
   buildMessageRecord,
   buildReactionRecords,
+  buildReminderRecord,
+  buildStarRecord,
+  buildUserGroupRecord,
   buildUserRecord,
   buildWorkspaceRecord,
   extractMessageTimeRange,
+  parseBlob,
   parseMessageRow,
   selectCommittedMaxTs,
   toSlackTime,
   WORKSPACE_LIST_ARROW,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
+import { fetchAllReminders, fetchAllStars, fetchAllUserGroups, fetchDmReadStates } from "./slack-api.ts";
 import type {
   CanvasRow,
   ChannelRow,
@@ -459,7 +466,7 @@ interface SlackOpts {
   SKIP_FILES: boolean;
 }
 
-export const SLACK_RETRYABLE_FAILURE_RE = /ECONN|ETIMEDOUT|timeout|slackdump_exit_6/i;
+export const SLACK_RETRYABLE_FAILURE_RE = /ECONN|ETIMEDOUT|timeout|slackdump_exit_6|slack_rate_limited/i;
 
 function extractCredentials(credentials: Record<string, string>): SlackCredentials {
   const workspace = credentials.SLACK_WORKSPACE;
@@ -770,12 +777,17 @@ function messageFamilyRequestedOnly(requested: CollectContext["requested"]): Col
 }
 
 async function mergeScopedMessageArchivePasses(deps: {
+  credentials: SlackCredentials;
   messageResult: MessagesPassResult;
   scopedArchives: readonly SelectedScopedArchive[];
   state: CollectContext["state"];
   streamDeps: StreamDeps;
 }): Promise<MessagesPassResult> {
   let merged = deps.messageResult;
+  // Message-family only: this pass merges scoped-archive resume results for
+  // messages/reactions/message_attachments. stars/user_groups/reminders/
+  // dm_read_states are never in this filtered `requested` set, so
+  // `deps.credentials` is threaded for type consistency but unused here.
   const requested = messageFamilyRequestedOnly(deps.streamDeps.requested);
   for (const archive of deps.scopedArchives) {
     if (!existsSync(archive.paths.sqlitePath)) {
@@ -785,7 +797,7 @@ async function mergeScopedMessageArchivePasses(deps: {
     try {
       merged = mergeMessagesPassResults(
         merged,
-        await runRequestedStreams({ ...deps.streamDeps, db: scopedDb, requested }, deps.state, {
+        await runRequestedStreams({ ...deps.streamDeps, db: scopedDb, requested }, deps.state, deps.credentials, {
           allowLegacyMessageCursorFallback: false,
           ignoreMessageChannelCursors: false,
         })
@@ -1485,41 +1497,75 @@ export async function runCanvasesStream(deps: StreamDeps): Promise<void> {
   await declareListConsidered(deps, "canvases", canvasRows.length);
 }
 
-export const UNAVAILABLE_STREAMS: ReadonlyArray<{ name: string; reason: string }> = [
-  {
-    name: "stars",
-    reason: "slackdump does not archive starred/saved items (stars.list is not called in archive mode)",
-  },
-  {
-    name: "user_groups",
-    reason: "slackdump does not archive user groups (usergroups.list is not called in archive mode)",
-  },
-  {
-    name: "reminders",
-    reason: "slackdump does not archive reminders (reminders.list is not called in archive mode)",
-  },
-  {
-    name: "dm_read_states",
-    reason: "slackdump archive strips last_read / unread_count_display from channel data",
-  },
-];
+/**
+ * `stars`, `user_groups`, `reminders`, `dm_read_states` are not producible
+ * from the slackdump archive (see `slack-api.ts` header). They collect via
+ * direct Slack Web API calls using the same session credential the
+ * connector already captured for slackdump.
+ */
+export async function runStarsStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
+  const items = await fetchAllStars(token, cookie);
+  for (const item of items) {
+    await deps.emitRecord("stars", buildStarRecord(item));
+  }
+  await declareListConsidered(deps, "stars", items.length);
+}
+
+export async function runUserGroupsStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
+  const groups = await fetchAllUserGroups(token, cookie);
+  for (const g of groups) {
+    await deps.emitRecord("user_groups", buildUserGroupRecord(g));
+  }
+  await declareListConsidered(deps, "user_groups", groups.length);
+}
+
+export async function runRemindersStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
+  const reminders = await fetchAllReminders(token, cookie);
+  for (const r of reminders) {
+    await deps.emitRecord("reminders", buildReminderRecord(r));
+  }
+  await declareListConsidered(deps, "reminders", reminders.length);
+}
 
 /**
- * Streams declared in the manifest for Layer-2 completeness but NOT
- * realizable from a slackdump archive today. If a caller requests them we
- * emit SKIP_RESULT so the run completes cleanly without spoofing empty data.
+ * DM/MPIM channel IDs from this run's slackdump archive. Read directly
+ * (not reused from `runChannelsStream`'s pass) so `dm_read_states` does not
+ * depend on `channels` also being requested this run.
  */
-function emitUnavailableStreams(requested: CollectContext["requested"], emit: CollectContext["emit"]): void {
-  for (const s of UNAVAILABLE_STREAMS) {
-    if (requested.has(s.name)) {
-      emit({
-        type: "SKIP_RESULT",
-        stream: s.name,
-        reason: "not_available",
-        message: s.reason,
-      });
+function currentDmMpimChannelIds(db: DatabaseSync): string[] {
+  const rows = safeAll<ChannelRow>(
+    db,
+    `
+    SELECT c.ID AS id, c.DATA AS data
+    FROM CHANNEL c
+    JOIN (SELECT ID, MAX(CHUNK_ID) AS mx FROM CHANNEL GROUP BY ID) m
+      ON m.ID = c.ID AND m.mx = c.CHUNK_ID
+  `
+  );
+  const ids: string[] = [];
+  for (const r of rows) {
+    const d = parseBlob(r.data);
+    if (d.is_im || d.is_mpim) {
+      ids.push(r.id);
     }
   }
+  return ids.sort();
+}
+
+/**
+ * Scoped to `is_im`/`is_mpim` channel IDs — NOT the full channel inventory.
+ * `conversations.info` is a per-channel call (Tier 3), and read-state is
+ * specifically a DM/MPIM concept; sweeping every public/private channel
+ * would multiply calls with no stream-relevant payoff. See design.md
+ * Decision 3.
+ */
+export async function runDmReadStatesStream(deps: StreamDeps, token: string, cookie: string): Promise<void> {
+  const dmChannelIds = currentDmMpimChannelIds(deps.db);
+  const states = await fetchDmReadStates(token, cookie, dmChannelIds);
+  for (const state of states) {
+    await deps.emitRecord("dm_read_states", buildDmReadStateRecord(state, deps.emittedAt));
+  }
+  await declareListConsidered(deps, "dm_read_states", states.length);
 }
 
 interface StateEmitDeps {
@@ -1570,6 +1616,10 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
     "files",
     "canvases",
     "workspace",
+    "stars",
+    "user_groups",
+    "reminders",
+    "dm_read_states",
   ]) {
     if (deps.requested.has(stream)) {
       const cursor: Record<string, unknown> = { synced_at: nowIso() };
@@ -1664,6 +1714,7 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
 async function runRequestedStreams(
   deps: StreamDeps,
   state: CollectContext["state"],
+  credentials: SlackCredentials,
   options: { allowLegacyMessageCursorFallback?: boolean; ignoreMessageChannelCursors?: boolean } = {}
 ): Promise<MessagesPassResult> {
   if (deps.requested.has("workspace")) {
@@ -1700,6 +1751,22 @@ async function runRequestedStreams(
   if (deps.requested.has("canvases")) {
     deps.progress("Slack: emitting canvases", { stream: "canvases" });
     await runCanvasesStream(deps);
+  }
+  if (deps.requested.has("stars")) {
+    deps.progress("Slack: emitting stars", { stream: "stars" });
+    await runStarsStream(deps, credentials.token, credentials.cookie);
+  }
+  if (deps.requested.has("user_groups")) {
+    deps.progress("Slack: emitting user groups", { stream: "user_groups" });
+    await runUserGroupsStream(deps, credentials.token, credentials.cookie);
+  }
+  if (deps.requested.has("reminders")) {
+    deps.progress("Slack: emitting reminders", { stream: "reminders" });
+    await runRemindersStream(deps, credentials.token, credentials.cookie);
+  }
+  if (deps.requested.has("dm_read_states")) {
+    deps.progress("Slack: emitting DM read states", { stream: "dm_read_states" });
+    await runDmReadStatesStream(deps, credentials.token, credentials.cookie);
   }
   return result;
 }
@@ -1821,20 +1888,24 @@ if (isMainModule(import.meta.url)) {
         await emitMissingChannelDiagnostic(emit, reconciledSourceCache.missingChannelIds);
       }
 
-      let messageResult = await runRequestedStreams(deps, state, {
-        allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
-        ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
-      });
+      let messageResult = await runRequestedStreams(
+        deps,
+        state,
+        { workspace, token, cookie },
+        {
+          allowLegacyMessageCursorFallback: isUnscopedMessageBoundary,
+          ignoreMessageChannelCursors: Boolean(msgResFilter && msgResFilter.size > 0),
+        }
+      );
       if (messageFamilyRequested && isUnscopedMessageBoundary && reconciledSourceCache.scopedArchives.length > 0) {
         messageResult = await mergeScopedMessageArchivePasses({
+          credentials: { workspace, token, cookie },
           messageResult,
           scopedArchives: reconciledSourceCache.scopedArchives,
           state,
           streamDeps: deps,
         });
       }
-
-      emitUnavailableStreams(requested, emit);
 
       // Drop fingerprint entries for IDs that disappeared from the source
       // since the prior run on streams we actually requested. Streams the

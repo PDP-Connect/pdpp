@@ -179,8 +179,9 @@ test(
 test(
   'enrollment is a no-op for connectors whose manifest is manual or background-unsafe',
   withTmpDb(async () => {
-    // Reddit currently ships as background_safe=false (browser auth), so
-    // its row must not appear even if a putative env existed.
+    // Reddit ships recommended_mode=manual (background_safe=true only
+    // permits an explicit owner-created schedule, not boot auto-enroll),
+    // so its row must not appear even if a putative env existed.
     const reddit = readManifest('reddit');
     await registerConnector(reddit);
     const controller = createController({});
@@ -193,5 +194,37 @@ test(
     assert.equal(summary.enrolled, 0);
     const schedule = await controller.getSchedule(reddit.connector_id);
     assert.equal(schedule, null);
+  }),
+);
+
+test(
+  'reddit manifest still does not auto-enroll but accepts an explicit owner schedule',
+  withTmpDb(async () => {
+    // Reddit ships background_safe=true (session persists in the profile
+    // after first login), so it must stay out of boot auto-enrollment
+    // (recommended_mode=manual) while still accepting an explicit
+    // owner-created schedule via the same opt-in path proven for Amazon.
+    const reddit = readManifest('reddit');
+    assert.equal(reddit.capabilities.refresh_policy.recommended_mode, 'manual');
+    assert.equal(reddit.capabilities.refresh_policy.background_safe, true);
+    await registerConnector(reddit);
+    const controller = createController({});
+    const summary = await autoEnrollEligibleSchedules({
+      controller,
+      env: { REDDIT_USERNAME: 'u', REDDIT_PASSWORD: 'p' },
+      listConnectors: buildListConnectors(),
+    });
+    assert.equal(summary.enrolled, 0, 'manual-default connectors never auto-enroll on boot');
+    assert.equal(await controller.getSchedule(reddit.connector_id), null);
+
+    const result = await controller.upsertSchedule(reddit.connector_id, {
+      enabled: true,
+      interval_seconds: 21600,
+    });
+    assert.equal(result.schedule.enabled, true);
+    assert.equal(result.schedule.ineligibility_reason ?? null, null);
+    const schedule = await controller.getSchedule(reddit.connector_id);
+    assert.equal(schedule.enabled, true);
+    assert.equal(schedule.interval_seconds, 21600);
   }),
 );

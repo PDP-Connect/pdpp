@@ -588,11 +588,11 @@ test('controller.listSchedules projects persisted history when no active run is 
 });
 
 test('controller.listSchedules suppresses stale error code and next_due_at when manifest has gated the schedule', async () => {
-  // Reddit-shape regression: an enabled schedule row exists from before
-  // the connector's manifest was tightened to `background_safe: false`.
-  // The persisted history carries `schedule.gave_up` and `not_ready`
-  // entries from the doomed automatic runs the runtime attempted before
-  // the gate landed. After gating:
+  // USAA-shape regression: an enabled schedule row exists from before the
+  // connector's manifest was tightened to `background_safe: false`. The
+  // persisted history carries `schedule.gave_up` and `not_ready` entries
+  // from the doomed automatic runs the runtime attempted before the gate
+  // landed. After gating:
   //   - the scheduler manager filters the row out of the runnable set;
   //   - `ineligibility_reason` reflects the current gate;
   //   - `last_error_code` MUST NOT continue to advertise the old
@@ -607,21 +607,23 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
   const { closeDb } = await import('../server/db.js');
   const { readFileSync } = await import('node:fs');
   const REFERENCE_IMPL_DIR = join(__dirname, '..');
-  // Use the polyfill Reddit manifest directly — it is the live shape
-  // the manifest reconcile installs at startup, with refresh_policy
+  // Use the polyfill USAA manifest directly — it is the live shape the
+  // manifest reconcile installs at startup, with refresh_policy
   // {recommended_mode: 'manual', background_safe: false}. Pinning the
-  // test to the shipped manifest also fails closed if a future edit
-  // ever relaxes Reddit's policy back to automatic without owner intent.
+  // test to a shipped manifest also fails closed if a future edit ever
+  // relaxes USAA's policy back to automatic without owner intent. (Reddit
+  // and Amazon are no longer usable here: both now declare
+  // background_safe: true for owner opt-in scheduling.)
   const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyfill-connectors', 'manifests');
-  const redditManifest = JSON.parse(
-    readFileSync(join(POLYFILL_MANIFESTS_DIR, 'reddit.json'), 'utf8'),
+  const gatedManifest = JSON.parse(
+    readFileSync(join(POLYFILL_MANIFESTS_DIR, 'usaa.json'), 'utf8'),
   );
   // Schedule rows and history are keyed by the canonical connector key. The
   // store-direct seeds below bypass the controller, so they must use the
   // canonical key themselves to match what listSchedules/getSchedule read.
   // See canonicalize-connector-keys.
-  const canonicalRedditId = canonicalConnectorKey(redditManifest.connector_id);
-  const ownerPassword = 'scheduler-doctor-reddit-gate-pw';
+  const canonicalGatedId = canonicalConnectorKey(gatedManifest.connector_id);
+  const ownerPassword = 'scheduler-doctor-gated-connector-pw';
 
   const server = await startServer({
     quiet: true,
@@ -636,7 +638,7 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     const registerResp = await fetch(`${asUrl}/connectors`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(redditManifest),
+      body: JSON.stringify(gatedManifest),
     });
     assert.equal(registerResp.status, 201);
 
@@ -648,7 +650,7 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     const now = new Date().toISOString();
     await Promise.resolve(
       store.createSchedule({
-        connector_id: canonicalRedditId,
+        connector_id: canonicalGatedId,
         interval_seconds: 1800,
         jitter_seconds: 0,
         enabled: true,
@@ -667,16 +669,16 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     const skipCompletedAt = new Date(Date.now() - 60_000).toISOString();
     await Promise.resolve(
       store.appendRunHistory({
-        connectorId: canonicalRedditId,
-        source: { kind: 'connector', id: canonicalRedditId },
+        connectorId: canonicalGatedId,
+        source: { kind: 'connector', id: canonicalGatedId },
         status: 'failed',
         recordsEmitted: 0,
         reportedRecordsEmitted: 0,
         checkpointSummary: null,
         knownGaps: [],
         connectorError: null,
-        runId: 'run_test_reddit_failed',
-        traceId: 'trace_test_reddit_failed',
+        runId: 'run_test_gated_failed',
+        traceId: 'trace_test_gated_failed',
         failureReason: 'browser_runtime_not_configured',
         terminalReason: 'browser_runtime_not_configured',
         startedAt: olderFailedStartedAt,
@@ -686,8 +688,8 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     );
     await Promise.resolve(
       store.appendRunHistory({
-        connectorId: canonicalRedditId,
-        source: { kind: 'connector', id: canonicalRedditId },
+        connectorId: canonicalGatedId,
+        source: { kind: 'connector', id: canonicalGatedId },
         status: 'skipped',
         recordsEmitted: 0,
         reportedRecordsEmitted: null,
@@ -706,20 +708,20 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     );
     await Promise.resolve(
       store.upsertLastRunTime(
-        canonicalRedditId,
+        canonicalGatedId,
         Date.parse(skipCompletedAt),
         new Date().toISOString(),
       ),
     );
 
     const schedules = await server.controller.listSchedules();
-    assert.equal(schedules.length, 1, 'reddit schedule row is listed');
-    const reddit = schedules[0];
+    assert.equal(schedules.length, 1, 'gated connector schedule row is listed');
+    const gated = schedules[0];
 
-    assert.equal(reddit.connector_id, canonicalRedditId);
-    assert.equal(reddit.enabled, true, 'persisted operator intent is preserved');
+    assert.equal(gated.connector_id, canonicalGatedId);
+    assert.equal(gated.enabled, true, 'persisted operator intent is preserved');
     assert.match(
-      reddit.ineligibility_reason ?? '',
+      gated.ineligibility_reason ?? '',
       /background-safe|manual/,
       'gated by manifest refresh_policy',
     );
@@ -729,28 +731,28 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     // the prior automatic regime must not continue to advertise itself
     // as the current failure mode.
     assert.equal(
-      reddit.last_error_code,
+      gated.last_error_code,
       null,
       'gated row does not surface stale historical error code as current state',
     );
     assert.equal(
-      reddit.next_due_at,
+      gated.next_due_at,
       null,
       'gated row will not fire automatically; next_due_at is fiction',
     );
 
     // Historical anchors stay truthful — they describe events that
     // really happened, regardless of whether the row can fire again.
-    assert.equal(reddit.last_finished_at, skipCompletedAt);
+    assert.equal(gated.last_finished_at, skipCompletedAt);
     assert.equal(
-      reddit.last_started_at,
+      gated.last_started_at,
       olderFailedStartedAt,
       'last terminal run that actually started is preserved',
     );
-    assert.equal(reddit.last_successful_at, null);
+    assert.equal(gated.last_successful_at, null);
 
     // Single-row read must agree.
-    const single = await server.controller.getSchedule(canonicalRedditId);
+    const single = await server.controller.getSchedule(canonicalGatedId);
     assert.ok(single);
     assert.equal(single.last_error_code, null);
     assert.equal(single.next_due_at, null);

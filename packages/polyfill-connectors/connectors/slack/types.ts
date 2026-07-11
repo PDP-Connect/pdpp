@@ -187,3 +187,73 @@ export interface TimeRangeLike {
   from?: string | null;
   to?: string | null;
 }
+
+// ─── Slack Web API response shapes (direct-API gap streams) ────────────
+// stars/user_groups/reminders/dm_read_states are not producible from the
+// slackdump archive (see openspec/changes/complete-slack-bundled-connector-coverage);
+// these shapes mirror the JSON `rusq/slack`'s Go client parses for the same
+// endpoints, permissive on optional fields per Slack's API conventions.
+
+export interface SlackApiError {
+  error?: string;
+  ok: boolean;
+}
+
+export interface SlackStarItem {
+  channel?: string;
+  date_create?: number;
+  file?: { id?: string };
+  message?: { ts?: string; user?: string };
+  type?: string;
+}
+
+export interface SlackStarsListResponse extends SlackApiError {
+  items?: SlackStarItem[];
+  response_metadata?: { next_cursor?: string };
+}
+
+export interface SlackUserGroup {
+  auto_type?: string | null;
+  channel_count?: number;
+  created_by?: string;
+  date_create?: number;
+  date_delete?: number;
+  date_update?: number;
+  description?: string;
+  handle?: string;
+  id: string;
+  is_external?: boolean;
+  is_subteam?: boolean;
+  name?: string;
+  prefs?: { channels?: string[] };
+  team_id?: string;
+  user_count?: number;
+  users?: string[];
+}
+
+export interface SlackUserGroupsListResponse extends SlackApiError {
+  usergroups?: SlackUserGroup[];
+}
+
+export interface SlackReminder {
+  complete_ts?: number;
+  creator?: string;
+  id: string;
+  recurring?: boolean;
+  text?: string;
+  time?: number;
+  user?: string;
+}
+
+export interface SlackRemindersListResponse extends SlackApiError {
+  reminders?: SlackReminder[];
+}
+
+export interface SlackConversationInfoResponse extends SlackApiError {
+  channel?: {
+    id: string;
+    last_read?: string;
+    unread_count?: number;
+    unread_count_display?: number;
+  };
+}

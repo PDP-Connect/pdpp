@@ -70,6 +70,26 @@ const VIRTUAL_KEY_CODES: Record<string, number> = {
   PageDown: 34,
 };
 
+type WireInput = Record<string, any>;
+type MouseCommandBuilder = (input: { x: number; y: number; button: string }) => CdpCommand[];
+
+function mouseCommand(type: string, x: number, y: number, button: string, clickCount = 1): CdpCommand {
+  return { method: "Input.dispatchMouseEvent", params: { type, x, y, button, clickCount } };
+}
+
+const MOUSE_COMMANDS: Record<string, MouseCommandBuilder> = {
+  mousemove: ({ x, y }) => [{ method: "Input.dispatchMouseEvent", params: { type: "mouseMoved", x, y, button: "none" } }],
+  click: ({ x, y, button }) => [mouseCommand("mousePressed", x, y, button), mouseCommand("mouseReleased", x, y, button)],
+  dblclick: ({ x, y }) => [
+    mouseCommand("mousePressed", x, y, "left"),
+    mouseCommand("mouseReleased", x, y, "left"),
+    mouseCommand("mousePressed", x, y, "left", 2),
+    mouseCommand("mouseReleased", x, y, "left", 2),
+  ],
+  mousedown: ({ x, y, button }) => [mouseCommand("mousePressed", x, y, button)],
+  mouseup: ({ x, y, button }) => [mouseCommand("mouseReleased", x, y, button)],
+};
+
 function invalidInput(message: string): CodedError {
   const err: CodedError = new Error(message);
   err.code = "invalid_input";
@@ -88,53 +108,30 @@ function ensureNumber(value: unknown, label: string): number {
  * Map a `mouse` wire event to CDP mouse commands. Callers pass the already
  * shape-validated event; this focuses purely on the action dispatch.
  */
-// biome-ignore lint/suspicious/noExplicitAny: receives the untrusted wire event already validated as an object by the caller.
-function mapMouseEventToCdp(event: any): CdpCommand[] {
+function mapMouseEventToCdp(event: WireInput): CdpCommand[] {
   const x = ensureNumber(event.x, "x");
   const y = ensureNumber(event.y, "y");
   const button = BUTTON_MAP[event.button ?? 0] ?? "left";
-  switch (event.action) {
-    case "mousemove":
-      return [{ method: "Input.dispatchMouseEvent", params: { type: "mouseMoved", x, y, button: "none" } }];
-    case "click":
-      return [
-        { method: "Input.dispatchMouseEvent", params: { type: "mousePressed", x, y, button, clickCount: 1 } },
-        { method: "Input.dispatchMouseEvent", params: { type: "mouseReleased", x, y, button, clickCount: 1 } },
-      ];
-    case "dblclick":
-      return [
-        {
-          method: "Input.dispatchMouseEvent",
-          params: { type: "mousePressed", x, y, button: "left", clickCount: 1 },
-        },
-        {
-          method: "Input.dispatchMouseEvent",
-          params: { type: "mouseReleased", x, y, button: "left", clickCount: 1 },
-        },
-        {
-          method: "Input.dispatchMouseEvent",
-          params: { type: "mousePressed", x, y, button: "left", clickCount: 2 },
-        },
-        {
-          method: "Input.dispatchMouseEvent",
-          params: { type: "mouseReleased", x, y, button: "left", clickCount: 2 },
-        },
-      ];
-    case "mousedown":
-      return [{ method: "Input.dispatchMouseEvent", params: { type: "mousePressed", x, y, button, clickCount: 1 } }];
-    case "mouseup":
-      return [{ method: "Input.dispatchMouseEvent", params: { type: "mouseReleased", x, y, button, clickCount: 1 } }];
-    default:
-      throw invalidInput(`unknown mouse action: ${event.action}`);
-  }
+  const buildCommands = MOUSE_COMMANDS[event.action];
+  if (!buildCommands) throw invalidInput(`unknown mouse action: ${event.action}`);
+  return buildCommands({ x, y, button });
 }
 
 /**
  * Map a `keyboard` wire event to a CDP key command. Callers pass the already
  * shape-validated event; this focuses purely on the action dispatch.
  */
-// biome-ignore lint/suspicious/noExplicitAny: receives the untrusted wire event already validated as an object by the caller.
-function mapKeyboardEventToCdp(event: any): CdpCommand[] {
+function virtualKeyCodeParams(vk: number | undefined) {
+  return vk ? { windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk } : {};
+}
+
+function keyboardType(action: unknown, isPrintable: boolean): string {
+  if (action === "keydown") return isPrintable ? "keyDown" : "rawKeyDown";
+  if (action === "keyup") return "keyUp";
+  throw invalidInput(`unknown keyboard action: ${action}`);
+}
+
+function mapKeyboardEventToCdp(event: WireInput): CdpCommand[] {
   if (typeof event.key !== "string" || event.key.length === 0) {
     throw invalidInput("keyboard.key is required");
   }
@@ -142,37 +139,54 @@ function mapKeyboardEventToCdp(event: any): CdpCommand[] {
   const modifiers = Number.isFinite(event.modifiers) ? Number(event.modifiers) : 0;
   const code = typeof event.code === "string" ? event.code : undefined;
   const isPrintable = event.key.length === 1;
-  if (event.action === "keydown") {
-    return [
-      {
-        method: "Input.dispatchKeyEvent",
-        params: {
-          type: isPrintable ? "keyDown" : "rawKeyDown",
-          key: event.key,
-          code,
-          modifiers,
-          ...(isPrintable ? { text: event.key } : {}),
-          ...(vk ? { windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk } : {}),
-        },
-      },
-    ];
-  }
-  if (event.action === "keyup") {
-    return [
-      {
-        method: "Input.dispatchKeyEvent",
-        params: {
-          type: "keyUp",
-          key: event.key,
-          code,
-          modifiers,
-          ...(vk ? { windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk } : {}),
-        },
-      },
-    ];
-  }
-  throw invalidInput(`unknown keyboard action: ${event.action}`);
+  const type = keyboardType(event.action, isPrintable);
+  const text = type === "keyDown" ? { text: event.key } : {};
+  return [{ method: "Input.dispatchKeyEvent", params: { type, key: event.key, code, modifiers, ...text, ...virtualKeyCodeParams(vk) } }];
 }
+
+function mapTouchEventToCdp(event: WireInput): CdpCommand[] {
+  const x = ensureNumber(event.x, "x");
+  const y = ensureNumber(event.y, "y");
+  const id = Number.isFinite(event.id) ? Number(event.id) : 1;
+  const cdpType = TOUCH_TYPE_MAP[event.action] ?? null;
+  if (!cdpType) throw invalidInput(`unknown touch action: ${event.action}`);
+  const touchPoints = cdpType === "touchEnd" ? [] : [{ x, y, id }];
+  return [{ method: "Input.dispatchTouchEvent", params: { type: cdpType, touchPoints } }];
+}
+
+function mapScrollEventToCdp(event: WireInput): CdpCommand[] {
+  const x = ensureNumber(event.x, "x");
+  const y = ensureNumber(event.y, "y");
+  const deltaX = ensureNumber(event.deltaX, "deltaX");
+  const deltaY = ensureNumber(event.deltaY, "deltaY");
+  return [{ method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x, y, deltaX, deltaY } }];
+}
+
+function mapPasteEventToCdp(event: WireInput): CdpCommand[] {
+  if (typeof event.text !== "string") throw invalidInput("paste.text must be a string");
+  return [{ method: "Input.insertText", params: { text: event.text } }];
+}
+
+function mapViewportEventToCdp(event: WireInput): CdpCommand[] {
+  const width = ensureNumber(event.width, "width");
+  const height = ensureNumber(event.height, "height");
+  const deviceScaleFactor = Number.isFinite(event.deviceScaleFactor) ? Number(event.deviceScaleFactor) : 1;
+  const mobile = event.mobile === true;
+  return [
+    { method: "Emulation.setDeviceMetricsOverride", params: { width, height, deviceScaleFactor, mobile } },
+    { method: "Page.stopScreencast", params: undefined },
+    { method: "Page.startScreencast", params: buildScreencastParams({ viewport: { width, height } }) },
+  ];
+}
+
+const INPUT_EVENT_MAPPERS: Record<string, (event: WireInput) => CdpCommand[]> = {
+  mouse: mapMouseEventToCdp,
+  keyboard: mapKeyboardEventToCdp,
+  touch: mapTouchEventToCdp,
+  scroll: mapScrollEventToCdp,
+  paste: mapPasteEventToCdp,
+  viewport: mapViewportEventToCdp,
+};
 
 /**
  * Translate a wire input event into a list of CDP commands. Pure function
@@ -180,74 +194,13 @@ function mapKeyboardEventToCdp(event: any): CdpCommand[] {
  *
  * `event` is untrusted wire JSON; the function validates shape at runtime.
  */
-// biome-ignore lint/suspicious/noExplicitAny: `event` is untrusted wire JSON; every field is validated at runtime before use.
 export function mapInputEventToCdp(event: any): CdpCommand[] {
   if (!event || typeof event !== "object") {
     throw invalidInput("input event must be an object");
   }
-  switch (event.type) {
-    case "mouse":
-      return mapMouseEventToCdp(event);
-
-    case "keyboard":
-      return mapKeyboardEventToCdp(event);
-
-    case "touch": {
-      const x = ensureNumber(event.x, "x");
-      const y = ensureNumber(event.y, "y");
-      const id = Number.isFinite(event.id) ? Number(event.id) : 1;
-      const action = event.action;
-      const cdpType = TOUCH_TYPE_MAP[action] ?? null;
-      if (!cdpType) {
-        throw invalidInput(`unknown touch action: ${event.action}`);
-      }
-      return [
-        {
-          method: "Input.dispatchTouchEvent",
-          params: {
-            type: cdpType,
-            touchPoints: cdpType === "touchEnd" ? [] : [{ x, y, id }],
-          },
-        },
-      ];
-    }
-
-    case "scroll": {
-      const x = ensureNumber(event.x, "x");
-      const y = ensureNumber(event.y, "y");
-      const deltaX = ensureNumber(event.deltaX, "deltaX");
-      const deltaY = ensureNumber(event.deltaY, "deltaY");
-      return [{ method: "Input.dispatchMouseEvent", params: { type: "mouseWheel", x, y, deltaX, deltaY } }];
-    }
-
-    case "paste": {
-      if (typeof event.text !== "string") {
-        throw invalidInput("paste.text must be a string");
-      }
-      return [{ method: "Input.insertText", params: { text: event.text } }];
-    }
-
-    case "viewport": {
-      const width = ensureNumber(event.width, "width");
-      const height = ensureNumber(event.height, "height");
-      const deviceScaleFactor = Number.isFinite(event.deviceScaleFactor) ? Number(event.deviceScaleFactor) : 1;
-      const mobile = event.mobile === true;
-      return [
-        {
-          method: "Emulation.setDeviceMetricsOverride",
-          params: { width, height, deviceScaleFactor, mobile },
-        },
-        { method: "Page.stopScreencast", params: undefined },
-        {
-          method: "Page.startScreencast",
-          params: buildScreencastParams({ viewport: { width, height } }),
-        },
-      ];
-    }
-
-    default:
-      throw invalidInput(`unknown input event type: ${event.type}`);
-  }
+  const mapEvent = INPUT_EVENT_MAPPERS[event.type];
+  if (!mapEvent) throw invalidInput(`unknown input event type: ${event.type}`);
+  return mapEvent(event);
 }
 
 /** Screencast start parameters passed to `Page.startScreencast`. */

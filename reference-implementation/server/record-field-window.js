@@ -26,6 +26,20 @@ export const FIELD_WINDOW_DEFAULT_LIMIT = 4096;
 export const FIELD_WINDOW_MAX_LIMIT = 16384;
 export const FIELD_WINDOW_MAX_CONTEXT_CHARS = 8192;
 
+const FIELD_TYPE_CLASSES = new Map([
+  ['text', 'string'],
+  ['string', 'string'],
+  ['integer', 'number'],
+  ['real', 'number'],
+  ['number', 'number'],
+  ['true', 'boolean'],
+  ['false', 'boolean'],
+  ['boolean', 'boolean'],
+  ['null', 'null'],
+  ['object', 'object'],
+  ['array', 'array'],
+]);
+
 /**
  * Typed error for field-window reads. `.code` is surfaced verbatim by the
  * route and mapped to an HTTP status; the MCP adapter forwards the same code so
@@ -80,28 +94,33 @@ export function sqliteFieldJsonPath(fieldPath) {
  * inputs are rejected rather than silently coerced, because a silently shifted
  * window is a correctness trap for a paging client.
  */
+function normalizeOffset(offsetChars) {
+  if (offsetChars === undefined || offsetChars === null) {
+    return 0;
+  }
+  if (!Number.isInteger(offsetChars) || offsetChars < 0) {
+    throw fieldWindowError('invalid_window', 'offset_chars must be a non-negative integer', 400);
+  }
+  return offsetChars;
+}
+
+function normalizeLimit(limitChars) {
+  if (limitChars === undefined || limitChars === null) {
+    return { limit: FIELD_WINDOW_DEFAULT_LIMIT, limitClamped: false };
+  }
+  if (!Number.isInteger(limitChars) || limitChars <= 0) {
+    throw fieldWindowError('invalid_window', 'limit_chars must be a positive integer', 400);
+  }
+  const limitClamped = limitChars > FIELD_WINDOW_MAX_LIMIT;
+  return {
+    limit: limitClamped ? FIELD_WINDOW_MAX_LIMIT : limitChars,
+    limitClamped,
+  };
+}
+
 export function clampWindowBounds({ offsetChars, limitChars } = {}) {
-  let offset = 0;
-  if (offsetChars !== undefined && offsetChars !== null) {
-    if (!Number.isInteger(offsetChars) || offsetChars < 0) {
-      throw fieldWindowError('invalid_window', 'offset_chars must be a non-negative integer', 400);
-    }
-    offset = offsetChars;
-  }
-
-  let limit = FIELD_WINDOW_DEFAULT_LIMIT;
-  let limitClamped = false;
-  if (limitChars !== undefined && limitChars !== null) {
-    if (!Number.isInteger(limitChars) || limitChars <= 0) {
-      throw fieldWindowError('invalid_window', 'limit_chars must be a positive integer', 400);
-    }
-    limit = limitChars;
-    if (limit > FIELD_WINDOW_MAX_LIMIT) {
-      limit = FIELD_WINDOW_MAX_LIMIT;
-      limitClamped = true;
-    }
-  }
-
+  const offset = normalizeOffset(offsetChars);
+  const { limit, limitClamped } = normalizeLimit(limitChars);
   return { offset, limit, limitClamped };
 }
 
@@ -116,19 +135,46 @@ function assertContextChars(value, label) {
   return value;
 }
 
+function hasValue(value) {
+  return value !== undefined && value !== null;
+}
+
+function assertCompatibleSelectorParams(params, hasQParam) {
+  const hasContextParams = params.before_chars !== undefined || params.after_chars !== undefined;
+  if (hasContextParams && !hasQParam) {
+    throw fieldWindowError('invalid_window', 'before_chars and after_chars require q', 400);
+  }
+  if (hasQParam && hasValue(params.offset_chars)) {
+    throw fieldWindowError('invalid_window', 'q is exclusive with offset_chars', 400);
+  }
+}
+
+function assertQueryValue(query) {
+  if (typeof query !== 'string' || query.length === 0) {
+    throw fieldWindowError('invalid_window', 'q must be a non-empty string', 400);
+  }
+}
+
+function decideQueryLimit({ query, before, after, hasExplicitContext, hasExplicitLimit, boundedLimit, limitClamped }) {
+  const requestedLimit = hasExplicitLimit
+    ? boundedLimit
+    : hasExplicitContext
+      ? before + query.length + after
+      : FIELD_WINDOW_DEFAULT_LIMIT;
+  return {
+    limit: Math.min(requestedLimit, FIELD_WINDOW_MAX_LIMIT),
+    limitClamped: limitClamped || requestedLimit > FIELD_WINDOW_MAX_LIMIT,
+  };
+}
+
 /**
  * Normalize the field-window selector. Offset windows remain the default; a
  * `q` selector asks the storage backend to find the first match and return a
  * bounded context window without returning the full field to JS.
  */
 export function normalizeWindowSelector(params = {}) {
-  const hasQParam = params.q !== undefined && params.q !== null;
-  if ((params.before_chars !== undefined || params.after_chars !== undefined) && !hasQParam) {
-    throw fieldWindowError('invalid_window', 'before_chars and after_chars require q', 400);
-  }
-  if (hasQParam && params.offset_chars !== undefined && params.offset_chars !== null) {
-    throw fieldWindowError('invalid_window', 'q is exclusive with offset_chars', 400);
-  }
+  const hasQParam = hasValue(params.q);
+  assertCompatibleSelectorParams(params, hasQParam);
 
   const { offset, limit: boundedLimit, limitClamped } = clampWindowBounds({
     offsetChars: params.offset_chars,
@@ -138,17 +184,19 @@ export function normalizeWindowSelector(params = {}) {
   if (!hasQParam) {
     return { mode: 'offset', offset, limit: boundedLimit, limitClamped };
   }
-  if (typeof params.q !== 'string' || params.q.length === 0) {
-    throw fieldWindowError('invalid_window', 'q must be a non-empty string', 400);
-  }
+  assertQueryValue(params.q);
 
   const before = assertContextChars(params.before_chars, 'before_chars');
   const after = assertContextChars(params.after_chars, 'after_chars');
-  const explicitContext = params.before_chars !== undefined || params.after_chars !== undefined;
-  const requestedLimit = params.limit_chars === undefined || params.limit_chars === null
-    ? (explicitContext ? before + params.q.length + after : FIELD_WINDOW_DEFAULT_LIMIT)
-    : boundedLimit;
-  const effectiveLimit = Math.min(requestedLimit, FIELD_WINDOW_MAX_LIMIT);
+  const { limit, limitClamped: queryLimitClamped } = decideQueryLimit({
+    query: params.q,
+    before,
+    after,
+    hasExplicitContext: params.before_chars !== undefined || params.after_chars !== undefined,
+    hasExplicitLimit: hasValue(params.limit_chars),
+    boundedLimit,
+    limitClamped,
+  });
 
   return {
     mode: 'query',
@@ -156,8 +204,8 @@ export function normalizeWindowSelector(params = {}) {
     before,
     after,
     offset: 0,
-    limit: effectiveLimit,
-    limitClamped: limitClamped || requestedLimit > FIELD_WINDOW_MAX_LIMIT,
+    limit,
+    limitClamped: queryLimitClamped,
   };
 }
 
@@ -226,25 +274,7 @@ export function classifyFieldType(engineType) {
   if (engineType === null || engineType === undefined) {
     return 'absent';
   }
-  if (engineType === 'text' || engineType === 'string') {
-    return 'string';
-  }
-  if (engineType === 'integer' || engineType === 'real' || engineType === 'number') {
-    return 'number';
-  }
-  if (engineType === 'true' || engineType === 'false' || engineType === 'boolean') {
-    return 'boolean';
-  }
-  if (engineType === 'null') {
-    return 'null';
-  }
-  if (engineType === 'object') {
-    return 'object';
-  }
-  if (engineType === 'array') {
-    return 'array';
-  }
-  return 'other';
+  return FIELD_TYPE_CLASSES.get(engineType) ?? 'other';
 }
 
 /**

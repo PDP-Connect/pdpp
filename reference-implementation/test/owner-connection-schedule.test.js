@@ -397,30 +397,32 @@ test('owner-agent connector-only action rejects two active connections with type
 
 test('owner-agent resume is blocked when the connector refresh policy forbids automation', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
-    // The packaged amazon manifest recommends manual refresh, so resuming
-    // (enabling) its schedule is rejected with the same eligibility semantics
-    // the cookie-authed surface enforces — proving the shared mutation path,
-    // not a cloned one.
-    const manifest = await registerConnector(asUrl, loadPackageManifest('amazon'));
+    // The packaged usaa manifest is background_safe:false (owner-present
+    // login required, no opt-in path), so resuming (enabling) its schedule
+    // is rejected with the same eligibility semantics the cookie-authed
+    // surface enforces — proving the shared mutation path, not a cloned
+    // one. (Amazon and Reddit no longer fit this case: both now declare
+    // background_safe:true and accept an explicit owner-enabled schedule.)
+    const manifest = await registerConnector(asUrl, loadPackageManifest('usaa'));
     const connectorKey = canonicalConnectorKey(manifest.connector_id);
     await seedInstance({
-      connectorInstanceId: 'cin_amazon_solo',
+      connectorInstanceId: 'cin_usaa_solo',
       connectorId: connectorKey,
       displayName: 'the owner personal',
       sourceBindingKey: 'the owner@example.com',
     });
-    await seedSchedule({ connectorInstanceId: 'cin_amazon_solo', connectorId: connectorKey, enabled: false });
+    await seedSchedule({ connectorInstanceId: 'cin_usaa_solo', connectorId: connectorKey, enabled: false });
 
     const ownerToken = await issueOwnerToken(asUrl);
     const { status, body } = await postSchedule(
       rsUrl,
       ownerToken,
-      '/v1/owner/connections/cin_amazon_solo/schedule/resume',
+      '/v1/owner/connections/cin_usaa_solo/schedule/resume',
     );
     assert.equal(status, 400);
     assert.equal(body?.error?.code, 'invalid_request');
     // Pause is still allowed (no eligibility gate on disabling).
-    assert.equal(scheduleEnabled('cin_amazon_solo'), false, 'resume must not have flipped the row');
+    assert.equal(scheduleEnabled('cin_usaa_solo'), false, 'resume must not have flipped the row');
   });
 });
 

@@ -212,27 +212,67 @@ function httpStatusForAuditError(err: unknown): number {
   return 500;
 }
 
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+type OwnerConnectionRenameAuditArgs = {
+  connectionId: string;
+  connectorKey?: string | null;
+  displayNameSupplied?: boolean;
+  error?: unknown;
+  labelStatus?: string | null;
+  ownerSubjectId?: string | null;
+  outcome: "succeeded" | "failed";
+};
+
+function buildOwnerConnectionRenameAuditError(error: unknown): Record<string, unknown> {
+  if (!error) {
+    return {};
+  }
+  const code = (error as { code?: unknown }).code;
+  return {
+    error: {
+      code: typeof code === "string" ? code : "api_error",
+      http_status: httpStatusForAuditError(error),
+    },
+  };
+}
+
+function buildOwnerConnectionRenameAuditData(
+  req: RouteRequest,
+  args: OwnerConnectionRenameAuditArgs,
+  actorKind: string,
+  clientId: string | null,
+  clientName: string | null
+): Record<string, unknown> {
+  return {
+    auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
+    actor_kind: actorKind,
+    client_id: clientId,
+    client_name: clientName,
+    connection_id: args.connectionId,
+    connector_key: args.connectorKey ?? null,
+    display_name_supplied: args.displayNameSupplied ?? true,
+    label_status: args.labelStatus ?? null,
+    operation: "rename_connection",
+    outcome: args.outcome,
+    target_resource: "connection",
+    ...buildOwnerConnectionRenameAuditError(args.error),
+  };
+}
+
 async function emitOwnerConnectionRenameAudit(
   ctx: MountOwnerConnectionsContext,
   req: RouteRequest,
   res: RouteResponse,
-  args: {
-    connectionId: string;
-    connectorKey?: string | null;
-    displayNameSupplied?: boolean;
-    error?: unknown;
-    labelStatus?: string | null;
-    ownerSubjectId?: string | null;
-    outcome: "succeeded" | "failed";
-  }
+  args: OwnerConnectionRenameAuditArgs
 ): Promise<void> {
   const trace = buildAuditTrace(ctx, req, res);
-  const clientId = typeof req.tokenInfo?.client_id === "string" ? req.tokenInfo.client_id : null;
-  const clientName = typeof req.tokenInfo?.client_name === "string" ? req.tokenInfo.client_name : null;
+  const clientId = stringOrNull(req.tokenInfo?.client_id);
+  const clientName = stringOrNull(req.tokenInfo?.client_name);
   const actorKind = auditActorKind(req);
-  const ownerSubjectId =
-    args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
-  const code = (args.error as { code?: unknown } | null)?.code;
+  const ownerSubjectId = args.ownerSubjectId ?? stringOrNull(req.tokenInfo?.subject_id);
   await ctx.emitSpineEvent({
     event_type: "owner_agent.connection.rename",
     trace_id: trace.trace_id,
@@ -246,27 +286,7 @@ async function emitOwnerConnectionRenameAudit(
     object_type: "connection",
     object_id: args.connectionId || "unknown_connection",
     status: args.outcome,
-    data: {
-      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
-      actor_kind: actorKind,
-      client_id: clientId,
-      client_name: clientName,
-      connection_id: args.connectionId,
-      connector_key: args.connectorKey ?? null,
-      display_name_supplied: args.displayNameSupplied ?? true,
-      label_status: args.labelStatus ?? null,
-      operation: "rename_connection",
-      outcome: args.outcome,
-      target_resource: "connection",
-      ...(args.error
-        ? {
-            error: {
-              code: typeof code === "string" ? code : "api_error",
-              http_status: httpStatusForAuditError(args.error),
-            },
-          }
-        : {}),
-    },
+    data: buildOwnerConnectionRenameAuditData(req, args, actorKind, clientId, clientName),
   });
 }
 
@@ -288,6 +308,66 @@ function buildOwnerConnectionRenameRequireOwner(ctx: MountOwnerConnectionsContex
     });
     ctx.pdppError(res, 403, "permission_error", "Owner token required");
   };
+}
+
+async function validateOwnerConnectionRename(
+  ctx: MountOwnerConnectionsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  connectionId: string
+): Promise<{ displayName: string } | null> {
+  const body = (req.body as Record<string, unknown> | null) || {};
+  const displayName = body.display_name;
+  // Validate at the boundary so a malformed request is a typed 400 before
+  // the store is touched, matching the `/_ref` PATCH behaviour and the
+  // contract's `display_name` body schema.
+  if (typeof displayName !== "string" || !displayName.trim()) {
+    const err = new Error("display_name must be a non-empty string") as Error & { code: string; param: string };
+    err.code = "invalid_request";
+    err.param = "display_name";
+    await emitOwnerConnectionRenameAudit(ctx, req, res, {
+      connectionId,
+      displayNameSupplied: Object.hasOwn(body, "display_name"),
+      error: err,
+      outcome: "failed",
+      ownerSubjectId: ctx.getOwnerTokenSubjectId(req),
+    });
+    ctx.pdppError(res, 400, "invalid_request", "display_name must be a non-empty string", "display_name");
+    return null;
+  }
+  return { displayName: displayName.trim() };
+}
+
+async function performOwnerConnectionRename(
+  ctx: MountOwnerConnectionsContext,
+  req: RouteRequest,
+  connectionId: string,
+  displayName: string
+): Promise<{ projected: Record<string, unknown>; ownerSubjectId: string }> {
+  const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
+  const store = ctx.createRequestConnectorInstanceStore();
+  const updated = await store.setDisplayName(connectionId, {
+    ownerSubjectId,
+    displayName,
+    updatedAt: ctx.now ? ctx.now() : new Date().toISOString(),
+  });
+  ctx.invalidateConnectorSummariesCache?.();
+  // Scoped, awaited dirty marking: display_name is durable summary
+  // evidence, so a rename makes this connection's row stale. Instance id
+  // is known.
+  await ctx.markConnectorSummaryEvidenceDirty?.({
+    connectorInstanceId: connectionId,
+    reason: "owner rename changed connection display_name evidence",
+  });
+  const schedules = await ctx.listSchedules();
+  const schedulesByInstanceId = new Map<string, unknown>(
+    schedules
+      .filter((schedule) => schedule?.connector_instance_id)
+      .map((schedule) => [schedule.connector_instance_id as string, schedule])
+  );
+  const resource = ctx.resolveResource(req);
+  const projected = projectOwnerConnection(ctx, updated, schedulesByInstanceId, resource);
+  return { projected, ownerSubjectId };
 }
 
 // GET /v1/owner/connections — bearer-authed owner-agent listing of every
@@ -367,52 +447,20 @@ export function mountOwnerConnectionRename(app: AppLike, ctx: MountOwnerConnecti
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const connectionId = decodeURIComponent(req.params.connectionId as string);
-        const body = (req.body as Record<string, unknown> | null) || {};
-        const displayName = body.display_name;
-        // Validate at the boundary so a malformed request is a typed 400 before
-        // the store is touched, matching the `/_ref` PATCH behaviour and the
-        // contract's `display_name` body schema.
-        if (typeof displayName !== "string" || !displayName.trim()) {
-          const err = new Error("display_name must be a non-empty string") as Error & { code: string; param: string };
-          err.code = "invalid_request";
-          err.param = "display_name";
-          await emitOwnerConnectionRenameAudit(ctx, req, res, {
-            connectionId,
-            displayNameSupplied: Object.hasOwn(body, "display_name"),
-            error: err,
-            outcome: "failed",
-            ownerSubjectId: ctx.getOwnerTokenSubjectId(req),
-          });
-          ctx.pdppError(res, 400, "invalid_request", "display_name must be a non-empty string", "display_name");
+        const renameInput = await validateOwnerConnectionRename(ctx, req, res, connectionId);
+        if (!renameInput) {
           return;
         }
-        const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
-        const store = ctx.createRequestConnectorInstanceStore();
-        const updated = await store.setDisplayName(connectionId, {
-          ownerSubjectId,
-          displayName: displayName.trim(),
-          updatedAt: ctx.now ? ctx.now() : new Date().toISOString(),
-        });
-        ctx.invalidateConnectorSummariesCache?.();
-        // Scoped, awaited dirty marking: display_name is durable summary
-        // evidence, so a rename makes this connection's row stale. Instance id
-        // is known.
-        await ctx.markConnectorSummaryEvidenceDirty?.({
-          connectorInstanceId: connectionId,
-          reason: "owner rename changed connection display_name evidence",
-        });
-        const schedules = await ctx.listSchedules();
-        const schedulesByInstanceId = new Map<string, unknown>(
-          schedules
-            .filter((schedule) => schedule?.connector_instance_id)
-            .map((schedule) => [schedule.connector_instance_id as string, schedule])
+        const { projected, ownerSubjectId } = await performOwnerConnectionRename(
+          ctx,
+          req,
+          connectionId,
+          renameInput.displayName
         );
-        const resource = ctx.resolveResource(req);
-        const projected = projectOwnerConnection(ctx, updated, schedulesByInstanceId, resource);
         await emitOwnerConnectionRenameAudit(ctx, req, res, {
           connectionId,
-          connectorKey: typeof projected.connector_key === "string" ? projected.connector_key : null,
-          labelStatus: typeof projected.label_status === "string" ? projected.label_status : null,
+          connectorKey: stringOrNull(projected.connector_key),
+          labelStatus: stringOrNull(projected.label_status),
           outcome: "succeeded",
           ownerSubjectId,
         });

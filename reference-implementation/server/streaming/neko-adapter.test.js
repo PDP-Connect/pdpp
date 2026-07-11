@@ -16,23 +16,37 @@ function frameResponse() {
   return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
 }
 
+function isNekoRequest(url, request, path, method) {
+  return url.endsWith(path) && request.method === method;
+}
+
+function responseForNekoRequest(url, request, screenConfigurations) {
+  const routes = [
+    {
+      matches: () => url.endsWith('/api/room/screen/configurations'),
+      response: () => jsonResponse(screenConfigurations),
+    },
+    {
+      matches: () => isNekoRequest(url, request, '/api/room/screen', 'POST'),
+      response: () => jsonResponse(JSON.parse(request.body)),
+    },
+    {
+      matches: () => isNekoRequest(url, request, '/api/room/screen', 'GET'),
+      response: () => jsonResponse({ width: 2128, height: 816 }),
+    },
+    {
+      matches: () => url.endsWith('/api/room/screen/cast.jpg') || url.endsWith('/api/room/screen/shot.jpg'),
+      response: frameResponse,
+    },
+  ];
+  return routes.find((route) => route.matches())?.response() || jsonResponse({});
+}
+
 function createFetchMock({ screenConfigurations = [{ width: 2128, height: 816, rate: 30 }] } = {}) {
   const requests = [];
   const fetchImpl = async (url, request = {}) => {
     requests.push({ body: request.body || null, method: request.method || 'GET', url });
-    if (url.endsWith('/api/room/screen/configurations')) {
-      return jsonResponse(screenConfigurations);
-    }
-    if (url.endsWith('/api/room/screen') && request.method === 'POST') {
-      return jsonResponse(JSON.parse(request.body));
-    }
-    if (url.endsWith('/api/room/screen') && request.method === 'GET') {
-      return jsonResponse({ width: 2128, height: 816 });
-    }
-    if (url.endsWith('/api/room/screen/cast.jpg') || url.endsWith('/api/room/screen/shot.jpg')) {
-      return frameResponse();
-    }
-    return jsonResponse({});
+    return responseForNekoRequest(url, request, screenConfigurations);
   };
   fetchImpl.requests = requests;
   return fetchImpl;
@@ -83,13 +97,7 @@ function createFakeBrowserClient({ copyText = '', statuses = [] } = {}) {
     },
     async evaluate(source) {
       calls.push({ op: 'evaluate', source });
-      if (String(source).includes('__pdppPlaygroundEvents')) {
-        return JSON.stringify(statuses.length > 0 ? statuses.shift() : {});
-      }
-      if (String(source).includes('document.getSelection')) {
-        return copyText;
-      }
-      return undefined;
+      return evaluationResult(source, statuses, copyText);
     },
     async close() {
       calls.push({ op: 'close' });
@@ -101,6 +109,12 @@ function createFakeBrowserClient({ copyText = '', statuses = [] } = {}) {
     },
   };
   return client;
+}
+
+function evaluationResult(source, statuses, copyText) {
+  if (String(source).includes('__pdppPlaygroundEvents')) return JSON.stringify(statuses.length > 0 ? statuses.shift() : {});
+  if (String(source).includes('document.getSelection')) return copyText;
+  return undefined;
 }
 
 function createCompanionWithBrowserClient(browserClient, options = {}) {

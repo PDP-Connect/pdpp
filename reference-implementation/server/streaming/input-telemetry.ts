@@ -65,12 +65,23 @@ export function createInputTelemetry({
     return entry;
   }
 
+  function isStorableRecord(browser_session_id: string, record: TelemetryRecord): boolean {
+    return Boolean(browser_session_id) && Boolean(record) && typeof record === "object";
+  }
+
+  function trimToBufferSize(entry: BufferEntry): void {
+    const excess = entry.records.length - bufferSize;
+    if (excess > 0) {
+      entry.records.splice(0, excess);
+    }
+  }
+
   /**
    * Append a record. `record` is a plain object — caller-controlled keys.
    * Mutates record by assigning `seq` and `serverAtMs`.
    */
   function push(browser_session_id: string, record: TelemetryRecord): StampedRecord | undefined {
-    if (!(browser_session_id && record) || typeof record !== "object") {
+    if (!isStorableRecord(browser_session_id, record)) {
       return;
     }
     const entry = getOrCreate(browser_session_id);
@@ -81,9 +92,7 @@ export function createInputTelemetry({
       ...record,
     };
     entry.records.push(stamped);
-    if (entry.records.length > bufferSize) {
-      entry.records.splice(0, entry.records.length - bufferSize);
-    }
+    trimToBufferSize(entry);
     return stamped;
   }
 

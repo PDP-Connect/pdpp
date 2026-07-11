@@ -438,7 +438,19 @@ function labelForPill(
     return "Syncing";
   }
   if (tone === "amber") {
-    return amberLabel(snapshot, disposition, toneInputs);
+    const label = amberLabel(snapshot, disposition, toneInputs);
+    // An active run dominates a routine "needs refresh" nudge (Wave 10a
+    // active-run visibility): when every reason the tone reached amber is a
+    // not-actually-broken shape (idle-with-prior-success, stale, or
+    // owner_refresh_due) AND a run is currently advancing, the connection is
+    // already doing the thing the nudge would ask for — render `Syncing`
+    // like the green/active-outbox case, not `Needs refresh`. Real trouble
+    // (`Degraded`) is never softened this way; active work does not mask a
+    // genuine defect.
+    if (label === "Needs refresh" && snapshot.badges.syncing) {
+      return "Syncing";
+    }
+    return label;
   }
   return TONE_TO_LABEL[tone];
 }
@@ -738,6 +750,36 @@ function hasOwnerAction(actions: readonly RequiredAction[]): boolean {
   return actions.some((action) => action.audience === "owner" && action.satisfied_when.kind !== "none");
 }
 
+/**
+ * Whether a stalled outbox is eligible to add an action (`wait` or
+ * `add_info`, chosen by the caller on `hasTransientUploadFailure`): durable
+ * work is stuck outside the server, the disposition is not already terminal
+ * (a terminal connection gets `code_fix` instead), and nothing
+ * owner-actionable already covers the connection (a stalled outbox never
+ * competes with a real defect already found above).
+ */
+function isStalledOutboxActionable(
+  snapshot: ConnectionHealthSnapshot,
+  disposition: ForwardDisposition,
+  actions: readonly RequiredAction[]
+): boolean {
+  return snapshot.axes.outbox === "stalled" && disposition !== "terminal" && !hasOwnerAction(actions);
+}
+
+/**
+ * Whether a disabled schedule with a prior success should emit
+ * `reattach_schedule`: the system cannot self-recover with no automatic
+ * retry to fall back on, and no real defect found earlier in
+ * `buildRequiredActions` (`actions.length === 0`) already outranks a
+ * merely-paused schedule.
+ */
+function isOwnerPausedScheduleEligible(
+  scheduleEvidence: ScheduleEvidence | null,
+  actions: readonly RequiredAction[]
+): boolean {
+  return scheduleEvidence?.mode === "scheduled-disabled" && scheduleEvidence.hasPriorSuccess && actions.length === 0;
+}
+
 function hasTransientUploadFailure(snapshot: ConnectionHealthSnapshot): boolean {
   return snapshot.conditions.some(
     (condition) =>
@@ -758,6 +800,26 @@ function hasEffectiveActiveScheduleEvidence(
   // The one manual-only exception we honor is the explicit Amazon-style
   // owner opt-in: recommended_mode=manual + backgroundSafe=true.
   return !isManualRefreshOnly(refresh) || (refresh?.recommendedMode === "manual" && refresh.backgroundSafe === true);
+}
+
+/**
+ * Whether an `owner_refresh_due` connection should offer `refresh_now`.
+ * Suppressed when a paused schedule (owned by `reattach_schedule` instead)
+ * or an active run already covers the same "run it again" outcome; offered
+ * only under a manual-only or assisted refresh policy.
+ */
+function shouldOfferRefreshNowAction(
+  snapshot: ConnectionHealthSnapshot,
+  disposition: ForwardDisposition,
+  refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null
+): boolean {
+  return (
+    disposition === "owner_refresh_due" &&
+    scheduleEvidence?.mode !== "scheduled-disabled" &&
+    !snapshot.badges.syncing &&
+    (isManualRefreshOnly(refresh) || isAssistedRefresh(refresh))
+  );
 }
 
 function shouldOfferRetryGapAction(
@@ -1011,12 +1073,7 @@ function buildRequiredActions(
   // A stalled outbox means durable work is stuck outside the server. Coverage may
   // still be "complete" because the records already accepted are valid, but the
   // source cannot keep making progress until the owner checks the collector host.
-  if (
-    snapshot.axes.outbox === "stalled" &&
-    disposition !== "terminal" &&
-    !hasOwnerAction(actions) &&
-    hasTransientUploadFailure(snapshot)
-  ) {
+  if (isStalledOutboxActionable(snapshot, disposition, actions) && hasTransientUploadFailure(snapshot)) {
     const remediation = stalledOutboxRemediation(snapshot);
     actions.push({
       kind: "wait",
@@ -1031,12 +1088,7 @@ function buildRequiredActions(
     });
   }
 
-  if (
-    snapshot.axes.outbox === "stalled" &&
-    disposition !== "terminal" &&
-    !hasOwnerAction(actions) &&
-    !hasTransientUploadFailure(snapshot)
-  ) {
+  if (isStalledOutboxActionable(snapshot, disposition, actions) && !hasTransientUploadFailure(snapshot)) {
     const remediation = stalledOutboxRemediation(snapshot);
     actions.push({
       kind: "add_info",
@@ -1051,20 +1103,14 @@ function buildRequiredActions(
     });
   }
 
-  // Owner-paused schedule (Wave 10a, owner review 2026-07-09): a disabled
-  // schedule with a prior success means the system CANNOT self-recover —
-  // there is no automatic retry to fall back on. Emit `reattach_schedule`
+  // Owner-paused schedule (Wave 10a, owner review 2026-07-09). Emitted
   // BEFORE the refresh_now/retry_gap/wait branches below (which all assume
   // the system can still act on its own), so an otherwise
   // healthy/stale/resumable paused source gets "Resume schedule" as its
   // primary action rather than a one-off Retry/Refresh that leaves the
   // schedule disabled, or a calm "Collecting — no action needed" that is
-  // false while the schedule is off. Gated on `actions.length === 0` so a
-  // real defect already found above (`reauth`/`add_info`/`code_fix`/stalled
-  // outbox) always outranks a merely-paused schedule — this is exactly why
-  // action derivation must have one owner: the same `actions.length === 0`
-  // gate the later branches use naturally keeps them silent once this fires.
-  if (scheduleEvidence?.mode === "scheduled-disabled" && scheduleEvidence.hasPriorSuccess && actions.length === 0) {
+  // false while the schedule is off. See `isOwnerPausedScheduleEligible`.
+  if (isOwnerPausedScheduleEligible(scheduleEvidence, actions)) {
     actions.push({
       kind: "reattach_schedule",
       audience: "owner",
@@ -1082,22 +1128,10 @@ function buildRequiredActions(
     });
   }
 
-  // Manual/assisted-refresh stale: owner-refresh-due. Owner-actionable but NON-urgent
-  // (the data is simply aging; the owner can accelerate but inaction is not a failure).
-  // Guarded specifically on `scheduleEvidence?.mode !== "scheduled-disabled"`
-  // (Wave 10a, owner review 2026-07-09) — reattach_schedule already owns the
-  // paused case above, and both mean "run it again now." This does NOT add
-  // a general `actions.length === 0` guard: every caller that omits
-  // `scheduleEvidence` (`null`) — i.e. every pre-existing caller — takes
-  // this same `!== "scheduled-disabled"` branch unconditionally-true, so
-  // behavior stays byte-for-byte identical for all non-paused callers,
-  // including the pre-existing transient-upload `wait` + `refresh_now`
-  // co-occurrence.
-  if (
-    disposition === "owner_refresh_due" &&
-    scheduleEvidence?.mode !== "scheduled-disabled" &&
-    (isManualRefreshOnly(refresh) || isAssistedRefresh(refresh))
-  ) {
+  // Manual/assisted-refresh stale: owner-refresh-due. See
+  // `shouldOfferRefreshNowAction` for the full eligibility contract (paused
+  // schedule, active run, and manual/assisted refresh policy).
+  if (shouldOfferRefreshNowAction(snapshot, disposition, refresh, scheduleEvidence)) {
     actions.push({
       kind: "refresh_now",
       audience: "owner",
@@ -1284,29 +1318,47 @@ function freshnessAnnotationText(
   if (snapshot.axes.freshness === "unknown") {
     return "Freshness has not been measured yet.";
   }
-  const retry = actions.find((action) => action.kind === "retry_gap");
-  if (retry) {
-    const affected = retry.affects[0] ?? null;
-    const since = shortMonthDay(snapshot.last_success_at);
-    if (affected && since) {
-      return `${humanizeStreamId(affected)} stuck since ${since}.`;
-    }
+  const stuckSince = retryGapStuckSinceText(snapshot, actions);
+  if (stuckSince) {
+    return stuckSince;
   }
+  // A run is actively advancing: stale-freshness copy that tells the owner
+  // to run a refresh is contradicted by the run already in flight.
+  if (snapshot.badges.syncing) {
+    return "Refreshing now.";
+  }
+  return staleRefreshPolicyText(refresh, scheduleEvidence, progress);
+}
+
+/** Named per retry_gap action, e.g. "Messages stuck since Jul 3." */
+function retryGapStuckSinceText(snapshot: ConnectionHealthSnapshot, actions: readonly RequiredAction[]): string | null {
+  const retry = actions.find((action) => action.kind === "retry_gap");
+  if (!retry) {
+    return null;
+  }
+  const affected = retry.affects[0] ?? null;
+  const since = shortMonthDay(snapshot.last_success_at);
+  return affected && since ? `${humanizeStreamId(affected)} stuck since ${since}.` : null;
+}
+
+/**
+ * Stale-freshness copy for a connection with no retry_gap and no active run,
+ * keyed to the connection's refresh policy (manual / scheduled / assisted).
+ */
+function staleRefreshPolicyText(
+  refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null,
+  progress: ProgressEvidence | null
+): string {
   const refreshedAge = relativeDayAge(progress?.last_refreshed_at ?? null, progress?.observed_at ?? null);
   if (
     progress?.mode === "manual" ||
     (isManualRefreshOnly(refresh) && !hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence))
   ) {
-    if (refreshedAge) {
-      return `Last refreshed ${refreshedAge}.`;
-    }
-    return "Stale — this connector refreshes when you run it.";
+    return refreshedAge ? `Last refreshed ${refreshedAge}.` : "Stale — this connector refreshes when you run it.";
   }
   if (hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence)) {
-    if (refreshedAge) {
-      return `Last refreshed ${refreshedAge}. Refreshes on schedule.`;
-    }
-    return "Stale — refreshes on schedule.";
+    return refreshedAge ? `Last refreshed ${refreshedAge}. Refreshes on schedule.` : "Stale — refreshes on schedule.";
   }
   if (isAssistedRefresh(refresh)) {
     return "Stale — refreshes on schedule; may ask for your help to catch up.";
@@ -1444,7 +1496,9 @@ function buildForwardStatement(
     case "resumable":
       return "The next run is expected to fill the remaining data.";
     case "owner_refresh_due":
-      return "Up to date once you refresh.";
+      // An active run already answers "refresh"; do not ask for one while
+      // it is in flight.
+      return snapshot.badges.syncing ? "Refreshing now." : "Up to date once you refresh.";
     case "awaiting_owner":
       return "Waiting on you before the next run can make progress.";
     default:
@@ -1574,7 +1628,7 @@ function buildStreamRows(
       collected,
       considered: stream.considered,
       action_ref: actionRefFor(stream, disposition, actions),
-      statement: streamStatement(disposition),
+      statement: streamStatement(disposition, snapshot.badges.syncing),
     };
   });
 }
@@ -1599,7 +1653,7 @@ function actionRefFor(
   return null;
 }
 
-function streamStatement(disposition: ForwardDisposition): string {
+function streamStatement(disposition: ForwardDisposition, activeRunSyncing = false): string {
   switch (disposition) {
     case "complete":
       return "Complete.";
@@ -1609,7 +1663,11 @@ function streamStatement(disposition: ForwardDisposition): string {
     case "resumable":
       return "The next run is expected to fill the rest.";
     case "owner_refresh_due":
-      return "Up to date once you refresh.";
+      // An advancing run already answers the same nudge this stream would
+      // otherwise ask the owner to trigger (mirrors labelForPill's amber
+      // Syncing dominance) — never ask the owner to refresh what is already
+      // in flight.
+      return activeRunSyncing ? "Refreshing now." : "Up to date once you refresh.";
     case "awaiting_owner":
       return "Waiting on you.";
     case "terminal":

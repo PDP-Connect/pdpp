@@ -24,6 +24,7 @@ import {
 } from "../../operations/ref-dataset-summary/index.ts";
 import {
   executeRefDatasetSummaryStreams,
+  type RefDatasetSummaryStreamsDependencies,
   type RefDatasetSummaryStreamRow,
 } from "../../operations/ref-dataset-summary-streams/index.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
@@ -307,6 +308,53 @@ async function buildAutoReconciledRetainedSizeProjection(
   }
 }
 
+// Adapts the two retained-size read models to the one summary-streams
+// operation contract. Keeping the paired row and metadata reads together
+// makes the backend choice explicit without mixing it into HTTP handling.
+function buildDatasetSummaryStreamsDeps(ctx: MountRefDatasetContext): RefDatasetSummaryStreamsDependencies {
+  return {
+    listStreams: async ({ connectorId }) => {
+      if (ctx.isPostgresStorageBackend()) {
+        // `connector_id` is the public route filter — it MUST be
+        // forwarded as `connectorId`, NOT `connectorInstanceId`.
+        // The retained_size_stream Postgres table carries both
+        // columns; we filter on `connector_id` to match the SQLite
+        // `dataset_summary_stream_projection` filter semantics.
+        const rows = await ctx.listRetainedSizeStreams(connectorId === null ? {} : { connectorId });
+        return rows.map((row) => ({
+          connector_id: String(row.connector_id ?? ""),
+          stream: String(row.stream ?? ""),
+          record_count: Number(row.record_count ?? 0),
+          record_json_bytes: Number(row.current_record_json_bytes ?? 0),
+          earliest_ingested_at: null,
+          latest_ingested_at: null,
+          earliest_record_time: null,
+          latest_record_time: null,
+          consent_time_field: null,
+          dirty_record_time_bounds: Boolean(row.dirty),
+          computed_at: row.computed_at ?? null,
+        }));
+      }
+      return ctx.listStreamProjections({ connectorId });
+    },
+    getProjectionMetadata: async () => {
+      if (ctx.isPostgresStorageBackend()) {
+        const global = await ctx.getRetainedSizeGlobal();
+        return {
+          computed_at: global.computed_at ?? null,
+          state: (global.metadata?.state ||
+            (global.dirty ? "stale" : "fresh")) as RefDatasetSummaryProjectionState,
+          stale_since: global.metadata?.stale_since ?? null,
+          rebuild_status: (global.metadata?.rebuild_status ?? "idle") as RefDatasetSummaryRebuildStatus,
+          last_error: global.metadata?.last_error ?? null,
+          source_high_watermark: global.metadata?.source_high_watermark ?? null,
+        };
+      }
+      return ctx.getDatasetSummaryProjection().metadata;
+    },
+  };
+}
+
 export function mountRefDatasetSummary(app: AppLike, ctx: MountRefDatasetContext): void {
   app.get(
     "/_ref/dataset/summary",
@@ -353,47 +401,7 @@ export function mountRefDatasetSummaryStreams(app: AppLike, ctx: MountRefDataset
             : null;
         const envelope = await executeRefDatasetSummaryStreams(
           { connector_id: connectorIdFilter },
-          {
-            listStreams: async ({ connectorId }) => {
-              if (ctx.isPostgresStorageBackend()) {
-                // `connector_id` is the public route filter — it MUST be
-                // forwarded as `connectorId`, NOT `connectorInstanceId`.
-                // The retained_size_stream Postgres table carries both
-                // columns; we filter on `connector_id` to match the SQLite
-                // `dataset_summary_stream_projection` filter semantics.
-                const rows = await ctx.listRetainedSizeStreams(connectorId === null ? {} : { connectorId });
-                return rows.map((row) => ({
-                  connector_id: String(row.connector_id ?? ""),
-                  stream: String(row.stream ?? ""),
-                  record_count: Number(row.record_count ?? 0),
-                  record_json_bytes: Number(row.current_record_json_bytes ?? 0),
-                  earliest_ingested_at: null,
-                  latest_ingested_at: null,
-                  earliest_record_time: null,
-                  latest_record_time: null,
-                  consent_time_field: null,
-                  dirty_record_time_bounds: Boolean(row.dirty),
-                  computed_at: row.computed_at ?? null,
-                }));
-              }
-              return ctx.listStreamProjections({ connectorId });
-            },
-            getProjectionMetadata: async () => {
-              if (ctx.isPostgresStorageBackend()) {
-                const global = await ctx.getRetainedSizeGlobal();
-                return {
-                  computed_at: global.computed_at ?? null,
-                  state: (global.metadata?.state ||
-                    (global.dirty ? "stale" : "fresh")) as RefDatasetSummaryProjectionState,
-                  stale_since: global.metadata?.stale_since ?? null,
-                  rebuild_status: (global.metadata?.rebuild_status ?? "idle") as RefDatasetSummaryRebuildStatus,
-                  last_error: global.metadata?.last_error ?? null,
-                  source_high_watermark: global.metadata?.source_high_watermark ?? null,
-                };
-              }
-              return ctx.getDatasetSummaryProjection().metadata;
-            },
-          }
+          buildDatasetSummaryStreamsDeps(ctx)
         );
         res.json(envelope);
       } catch (err) {

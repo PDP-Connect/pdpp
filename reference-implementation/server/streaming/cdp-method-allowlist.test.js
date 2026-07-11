@@ -91,6 +91,46 @@ function extractCdpMethods(src) {
   return methods;
 }
 
+function inspectStreamingFile(filename) {
+  const filepath = join(__dirname, filename);
+  return extractCdpMethods(stripComments(readFileSync(filepath, 'utf8')));
+}
+
+function findAllowlistViolations(filename, methods) {
+  const violations = [];
+  for (const method of methods) {
+    if (!ALLOWLIST.has(method)) violations.push({ file: filename, method });
+  }
+  return violations;
+}
+
+function inspectStreamingFiles(files) {
+  const allMethods = new Set();
+  const violations = [];
+
+  for (const filename of files) {
+    const methods = inspectStreamingFile(filename);
+    methods.forEach((method) => allMethods.add(method));
+    violations.push(...findAllowlistViolations(filename, methods));
+  }
+
+  return { allMethods, violations };
+}
+
+function formatViolations(violations) {
+  return violations
+    .map(({ file, method }) => {
+      const domain = method.split('.')[0];
+      return `  ${file}: found '${method}' (${domain} domain not in allowlist)`;
+    })
+    .join('\n');
+}
+
+function assertNoViolations(violations) {
+  if (violations.length === 0) return;
+  assert.fail(`Streaming code contains non-allowlisted CDP methods:\n${formatViolations(violations)}`);
+}
+
 test('streaming code only sends allowlisted CDP methods', async (t) => {
   const files = [
     'cdp-adapter.js',
@@ -98,33 +138,10 @@ test('streaming code only sends allowlisted CDP methods', async (t) => {
     'run-target-registry.js',
   ];
 
-  const allMethods = new Set();
-  const violations = [];
-
-  for (const filename of files) {
-    const filepath = join(__dirname, filename);
-    const content = readFileSync(filepath, 'utf8');
-    const stripped = stripComments(content);
-    const methods = extractCdpMethods(stripped);
-
-    for (const method of methods) {
-      if (!ALLOWLIST.has(method)) {
-        violations.push({ file: filename, method });
-      }
-      allMethods.add(method);
-    }
-  }
+  const { allMethods, violations } = inspectStreamingFiles(files);
 
   // If any violations found, report them clearly
-  if (violations.length > 0) {
-    const msg = violations
-      .map(({ file, method }) => {
-        const domain = method.split('.')[0];
-        return `  ${file}: found '${method}' (${domain} domain not in allowlist)`;
-      })
-      .join('\n');
-    assert.fail(`Streaming code contains non-allowlisted CDP methods:\n${msg}`);
-  }
+  assertNoViolations(violations);
 
   // Assert that at least some basic Page/Input methods are present
   // (so we know streaming code actually exists and the test is working)

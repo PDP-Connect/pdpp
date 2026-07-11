@@ -50,16 +50,19 @@
   },
   "capabilities": {
     "human_interaction": [
-      "credentials"
+      "manual_action",
+      "otp"
     ],
     "refresh_policy": {
       "recommended_mode": "manual",
+      "minimum_interval_seconds": 7200,
       "maximum_staleness_seconds": 86400,
-      "interaction_posture": "credentials",
+      "interaction_posture": "otp_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "medium",
-      "background_safe": false,
-      "rationale": "Reddit requires a logged-in browser session (REDDIT_USERNAME/REDDIT_PASSWORD). Without credentials the connector cannot authenticate, so background runs always fail. Operator must supply credentials before scheduling."
+      "background_safe": true,
+      "assisted_after_owner_auth": true,
+      "rationale": "Reddit remains manual by default because first login from a new profile commonly serves a 2FA/OTP step or a Cloudflare challenge, but the session persists in the profile afterward, so an owner can explicitly opt into a background schedule after authenticating the connection."
     },
     "public_listing": {
       "listed": true,

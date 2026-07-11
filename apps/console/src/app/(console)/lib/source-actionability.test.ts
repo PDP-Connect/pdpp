@@ -234,6 +234,31 @@ test("source actionability routes a Needs refresh pill (no wired owner action) t
   assert.equal(actionability.work?.statusLabel, "needs a refresh");
 });
 
+test("source actionability routes a Syncing pill (active run over stale/owner-refresh-due evidence) to working, not systemIssue", () => {
+  // The server softens a Needs-refresh-shaped amber verdict to "Syncing" while
+  // a run is actively advancing (rendered-verdict.ts labelForPill) and drops
+  // the conflicting refresh_now action. The console must not fall through to
+  // "System or connector issue" / "is degraded" just because the underlying
+  // tone is still honestly amber — the active run already answers the nudge.
+  const actionability = projectSourceActionability(
+    connector({
+      connection_health: health({
+        axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
+        badges: { stale: true, syncing: true },
+      }),
+      rendered_verdict: verdict({
+        channel: "calm",
+        pill: { label: "Syncing", tone: "amber" },
+        forward_statement: "Refreshing now.",
+        required_actions: [],
+      }),
+    })
+  );
+
+  assert.equal(actionability.work?.group, "working");
+  assert.equal(actionability.work?.statusLabel, "is working");
+});
+
 test("source actionability keeps a Degraded pill (no wired owner action) in systemIssue", () => {
   // Contrast case: a real Degraded verdict without an owner-satisfiable action
   // (e.g. maintainer-only code_fix) correctly stays in systemIssue with "is

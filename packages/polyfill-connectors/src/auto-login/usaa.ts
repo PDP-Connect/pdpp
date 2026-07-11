@@ -13,6 +13,7 @@
 import type { BrowserContext, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import type { CaptureSession } from "../fixture-capture.ts";
 
 const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
 const LOGIN_URL = "https://www.usaa.com/my/logon";
@@ -33,9 +34,25 @@ const USAA_SOURCE_UNAVAILABLE_TEXT =
 const MAX_OTP_ATTEMPTS = 3;
 const MANUAL_LOGIN_MESSAGE =
   "USAA could not finish sign-in automatically; open the browser to continue. PDPP resumes when sign-in succeeds.";
+// `classifyUsaaLoginStepFailure` returning `source_unavailable` proves only
+// that USAA's page copy matches known outage boilerplate — it does NOT prove
+// the provider is actually down. A prior fix (2026-07-10, since reverted)
+// treated this classification as sufficient to skip manual_action entirely
+// and throw a silently-retried error instead; that was wrong. The same
+// password-field stall had already been the connector's dominant failure
+// mode for weeks before that page text was ever seen, which is inconsistent
+// with an intermittent provider outage and consistent with a persistent
+// automation-side condition (stale/blocked profile, bot-detection challenge)
+// that happens to render USAA's generic-outage copy. Only a human completing
+// login in the visible browser can distinguish those cases; route both
+// failure points back through manual_action, with the classification result
+// surfaced as an owner-visible diagnostic instead of a silent bypass.
+const MANUAL_LOGIN_MESSAGE_SOURCE_UNAVAILABLE_SUFFIX =
+  " USAA's page reported its own system as unavailable, but this exact failure has recurred — if USAA works normally in your own browser, this may be an automated sign-in issue rather than a real outage.";
 const STACK_TRACE_LOCATION_SUFFIX_RE = /\s+at\s+https?:\/\/\S+$/i;
 
 interface EnsureUsaaSessionArgs {
+  capture?: CaptureSession | null;
   context: BrowserContext;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -109,12 +126,15 @@ async function verifyLoggedIn(context: BrowserContext, page: Page): Promise<bool
   return LOGGED_IN_TEXT.test(bodyText);
 }
 
-async function requestManualLoginRecovery({ context, page, sendInteraction }: EnsureUsaaSessionArgs): Promise<boolean> {
+async function requestManualLoginRecovery(
+  { context, page, sendInteraction }: EnsureUsaaSessionArgs,
+  message: string = MANUAL_LOGIN_MESSAGE
+): Promise<boolean> {
   await manualAction(
     {
       page,
       reason: "login",
-      message: MANUAL_LOGIN_MESSAGE,
+      message,
       timeoutSeconds: 1800,
     },
     sendInteraction
@@ -182,7 +202,12 @@ async function completeOtpChallenge({ context, page, sendInteraction }: EnsureUs
   return false;
 }
 
-export async function ensureUsaaSession({ context, page, sendInteraction }: EnsureUsaaSessionArgs): Promise<boolean> {
+export async function ensureUsaaSession({
+  capture,
+  context,
+  page,
+  sendInteraction,
+}: EnsureUsaaSessionArgs): Promise<boolean> {
   // Probe first — no need to re-login if session is alive.
   if (await verifyLoggedIn(context, page)) {
     return true;
@@ -237,16 +262,8 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
       .locator("body")
       .innerText()
       .catch((): string => "");
-    if (classifyUsaaLoginStepFailure(body) === "source_unavailable") {
-      // USAA's own login system reported itself unavailable. This is a
-      // provider-side condition, not something the owner can fix by
-      // operating a browser — sending them into one would show the exact
-      // same unavailable page. Throw a retryable source_unavailable error
-      // so it flows through the runtime's existing retryable/backoff seam
-      // (see USAA_RETRYABLE_PATTERN + buildSessionEstablishTerminalError)
-      // instead of requesting manual_action.
-      throw new Error("source_unavailable: USAA reported its login system is currently unavailable after Next click.");
-    }
+    const classification = classifyUsaaLoginStepFailure(body);
+    await capture?.captureDom(page, "usaa-password-field-stall").catch((): undefined => undefined);
     const inputs = await page
       .evaluate((): InputProbe[] => {
         const els = document.querySelectorAll("input");
@@ -260,7 +277,11 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
       })
       .catch((): InputProbe[] => []);
     const diagnostic = passwordStepFailureDiagnostic({ body, inputs, url: page.url() });
-    if (await requestManualLoginRecovery({ context, page, sendInteraction })) {
+    const manualLoginMessage =
+      classification === "source_unavailable"
+        ? `${MANUAL_LOGIN_MESSAGE}${MANUAL_LOGIN_MESSAGE_SOURCE_UNAVAILABLE_SUFFIX}`
+        : MANUAL_LOGIN_MESSAGE;
+    if (await requestManualLoginRecovery({ context, page, sendInteraction }, manualLoginMessage)) {
       return true;
     }
     throw new Error(`USAA login stalled after Next click (${diagnostic}); manual action did not establish a session`);
@@ -294,15 +315,8 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
     .locator("body")
     .innerText()
     .catch((): string => "");
-  if (classifyUsaaLoginStepFailure(finalText) === "source_unavailable") {
-    // Same provider-outage condition as the memberId-step check above, but
-    // observed after password submission instead. Classify the same way so
-    // this also flows through the retryable seam instead of a generic,
-    // non-retryable diagnostic.
-    throw new Error(
-      "source_unavailable: USAA reported its login system is currently unavailable after password submit."
-    );
-  }
+  await capture?.captureDom(page, "usaa-post-password-no-session").catch((): undefined => undefined);
+  const classification = classifyUsaaLoginStepFailure(finalText);
   const inputs = await page
     .evaluate((): InputProbe[] => {
       const els = document.querySelectorAll("input");
@@ -315,7 +329,12 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
       );
     })
     .catch((): InputProbe[] => []);
+  // `classification` here is a diagnostic label, not proof of provider
+  // uptime — see the comment on MANUAL_LOGIN_MESSAGE_SOURCE_UNAVAILABLE_SUFFIX.
+  // It is folded into the thrown diagnostic so downstream classification/logs
+  // can see it, but it does not change what error this throws or suppress
+  // the owner-visible diagnostic that was already here.
   throw new Error(
-    `USAA login completed but no verified authenticated dashboard session was detected. url=${page.url()} inputs=${JSON.stringify(inputs)} body-preview=${trimForDiagnostic(finalText, 300)}`
+    `USAA login completed but no verified authenticated dashboard session was detected (classification=${classification}). url=${page.url()} inputs=${JSON.stringify(inputs)} body-preview=${trimForDiagnostic(finalText, 300)}`
   );
 }

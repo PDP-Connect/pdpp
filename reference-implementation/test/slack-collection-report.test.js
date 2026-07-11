@@ -6,8 +6,7 @@ import { buildCollectionReport } from '../server/ref-control.ts';
 // Slack-specific projection proofs for OpenSpec task 4.2
 // (`define-connector-progress-evidence-contract`): the Slack connector declares
 // an objective `considered` denominator for `canvases` (its one full-sync,
-// non-fingerprinted, no-filter list stream) and emits SKIP_RESULT(reason:
-// "not_available") for the four streams a slackdump archive cannot realize.
+// non-fingerprinted, no-filter list stream).
 //
 // These tests feed a realistic Slack `collection_facts` block to the REAL
 // exported `buildCollectionReport` projection and assert the derived report:
@@ -15,9 +14,14 @@ import { buildCollectionReport } from '../server/ref-control.ts';
 //   - canvases with collected  <  considered  -> partial   (honest shortfall)
 //   - streams that declare NO considered (messages, workspace, users, …) stay
 //     `unknown` / `unmeasured` — never inferred `complete` from collected count
-//   - the unsupported streams' existing SKIP_RESULT(reason: "not_available")
-//     reads `unavailable` coverage -> a `terminal` forward disposition with no
-//     extra connector code (the second half of task 4.2, true by construction).
+//   - a stream that emits SKIP_RESULT(reason: "not_available") reads
+//     `unavailable` coverage -> a `terminal` forward disposition with no extra
+//     connector code (the second half of task 4.2, true by construction). As
+//     of `complete-slack-bundled-connector-coverage`, Slack no longer has any
+//     streams in this state (stars/user_groups/reminders/dm_read_states now
+//     collect via direct Slack Web API calls); the mechanism below is
+//     projection-generic and exercised with synthetic fixture stream names,
+//     not a live Slack manifest assertion.
 //
 // The runtime half (DETAIL_COVERAGE.considered carried onto the terminal facts
 // block without blocking commit) is proven connector-agnostically in
@@ -101,11 +105,13 @@ test('slack non-canvas streams declare NO considered -> stay unknown / unmeasure
 });
 
 test('slack unsupported streams: SKIP_RESULT(reason: "not_available") -> unavailable coverage -> terminal disposition', () => {
-  // The four streams a slackdump archive cannot realize already emit
-  // SKIP_RESULT { reason: "not_available" }. The projection maps "not_available"
-  // -> `unavailable` coverage, and the pure disposition helper maps an
-  // `unavailable` coverage with no recovery path -> `terminal`. No extra Slack
-  // code is needed for the second half of task 4.2 — it holds by construction.
+  // Projection-generic mechanism proof (synthetic stream names — not a live
+  // Slack manifest assertion; see file header). A stream that emits
+  // SKIP_RESULT { reason: "not_available" } projects "not_available" ->
+  // `unavailable` coverage, and the pure disposition helper maps an
+  // `unavailable` coverage with no recovery path -> `terminal`. No extra
+  // connector code is needed for the second half of task 4.2 — it holds by
+  // construction.
   const unsupported = ['stars', 'user_groups', 'reminders', 'dm_read_states'];
   const entries = report(
     unsupported.map((stream) => fact({ stream, collected: 0, skipped: { reason: 'not_available' } }))
@@ -118,11 +124,12 @@ test('slack unsupported streams: SKIP_RESULT(reason: "not_available") -> unavail
 });
 
 test('slack unsupported-in-mode streams: manifest accepted-absence prevents resting unknown coverage', () => {
-  // Live regression: the latest successful Slack run predated skip/fact emission
-  // for the slackdump-unavailable Layer-2 streams, so these rows had no
-  // SKIP_RESULT and projected as unknown forever. The manifest already declares
-  // unsupported_in_mode; coverage_policy=deferred + required=false makes that
-  // accepted-absence explicit even when old run facts have no skip.
+  // Projection-generic mechanism proof (synthetic stream names and a
+  // synthetic manifest fragment — Slack's real manifest no longer declares
+  // any stream this way as of `complete-slack-bundled-connector-coverage`;
+  // see file header). A manifest stream declaring coverage_policy=deferred +
+  // required=false projects an explicit accepted-absence even when old run
+  // facts have no skip, instead of resting `unknown` forever.
   const unsupported = ['stars', 'user_groups', 'reminders', 'dm_read_states'];
   const manifestStreams = unsupported.map((stream) => ({
     name: stream,

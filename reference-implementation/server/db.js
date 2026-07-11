@@ -127,63 +127,59 @@ function computeBusyRetryDelay(attempt, initialDelayMs, maxDelayMs) {
 }
 
 // Decide the next step after a caught error in a busy-retry loop. Rethrows a
-// non-transient error; returns the backoff delay to wait before the next
-// attempt (after advancing `state.attempt` and firing `onRetry`); or returns
-// null when the retry budget is exhausted so the caller breaks and surfaces the
-// original error. Shared by the sync and async runners — only their wait
-// mechanism differs.
+// non-transient error or the current transient error when the retry budget is
+// exhausted; otherwise returns the backoff delay to wait before the next
+// attempt (after advancing `state.attempt` and firing `onRetry`). Shared by
+// the sync and async runners — only their wait mechanism differs.
 function nextBusyRetryDelay(err, state, cfg) {
   if (!isTransientSqliteLockError(err)) throw err;
   state.attempt += 1;
-  if (state.attempt >= cfg.maxAttempts) return null;
+  if (state.attempt >= cfg.maxAttempts) throw err;
   const delay = computeBusyRetryDelay(state.attempt, cfg.initialDelayMs, cfg.maxDelayMs);
   if (cfg.onRetry) cfg.onRetry({ err, attempt: state.attempt, delay });
   return delay;
 }
 
-export function runWithSqliteBusyRetrySync(fn, opts = {}) {
-  const cfg = normalizeBusyRetryOptions(opts);
-  const sleepSync = typeof opts.sleepSync === 'function'
-    ? opts.sleepSync
-    : (ms) => {
+// Select the injected or default wait strategy independently of retry execution.
+function selectBusyRetryWait(opts, sync) {
+  const sleep = sync ? opts.sleepSync : opts.sleep;
+  if (typeof sleep === 'function') return sleep;
+  return sync
+    ? (ms) => {
         const deadline = Date.now() + ms;
         while (Date.now() < deadline) { /* busy-wait */ }
-      };
+      }
+    : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function runWithSqliteBusyRetrySync(fn, opts = {}) {
+  const cfg = normalizeBusyRetryOptions(opts);
+  const sleepSync = selectBusyRetryWait(opts, true);
 
   const state = { attempt: 0 };
-  let lastErr;
-  while (state.attempt < cfg.maxAttempts) {
+  while (true) {
     try {
       return fn();
     } catch (err) {
-      lastErr = err;
       const delay = nextBusyRetryDelay(err, state, cfg);
-      if (delay === null) break;
       sleepSync(delay);
     }
   }
-  throw lastErr;
 }
 
 export async function runWithSqliteBusyRetry(fn, opts = {}) {
   const cfg = normalizeBusyRetryOptions(opts);
-  const sleep = typeof opts.sleep === 'function'
-    ? opts.sleep
-    : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const sleep = selectBusyRetryWait(opts, false);
 
   const state = { attempt: 0 };
-  let lastErr;
-  while (state.attempt < cfg.maxAttempts) {
+  while (true) {
     try {
       return await fn();
     } catch (err) {
-      lastErr = err;
       const delay = nextBusyRetryDelay(err, state, cfg);
-      if (delay === null) break;
       await sleep(delay);
     }
   }
-  throw lastErr;
 }
 
 const SCHEMA = `

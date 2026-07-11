@@ -155,6 +155,49 @@ export interface MountOwnerConnectionRunContext {
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
+type RunAuditArgs = {
+  connectionId?: string | null;
+  connectorKey?: string | null;
+  error?: unknown;
+  force?: boolean;
+  outcome: "succeeded" | "failed";
+  ownerSubjectId?: string | null;
+  runId?: string | null;
+  selector: "connection_id" | "connector_id";
+};
+
+function projectRunAuditData(
+  req: RouteRequest,
+  args: RunAuditArgs,
+  clientId: string | null,
+  clientName: string | null,
+  actorKind: ReturnType<typeof auditActorKind>,
+  code: unknown
+): Record<string, unknown> {
+  return {
+    auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
+    actor_kind: actorKind,
+    client_id: clientId,
+    client_name: clientName,
+    connection_id: args.connectionId ?? null,
+    connector_key: args.connectorKey ?? null,
+    selector: args.selector,
+    operation: "run_now",
+    outcome: args.outcome,
+    forced: args.force === true,
+    run_id: args.runId ?? null,
+    target_resource: "connection_run",
+    ...(args.error
+      ? {
+          error: {
+            code: typeof code === "string" ? code : "api_error",
+            http_status: httpStatusForOperationError(args.error),
+          },
+        }
+      : {}),
+  };
+}
+
 // Emits one non-secret `owner_agent.connection.run` spine event. The `selector`
 // records whether the action was addressed by `connection_id` or by
 // `connector_id` (the latter is the path that can be ambiguous). The audit
@@ -163,16 +206,7 @@ async function emitRunAudit(
   ctx: MountOwnerConnectionRunContext,
   req: RouteRequest,
   res: RouteResponse,
-  args: {
-    connectionId?: string | null;
-    connectorKey?: string | null;
-    error?: unknown;
-    force?: boolean;
-    outcome: "succeeded" | "failed";
-    ownerSubjectId?: string | null;
-    runId?: string | null;
-    selector: "connection_id" | "connector_id";
-  }
+  args: RunAuditArgs
 ): Promise<void> {
   const trace = buildAuditTrace(ctx, req, res);
   const clientId = typeof req.tokenInfo?.client_id === "string" ? req.tokenInfo.client_id : null;
@@ -194,28 +228,7 @@ async function emitRunAudit(
     object_type: "connection",
     object_id: args.connectionId || args.connectorKey || "unknown_connection",
     status: args.outcome,
-    data: {
-      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
-      actor_kind: actorKind,
-      client_id: clientId,
-      client_name: clientName,
-      connection_id: args.connectionId ?? null,
-      connector_key: args.connectorKey ?? null,
-      selector: args.selector,
-      operation: "run_now",
-      outcome: args.outcome,
-      forced: args.force === true,
-      run_id: args.runId ?? null,
-      target_resource: "connection_run",
-      ...(args.error
-        ? {
-            error: {
-              code: typeof code === "string" ? code : "api_error",
-              http_status: httpStatusForOperationError(args.error),
-            },
-          }
-        : {}),
-    },
+    data: projectRunAuditData(req, args, clientId, clientName, actorKind, code),
   });
 }
 

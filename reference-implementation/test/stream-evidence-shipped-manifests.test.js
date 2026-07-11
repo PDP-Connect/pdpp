@@ -117,15 +117,28 @@ test('shipped chase manifest: zero eligible accounts after a completed enumerati
   assert.equal(condition(entries, 'transactions'), 'complete');
 });
 
-test('shipped slack manifest: the accepted-absent quartet classifies by policy and never blocks; channel_stats proves by checkpoint', () => {
-  const entries = report('slack', [committedFact('channel_stats')]);
-  for (const stream of ['stars', 'user_groups', 'reminders', 'dm_read_states']) {
-    const entry = entries.find((e) => e.stream === stream);
-    assert.ok(entry, `entry for ${stream}`);
-    assert.equal(entry.coverage_condition, 'deferred', `${stream} classifies by accepted manifest policy`);
-    assert.equal(entry.required, false, `${stream} is non-required accepted absence`);
+test('shipped slack manifest: stars/user_groups/reminders/dm_read_states are ordinary collected full-inventory streams, not accepted absence', () => {
+  // As of complete-slack-bundled-connector-coverage, these four streams are
+  // directly collected via the connector's existing xoxc+cookie credential
+  // (stars.list/usergroups.list/reminders.list/conversations.info) — they no
+  // longer declare coverage_policy:deferred. A committed checkpoint proves
+  // them complete exactly like channel_stats; absent any fact, per the audit
+  // contract, they rest honestly unknown, never a stale accepted-absence label.
+  const proven = report('slack', [
+    committedFact('channel_stats'),
+    committedFact('stars'),
+    committedFact('user_groups'),
+    committedFact('reminders'),
+    committedFact('dm_read_states'),
+  ]);
+  for (const stream of ['channel_stats', 'stars', 'user_groups', 'reminders', 'dm_read_states']) {
+    assert.equal(condition(proven, stream), 'complete', `${stream} classifies complete once committed`);
   }
-  assert.equal(condition(entries, 'channel_stats'), 'complete');
+
+  const unmeasured = report('slack', [committedFact('channel_stats')]);
+  for (const stream of ['stars', 'user_groups', 'reminders', 'dm_read_states']) {
+    assert.equal(condition(unmeasured, stream), 'unknown', `${stream} rests unknown with no fact, not accepted-absence`);
+  }
 });
 
 test('shipped gmail manifest: message_bodies inherits the messages checkpoint through state_stream within one run', () => {

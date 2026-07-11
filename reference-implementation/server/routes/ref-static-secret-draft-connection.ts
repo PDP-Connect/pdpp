@@ -272,6 +272,42 @@ async function emitDraftAudit(
   });
 }
 
+function createDraftConnection(
+  ctx: MountRefStaticSecretDraftConnectionContext,
+  input: {
+    connectorId: string;
+    manifest: ConnectorManifestLike;
+    captureSetup: NonNullable<ReturnType<typeof staticSecretCredentialCaptureFromManifest>>;
+    setupFields: Record<string, string>;
+    ownerSubjectId: string;
+  }
+): { displayName: string; instance: ReturnType<ConnectorInstanceStore["upsert"]> } {
+  // A fresh random binding key makes every draft a distinct connection
+  // identity (two mailboxes → two connection_ids) and deliberately avoids
+  // the deterministic default-account key, which is the phantom-
+  // resurrection key. The store derives the connector_instance_id from
+  // the binding key.
+  const sourceBindingKey = `draft_${randomBytes(24).toString("hex")}`;
+  const now = ctx.now ? ctx.now() : new Date().toISOString();
+  const store = ctx.createRequestConnectorInstanceStore();
+  const idValue = identityValue(input.captureSetup.fields, input.setupFields);
+  const displayName = idValue
+    ? `${displayNameForConnector(input.connectorId, input.manifest)} - ${idValue}`
+    : displayNameForConnector(input.connectorId, input.manifest);
+  const instance = store.upsert({
+    ownerSubjectId: input.ownerSubjectId,
+    connectorId: input.connectorId,
+    displayName,
+    status: "draft",
+    sourceKind: "account",
+    sourceBindingKey,
+    sourceBinding: { kind: "static_secret_draft", setup_fields: input.setupFields },
+    createdAt: now,
+    updatedAt: now,
+  });
+  return { displayName, instance };
+}
+
 // POST /_ref/connectors/:connectorId/draft-connection
 //
 // Owner-session-only. Creates one invisible `draft` connection for a
@@ -374,29 +410,14 @@ export function mountRefStaticSecretDraftConnection(
           return;
         }
 
-        // A fresh random binding key makes every draft a distinct connection
-        // identity (two mailboxes → two connection_ids) and deliberately avoids
-        // the deterministic default-account key, which is the phantom-
-        // resurrection key. The store derives the connector_instance_id from
-        // the binding key.
-        const sourceBindingKey = `draft_${randomBytes(24).toString("hex")}`;
-        const now = ctx.now ? ctx.now() : new Date().toISOString();
-        const store = ctx.createRequestConnectorInstanceStore();
-        const idValue = identityValue(captureSetup.fields, setupFields);
-        const displayName = idValue
-          ? `${displayNameForConnector(connectorId, manifest)} - ${idValue}`
-          : displayNameForConnector(connectorId, manifest);
-        const instance = await store.upsert({
-          ownerSubjectId,
+        const { displayName, instance: pendingInstance } = createDraftConnection(ctx, {
           connectorId,
-          displayName,
-          status: "draft",
-          sourceKind: "account",
-          sourceBindingKey,
-          sourceBinding: { kind: "static_secret_draft", setup_fields: setupFields },
-          createdAt: now,
-          updatedAt: now,
+          manifest,
+          captureSetup,
+          setupFields,
+          ownerSubjectId,
         });
+        const instance = await pendingInstance;
 
         await emitDraftAudit(ctx, req, res, {
           connectionId: instance.connectorInstanceId,

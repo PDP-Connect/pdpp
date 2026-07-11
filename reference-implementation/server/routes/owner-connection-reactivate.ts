@@ -90,6 +90,11 @@ interface ReactivatedInstance {
   readonly status?: string | null;
 }
 
+interface ReactivateTarget {
+  connectionId: string | null;
+  connectorKey: string | null;
+}
+
 export interface MountOwnerConnectionReactivateContext {
   AmbiguousConnectionError: new (
     message: string,
@@ -164,12 +169,10 @@ async function emitReactivateAudit(
   }
 ): Promise<void> {
   const trace = buildAuditTrace(ctx, req, res);
-  const clientId = typeof req.tokenInfo?.client_id === "string" ? req.tokenInfo.client_id : null;
-  const clientName = typeof req.tokenInfo?.client_name === "string" ? req.tokenInfo.client_name : null;
+  const clientId = readTokenString(req.tokenInfo?.client_id);
+  const clientName = readTokenString(req.tokenInfo?.client_name);
   const actorKind = auditActorKind(req);
-  const ownerSubjectId =
-    args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
-  const code = (args.error as { code?: unknown } | null)?.code;
+  const ownerSubjectId = resolveAuditOwnerSubjectId(req, args.ownerSubjectId);
   await ctx.emitSpineEvent({
     event_type: "owner_agent.connection.reactivate",
     trace_id: trace.trace_id,
@@ -181,7 +184,7 @@ async function emitReactivateAudit(
     subject_id: ownerSubjectId,
     client_id: clientId,
     object_type: "connection",
-    object_id: args.connectionId || args.connectorKey || "unknown_connection",
+    object_id: reactivateObjectId(args),
     status: args.outcome,
     data: {
       auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
@@ -194,16 +197,34 @@ async function emitReactivateAudit(
       operation: "reactivate",
       outcome: args.outcome,
       target_resource: "connection",
-      ...(args.error
-        ? {
-            error: {
-              code: typeof code === "string" ? code : "api_error",
-              http_status: httpStatusForOperationError(args.error),
-            },
-          }
-        : {}),
+      ...reactivateAuditError(args.error),
     },
   });
+}
+
+function readTokenString(value: string | null | undefined): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function resolveAuditOwnerSubjectId(req: RouteRequest, ownerSubjectId?: string | null): string | null {
+  return ownerSubjectId ?? readTokenString(req.tokenInfo?.subject_id);
+}
+
+function reactivateObjectId(args: { connectionId?: string | null; connectorKey?: string | null }): string {
+  return args.connectionId || args.connectorKey || "unknown_connection";
+}
+
+function reactivateAuditError(error: unknown): Record<string, unknown> {
+  if (!error) {
+    return {};
+  }
+  const code = (error as { code?: unknown } | null)?.code;
+  return {
+    error: {
+      code: typeof code === "string" ? code : "api_error",
+      http_status: httpStatusForOperationError(error),
+    },
+  };
 }
 
 // Owner-token guard mirroring buildRevokeRequireOwner. Emits a failed-
@@ -273,6 +294,104 @@ async function resolveRevokedConnectorNamespace(
   };
 }
 
+async function resolveConnectionReactivateNamespace(
+  ctx: MountOwnerConnectionReactivateContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  ownerSubjectId: string,
+  target: ReactivateTarget
+): Promise<ConnectorNamespace | null> {
+  const addressed = decodeURIComponent(req.params.connectionId as string);
+  target.connectionId = addressed;
+  try {
+    return await ctx.resolveOwnerConnectorNamespace(req, null, {
+      ownerSubjectId,
+      allowDefaultAccount: false,
+      allowStatuses: ["revoked"],
+      connectorInstanceId: addressed,
+    });
+  } catch (resolveErr) {
+    const code = (resolveErr as { code?: unknown })?.code;
+    if (code === "connector_instance_inactive") {
+      ctx.pdppError(
+        res,
+        409,
+        "connector_instance_not_revoked",
+        `Connection '${addressed}' is not revoked; only revoked connections can be reactivated.`
+      );
+      return null;
+    }
+    throw resolveErr;
+  }
+}
+
+async function resolveConnectorReactivateNamespace(
+  ctx: MountOwnerConnectionReactivateContext,
+  ownerSubjectId: string,
+  target: ReactivateTarget,
+  req: RouteRequest
+): Promise<ConnectorNamespace> {
+  const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
+  target.connectorKey = ctx.canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
+  return resolveRevokedConnectorNamespace(ctx, ownerSubjectId, target.connectorKey);
+}
+
+async function resolveReactivateNamespace(
+  ctx: MountOwnerConnectionReactivateContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  ownerSubjectId: string,
+  selector: "connection_id" | "connector_id",
+  target: ReactivateTarget
+): Promise<ConnectorNamespace | null> {
+  if (selector === "connection_id") {
+    return resolveConnectionReactivateNamespace(ctx, req, res, ownerSubjectId, target);
+  }
+  return resolveConnectorReactivateNamespace(ctx, ownerSubjectId, target, req);
+}
+
+function reactivateTimestamp(ctx: MountOwnerConnectionReactivateContext): string {
+  return ctx.now ? ctx.now() : new Date().toISOString();
+}
+
+async function applyReactivate(
+  ctx: MountOwnerConnectionReactivateContext,
+  connectorInstanceId: string
+): Promise<{ reactivated: ReactivatedInstance; stamp: string }> {
+  const stamp = reactivateTimestamp(ctx);
+  const reactivated = await Promise.resolve(
+    ctx.updateConnectorInstanceStatus(connectorInstanceId, {
+      status: "active",
+      updatedAt: stamp,
+      revokedAt: null,
+    })
+  );
+  ctx.invalidateConnectorSummariesCache?.();
+  // Scoped, awaited dirty marking: reactivation flips status back to active
+  // and clears revoked_at — both durable summary evidence. Instance id known.
+  await ctx.markConnectorSummaryEvidenceDirty?.({
+    connectorInstanceId,
+    reason: "owner reactivate changed connection lifecycle evidence",
+  });
+  return { reactivated, stamp };
+}
+
+function reactivateResponse(
+  connectionId: string | null,
+  connectorKey: string | null,
+  reactivated: ReactivatedInstance,
+  stamp: string
+): Record<string, unknown> {
+  return {
+    object: "owner_connection_reactivate",
+    connection_id: connectionId,
+    connector_id: connectorKey,
+    connector_key: connectorKey,
+    status: reactivated.status ?? "active",
+    reactivated_at: stamp,
+  };
+}
+
 // Shared handler body for both reactivate routes. Resolves the namespace with
 // `allowStatuses: ['revoked']` so that:
 //   - a foreign/unknown id → connector_instance_not_found (404)
@@ -289,88 +408,29 @@ function buildReactivateHandler(
 ): RouteHandler {
   return async (req: RouteRequest, res: RouteResponse) => {
     const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
-    let connectionId: string | null = null;
-    let connectorKey: string | null = null;
+    const target: ReactivateTarget = { connectionId: null, connectorKey: null };
     try {
-      let namespace: ConnectorNamespace;
-      if (selector === "connection_id") {
-        const addressed = decodeURIComponent(req.params.connectionId as string);
-        connectionId = addressed;
-        // Resolve with allowStatuses: ['revoked'] — this bypasses the active-
-        // only gate while retaining ownership verification. A non-revoked
-        // (active/draft) connection surfaces as connector_instance_inactive (400)
-        // from the resolver; we catch and re-label it as
-        // connector_instance_not_revoked (409) so callers get a typed guard.
-        try {
-          namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
-            ownerSubjectId,
-            allowDefaultAccount: false,
-            allowStatuses: ["revoked"],
-            connectorInstanceId: addressed,
-          });
-        } catch (resolveErr) {
-          const code = (resolveErr as { code?: unknown })?.code;
-          if (code === "connector_instance_inactive") {
-            // Connection exists and is owned but not revoked (it's active/draft).
-            ctx.pdppError(
-              res,
-              409,
-              "connector_instance_not_revoked",
-              `Connection '${addressed}' is not revoked; only revoked connections can be reactivated.`
-            );
-            return;
-          }
-          throw resolveErr;
-        }
-      } else {
-        const rawConnectorId = decodeURIComponent(req.params.connectorId as string);
-        connectorKey = ctx.canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
-        // The generic namespace resolver uses `resolveActiveByConnector` for the
-        // connector-only path — it always filters for `status = 'active'` and
-        // ignores `allowStatuses`. For reactivate we need to find the single
-        // REVOKED connection, so we bypass the resolver here and use the
-        // purpose-built `resolveRevokedConnectorNamespace` which calls
-        // `listRevokedConnectionsForConnector`.
-        namespace = await resolveRevokedConnectorNamespace(ctx, ownerSubjectId, connectorKey);
+      const namespace = await resolveReactivateNamespace(ctx, req, res, ownerSubjectId, selector, target);
+      if (!namespace) {
+        return;
       }
 
-      connectionId = namespace.connectorInstanceId;
-      connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
+      target.connectionId = namespace.connectorInstanceId;
+      target.connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
 
-      const stamp = ctx.now ? ctx.now() : new Date().toISOString();
-      const reactivated = await Promise.resolve(
-        ctx.updateConnectorInstanceStatus(namespace.connectorInstanceId, {
-          status: "active",
-          updatedAt: stamp,
-          revokedAt: null,
-        })
-      );
-      ctx.invalidateConnectorSummariesCache?.();
-      // Scoped, awaited dirty marking: reactivation flips status back to active
-      // and clears revoked_at — both durable summary evidence. Instance id known.
-      await ctx.markConnectorSummaryEvidenceDirty?.({
-        connectorInstanceId: namespace.connectorInstanceId,
-        reason: "owner reactivate changed connection lifecycle evidence",
-      });
+      const { reactivated, stamp } = await applyReactivate(ctx, namespace.connectorInstanceId);
       await emitReactivateAudit(ctx, req, res, {
-        connectionId,
-        connectorKey,
+        connectionId: target.connectionId,
+        connectorKey: target.connectorKey,
         outcome: "succeeded",
         ownerSubjectId,
         selector,
       });
-      res.status(200).json({
-        object: "owner_connection_reactivate",
-        connection_id: connectionId,
-        connector_id: connectorKey,
-        connector_key: connectorKey,
-        status: reactivated.status ?? "active",
-        reactivated_at: stamp,
-      });
+      res.status(200).json(reactivateResponse(target.connectionId, target.connectorKey, reactivated, stamp));
     } catch (err) {
       await emitReactivateAudit(ctx, req, res, {
-        connectionId,
-        connectorKey,
+        connectionId: target.connectionId,
+        connectorKey: target.connectorKey,
         error: err,
         outcome: "failed",
         ownerSubjectId,

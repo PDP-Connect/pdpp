@@ -178,27 +178,43 @@ interface ExploreTimelineScope {
   readonly streams?: readonly string[];
 }
 
+type ExploreTimelineScopeKey = keyof Pick<
+  ExploreTimelineScope,
+  "connectionIds" | "streams" | "excludeConnectionIds" | "excludeStreams"
+>;
+
+const SQLITE_SCOPE_RULES: readonly {
+  readonly key: ExploreTimelineScopeKey;
+  readonly clause: (placeholderList: string) => string;
+}[] = [
+  { key: "connectionIds", clause: (placeholders) => `connector_instance_id IN (${placeholders})` },
+  { key: "streams", clause: (placeholders) => `stream IN (${placeholders})` },
+  { key: "excludeConnectionIds", clause: (placeholders) => `connector_instance_id NOT IN (${placeholders})` },
+  { key: "excludeStreams", clause: (placeholders) => `stream NOT IN (${placeholders})` },
+];
+
+const POSTGRES_SCOPE_RULES: readonly {
+  readonly key: ExploreTimelineScopeKey;
+  readonly clause: (parameterIndex: number) => string;
+}[] = [
+  { key: "connectionIds", clause: (index) => `connector_instance_id = ANY($${index}::text[])` },
+  { key: "streams", clause: (index) => `stream = ANY($${index}::text[])` },
+  { key: "excludeConnectionIds", clause: (index) => `connector_instance_id <> ALL($${index}::text[])` },
+  { key: "excludeStreams", clause: (index) => `stream <> ALL($${index}::text[])` },
+];
+
 function appendSqliteScope(
   whereParts: string[],
   binds: (string | number)[],
   scope: ExploreTimelineScope | undefined
 ): void {
-  if (scope?.connectionIds && scope.connectionIds.length > 0) {
-    whereParts.push(`connector_instance_id IN (${scope.connectionIds.map(() => "?").join(", ")})`);
-    binds.push(...scope.connectionIds);
-  }
-  if (scope?.streams && scope.streams.length > 0) {
-    whereParts.push(`stream IN (${scope.streams.map(() => "?").join(", ")})`);
-    binds.push(...scope.streams);
-  }
-  // EXCLUDE: drop excluded partitions at the source so counts stay exact.
-  if (scope?.excludeConnectionIds && scope.excludeConnectionIds.length > 0) {
-    whereParts.push(`connector_instance_id NOT IN (${scope.excludeConnectionIds.map(() => "?").join(", ")})`);
-    binds.push(...scope.excludeConnectionIds);
-  }
-  if (scope?.excludeStreams && scope.excludeStreams.length > 0) {
-    whereParts.push(`stream NOT IN (${scope.excludeStreams.map(() => "?").join(", ")})`);
-    binds.push(...scope.excludeStreams);
+  for (const rule of SQLITE_SCOPE_RULES) {
+    const values = scope?.[rule.key];
+    if (!values || values.length === 0) {
+      continue;
+    }
+    whereParts.push(rule.clause(values.map(() => "?").join(", ")));
+    binds.push(...values);
   }
 }
 
@@ -207,23 +223,32 @@ function appendPostgresScope(
   params: (string | number | readonly string[])[],
   scope: ExploreTimelineScope | undefined
 ): void {
-  if (scope?.connectionIds && scope.connectionIds.length > 0) {
-    params.push(scope.connectionIds);
-    whereParts.push(`connector_instance_id = ANY($${params.length}::text[])`);
+  for (const rule of POSTGRES_SCOPE_RULES) {
+    const values = scope?.[rule.key];
+    if (!values || values.length === 0) {
+      continue;
+    }
+    params.push(values);
+    whereParts.push(rule.clause(params.length));
   }
-  if (scope?.streams && scope.streams.length > 0) {
-    params.push(scope.streams);
-    whereParts.push(`stream = ANY($${params.length}::text[])`);
+}
+
+function parseSqliteRecordJson(recordJson: string): unknown {
+  try {
+    return JSON.parse(recordJson);
+  } catch {
+    return null;
   }
-  // EXCLUDE: drop excluded partitions at the source so counts stay exact.
-  if (scope?.excludeConnectionIds && scope.excludeConnectionIds.length > 0) {
-    params.push(scope.excludeConnectionIds);
-    whereParts.push(`connector_instance_id <> ALL($${params.length}::text[])`);
+}
+
+function parsePostgresRecordJson(recordJson: unknown): unknown {
+  if (recordJson !== null && typeof recordJson === "object") {
+    return recordJson; // Postgres already parses JSONB
   }
-  if (scope?.excludeStreams && scope.excludeStreams.length > 0) {
-    params.push(scope.excludeStreams);
-    whereParts.push(`stream <> ALL($${params.length}::text[])`);
+  if (typeof recordJson !== "string") {
+    return null;
   }
+  return parseSqliteRecordJson(recordJson);
 }
 
 function sqliteListPartitions(scope?: ExploreTimelineScope): readonly ExploreTimelinePartition[] {
@@ -263,55 +288,95 @@ function sqliteFetchSnapshotAnchor(): { snapshotSeq: number; snapshotAt: string 
   return null;
 }
 
+type PartitionPageDirection = "asc" | "desc";
+
+const PARTITION_PAGE_DIRECTION_SQL: Record<PartitionPageDirection, { readonly order: string; readonly seek: string }> = {
+  asc: { order: "ASC", seek: ">" },
+  desc: { order: "DESC", seek: "<" },
+};
+
+function partitionPageDirection(input: PartitionPageInput): PartitionPageDirection {
+  return input.direction === "asc" ? "asc" : "desc";
+}
+
+function partitionPageCursorValues(
+  afterPosition: PartitionPageInput["afterPosition"]
+): readonly [string, string, string] | null {
+  if (afterPosition === null || afterPosition.lastSemanticTime === null || afterPosition.lastRecordKey === null) {
+    return null;
+  }
+  return [afterPosition.lastSemanticTime, afterPosition.lastSemanticTime, afterPosition.lastRecordKey];
+}
+
+function appendSqlitePartitionPageNowCeiling(
+  whereParts: string[],
+  binds: (string | number)[],
+  semanticExpression: string,
+  nowCeiling: PartitionPageInput["nowCeiling"]
+): void {
+  if (typeof nowCeiling !== "string" || nowCeiling.length === 0) {
+    return;
+  }
+  whereParts.push(`${semanticExpression} <= ?`);
+  binds.push(nowCeiling);
+}
+
+function appendSqlitePartitionPageCursor(
+  whereParts: string[],
+  binds: (string | number)[],
+  semanticExpression: string,
+  direction: PartitionPageDirection,
+  afterPosition: PartitionPageInput["afterPosition"]
+): void {
+  const cursorValues = partitionPageCursorValues(afterPosition);
+  if (!cursorValues) {
+    return;
+  }
+  const seek = PARTITION_PAGE_DIRECTION_SQL[direction].seek;
+  whereParts.push(`(${semanticExpression} ${seek} ? OR (${semanticExpression} = ? AND record_key ${seek} ?))`);
+  binds.push(...cursorValues);
+}
+
+function sqlitePartitionPageQuery(input: PartitionPageInput): { readonly sql: string; readonly binds: (string | number)[] } {
+  const { connectorId, stream, snapshotSeq, limit } = input;
+  const direction = partitionPageDirection(input);
+  const directionSql = PARTITION_PAGE_DIRECTION_SQL[direction];
+  const semanticExpression = "COALESCE(NULLIF(semantic_time, ''), emitted_at)";
+  const whereParts: string[] = ["connector_instance_id = ?", "stream = ?", "deleted = 0", "id <= ?"];
+  const binds: (string | number)[] = [connectorId, stream, snapshotSeq];
+  appendSqlitePartitionPageNowCeiling(whereParts, binds, semanticExpression, input.nowCeiling);
+  appendSqlitePartitionPageCursor(whereParts, binds, semanticExpression, direction, input.afterPosition);
+  binds.push(limit + 1);
+  return {
+    binds,
+    sql: `
+      SELECT connector_instance_id AS connectorId, connector_id AS connectorType,
+             stream, record_key AS recordKey,
+             record_json AS recordJson, emitted_at AS emittedAt,
+             ${semanticExpression} AS semanticTime
+      FROM records
+      WHERE ${whereParts.join(" AND ")}
+      ORDER BY ${semanticExpression} ${directionSql.order}, record_key ${directionSql.order}
+      LIMIT ?
+    `,
+  };
+}
+
 function sqliteFetchPartitionPage(input: PartitionPageInput): PartitionPageResult {
   // REVIEWED-DYNAMIC: keyset WHERE clause varies by cursor presence and
   // snapshot anchor; all values are bound as parameters.
-  const { connectorId, stream, snapshotSeq, afterPosition, limit, nowCeiling } = input;
+  const { limit } = input;
   // Scan direction over semantic time. "desc" (default) = newest-first browse;
   // "asc" = the order=oldest re-page (earliest past record first). The keyset
   // seek predicate and the ORDER BY both flip with the direction; the nowCeiling
   // upper-bound clamp is kept either way, so "asc" walks the PAST partition from
   // its floor up to the ceiling and never surfaces the future partition.
-  const direction = input.direction === "asc" ? "asc" : "desc";
-
   // The merged timeline ORDERS by SEMANTIC time (when the thing happened), not
   // ingest time. A row not yet backfilled has semantic_time '' -> COALESCE to
   // emitted_at, so ordering degrades gracefully to the prior behavior until the
   // semantic backfill runs. SNAPSHOT MEMBERSHIP stays on the monotonic ingest
   // sequence (id <= snapshotSeq) — ordering and membership are different keys.
-  const semExpr = "COALESCE(NULLIF(semantic_time, ''), emitted_at)";
-  const whereParts: string[] = ["connector_instance_id = ?", "stream = ?", "deleted = 0", "id <= ?"];
-  const binds: (string | number)[] = [connectorId, stream, snapshotSeq];
-
-  // Clamp the MAIN feed to <= now: future-dated records are surfaced separately
-  // (fetchUpcoming) so they never dominate the newest-first feed above today.
-  if (typeof nowCeiling === "string" && nowCeiling.length > 0) {
-    whereParts.push(`${semExpr} <= ?`);
-    binds.push(nowCeiling);
-  }
-
-  if (afterPosition !== null && afterPosition.lastSemanticTime !== null && afterPosition.lastRecordKey !== null) {
-    // Keyset seek on (semantic_time, record_key): rows strictly AFTER the cursor
-    // position in the scan direction — "<" (older) for desc, ">" (newer) for asc.
-    const seekOp = direction === "asc" ? ">" : "<";
-    whereParts.push(`(${semExpr} ${seekOp} ? OR (${semExpr} = ? AND record_key ${seekOp} ?))`);
-    binds.push(afterPosition.lastSemanticTime, afterPosition.lastSemanticTime, afterPosition.lastRecordKey);
-  }
-
-  // Fetch limit+1 to detect hasMore without an extra COUNT query.
-  binds.push(limit + 1);
-
-  const orderDir = direction === "asc" ? "ASC" : "DESC";
-  const sql = `
-    SELECT connector_instance_id AS connectorId, connector_id AS connectorType,
-           stream, record_key AS recordKey,
-           record_json AS recordJson, emitted_at AS emittedAt,
-           ${semExpr} AS semanticTime
-    FROM records
-    WHERE ${whereParts.join(" AND ")}
-    ORDER BY ${semExpr} ${orderDir}, record_key ${orderDir}
-    LIMIT ?
-  `;
+  const { sql, binds } = sqlitePartitionPageQuery(input);
 
   const rawRows: Array<{
     connectorId: string;
@@ -347,13 +412,7 @@ function sqliteFetchPartitionPage(input: PartitionPageInput): PartitionPageResul
     recordKey: r.recordKey,
     emittedAt: r.emittedAt,
     semanticTime: r.semanticTime,
-    data: (() => {
-      try {
-        return JSON.parse(r.recordJson);
-      } catch {
-        return null;
-      }
-    })(),
+    data: parseSqliteRecordJson(r.recordJson),
   }));
 
   return { rows, hasMore };
@@ -396,75 +455,10 @@ function sqliteFetchUpcoming(input: UpcomingFetchInput): UpcomingFetchResult {
 
   input.partitions.forEach((partition, partitionIndex) => {
     const after = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream)) ?? null;
-    const binds: (string | number)[] = [partition.connectorId, partition.stream, input.snapshotSeq, input.nowCeiling];
-    let where = `connector_instance_id = ? AND stream = ? AND deleted = 0 AND id <= ? AND ${semExpr} > ?`;
-    // Resume strictly AFTER this partition's carried ASC position (seek predicate).
-    if (after && after.lastSemanticTime !== null && after.lastRecordKey !== null) {
-      where += ` AND (${semExpr} > ? OR (${semExpr} = ? AND record_key > ?))`;
-      binds.push(after.lastSemanticTime, after.lastSemanticTime, after.lastRecordKey);
-    }
-
-    if (computeTotal) {
-      // The TRUE total counts ALL future records in the partition regardless of the
-      // cursor seek — so count on the FIRST upcoming page (no afterPositions) using
-      // the base predicate. On the first page `after` is null, so `where` is the base.
-      for (const row of iterateDynamicSqlAcknowledged<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM records WHERE ${where}`,
-        binds
-      )) {
-        total += Number(row.n) || 0;
-        break;
-      }
-    }
-
-    // Soonest-first head from THIS partition, index-backed. Fetch limit + 1: the
-    // extra row is a sentinel proving the partition has more than `limit` of its own.
-    const rowsSql = `
-      SELECT connector_instance_id AS connectorId, connector_id AS connectorType,
-             stream, record_key AS recordKey,
-             record_json AS recordJson, emitted_at AS emittedAt,
-             ${semExpr} AS semanticTime
-      FROM records
-      WHERE ${where}
-      ORDER BY ${semExpr} ASC, record_key ASC
-      LIMIT ?
-    `;
-    let taken = 0;
-    let overflow = false;
-    for (const r of iterateDynamicSqlAcknowledged<{
-      connectorId: string;
-      connectorType: string;
-      stream: string;
-      recordKey: string;
-      recordJson: string;
-      emittedAt: string;
-      semanticTime: string;
-    }>(rowsSql, [...binds, input.limit + 1])) {
-      if (taken >= input.limit) {
-        overflow = true;
-        break;
-      }
-      tagged.push({
-        partitionIndex,
-        row: {
-          connectorId: r.connectorId,
-          connectorType: r.connectorType,
-          stream: r.stream,
-          recordKey: r.recordKey,
-          emittedAt: r.emittedAt,
-          semanticTime: r.semanticTime,
-          data: (() => {
-            try {
-              return JSON.parse(r.recordJson);
-            } catch {
-              return null;
-            }
-          })(),
-        },
-      });
-      taken += 1;
-    }
-    partitionOverflow[partitionIndex] = overflow;
+    const fetched = sqliteFetchUpcomingPartition(input, semExpr, computeTotal, partition, partitionIndex, after);
+    total += fetched.total;
+    tagged.push(...fetched.tagged);
+    partitionOverflow[partitionIndex] = fetched.overflow;
   });
 
   return finalizeUpcoming({
@@ -479,6 +473,101 @@ function sqliteFetchUpcoming(input: UpcomingFetchInput): UpcomingFetchResult {
 interface TaggedUpcomingRow {
   readonly partitionIndex: number;
   readonly row: PartitionRow;
+}
+
+interface SqliteUpcomingQuery {
+  readonly where: string;
+  readonly binds: (string | number)[];
+}
+
+interface UpcomingPartitionFetch {
+  readonly total: number;
+  readonly tagged: readonly TaggedUpcomingRow[];
+  readonly overflow: boolean;
+}
+
+function sqliteUpcomingQuery(
+  input: UpcomingFetchInput,
+  semanticExpression: string,
+  partition: ExploreTimelinePartition,
+  after: UpcomingPartitionPosition | null
+): SqliteUpcomingQuery {
+  const binds: (string | number)[] = [partition.connectorId, partition.stream, input.snapshotSeq, input.nowCeiling];
+  let where = `connector_instance_id = ? AND stream = ? AND deleted = 0 AND id <= ? AND ${semanticExpression} > ?`;
+  if (after && after.lastSemanticTime !== null && after.lastRecordKey !== null) {
+    where += ` AND (${semanticExpression} > ? OR (${semanticExpression} = ? AND record_key > ?))`;
+    binds.push(after.lastSemanticTime, after.lastSemanticTime, after.lastRecordKey);
+  }
+  return { where, binds };
+}
+
+function sqliteCountUpcomingRows(query: SqliteUpcomingQuery): number {
+  for (const row of iterateDynamicSqlAcknowledged<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM records WHERE ${query.where}`,
+    query.binds
+  )) {
+    return Number(row.n) || 0;
+  }
+  return 0;
+}
+
+function sqliteFetchUpcomingTaggedRows(
+  input: UpcomingFetchInput,
+  semanticExpression: string,
+  partitionIndex: number,
+  query: SqliteUpcomingQuery
+): { readonly tagged: readonly TaggedUpcomingRow[]; readonly overflow: boolean } {
+  const sql = `
+    SELECT connector_instance_id AS connectorId, connector_id AS connectorType,
+           stream, record_key AS recordKey,
+           record_json AS recordJson, emitted_at AS emittedAt,
+           ${semanticExpression} AS semanticTime
+    FROM records
+    WHERE ${query.where}
+    ORDER BY ${semanticExpression} ASC, record_key ASC
+    LIMIT ?
+  `;
+  const tagged: TaggedUpcomingRow[] = [];
+  for (const row of iterateDynamicSqlAcknowledged<{
+    connectorId: string;
+    connectorType: string;
+    stream: string;
+    recordKey: string;
+    recordJson: string;
+    emittedAt: string;
+    semanticTime: string;
+  }>(sql, [...query.binds, input.limit + 1])) {
+    if (tagged.length >= input.limit) {
+      return { tagged, overflow: true };
+    }
+    tagged.push({
+      partitionIndex,
+      row: {
+        connectorId: row.connectorId,
+        connectorType: row.connectorType,
+        stream: row.stream,
+        recordKey: row.recordKey,
+        emittedAt: row.emittedAt,
+        semanticTime: row.semanticTime,
+        data: parseSqliteRecordJson(row.recordJson),
+      },
+    });
+  }
+  return { tagged, overflow: false };
+}
+
+function sqliteFetchUpcomingPartition(
+  input: UpcomingFetchInput,
+  semanticExpression: string,
+  computeTotal: boolean,
+  partition: ExploreTimelinePartition,
+  partitionIndex: number,
+  after: UpcomingPartitionPosition | null
+): UpcomingPartitionFetch {
+  const query = sqliteUpcomingQuery(input, semanticExpression, partition, after);
+  const total = computeTotal ? sqliteCountUpcomingRows(query) : 0;
+  const { tagged, overflow } = sqliteFetchUpcomingTaggedRows(input, semanticExpression, partitionIndex, query);
+  return { total, tagged, overflow };
 }
 
 /** Stable key for matching afterPositions to partitions: connector_instance_id + stream. */
@@ -518,6 +607,10 @@ interface NextUpcomingPositionLookups {
   readonly partitionOverflow: readonly boolean[];
 }
 
+function partitionHasMoreUpcomingRows(partitionIndex: number, lookups: NextUpcomingPositionLookups): boolean {
+  return (lookups.partitionOverflow[partitionIndex] ?? false) || lookups.cutByPartition.has(partitionIndex);
+}
+
 /**
  * Per-partition cursor policy: whether this partition appears in the next-page
  * cursor and at WHICH resume position. Returns null when the partition is
@@ -531,10 +624,8 @@ function nextUpcomingPositionForPartition(
   partitionIndex: number,
   lookups: NextUpcomingPositionLookups
 ): UpcomingPartitionPosition | null {
-  const { lastEmittedByPartition, partitionOverflow, cutByPartition, afterByKey } = lookups;
-  const lastEmitted = lastEmittedByPartition.get(partitionIndex);
-  const hasMore = (partitionOverflow[partitionIndex] ?? false) || cutByPartition.has(partitionIndex);
-  if (!hasMore) {
+  const lastEmitted = lookups.lastEmittedByPartition.get(partitionIndex);
+  if (!partitionHasMoreUpcomingRows(partitionIndex, lookups)) {
     return null; // exhausted: omit from the next cursor
   }
   if (lastEmitted) {
@@ -548,7 +639,7 @@ function nextUpcomingPositionForPartition(
   }
   // Contributed nothing to this page but still has rows (all after the cut):
   // carry its incoming position unchanged so the next page re-probes from there.
-  const incoming = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream));
+  const incoming = lookups.afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream));
   return {
     connectorId: partition.connectorId,
     connectorType: partition.connectorType,
@@ -694,13 +785,40 @@ async function postgresFetchSnapshotAnchor(): Promise<{ snapshotSeq: number; sna
   };
 }
 
+function postgresPartitionPageNowCeilingClause(
+  params: (string | number)[],
+  semanticExpression: string,
+  nowCeiling: PartitionPageInput["nowCeiling"]
+): string {
+  if (typeof nowCeiling !== "string" || nowCeiling.length === 0) {
+    return "";
+  }
+  params.push(nowCeiling);
+  return `AND ${semanticExpression} <= $${params.length}`;
+}
+
+function postgresPartitionPageCursorClause(
+  params: (string | number)[],
+  semanticExpression: string,
+  direction: PartitionPageDirection,
+  afterPosition: PartitionPageInput["afterPosition"]
+): string {
+  const cursorValues = partitionPageCursorValues(afterPosition);
+  if (!cursorValues) {
+    return "";
+  }
+  params.push(...cursorValues);
+  const seek = PARTITION_PAGE_DIRECTION_SQL[direction].seek;
+  return `AND (${semanticExpression} ${seek} $${params.length - 2} OR (${semanticExpression} = $${params.length - 1} AND record_key ${seek} $${params.length}))`;
+}
+
 async function postgresFetchPartitionPage(input: PartitionPageInput): Promise<PartitionPageResult> {
   const { connectorId, stream, snapshotSeq, afterPosition, limit, nowCeiling } = input;
   // Scan direction over semantic time. "desc" (default) = newest-first; "asc" =
   // the order=oldest re-page. The keyset seek predicate and ORDER BY flip with
   // it; the nowCeiling clamp is kept either way (asc walks the PAST partition
   // floor→ceiling, never the future partition).
-  const direction = input.direction === "asc" ? "asc" : "desc";
+  const direction = partitionPageDirection(input);
 
   // The merged timeline ORDERS by SEMANTIC time (when the thing happened), not
   // ingest time. A row not yet backfilled has semantic_time '' -> COALESCE to
@@ -715,24 +833,12 @@ async function postgresFetchPartitionPage(input: PartitionPageInput): Promise<Pa
 
   // Clamp the MAIN feed to <= now: future-dated records are surfaced separately
   // (fetchUpcoming) so they never dominate the newest-first feed above today.
-  let nowClause = "";
-  if (typeof nowCeiling === "string" && nowCeiling.length > 0) {
-    params.push(nowCeiling);
-    nowClause = `AND ${semExpr} <= $${params.length}`;
-  }
-
-  const seekOp = direction === "asc" ? ">" : "<";
-  let cursorClause = "";
-  if (afterPosition !== null && afterPosition.lastSemanticTime !== null && afterPosition.lastRecordKey !== null) {
-    // Keyset seek on (semantic_time, record_key): rows strictly AFTER the cursor
-    // position in the scan direction — "<" (older) for desc, ">" (newer) for asc.
-    params.push(afterPosition.lastSemanticTime, afterPosition.lastSemanticTime, afterPosition.lastRecordKey);
-    cursorClause = `AND (${semExpr} ${seekOp} $${params.length - 2} OR (${semExpr} = $${params.length - 1} AND record_key ${seekOp} $${params.length}))`;
-  }
+  const nowClause = postgresPartitionPageNowCeilingClause(params, semExpr, nowCeiling);
+  const cursorClause = postgresPartitionPageCursorClause(params, semExpr, direction, afterPosition);
 
   params.push(limit + 1);
 
-  const orderDir = direction === "asc" ? "ASC" : "DESC";
+  const orderDir = PARTITION_PAGE_DIRECTION_SQL[direction].order;
   const result = await postgresQuery(
     `SELECT connector_instance_id AS "connectorId", connector_id AS "connectorType",
             stream, record_key AS "recordKey", record_json AS "recordJson",
@@ -768,19 +874,7 @@ async function postgresFetchPartitionPage(input: PartitionPageInput): Promise<Pa
     recordKey: r.recordKey,
     emittedAt: r.emittedAt,
     semanticTime: r.semanticTime,
-    data: (() => {
-      if (r.recordJson !== null && typeof r.recordJson === "object") {
-        return r.recordJson; // Postgres already parses JSONB
-      }
-      if (typeof r.recordJson === "string") {
-        try {
-          return JSON.parse(r.recordJson);
-        } catch {
-          return null;
-        }
-      }
-      return null;
-    })(),
+    data: parsePostgresRecordJson(r.recordJson),
   }));
 
   return { rows, hasMore };
@@ -813,80 +907,10 @@ async function postgresFetchUpcoming(input: UpcomingFetchInput): Promise<Upcomin
 
   for (const [partitionIndex, partition] of input.partitions.entries()) {
     const after = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream)) ?? null;
-    let where = `connector_instance_id = $1 AND stream = $2 AND deleted = FALSE AND id <= $3 AND ${semExpr} > $4`;
-    const baseParams: (string | number)[] = [
-      partition.connectorId,
-      partition.stream,
-      input.snapshotSeq,
-      input.nowCeiling,
-    ];
-    // Resume strictly AFTER this partition's carried ASC position (seek predicate).
-    if (after && after.lastSemanticTime !== null && after.lastRecordKey !== null) {
-      where += ` AND (${semExpr} > $5 OR (${semExpr} = $5 AND record_key > $6))`;
-      baseParams.push(after.lastSemanticTime, after.lastRecordKey);
-    }
-
-    if (computeTotal) {
-      const countResult = await postgresQuery(`SELECT COUNT(*)::bigint AS n FROM records WHERE ${where}`, baseParams);
-      total += Number(countResult.rows[0]?.n ?? 0);
-    }
-
-    // Fetch limit + 1: the extra row is a sentinel proving this partition has more
-    // than `limit` of its own (the next placeholder index follows baseParams).
-    const limitPlaceholder = `$${baseParams.length + 1}`;
-    const rowsResult = await postgresQuery(
-      `SELECT connector_instance_id AS "connectorId", connector_id AS "connectorType",
-              stream, record_key AS "recordKey", record_json AS "recordJson",
-              emitted_at AS "emittedAt", ${semExpr} AS "semanticTime"
-       FROM records
-       WHERE ${where}
-       ORDER BY ${semExpr} ASC, record_key ASC
-       LIMIT ${limitPlaceholder}`,
-      [...baseParams, input.limit + 1]
-    );
-    const rows = rowsResult.rows as Array<{
-      connectorId: string;
-      connectorType: string;
-      stream: string;
-      recordKey: string;
-      recordJson: unknown;
-      emittedAt: string;
-      semanticTime: string;
-    }>;
-    let taken = 0;
-    let overflow = false;
-    for (const r of rows) {
-      if (taken >= input.limit) {
-        overflow = true;
-        break;
-      }
-      tagged.push({
-        partitionIndex,
-        row: {
-          connectorId: r.connectorId,
-          connectorType: r.connectorType,
-          stream: r.stream,
-          recordKey: r.recordKey,
-          emittedAt: r.emittedAt,
-          semanticTime: r.semanticTime,
-          data: (() => {
-            if (r.recordJson !== null && typeof r.recordJson === "object") {
-              return r.recordJson; // Postgres already parses JSONB
-            }
-            if (typeof r.recordJson === "string") {
-              try {
-                return JSON.parse(r.recordJson);
-              } catch {
-                return null;
-              }
-            }
-            return null;
-          })(),
-        },
-      });
-      taken += 1;
-    }
-    partitionOverflow[partitionIndex] = overflow;
+    const fetched = await postgresFetchUpcomingPartition(input, semExpr, computeTotal, partition, partitionIndex, after);
+    total += fetched.total;
+    tagged.push(...fetched.tagged);
+    partitionOverflow[partitionIndex] = fetched.overflow;
   }
 
   return finalizeUpcoming({
@@ -895,6 +919,91 @@ async function postgresFetchUpcoming(input: UpcomingFetchInput): Promise<Upcomin
     partitionOverflow,
     total: computeTotal ? total : 0,
   });
+}
+
+interface PostgresUpcomingQuery {
+  readonly where: string;
+  readonly params: (string | number)[];
+}
+
+function postgresUpcomingQuery(
+  input: UpcomingFetchInput,
+  semanticExpression: string,
+  partition: ExploreTimelinePartition,
+  after: UpcomingPartitionPosition | null
+): PostgresUpcomingQuery {
+  let where = `connector_instance_id = $1 AND stream = $2 AND deleted = FALSE AND id <= $3 AND ${semanticExpression} > $4`;
+  const params: (string | number)[] = [partition.connectorId, partition.stream, input.snapshotSeq, input.nowCeiling];
+  if (after && after.lastSemanticTime !== null && after.lastRecordKey !== null) {
+    where += ` AND (${semanticExpression} > $5 OR (${semanticExpression} = $5 AND record_key > $6))`;
+    params.push(after.lastSemanticTime, after.lastRecordKey);
+  }
+  return { where, params };
+}
+
+async function postgresCountUpcomingRows(query: PostgresUpcomingQuery): Promise<number> {
+  const result = await postgresQuery(`SELECT COUNT(*)::bigint AS n FROM records WHERE ${query.where}`, query.params);
+  return Number(result.rows[0]?.n ?? 0);
+}
+
+async function postgresFetchUpcomingTaggedRows(
+  input: UpcomingFetchInput,
+  semanticExpression: string,
+  partitionIndex: number,
+  query: PostgresUpcomingQuery
+): Promise<{ readonly tagged: readonly TaggedUpcomingRow[]; readonly overflow: boolean }> {
+  const limitPlaceholder = `$${query.params.length + 1}`;
+  const result = await postgresQuery(
+    `SELECT connector_instance_id AS "connectorId", connector_id AS "connectorType",
+            stream, record_key AS "recordKey", record_json AS "recordJson",
+            emitted_at AS "emittedAt", ${semanticExpression} AS "semanticTime"
+     FROM records
+     WHERE ${query.where}
+     ORDER BY ${semanticExpression} ASC, record_key ASC
+     LIMIT ${limitPlaceholder}`,
+    [...query.params, input.limit + 1]
+  );
+  const tagged: TaggedUpcomingRow[] = [];
+  for (const row of result.rows as Array<{
+    connectorId: string;
+    connectorType: string;
+    stream: string;
+    recordKey: string;
+    recordJson: unknown;
+    emittedAt: string;
+    semanticTime: string;
+  }>) {
+    if (tagged.length >= input.limit) {
+      return { tagged, overflow: true };
+    }
+    tagged.push({
+      partitionIndex,
+      row: {
+        connectorId: row.connectorId,
+        connectorType: row.connectorType,
+        stream: row.stream,
+        recordKey: row.recordKey,
+        emittedAt: row.emittedAt,
+        semanticTime: row.semanticTime,
+        data: parsePostgresRecordJson(row.recordJson),
+      },
+    });
+  }
+  return { tagged, overflow: false };
+}
+
+async function postgresFetchUpcomingPartition(
+  input: UpcomingFetchInput,
+  semanticExpression: string,
+  computeTotal: boolean,
+  partition: ExploreTimelinePartition,
+  partitionIndex: number,
+  after: UpcomingPartitionPosition | null
+): Promise<UpcomingPartitionFetch> {
+  const query = postgresUpcomingQuery(input, semanticExpression, partition, after);
+  const total = computeTotal ? await postgresCountUpcomingRows(query) : 0;
+  const { tagged, overflow } = await postgresFetchUpcomingTaggedRows(input, semanticExpression, partitionIndex, query);
+  return { total, tagged, overflow };
 }
 
 export function buildPostgresExploreTimelineDeps(): ExploreTimelineDependencies {

@@ -135,34 +135,62 @@ export interface MountRsHostedMcpContext {
   readonly trustedMetadataHosts: string | null | undefined;
 }
 
-function buildMcpWebRequest(req: RouteRequest, resource: string): Request {
-  const url = new URL(req.raw?.url ?? req.url ?? req.path ?? "/mcp", resource);
+function addMcpWebRequestHeader(headers: Headers, name: string, value: string | string[] | undefined): void {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      headers.append(name, String(item));
+    }
+    return;
+  }
+  if (value !== undefined) {
+    headers.set(name, String(value));
+  }
+}
+
+function buildMcpWebRequestHeaders(req: RouteRequest): Headers {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        headers.append(name, String(item));
-      }
-    } else if (value !== undefined) {
-      headers.set(name, String(value));
-    }
+    addMcpWebRequestHeader(headers, name, value);
+  }
+  return headers;
+}
+
+function buildMcpWebRequestBody(req: RouteRequest, headers: Headers): Buffer | string | undefined {
+  if (["GET", "HEAD"].includes(req.method)) {
+    return undefined;
+  }
+  if (Buffer.isBuffer(req.body) || typeof req.body === "string") {
+    return req.body as Buffer | string;
+  }
+  if (req.body === undefined) {
+    return undefined;
   }
 
-  let body: Buffer | string | undefined;
-  if (!["GET", "HEAD"].includes(req.method)) {
-    if (Buffer.isBuffer(req.body) || typeof req.body === "string") {
-      body = req.body as Buffer | string;
-    } else if (req.body !== undefined) {
-      body = JSON.stringify(req.body);
-      if (!headers.has("content-type")) {
-        headers.set("content-type", "application/json");
-      }
-    }
+  const body = JSON.stringify(req.body);
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json");
   }
+  return body;
+}
 
+function buildMcpWebRequestInit(req: RouteRequest, headers: Headers): RequestInit {
+  const body = buildMcpWebRequestBody(req, headers);
   const init: RequestInit =
     body === undefined ? { method: req.method, headers } : { method: req.method, headers, body };
+  return init;
+}
+
+function buildMcpWebRequest(req: RouteRequest, resource: string): Request {
+  const url = new URL(req.raw?.url ?? req.url ?? req.path ?? "/mcp", resource);
+  const headers = buildMcpWebRequestHeaders(req);
+  const init = buildMcpWebRequestInit(req, headers);
   return new Request(url.toString(), init);
+}
+
+function extractInboundMcpToken(req: RouteRequest): string {
+  const authHeader = req.headers.authorization;
+  const authValue = Array.isArray(authHeader) ? (authHeader[0] ?? "") : (authHeader ?? "");
+  return authValue.slice(7);
 }
 
 interface SendWebResponseOptions {
@@ -227,6 +255,81 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     next();
   }
 
+  async function buildPackageMcpServerOptions(
+    req: RouteRequest,
+    res: RouteResponse,
+    resource: string,
+    internalBase: string
+  ): Promise<McpServerOptions | null> {
+    const access = await ctx.getGrantPackageAccess(req.tokenInfo!.grant_package_id as string);
+    if (!access || access.members.length === 0) {
+      ctx.pdppError(res, 403, "package_revoked", "Grant package is revoked or has no active members");
+      return null;
+    }
+    const rsClient = ctx.createPackageRsClient({
+      // Child self-calls use the internal base, not the public edge.
+      providerUrl: internalBase,
+      members: access.members,
+      fetch: globalThis.fetch,
+    });
+    const mcpServerOptions = {
+      providerUrl: resource,
+      rsClient,
+      fetch: globalThis.fetch,
+      serverIcons: hostedMcpIcons(resource),
+      serverName: "pdpp-reference-mcp",
+      serverVersion: referenceRevision,
+    } satisfies McpServerOptions;
+    res.setHeader("x-pdpp-grant-package-id", req.tokenInfo!.grant_package_id as string);
+    res.setHeader("x-pdpp-grant-package-member-count", String(access.members.length));
+    return mcpServerOptions;
+  }
+
+  function buildStandaloneMcpServerOptions(
+    resource: string,
+    internalBase: string,
+    accessToken: string
+  ): McpServerOptions {
+    // Standalone (`client`-token) path: build the single-bearer RsClient
+    // against the internal base so its self-calls avoid the public-edge
+    // hairpin too — parity with the package path's child clients. The
+    // advertised `providerUrl`
+    // stays the public `resource` (display/provenance only; all fetches go
+    // through the injected rsClient). When no internal base is configured,
+    // internalBase === resource, so this is a no-op vs prior behavior.
+    const rsClient = ctx.createRsClient({
+      providerUrl: internalBase,
+      accessToken,
+      fetch: globalThis.fetch,
+    });
+    return {
+      providerUrl: resource,
+      rsClient,
+      fetch: globalThis.fetch,
+      serverIcons: hostedMcpIcons(resource),
+      serverName: "pdpp-reference-mcp",
+      serverVersion: referenceRevision,
+    };
+  }
+
+  async function buildHostedMcpServerOptions(
+    req: RouteRequest,
+    res: RouteResponse,
+    resource: string,
+    internalBase: string,
+    inboundToken: string
+  ): Promise<McpServerOptions | null> {
+    if (req.tokenInfo?.pdpp_token_kind === "mcp_package") {
+      return buildPackageMcpServerOptions(
+        req,
+        res,
+        resource,
+        internalBase
+      );
+    }
+    return buildStandaloneMcpServerOptions(resource, internalBase, inboundToken);
+  }
+
   async function handleHostedMcp(req: RouteRequest, res: RouteResponse): Promise<void> {
     // Advertised identity (what clients discover and call) — always public.
     const resource = resolvePublicUrl(req, explicitResource);
@@ -236,54 +339,11 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     // The internal base is fetch-only: it is never advertised, never written
     // into discovery metadata, and never carried in issued-token audiences.
     const internalBase = internalResource ?? resource;
-    const authHeader = req.headers.authorization;
-    const authValue = Array.isArray(authHeader) ? (authHeader[0] ?? "") : (authHeader ?? "");
-    const inboundToken = authValue.slice(7);
+    const inboundToken = extractInboundMcpToken(req);
 
-    let mcpServerOptions: McpServerOptions;
-    if (req.tokenInfo?.pdpp_token_kind === "mcp_package") {
-      const access = await ctx.getGrantPackageAccess(req.tokenInfo.grant_package_id as string);
-      if (!access || access.members.length === 0) {
-        ctx.pdppError(res, 403, "package_revoked", "Grant package is revoked or has no active members");
-        return;
-      }
-      const rsClient = ctx.createPackageRsClient({
-        // Child self-calls use the internal base, not the public edge.
-        providerUrl: internalBase,
-        members: access.members,
-        fetch: globalThis.fetch,
-      });
-      mcpServerOptions = {
-        providerUrl: resource,
-        rsClient,
-        fetch: globalThis.fetch,
-        serverIcons: hostedMcpIcons(resource),
-        serverName: "pdpp-reference-mcp",
-        serverVersion: referenceRevision,
-      };
-      res.setHeader("x-pdpp-grant-package-id", req.tokenInfo.grant_package_id as string);
-      res.setHeader("x-pdpp-grant-package-member-count", String(access.members.length));
-    } else {
-      // Standalone (`client`-token) path: build the single-bearer RsClient
-      // against the internal base so its self-calls avoid the public-edge
-      // hairpin too — parity with the package path's child clients. The
-      // advertised `providerUrl`
-      // stays the public `resource` (display/provenance only; all fetches go
-      // through the injected rsClient). When no internal base is configured,
-      // internalBase === resource, so this is a no-op vs prior behavior.
-      const rsClient = ctx.createRsClient({
-        providerUrl: internalBase,
-        accessToken: inboundToken,
-        fetch: globalThis.fetch,
-      });
-      mcpServerOptions = {
-        providerUrl: resource,
-        rsClient,
-        fetch: globalThis.fetch,
-        serverIcons: hostedMcpIcons(resource),
-        serverName: "pdpp-reference-mcp",
-        serverVersion: referenceRevision,
-      };
+    const mcpServerOptions = await buildHostedMcpServerOptions(req, res, resource, internalBase, inboundToken);
+    if (!mcpServerOptions) {
+      return;
     }
 
     const webRequest = buildMcpWebRequest(req, resource);

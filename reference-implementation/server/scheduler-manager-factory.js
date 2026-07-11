@@ -34,6 +34,66 @@ import { createScheduler } from '../runtime/scheduler.ts';
 import { SOURCE_PRESSURE_GAP_REASONS } from '../runtime/scheduler-source-pressure-cooldown.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 
+const SURFACE_UNAVAILABLE_HANDLE_STATUSES = Object.freeze([
+  'run_browser_surface_queued',
+  'browser_surface_probe_failed',
+  'browser_surface_lost',
+  'surface_failed',
+]);
+
+function projectManagedControllerTerminalRun(handle, terminalStatus, terminalEvent) {
+  const terminalData = terminalEvent && terminalEvent.data && typeof terminalEvent.data === 'object'
+    ? terminalEvent.data
+    : {};
+  return {
+    run_id: handle.run_id,
+    trace_id: handle.trace_id,
+    status: terminalStatus,
+    connector_error: terminalData.connector_error || null,
+    failure_reason: terminalData.reason || null,
+    known_gaps: Array.isArray(terminalData.known_gaps) ? terminalData.known_gaps : [],
+    terminal_reason: terminalData.terminal_reason || null,
+  };
+}
+
+function createRunManagedConnectorViaController(controller) {
+  if (!controller?.browserSurfaceLeaseManager) {
+    return null;
+  }
+
+  return async (connectorId, opts) => {
+    if (!controller.browserSurfaceLeaseManager.isManagedConnector(connectorId)) {
+      // Not a managed connector — signal launchRun to use the direct
+      // runConnector path (no lease needed).
+      return null;
+    }
+    const handle = await controller.runNow(connectorId, {
+      connectorInstanceId: opts.connectorInstanceId,
+      ownerToken: opts.ownerToken,
+      priorityClass: opts.priorityClass,
+      triggerKind: opts.triggerKind,
+      rsUrl: opts.rsUrl,
+      referenceBaseUrl: opts.referenceBaseUrl,
+    });
+    // Early-exit statuses (browser_surface_queued, surface_failed, etc.)
+    // mean no run was started — return the handle as-is for the scheduler's
+    // surface-unavailable skip path.
+    if (handle.status && SURFACE_UNAVAILABLE_HANDLE_STATUSES.includes(handle.status)) {
+      return handle;
+    }
+    // Run was dispatched (status "started"). Await its real terminal
+    // outcome so the scheduler records the true succeeded/failed status
+    // and its failure-streak / back-off machinery fires correctly.
+    // controller.awaitRun waits for activeRunPromises[runId] to settle
+    // (the .finally() cleanup chain), then reads the spine terminal event.
+    // No deadlock risk: the run has its own wall-clock budget; a hung run
+    // is the run's responsibility, matching the old runConnector await.
+    const terminalStatus = await controller.awaitRun(handle.run_id);
+    const terminalEvent = await getRunTerminalEvent(handle.run_id);
+    return projectManagedControllerTerminalRun(handle, terminalStatus, terminalEvent);
+  };
+}
+
 export function createReferenceSchedulerManager({
   controller,
   logger,
@@ -153,56 +213,7 @@ export function createReferenceSchedulerManager({
       // throws run_already_active when a run is already in-flight; the
       // scheduler's own runtime.activeRuns guard prevents double-dispatch
       // from within the scheduler.
-      runManagedConnectorViaController: controller?.browserSurfaceLeaseManager
-        ? async (connectorId, opts) => {
-            if (!controller.browserSurfaceLeaseManager.isManagedConnector(connectorId)) {
-              // Not a managed connector — signal launchRun to use the direct
-              // runConnector path (no lease needed).
-              return null;
-            }
-            const handle = await controller.runNow(connectorId, {
-              connectorInstanceId: opts.connectorInstanceId,
-              ownerToken: opts.ownerToken,
-              priorityClass: opts.priorityClass,
-              triggerKind: opts.triggerKind,
-              rsUrl: opts.rsUrl,
-              referenceBaseUrl: opts.referenceBaseUrl,
-            });
-            // Early-exit statuses (browser_surface_queued, surface_failed, etc.)
-            // mean no run was started — return the handle as-is for the scheduler's
-            // surface-unavailable skip path.
-            const surfaceUnavailableStatuses = new Set([
-              'run_browser_surface_queued',
-              'browser_surface_probe_failed',
-              'browser_surface_lost',
-              'surface_failed',
-            ]);
-            if (handle.status && surfaceUnavailableStatuses.has(handle.status)) {
-              return handle;
-            }
-            // Run was dispatched (status "started"). Await its real terminal
-            // outcome so the scheduler records the true succeeded/failed status
-            // and its failure-streak / back-off machinery fires correctly.
-            // controller.awaitRun waits for activeRunPromises[runId] to settle
-            // (the .finally() cleanup chain), then reads the spine terminal event.
-            // No deadlock risk: the run has its own wall-clock budget; a hung run
-            // is the run's responsibility, matching the old runConnector await.
-            const terminalStatus = await controller.awaitRun(handle.run_id);
-            const terminalEvent = await getRunTerminalEvent(handle.run_id);
-            const terminalData = terminalEvent && terminalEvent.data && typeof terminalEvent.data === 'object'
-              ? terminalEvent.data
-              : {};
-            return {
-              run_id: handle.run_id,
-              trace_id: handle.trace_id,
-              status: terminalStatus,
-              connector_error: terminalData.connector_error || null,
-              failure_reason: terminalData.reason || null,
-              known_gaps: Array.isArray(terminalData.known_gaps) ? terminalData.known_gaps : [],
-              terminal_reason: terminalData.terminal_reason || null,
-            };
-          }
-        : null,
+      runManagedConnectorViaController: createRunManagedConnectorViaController(controller),
       // Recognize managed (browser-surface-leased) connectors so the scheduler
       // can DEFER a scheduled tick when the managed-routing seam above is not
       // wired yet (controller boot race), instead of cold-dispatching a fresh

@@ -189,10 +189,18 @@ export function progressMode(input: {
   if (input.schedule?.enabled !== true) {
     return "manual";
   }
-  if (isExplicitOwnerScheduledManual(input.refresh, input.schedule)) {
+  return scheduledProgressMode(input.refresh, input.schedule);
+}
+
+/** An enabled schedule still reads `manual` progress unless it is genuinely automatic. */
+function scheduledProgressMode(
+  refresh: ConnectionRefreshEvidence | null,
+  schedule: ConnectionScheduleEvidence | null
+): ProgressMode {
+  if (isExplicitOwnerScheduledManual(refresh, schedule)) {
     return "scheduled";
   }
-  if (isManualRefreshOnly(input.refresh)) {
+  if (isManualRefreshOnly(refresh)) {
     return "manual";
   }
   return "scheduled";

@@ -64,6 +64,36 @@ const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const NEKO_PRIVATE_HOSTS = new Set([...LOOPBACK_HOSTS, 'neko']);
+const WS_PROTOCOLS = new Set(['ws:', 'wss:']);
+const HTTP_PROTOCOLS = new Set(['http:', 'https:']);
+const NEKO_HTTP_URL_FIELDS = {
+  base: {
+    inputName: 'base_url',
+    outputName: 'baseUrl',
+    missingMessage: 'base_url is required',
+    trailingSlash: 'remove',
+  },
+  cdp: {
+    inputName: 'cdp_http_url',
+    outputName: 'cdpHttpUrl',
+    missingMessage: 'cdp_http_url must be a non-empty URL when provided',
+    trailingSlash: 'add',
+  },
+};
+const NEKO_OPTIONAL_DESCRIPTOR_FIELDS = [
+  { key: 'start_url', sourceNames: ['start_url', 'startUrl'], inputNames: ['start_url', 'startUrl'] },
+  { key: 'browser_session_id', sourceNames: ['browser_session_id', 'browserSessionId'] },
+  { key: 'lease_id', sourceNames: ['lease_id', 'leaseId'] },
+  { key: 'profile_key', sourceNames: ['profile_key', 'profileKey'] },
+  { key: 'surface_id', sourceNames: ['surface_id', 'surfaceId'] },
+];
+const ROUTE_STRING_FIELDS = [
+  ['wsUrl', 'ws_url', 'wsUrl'],
+  ['pageUrl', 'page_url', 'pageUrl'],
+  ['pageTitle', 'page_title', 'pageTitle'],
+  ['startUrl', 'start_url', 'startUrl'],
+  ['reason', 'reason', null],
+];
 
 /** Encode a `(runId, interactionId)` pair into the internal Map key. */
 function compositeKey(runId, interactionId) {
@@ -112,19 +142,56 @@ function pdppErrorBody(code, message) {
   // also wires up resource-metadata / request-id behavior that the admin
   // routes do not need. Status-code → error-type is intentionally narrow:
   // the admin endpoint only ever returns 400, 401, 403, 404, 409, 500.
-  const type =
-    code === 'authentication_error'
-      ? 'authentication_error'
-      : code === 'permission_error'
-        ? 'permission_error'
-        : code === 'not_found'
-          ? 'invalid_request_error'
-          : 'invalid_request_error';
+  let type = 'invalid_request_error';
+  if (code === 'authentication_error') type = 'authentication_error';
+  else if (code === 'permission_error') type = 'permission_error';
   return { error: { type, code, message } };
 }
 
 function sendError(res, status, code, message) {
   res.status(status).json(pdppErrorBody(code, message));
+}
+
+function firstStringField(object, fieldNames) {
+  for (const fieldName of fieldNames) {
+    if (typeof object[fieldName] === 'string') return object[fieldName];
+  }
+  return undefined;
+}
+
+function firstNonNullField(object, fieldNames) {
+  for (const fieldName of fieldNames) {
+    if (object[fieldName] !== undefined && object[fieldName] !== null) return object[fieldName];
+  }
+  return undefined;
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function hasRunInteraction(runId, interactionId) {
+  return isNonEmptyString(runId) && isNonEmptyString(interactionId);
+}
+
+function parseRequiredUrl(value, fieldName, missingMessage) {
+  if (!isNonEmptyString(value)) {
+    throw new RunTargetError('run_target_invalid_url', missingMessage);
+  }
+  try {
+    return new URL(value);
+  } catch {
+    throw new RunTargetError('run_target_invalid_url', `${fieldName} is not a valid URL`);
+  }
+}
+
+function defaultPort(parsed) {
+  return parsed.port || (parsed.protocol === 'https:' || parsed.protocol === 'wss:' ? '443' : '80');
+}
+
+function normalizeTrailingSlash(href, trailingSlash) {
+  if (trailingSlash === 'remove') return href.endsWith('/') ? href.slice(0, -1) : href;
+  return href.endsWith('/') ? href : `${href}/`;
 }
 
 /**
@@ -133,16 +200,8 @@ function sendError(res, status, code, message) {
  * on rejection. Never includes the full URL or path in thrown messages.
  */
 function validateWsUrl(wsUrl) {
-  if (typeof wsUrl !== 'string' || wsUrl.length === 0) {
-    throw new RunTargetError('run_target_invalid_url', 'wsUrl is required');
-  }
-  let parsed;
-  try {
-    parsed = new URL(wsUrl);
-  } catch {
-    throw new RunTargetError('run_target_invalid_url', 'wsUrl is not a valid URL');
-  }
-  if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+  const parsed = parseRequiredUrl(wsUrl, 'wsUrl', 'wsUrl is required');
+  if (!WS_PROTOCOLS.has(parsed.protocol)) {
     throw new RunTargetError(
       'run_target_invalid_url',
       `wsUrl scheme must be ws: or wss:, got ${parsed.protocol}`,
@@ -164,79 +223,33 @@ function validateWsUrl(wsUrl) {
       'wsUrl host must be 127.0.0.1, localhost, or neko',
     );
   }
-  return { host, port: parsed.port || (parsed.protocol === 'wss:' ? '443' : '80') };
+  return { host, port: defaultPort(parsed) };
 }
 
-function validateNekoBaseUrl(baseUrl) {
-  if (typeof baseUrl !== 'string' || baseUrl.length === 0) {
-    throw new RunTargetError('run_target_invalid_url', 'base_url is required');
-  }
-  let parsed;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw new RunTargetError('run_target_invalid_url', 'base_url is not a valid URL');
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+function validateNekoHttpUrl(url, field) {
+  const parsed = parseRequiredUrl(url, field.inputName, field.missingMessage);
+  if (!HTTP_PROTOCOLS.has(parsed.protocol)) {
     throw new RunTargetError(
       'run_target_invalid_url',
-      `base_url scheme must be http: or https:, got ${parsed.protocol}`,
+      `${field.inputName} scheme must be http: or https:, got ${parsed.protocol}`,
     );
   }
   if (parsed.username || parsed.password) {
     throw new RunTargetError(
       'run_target_invalid_url',
-      'base_url must not include credentials',
+      `${field.inputName} must not include credentials`,
     );
   }
   if (parsed.search || parsed.hash) {
     throw new RunTargetError(
       'run_target_invalid_url',
-      'base_url must not include query or fragment',
+      `${field.inputName} must not include query or fragment`,
     );
   }
-  const host = parsed.hostname;
-  const href = parsed.href.endsWith('/') ? parsed.href.slice(0, -1) : parsed.href;
   return {
-    baseUrl: href,
-    host,
-    port: parsed.port || (parsed.protocol === 'https:' ? '443' : '80'),
-  };
-}
-
-function validateNekoCdpHttpUrl(cdpHttpUrl) {
-  if (typeof cdpHttpUrl !== 'string' || cdpHttpUrl.length === 0) {
-    throw new RunTargetError('run_target_invalid_url', 'cdp_http_url must be a non-empty URL when provided');
-  }
-  let parsed;
-  try {
-    parsed = new URL(cdpHttpUrl);
-  } catch {
-    throw new RunTargetError('run_target_invalid_url', 'cdp_http_url is not a valid URL');
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new RunTargetError(
-      'run_target_invalid_url',
-      `cdp_http_url scheme must be http: or https:, got ${parsed.protocol}`,
-    );
-  }
-  if (parsed.username || parsed.password) {
-    throw new RunTargetError(
-      'run_target_invalid_url',
-      'cdp_http_url must not include credentials',
-    );
-  }
-  if (parsed.search || parsed.hash) {
-    throw new RunTargetError(
-      'run_target_invalid_url',
-      'cdp_http_url must not include query or fragment',
-    );
-  }
-  const href = parsed.href.endsWith('/') ? parsed.href : `${parsed.href}/`;
-  return {
-    cdpHttpUrl: href,
+    [field.outputName]: normalizeTrailingSlash(parsed.href, field.trailingSlash),
     host: parsed.hostname,
-    port: parsed.port || (parsed.protocol === 'https:' ? '443' : '80'),
+    port: defaultPort(parsed),
   };
 }
 
@@ -252,26 +265,26 @@ function optionalString(value) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function normalizeJsonMetadata(value, fieldName = 'auth') {
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'boolean' ||
-    (typeof value === 'number' && Number.isFinite(value))
-  ) {
-    return value;
+function isJsonScalar(value) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function normalizeJsonObject(value, fieldName) {
+  const out = {};
+  for (const key of Object.keys(value).sort()) {
+    const normalized = normalizeJsonMetadata(value[key], fieldName);
+    if (normalized !== undefined) out[key] = normalized;
   }
+  return out;
+}
+
+function normalizeJsonMetadata(value, fieldName = 'auth') {
+  if (isJsonScalar(value)) return value;
   if (Array.isArray(value)) {
     return value.map((item) => normalizeJsonMetadata(item, fieldName));
   }
-  if (value && typeof value === 'object') {
-    const out = {};
-    for (const key of Object.keys(value).sort()) {
-      const normalized = normalizeJsonMetadata(value[key], fieldName);
-      if (normalized !== undefined) out[key] = normalized;
-    }
-    return out;
-  }
+  if (value && typeof value === 'object') return normalizeJsonObject(value, fieldName);
   if (value === undefined) return undefined;
   throw new RunTargetError(
     'run_target_invalid_auth',
@@ -292,97 +305,396 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function registrationAction(existing, target) {
+  if (!existing) return 'registered';
+  return existing.comparisonKey === target.comparisonKey ? 'reaffirmed' : 'replaced';
+}
+
+function buildRecord({
+  runId,
+  interactionId,
+  target,
+  deviceId,
+  pageUrl,
+  pageTitle,
+  reason,
+  registeredAt,
+  ttlMs,
+}) {
+  return {
+    runId,
+    interactionId,
+    backend: target.backend,
+    wsUrl: target.backend === 'cdp' ? target.resolverValue : undefined,
+    baseUrl: target.backend === 'neko' ? target.descriptor.base_url : undefined,
+    descriptor: cloneJson(target.descriptor),
+    comparisonKey: target.comparisonKey,
+    pageUrl: optionalString(pageUrl),
+    pageTitle: optionalString(pageTitle),
+    reason: optionalString(reason),
+    deviceId,
+    registeredAt: new Date(registeredAt).toISOString(),
+    expiry: registeredAt + ttlMs,
+  };
+}
+
+function selectRouteDescriptor(body) {
+  if (body.target && typeof body.target === 'object') return body.target;
+  if (body.descriptor && typeof body.descriptor === 'object') return body.descriptor;
+  return undefined;
+}
+
+function selectRouteStringFields(body) {
+  return Object.fromEntries(
+    ROUTE_STRING_FIELDS.map(([key, snakeCase, camelCase]) => [
+      key,
+      typeof body[snakeCase] === 'string'
+        ? body[snakeCase]
+        : camelCase === null
+          ? undefined
+          : body[camelCase],
+    ]),
+  );
+}
+
+function registrationInputFromRoute(req, runId, interactionId, deviceId) {
+  const body = req.body || {};
+  const { wsUrl, pageUrl, pageTitle, startUrl, reason } = selectRouteStringFields(body);
+  return {
+    runId,
+    interactionId,
+    wsUrl,
+    ws_url: body.ws_url,
+    backend: body.backend,
+    baseUrl: body.baseUrl,
+    base_url: body.base_url,
+    cdpHttpUrl: body.cdpHttpUrl,
+    cdp_http_url: body.cdp_http_url,
+    startUrl,
+    start_url: body.start_url,
+    auth: body.auth,
+    descriptor: selectRouteDescriptor(body),
+    deviceId,
+    pageUrl,
+    pageTitle,
+    reason,
+  };
+}
+
+function supportsRouteRegistration(app) {
+  return app && typeof app.put === 'function' && typeof app.post === 'function' && typeof app.delete === 'function';
+}
+
+function normalizeOptionalDescriptorFields(descriptor, source, input) {
+  for (const { key, sourceNames, inputNames = [] } of NEKO_OPTIONAL_DESCRIPTOR_FIELDS) {
+    const value =
+      firstNonNullField(source, sourceNames) ?? firstNonNullField(input, inputNames);
+    const normalized = optionalString(value);
+    if (normalized !== undefined) descriptor[key] = normalized;
+  }
+}
+
+function assertNekoDescriptorApproved(
+  descriptor,
+  { host, port, cdpHost, cdpPort, runId, interactionId },
+  isNekoDescriptorApproved,
+) {
+  if (NEKO_PRIVATE_HOSTS.has(host) && (cdpHost === null || NEKO_PRIVATE_HOSTS.has(cdpHost))) {
+    return;
+  }
+  if (
+    typeof isNekoDescriptorApproved === 'function' &&
+    isNekoDescriptorApproved(descriptor, { host, port, cdpHost, cdpPort, runId, interactionId }) === true
+  ) {
+    return;
+  }
+  throw new RunTargetError(
+    'run_target_non_loopback',
+    'base_url host must be 127.0.0.1, localhost, neko, or an approved managed n.eko surface',
+  );
+}
+
+function normalizedTarget(backend, descriptor, resolverValue, host, port) {
+  return { backend, descriptor, resolverValue, host, port, comparisonKey: JSON.stringify(descriptor) };
+}
+
+function normalizeCdpTarget(input, source) {
+  const wsUrl = firstStringField(source, ['ws_url', 'wsUrl']) ?? input.wsUrl;
+  const { host, port } = validateWsUrl(wsUrl);
+  return normalizedTarget('cdp', { backend: 'cdp', ws_url: wsUrl }, wsUrl, host, port);
+}
+
+function hasCdpHttpUrl(value) {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function normalizedDescriptorInteractionId(source, input) {
+  if (source === input) return optionalString(source.interaction_id);
+  return optionalString(firstNonNullField(source, ['interaction_id', 'interactionId']));
+}
+
+function addNekoCdpHttpUrl(descriptor, source, input) {
+  const rawUrl = firstNonNullField(source, ['cdp_http_url', 'cdpHttpUrl']) ??
+    firstNonNullField(input, ['cdp_http_url', 'cdpHttpUrl']);
+  if (!hasCdpHttpUrl(rawUrl)) return { cdpHost: null, cdpPort: null };
+  const normalized = validateNekoHttpUrl(rawUrl, NEKO_HTTP_URL_FIELDS.cdp);
+  descriptor.cdp_http_url = normalized.cdpHttpUrl;
+  return { cdpHost: normalized.host, cdpPort: normalized.port };
+}
+
+function normalizeNekoTarget(input, source, isNekoDescriptorApproved) {
+  const baseUrl = firstStringField(source, ['base_url', 'baseUrl']) ?? input.baseUrl;
+  const { baseUrl: normalizedBaseUrl, host, port } = validateNekoHttpUrl(
+    baseUrl,
+    NEKO_HTTP_URL_FIELDS.base,
+  );
+  const descriptor = { backend: 'neko', base_url: normalizedBaseUrl };
+  const { cdpHost, cdpPort } = addNekoCdpHttpUrl(descriptor, source, input);
+  normalizeOptionalDescriptorFields(descriptor, source, input);
+  const descriptorInteractionId = normalizedDescriptorInteractionId(source, input);
+  if (descriptorInteractionId !== undefined) descriptor.interaction_id = descriptorInteractionId;
+  const auth = normalizeAuthMetadata(firstNonNullField(source, ['auth']) ?? input.auth);
+  if (auth !== undefined) descriptor.auth = auth;
+  assertNekoDescriptorApproved(
+    descriptor,
+    { host, port, cdpHost, cdpPort, runId: input.runId, interactionId: input.interactionId },
+    isNekoDescriptorApproved,
+  );
+  return normalizedTarget('neko', descriptor, descriptor, host, port);
+}
+
 function normalizeTargetDescriptor(input, { isNekoDescriptorApproved } = {}) {
   const source = input?.descriptor && typeof input.descriptor === 'object' ? input.descriptor : input;
   const backend = optionalString(source?.backend) || 'cdp';
-
-  if (backend === 'cdp') {
-    const wsUrl =
-      typeof source.ws_url === 'string'
-        ? source.ws_url
-        : typeof source.wsUrl === 'string'
-          ? source.wsUrl
-          : input.wsUrl;
-    const { host, port } = validateWsUrl(wsUrl);
-    const descriptor = { backend: 'cdp', ws_url: wsUrl };
-    return {
-      backend: 'cdp',
-      descriptor,
-      resolverValue: wsUrl,
-      host,
-      port,
-      comparisonKey: JSON.stringify(descriptor),
-    };
-  }
-
-  if (backend === 'neko') {
-    const baseUrl =
-      typeof source.base_url === 'string'
-        ? source.base_url
-        : typeof source.baseUrl === 'string'
-          ? source.baseUrl
-          : input.baseUrl;
-    const { baseUrl: normalizedBaseUrl, host, port } = validateNekoBaseUrl(baseUrl);
-    const descriptor = { backend: 'neko', base_url: normalizedBaseUrl };
-    const cdpHttpUrlRaw =
-      source.cdp_http_url ?? source.cdpHttpUrl ?? input.cdp_http_url ?? input.cdpHttpUrl;
-    let cdpHost = null;
-    let cdpPort = null;
-    if (cdpHttpUrlRaw !== undefined && cdpHttpUrlRaw !== null && cdpHttpUrlRaw !== '') {
-      const normalizedCdp = validateNekoCdpHttpUrl(cdpHttpUrlRaw);
-      descriptor.cdp_http_url = normalizedCdp.cdpHttpUrl;
-      cdpHost = normalizedCdp.host;
-      cdpPort = normalizedCdp.port;
-    }
-    const startUrl = optionalString(
-      source.start_url ?? source.startUrl ?? input.start_url ?? input.startUrl,
-    );
-    if (startUrl !== undefined) descriptor.start_url = startUrl;
-    const browserSessionId = optionalString(source.browser_session_id ?? source.browserSessionId);
-    if (browserSessionId !== undefined) descriptor.browser_session_id = browserSessionId;
-    const leaseId = optionalString(source.lease_id ?? source.leaseId);
-    if (leaseId !== undefined) descriptor.lease_id = leaseId;
-    const profileKey = optionalString(source.profile_key ?? source.profileKey);
-    if (profileKey !== undefined) descriptor.profile_key = profileKey;
-    const surfaceId = optionalString(source.surface_id ?? source.surfaceId);
-    if (surfaceId !== undefined) descriptor.surface_id = surfaceId;
-    const descriptorInteractionId = optionalString(
-      source !== input ? source.interaction_id ?? source.interactionId : source.interaction_id,
-    );
-    if (descriptorInteractionId !== undefined) descriptor.interaction_id = descriptorInteractionId;
-    const auth = normalizeAuthMetadata(source.auth ?? input.auth);
-    if (auth !== undefined) descriptor.auth = auth;
-    if (
-      (!NEKO_PRIVATE_HOSTS.has(host) || (cdpHost !== null && !NEKO_PRIVATE_HOSTS.has(cdpHost))) &&
-      (typeof isNekoDescriptorApproved !== 'function' ||
-        isNekoDescriptorApproved(descriptor, {
-          host,
-          port,
-          cdpHost,
-          cdpPort,
-          runId: input.runId,
-          interactionId: input.interactionId,
-        }) !== true)
-    ) {
-      throw new RunTargetError(
-        'run_target_non_loopback',
-        'base_url host must be 127.0.0.1, localhost, neko, or an approved managed n.eko surface',
-      );
-    }
-    return {
-      backend: 'neko',
-      descriptor,
-      resolverValue: descriptor,
-      host,
-      port,
-      comparisonKey: JSON.stringify(descriptor),
-    };
-  }
-
+  if (backend === 'cdp') return normalizeCdpTarget(input, source);
+  if (backend === 'neko') return normalizeNekoTarget(input, source, isNekoDescriptorApproved);
   throw new RunTargetError(
     'run_target_invalid_backend',
     'streaming target backend must be cdp or neko',
   );
+}
+
+function logRegistry(state, level, msg, data) {
+  if (!state.logger || typeof state.logger[level] !== 'function') return;
+  try {
+    state.logger[level]({ msg, ...(data || {}) });
+  } catch {
+    /* logger errors must not break the registration path */
+  }
+}
+
+function evictRegistryRecord(state, key, record) {
+  state.records.delete(key);
+  logRegistry(state, 'info', 'run_target_evicted_expired', {
+    runId: record.runId,
+    interactionId: record.interactionId,
+  });
+}
+
+function evictIfRegistryRecordExpired(state, key, record, time) {
+  if (record.expiry > time) return false;
+  evictRegistryRecord(state, key, record);
+  return true;
+}
+
+function evictExpiredRegistryRecords(state) {
+  const time = state.now();
+  for (const [key, record] of state.records) {
+    evictIfRegistryRecordExpired(state, key, record, time);
+  }
+}
+
+function logRegistryRegistration(state, action, record, target) {
+  if (action === 'reaffirmed') return;
+  logRegistry(state, action === 'replaced' ? 'warn' : 'info', `run_target_${action}`, {
+    runId: record.runId,
+    interactionId: record.interactionId,
+    backend: target.backend,
+    host: target.host,
+    port: target.port,
+    deviceId: record.deviceId,
+    reason: record.reason,
+  });
+}
+
+function registerRegistryTarget(state, input) {
+  const { runId, interactionId, deviceId } = input;
+  if (!isNonEmptyString(runId)) {
+    throw new RunTargetError('run_target_invalid_url', 'runId is required');
+  }
+  if (!isNonEmptyString(interactionId)) {
+    throw new RunTargetError('run_target_invalid_url', 'interactionId is required');
+  }
+  if (!isNonEmptyString(deviceId)) {
+    throw new RunTargetError('run_target_invalid_url', 'deviceId is required');
+  }
+  const target = normalizeTargetDescriptor(input, state);
+  evictExpiredRegistryRecords(state);
+
+  const key = compositeKey(runId, interactionId);
+  const existing = state.records.get(key);
+  if (existing && existing.deviceId !== deviceId) {
+    throw new RunTargetError(
+      'run_target_already_registered_other_device',
+      'Another device has already registered a streaming target for this run interaction',
+      409,
+    );
+  }
+
+  const registeredAt = state.now();
+  const action = registrationAction(existing, target);
+  const record = buildRecord({ ...input, target, registeredAt, ttlMs: state.ttlMs });
+  state.records.set(key, record);
+  logRegistryRegistration(state, action, record, target);
+  return { runId, interactionId, expiry: record.expiry, action };
+}
+
+function unregisterRegistryTarget(state, { runId, interactionId, deviceId }) {
+  if (!hasRunInteraction(runId, interactionId)) return false;
+  const key = compositeKey(runId, interactionId);
+  const record = state.records.get(key);
+  if (!record || record.deviceId !== deviceId) return false;
+  state.records.delete(key);
+  logRegistry(state, 'info', 'run_target_unregistered', { runId, interactionId, deviceId });
+  return true;
+}
+
+function forceUnregisterRegistryTarget(state, { runId, interactionId }) {
+  if (!hasRunInteraction(runId, interactionId)) return false;
+  const key = compositeKey(runId, interactionId);
+  if (!state.records.has(key)) return false;
+  state.records.delete(key);
+  logRegistry(state, 'info', 'run_target_force_unregistered', { runId, interactionId });
+  return true;
+}
+
+function getRegistryTarget(state, { runId, interactionId }) {
+  if (!hasRunInteraction(runId, interactionId)) return null;
+  const key = compositeKey(runId, interactionId);
+  const record = state.records.get(key);
+  if (!record || evictIfRegistryRecordExpired(state, key, record, state.now())) return null;
+  return record.backend === 'neko' ? cloneJson(record.descriptor) : record.wsUrl;
+}
+
+function getRegistryTargetsByRun(state, runId) {
+  if (!isNonEmptyString(runId)) return [];
+  const time = state.now();
+  const records = [];
+  for (const [key, record] of state.records) {
+    if (record.runId === runId && !evictIfRegistryRecordExpired(state, key, record, time)) {
+      records.push(record);
+    }
+  }
+  return records;
+}
+
+function registerRegistryNonce(state, { runId, nonce }) {
+  if (!isNonEmptyString(runId)) {
+    throw new RunTargetError('run_target_invalid_url', 'runId is required');
+  }
+  if (!isNonEmptyString(nonce)) {
+    throw new RunTargetError('run_target_invalid_url', 'nonce is required');
+  }
+  state.nonceHashes.set(runId, hashNonce(nonce));
+}
+
+function verifyRegistryNonce(state, { runId, presentedToken }) {
+  if (!hasRunInteraction(runId, presentedToken)) return false;
+  const stored = state.nonceHashes.get(runId);
+  return stored ? constantTimeHexEqual(stored, hashNonce(presentedToken)) : false;
+}
+
+function clearRegistryNonce(state, { runId }) {
+  if (isNonEmptyString(runId)) state.nonceHashes.delete(runId);
+}
+
+function extractBearerToken(req) {
+  const header = req?.headers?.authorization || req?.headers?.Authorization;
+  if (typeof header !== 'string') return null;
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return match ? match[1].trim() : null;
+}
+
+function routeParameters(req) {
+  return {
+    runId: decodeURIComponent(req.params.runId),
+    interactionId: decodeURIComponent(req.params.interactionId),
+  };
+}
+
+function sendUnexpectedRouteError(res, err, log, event, message) {
+  log('warn', event, { error: err?.message });
+  return sendError(res, 500, 'server_error', message);
+}
+
+function handleRegisterRoute(req, res, { register, log }) {
+  try {
+    const { runId, interactionId } = routeParameters(req);
+    const deviceId = req.deviceExporter?.deviceId;
+    if (!isNonEmptyString(deviceId)) {
+      return sendError(res, 403, 'permission_error', 'Device exporter authority is required to register a run streaming target');
+    }
+    const { expiry, action } = register(registrationInputFromRoute(req, runId, interactionId, deviceId));
+    return res.status(200).json({
+      object: 'run_streaming_target',
+      run_id: runId,
+      interaction_id: interactionId,
+      expiry,
+      action,
+    });
+  } catch (err) {
+    if (err instanceof RunTargetError) return sendError(res, err.status, err.code, err.message);
+    return sendUnexpectedRouteError(res, err, log, 'run_target_register_failed', 'Failed to register run streaming target');
+  }
+}
+
+function handleUnregisterRoute(req, res, { unregister, log }) {
+  try {
+    const { runId, interactionId } = routeParameters(req);
+    const deviceId = req.deviceExporter?.deviceId;
+    if (!isNonEmptyString(deviceId)) {
+      return sendError(res, 403, 'permission_error', 'Device exporter authority is required to unregister a run streaming target');
+    }
+    if (!unregister({ runId, interactionId, deviceId })) {
+      return sendError(res, 404, 'not_found', 'No streaming target is registered for this run interaction by this device');
+    }
+    return res.status(200).json({
+      object: 'run_streaming_target_deleted',
+      run_id: runId,
+      interaction_id: interactionId,
+    });
+  } catch (err) {
+    return sendUnexpectedRouteError(res, err, log, 'run_target_unregister_failed', 'Failed to unregister run streaming target');
+  }
+}
+
+function requireRunTargetAuth(req, res, next, { verifyNonce, requireDeviceExporterAuth }) {
+  const presentedToken = extractBearerToken(req);
+  const runId = req?.params?.runId ? decodeURIComponent(req.params.runId) : '';
+  if (presentedToken && runId && verifyNonce({ runId, presentedToken })) {
+    req.deviceExporter = { deviceId: `nonce:${runId}` };
+    return next();
+  }
+  return requireDeviceExporterAuth(req, res, next);
+}
+
+function attachRegistryRoutes(app, requireDeviceExporterAuth, handlers) {
+  if (!supportsRouteRegistration(app)) {
+    throw new Error('attachRoutes: app must support .put(), .post(), and .delete()');
+  }
+  if (typeof requireDeviceExporterAuth !== 'function') {
+    throw new Error('attachRoutes: requireDeviceExporterAuth middleware is required');
+  }
+  const resourcePath = '/admin/runs/:runId/interactions/:interactionId/streaming-target';
+  const requireAuth = (req, res, next) => requireRunTargetAuth(req, res, next, {
+    verifyNonce: handlers.verifyNonce,
+    requireDeviceExporterAuth,
+  });
+  const register = (req, res) => handleRegisterRoute(req, res, handlers);
+  const unregister = (req, res) => handleUnregisterRoute(req, res, handlers);
+  app.put(resourcePath, requireAuth, register);
+  app.post(resourcePath, requireAuth, register);
+  app.delete(resourcePath, requireAuth, unregister);
 }
 
 /**
@@ -404,438 +716,29 @@ export function createRunTargetRegistry({
   sweepIntervalMs = DEFAULT_SWEEP_INTERVAL_MS,
   isNekoDescriptorApproved = null,
 } = {}) {
-  // Map<compositeKey, Record>. Target URLs/auth are held in memory only; never
-  // persisted or logged in full.
-  const records = new Map();
-
-  // Per-run nonce store for Mode A (in-process runtime). Map<runId, nonceHash>.
-  // Stored as SHA-256 hex of the random token issued at spawn time. The raw
-  // nonce is NEVER held here — only the hash. At verify time we hash the
-  // presented token and constant-time compare against the stored hash.
-  // The store is bound by `runId`: a nonce that authenticates for run X
-  // cannot register/unregister for run Y. Nonces are intentionally
-  // per-run (not per-interaction) — the run's connector child is the
-  // single authority that emits manual_action interactions on the run's
-  // behalf, so one credential covers all interactions in that run.
-  // Cleared explicitly when the run ends; a stale entry would block a
-  // future re-use of the same runId, which the controller MUST not do anyway.
-  const nonceHashes = new Map();
-
-  function log(level, msg, data) {
-    if (!logger || typeof logger[level] !== 'function') return;
-    try {
-      logger[level]({ msg, ...(data || {}) });
-    } catch {
-      /* logger errors must not break the registration path */
-    }
-  }
-
-  function evictExpired() {
-    const t = now();
-    for (const [key, record] of records) {
-      if (record.expiry <= t) {
-        records.delete(key);
-        log('info', 'run_target_evicted_expired', {
-          runId: record.runId,
-          interactionId: record.interactionId,
-        });
-      }
-    }
-  }
-
-  function register({
-    runId,
-    interactionId,
-    wsUrl,
-    ws_url,
-    backend,
-    baseUrl,
-    base_url,
-    cdpHttpUrl,
-    cdp_http_url,
-    startUrl,
-    start_url,
-    auth,
-    descriptor,
-    deviceId,
-    pageUrl,
-    pageTitle,
-    reason,
-  }) {
-    if (typeof runId !== 'string' || runId.length === 0) {
-      throw new RunTargetError('run_target_invalid_url', 'runId is required');
-    }
-    if (typeof interactionId !== 'string' || interactionId.length === 0) {
-      throw new RunTargetError('run_target_invalid_url', 'interactionId is required');
-    }
-    if (typeof deviceId !== 'string' || deviceId.length === 0) {
-      throw new RunTargetError('run_target_invalid_url', 'deviceId is required');
-    }
-    const target = normalizeTargetDescriptor({
-      backend,
-      wsUrl,
-      ws_url,
-      baseUrl,
-      base_url,
-      cdpHttpUrl,
-      cdp_http_url,
-      startUrl,
-      start_url,
-      auth,
-      descriptor,
-      runId,
-      interactionId,
-    }, { isNekoDescriptorApproved });
-    const { host, port } = target;
-
-    evictExpired();
-
-    const key = compositeKey(runId, interactionId);
-    const existing = records.get(key);
-    if (existing && existing.deviceId !== deviceId) {
-      // Different-authority conflict: rejected. This is NOT an idempotent
-      // re-PUT — it is another device trying to bind the same key.
-      throw new RunTargetError(
-        'run_target_already_registered_other_device',
-        'Another device has already registered a streaming target for this run interaction',
-        409,
-      );
-    }
-
-    const registeredAt = now();
-    const expiry = registeredAt + ttlMs;
-    const registeredAtIso = new Date(registeredAt).toISOString();
-
-    let action = 'registered';
-    if (existing) {
-      // Same-device re-PUT. Idempotent on identical target descriptor;
-      // replace + warn on a different value so the swap is visible in the
-      // diagnostic counter.
-      action = existing.comparisonKey === target.comparisonKey ? 'reaffirmed' : 'replaced';
-    }
-
-    const record = {
-      runId,
-      interactionId,
-      backend: target.backend,
-      wsUrl: target.backend === 'cdp' ? target.resolverValue : undefined,
-      baseUrl: target.backend === 'neko' ? target.descriptor.base_url : undefined,
-      descriptor: cloneJson(target.descriptor),
-      comparisonKey: target.comparisonKey,
-      pageUrl: optionalString(pageUrl),
-      pageTitle: optionalString(pageTitle),
-      reason: optionalString(reason),
-      deviceId,
-      registeredAt: registeredAtIso,
-      expiry,
-    };
-    records.set(key, record);
-
-    // Log host:port only — the path encodes the page-target secret and must
-    // never be logged.
-    if (action === 'replaced') {
-      // Warn-level so operators see when a manual_action's page identity
-      // changed under their feet. The wsUrl itself is never logged; only
-      // host/port deltas.
-      log('warn', 'run_target_replaced', {
-        runId,
-        interactionId,
-        backend: target.backend,
-        host,
-        port,
-        deviceId,
-        reason: record.reason,
-      });
-    } else if (action === 'registered') {
-      log('info', 'run_target_registered', {
-        runId,
-        interactionId,
-        backend: target.backend,
-        host,
-        port,
-        deviceId,
-        reason: record.reason,
-      });
-    }
-    // `reaffirmed` is intentionally silent — same value, same device. A
-    // log line per retry would be noise.
-
-    return { runId, interactionId, expiry, action };
-  }
-
-  function unregister({ runId, interactionId, deviceId }) {
-    if (typeof runId !== 'string' || runId.length === 0) return false;
-    if (typeof interactionId !== 'string' || interactionId.length === 0) return false;
-    const key = compositeKey(runId, interactionId);
-    const record = records.get(key);
-    if (!record) return false;
-    if (record.deviceId !== deviceId) return false;
-    records.delete(key);
-    log('info', 'run_target_unregistered', { runId, interactionId, deviceId });
-    return true;
-  }
-
-  /**
-   * Forcibly drop a registry entry by (runId, interactionId) without checking
-   * the deviceId that registered it. Used by the system (e.g. controller)
-   * to clean up when an interaction resolves, bypassing the device-authority
-   * check that guards the client-side unregister route. Idempotent: returns
-   * true if an entry was removed, false if no entry existed. Logs at info
-   * level when an entry is dropped.
-   */
-  function forceUnregister({ runId, interactionId }) {
-    if (typeof runId !== 'string' || runId.length === 0) return false;
-    if (typeof interactionId !== 'string' || interactionId.length === 0) return false;
-    const key = compositeKey(runId, interactionId);
-    const record = records.get(key);
-    if (!record) return false;
-    records.delete(key);
-    log('info', 'run_target_force_unregistered', { runId, interactionId });
-    return true;
-  }
-
-  function get({ runId, interactionId }) {
-    if (typeof runId !== 'string' || runId.length === 0) return null;
-    if (typeof interactionId !== 'string' || interactionId.length === 0) return null;
-    const key = compositeKey(runId, interactionId);
-    const record = records.get(key);
-    if (!record) return null;
-    if (record.expiry <= now()) {
-      records.delete(key);
-      log('info', 'run_target_evicted_expired', { runId, interactionId });
-      return null;
-    }
-    if (record.backend === 'neko') return cloneJson(record.descriptor);
-    return record.wsUrl;
-  }
-
-  /**
-   * Debug helper: return an array of records for `runId` (one per
-   * interaction). Includes target data because callers inside this process
-   * already have the values; callers MUST NOT log URL paths or auth metadata.
-   * This is a debugging convenience, not the resolver path — the streaming-
-   * companion resolver always uses `get({ runId, interactionId })`.
-   */
-  function getByRun(runId) {
-    if (typeof runId !== 'string' || runId.length === 0) return [];
-    const t = now();
-    const out = [];
-    for (const [key, record] of records) {
-      if (record.runId !== runId) continue;
-      if (record.expiry <= t) {
-        records.delete(key);
-        log('info', 'run_target_evicted_expired', {
-          runId: record.runId,
-          interactionId: record.interactionId,
-        });
-        continue;
-      }
-      out.push(record);
-    }
-    return out;
-  }
-
-  /**
-   * Mode-A per-run nonce registration. Called by the in-process runtime
-   * controller at spawn time. Stores the SHA-256 hash of the nonce keyed
-   * by `runId`; the raw nonce is never retained. Overwriting an existing
-   * entry for the same runId is allowed (covers the legitimate retry case
-   * — controller re-spawns the connector after a crash); the previous
-   * nonce is discarded by the overwrite.
-   */
-  function registerNonce({ runId, nonce }) {
-    if (typeof runId !== 'string' || runId.length === 0) {
-      throw new RunTargetError('run_target_invalid_url', 'runId is required');
-    }
-    if (typeof nonce !== 'string' || nonce.length === 0) {
-      throw new RunTargetError('run_target_invalid_url', 'nonce is required');
-    }
-    nonceHashes.set(runId, hashNonce(nonce));
-  }
-
-  /**
-   * Verify a presented bearer token against the stored nonce hash for
-   * `runId`. Returns true when the nonce matches; false otherwise. The
-   * comparison is constant-time so timing cannot reveal which characters
-   * differ. A nonce that authenticates for run X cannot be used to act
-   * on run Y because the lookup is keyed by `runId`. Within a single run
-   * the nonce authenticates the route for multiple interactionIds, while
-   * managed n.eko descriptors enforce interaction exactness in approval.
-   */
-  function verifyNonce({ runId, presentedToken }) {
-    if (typeof runId !== 'string' || runId.length === 0) return false;
-    if (typeof presentedToken !== 'string' || presentedToken.length === 0) return false;
-    const stored = nonceHashes.get(runId);
-    if (!stored) return false;
-    return constantTimeHexEqual(stored, hashNonce(presentedToken));
-  }
-
-  /**
-   * Drop the nonce entry for `runId`. Idempotent. Called by the
-   * controller's run-end finally block.
-   */
-  function clearNonce({ runId }) {
-    if (typeof runId !== 'string' || runId.length === 0) return;
-    nonceHashes.delete(runId);
-  }
-
-  /**
-   * Extract a Bearer token from an Authorization header, RFC 6750 § 2.1.
-   * Returns null when the header is absent or not a Bearer credential.
-   */
-  function extractBearerToken(req) {
-    const header = req?.headers?.authorization || req?.headers?.Authorization;
-    if (typeof header !== 'string') return null;
-    const m = /^Bearer\s+(.+)$/i.exec(header.trim());
-    return m ? m[1].trim() : null;
-  }
-
-  function attachRoutes(app, requireDeviceExporterAuth) {
-    if (!app || typeof app.put !== 'function' || typeof app.post !== 'function' || typeof app.delete !== 'function') {
-      throw new Error('attachRoutes: app must support .put(), .post(), and .delete()');
-    }
-    if (typeof requireDeviceExporterAuth !== 'function') {
-      throw new Error('attachRoutes: requireDeviceExporterAuth middleware is required');
-    }
-
-    /**
-     * Composed auth middleware: tries the per-run nonce first (cheap
-     * in-memory lookup, no DB hit), then falls back to the existing
-     * device-exporter middleware. Both paths produce the same authorized
-     * state on the request (`req.deviceExporter = { deviceId }`) so the
-     * route handler stays mode-agnostic.
-     *
-     * Why try nonce first: the device-exporter middleware can write its
-     * own 401 envelope and end the response, which would mask a valid
-     * nonce on the same request. We try the cheaper, more specific path
-     * first and only fall through when no nonce credential is present.
-     *
-     * Nonce scoping reminder: the nonce verifies against `runId` only.
-     * The same nonce authenticates the route for multiple interactionIds
-     * within that run; managed n.eko descriptors still carry their own
-     * `interaction_id` for approval. The synthetic deviceId for the nonce path is
-     * `nonce:<runId>`, which is unique per run and cannot collide with
-     * a real device id (those live in the device-exporter table and have
-     * a different prefix). That keeps the existing register/unregister
-     * `deviceId` invariants intact at the composite-key level: a different
-     * run's nonce cannot displace this run's record.
-     */
-    function requireAuth(req, res, next) {
-      const presented = extractBearerToken(req);
-      const runId = req?.params?.runId ? decodeURIComponent(req.params.runId) : '';
-      if (presented && runId && verifyNonce({ runId, presentedToken: presented })) {
-        req.deviceExporter = { deviceId: `nonce:${runId}` };
-        return next();
-      }
-      // Fall through to the device-exporter middleware. It is responsible
-      // for writing the 401 envelope on failure; we do not retry on its
-      // outcome.
-      return requireDeviceExporterAuth(req, res, next);
-    }
-
-    const RESOURCE_PATH =
-      '/admin/runs/:runId/interactions/:interactionId/streaming-target';
-
-    function handleRegister(req, res) {
-      try {
-        const runId = decodeURIComponent(req.params.runId);
-        const interactionId = decodeURIComponent(req.params.interactionId);
-        const body = req.body || {};
-        const descriptor =
-          body.target && typeof body.target === 'object'
-            ? body.target
-            : body.descriptor && typeof body.descriptor === 'object'
-              ? body.descriptor
-              : undefined;
-        const wsUrl = typeof body.ws_url === 'string' ? body.ws_url : body.wsUrl;
-        // Forward-compatible metadata. Accept snake_case (the client
-        // and the rest of the device-exporter ingest envelope use
-        // snake_case) and silently ignore unknown fields.
-        const pageUrl = typeof body.page_url === 'string' ? body.page_url : body.pageUrl;
-        const pageTitle = typeof body.page_title === 'string' ? body.page_title : body.pageTitle;
-        const startUrl = typeof body.start_url === 'string' ? body.start_url : body.startUrl;
-        const reason = typeof body.reason === 'string' ? body.reason : undefined;
-        const deviceId = req.deviceExporter?.deviceId;
-        if (typeof deviceId !== 'string' || deviceId.length === 0) {
-          return sendError(
-            res,
-            403,
-            'permission_error',
-            'Device exporter authority is required to register a run streaming target',
-          );
-        }
-        const { expiry, action } = register({
-          runId,
-          interactionId,
-          wsUrl,
-          ws_url: body.ws_url,
-          backend: body.backend,
-          baseUrl: body.baseUrl,
-          base_url: body.base_url,
-          cdpHttpUrl: body.cdpHttpUrl,
-          cdp_http_url: body.cdp_http_url,
-          startUrl,
-          start_url: body.start_url,
-          auth: body.auth,
-          descriptor,
-          deviceId,
-          pageUrl,
-          pageTitle,
-          reason,
-        });
-        // Never echo wsUrl back. The caller already has it.
-        return res.status(200).json({
-          object: 'run_streaming_target',
-          run_id: runId,
-          interaction_id: interactionId,
-          expiry,
-          action,
-        });
-      } catch (err) {
-        if (err instanceof RunTargetError) {
-          return sendError(res, err.status, err.code, err.message);
-        }
-        log('warn', 'run_target_register_failed', { error: err?.message });
-        return sendError(res, 500, 'server_error', 'Failed to register run streaming target');
-      }
-    }
-
-    app.put(RESOURCE_PATH, requireAuth, handleRegister);
-    app.post(RESOURCE_PATH, requireAuth, handleRegister);
-
-    app.delete(RESOURCE_PATH, requireAuth, (req, res) => {
-      try {
-        const runId = decodeURIComponent(req.params.runId);
-        const interactionId = decodeURIComponent(req.params.interactionId);
-        const deviceId = req.deviceExporter?.deviceId;
-        if (typeof deviceId !== 'string' || deviceId.length === 0) {
-          return sendError(
-            res,
-            403,
-            'permission_error',
-            'Device exporter authority is required to unregister a run streaming target',
-          );
-        }
-        const removed = unregister({ runId, interactionId, deviceId });
-        if (!removed) {
-          return sendError(
-            res,
-            404,
-            'not_found',
-            'No streaming target is registered for this run interaction by this device',
-          );
-        }
-        return res.status(200).json({
-          object: 'run_streaming_target_deleted',
-          run_id: runId,
-          interaction_id: interactionId,
-        });
-      } catch (err) {
-        log('warn', 'run_target_unregister_failed', { error: err?.message });
-        return sendError(res, 500, 'server_error', 'Failed to unregister run streaming target');
-      }
-    });
-  }
+  const state = {
+    ttlMs,
+    now,
+    logger,
+    isNekoDescriptorApproved,
+    records: new Map(),
+    nonceHashes: new Map(),
+  };
+  const register = (input) => registerRegistryTarget(state, input);
+  const unregister = (input) => unregisterRegistryTarget(state, input);
+  const forceUnregister = (input) => forceUnregisterRegistryTarget(state, input);
+  const get = (input) => getRegistryTarget(state, input);
+  const getByRun = (runId) => getRegistryTargetsByRun(state, runId);
+  const registerNonce = (input) => registerRegistryNonce(state, input);
+  const verifyNonce = (input) => verifyRegistryNonce(state, input);
+  const clearNonce = (input) => clearRegistryNonce(state, input);
+  const evictExpired = () => evictExpiredRegistryRecords(state);
+  const log = (level, msg, data) => logRegistry(state, level, msg, data);
+  const attachRoutes = (app, requireDeviceExporterAuth) => attachRegistryRoutes(
+    app,
+    requireDeviceExporterAuth,
+    { register, unregister, verifyNonce, log },
+  );
 
   let sweepTimer = null;
   if (Number.isFinite(sweepIntervalMs) && sweepIntervalMs > 0) {
@@ -848,16 +751,9 @@ export function createRunTargetRegistry({
       clearInterval(sweepTimer);
       sweepTimer = null;
     }
-    records.clear();
-    nonceHashes.clear();
+    state.records.clear();
+    state.nonceHashes.clear();
   }
-
-  // Process-exit eviction: when the surrounding server runs as a long-lived
-  // process, `exit` fires once on tear-down and the timer + records are
-  // released. Tests construct many registries in one process; explicit
-  // `shutdown()` is the supported idiom there. We do not attach a
-  // `beforeExit` listener per-registry to avoid accumulating handlers and
-  // emitting MaxListenersExceeded warnings under test concurrency.
 
   return {
     register,
@@ -872,8 +768,8 @@ export function createRunTargetRegistry({
     evictExpired,
     shutdown,
     _internal: {
-      records,
-      nonceHashes,
+      records: state.records,
+      nonceHashes: state.nonceHashes,
       ttlMs,
     },
   };

@@ -131,35 +131,54 @@ function normalizeCdpTarget(target: any): string | null {
   );
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: `target` is untyped JSON returned by the injected resolver; shape is validated at runtime.
-function normalizeNekoTarget(target: any): NekoTarget | null {
-  if (!target || typeof target !== "object") {
+function recordOrNull(value: unknown): Record<string, any> | null {
+  return value && typeof value === "object" ? (value as Record<string, any>) : null;
+}
+
+function nekoTargetSource(target: any): Record<string, any> | null {
+  const targetRecord = recordOrNull(target);
+  if (!targetRecord) {
     return null;
   }
-  const source = target.neko && typeof target.neko === "object" ? target.neko : target;
-  const origin =
-    optionalString(source.origin) ||
-    optionalString(source.base_url) ||
-    optionalString(source.baseUrl) ||
-    optionalString(target.base_url) ||
-    optionalString(target.baseUrl);
+  return recordOrNull(targetRecord.neko) ?? targetRecord;
+}
+
+function nekoTargetOrigin(source: Record<string, any>, target: Record<string, any>): string | null {
+  return [source.origin, source.base_url, source.baseUrl, target.base_url, target.baseUrl].map(optionalString).find(Boolean) ?? null;
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: `target` is untyped JSON returned by the injected resolver; shape is validated at runtime.
+function normalizeNekoTarget(target: any): NekoTarget | null {
+  const targetRecord = recordOrNull(target);
+  const source = nekoTargetSource(target);
+  if (!targetRecord || !source) {
+    return null;
+  }
+  const origin = nekoTargetOrigin(source, targetRecord);
   if (!origin) {
     return null;
   }
   return { ...source, origin, base_url: origin };
 }
 
+function explicitNekoTarget(target: any): SelectedTarget | null {
+  if (target?.backend !== "neko") {
+    return null;
+  }
+  const neko = normalizeNekoTarget(target);
+  if (!neko) {
+    throw createMissingTargetError("n.eko");
+  }
+  return { backend: "neko", neko };
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: `target` is untyped JSON returned by the injected resolver; shape is validated at runtime.
 function selectBackendTarget(target: any): SelectedTarget {
   const backend = typeof target?.backend === "string" ? target.backend : null;
-  if (backend === "neko") {
-    const neko = normalizeNekoTarget(target);
-    if (!neko) {
-      throw createMissingTargetError("n.eko");
-    }
-    return { backend: "neko", neko };
+  const explicitNeko = explicitNekoTarget(target);
+  if (explicitNeko) {
+    return explicitNeko;
   }
-
   const wsUrl = normalizeCdpTarget(target);
   if (wsUrl) {
     return { backend: "cdp", wsUrl };
@@ -203,15 +222,36 @@ function createResolvedCompanion({
   const pendingFrames = new Map<(...args: unknown[]) => unknown, PendingRecord>();
   const pendingEvents = new Map<(...args: unknown[]) => unknown, PendingRecord>();
 
+  function bindRecords(
+    pending: Map<(...args: unknown[]) => unknown, PendingRecord>,
+    subscribeToInner: (handler: (...args: unknown[]) => unknown) => () => void
+  ): void {
+    for (const record of pending.values()) {
+      record.innerUnsubscribe = subscribeToInner(record.handler);
+    }
+  }
+
   function bindPending(next: InnerCompanion): void {
     inner = next;
-    for (const record of pendingFrames.values()) {
-      record.innerUnsubscribe = inner.onFrame(record.handler);
-    }
+    bindRecords(pendingFrames, inner.onFrame.bind(inner));
     if (typeof inner.onEvent === "function") {
-      for (const record of pendingEvents.values()) {
-        record.innerUnsubscribe = inner.onEvent(record.handler);
-      }
+      bindRecords(pendingEvents, inner.onEvent.bind(inner));
+    }
+  }
+
+  function unsubscribePending(
+    pending: Map<(...args: unknown[]) => unknown, PendingRecord>,
+    handler: (...args: unknown[]) => unknown,
+    record: PendingRecord
+  ): void {
+    pending.delete(handler);
+    if (!record.innerUnsubscribe) {
+      return;
+    }
+    try {
+      record.innerUnsubscribe();
+    } catch {
+      /* unsubscribe is best-effort */
     }
   }
 
@@ -225,16 +265,31 @@ function createResolvedCompanion({
     }
     const record: PendingRecord = { handler, innerUnsubscribe: null };
     pending.set(handler, record);
-    return () => {
-      pending.delete(handler);
-      if (record.innerUnsubscribe) {
-        try {
-          record.innerUnsubscribe();
-        } catch {
-          /* unsubscribe is best-effort */
-        }
-      }
-    };
+    return () => unsubscribePending(pending, handler, record);
+  }
+
+  function createInnerCompanion(selected: SelectedTarget): InnerCompanion {
+    if (selected.backend === "neko") {
+      nekoTarget = selected.neko;
+      return createNekoCompanion({
+        ...neko,
+        target: selected.neko,
+        origin: selected.neko.origin,
+        browser_session_id,
+        fetchImpl,
+        WebSocketCtor,
+        logger,
+      });
+    }
+    return createCdpCompanion({
+      wsUrl: selected.wsUrl,
+      browser_session_id,
+      WebSocketCtor,
+      logger,
+      commandTimeoutMs,
+      openTimeoutMs,
+      // biome-ignore lint/suspicious/noExplicitAny: cast defeats the untyped `.js` adapter's too-narrow inferred option shape without changing runtime values.
+    } as any);
   }
 
   async function ensureInner(): Promise<InnerCompanion> {
@@ -254,37 +309,7 @@ function createResolvedCompanion({
       browser_session_id,
       backend,
     });
-
-    if (selected.backend === "neko") {
-      nekoTarget = selected.neko;
-      bindPending(
-        createNekoCompanion({
-          ...neko,
-          target: selected.neko,
-          origin: selected.neko.origin,
-          browser_session_id,
-          fetchImpl,
-          WebSocketCtor,
-          logger,
-        })
-      );
-      return inner;
-    }
-
-    bindPending(
-      // The CDP adapter is an untyped `.js` module whose inferred option shape
-      // is narrower than its real runtime contract; pass the options it expects
-      // at runtime and defeat the excess-property check without altering values.
-      createCdpCompanion({
-        wsUrl: selected.wsUrl,
-        browser_session_id,
-        WebSocketCtor,
-        logger,
-        commandTimeoutMs,
-        openTimeoutMs,
-        // biome-ignore lint/suspicious/noExplicitAny: cast defeats the untyped `.js` adapter's too-narrow inferred option shape without changing runtime values.
-      } as any)
-    );
+    bindPending(createInnerCompanion(selected));
     return inner;
   }
 

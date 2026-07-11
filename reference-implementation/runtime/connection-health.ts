@@ -2655,15 +2655,19 @@ function runtimeDependencyReason(reason: string): string | null {
   if (normalized.includes("missing_runtime_binding") || normalized.includes("runtime_binding_missing")) {
     return CONDITION_REASON.RUNTIME_BINDING_MISSING;
   }
-  if (
+  if (isExternalToolUnavailableReason(normalized)) {
+    return CONDITION_REASON.EXTERNAL_TOOL_UNAVAILABLE;
+  }
+  return null;
+}
+
+function isExternalToolUnavailableReason(normalized: string): boolean {
+  return (
     normalized.includes("binary_missing") ||
     normalized.includes("external_tool_missing") ||
     normalized.includes("external_tool_unavailable") ||
     normalized.includes("slackdump_missing")
-  ) {
-    return CONDITION_REASON.EXTERNAL_TOOL_UNAVAILABLE;
-  }
-  return null;
+  );
 }
 
 function conditionClassifierText(value: string): string {

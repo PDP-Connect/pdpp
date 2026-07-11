@@ -126,7 +126,22 @@ function runRequiresOwnerAuthRepair(err: RunConnectorError | null | undefined): 
     const record = plainObject(gap);
     return record !== null && knownGapRequiresOwnerAuthRepair(record);
   });
-  return gapHit || matchesOwnerAuthMessage(err.connector_error?.message) || matchesOwnerAuthMessage(err.failure_reason);
+  if (gapHit) {
+    return true;
+  }
+  // A connector that explicitly declared this failure retryable (via its
+  // `retryablePattern`, e.g. USAA's `source_unavailable`) has already made a
+  // connector-neutral, source-specific determination that this is not an
+  // auth failure. The session-establishment wrapper's message prefix (e.g.
+  // `usaa_session_failed: source_unavailable: ...`) still contains
+  // "session_failed" for EVERY session-establishment failure, retryable or
+  // not, so the message-text heuristic below cannot distinguish a proven
+  // provider outage from a real auth failure by substring alone. Trust the
+  // connector's explicit signal over the heuristic when both are present.
+  if (err.connector_error?.retryable === true) {
+    return false;
+  }
+  return matchesOwnerAuthMessage(err.connector_error?.message) || matchesOwnerAuthMessage(err.failure_reason);
 }
 
 function shouldRetryRunFailure(err: RunConnectorError | null | undefined): boolean {
