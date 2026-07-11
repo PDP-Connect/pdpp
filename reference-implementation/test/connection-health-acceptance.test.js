@@ -282,6 +282,29 @@ test('acceptance 7.1: manual/background-unsafe connector that is complete+succee
   assert.equal(snap.badges.stale, true);
 });
 
+test('acceptance 7.1: manual-default background-safe connector with an enabled owner schedule is scheduled, not stale_manual_refresh', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: STALE_FRESHNESS,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    refreshPolicy: {
+      recommended_mode: 'manual',
+      maximum_staleness_seconds: 86400,
+      background_safe: true,
+      assisted_after_owner_auth: true,
+    },
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.reason_code, null);
+  assert.equal(snap.axes.freshness, 'stale');
+  assert.equal(snap.badges.stale, true);
+  assert.equal(snap.forward_disposition, 'complete');
+  assert.notEqual(snap.forward_disposition, 'owner_refresh_due');
+});
+
 test('acceptance 7.1: schedulable connector with the SAME stale evidence still degrades', () => {
   const run = succeededRun();
   const snap = projectConnectorSummaryConnectionHealth({

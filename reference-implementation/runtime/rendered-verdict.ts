@@ -624,7 +624,8 @@ function worstStreamCoverageTone(streams: readonly StreamRollup[]): VerdictTone 
 function connectionDisposition(
   snapshot: ConnectionHealthSnapshot,
   streams: readonly StreamRollup[],
-  refresh: ConnectionRefreshEvidence | null
+  refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null
 ): ForwardDisposition {
   if (streams.length === 0) {
     // No per-stream rollup supplied — trust the snapshot's own connection-level
@@ -640,7 +641,7 @@ function connectionDisposition(
   let worstRank = TONE_RANK[dispositionTone(snapshot.forward_disposition)];
   let worst: ForwardDisposition = snapshot.forward_disposition;
   for (const stream of streams) {
-    const disposition = streamDisposition(stream, snapshot, refresh);
+    const disposition = streamDisposition(stream, snapshot, refresh, scheduleEvidence);
     const counts = stream.priority === "required" || disposition === "terminal";
     if (!counts) {
       continue;
@@ -663,15 +664,28 @@ function connectionDisposition(
 function streamDisposition(
   stream: StreamRollup,
   snapshot: ConnectionHealthSnapshot,
-  refresh: ConnectionRefreshEvidence | null
+  refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null
 ): ForwardDisposition {
+  const schedule = scheduleEvidenceToRecord(scheduleEvidence);
   return deriveForwardDisposition({
     coverage: stream.coverage,
     gapRetryable: stream.gap_retryable,
     attentionOpen: stream.attention_open,
     freshness: snapshot.axes.freshness,
     refresh,
+    schedule,
   });
+}
+
+function scheduleEvidenceToRecord(scheduleEvidence: ScheduleEvidence | null): { readonly enabled: boolean } | null {
+  if (scheduleEvidence?.mode === "scheduled-active") {
+    return { enabled: true };
+  }
+  if (scheduleEvidence?.mode === "scheduled-disabled") {
+    return { enabled: false };
+  }
+  return null;
 }
 
 // ─── Required actions ───────────────────────────────────────────────────────
@@ -733,12 +747,26 @@ function hasTransientUploadFailure(snapshot: ConnectionHealthSnapshot): boolean 
   );
 }
 
+function hasEffectiveActiveScheduleEvidence(
+  refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null
+): boolean {
+  if (scheduleEvidence?.mode !== "scheduled-active") {
+    return false;
+  }
+  // "Normally schedulable" means the refresh policy is not manual-only.
+  // The one manual-only exception we honor is the explicit Amazon-style
+  // owner opt-in: recommended_mode=manual + backgroundSafe=true.
+  return !isManualRefreshOnly(refresh) || (refresh?.recommendedMode === "manual" && refresh.backgroundSafe === true);
+}
+
 function shouldOfferRetryGapAction(
   snapshot: ConnectionHealthSnapshot,
   refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null,
   progress: ProgressEvidence | null
 ): boolean {
-  if (isManualRefreshOnly(refresh)) {
+  if (isManualRefreshOnly(refresh) && !hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence)) {
     return true;
   }
   if (snapshot.badges.syncing || snapshot.reason_code === "source_pressure") {
@@ -1085,7 +1113,11 @@ function buildRequiredActions(
   // Degraded or manual-refresh retryable gaps: the system can recover on a
   // future run, but the owner can explicitly ask for another attempt. Surface
   // that non-urgent accelerant instead of hiding degraded gaps as a calm wait.
-  if (disposition === "resumable" && actions.length === 0 && shouldOfferRetryGapAction(snapshot, refresh, progress)) {
+  if (
+    disposition === "resumable" &&
+    actions.length === 0 &&
+    shouldOfferRetryGapAction(snapshot, refresh, scheduleEvidence, progress)
+  ) {
     const affects = resumableStreamIds(streams);
     actions.push({
       kind: "retry_gap",
@@ -1215,6 +1247,7 @@ function buildAnnotations(
   channel: RenderedChannel,
   tone: VerdictTone,
   refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null,
   progress: ProgressEvidence | null,
   actions: readonly RequiredAction[]
 ): VerdictAnnotation[] {
@@ -1223,7 +1256,7 @@ function buildAnnotations(
   // Co-required freshness annotation: ALWAYS present when freshness is not fresh
   // (honesty invariant 1). For fresh connections, include a quiet recency cue
   // when the caller supplied enough evidence. Text carries NO raw mechanistic counts.
-  const freshnessText = freshnessAnnotationText(snapshot, tone, refresh, progress, actions);
+  const freshnessText = freshnessAnnotationText(snapshot, tone, refresh, scheduleEvidence, progress, actions);
   if (freshnessText) {
     annotations.push({ kind: "freshness", text: freshnessText });
   }
@@ -1241,6 +1274,7 @@ function freshnessAnnotationText(
   snapshot: ConnectionHealthSnapshot,
   tone: VerdictTone,
   refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null,
   progress: ProgressEvidence | null,
   actions: readonly RequiredAction[]
 ): string | null {
@@ -1259,11 +1293,20 @@ function freshnessAnnotationText(
     }
   }
   const refreshedAge = relativeDayAge(progress?.last_refreshed_at ?? null, progress?.observed_at ?? null);
-  if (progress?.mode === "manual" || isManualRefreshOnly(refresh)) {
+  if (
+    progress?.mode === "manual" ||
+    (isManualRefreshOnly(refresh) && !hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence))
+  ) {
     if (refreshedAge) {
       return `Last refreshed ${refreshedAge}.`;
     }
     return "Stale — this connector refreshes when you run it.";
+  }
+  if (hasEffectiveActiveScheduleEvidence(refresh, scheduleEvidence)) {
+    if (refreshedAge) {
+      return `Last refreshed ${refreshedAge}. Refreshes on schedule.`;
+    }
+    return "Stale — refreshes on schedule.";
   }
   if (isAssistedRefresh(refresh)) {
     return "Stale — refreshes on schedule; may ask for your help to catch up.";
@@ -1514,10 +1557,11 @@ function buildStreamRows(
   streams: readonly StreamRollup[],
   snapshot: ConnectionHealthSnapshot,
   refresh: ConnectionRefreshEvidence | null,
+  scheduleEvidence: ScheduleEvidence | null,
   actions: readonly RequiredAction[]
 ): VerdictStreamRow[] {
   return streams.map((stream) => {
-    const disposition = streamDisposition(stream, snapshot, refresh);
+    const disposition = streamDisposition(stream, snapshot, refresh, scheduleEvidence);
     // Clamp collected to considered (honesty invariant 2): no "3/2 collected".
     const collected =
       stream.collected !== null && stream.considered !== null
@@ -1865,7 +1909,7 @@ export function synthesizeRenderedVerdict(
   attention: ConnectionAttentionEvidence | null = null
 ): RenderedVerdict {
   // ── tone: worst-wins over base(state) + every axis ──
-  const disposition = connectionDisposition(snapshot, streams, refresh);
+  const disposition = connectionDisposition(snapshot, streams, refresh, scheduleEvidence);
   const coverageHealthTone = terminalAwareTone(worstStreamCoverageTone(streams), snapshot, disposition);
   const dispositionHealthTone = terminalAwareTone(dispositionTone(disposition), snapshot, disposition);
   const toneInputs: { axis: string; tone: VerdictTone }[] = [
@@ -1890,9 +1934,9 @@ export function synthesizeRenderedVerdict(
   }
 
   // ── annotations, statement, streams, progress ──
-  const annotations = buildAnnotations(snapshot, channel, tone, refresh, progress, actions);
+  const annotations = buildAnnotations(snapshot, channel, tone, refresh, scheduleEvidence, progress, actions);
   const forwardStatement = buildForwardStatement(disposition, actions, snapshot);
-  const streamRows = buildStreamRows(streams, snapshot, refresh, actions);
+  const streamRows = buildStreamRows(streams, snapshot, refresh, scheduleEvidence, actions);
   const renderedProgress = buildProgress(progress, disposition, actions);
 
   // ── inspection layer: suppressed signals routed to detail, never deleted ──

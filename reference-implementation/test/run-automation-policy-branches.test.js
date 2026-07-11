@@ -5,7 +5,8 @@
  *   - the deployment-not-ready outcome (scheduled -> ask_before_run;
  *     manual -> assisted) including the reason fallback string.
  *   - the recommended_mode manual / paused policy-blocks projections
- *     end-to-end (the existing tests only reach these via
+ *     end-to-end, including the manual-default + background_safe=true
+ *     escape hatch (the existing tests only reach these via
  *     automaticIneligibilityReason, not the full projection shape).
  *   - canNotifyDuringRun posture branches: credentials (assisted), none
  *     (unattended), and the assisted_after_owner_auth scheduled-trigger
@@ -72,7 +73,7 @@ test('projectRunAutomationPolicy defaults deployment readiness to ready when nul
 
 // ─── policy-blocks (recommended_mode / background_safe) projections ──────
 
-test('projectRunAutomationPolicy projects recommended_mode=manual as manual_only for a scheduled run', () => {
+test('projectRunAutomationPolicy keeps recommended_mode=manual blocked unless background_safe=true is declared', () => {
   const p = projectRunAutomationPolicy({
     triggerKind: 'scheduled',
     refreshPolicy: { recommended_mode: 'manual' },
@@ -81,7 +82,18 @@ test('projectRunAutomationPolicy projects recommended_mode=manual as manual_only
   assert.equal(p.allowed_to_start, false);
   assert.equal(p.requires_owner_approval, true);
   assert.equal(p.notification_posture, 'informational');
-  assert.match(p.reason, /manual runs/);
+  assert.match(p.reason, /background_safe=true/);
+});
+
+test('projectRunAutomationPolicy lets a manual-default background-safe connector run when explicitly scheduled', () => {
+  const p = projectRunAutomationPolicy({
+    triggerKind: 'scheduled',
+    refreshPolicy: { recommended_mode: 'manual', background_safe: true },
+  });
+  assert.equal(p.automation_mode, 'unattended');
+  assert.equal(p.allowed_to_start, true);
+  assert.equal(p.requires_owner_approval, false);
+  assert.equal(p.notification_posture, 'none');
 });
 
 test('projectRunAutomationPolicy lets a manual trigger start a manual_only (paused) policy', () => {

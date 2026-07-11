@@ -156,6 +156,7 @@ function stream(overrides = {}) {
 }
 
 const MANUAL_REFRESH = { backgroundSafe: false, interactionPosture: 'otp_likely', recommendedMode: 'manual' };
+const PAUSED_REFRESH = { backgroundSafe: true, interactionPosture: 'otp_likely', recommendedMode: 'paused' };
 const ASSISTED_REFRESH = { backgroundSafe: true, interactionPosture: 'manual_action_likely', recommendedMode: 'automatic' };
 
 // ─── Composite invariant harness (task 4.3) ──────────────────────────────────
@@ -373,33 +374,35 @@ test('connection-level terminal disposition is not erased by a retryable stream 
   assert.notEqual(v.required_actions[0]?.kind, 'retry_gap');
 });
 
-test('freshness annotation does not claim schedule refresh when the schedule is disabled', () => {
+test('freshness annotation describes an explicit manual-default schedule as scheduled', () => {
   const mode = progressMode({
     localDeviceBacked: false,
-    refresh: ASSISTED_REFRESH,
-    scheduled: false,
+    refresh: { recommendedMode: 'manual', backgroundSafe: true },
+    schedule: { enabled: true },
     hasRecoveredDetailGaps: false,
   });
   const v = synthesizeRenderedVerdict(
     snapshot({
       state: 'idle',
       axes: { freshness: 'stale' },
-      forward_disposition: 'owner_refresh_due',
+      forward_disposition: 'complete',
     }),
     [stream()],
-    ASSISTED_REFRESH,
+    { backgroundSafe: true, recommendedMode: 'manual' },
     true,
     {
       mode,
       retained_records: 100,
       last_refreshed_at: '2026-06-29T12:00:00.000Z',
       observed_at: '2026-07-01T12:00:00.000Z',
-    }
+    },
+    { hasPriorSuccess: true, mode: 'scheduled-active' }
   );
   const freshness = v.annotations.find((annotation) => annotation.kind === 'freshness')?.text ?? '';
-  assert.equal(mode, 'manual');
-  assert.equal(freshness, 'Last refreshed 2 days ago.');
-  assert.doesNotMatch(freshness, /schedule/i);
+  assert.equal(mode, 'scheduled');
+  assert.match(freshness, /schedule/i);
+  assert.doesNotMatch(freshness, /refreshes when you run it/i);
+  assert.doesNotMatch(freshness, /manual/i);
 });
 
 test('tone: unknown freshness renders Not measured rather than Healthy, Degraded, or Checking', () => {
@@ -1039,6 +1042,105 @@ test('channel: idle assisted retryable gap offers retry instead of passive colle
   assert.equal(action.cta, 'Retry now');
   assert.deepEqual(action.affects, ['messages']);
   assert.ok(!v.required_actions.some((a) => a.kind === 'wait' && a.cta === 'Collecting — no action needed'));
+});
+
+test('channel: explicit manual-default background-safe schedule stays scheduled and does not offer Retry now', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'retryable_gap', freshness: 'stale', outbox: 'idle' },
+      forward_disposition: 'resumable',
+    }),
+    [stream({ stream_id: 'messages', coverage: 'retryable_gap', gap_retryable: true })],
+    { backgroundSafe: true, recommendedMode: 'manual' },
+    true,
+    {
+      mode: 'scheduled',
+      retained_records: 136_907,
+      last_refreshed_at: '2026-07-03T03:51:30.681Z',
+      observed_at: '2026-07-06T15:33:39.630Z',
+    },
+    { hasPriorSuccess: true, mode: 'scheduled-active' }
+  );
+  const freshness = v.annotations.find((annotation) => annotation.kind === 'freshness')?.text ?? '';
+  const action = v.required_actions[0];
+  assert.equal(v.progress.mode, 'scheduled');
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'calm');
+  assert.equal(v.forward_statement, 'The next run is expected to fill the remaining data.');
+  assert.equal(action.kind, 'wait');
+  assert.equal(action.audience, 'none');
+  assert.equal(action.cta, 'Collecting — no action needed');
+  assert.match(freshness, /schedule/i);
+  assert.doesNotMatch(freshness, /refreshes when you run it/i);
+  assert.ok(!v.required_actions.some((a) => a.kind === 'retry_gap' || a.audience === 'owner'));
+});
+
+test('channel: background-unsafe active schedule stays manual and still offers Retry now', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'retryable_gap', freshness: 'stale', outbox: 'idle' },
+      forward_disposition: 'resumable',
+      last_success_at: '2026-06-01T00:00:00.000Z',
+    }),
+    [stream({ stream_id: 'messages', coverage: 'retryable_gap', gap_retryable: true })],
+    MANUAL_REFRESH,
+    true,
+    {
+      mode: 'manual',
+      retained_records: 136_907,
+      last_refreshed_at: '2026-07-03T03:51:30.681Z',
+      observed_at: '2026-07-06T15:33:39.630Z',
+    },
+    { hasPriorSuccess: true, mode: 'scheduled-active' }
+  );
+  const freshness = v.annotations.find((annotation) => annotation.kind === 'freshness')?.text ?? '';
+  const action = v.required_actions[0];
+  assert.equal(v.progress.mode, 'manual');
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'advisory');
+  assert.equal(v.forward_statement, 'Retry now to give the recoverable gap another run.');
+  assert.equal(action.kind, 'retry_gap');
+  assert.equal(action.audience, 'owner');
+  assert.equal(action.cta, 'Retry now');
+  assert.match(freshness, /stuck since/i);
+  assert.doesNotMatch(freshness, /schedule/i);
+});
+
+test('channel: paused active schedule stays manual and still offers Retry now', () => {
+  const v = synthesizeRenderedVerdict(
+    snapshot({
+      state: 'degraded',
+      axes: { coverage: 'retryable_gap', freshness: 'stale', outbox: 'idle' },
+      forward_disposition: 'resumable',
+      last_success_at: '2026-06-01T00:00:00.000Z',
+    }),
+    [stream({ stream_id: 'messages', coverage: 'retryable_gap', gap_retryable: true })],
+    PAUSED_REFRESH,
+    true,
+    {
+      mode: 'manual',
+      retained_records: 136_907,
+      last_refreshed_at: '2026-07-03T03:51:30.681Z',
+      observed_at: '2026-07-06T15:33:39.630Z',
+    },
+    { hasPriorSuccess: true, mode: 'scheduled-active' }
+  );
+  const freshness = v.annotations.find((annotation) => annotation.kind === 'freshness')?.text ?? '';
+  const action = v.required_actions[0];
+  assert.equal(v.progress.mode, 'manual');
+  assert.equal(v.pill.tone, 'amber');
+  assert.equal(v.pill.label, 'Degraded');
+  assert.equal(v.channel, 'advisory');
+  assert.equal(v.forward_statement, 'Retry now to give the recoverable gap another run.');
+  assert.equal(action.kind, 'retry_gap');
+  assert.equal(action.audience, 'owner');
+  assert.equal(action.cta, 'Retry now');
+  assert.match(freshness, /stuck since/i);
+  assert.doesNotMatch(freshness, /schedule/i);
 });
 
 test('channel: source-pressure deferred recovery is a self-handled wait, not an owner Retry now action', () => {
@@ -1865,7 +1967,7 @@ test('reattach_schedule: paused schedule preempts refresh_now — a merely-stale
   assert.ok(!v.required_actions.some((a) => a.kind === 'refresh_now'), 'refresh_now must not compete with reattach_schedule — both mean "run it again"');
 });
 
-test('refresh_now: unaffected by an ACTIVE (non-paused) schedule — byte-identical to omitting scheduleEvidence', () => {
+test('refresh_now: background-unsafe active schedule stays manual and keeps the owner refresh action', () => {
   const snap = snapshot({
     state: 'idle',
     axes: { freshness: 'stale' },
@@ -1874,6 +1976,37 @@ test('refresh_now: unaffected by an ACTIVE (non-paused) schedule — byte-identi
   });
   const withoutSchedule = synthesizeRenderedVerdict(snap, [], MANUAL_REFRESH, true, null);
   const withActiveSchedule = synthesizeRenderedVerdict(snap, [], MANUAL_REFRESH, true, null, SCHEDULED_ACTIVE);
-  assert.deepEqual(withoutSchedule, withActiveSchedule);
   assert.equal(withoutSchedule.required_actions[0].kind, 'refresh_now');
+  assert.equal(withActiveSchedule.required_actions[0].kind, 'refresh_now');
+  assert.deepEqual(withoutSchedule, withActiveSchedule);
+  assert.doesNotMatch(
+    withActiveSchedule.annotations.find((annotation) => annotation.kind === 'freshness')?.text ?? '',
+    /schedule/i
+  );
+  assert.match(
+    withActiveSchedule.annotations.find((annotation) => annotation.kind === 'freshness')?.text ?? '',
+    /refreshes when you run it/i
+  );
+});
+
+test('refresh_now: paused active schedule stays manual and keeps the owner refresh action', () => {
+  const snap = snapshot({
+    state: 'idle',
+    axes: { freshness: 'stale' },
+    forward_disposition: 'owner_refresh_due',
+    last_success_at: '2026-06-01T00:00:00.000Z',
+  });
+  const withoutSchedule = synthesizeRenderedVerdict(snap, [], PAUSED_REFRESH, true, null);
+  const withActiveSchedule = synthesizeRenderedVerdict(snap, [], PAUSED_REFRESH, true, null, SCHEDULED_ACTIVE);
+  assert.equal(withoutSchedule.required_actions[0].kind, 'refresh_now');
+  assert.equal(withActiveSchedule.required_actions[0].kind, 'refresh_now');
+  assert.deepEqual(withoutSchedule, withActiveSchedule);
+  assert.doesNotMatch(
+    withActiveSchedule.annotations.find((annotation) => annotation.kind === 'freshness')?.text ?? '',
+    /schedule/i
+  );
+  assert.match(
+    withActiveSchedule.annotations.find((annotation) => annotation.kind === 'freshness')?.text ?? '',
+    /refreshes when you run it/i
+  );
 });

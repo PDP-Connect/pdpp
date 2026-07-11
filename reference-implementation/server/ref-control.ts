@@ -2321,6 +2321,7 @@ export function buildCollectionReport(input: {
   readonly freshness: FreshnessAxis;
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
+  readonly schedule?: { readonly enabled: boolean } | null;
 }): CollectionReportEntry[] {
   const factByStream = resolveEffectiveStreamFacts(input);
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
@@ -2363,6 +2364,7 @@ export function buildCollectionReport(input: {
         freshness: input.freshness,
         attentionOpen: input.attentionOpen,
         refresh: input.refresh,
+        schedule: input.schedule ?? null,
       })
     );
   }
@@ -2381,6 +2383,7 @@ function buildCollectionReportEntry(input: {
   readonly freshness: FreshnessAxis;
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
+  readonly schedule?: { readonly enabled: boolean } | null;
 }): CollectionReportEntry {
   const effective = input.factByStream.get(input.stream);
   const hasRuntimeFact = effective !== undefined;
@@ -2420,6 +2423,7 @@ function buildCollectionReportEntry(input: {
     attentionOpen: input.attentionOpen,
     freshness: input.freshness,
     refresh: input.refresh,
+    schedule: input.schedule ?? null,
   });
   return {
     stream: input.stream,
@@ -2499,6 +2503,7 @@ export function projectCollectionReport(input: {
   readonly pendingDetailGapsReadLimit?: number | null;
   readonly terminalDetailGapsByStream?: ReadonlyMap<string, number> | null;
   readonly refreshPolicy: unknown;
+  readonly schedule?: { readonly enabled: boolean } | null;
 }): CollectionReportEntry[] {
   const classifyingRun = coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
   return buildCollectionReport({
@@ -2514,6 +2519,7 @@ export function projectCollectionReport(input: {
     freshness: input.connectionHealth.axes.freshness,
     attentionOpen: input.connectionHealth.axes.attention !== "none",
     refresh: buildRefreshEvidence(input.refreshPolicy),
+    schedule: input.schedule ?? null,
   });
 }
 
@@ -3824,10 +3830,11 @@ function buildRenderedVerdictForSummary(input: {
   readonly schedule: unknown;
 }): RenderedVerdict {
   const refresh = buildRefreshEvidence(input.refreshPolicy);
+  const schedule = normalizeScheduleEvidence(input.schedule);
   const mode = progressMode({
     localDeviceBacked: input.localDeviceBacked,
     refresh,
-    scheduled: !!(input.schedule as { enabled?: boolean } | null)?.enabled,
+    schedule,
     hasRecoveredDetailGaps: input.hasRecoveredDetailGaps,
   });
   const progressEvidence = buildProgressEvidence({
@@ -3867,6 +3874,13 @@ function buildRenderedVerdictForSummary(input: {
     runtimeOk: input.runtimeOk,
     scheduleEvidence,
   });
+}
+
+function normalizeScheduleEvidence(schedule: unknown): { readonly enabled: boolean } | null {
+  if (!schedule || typeof schedule !== "object" || !("enabled" in schedule)) {
+    return null;
+  }
+  return { enabled: Boolean((schedule as { enabled?: unknown }).enabled) };
 }
 
 /**
@@ -4010,6 +4024,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     terminalDetailGapsByStream: detailGaps.terminalByStream,
     refreshPolicy,
+    schedule: normalizeScheduleEvidence(schedule),
   });
   // `refineConnectionHealthWithCollectionReport` owns both report-derived
   // overrides: the required-unknown coverage refusal and the proof-age
@@ -4616,6 +4631,7 @@ export async function getConnectorDetail(
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     terminalDetailGapsByStream: detailGaps.terminalByStream,
     refreshPolicy,
+    schedule: normalizeScheduleEvidence(schedule),
   });
   const connectionHealth = refineConnectionHealthWithCollectionReport(
     healthInput,

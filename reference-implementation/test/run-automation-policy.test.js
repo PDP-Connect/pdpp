@@ -43,6 +43,13 @@ test('run automation policy distinguishes unattended, assisted, ask-before-run, 
   assert.equal(manualOnly.automation_mode, 'manual_only');
   assert.equal(manualOnly.requires_owner_approval, true);
 
+  const manualByDefault = projectRunAutomationPolicy({
+    triggerKind: 'scheduled',
+    refreshPolicy: { background_safe: true, recommended_mode: 'manual' },
+  });
+  assert.equal(manualByDefault.allowed_to_start, true);
+  assert.equal(manualByDefault.automation_mode, 'unattended');
+
   const manualGesture = projectRunAutomationPolicy({
     triggerKind: 'manual',
     refreshPolicy: { background_safe: false },
@@ -54,7 +61,11 @@ test('run automation policy distinguishes unattended, assisted, ask-before-run, 
 test('run automation policy preserves existing unsafe automatic-schedule reasons', () => {
   assert.match(
     automaticIneligibilityReason({ recommended_mode: 'manual' }),
-    /manual runs/,
+    /background_safe=true/,
+  );
+  assert.equal(
+    automaticIneligibilityReason({ recommended_mode: 'manual', background_safe: true }),
+    null,
   );
   assert.match(
     automaticIneligibilityReason({ recommended_mode: 'paused' }),

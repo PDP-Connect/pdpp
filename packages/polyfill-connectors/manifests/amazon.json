@@ -60,8 +60,9 @@
       "interaction_posture": "otp_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",
-      "background_safe": false,
-      "rationale": "Amazon retail orders frequently require OTP and trigger bot-detection; refresh manually."
+      "background_safe": true,
+      "assisted_after_owner_auth": true,
+      "rationale": "Amazon remains manual by default because sign-in and anti-bot checks are common, but an owner can explicitly opt into a background schedule after authenticating the connection."
     },
     "public_listing": {
       "listed": true,

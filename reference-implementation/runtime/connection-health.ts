@@ -1377,7 +1377,11 @@ function classifyManualStaleAdvisory(ctx: ClassificationContext): ReturnType<Cla
   // 6b'. Manual / paused / background-unsafe connector that is otherwise green
   //      but whose data has aged past its staleness window -> idle with a
   //      manual-refresh advisory, NOT degraded.
-  return classifyStaleAdvisory(ctx, isManualRefreshOnly(ctx.input.refresh), CONDITION_REASON.STALE_MANUAL_REFRESH);
+  return classifyStaleAdvisory(
+    ctx,
+    isManualRefreshOnly(ctx.input.refresh) && !isExplicitOwnerScheduledManual(ctx.input.refresh, ctx.input.schedule),
+    CONDITION_REASON.STALE_MANUAL_REFRESH
+  );
 }
 
 function classifyAssistedStaleAdvisory(ctx: ClassificationContext): ReturnType<ClassificationStep> {
@@ -2211,10 +2215,10 @@ function sourceCoverageCondition(input: ComputeConnectionHealthInput, axes: Conn
  * declares it cannot be auto-scheduled in the background — either
  * `background_safe: false`, `recommended_mode: "manual"`, or
  * `recommended_mode: "paused"`. These are the same refresh-policy values the
- * schedule auto-enroll gate treats as ineligible for automatic scheduling, so
- * the projection stays consistent with "this connector will never refresh on
- * its own." Absent/unknown evidence is treated as schedulable (the pre-change
- * behavior), so staleness still degrades.
+ * projection uses to decide whether stale freshness is an owner-action
+ * advisory. Absent/unknown evidence is treated as schedulable (the pre-change
+ * behavior), so staleness still degrades unless an explicit owner-created
+ * schedule says otherwise.
  */
 export function isManualRefreshOnly(refresh: ConnectionRefreshEvidence | null | undefined): boolean {
   if (!refresh) {
@@ -2223,6 +2227,19 @@ export function isManualRefreshOnly(refresh: ConnectionRefreshEvidence | null | 
   return (
     refresh.backgroundSafe === false || refresh.recommendedMode === "manual" || refresh.recommendedMode === "paused"
   );
+}
+
+/**
+ * A manual-default connector with an owner-created enabled schedule is still
+ * scheduled work, not manual-only work. Keep this predicate separate from the
+ * conservative refresh recommendation so explicit owner opt-in can be honored
+ * without auto-enrolling unscheduled connections.
+ */
+export function isExplicitOwnerScheduledManual(
+  refresh: ConnectionRefreshEvidence | null | undefined,
+  schedule: ConnectionScheduleEvidence | null | undefined
+): boolean {
+  return schedule?.enabled === true && refresh?.recommendedMode === "manual" && refresh?.backgroundSafe === true;
 }
 
 /**
@@ -2258,13 +2275,14 @@ function freshCondition(input: ComputeConnectionHealthInput, axes: ConnectionAxe
   }
   if (axes.freshness === "stale") {
     // A manual / paused / background-unsafe connector cannot auto-refresh, so
-    // stale data is not a failure — it is an owner-action advisory. Emit the
-    // stale `Fresh` condition at `info` severity so it never trips the
-    // degrading threshold; the headline becomes `idle` with a manual-refresh
-    // remediation and the `stale` badge stays on. Schedulable / background-
-    // safe connectors keep the degrading `warning` stale condition, because
-    // the system was supposed to refresh them and did not.
-    if (isManualRefreshOnly(input.refresh)) {
+    // stale data is not a failure — it is an owner-action advisory unless the
+    // owner has explicitly enabled a background-safe schedule. Emit the stale
+    // `Fresh` condition at `info` severity so it never trips the degrading
+    // threshold; the headline becomes `idle` with a manual-refresh remediation
+    // and the `stale` badge stays on. Schedulable / background-safe connectors
+    // keep the degrading `warning` stale condition, because the system was
+    // supposed to refresh them and did not.
+    if (isManualRefreshOnly(input.refresh) && !isExplicitOwnerScheduledManual(input.refresh, input.schedule)) {
       return condition({
         type: "Fresh",
         status: "false",
@@ -2355,6 +2373,12 @@ export interface ForwardDispositionInput {
    * not background-safe) or the scheduler's own responsibility (background-safe).
    */
   readonly refresh: ConnectionRefreshEvidence | null;
+  /**
+   * Durable schedule evidence. When a manual-by-default connector has an
+   * explicit owner-created enabled schedule, the refresh policy alone must not
+   * force the manual-refresh advisory.
+   */
+  readonly schedule?: ConnectionScheduleEvidence | null;
 }
 
 /**
@@ -2441,10 +2465,15 @@ export function deriveForwardDisposition(input: ForwardDispositionInput): Forwar
   // refreshes on schedule but may need the owner's bounded assistance to catch
   // up, so the disposition honestly names an owner-initiated/assisted run rather
   // than re-encoding staleness as a coverage gap. Coverage stays complete; only
-  // the disposition carries the freshness fact. A truly unattended schedulable
-  // stream is the scheduler's job and stays `complete` here (the connection-
-  // health projection raises its own schedulable-stale warning).
-  if (input.freshness === "stale" && (isManualRefreshOnly(input.refresh) || isAssistedRefresh(input.refresh))) {
+  // the disposition carries the freshness fact. A manual-default connector with
+  // an explicit owner-created enabled schedule is treated as schedulable here and
+  // stays `complete` on the disposition axis (the connection-health projection
+  // still raises its stale warning).
+  if (
+    input.freshness === "stale" &&
+    !isExplicitOwnerScheduledManual(input.refresh, input.schedule) &&
+    (isManualRefreshOnly(input.refresh) || isAssistedRefresh(input.refresh))
+  ) {
     return "owner_refresh_due";
   }
 
@@ -2498,6 +2527,7 @@ function deriveConnectionForwardDisposition(
     attentionOpen: conditionIsFalse(conditionSet, "AttentionClear"),
     freshness: input.freshness?.axis ?? "unknown",
     refresh: input.refresh ?? null,
+    schedule: input.schedule ?? null,
   });
 }
 

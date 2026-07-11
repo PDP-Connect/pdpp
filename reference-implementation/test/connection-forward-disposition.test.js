@@ -93,6 +93,20 @@ test('complete coverage, manual-refresh stale -> idle headline + owner_refresh_d
   assert.equal(snap.forward_disposition, 'owner_refresh_due');
 });
 
+test('complete coverage, manual-default background-safe + enabled schedule -> degraded headline + complete disposition', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: succeededRun(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'manual' },
+      schedule: { enabled: true },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(snap.forward_disposition, 'complete');
+});
+
 test('schedulable-stale is the scheduler\'s job, not owner_refresh_due', () => {
   const snap = computeConnectionHealth(
     input({

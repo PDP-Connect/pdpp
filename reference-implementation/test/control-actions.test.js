@@ -1000,6 +1000,51 @@ test('schedule upsert rejects enabling manual or background-unsafe connector pol
   }
 });
 
+test('schedule upsert permits a manual-default connector when background_safe=true is declared', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'manual-safe-test',
+    version: '1.0.0',
+    display_name: 'Manual Safe Test',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        primary_key: ['id'],
+      },
+    ],
+    capabilities: {
+      refresh_policy: {
+        recommended_mode: 'manual',
+        interaction_posture: 'otp_likely',
+        background_safe: true,
+        rationale: 'Owner-created schedule is allowed after the connection is marked background-safe.',
+      },
+    },
+  };
+
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerConnector(asUrl, manifest);
+
+    const putResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(manifest.connector_id)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 3600, enabled: true }),
+    });
+    assert.equal(putResp.status, 200);
+    const body = await putResp.json();
+    assert.equal(body.object, 'schedule');
+    assert.equal(body.enabled, true);
+    assert.equal(body.ineligibility_reason, null);
+    assert.equal(body.automation_mode, 'assisted');
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('schedule upsert permits assisted-after-owner-auth schedules as unattended session reuse', async () => {
   const manifest = {
     protocol_version: '0.1.0',

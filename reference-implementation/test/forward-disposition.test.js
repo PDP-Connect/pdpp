@@ -7,6 +7,7 @@ import { deriveForwardDisposition } from '../runtime/connection-health.ts';
 
 /** A manual / paused / not-background-safe connection that cannot self-refresh. */
 const MANUAL_REFRESH = Object.freeze({ backgroundSafe: false, recommendedMode: 'manual' });
+const MANUAL_DEFAULT_BACKGROUND_SAFE = Object.freeze({ backgroundSafe: true, recommendedMode: 'manual' });
 const PAUSED_REFRESH = Object.freeze({ backgroundSafe: true, recommendedMode: 'paused' });
 /** A schedulable, background-safe connection the scheduler refreshes on its own. */
 const SCHEDULABLE_REFRESH = Object.freeze({ backgroundSafe: true, recommendedMode: 'automatic' });
@@ -54,6 +55,20 @@ test('owner_refresh_due: complete coverage, paused-refresh stale -> owner_refres
   assert.equal(
     deriveForwardDisposition(input({ coverage: 'complete', freshness: 'stale', refresh: PAUSED_REFRESH })),
     'owner_refresh_due',
+  );
+});
+
+test('owner_refresh_due: complete coverage, manual-default background-safe plus enabled schedule -> complete', () => {
+  assert.equal(
+    deriveForwardDisposition(
+      input({
+        coverage: 'complete',
+        freshness: 'stale',
+        refresh: MANUAL_DEFAULT_BACKGROUND_SAFE,
+        schedule: { enabled: true },
+      }),
+    ),
+    'complete',
   );
 });
 

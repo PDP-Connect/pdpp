@@ -58,18 +58,18 @@ function createRunAutomationPolicyProjection({
   };
 }
 
-function policyBlocksAutomatic(refreshPolicy: AutomationRefreshPolicy | null | undefined): string | null {
+function policyBlocksScheduledRuns(refreshPolicy: AutomationRefreshPolicy | null | undefined): string | null {
   if (!refreshPolicy) {
     return null;
-  }
-  if (refreshPolicy.recommended_mode === "manual") {
-    return "Connector refresh policy recommends manual runs; automatic scheduling is disabled.";
   }
   if (refreshPolicy.recommended_mode === "paused") {
     return "Connector refresh policy recommends paused refresh; automatic scheduling is disabled.";
   }
   if (refreshPolicy.background_safe === false) {
     return "Connector refresh policy is not background-safe; automatic scheduling is disabled.";
+  }
+  if (refreshPolicy.recommended_mode === "manual" && refreshPolicy.background_safe !== true) {
+    return "Connector refresh policy recommends manual runs; automatic scheduling is disabled until background_safe=true is declared.";
   }
   return null;
 }
@@ -87,7 +87,7 @@ function canNotifyDuringRun(
 
 export function projectRunAutomationPolicy(input: RunAutomationPolicyInput): RunAutomationPolicyProjection {
   const deploymentReadiness = input.deploymentReadiness ?? { ready: true };
-  const automaticPolicyReason = policyBlocksAutomatic(input.refreshPolicy);
+  const automaticPolicyReason = policyBlocksScheduledRuns(input.refreshPolicy);
   const isManualTrigger = input.triggerKind === "manual";
   const manualAwareNotificationPosture = isManualTrigger ? "none" : "informational";
   const requiresOwnerApproval = !isManualTrigger;
@@ -156,5 +156,5 @@ export function automationModeCopy(mode: RunAutomationMode): string {
 }
 
 export function automaticIneligibilityReason(refreshPolicy: AutomationRefreshPolicy | null): string | null {
-  return policyBlocksAutomatic(refreshPolicy);
+  return policyBlocksScheduledRuns(refreshPolicy);
 }

@@ -2,13 +2,14 @@
  * Unit coverage for the two UNTESTED streaming-progress projection exports of
  * `runtime/connector-verdict-input.ts`:
  *
- *   - `progressMode({localDeviceBacked, refresh, scheduled, hasRecoveredDetailGaps})`
+ *   - `progressMode({localDeviceBacked, refresh, schedule, hasRecoveredDetailGaps})`
  *     — the priority ladder that chooses which "did it work?" model the rendered
  *     verdict privileges (design D9). Exact order:
  *       1. localDeviceBacked            => "local_device"
- *       2. scheduled && recoveredGaps   => "deferred"
- *       3. manual-refresh-only refresh  => "manual"
- *       4. otherwise                    => "scheduled"
+ *       2. enabled schedule + gaps      => "deferred"
+ *       3. no enabled schedule          => "manual"
+ *       4. manual-refresh-only refresh  => "manual"
+ *       5. otherwise                    => "scheduled"
  *     Manual-refresh-only is decided by `isManualRefreshOnly`:
  *       null refresh => false; else backgroundSafe===false OR
  *       recommendedMode in {"manual","paused"}.
@@ -38,7 +39,7 @@ test('progressMode: local_device wins over every other signal', () => {
   const out = progressMode({
     localDeviceBacked: true,
     // Even with scheduled+gaps and a manual refresh set, local_device short-circuits.
-    scheduled: true,
+    schedule: { enabled: true },
     hasRecoveredDetailGaps: true,
     refresh: { recommendedMode: 'manual', backgroundSafe: false },
   });
@@ -48,7 +49,7 @@ test('progressMode: local_device wins over every other signal', () => {
 test('progressMode: scheduled + recovered detail gaps => deferred (below local_device)', () => {
   const out = progressMode({
     localDeviceBacked: false,
-    scheduled: true,
+    schedule: { enabled: true },
     hasRecoveredDetailGaps: true,
     // manual refresh present but deferred outranks manual in the ladder.
     refresh: { recommendedMode: 'manual', backgroundSafe: false },
@@ -59,7 +60,7 @@ test('progressMode: scheduled + recovered detail gaps => deferred (below local_d
 test('progressMode: scheduled but NO recovered gaps does NOT trigger deferred', () => {
   const out = progressMode({
     localDeviceBacked: false,
-    scheduled: true,
+    schedule: { enabled: true },
     hasRecoveredDetailGaps: false,
     refresh: null,
   });
@@ -69,16 +70,16 @@ test('progressMode: scheduled but NO recovered gaps does NOT trigger deferred', 
 // NOTE (unify): the original autoquality/w6 draft of this test asserted that a
 // non-scheduled connection with recovered gaps (and null refresh) falls through
 // to `scheduled`. Harvest's shipped progressMode ladder deliberately maps ANY
-// non-scheduled connection to `manual` (see the `!input.scheduled` rule and the
-// harvest-native test "progressMode is manual for a non-scheduled connection" in
-// connector-verdict-input-mappers.test.js). The two ladders conflict; harvest's
-// is the retained contract, so this superseded case is dropped rather than
-// forcing a source change to a contested god-file.
+// connection without an enabled schedule to `manual` (see the `schedule ===
+// null` rule and the harvest-native test "progressMode is manual for a
+// non-scheduled connection" in connector-verdict-input-mappers.test.js). The
+// two ladders conflict; harvest's is the retained contract, so this superseded
+// case is dropped rather than forcing a source change to a contested god-file.
 
 test('progressMode: manual via recommendedMode="manual" when not local/deferred', () => {
   const out = progressMode({
     localDeviceBacked: false,
-    scheduled: false,
+    schedule: null,
     hasRecoveredDetailGaps: false,
     refresh: { recommendedMode: 'manual', backgroundSafe: true },
   });
@@ -88,7 +89,7 @@ test('progressMode: manual via recommendedMode="manual" when not local/deferred'
 test('progressMode: manual via recommendedMode="paused"', () => {
   const out = progressMode({
     localDeviceBacked: false,
-    scheduled: false,
+    schedule: null,
     hasRecoveredDetailGaps: false,
     refresh: { recommendedMode: 'paused', backgroundSafe: true },
   });
@@ -98,7 +99,7 @@ test('progressMode: manual via recommendedMode="paused"', () => {
 test('progressMode: manual via backgroundSafe=false even when recommendedMode is auto', () => {
   const out = progressMode({
     localDeviceBacked: false,
-    scheduled: false,
+    schedule: null,
     hasRecoveredDetailGaps: false,
     refresh: { recommendedMode: 'auto', backgroundSafe: false },
   });
@@ -108,18 +109,29 @@ test('progressMode: manual via backgroundSafe=false even when recommendedMode is
 test('progressMode: null refresh + not local/deferred => scheduled (not manual)', () => {
   const out = progressMode({
     localDeviceBacked: false,
-    scheduled: true,
+    schedule: { enabled: true },
     hasRecoveredDetailGaps: false,
     refresh: null,
   });
   assert.equal(out, 'scheduled', `null refresh must NOT be manual, got ${out}`);
 });
 
+test('progressMode: explicit manual-default background-safe schedule stays scheduled', () => {
+  const out = progressMode({
+    localDeviceBacked: false,
+    schedule: { enabled: true },
+    hasRecoveredDetailGaps: false,
+    refresh: { recommendedMode: 'manual', backgroundSafe: true },
+  });
+  assert.equal(out, 'scheduled', `explicit owner schedule must stay scheduled, got ${out}`);
+});
+
 // NOTE (unify): the autoquality/w6 draft asserted that a non-scheduled
 // connection with a background-safe auto refresh resolves to `scheduled`.
-// Harvest's shipped ladder maps non-scheduled to `manual` regardless of the
-// refresh mode (the `!input.scheduled` rule runs before the refresh check).
-// Dropped as a superseded expectation against harvest's retained contract.
+// Harvest's shipped ladder maps connections without an enabled schedule to
+// `manual` regardless of the refresh mode (the `schedule?.enabled !== true`
+// rule runs before the refresh check). Dropped as a superseded expectation
+// against harvest's retained contract.
 
 // --- buildProgressEvidence: field mapping ----------------------------------
 

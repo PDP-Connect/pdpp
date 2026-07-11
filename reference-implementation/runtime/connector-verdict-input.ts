@@ -22,7 +22,9 @@ import {
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
   type ConnectionRefreshEvidence,
+  type ConnectionScheduleEvidence,
   type CoverageAxis,
+  isExplicitOwnerScheduledManual,
   isManualRefreshOnly,
 } from "./connection-health.ts";
 import {
@@ -175,17 +177,20 @@ export function buildStreamRollups(
 export function progressMode(input: {
   readonly localDeviceBacked: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
-  readonly scheduled: boolean;
+  readonly schedule: ConnectionScheduleEvidence | null;
   readonly hasRecoveredDetailGaps: boolean;
 }): ProgressMode {
   if (input.localDeviceBacked) {
     return "local_device";
   }
-  if (input.scheduled && input.hasRecoveredDetailGaps) {
+  if (input.schedule?.enabled === true && input.hasRecoveredDetailGaps) {
     return "deferred";
   }
-  if (!input.scheduled) {
+  if (input.schedule?.enabled !== true) {
     return "manual";
+  }
+  if (isExplicitOwnerScheduledManual(input.refresh, input.schedule)) {
+    return "scheduled";
   }
   if (isManualRefreshOnly(input.refresh)) {
     return "manual";

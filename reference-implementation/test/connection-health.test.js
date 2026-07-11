@@ -1049,6 +1049,42 @@ test('manual stale: a never-run manual connector that is stale stays idle (not a
   assert.notEqual(snap.reason_code, 'stale_manual_refresh');
 });
 
+test('manual stale: a background-safe manual connector with an enabled owner schedule is scheduled, not manual-refresh-only', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'manual' },
+      schedule: { enabled: true },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(snap.reason_code, null);
+  assert.equal(snap.axes.freshness, 'stale');
+  assert.equal(snap.badges.stale, true);
+  assert.equal(findCondition(snap, 'Fresh')?.severity, 'warning');
+  assert.equal(findCondition(snap, 'Fresh')?.reason, 'stale');
+  assert.equal(snap.forward_disposition, 'complete');
+  assert.notEqual(snap.forward_disposition, 'owner_refresh_due');
+});
+
+test('manual stale: the same manual-default policy stays manual-refresh-only when the owner has not enabled a schedule', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+      refresh: { backgroundSafe: true, recommendedMode: 'manual' },
+      schedule: { enabled: false },
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.reason_code, null);
+  assert.equal(findCondition(snap, 'Fresh')?.reason, 'stale_manual_refresh');
+  assert.equal(snap.forward_disposition, 'owner_refresh_due');
+});
+
 // ─── Assisted-refresh connector freshness ─────────────────────────────────
 // A connector whose manifest refresh policy is schedulable
 // (recommended_mode automatic / background_safe true) but whose

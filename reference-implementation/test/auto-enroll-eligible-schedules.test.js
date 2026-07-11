@@ -242,6 +242,27 @@ test('manual refresh policy is never auto-enrolled even when env is present', as
   assert.equal(summary.enrolled, 0);
 });
 
+test('manual-default background-safe policy is still never auto-enrolled even when env is present', async () => {
+  const controller = createFakeController();
+  const m = manifest({
+    capabilities: {
+      ...manifest().capabilities,
+      refresh_policy: {
+        ...manifest().capabilities.refresh_policy,
+        recommended_mode: 'manual',
+        background_safe: true,
+      },
+    },
+  });
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: { WIDGET_TOKEN: 'set' },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.skipped_policy, 1);
+  assert.equal(summary.enrolled, 0);
+});
+
 test('background_safe=false is never auto-enrolled even when env is present', async () => {
   const controller = createFakeController();
   const m = manifest();

@@ -54,21 +54,21 @@ test('streamPriority keeps a contradictory required+accepted-policy stream requi
 
 test('progressMode prefers local_device above all other signals', () => {
   assert.equal(
-    progressMode({ localDeviceBacked: true, refresh: null, scheduled: true, hasRecoveredDetailGaps: true }),
+    progressMode({ localDeviceBacked: true, refresh: null, schedule: { enabled: true }, hasRecoveredDetailGaps: true }),
     'local_device',
   );
 });
 
 test('progressMode is deferred for a scheduled connector draining recovered detail gaps', () => {
   assert.equal(
-    progressMode({ localDeviceBacked: false, refresh: null, scheduled: true, hasRecoveredDetailGaps: true }),
+    progressMode({ localDeviceBacked: false, refresh: null, schedule: { enabled: true }, hasRecoveredDetailGaps: true }),
     'deferred',
   );
 });
 
 test('progressMode is manual for a non-scheduled connection', () => {
   assert.equal(
-    progressMode({ localDeviceBacked: false, refresh: null, scheduled: false, hasRecoveredDetailGaps: false }),
+    progressMode({ localDeviceBacked: false, refresh: null, schedule: null, hasRecoveredDetailGaps: false }),
     'manual',
   );
 });
@@ -78,16 +78,28 @@ test('progressMode is manual when the refresh contract is manual-only', () => {
     progressMode({
       localDeviceBacked: false,
       refresh: { recommendedMode: 'manual' },
-      scheduled: true,
+      schedule: { enabled: true },
       hasRecoveredDetailGaps: false,
     }),
     'manual',
   );
 });
 
+test('progressMode is scheduled for an explicit manual-default background-safe schedule', () => {
+  assert.equal(
+    progressMode({
+      localDeviceBacked: false,
+      refresh: { recommendedMode: 'manual', backgroundSafe: true },
+      schedule: { enabled: true },
+      hasRecoveredDetailGaps: false,
+    }),
+    'scheduled',
+  );
+});
+
 test('progressMode is scheduled otherwise', () => {
   assert.equal(
-    progressMode({ localDeviceBacked: false, refresh: null, scheduled: true, hasRecoveredDetailGaps: false }),
+    progressMode({ localDeviceBacked: false, refresh: null, schedule: { enabled: true }, hasRecoveredDetailGaps: false }),
     'scheduled',
   );
 });
