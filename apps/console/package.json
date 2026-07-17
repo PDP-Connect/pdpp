@@ -21,7 +21,7 @@
     "@pdpp/brand": "workspace:*",
     "@pdpp/brand-react": "workspace:*",
     "@pdpp/operator-ui": "workspace:*",
-    "@opendatalabs/remote-surface": "^0.3.0",
+    "@opendatalabs/remote-surface": "^0.4.0",
     "@tailwindcss/postcss": "^4.2.2",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",

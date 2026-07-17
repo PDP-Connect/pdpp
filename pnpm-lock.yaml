@@ -58,8 +58,8 @@ importers:
         specifier: 1.6.32
         version: 1.6.32
       '@opendatalabs/remote-surface':
-        specifier: ^0.3.0
-        version: 0.3.0
+        specifier: ^0.4.0
+        version: 0.4.0
       '@pdpp/brand':
         specifier: workspace:*
         version: link:../../packages/pdpp-brand
@@ -1557,6 +1557,10 @@ packages:
 
   '@opendatalabs/remote-surface@0.3.0':
     resolution: {integrity: sha512-CgN25tfIqoyEPPwApp4ujC27ueUVpCbP4AVHA25AuT6+qJ6MzmSA4wvGRmH2AxbIl5kf+WkOVCioGZs2R6/G0A==}
+    engines: {node: '>=24'}
+
+  '@opendatalabs/remote-surface@0.4.0':
+    resolution: {integrity: sha512-jUR4GavB+Q2SkwXb/ZacDyCZfaGzn5E6PS+rYUfwdKIr1+++mdTAK+G1vtA+oUIkuExyi5T7no3AgTTd2Wgcug==}
     engines: {node: '>=24'}
 
   '@orama/orama@3.1.18':
@@ -7203,6 +7207,11 @@ snapshots:
   '@open-draft/until@2.1.0': {}
 
   '@opendatalabs/remote-surface@0.3.0':
+    dependencies:
+      transformation-matrix: 3.1.0
+    optional: true
+
+  '@opendatalabs/remote-surface@0.4.0':
     dependencies:
       transformation-matrix: 3.1.0
 
