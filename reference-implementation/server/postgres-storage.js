@@ -358,6 +358,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         revoked_at TEXT,
+        manifest_generation BIGINT NOT NULL DEFAULT 0,
         UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key)
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_instances_owner_connector_status
@@ -371,6 +372,8 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       -- Spec: openspec/changes/reconcile-active-summary-evidence/design.md
       ALTER TABLE connector_instances
         ADD COLUMN IF NOT EXISTS record_reset_generation BIGINT NOT NULL DEFAULT 0;
+      ALTER TABLE connector_instances
+        ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT 0;
 
       -- Existing Postgres deployments may have been bootstrapped before the
       -- static-secret draft lifecycle existed. Widen the status CHECK in place
@@ -820,6 +823,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         last_heartbeat_status TEXT,
         records_pending INTEGER,
         outbox_diagnostics_json JSONB,
+        manifest_generation BIGINT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         revoked_at TEXT,
@@ -869,6 +873,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         stream TEXT NOT NULL,
         state_json JSONB NOT NULL,
         updated_at TEXT NOT NULL,
+        manifest_generation BIGINT NOT NULL DEFAULT 0,
         PRIMARY KEY(connector_instance_id, stream)
       );
 
@@ -879,6 +884,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         stream TEXT NOT NULL,
         state_json JSONB NOT NULL,
         updated_at TEXT NOT NULL,
+        manifest_generation BIGINT NOT NULL DEFAULT 0,
         PRIMARY KEY(grant_id, connector_instance_id, stream)
       );
 
@@ -1494,10 +1500,20 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         computed_at               TEXT,
         source_event_seq          BIGINT,
         state                     TEXT NOT NULL DEFAULT 'rebuilding',
-        last_error                TEXT
+        last_error                TEXT,
+        manifest_generation BIGINT NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_summary_evidence_connector
         ON connector_summary_evidence(connector_id);
+
+      CREATE TABLE IF NOT EXISTS manifest_write_violations (
+        connector_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        manifest_generation BIGINT NOT NULL,
+        provenance TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY(connector_instance_id, stream, manifest_generation)
+      );
 
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS last_record_updated_at TEXT;
@@ -1553,6 +1569,12 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         ADD COLUMN IF NOT EXISTS retained_bytes_state TEXT NOT NULL DEFAULT 'unobserved';
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS retained_bytes_reason_code TEXT;
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT 0;
+      ALTER TABLE connector_state
+        ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT 0;
+      ALTER TABLE grant_connector_state
+        ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT 0;
       -- Terminal-run events are the fold source for per-stream evidence; the
       -- partial index keeps the fold's max-seq and delta reads off the full
       -- spine.
@@ -1572,6 +1594,37 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       -- reference-connector-instances/spec.md
       ALTER TABLE spine_events
         ADD COLUMN IF NOT EXISTS connector_instance_id TEXT;
+      -- Registry mutation takes an update lock on this same connection row;
+      -- the trigger's share lock gives terminal append and mutation one
+      -- authoritative serialization order. Legacy rows remain NULL.
+      ALTER TABLE spine_events
+        ADD COLUMN IF NOT EXISTS manifest_generation BIGINT;
+      CREATE OR REPLACE FUNCTION stamp_terminal_manifest_generation()
+      RETURNS trigger AS $$
+      DECLARE terminal_instance_id TEXT;
+      BEGIN
+        IF NEW.manifest_generation IS NULL
+          AND NEW.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
+        THEN
+          terminal_instance_id := COALESCE(
+            NULLIF(NEW.connector_instance_id, ''),
+            NULLIF(NEW.data_json->>'connector_instance_id', ''),
+            NULLIF(NEW.data_json->>'connection_id', '')
+          );
+          NEW.connector_instance_id := terminal_instance_id;
+          SELECT manifest_generation
+            INTO NEW.manifest_generation
+            FROM connector_instances
+           WHERE connector_instance_id = terminal_instance_id
+           FOR SHARE;
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+      DROP TRIGGER IF EXISTS stamp_terminal_manifest_generation ON spine_events;
+      CREATE TRIGGER stamp_terminal_manifest_generation
+        BEFORE INSERT ON spine_events
+        FOR EACH ROW EXECUTE FUNCTION stamp_terminal_manifest_generation();
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_terminal_instance_seq
         ON spine_events(connector_instance_id, event_seq)
         WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
@@ -1672,6 +1725,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
     `);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
+    await migratePostgresManifestWriteViolations(client);
     await migratePostgresBlobBindingsJsonPath(client);
     await migratePostgresConnectorSyncStateInstanceColumns(client);
     await migratePostgresConnectorDetailGapInstanceColumns(client);
@@ -2710,6 +2764,8 @@ const PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
   'semantic_search_meta',
   'semantic_search_backfill_progress',
   'connector_detail_gaps',
+  'connector_summary_evidence',
+  'manifest_write_violations',
   'connector_attention_records',
   'connector_schedules',
   'controller_active_runs',
@@ -2738,6 +2794,10 @@ function pgUniqueColumnsForLegacyRewrite(table) {
       return ['stream'];
     case 'connector_detail_gaps':
       return ['grant_id', 'stream', 'parent_stream', 'record_key', 'detail_locator_json'];
+    case 'connector_summary_evidence':
+      return [];
+    case 'manifest_write_violations':
+      return ['stream', 'manifest_generation'];
     case 'semantic_search_meta':
       return ['stream'];
     case 'semantic_search_backfill_progress':
@@ -3088,6 +3148,45 @@ async function migratePostgresBlobBindingsJsonPath(client) {
   }
 }
 
+async function migratePostgresManifestWriteViolations(client) {
+  const column = await client.query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'manifest_write_violations'
+        AND column_name = 'manifest_fingerprint'`,
+  );
+  if (column.rowCount === 0) return;
+  await client.query('BEGIN');
+  try {
+    // A legacy NOT NULL `manifest_fingerprint` column cannot coexist with the
+    // generation-keyed writer: keeping it would make every current write fail
+    // even after adding the new primary-key column. Rebuild the small
+    // provenance table so its schema, not merely its primary key, expresses
+    // the durable-generation contract.
+    await client.query(`ALTER TABLE manifest_write_violations RENAME TO manifest_write_violations_legacy_generation`);
+    await client.query(`CREATE TABLE manifest_write_violations (
+      connector_instance_id TEXT NOT NULL,
+      stream TEXT NOT NULL,
+      manifest_generation BIGINT NOT NULL,
+      provenance TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      PRIMARY KEY(connector_instance_id, stream, manifest_generation)
+    )`);
+    await client.query(`INSERT INTO manifest_write_violations(
+      connector_instance_id, stream, manifest_generation, provenance, observed_at
+    )
+    SELECT connector_instance_id, stream,
+           -ROW_NUMBER() OVER (PARTITION BY connector_instance_id, stream ORDER BY observed_at, manifest_fingerprint),
+           provenance, observed_at
+      FROM manifest_write_violations_legacy_generation`);
+    await client.query(`DROP TABLE manifest_write_violations_legacy_generation`);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  }
+}
+
 async function migratePostgresDeviceExporterColumns(client) {
   await client.query(`
     ALTER TABLE device_exporters
@@ -3109,7 +3208,8 @@ async function migratePostgresDeviceExporterColumns(client) {
       ADD COLUMN IF NOT EXISTS last_heartbeat_at TEXT,
       ADD COLUMN IF NOT EXISTS last_heartbeat_status TEXT,
       ADD COLUMN IF NOT EXISTS records_pending INTEGER,
-      ADD COLUMN IF NOT EXISTS outbox_diagnostics_json JSONB
+      ADD COLUMN IF NOT EXISTS outbox_diagnostics_json JSONB,
+      ADD COLUMN IF NOT EXISTS manifest_generation BIGINT
   `);
   await client.query(`
     ALTER TABLE device_ingest_batch_outcomes

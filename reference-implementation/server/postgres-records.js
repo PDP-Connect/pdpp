@@ -11,6 +11,10 @@
 import { createHash } from 'node:crypto';
 
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
+import {
+  assertGrantedManifestReadAuthority,
+  assertManifestReadAuthority,
+} from './manifest-read-authority.ts';
 import { advancePostgresDeviceIngestPrefix } from './stores/device-exporter-store.ts';
 import {
   assertRecordIdentity,
@@ -1303,6 +1307,7 @@ export async function postgresDeleteRecord(storageTarget, stream, recordId) {
 }
 
 export async function postgresQueryRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
@@ -1683,6 +1688,7 @@ function attachRequestWarningsToResponse(response, warnings) {
 }
 
 export async function postgresGetRecord(storageTarget, stream, recordId, grant, manifest = null, requestParams = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
@@ -1745,6 +1751,14 @@ export async function postgresGetRecordFieldWindow(
   manifest = null,
   requestParams = {},
 ) {
+  try {
+    assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
+  } catch (error) {
+    if (error?.code === 'stream_not_declared') {
+      throw fieldWindowError(error.code, error.message, error.statusCode);
+    }
+    throw error;
+  }
   assertFieldPath(fieldPath);
   const selector = normalizeWindowSelector(requestParams);
 
@@ -1881,6 +1895,7 @@ export async function postgresListAllStreams(storageTarget) {
 }
 
 export async function postgresListStreams(storageTarget, grant, manifest = null) {
+  assertGrantedManifestReadAuthority(manifest, grant, null);
   const rows = await postgresListAllStreams(storageTarget);
   const byName = new Map(rows.map((row) => [row.name, row]));
   return (grant?.streams || []).map((streamGrant) => {

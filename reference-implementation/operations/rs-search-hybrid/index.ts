@@ -652,10 +652,12 @@ export async function executeSearchHybrid(
     streams: params.streams,
     filter: params.filter,
   };
-  const [lexicalOutcome, semanticOutcome] = await Promise.all([
-    Promise.resolve(dependencies.runLexical(subRequest)),
-    Promise.resolve(dependencies.runSemantic(subRequest)),
-  ]);
+  // Run lexical first. A manifest read-authority rejection must stop before
+  // semantic dispatch can open a vector index or delegate. Both direct
+  // runners share that authority gate, so this preserves one policy while
+  // making the hybrid fan-in fail closed rather than laundering it as empty.
+  const lexicalOutcome = await Promise.resolve(dependencies.runLexical(subRequest));
+  const semanticOutcome = await Promise.resolve(dependencies.runSemantic(subRequest));
 
   const lexicalHits = Array.isArray(lexicalOutcome.envelope?.data)
     ? lexicalOutcome.envelope.data

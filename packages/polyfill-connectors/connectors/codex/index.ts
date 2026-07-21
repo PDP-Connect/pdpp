@@ -53,6 +53,7 @@ import type { EmittedMessage, RecordData, StreamScope } from "../../src/connecto
 import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
+  buildCoverageDiagnosticsStateSnapshot,
   buildLocalSourceInventory,
   type KnownLocalStore,
   listDirectoryInventory,
@@ -1894,7 +1895,11 @@ async function main(): Promise<void> {
   await waitForEmitDrain();
 
   if (requested.has("coverage_diagnostics")) {
-    emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: nowIso() } });
+    emit({
+      type: "STATE",
+      stream: "coverage_diagnostics",
+      cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(inventory.coverage) },
+    });
     await waitForEmitDrain();
   }
 

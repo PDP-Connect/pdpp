@@ -40,6 +40,7 @@ import {
   parseSearchHybridParams,
   SearchHybridRequestError,
 } from '../operations/rs-search-hybrid/index.ts';
+import { ManifestReadAuthorityError } from '../server/manifest-read-authority.ts';
 
 const ownerActor = { kind: 'owner', subject_id: 'subj_owner' };
 const clientActor = {
@@ -535,4 +536,22 @@ test('filter[...] bound to exactly one streams[] is forwarded into both sub-requ
     assert.deepEqual(call.streams, ['posts']);
     assert.deepEqual(call.filter, { source_created_at: { gte: 'x' } });
   }
+});
+
+test('a manifest read-authority rejection stops hybrid before semantic dispatch', async () => {
+  let semanticCalls = 0;
+  const deps = makeDeps({
+    runLexical: () => {
+      throw new ManifestReadAuthorityError('time_entries');
+    },
+    runSemantic: () => {
+      semanticCalls += 1;
+      assert.fail('semantic vector/delegate path must not run after stale-grant rejection');
+    },
+  });
+  await assert.rejects(
+    () => executeSearchHybrid({ actor: clientActor, query: { q: 'old', streams: 'time_entries' } }, deps),
+    (error) => error.code === 'stream_not_declared',
+  );
+  assert.equal(semanticCalls, 0);
 });

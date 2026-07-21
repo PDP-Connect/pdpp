@@ -500,11 +500,16 @@ quarantined audit history and SHALL NOT participate in coverage, freshness, or
 verdict projection. Non-local connections retain existing run behavior.
 
 `local_device` coverage SHALL be proven only by connection-scoped committed
-`coverage_diagnostics` STATE with valid `{ fetched_at }`, non-null server
-`updated_at`, complete sanitized known-store diagnostics, and no malformed,
-dropped, duplicate, or `unaccounted` diagnostic. Same-stream stores SHALL fold
+`coverage_diagnostics` STATE with exact `{ fetched_at, stores }`, a stored
+manifest generation equal to the connection's current durable generation, and
+an exact complete sanitized known-store/store-to-stream snapshot. Health SHALL
+source its rows only from that STATE, never retained diagnostics RECORDs;
+fetched-at-only legacy STATE is historical data but insufficient proof.
+Malformed, dropped, extra, private, future-version, duplicate, conflicting, or
+`unaccounted` entries shall fail closed. Same-stream stores SHALL fold
 worst-wins. The STATE server `updated_at` is each local stream's
-`evidence_as_of`; heartbeat and record emission time cannot refresh proof.
+`evidence_as_of`, not a proof-ordering boundary; heartbeat and record emission
+time cannot refresh proof.
 
 The control plane SHALL also require a fresh healthy idle/drained heartbeat,
 reliable state read, no pending/leased/retrying/stale-lease/dead-letter/
@@ -521,16 +526,17 @@ and a newer scheduler run fact
 
 #### Scenario: incomplete local proof cannot green
 
-**WHEN** local coverage STATE is absent, malformed, unreadable, lacks server
-`updated_at`, has invalid cursor, empty/duplicate/dropped/unaccounted rows,
-unresolved gap, unhealthy/stale/starting heartbeat, or open outbox work
+**WHEN** local coverage STATE is absent, malformed, unreadable, carries a
+generation other than the connection's current generation, has an invalid
+cursor, empty/duplicate/dropped/unaccounted rows, unresolved gap,
+unhealthy/stale/starting heartbeat, or open outbox work
 **THEN** the connection SHALL NOT render Healthy.
 
-#### Scenario: fixed inventory and future proof are rejected
+#### Scenario: fixed inventory and stale-generation proof are rejected
 
 **WHEN** a local coverage proof omits or adds a store outside the connector's
-shared fixed inventory, or its cursor or server `updated_at` is more than the
-allowed bounded future skew ahead of trusted server time
+shared fixed inventory, includes an unknown/private/future tuple field, or was
+committed before the current manifest generation
 **THEN** its local coverage evidence SHALL be unmeasured
 **AND** it SHALL NOT seed complete Collection Report rows or pass machine audit.
 

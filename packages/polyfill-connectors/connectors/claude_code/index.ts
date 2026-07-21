@@ -32,6 +32,7 @@ import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
+  buildCoverageDiagnosticsStateSnapshot,
   buildLocalSourceInventory,
   type KnownLocalStore,
   listDirectoryInventory,
@@ -1046,10 +1047,15 @@ async function emitCoverageDiagnostics(input: {
 
 async function emitCoverageDiagnosticsState(input: {
   emit: CollectContext["emit"];
+  inventory: Awaited<ReturnType<typeof buildLocalSourceInventory>>;
   requested: Map<string, StreamScope>;
 }): Promise<void> {
   if (input.requested.has("coverage_diagnostics")) {
-    await input.emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: nowIso() } });
+    await input.emit({
+      type: "STATE",
+      stream: "coverage_diagnostics",
+      cursor: { fetched_at: nowIso(), stores: buildCoverageDiagnosticsStateSnapshot(input.inventory.coverage) },
+    });
   }
 }
 
@@ -1232,7 +1238,7 @@ if (isMainModule(import.meta.url)) {
         requested.has("attachments") ||
         requested.has("memory_notes");
       if (!needsProjects) {
-        await emitCoverageDiagnosticsState({ emit, requested });
+        await emitCoverageDiagnosticsState({ emit, inventory, requested });
         return;
       }
 
@@ -1297,7 +1303,7 @@ if (isMainModule(import.meta.url)) {
       }
       // Coverage STATE is emitted only after every requested collection pass
       // has completed successfully; a later failure cannot commit this proof.
-      await emitCoverageDiagnosticsState({ emit, requested });
+      await emitCoverageDiagnosticsState({ emit, inventory, requested });
 
       if (requested.has("messages") || requested.has("attachments")) {
         await emit({

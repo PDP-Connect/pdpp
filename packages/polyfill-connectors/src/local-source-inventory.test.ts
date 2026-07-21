@@ -12,7 +12,13 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { INVENTORY_FINGERPRINT_EXCLUDE_KEYS, openInventoryFingerprintCursor } from "./local-source-inventory.ts";
+import {
+  buildCoverageDiagnosticsStateSnapshot,
+  expectedLocalCoverageStoreDescriptors,
+  INVENTORY_FINGERPRINT_EXCLUDE_KEYS,
+  openInventoryFingerprintCursor,
+  parseCoverageDiagnosticsStateSnapshot,
+} from "./local-source-inventory.ts";
 
 function inventoryRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -32,6 +38,80 @@ function inventoryRecord(over: Record<string, unknown> = {}): Record<string, unk
 test("excluded keys are exactly mtime_epoch and size_bytes", () => {
   assert.deepEqual([...INVENTORY_FINGERPRINT_EXCLUDE_KEYS], ["mtime_epoch", "size_bytes"]);
 });
+
+function coverageState(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const expected = expectedLocalCoverageStoreDescriptors("claude-code");
+  assert.ok(expected);
+  return {
+    fetched_at: "2026-07-21T12:00:00.000Z",
+    stores: expected.map(({ store, stream }) => ({ store, stream, status: "inventory_only" })),
+    ...overrides,
+  };
+}
+
+function coverageStores(): Record<string, unknown>[] {
+  const stores = coverageState().stores;
+  assert.ok(Array.isArray(stores));
+  return stores as Record<string, unknown>[];
+}
+
+test("coverage STATE parser accepts the exact sanitized producer schema", () => {
+  const expected = expectedLocalCoverageStoreDescriptors("claude-code");
+  assert.ok(expected);
+  const snapshot = buildCoverageDiagnosticsStateSnapshot(
+    expected.map(({ store, stream }) => ({
+      id: `coverage:${store}`,
+      reason: "producer-only metadata",
+      status: "inventory_only" as const,
+      store,
+      stream,
+    }))
+  );
+  const parsed = parseCoverageDiagnosticsStateSnapshot("claude-code", {
+    fetched_at: "2026-07-21T12:00:00.000Z",
+    stores: snapshot,
+  });
+  assert.equal(parsed.hasCommittedSnapshot, true);
+  assert.equal(parsed.malformed, false);
+  assert.deepEqual(
+    parsed.rows,
+    [...snapshot].sort((left, right) => left.store.localeCompare(right.store))
+  );
+});
+
+for (const [name, state] of [
+  ["private top-level field", coverageState({ secret_path: "/private/home" })],
+  ["future top-level version", coverageState({ version: 2 })],
+  ["missing top-level fetched_at", (({ fetched_at: _fetchedAt, ...state }) => state)(coverageState())],
+  ["missing top-level stores", (({ stores: _stores, ...state }) => state)(coverageState())],
+  ["missing fetched_at", coverageState({ fetched_at: undefined })],
+  ["malformed fetched_at", coverageState({ fetched_at: "not-a-timestamp" })],
+  [
+    "private tuple field",
+    coverageState({
+      stores: [{ ...coverageStores()[0], secret_path: "/private/home" }, ...coverageStores().slice(1)],
+    }),
+  ],
+  [
+    "conflicting tuple stream",
+    coverageState({
+      stores: [{ ...coverageStores()[0], stream: "conflicting" }, ...coverageStores().slice(1)],
+    }),
+  ],
+  [
+    "duplicate tuple",
+    coverageState({
+      stores: [...coverageStores(), coverageStores()[0]],
+    }),
+  ],
+] as const) {
+  test(`coverage STATE parser rejects ${name} fail closed without echoing private values`, () => {
+    const parsed = parseCoverageDiagnosticsStateSnapshot("claude-code", state);
+    assert.equal(parsed.hasCommittedSnapshot, false);
+    assert.equal(parsed.malformed || parsed.duplicateStores.length > 0, true);
+    assert.equal(JSON.stringify(parsed).includes("/private/home"), false);
+  });
+}
 
 test("mtime-only tick on a directory inventory record is a no-op emit", () => {
   const run1 = openInventoryFingerprintCursor(undefined);

@@ -439,7 +439,15 @@ export async function postgresGetSemanticMeta({ connectorInstanceId, stream }) {
   return result.rows[0] || null;
 }
 
-export async function postgresUpsertSemanticMeta({ connectorId, connectorInstanceId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric }) {
+export async function postgresUpsertSemanticMeta({
+  connectorId,
+  connectorInstanceId = defaultConnectorInstanceId(connectorId),
+  stream,
+  fieldsFingerprint,
+  modelId,
+  dimensions,
+  distanceMetric,
+}) {
   await postgresQuery(
     `INSERT INTO semantic_search_meta(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

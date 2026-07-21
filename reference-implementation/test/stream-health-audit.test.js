@@ -15,8 +15,8 @@
  *     streams still both surface;
  *   - active bounded work is reported as inconclusive, but it does not
  *     suppress masked failures;
- *   - declared-stream count absence fails only when the retained-size
- *     projection is reliable, otherwise it stays inconclusive;
+ *   - declared-stream count absence fails only when canonical record-snapshot
+ *     evidence is current, otherwise it stays inconclusive;
  *   - bearer auth is rejected before HTTP because /_ref/connectors is
  *     cookie-gated.
  */
@@ -46,7 +46,7 @@ function coverageEntry(overrides = {}) {
   };
 }
 
-function retainedStream(stream, recordCount) {
+function canonicalStream(stream, recordCount) {
   return { stream, record_count: recordCount, last_updated: null };
 }
 
@@ -63,9 +63,10 @@ function settledConnection(overrides = {}) {
       conditions: [{ type: "ProjectionReliable", status: "true" }],
       state: "healthy",
     },
+    record_snapshot: { state: "current" },
     owner_state: { resolver: "healthy" },
     streams: ["messages", "attachments"],
-    stream_records: [retainedStream("messages", 4), retainedStream("attachments", 0)],
+    stream_records: [canonicalStream("messages", 4), canonicalStream("attachments", 0)],
     collection_report: [coverageEntry(), coverageEntry({ stream: "attachments" })],
     ...overrides,
   };
@@ -155,7 +156,7 @@ test("machine audit keeps a real ChatGPT-shaped required coverage failure red", 
       connector_id: "chatgpt",
       display_name: "ChatGPT",
       streams: ["messages", "shared_conversations"],
-      stream_records: [retainedStream("messages", 4), retainedStream("shared_conversations", 0)],
+      stream_records: [canonicalStream("messages", 4), canonicalStream("shared_conversations", 0)],
       collection_report: [
         coverageEntry(),
         coverageEntry({
@@ -254,11 +255,11 @@ test("settled mode: contradictory active work still fails masked streams", () =>
   ]);
 });
 
-test("settled mode: exact zero from a reliable retained projection passes", () => {
+test("settled mode: exact zero from a current canonical snapshot passes", () => {
   const result = auditStreamHealth([
     settledConnection({
       streams: ["messages", "attachments"],
-      stream_records: [retainedStream("messages", 4), retainedStream("attachments", 0)],
+      stream_records: [canonicalStream("messages", 4), canonicalStream("attachments", 0)],
       collection_report: [coverageEntry(), coverageEntry({ stream: "attachments" })],
     }),
   ]);
@@ -269,15 +270,11 @@ test("settled mode: exact zero from a reliable retained projection passes", () =
   assert.deepEqual(result.inconclusive, []);
 });
 
-test("settled mode: dirty retained projection keeps declared-stream count unavailable and inconclusive", () => {
+test("settled mode: stale canonical snapshot keeps declared-stream count unavailable and inconclusive", () => {
   const result = auditStreamHealth([
     settledConnection({
-      connection_health: {
-        badges: { syncing: false, stale: false },
-        conditions: [{ type: "ProjectionReliable", status: "false" }],
-        state: "healthy",
-      },
-      stream_records: [retainedStream("messages", 4)],
+      record_snapshot: { state: "stale" },
+      stream_records: [canonicalStream("messages", 4)],
       collection_report: [coverageEntry(), coverageEntry({ stream: "attachments" })],
     }),
   ]);
@@ -295,7 +292,7 @@ test("settled mode: required collection_report entries outside declared streams 
   const result = auditStreamHealth([
     settledConnection({
       streams: ["messages"],
-      stream_records: [retainedStream("messages", 4), retainedStream("legacy_stream", 0)],
+      stream_records: [canonicalStream("messages", 4), canonicalStream("legacy_stream", 0)],
       collection_report: [
         coverageEntry(),
         coverageEntry({
@@ -409,7 +406,7 @@ test("duplicate collapse does not mask distinct real failures across streams", (
   const result = auditStreamHealth([
     settledConnection({
       streams: ["messages", "attachments", "receipts"],
-      stream_records: [retainedStream("messages", 4), retainedStream("attachments", 0), retainedStream("receipts", 0)],
+      stream_records: [canonicalStream("messages", 4), canonicalStream("attachments", 0), canonicalStream("receipts", 0)],
       collection_report: [
         coverageEntry(),
         coverageEntry({

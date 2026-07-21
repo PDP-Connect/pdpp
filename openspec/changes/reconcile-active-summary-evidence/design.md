@@ -100,7 +100,8 @@ no record key, value, content, or credential.
 ### One scope-safe reconciliation primitive
 
 One backend-parity primitive owns convergence. Batched discovery compares the
-requested canonical set, normalized record checkpoints, manifest fingerprints,
+requested canonical set, normalized record checkpoints, durable manifest
+generations (with fingerprints retained only as declaration diagnostics),
 retained-byte envelopes, terminal high-water, and observed evidence. It
 classifies each requested row as:
 
@@ -108,7 +109,7 @@ classifies each requested row as:
 - `dirty`: the row says it has not absorbed a change;
 - `record_checkpoint_mismatch`: the composite record checkpoint differs;
 - `identity_mismatch`: cached lifecycle/identity fields differ;
-- `manifest_mismatch`: its normalized declaration fingerprint differs;
+- `manifest_generation_mismatch`: its durable declaration generation differs;
 - `terminal_checkpoint_lag`: terminal facts are behind the pass high-water;
 - `retained_bytes_changed_or_unavailable`: the byte source changed or is not
   trustworthy; or
@@ -182,7 +183,7 @@ declaration.
 
 Each stream record entry carries two independent fields:
 
-- `declaration_state`: `declared`, `unexpected`, or `unavailable`;
+- `declaration_state`: `declared`, `dormant`, `unexpected`, or `unavailable`;
 - `count_state`: `known`, `known_zero`, `unobserved`, `stale`, or `unknown`.
 
 The invariants are disjoint:
@@ -197,12 +198,40 @@ The invariants are disjoint:
 
 When a manifest is readable, the stream set is exhaustive over the union of
 manifest declarations, stable canonical live-record streams, and readable
-retained-size stream grains. A retained/history/blob-only stream can therefore
-be `unexpected + known_zero`; a canonical unexpected stream remains visible
-with its true count. When the manifest is missing or malformed, canonical and
-readable retained stream names remain visible with `declaration_state =
-unavailable`; `unexpected` is never asserted without a successfully parsed
-manifest.
+retained-size stream grains. A canonical or retained grain outside the current
+manifest is `dormant`: its physical count and retained facts remain visible on
+the diagnostic/retention surface, but it is excluded from active totals,
+coverage, discovery, and serving. `unexpected` is reserved for an explicit
+current-generation declaration violation, not historical persistence. When a
+manifest is missing or malformed, canonical and readable retained stream names
+remain visible with `declaration_state = unavailable`; `unexpected` is never
+asserted without a successfully parsed manifest. Re-adding a dormant stream
+makes it declared with its old retained facts, but coverage/freshness remain
+unknown or stale until new current evidence commits. The production
+manifest-registration transaction advances a connection-scoped durable
+generation for every changed manifest and dirties its summary evidence before
+any reader can observe it. Every attributable terminal spine event is stamped
+with that connection's current generation in the terminal append transaction;
+the event append and manifest mutation serialize on the same connection row.
+A rebuilt summary accepts only facts stamped with its current generation, so a
+deleted projection cannot replay a pre-removal success into a re-added stream.
+Legacy or unattributed terminal events are historical, never current proof.
+This boundary is durable and generation based, never a clock, fingerprint-reuse
+test, or connector-specific branch.
+
+Source-generation filtering is fold contract version 3. A version-2 terminal
+map can have accepted source rows that predate durable generation provenance,
+so version 3 treats that map and checkpoint as an invalid replay baseline. The
+first v3 observation replays from source; its source-derived historical verdict
+must equal deleting and rebuilding the disposable projection. A binary that
+sees a fold version ahead of its own continues to fail closed in memory and
+never overwrites that newer-owned row.
+
+A replay CAS loss is an authority event, not a successful fold. The reader
+replays from the new durable baseline a bounded number of times. If competing
+writes keep winning, that observation returns typed non-current terminal
+evidence in memory rather than trusting the retained map; it does not durably
+mutate a potentially future-version row.
 
 A declared stream absent from a completed stable canonical record snapshot is
 `declared + known_zero`. A missing retained-size row does not change that count;
@@ -238,8 +267,9 @@ invalidation is required for correctness.
 ### Health boundary
 
 `record_snapshot` non-current, `terminal_facts` non-current,
-`manifest_declaration` non-current, or a current-manifest `unexpected` stream is
-added to the existing `ProjectionReliable` input. That condition has highest
+`manifest_declaration` non-current, or an explicit current-generation
+`unexpected` stream is added to the existing `ProjectionReliable` input.
+Dormant historical grains are not an unreliable input. That condition has highest
 precedence and forces `unknown`; it cannot be overwritten by a successful run,
 fresh source heartbeat, or complete coverage. A successfully checkpointed empty
 terminal history is `current`, not failed absence; a never-observed terminal
@@ -291,11 +321,13 @@ Rejected. Batched discovery identifies candidates; only K mismatches acquire a
 fence and rescan one connection. Current steady-state reads remain fixed-query
 and lock-free.
 
-### Treat absent stream as zero or hide unexpected streams
+### Treat absent stream as zero or hide retained history
 
 Rejected. Exact zero requires a completed canonical snapshot, while manifest or
-retained evidence may be unavailable. Hiding unexpected grains makes declaration
-drift look healthy.
+retained evidence may be unavailable. The accepted design preserves retained
+history as `dormant` diagnostic evidence while preventing stale grants and
+active discovery from serving it; it does not call historical retention a
+current declaration mismatch.
 
 ### Retain stale-while-revalidate value caching
 

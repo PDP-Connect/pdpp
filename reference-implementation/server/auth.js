@@ -8,6 +8,7 @@
  * - Implements RFC 7662-style introspection with PDPP extensions
  */
 import { randomBytes } from 'crypto';
+import { assertManifestReadAuthority } from './manifest-read-authority.ts';
 import {
   BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
   BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
@@ -864,8 +865,11 @@ function resolveGrantSelection(selection = {}, manifest = {}) {
   }
 
   return streams.map((streamRequest) => {
-    const manifestStream = manifest.streams.find((stream) => stream.name === streamRequest.name);
-    if (!manifestStream) {
+    let manifestStream;
+    try {
+      assertManifestReadAuthority(manifest, streamRequest.name, { actor: 'client' });
+      manifestStream = manifest.streams.find((stream) => stream.name === streamRequest.name);
+    } catch {
       throw bindingError('invalid_request', `Unknown stream: ${streamRequest.name}`);
     }
 
@@ -1051,8 +1055,11 @@ export function requireGrantContractAgainstManifest(grant = {}, manifest = {}) {
       throw bindingError('grant_invalid', 'grant.streams entries must include a non-empty name');
     }
 
-    const manifestStream = manifest.streams?.find((stream) => stream.name === streamGrant.name);
-    if (!manifestStream) {
+    let manifestStream;
+    try {
+      assertManifestReadAuthority(manifest, streamGrant.name, { actor: 'client' });
+      manifestStream = manifest.streams?.find((stream) => stream.name === streamGrant.name);
+    } catch {
       throw bindingError('grant_invalid', `Unknown stream in persisted grant: ${streamGrant.name}`);
     }
 
@@ -1574,6 +1581,71 @@ const sqliteConnectorCatalogStore = {
   getManifestById: (connectorId) =>
     getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]),
 };
+
+/**
+ * The registry write is the manifest-generation boundary.  The manifest row,
+ * every affected connection's monotonic generation, and the disposable
+ * summary invalidation commit together.  Do not move this into summary
+ * repair: an unobserved remove/re-add must still advance twice.
+ */
+function canonicalManifestJson(rawManifest) {
+  const value = JSON.parse(rawManifest);
+  return JSON.stringify(value, (_key, candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return candidate;
+    }
+    const sorted = {};
+    for (const key of Object.keys(candidate).sort()) {
+      sorted[key] = candidate[key];
+    }
+    return sorted;
+  });
+}
+
+async function persistManifestAndAdvanceGenerations(connectorId, manifestJson) {
+  if (isPostgresStorageBackend()) {
+    return withPostgresTransaction(async (client) => {
+      const changed = await client.query(
+        `INSERT INTO connectors(connector_id, manifest)
+         VALUES($1, $2::jsonb)
+         ON CONFLICT (connector_id) DO UPDATE SET manifest = EXCLUDED.manifest
+           WHERE connectors.manifest IS DISTINCT FROM EXCLUDED.manifest
+         RETURNING connector_id`,
+        [connectorId, manifestJson],
+      );
+      if (changed.rowCount === 0) return false;
+      await client.query(
+        `UPDATE connector_instances
+            SET manifest_generation = manifest_generation + 1
+          WHERE connector_id = $1`,
+        [connectorId],
+      );
+      await client.query(
+        `UPDATE connector_summary_evidence
+            SET dirty = 1, state = 'stale'
+          WHERE connector_id = $1`,
+        [connectorId],
+      );
+      return true;
+    });
+  }
+  return transaction(() => {
+    const db = getDb();
+    const existing = db.prepare('SELECT manifest FROM connectors WHERE connector_id = ?').get(connectorId);
+    if (existing?.manifest && canonicalManifestJson(existing.manifest) === canonicalManifestJson(manifestJson)) return false;
+    db.prepare(
+      `INSERT INTO connectors(connector_id, manifest) VALUES(?, ?)
+       ON CONFLICT(connector_id) DO UPDATE SET manifest = excluded.manifest`,
+    ).run(connectorId, manifestJson);
+    db.prepare(
+      'UPDATE connector_instances SET manifest_generation = manifest_generation + 1 WHERE connector_id = ?',
+    ).run(connectorId);
+    db.prepare(
+      "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_id = ?",
+    ).run(connectorId);
+    return true;
+  });
+}
 
 function getConnectorCatalogStore() {
   return isPostgresStorageBackend() ? postgresConnectorCatalogStore : sqliteConnectorCatalogStore;
@@ -2454,10 +2526,7 @@ async function maybeRegisterConnectorPhaseForTest(point, context) {
 export async function registerConnector(manifest, options = {}) {
   validateConnectorManifest(manifest);
   const { connectorId, storedManifest } = normalizeConnectorManifestForStorage(manifest);
-  await getConnectorCatalogStore().upsert({
-    connectorId,
-    manifestJson: JSON.stringify(storedManifest),
-  });
+  await persistManifestAndAdvanceGenerations(connectorId, JSON.stringify(storedManifest));
   await maybeRegisterConnectorPhaseForTest('after-manifest-persisted', { connectorId, manifest: storedManifest });
 
   if (isPostgresStorageBackend()) {

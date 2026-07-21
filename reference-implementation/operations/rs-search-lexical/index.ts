@@ -1170,13 +1170,22 @@ export async function executeSearchLexical(
     snapshotId = decoded.snap;
     offset = decoded.off;
   } else {
-    snapshot = await dependencies.buildSnapshot({
-      q: params.q,
-      perConnectorPlans,
-      isOwner,
-    });
-    snapshotId = snapshot.snapshot_id;
-    await dependencies.persistSnapshot(snapshot);
+    // No eligible manifest stream means no storage or index operation is
+    // authorized. In particular, a stale grant may still name a now-dormant
+    // stream; planner omission must short-circuit before the host adapter can
+    // scan records or FTS state.
+    if (perConnectorPlans.length === 0) {
+      snapshot = { snapshot_id: "", query: params.q, results: [] };
+      snapshotId = "";
+    } else {
+      snapshot = await dependencies.buildSnapshot({
+        q: params.q,
+        perConnectorPlans,
+        isOwner,
+      });
+      snapshotId = snapshot.snapshot_id;
+      await dependencies.persistSnapshot(snapshot);
+    }
     offset = 0;
   }
 

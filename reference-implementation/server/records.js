@@ -2,7 +2,11 @@
  * PDPP Resource Server — record storage and grant-enforced query
  */
 import { getDb } from './db.js';
-import { expectedLocalCoverageStores } from '../../packages/polyfill-connectors/src/local-source-inventory.ts';
+import { parseCoverageDiagnosticsStateSnapshot } from '../../packages/polyfill-connectors/src/local-source-inventory.ts';
+import {
+  assertGrantedManifestReadAuthority,
+  assertManifestReadAuthority,
+} from './manifest-read-authority.ts';
 
 // Optional post-commit hook for outbound client event subscriptions. The
 // hook is invoked after a `record_changes` row has been durably committed
@@ -2446,81 +2450,102 @@ export async function readCommittedLocalCoverageDiagnostics(storageTarget) {
       missingStores: [],
       unexpectedStores: [],
       hasAuthoritativeInventory: false,
+      hasCommittedSnapshot: false,
       state: null,
       updatedAt: null,
     };
-  }
-  const rawRows = [];
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT record_json FROM records
-         WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE
-         ORDER BY record_key ASC`,
-      [connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM],
-    );
-    rawRows.push(...result.rows.map((row) => row.record_json));
-  } else {
-    rawRows.push(
-      ...getDb()
-        .prepare(
-          `SELECT record_json FROM records
-             WHERE connector_instance_id = ? AND stream = ? AND deleted = 0
-             ORDER BY record_key ASC`,
-        )
-        .all(connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM)
-        .map((row) => row.record_json),
-    );
-  }
-  const rows = [];
-  const stores = new Set();
-  const duplicateStores = [];
-  let malformed = false;
-  for (const raw of rawRows) {
-    let data;
-    try {
-      data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    } catch {
-      malformed = true;
-      continue;
-    }
-    const row = projectCoverageRow(data);
-    if (!row) {
-      malformed = true;
-      continue;
-    }
-    if (stores.has(row.store)) {
-      duplicateStores.push(row.store);
-      continue;
-    }
-    stores.add(row.store);
-    rows.push(row);
   }
   const stateProjection = await getSyncState(storageTarget, {
     grantId: null,
     allowedStreams: new Set([LOCAL_COVERAGE_DIAGNOSTICS_STREAM]),
   });
   const state = stateProjection.state?.[LOCAL_COVERAGE_DIAGNOSTICS_STREAM] ?? null;
-  const expectedStores = expectedLocalCoverageStores(connectorId);
-  const hasAuthoritativeInventory = expectedStores !== null;
-  const observedStores = new Set(rows.map((row) => row.store));
-  const missingStores = expectedStores ? expectedStores.filter((store) => !observedStores.has(store)).sort() : [];
-  const unexpectedStores = expectedStores ? rows.map((row) => row.store).filter((store) => !expectedStores.includes(store)).sort() : [];
+  const generation = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT ci.manifest_generation AS current_generation, cs.manifest_generation AS state_generation
+           FROM connector_instances ci
+           LEFT JOIN connector_state cs
+             ON cs.connector_instance_id = ci.connector_instance_id AND cs.stream = $2
+          WHERE ci.connector_instance_id = $1`,
+        [connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM],
+      )).rows[0] ?? null
+    : getDb().prepare(
+      `SELECT ci.manifest_generation AS current_generation, cs.manifest_generation AS state_generation
+         FROM connector_instances ci
+         LEFT JOIN connector_state cs
+           ON cs.connector_instance_id = ci.connector_instance_id AND cs.stream = ?
+        WHERE ci.connector_instance_id = ?`,
+      ).get(LOCAL_COVERAGE_DIAGNOSTICS_STREAM, connectorInstanceId) ?? null;
   return {
-    rows: rows.sort((a, b) => a.store.localeCompare(b.store)),
-    malformed,
-    duplicateStores: duplicateStores.sort(),
-    missingStores,
-    unexpectedStores,
-    hasAuthoritativeInventory,
+    ...parseCoverageDiagnosticsStateSnapshot(connectorId, state),
     state,
     updatedAt: stateProjection.updated_at ?? null,
+    manifestGeneration: generation?.current_generation == null ? null : Number(generation.current_generation),
+    stateManifestGeneration: generation?.state_generation == null ? null : Number(generation.state_generation),
   };
+}
+
+/**
+ * Persist explicit provenance for a rejected internal write against the
+ * current manifest generation. It never writes a record: retained history is
+ * diagnostic/dormant unless this independent signal says otherwise.
+ */
+export async function recordCurrentGenerationUndeclaredWrite(storageTarget, evidence) {
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  const stream = typeof evidence?.stream === 'string' ? evidence.stream : '';
+  const provenance = typeof evidence?.provenance === 'string' ? evidence.provenance : 'runtime_rejected_write';
+  if (!connectorInstanceId || !stream) {
+    throw new Error('Current manifest violation evidence requires connection and stream');
+  }
+  const observedAt = nowIso();
+  if (isPostgresStorageBackend()) {
+    await withPostgresTransaction(async (client) => {
+      const current = await client.query(
+        'SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = $1 FOR UPDATE',
+        [connectorInstanceId],
+      );
+      if (current.rowCount === 0) throw new Error('Current manifest violation evidence requires an existing connection');
+      const generation = Number(current.rows[0].manifest_generation ?? 0);
+      await client.query(
+      `INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_generation, provenance, observed_at)
+       VALUES($1, $2, $3, $4, $5)
+       ON CONFLICT(connector_instance_id, stream, manifest_generation) DO UPDATE
+         SET provenance = EXCLUDED.provenance, observed_at = EXCLUDED.observed_at`,
+      [connectorInstanceId, stream, generation, provenance, observedAt],
+      );
+      await client.query(
+        "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = $1",
+        [connectorInstanceId],
+      );
+    });
+    return;
+  }
+  await withConnectorInstanceWrite(connectorInstanceId, async () => {
+    writeTransaction(() => {
+      const current = getDb().prepare(
+        'SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = ?',
+      ).get(connectorInstanceId);
+      if (!current) throw new Error('Current manifest violation evidence requires an existing connection');
+      const generation = Number(current.manifest_generation ?? 0);
+      getDb().prepare(
+        `INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_generation, provenance, observed_at)
+         VALUES(?, ?, ?, ?, ?)
+         ON CONFLICT(connector_instance_id, stream, manifest_generation) DO UPDATE
+           SET provenance = excluded.provenance, observed_at = excluded.observed_at`,
+      ).run(connectorInstanceId, stream, generation, provenance, observedAt);
+      getDb().prepare(
+        "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = ?",
+      ).run(connectorInstanceId);
+    });
+  });
 }
 
 /**
  * Query records for a stream under grant enforcement
  */
 export async function queryRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   if (isPostgresStorageBackend()) {
     return postgresQueryRecords(storageTarget, stream, grant, requestParams, manifest);
   }
@@ -2536,7 +2561,6 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     err.code = 'grant_stream_not_allowed';
     throw err;
   }
-
   // Find manifest stream for stream-specific query capability declarations.
   const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
@@ -3017,6 +3041,7 @@ export function listRowsForAggregation(connectorInstanceId, stream) {
  * in-process instead of adding aggregate indexes; it is a semantic floor.
  */
 export async function aggregateRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
 
@@ -3028,11 +3053,6 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
   }
 
   const manifestStream = manifest?.streams?.find((entry) => entry.name === stream);
-  if (!manifestStream) {
-    const err = new Error(`Stream '${stream}' not found`);
-    err.code = 'not_found';
-    throw err;
-  }
 
   const aggregateRequest = normalizeAggregateRequest(requestParams, streamGrant, manifestStream);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
@@ -3178,6 +3198,7 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
  * Get a single record by key, under grant enforcement
  */
 export async function getRecord(storageTarget, stream, recordId, grant, manifest = null, requestParams = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   if (isPostgresStorageBackend()) {
     return postgresGetRecord(storageTarget, stream, recordId, grant, manifest, requestParams);
   }
@@ -3192,6 +3213,8 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     err.code = 'grant_stream_not_allowed';
     throw err;
   }
+
+  const mStream = manifest?.streams?.find(s => s.name === stream);
 
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
@@ -3208,7 +3231,6 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
   }
 
   const rawData = JSON.parse(row.record_json);
-  const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
 
@@ -3269,6 +3291,12 @@ export async function getRecordFieldWindow(
   manifest = null,
   requestParams = {},
 ) {
+  try {
+    assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
+  } catch (error) {
+    if (error?.code === 'stream_not_declared') throw fieldWindowError(error.code, error.message, error.statusCode);
+    throw error;
+  }
   if (isPostgresStorageBackend()) {
     return postgresGetRecordFieldWindow(
       storageTarget,
@@ -3938,6 +3966,9 @@ export async function teardownConnectionSearchProjection({ connectorId, connecto
  * List streams available under a grant, with record counts
  */
 export async function listStreams(storageTarget, grant, manifest = null) {
+  // Authority is checked before either backend enumerates physical history.
+  // A stale grant is a closed rejection, never an empty filtered list.
+  assertGrantedManifestReadAuthority(manifest, grant, null);
   if (isPostgresStorageBackend()) {
     return postgresListStreams(storageTarget, grant, manifest);
   }
@@ -4082,6 +4113,7 @@ function ensureBindingsOrThrow(bindings, { connectorId, missingMessage }) {
  *   binding's count ran last) is removed.
  */
 export async function queryRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest, opts = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId, missingMessage: 'No active connection is available under this grant.' });
 
   const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
@@ -4267,6 +4299,7 @@ export async function queryRecordsAcrossBindings(bindings, stream, grant, reques
  * to a normal `not_found` when no binding holds the identifier.
  */
 export async function getRecordAcrossBindings(bindings, stream, recordId, grant, manifest, requestParams = {}, opts = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
 
   const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
@@ -4340,6 +4373,7 @@ export async function getRecordFieldWindowAcrossBindings(
   requestParams = {},
   opts = {},
 ) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, {
     connectorId: bindings?.[0]?.connectorId,
     missingMessage: 'No active connection is available under this grant.',
@@ -4418,6 +4452,7 @@ export async function getRecordFieldWindowAcrossBindings(
  * disjoint connection partitions.
  */
 export async function aggregateRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest, opts = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
 
   const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
@@ -4635,6 +4670,7 @@ function compareMergedBuckets(left, right, isScalarGroup) {
  * that do not need per-stream constraint accuracy).
  */
 export async function listStreamsAcrossBindings(defaultBindings, grant, manifest, opts = {}) {
+  assertGrantedManifestReadAuthority(manifest, grant, null);
   ensureBindingsOrThrow(defaultBindings, { connectorId: defaultBindings?.[0]?.connectorId });
 
   const resolveBindingsForStream = typeof opts.resolveBindingsForStream === 'function'
@@ -4730,6 +4766,7 @@ export async function listStreamsAcrossBindings(defaultBindings, grant, manifest
  * if they want to follow up with a `connection_id` filter.
  */
 export async function getStreamDetailAcrossBindings(bindings, streamName, grant, manifest, opts = {}) {
+  assertManifestReadAuthority(manifest, streamName, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
 
   let recordCount = 0;

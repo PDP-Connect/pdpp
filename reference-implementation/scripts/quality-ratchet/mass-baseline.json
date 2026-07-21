@@ -77,7 +77,6 @@
     "server/metadata.ts": 36,
     "server/neko-surface-allocator-server.ts": 50,
     "server/notification-policy.ts": 2,
-    "server/outbox-axis-read-model.ts": 20,
     "server/owner-action-gate.js": 3,
     "server/owner-auth.ts": 9,
     "server/owner-csrf.ts": 4,

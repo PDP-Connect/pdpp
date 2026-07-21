@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries, writeTransaction } from '../../lib/db.ts';
+import { getDb } from '../db.js';
 import { postgresQuery, withPostgresTransaction } from '../postgres-storage.js';
 import { withConnectorInstanceWrite } from '../connector-instance-write-coordinator.ts';
 
@@ -633,6 +634,8 @@ export function createSqliteConnectorInstanceStore() {
         // (no inner transaction of its own), so it is atomic with the schedule /
         // device / row deletes below.
         const recordCount = purge.deleteRecordRowsSqlite(connectorInstanceId);
+        getDb().prepare("DELETE FROM manifest_write_violations WHERE connector_instance_id = ?").run(connectorInstanceId);
+        getDb().prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?").run(connectorInstanceId);
         const schedule = exec(referenceQueries.controllerDeleteSchedule, [connectorInstanceId]);
         const device = exec(referenceQueries.deviceExportersClearSourceInstanceConnectorRef, [stamp, connectorInstanceId]);
         exec(referenceQueries.connectorInstancesDeleteById, [connectorInstanceId]);
@@ -948,6 +951,8 @@ export function createPostgresConnectorInstanceStore() {
         // Record-family + blob + attention purge runs against the SAME client,
         // so it is atomic with the schedule / device / row deletes below.
         const recordCount = await purge.deleteRecordRowsPostgres(client, connectorInstanceId);
+        await client.query(`DELETE FROM manifest_write_violations WHERE connector_instance_id = $1`, [connectorInstanceId]);
+        await client.query(`DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1`, [connectorInstanceId]);
         const schedule = await client.query(
           `DELETE FROM connector_schedules WHERE connector_instance_id = $1`,
           [connectorInstanceId],

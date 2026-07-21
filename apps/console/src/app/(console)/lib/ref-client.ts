@@ -709,7 +709,7 @@ export interface RefConnectorStreamRecord {
    * predating these fields omits them and the console falls back to the
    * `record_count === null` binary check rather than inventing a state.
    */
-  declaration_state?: "declared" | "unexpected" | "unavailable";
+  declaration_state?: "declared" | "dormant" | "unexpected" | "unavailable";
   last_updated: string | null;
   /** `null` when the count is genuinely unknown/unavailable — never a fabricated `0`. */
   record_count: number | null;

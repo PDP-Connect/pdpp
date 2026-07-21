@@ -326,13 +326,20 @@ facts from health and Collection Report projection. Non-local connections retain
 the current run-based algorithm.
 
 For `local_device`, the sole positive coverage proof is the connection-scoped
-committed `coverage_diagnostics` STATE. It requires a valid `{ fetched_at }`
-cursor, non-null server `updated_at`, sanitized diagnostics for every known
-store, and no malformed, dropped, duplicate, or `unaccounted` row. Stores fold
-into streams worst-wins. The STATE row's server `updated_at` is every local
-coverage entry's `evidence_as_of`; heartbeat and record emission timestamps
-cannot refresh coverage proof. Direct status, `state_stream` inheritance,
-self-coverage, and accepted policy remain explicit.
+committed `coverage_diagnostics` STATE. Its cursor contains exactly the safe
+fixed-inventory snapshot: `{ fetched_at, stores: [{ store, stream, status }] }`.
+The parser rejects missing, extra, private, future-version, conflicting, or
+duplicate fields and tuples; the snapshot must contain exactly one sanitized
+entry for every known store and the authoritative store-to-stream mapping, with
+no malformed, dropped, extra, or `unaccounted` entry. The state write commits
+the current durable manifest generation, and a proof is eligible only when its
+stored generation equals the connection's current generation. Retained
+`coverage_diagnostics` RECORDs are operator evidence only and MUST NOT be read
+as positive health authority. Stores fold into streams worst-wins. Server
+`updated_at` remains presentation `evidence_as_of`, not a proof-ordering
+boundary; heartbeat and record-emission timestamps cannot refresh coverage
+proof. Direct status, `state_stream` inheritance, self-coverage, and accepted
+policy remain explicit.
 
 Admit the proof only while the device is fresh, healthy, idle/drained, and its
 read is reliable: no unhealthy/stale heartbeat, open outbox work, failed state
@@ -342,11 +349,13 @@ missing, legacy, malformed, unreadable, or contradictory input fails closed.
 Every local child, protocol, nonzero-exit, and terminal-DONE failure—including
 zero-record failures—creates a durable gap/backlog barrier. Acknowledgement,
 scoped non-coverage success, and a corrective heartbeat cannot recover it.
-Only a later terminally successful full coverage STATE commit can. V2 adds no
-schema column, observation identity, receipt hash/count, generic scheduler
-behavior, connector-specific UI branch, audit taxonomy, or live-data migration.
-It is deliberately bounded to the fixed Codex/Claude Code inventory after one
-post-change complete run; legacy rows without coverage STATE remain unknown.
+Only a later terminally successful full snapshot-bearing coverage STATE commit
+can. One such pass logically self-heals duplicate or legacy retained RECORD
+history without a data cleanup or migration. V2 adds no schema column,
+observation identity, receipt hash/count, generic scheduler behavior,
+connector-specific UI branch, audit taxonomy, or live-data migration. It is
+deliberately bounded to the fixed Codex/Claude Code inventory; legacy
+fetched-at-only STATE remains insufficient and projects unknown.
 
 Closure clarification: the proof reader compares the committed diagnostic store
 set exactly with the connector's shared fixed-inventory declaration. It rejects

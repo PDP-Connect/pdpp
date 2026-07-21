@@ -155,6 +155,7 @@ function mapSourceInstance(row: Row | null | undefined) {
     lastHeartbeatStatus: row.last_heartbeat_status ?? null,
     recordsPending: row.records_pending == null ? null : Number(row.records_pending),
     outboxDiagnostics: parseJson(row.outbox_diagnostics_json, null),
+    manifestGeneration: row.manifest_generation == null ? null : Number(row.manifest_generation),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     revokedAt: row.revoked_at,
@@ -180,6 +181,7 @@ function mapSourceInstanceHeartbeatRow(row: Row | null | undefined) {
     outboxDiagnostics: parseJson(row.outbox_diagnostics_json, null),
     lastIngestAt: row.last_ingest_at ?? null,
     updatedAt: row.updated_at ?? null,
+    manifestGeneration: row.manifest_generation == null ? null : Number(row.manifest_generation),
   };
 }
 
@@ -873,7 +875,7 @@ export function createPostgresDeviceExporterStore() {
 
     async getSourceInstance(deviceId: string, sourceInstanceId: string) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, outbox_diagnostics_json, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, outbox_diagnostics_json, manifest_generation, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND source_instance_id = $2`,
         [deviceId, sourceInstanceId]
       );
@@ -882,7 +884,7 @@ export function createPostgresDeviceExporterStore() {
 
     async listSourceInstances({ deviceId = null }: { deviceId?: string | null } = {}) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, outbox_diagnostics_json, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, outbox_diagnostics_json, manifest_generation, created_at, updated_at, revoked_at
          FROM device_source_instances
          WHERE ($1::text IS NULL OR device_id = $1)
          ORDER BY device_id ASC, created_at DESC, source_instance_id ASC`,
@@ -907,6 +909,7 @@ export function createPostgresDeviceExporterStore() {
                 dsi.last_heartbeat_status,
                 dsi.records_pending,
                 dsi.outbox_diagnostics_json,
+                dsi.manifest_generation,
                 dsi.updated_at,
                 dio.last_ingest_at,
                 de.status AS device_status,
@@ -929,7 +932,7 @@ export function createPostgresDeviceExporterStore() {
 
     async getSourceInstanceByBinding(deviceId: string, connectorId: string, localBindingId: string) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, outbox_diagnostics_json, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, outbox_diagnostics_json, manifest_generation, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND connector_id = $2 AND local_binding_id = $3`,
         [deviceId, connectorId, localBindingId]
       );
@@ -944,7 +947,8 @@ export function createPostgresDeviceExporterStore() {
                 last_heartbeat_at = $3,
                 last_heartbeat_status = $4,
                 records_pending = $5,
-                outbox_diagnostics_json = $6::jsonb
+                outbox_diagnostics_json = $6::jsonb,
+                manifest_generation = (SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = device_source_instances.connector_instance_id)
           WHERE device_id = $7 AND source_instance_id = $8 AND status = 'active'`,
         [
           record.receivedAt,

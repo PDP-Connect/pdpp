@@ -40,6 +40,7 @@ export interface HeartbeatRow {
   readonly lastHeartbeatAt: string | null;
   readonly lastHeartbeatStatus: string | null;
   readonly lastIngestAt: string | null;
+  readonly manifestGeneration: number | null;
   readonly outboxDiagnostics: OutboxDiagnosticCounts | null;
   readonly recordsPending: number | null;
   readonly sourceInstanceId: string;
@@ -237,10 +238,12 @@ export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]):
   let lastIngestAt: string | null = null;
   let recordsPending = 0;
   let sawPending = false;
+  let manifestGeneration: number | null = null;
   for (const row of trusted) {
     if (row.lastHeartbeatAt !== null && (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt)) {
       lastHeartbeatAt = row.lastHeartbeatAt;
       lastHeartbeatStatus = row.lastHeartbeatStatus;
+      manifestGeneration = row.manifestGeneration;
     }
     if (row.lastIngestAt !== null && (lastIngestAt === null || row.lastIngestAt > lastIngestAt)) {
       lastIngestAt = row.lastIngestAt;
@@ -254,6 +257,7 @@ export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]):
     last_heartbeat_at: lastHeartbeatAt,
     last_heartbeat_status: lastHeartbeatStatus,
     last_ingest_at: lastIngestAt,
+    manifest_generation: manifestGeneration,
     // Roll up the per-source outbox diagnostics across the same trusted
     // rows we already use for `records_pending`, so the connection summary
     // can show the pending / dead-letter / stale-lease breakdown a stalled

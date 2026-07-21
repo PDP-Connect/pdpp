@@ -318,7 +318,7 @@ export interface StreamRecordSummary {
    * unaffected; `projectConnectorSummaryForInstance` always populates it
    * when the observation barrier produced an evidence row.
    */
-  readonly declaration_state?: "declared" | "unexpected" | "unavailable";
+  readonly declaration_state?: "declared" | "dormant" | "unexpected" | "unavailable";
   readonly count_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
   readonly retained_record_count?: number | null;
 }
@@ -565,6 +565,7 @@ export interface LocalDeviceProgress {
   readonly last_heartbeat_at: string | null;
   readonly last_heartbeat_status: string | null;
   readonly last_ingest_at: string | null;
+  readonly manifest_generation: number | null;
   /**
    * Connection-level rollup of the per-source outbox diagnostics the
    * device reports on its heartbeats (pending, retrying, stale leases,
@@ -2909,7 +2910,9 @@ export function projectCollectionReport(input: {
 }): CollectionReportEntry[] {
   // Select source authority before run precedence: local-device scheduler facts
   // are audit history, never coverage evidence.
-  const classifyingRun = input.localDeviceBacked ? null : coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
+  const classifyingRun = input.localDeviceBacked
+    ? null
+    : coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
   return buildCollectionReport({
     collectionFacts: classifyingRun?.collection_facts ?? null,
     collectionFactsAsOf: classifyingRun?.last_at ?? null,
@@ -2984,13 +2987,34 @@ function seedLocalCoverageConditions(
 ): void {
   for (const row of rows) {
     const stream = typeof row.stream === "string" && row.stream ? row.stream : null;
-    if (!stream || conditions.has(stream)) {
+    if (!stream) {
       continue;
     }
     const condition = localCoverageConditionForStatus(row.status);
-    if (condition) {
+    if (!condition) {
+      continue;
+    }
+    const existing = conditions.get(stream);
+    if (!existing || localCoverageConditionSeverity(condition) > localCoverageConditionSeverity(existing)) {
       conditions.set(stream, condition);
     }
+  }
+}
+
+function localCoverageConditionSeverity(axis: CoverageAxis): number {
+  switch (axis) {
+    case "complete":
+      return 0;
+    case "inventory_only":
+    case "deferred":
+    case "unsupported":
+      return 1;
+    case "unavailable":
+      return 2;
+    case "gaps":
+      return 3;
+    default:
+      return 4;
   }
 }
 
@@ -3090,8 +3114,11 @@ export function deriveLocalCoverageAxis(input: {
   readonly missingStores: readonly string[];
   readonly unexpectedStores: readonly string[];
   readonly hasAuthoritativeInventory: boolean;
+  readonly hasCommittedSnapshot?: boolean;
   readonly state: unknown;
   readonly updatedAt: string | null;
+  readonly manifestGeneration?: number | null;
+  readonly stateManifestGeneration?: number | null;
   readonly nowIso?: string;
 }): LocalCoverageDiagnosticAxis {
   const { rows } = input;
@@ -3100,19 +3127,15 @@ export function deriveLocalCoverageAxis(input: {
       ? (input.state as Record<string, unknown>).fetched_at
       : null;
   const validCursor = typeof stateCursor === "string" && Number.isFinite(Date.parse(stateCursor));
-  const validUpdatedAt = typeof input.updatedAt === "string" && Number.isFinite(Date.parse(input.updatedAt));
-  const nowMs = Date.parse(input.nowIso ?? new Date().toISOString());
-  const maximumFutureProofMs = 5 * 60 * 1000;
-  const cursorMs = validCursor ? Date.parse(stateCursor) : Number.NaN;
-  const updatedAtMs = validUpdatedAt ? Date.parse(input.updatedAt) : Number.NaN;
+  const currentGeneration = input.manifestGeneration;
+  const proofGeneration = input.stateManifestGeneration;
   const reliable =
     validCursor &&
-    validUpdatedAt &&
-    Number.isFinite(nowMs) &&
-    cursorMs <= nowMs + maximumFutureProofMs &&
-    updatedAtMs <= nowMs + maximumFutureProofMs &&
+    Number.isInteger(currentGeneration) &&
+    currentGeneration === proofGeneration &&
     !input.malformed &&
     input.hasAuthoritativeInventory &&
+    input.hasCommittedSnapshot === true &&
     input.duplicateStores.length === 0 &&
     input.missingStores.length === 0 &&
     input.unexpectedStores.length === 0;
@@ -3798,7 +3821,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   /** Typed, provider-originated proof for at most one connection-scoped repair. */
   readonly browserSurfaceRepair?: BrowserSurfaceRepairContext | null;
   /**
-    * Connection/runtime capability proving that a session-required failure can
+   * Connection/runtime capability proving that a session-required failure can
    * be repaired through an owner browser session. This is deliberately
    * independent of `remoteSurface`: an idle managed runtime has no active
    * lease, but it still has the same browser-session repair path.
@@ -4077,9 +4100,16 @@ export function buildConnectorFreshness({
 
 function localDeviceFreshnessHeartbeatAt(
   localDeviceProgress: LocalDeviceProgress | null,
-  outbox: { readonly axis: OutboxAxis }
+  outbox: { readonly axis: OutboxAxis },
+  manifestGeneration: number | null | undefined = null
 ): string | null {
   if (!localDeviceProgress?.last_heartbeat_at) {
+    return null;
+  }
+  if (
+    !Number.isInteger(manifestGeneration) ||
+    localDeviceProgress.manifest_generation !== manifestGeneration
+  ) {
     return null;
   }
   if (outbox.axis === "active") {
@@ -4612,7 +4642,11 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // proves current collection; an active outbox proves the collector is checking
   // in and draining. Stalled/unknown outboxes remain load-bearing and do not get
   // greened by heartbeat freshness.
-  const freshnessHeartbeatAt = localDeviceFreshnessHeartbeatAt(localDeviceProgress, outbox);
+  const freshnessHeartbeatAt = localDeviceFreshnessHeartbeatAt(
+    localDeviceProgress,
+    outbox,
+    evidence?.manifest_generation ?? null
+  );
   const freshness = buildConnectorFreshness({
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
@@ -5163,9 +5197,7 @@ async function projectConnectorSummaryForInstance(
  * observe anything," and it must not be silently indistinguishable from
  * "there is honestly nothing to observe yet." Design.md task 5.4.
  */
-async function readSummaryEvidenceRowsOrFailure(
-  connectorInstanceIds: readonly string[] | null = null
-): Promise<{
+async function readSummaryEvidenceRowsOrFailure(connectorInstanceIds: readonly string[] | null = null): Promise<{
   readonly failed: boolean;
   readonly rows: readonly Row[];
 }> {
@@ -5316,12 +5348,13 @@ type Row = Record<string, unknown>;
  * never re-derived from a live source here.
  */
 export interface ConnectorSummaryEvidenceRow {
+  readonly manifest_generation?: number;
   readonly total_records: number;
   /** Count of streams with at least one live canonical record — NOT the exhaustive declared+observed stream_records set size. */
   readonly stream_count: number;
   readonly stream_records: readonly {
     readonly stream: string;
-    readonly declaration_state: "declared" | "unexpected" | "unavailable";
+    readonly declaration_state: "declared" | "dormant" | "unexpected" | "unavailable";
     readonly count_state: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
     readonly record_count: number | null;
     readonly retained_record_count: number | null;

@@ -61,6 +61,9 @@ function sanitizeProjectionError(err: unknown): string {
  */
 const REASON_CODES = {
   TERMINAL_FOLD_FAILED: "terminal_fold_failed",
+  // A bounded replay lost its CAS race on every attempt. The route receives
+  // an in-memory stale overlay instead of trusting the competing durable map.
+  TERMINAL_FOLD_CONTENTION: "terminal_fold_contention",
   DISCOVERY_FAILED: "summary_discovery_failed",
   /**
    * A fold pass wrote this row's terminal facts before its own drain
@@ -82,6 +85,9 @@ const REASON_CODES = {
    * replay, or overwrite it; this reason fails the row closed instead.
    */
   FOLD_LOGIC_VERSION_INCOMPATIBLE_FUTURE: "fold_logic_version_incompatible_future",
+  // A source-attributed terminal event without a matching durable generation
+  // is historical, never an empty/current fold result.
+  TERMINAL_FACTS_HISTORICAL: "terminal_facts_historical",
 } as const;
 
 function parseEvidenceJson(value: unknown, fallback: unknown): unknown {
@@ -146,7 +152,8 @@ function createConnectorSummaryStore() {
                   manifest_declaration_state, manifest_declaration_reason_code,
                   retained_bytes_state, retained_bytes_reason_code,
                   stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
-                  dirty, computed_at, source_event_seq, state, last_error
+                  dirty, computed_at, source_event_seq, state, last_error,
+                  manifest_generation
              FROM connector_summary_evidence
              ${where}
              ORDER BY connector_instance_id ASC`,
@@ -252,7 +259,8 @@ function createConnectorSummaryStore() {
                     manifest_declaration_state, manifest_declaration_reason_code,
                     retained_bytes_state, retained_bytes_reason_code,
                     stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
-                    dirty, computed_at, source_event_seq, state, last_error`;
+                    dirty, computed_at, source_event_seq, state, last_error,
+                    manifest_generation`;
       if (connectorInstanceId) {
         return db
           .prepare(
@@ -479,6 +487,7 @@ export function shapeEvidenceRow(row: Row) {
     retained_bytes_evidence: shapeComponentEnvelope(row, retainedBytesState, row.retained_bytes_reason_code),
     dirty: Number(row.dirty || 0) !== 0,
     computed_at: row.computed_at || null,
+    manifest_generation: Number(row.manifest_generation ?? 0),
     source_event_seq: row.source_event_seq == null ? null : Number(row.source_event_seq),
     state: row.state || "unknown",
     last_error: row.last_error || null,
@@ -569,9 +578,7 @@ async function readExistingRowsForFailureOverlay(
   }
   try {
     const store = createConnectorSummaryStore();
-    const rows = (await store.listEvidence(
-      connectorInstanceIds === null ? {} : { connectorInstanceIds }
-    )) as Row[];
+    const rows = (await store.listEvidence(connectorInstanceIds === null ? {} : { connectorInstanceIds })) as Row[];
     for (const row of rows) {
       byId.set(String(row.connector_instance_id), row);
     }
@@ -772,7 +779,16 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
  * change to `mergeEventStreamFacts`'s merge semantics could change the
  * output for existing already-folded event history.
  */
-const STREAM_FACTS_FOLD_LOGIC_VERSION = 2;
+// Version 3 makes source manifest-generation provenance part of the fold
+// contract. A v2 current map may have folded events created before that
+// provenance existed, so it is never a valid baseline after this upgrade:
+// `seedFoldState` replays it from an empty map on the first observation.
+const STREAM_FACTS_FOLD_LOGIC_VERSION = 3;
+// A route may retry a replay once after a concurrent writer wins its CAS.
+// This is deliberately small: each retry rereads the durable baseline, and
+// persistent contention fails closed in memory rather than spinning or
+// trusting a version-behind map.
+const STREAM_FACTS_CAS_REPLAY_ATTEMPTS = 2;
 
 /**
  * Test-only deterministic pause point inside `foldConnectorSummaryStreamFacts`,
@@ -860,7 +876,7 @@ function createStreamFactsFoldStore() {
       }) {
         const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentPostgres(scope, 4);
         const result = await postgresQuery(
-          `SELECT event_seq, occurred_at, run_id, data_json::text AS data_json
+          `SELECT event_seq, occurred_at, run_id, manifest_generation, data_json::text AS data_json
              FROM spine_events
             WHERE event_type IN (${TERMINAL_TYPES_SQL})
               AND event_seq > $1 AND event_seq <= $2${scopeSql}
@@ -939,7 +955,7 @@ function createStreamFactsFoldStore() {
       const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentSqlite(scope);
       return getDb()
         .prepare(
-          `SELECT event_seq, occurred_at, run_id, data_json
+          `SELECT event_seq, occurred_at, run_id, manifest_generation, data_json
              FROM spine_events
             WHERE event_type IN (${TERMINAL_TYPES_SQL})
               AND event_seq > ? AND event_seq <= ?${scopeSql}
@@ -1145,6 +1161,8 @@ function mergeEventStreamFacts(
 function foldTerminalEventFacts(
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>,
   checkpointByInstance: Map<string, number | null>,
+  generationByInstance: ReadonlyMap<string, number>,
+  generationCurrentByInstance: Map<string, boolean>,
   row: Row,
   counters: { folded: number; refused: number }
 ): void {
@@ -1164,6 +1182,15 @@ function foldTerminalEventFacts(
     // Not a tracked evidence row (deleted or foreign connection).
     return;
   }
+  const eventGeneration = row.manifest_generation;
+  if (eventGeneration == null || Number(eventGeneration) !== generationByInstance.get(instanceId)) {
+    // A missing stamp is legacy/unattributed; an unequal one belongs to a
+    // prior manifest generation. Both are historical, never current proof.
+    generationCurrentByInstance.set(instanceId, false);
+    counters.refused += 1;
+    return;
+  }
+  generationCurrentByInstance.set(instanceId, true);
   const eventSeq = Number(row.event_seq);
   const checkpoint = checkpointByInstance.get(instanceId);
   if (!Number.isFinite(eventSeq) || (checkpoint != null && eventSeq <= checkpoint)) {
@@ -1262,14 +1289,17 @@ function seedFoldState(participants: readonly Row[]): {
   casBaselineByInstance: Map<string, FoldCasBaseline>;
   checkpointByInstance: Map<string, number | null>;
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>;
+  generationByInstance: Map<string, number>;
   sinceSeq: number;
 } {
   const factsByInstance = new Map<string, Record<string, StoredStreamFactEntry>>();
   const checkpointByInstance = new Map<string, number | null>();
   const casBaselineByInstance = new Map<string, FoldCasBaseline>();
+  const generationByInstance = new Map<string, number>();
   let sinceSeq = Number.POSITIVE_INFINITY;
   for (const row of participants) {
     const instanceId = String(row.connector_instance_id);
+    generationByInstance.set(instanceId, Number(row.manifest_generation ?? 0));
     const versionBehind = rowIsFoldLogicVersionBehind(row);
     const parsed = versionBehind ? null : parseEvidenceJson(row.stream_latest_facts_json, null);
     factsByInstance.set(
@@ -1286,10 +1316,12 @@ function seedFoldState(participants: readonly Row[]): {
     });
     sinceSeq = Math.min(sinceSeq, checkpoint ?? 0);
   }
-  return { casBaselineByInstance, checkpointByInstance, factsByInstance, sinceSeq };
+  return { casBaselineByInstance, checkpointByInstance, factsByInstance, generationByInstance, sinceSeq };
 }
 
 export interface FoldStreamFactsResult {
+  /** Participant ids whose CAS write still lost after the bounded replay attempts. */
+  readonly casRejectedInstanceIds: readonly string[];
   readonly folded: number;
   readonly participants: number;
   readonly refused: number;
@@ -1368,6 +1400,14 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
   if (rowIsFoldLogicVersionAhead(row)) {
     return false;
   }
+  // A manifest fingerprint transition intentionally clears the terminal map
+  // while retaining the current event high-water as its generation boundary.
+  // It still needs one converged fold pass to turn that deliberately stale
+  // component into a current, empty post-boundary fact set. The same retry
+  // behavior is correct for other recoverable terminal-fold failures.
+  if (row.terminal_facts_state !== "current") {
+    return true;
+  }
   if (rowIsFoldLogicVersionBehind(row)) {
     return true;
   }
@@ -1394,10 +1434,12 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
 async function stampZeroCheckpointForBootstrap(
   foldStore: ReturnType<typeof createStreamFactsFoldStore>,
   participants: readonly Row[]
-): Promise<void> {
+): Promise<readonly string[]> {
+  const casRejectedInstanceIds: string[] = [];
   for (const row of participants) {
-    await foldStore.updateStreamFacts({
-      connectorInstanceId: String(row.connector_instance_id),
+    const connectorInstanceId = String(row.connector_instance_id);
+    const accepted = await foldStore.updateStreamFacts({
+      connectorInstanceId,
       factsJson: null,
       eventSeq: 0,
       baselineEventSeq: row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq),
@@ -1406,7 +1448,11 @@ async function stampZeroCheckpointForBootstrap(
       terminalFactsState: "current",
       terminalFactsReasonCode: null,
     });
+    if (!accepted) {
+      casRejectedInstanceIds.push(connectorInstanceId);
+    }
   }
+  return casRejectedInstanceIds;
 }
 
 /**
@@ -1453,6 +1499,8 @@ async function drainTerminalEventBatches({
   foldStore,
   factsByInstance,
   checkpointByInstance,
+  generationByInstance,
+  generationCurrentByInstance,
   counters,
   connectorInstanceIds,
   maxSeq,
@@ -1463,6 +1511,8 @@ async function drainTerminalEventBatches({
   foldStore: ReturnType<typeof createStreamFactsFoldStore>;
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>;
   checkpointByInstance: Map<string, number | null>;
+  generationByInstance: ReadonlyMap<string, number>;
+  generationCurrentByInstance: Map<string, boolean>;
   counters: { folded: number; refused: number };
   connectorInstanceIds: readonly string[] | null;
   maxSeq: number;
@@ -1488,7 +1538,14 @@ async function drainTerminalEventBatches({
       scope: connectorInstanceIds,
     });
     for (const row of batch) {
-      foldTerminalEventFacts(factsByInstance, checkpointByInstance, row, counters);
+      foldTerminalEventFacts(
+        factsByInstance,
+        checkpointByInstance,
+        generationByInstance,
+        generationCurrentByInstance,
+        row,
+        counters
+      );
     }
     eventsProcessed += batch.length;
     if (batch.length > 0) {
@@ -1504,24 +1561,36 @@ export async function foldConnectorSummaryStreamFacts(
   connectorInstanceIds: readonly string[] | null = null,
   options: { readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
 ): Promise<FoldStreamFactsResult> {
+  let result: FoldStreamFactsResult | null = null;
+  for (let attempt = 0; attempt < STREAM_FACTS_CAS_REPLAY_ATTEMPTS; attempt += 1) {
+    result = await foldConnectorSummaryStreamFactsOnce(connectorInstanceIds, options);
+    if (result.casRejectedInstanceIds.length === 0) {
+      return result;
+    }
+  }
+  return result as FoldStreamFactsResult;
+}
+
+async function foldConnectorSummaryStreamFactsOnce(
+  connectorInstanceIds: readonly string[] | null,
+  options: { readonly maxDurationMs?: number; readonly maxEvents?: number }
+): Promise<FoldStreamFactsResult> {
   const store = createConnectorSummaryStore();
   const foldStore = createStreamFactsFoldStore();
-  const rows = (await store.listEvidence(
-    connectorInstanceIds === null ? {} : { connectorInstanceIds }
-  )) as Row[];
+  const rows = (await store.listEvidence(connectorInstanceIds === null ? {} : { connectorInstanceIds })) as Row[];
   if (rows.length === 0) {
-    return { folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return { casRejectedInstanceIds: [], folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
   const maxSeq = await foldStore.readMaxTerminalEventSeq(connectorInstanceIds);
   const participants = rows.filter((row) => rowNeedsFoldParticipation(row, maxSeq));
   if (participants.length === 0) {
-    return { folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return { casRejectedInstanceIds: [], folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
   if (maxSeq == null) {
-    await stampZeroCheckpointForBootstrap(foldStore, participants);
-    return { folded: 0, participants: participants.length, refused: 0, incomplete: false, resumeAfterSeq: null };
+    const casRejectedInstanceIds = await stampZeroCheckpointForBootstrap(foldStore, participants);
+    return { casRejectedInstanceIds, folded: 0, participants: participants.length, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
-  const { factsByInstance, checkpointByInstance, casBaselineByInstance, sinceSeq } = seedFoldState(participants);
+  const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, sinceSeq } = seedFoldState(participants);
   // Test-only: see `testOnlyFoldPauseHook` — a no-op unless a test installs
   // a hook. Held here, immediately after the baseline (checkpointByInstance)
   // is captured and before this pass's own terminal-event read/CAS write —
@@ -1531,10 +1600,13 @@ export async function foldConnectorSummaryStreamFacts(
   // interleave, instead of one pass completing before the next starts.
   await testOnlyFoldPauseHook("after_seed_before_read");
   const counters = { folded: 0, refused: 0 };
+  const generationCurrentByInstance = new Map<string, boolean>();
   const drain = await drainTerminalEventBatches({
     foldStore,
     factsByInstance,
     checkpointByInstance,
+    generationByInstance,
+    generationCurrentByInstance,
     counters,
     connectorInstanceIds,
     maxSeq,
@@ -1575,18 +1647,26 @@ export async function foldConnectorSummaryStreamFacts(
   // is what actually drives correct multi-round resumption — no reason-keyed
   // state machine is needed on top of it.
   const replayConverged = !budgetExhausted;
+  const casRejectedInstanceIds: string[] = [];
   for (const [instanceId, facts] of factsByInstance) {
-    await writeParticipantStreamFacts(
+    const sourceGenerationCurrent = generationCurrentByInstance.get(instanceId) !== false;
+    const terminalFactsCurrent = replayConverged && sourceGenerationCurrent;
+    const accepted = await writeParticipantStreamFacts(
       foldStore,
       instanceId,
       facts,
-      writeSeq,
-      replayConverged,
+      sourceGenerationCurrent ? writeSeq : checkpointByInstance.get(instanceId) ?? 0,
+      terminalFactsCurrent ? null : sourceGenerationCurrent ? REASON_CODES.TERMINAL_FOLD_INCOMPLETE : REASON_CODES.TERMINAL_FACTS_HISTORICAL,
+      terminalFactsCurrent,
       checkpointByInstance,
       casBaselineByInstance
     );
+    if (!accepted) {
+      casRejectedInstanceIds.push(instanceId);
+    }
   }
   return {
+    casRejectedInstanceIds,
     folded: counters.folded,
     participants: participants.length,
     refused: counters.refused,
@@ -1630,14 +1710,15 @@ async function writeParticipantStreamFacts(
   instanceId: string,
   facts: Record<string, StoredStreamFactEntry>,
   writeSeq: number,
+  terminalFactsReasonCode: string | null,
   replayConverged: boolean,
   checkpointByInstance: Map<string, number | null>,
   casBaselineByInstance: Map<string, FoldCasBaseline>
-): Promise<void> {
+): Promise<boolean> {
   const effectiveCheckpoint = checkpointByInstance.get(instanceId) ?? null;
   const participantEventSeq = effectiveCheckpoint == null ? writeSeq : Math.max(writeSeq, effectiveCheckpoint);
   const casBaseline = casBaselineByInstance.get(instanceId) ?? { eventSeq: null, foldVersion: null };
-  await foldStore.updateStreamFacts({
+  return foldStore.updateStreamFacts({
     connectorInstanceId: instanceId,
     factsJson: Object.keys(facts).length > 0 ? JSON.stringify(facts) : null,
     eventSeq: participantEventSeq,
@@ -1645,7 +1726,7 @@ async function writeParticipantStreamFacts(
     baselineFoldVersion: casBaseline.foldVersion,
     foldVersion: STREAM_FACTS_FOLD_LOGIC_VERSION,
     terminalFactsState: replayConverged ? "current" : "stale",
-    terminalFactsReasonCode: replayConverged ? null : REASON_CODES.TERMINAL_FOLD_INCOMPLETE,
+    terminalFactsReasonCode,
   });
 }
 
@@ -1689,6 +1770,25 @@ async function foldStreamFactsBestEffort(
 }> {
   try {
     const result = await foldConnectorSummaryStreamFacts(connectorInstanceIds, options);
+    if (result.casRejectedInstanceIds.length > 0) {
+      // Do not durably mark this row: the final competing writer may own a
+      // future fold version, which this binary must leave byte-for-byte
+      // untouched. The central route loader merges this typed overlay over
+      // the immediate read, so a still-v2 current row cannot leak through
+      // while the next observation retries from its new durable baseline.
+      const existingById = await readExistingRowsForFailureOverlay(result.casRejectedInstanceIds);
+      return {
+        ok: false,
+        failedRows: buildComponentFailedRows(
+          result.casRejectedInstanceIds,
+          existingById,
+          { terminal_facts_state: "stale", terminal_facts_reason_code: REASON_CODES.TERMINAL_FOLD_CONTENTION },
+          null
+        ),
+        incomplete: false,
+        resumeAfterSeq: null,
+      };
+    }
     return { ok: true, failedRows: new Map(), incomplete: result.incomplete, resumeAfterSeq: result.resumeAfterSeq };
   } catch (err) {
     // A fold failure is specifically a terminal-facts failure: nothing this
@@ -1815,9 +1915,7 @@ async function observeConnectorSummaryEvidence(
   }
   const foldOutcome = await foldStreamFactsBestEffort(connectorInstanceIds, foldBudget);
   const failedRows =
-    foldOutcome.failedRows.size === 0
-      ? result.failedRows
-      : new Map([...result.failedRows, ...foldOutcome.failedRows]);
+    foldOutcome.failedRows.size === 0 ? result.failedRows : new Map([...result.failedRows, ...foldOutcome.failedRows]);
   return {
     reconciled: result.repaired,
     skipped: result.skipped,

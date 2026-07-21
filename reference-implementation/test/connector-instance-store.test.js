@@ -448,6 +448,12 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
     getDb()
       .prepare(`INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, status, created_at, updated_at) VALUES('dsi_x','dev_x','reddit','cin_del','lb_x','active',?,?)`)
       .run(NOW, NOW);
+    getDb()
+      .prepare(`INSERT INTO connector_summary_evidence(connector_instance_id, connector_id, manifest_generation) VALUES('cin_del', 'reddit', 3)`)
+      .run();
+    getDb()
+      .prepare(`INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_generation, provenance, observed_at) VALUES('cin_del', 'removed_stream', 3, 'test', ?)`)
+      .run(NOW);
 
     let purgeCalls = 0;
     let purgedId = null;
@@ -471,6 +477,8 @@ test('SQLite deleteConnection erases schedule + row + device back-ref and refuse
     const dsi = getDb().prepare('SELECT connector_instance_id FROM device_source_instances WHERE source_instance_id=?').get('dsi_x');
     assert.equal(dsi.connector_instance_id, null, 'device back-ref cleared');
     assert.ok(getDb().prepare('SELECT device_id FROM device_exporters WHERE device_id=?').get('dev_x'), 'device edge preserved');
+    assert.equal(getDb().prepare('SELECT COUNT(*) n FROM connector_summary_evidence WHERE connector_instance_id=?').get('cin_del').n, 0, 'summary evidence erased');
+    assert.equal(getDb().prepare('SELECT COUNT(*) n FROM manifest_write_violations WHERE connector_instance_id=?').get('cin_del').n, 0, 'generation-keyed violation evidence erased');
 
     // Repeat delete → typed not-found (idempotency I4).
     await assert.rejects(

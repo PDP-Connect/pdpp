@@ -106,6 +106,10 @@ function seedSqliteTerminalEventOldShape(connectorInstanceId, streams, { identit
     ...(identityFields ? { connector_instance_id: connectorInstanceId, connection_id: connectorInstanceId } : {}),
     collection_facts: { reference_only: true, schema_version: 1, streams },
   };
+  // This fixture is intentionally pre-trigger as well as pre-column: a
+  // current write is source-stamped immediately and must not masquerade as
+  // an upgrade-era row.
+  getDb().exec('DROP TRIGGER IF EXISTS stamp_terminal_manifest_generation');
   getDb()
     .prepare(
       `INSERT INTO spine_events(
@@ -128,7 +132,7 @@ function seedSqliteTerminalEventOldShape(connectorInstanceId, streams, { identit
 }
 
 test(
-  'SQLite: migration backfill converges connector_instance_id for pre-existing terminal rows on the next boot, from data_json identity',
+  'SQLite: migration backfills identity but keeps pre-generation terminal facts historical',
   withTempDbPath(async (dbPath) => {
     // Boot 1: create the connection + a current evidence row at checkpoint 0
     // (no terminal events exist yet) — the migration/column/index already
@@ -162,14 +166,23 @@ test(
       'the backfill migration populates the column from data_json.connector_instance_id on the next boot',
     );
 
-    // The real SCOPED path (the exact one Sol's verdict named) now sees it.
+    assert.equal(
+      getDb().prepare('SELECT manifest_generation FROM spine_events WHERE event_id = ?').get(`evt_${targetEventSeq}`).manifest_generation,
+      null,
+      'identity migration never invents a source generation for an old terminal row',
+    );
+
+    // The real SCOPED path sees the row but refuses it as historical.
     const scoped = await foldConnectorSummaryStreamFacts(['cin_backfill_target']);
     assert.equal(scoped.participants, 1);
-    assert.equal(scoped.folded, 1, 'the migration-shaped row is folded on the scoped path after backfill');
+    assert.equal(scoped.folded, 0);
+    assert.equal(scoped.refused, 1);
 
     const evidence = await getConnectorSummaryEvidence('cin_backfill_target');
-    assert.equal(evidence.stream_facts_event_seq, targetEventSeq);
-    assert.equal(evidence.stream_latest_facts?.messages?.fact?.record_count, 7);
+    assert.equal(evidence.stream_facts_event_seq, 0, 'historical rows do not advance current terminal proof');
+    assert.equal(evidence.stream_latest_facts, null);
+    assert.equal(evidence.terminal_facts?.state, 'stale');
+    assert.equal(evidence.terminal_facts?.reason_code, 'terminal_facts_historical');
 
     closeDb();
   }),
@@ -211,11 +224,12 @@ test(
     // Scoped fold for the target sees ONLY its own backfilled row.
     const scoped = await foldConnectorSummaryStreamFacts(['cin_backfill_target']);
     assert.equal(scoped.participants, 1);
-    assert.equal(scoped.folded, 1);
-    assert.equal(scoped.refused, 0, 'the unattributed event was never visited by the target-scoped read at all');
+    assert.equal(scoped.folded, 0);
+    assert.equal(scoped.refused, 1, 'the source-attributed legacy event is historical; unattributed history is never scoped in');
 
     const targetEvidence = await getConnectorSummaryEvidence('cin_backfill_target');
-    assert.equal(targetEvidence.stream_latest_facts?.messages?.fact?.record_count, 3);
+    assert.equal(targetEvidence.stream_latest_facts, null);
+    assert.equal(targetEvidence.terminal_facts?.state, 'stale');
     const unrelatedEvidence = await getConnectorSummaryEvidence('cin_backfill_unrelated');
     assert.equal(unrelatedEvidence.stream_facts_event_seq, 0, 'the unrelated connection is untouched by the target-scoped fold');
 
@@ -224,7 +238,7 @@ test(
 );
 
 test(
-  'SQLite: the real mounted route AND the startup sweep both converge migration-shaped historical evidence after reboot',
+  'SQLite: the real mounted route and startup sweep preserve historical terminal uncertainty after reboot',
   withTempDbPath(async (dbPath) => {
     initDb(dbPath);
     seedSqliteConnection('cin_backfill_route', MANIFEST.connector_id, MANIFEST);
@@ -245,15 +259,18 @@ test(
     assert.equal(
       routeSummary.stream_records?.find((s) => s.stream === 'messages')?.record_count,
       1,
-      'the migration-shaped terminal fact is visible through the real route after backfill',
+      'canonical records remain visible independently of terminal provenance',
     );
 
+    assert.equal(routeSummary.terminal_facts.state, 'stale');
+
     // The startup sweep (which pages connections into the same scoped
-    // barrier) also converges it — not merely the direct fold call.
+    // barrier) preserves the same source-provenance refusal.
     const sweep = await runBoundedSummaryEvidenceSweep({ maxDurationMs: 60_000, pageSize: 25 });
     assert.equal(sweep.incomplete, false);
     const evidence = await getConnectorSummaryEvidence('cin_backfill_route');
-    assert.ok(evidence.stream_facts_event_seq > 0, 'the startup sweep folds the migration-shaped row too');
+    assert.equal(evidence.stream_facts_event_seq, 0);
+    assert.equal(evidence.terminal_facts?.state, 'stale');
 
     closeDb();
   }),
@@ -287,8 +304,10 @@ async function seedPostgresTerminalEventOldShape(connectorInstanceId, streams, {
     ...(identityFields ? { connector_instance_id: connectorInstanceId, connection_id: connectorInstanceId } : {}),
     collection_facts: { reference_only: true, schema_version: 1, streams },
   };
-  await postgresQuery(
-    `INSERT INTO spine_events(
+  await postgresQuery('ALTER TABLE spine_events DISABLE TRIGGER stamp_terminal_manifest_generation');
+  try {
+    await postgresQuery(
+      `INSERT INTO spine_events(
        event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
        actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, data_json, version
      )
@@ -300,8 +319,11 @@ async function seedPostgresTerminalEventOldShape(connectorInstanceId, streams, {
       `run_pg_backfill_${postgresEventSeq}`,
       `run_pg_backfill_${postgresEventSeq}`,
       JSON.stringify(data),
-    ],
-  );
+      ],
+    );
+  } finally {
+    await postgresQuery('ALTER TABLE spine_events ENABLE TRIGGER stamp_terminal_manifest_generation');
+  }
   return `evt_pg_backfill_${postgresEventSeq}`;
 }
 
@@ -317,16 +339,17 @@ async function cleanupPostgres() {
 }
 
 test(
-  'real PostgreSQL: migration backfill converges connector_instance_id for pre-existing terminal rows on the next initPostgresStorage() bootstrap',
+  'real PostgreSQL: migration backfills identity but refuses pre-generation terminal facts',
   { skip: !POSTGRES_URL },
   async () => {
+    let beforeCheckpoint;
     await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
     try {
       await cleanupPostgres();
       await seedPostgresConnection('cin_backfill_target_pg', MANIFEST.connector_id, MANIFEST);
       await rebuildConnectorSummaryEvidence();
       const before = await getConnectorSummaryEvidence('cin_backfill_target_pg');
-      assert.equal(Number(before.stream_facts_event_seq), 0);
+      beforeCheckpoint = Number(before.stream_facts_event_seq);
 
       const eventId = await seedPostgresTerminalEventOldShape('cin_backfill_target_pg', [
         { stream: 'messages', resolved: true, record_count: 7 },
@@ -344,21 +367,25 @@ test(
     await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
     try {
       const eventRow = await postgresQuery(
-        "SELECT event_id, connector_instance_id FROM spine_events WHERE event_id LIKE 'evt_pg_backfill_%' ORDER BY event_seq DESC LIMIT 1",
+        "SELECT event_id, connector_instance_id, manifest_generation FROM spine_events WHERE event_id LIKE 'evt_pg_backfill_%' ORDER BY event_seq DESC LIMIT 1",
       );
       assert.equal(
         eventRow.rows[0].connector_instance_id,
         'cin_backfill_target_pg',
         'the backfill UPDATE populates the column from data_json on the next bootstrap',
       );
+      assert.equal(eventRow.rows[0].manifest_generation, null, 'bootstrap does not invent legacy source provenance');
 
       const scoped = await foldConnectorSummaryStreamFacts(['cin_backfill_target_pg']);
       assert.equal(scoped.participants, 1);
-      assert.equal(scoped.folded, 1, 'the migration-shaped row is folded on the scoped path after backfill');
+      assert.equal(scoped.folded, 0);
+      assert.equal(scoped.refused, 1);
 
       const evidence = await getConnectorSummaryEvidence('cin_backfill_target_pg');
-      assert.ok(Number(evidence.stream_facts_event_seq) > 0);
-      assert.equal(evidence.stream_latest_facts?.messages?.fact?.record_count, 7);
+      assert.equal(Number(evidence.stream_facts_event_seq), beforeCheckpoint);
+      assert.equal(evidence.stream_latest_facts, null);
+      assert.equal(evidence.terminal_facts?.state, 'stale');
+      assert.equal(evidence.terminal_facts?.reason_code, 'terminal_facts_historical');
     } finally {
       await cleanupPostgres();
       await closePostgresStorage();
@@ -374,11 +401,13 @@ test(
     let targetEventId;
     let unrelatedEventId;
     let unattributedEventId;
+    let unrelatedBaseline;
     try {
       await cleanupPostgres();
       await seedPostgresConnection('cin_backfill_target_pg', MANIFEST.connector_id, MANIFEST);
       await seedPostgresConnection('cin_backfill_unrelated_pg', UNRELATED_MANIFEST.connector_id, UNRELATED_MANIFEST);
       await rebuildConnectorSummaryEvidence();
+      unrelatedBaseline = Number((await getConnectorSummaryEvidence('cin_backfill_unrelated_pg')).stream_facts_event_seq);
 
       targetEventId = await seedPostgresTerminalEventOldShape('cin_backfill_target_pg', [
         { stream: 'messages', resolved: true, record_count: 3 },
@@ -406,11 +435,11 @@ test(
 
       const scoped = await foldConnectorSummaryStreamFacts(['cin_backfill_target_pg']);
       assert.equal(scoped.participants, 1);
-      assert.equal(scoped.folded, 1);
-      assert.equal(scoped.refused, 0);
+      assert.equal(scoped.folded, 0);
+      assert.equal(scoped.refused, 1);
 
       const unrelatedEvidence = await getConnectorSummaryEvidence('cin_backfill_unrelated_pg');
-      assert.equal(Number(unrelatedEvidence.stream_facts_event_seq), 0, 'the unrelated connection is untouched by the target-scoped fold');
+      assert.equal(Number(unrelatedEvidence.stream_facts_event_seq), unrelatedBaseline, 'the unrelated connection is untouched by the target-scoped fold');
     } finally {
       await cleanupPostgres();
       await closePostgresStorage();

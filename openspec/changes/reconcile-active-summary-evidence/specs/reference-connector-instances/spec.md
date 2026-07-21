@@ -128,6 +128,30 @@ No pass SHALL hold more than one connector-instance fence.
 - **THEN** both backends SHALL produce the same classification, normalized checkpoint, component states, evidence values, and repair outcome
 - **AND** lock/read/write failure SHALL be explicit rather than silently skipped.
 
+### Requirement: Manifest declaration transitions SHALL start a new terminal-evidence generation
+
+When a production manifest registration changes the valid connector manifest,
+the same transaction SHALL advance every affected connection's durable manifest
+generation and dirty its summary evidence. Reconciliation SHALL retain
+non-declared canonical and retained stream grains as dormant diagnostic data,
+but it SHALL clear terminal latest-attempt facts. Every attributable terminal
+event SHALL durably carry the generation current at its append transaction; a
+rebuild SHALL consume only terminal facts whose stamped generation equals the
+connection's current generation. Legacy or unattributed terminal events SHALL
+remain historical. A manifest fingerprint is diagnostic only and SHALL NOT be
+the generation identity. A fold-contract upgrade that first requires source
+generation provenance SHALL invalidate every older terminal map before it is
+trusted: its first read SHALL replay from source, and a retained projection
+SHALL produce the same verdict as deleting and rebuilding that projection.
+
+#### Scenario: Re-added stream does not inherit historical terminal success
+
+- **GIVEN** a stream was declared and has a terminal coverage/freshness fact
+- **WHEN** it is absent from a valid manifest and later declared again
+- **THEN** the re-added stream SHALL remain stale or unknown until a terminal
+  event committed after the re-add generation boundary supplies new evidence
+- **AND** SQLite and real disposable Postgres SHALL produce the same result.
+
 ### Requirement: Terminal summary folds SHALL be snapshot-bounded and non-regressing
 
 A terminal fold SHALL capture a terminal sequence high-water `S`, fold only
@@ -157,8 +181,8 @@ for `record_snapshot`, `terminal_facts`, `manifest_declaration`, and
 `retained_bytes`, each with a closed state, checkpoint/as-of where applicable,
 and a closed sanitized optional reason code.
 
-Each stream entry SHALL carry `declaration_state` (`declared`, `unexpected`, or
-`unavailable`) and `count_state` (`known`, `known_zero`, `unobserved`, `stale`,
+Each stream entry SHALL carry `declaration_state` (`declared`, `dormant`,
+`unexpected`, or `unavailable`) and `count_state` (`known`, `known_zero`, `unobserved`, `stale`,
 or `unknown`). The count invariants SHALL be:
 
 - `known`: integer count at least one at the current record checkpoint;
@@ -192,13 +216,14 @@ only.
 - **THEN** the entry SHALL be `unobserved` or `unknown` with a null count
 - **AND** SHALL NOT fabricate `record_count: 0`.
 
-#### Scenario: Unexpected canonical or retained grain remains visible
+#### Scenario: Retained canonical or history grain becomes dormant
 
 - **GIVEN** a valid current manifest omits a stream that exists in canonical live records or readable retained history/bytes
 - **WHEN** the connection summary is synthesized
-- **THEN** the stream SHALL remain visible as `unexpected`
-- **AND** current canonical count state and retained-byte state SHALL be reported separately
-- **AND** the condition SHALL be a maintainer declaration mismatch, not record corruption or owner reauthentication.
+- **THEN** the stream SHALL remain visible as `dormant` on a diagnostic/retention surface
+- **AND** current canonical count state and retained-byte state SHALL be reported separately but excluded from active totals, coverage, discovery, and serving
+- **AND** records, history, blobs, and retained facts SHALL remain preserved without automatic deletion
+- **AND** re-adding the stream SHALL require new collection evidence before it can be fresh or coverage-complete.
 
 #### Scenario: Manifest unavailability does not invent unexpected declaration
 

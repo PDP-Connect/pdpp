@@ -348,7 +348,7 @@ test(
         )
       ).rows[0];
       assert.ok(
-        Number(healedRow.stream_facts_fold_version) >= 2,
+        Number(healedRow.stream_facts_fold_version) === 3,
         'the row is stamped current under the new fold-logic version after healing',
       );
       const healedFacts = await factsFor();
