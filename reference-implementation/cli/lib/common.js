@@ -11,7 +11,7 @@ export function resolveRsUrl(flags) {
 }
 
 export function resolveOwnerToken(flags) {
-  return flags.token || process.env.PDPP_OWNER_TOKEN || process.env.VANA_PS_TOKEN || null;
+  return flags.token || process.env.PDPP_OWNER_TOKEN || null;
 }
 
 export function resolveClientToken(flags) {
