@@ -41,7 +41,7 @@ links. Two equal-weight cards:
 >
 > ```sh
 > docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
->   ghcr.io/vana-com/pdpp/railway-core:main
+>   ghcr.io/pdp-connect/pdpp/railway-core:main
 > docker logs -f pdpp
 > ```
 >
@@ -82,7 +82,7 @@ closed by default:
 > ```sh
 > APP="pdpp-core-$(openssl rand -hex 3)"
 > OWNER_PASSWORD="$(openssl rand -base64 24)"
-> fly launch --image ghcr.io/vana-com/pdpp/railway-core:main \
+> fly launch --image ghcr.io/pdp-connect/pdpp/railway-core:main \
 >   --name "$APP" --internal-port 3000 --db \
 >   --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \
 >   --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \

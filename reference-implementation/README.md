@@ -468,8 +468,8 @@ remain the preferred path when they work.
 
 Default public images:
 
-- `ghcr.io/vana-com/pdpp/reference:main`
-- `ghcr.io/vana-com/pdpp/web:main`
+- `ghcr.io/pdp-connect/pdpp/reference:main`
+- `ghcr.io/pdp-connect/pdpp/web:main`
 
 The `main` tag is a moving default-branch build. Stable semantic-release images
 are published as exact version tags such as `1.2.3`, moving minor-series tags
@@ -477,8 +477,8 @@ such as `1.2`, and `latest`. For durable self-hosting, pin an exact version,
 `sha-*` tag, or digest in `.env.docker`:
 
 ```bash
-PDPP_REFERENCE_IMAGE=ghcr.io/vana-com/pdpp/reference:1.2.3
-PDPP_WEB_IMAGE=ghcr.io/vana-com/pdpp/web:1.2.3
+PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference:1.2.3
+PDPP_WEB_IMAGE=ghcr.io/pdp-connect/pdpp/web:1.2.3
 ```
 
 The important topology rule is that `PDPP_REFERENCE_ORIGIN` is what the

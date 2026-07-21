@@ -10,7 +10,7 @@ The selected template uses one application service plus a Postgres plugin.
 
 | Service | Source | Public networking | Healthcheck path |
 |---|---|---:|---|
-| `core` | `ghcr.io/vana-com/pdpp/railway-core:<version-tag>` | enabled | Railway default; externally probe `/.well-known/oauth-authorization-server` |
+| `core` | `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>` | enabled | Railway default; externally probe `/.well-known/oauth-authorization-server` |
 | `Postgres` | Railway plugin | disabled | n/a |
 
 The `railway-core` image is built from the root `Dockerfile` target
@@ -55,7 +55,7 @@ Before publishing the user-facing button:
 pnpm railway:ghcr-public --tag <version-tag>
 ```
 
-The probe exits `0` only when `ghcr.io/vana-com/pdpp/railway-core:<version-tag>`
+The probe exits `0` only when `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>`
 is anonymously pullable.
 
 The probe's pass/fail logic is unit-tested offline by
@@ -115,7 +115,7 @@ stay under the Railway volume mount path.
 
 1. Create a source Railway project.
 2. Add the `core` service from Docker Image
-   `ghcr.io/vana-com/pdpp/railway-core:<version-tag>`.
+   `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>`.
 3. Add a Railway Postgres plugin.
 4. Configure variables exactly as listed above.
 5. Generate a public domain for `core`.
@@ -168,7 +168,7 @@ only after the real template code has been installed and scratch-verified.
 ## 2026-06-06 scratch proof
 
 - Published config contained exactly `core` and `Postgres`.
-- `core` image: `ghcr.io/vana-com/pdpp/railway-core:sha-6581820`.
+- `core` image: `ghcr.io/pdp-connect/pdpp/railway-core:sha-6581820`.
 - Required app prompt: `core.PDPP_OWNER_PASSWORD`.
 - Generated app secret: `core.PDPP_CREDENTIAL_ENCRYPTION_KEY`.
 - No app prompts for `PORT`, `AS_PORT`, `RS_PORT`, `PDPP_AS_URL`, or

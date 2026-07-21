@@ -34,7 +34,7 @@ APP="pdpp-core-$(openssl rand -hex 3)"
 OWNER_PASSWORD="$(openssl rand -base64 24)"
 
 fly launch \
-  --image ghcr.io/vana-com/pdpp/railway-core:sha-39232ac \
+  --image ghcr.io/pdp-connect/pdpp/railway-core:sha-39232ac \
   --name "$APP" \
   --region iad \
   --internal-port 3000 \

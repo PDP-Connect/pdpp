@@ -21,8 +21,8 @@ When you finish either lane, jump to [Wire an MCP client](#wire-an-mcp-client).
 
 You need:
 
-- the published images (`ghcr.io/vana-com/pdpp/reference:main`,
-  `ghcr.io/vana-com/pdpp/web:main`) — both public, no login required;
+- the published images (`ghcr.io/pdp-connect/pdpp/reference:main`,
+  `ghcr.io/pdp-connect/pdpp/web:main`) — both public, no login required;
 - a place for the dashboard to be reachable over HTTPS (Lane A: a reverse proxy
   or local development URL; Lane B: the `*.proxy.runpod.net` URL RunPod gives
   you);

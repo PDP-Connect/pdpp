@@ -4,7 +4,7 @@
 // The selected first-button shape points the Railway app service at a public,
 // anonymously pullable GHCR image:
 //
-//   core -> ghcr.io/vana-com/pdpp/railway-core
+//   core -> ghcr.io/pdp-connect/pdpp/railway-core
 //
 // A reusable Railway Template CANNOT be published while this package is
 // private — Railway pulls the image with no credentials, and the template SHALL
@@ -26,7 +26,7 @@
 //   token 403                   -> ABSENT   (no such package path)
 //
 // The blocker is cleared only when the image reports PUBLIC. The owner clears
-// it by flipping the package's visibility to Public (GitHub -> org vana-com ->
+// it by flipping the package's visibility to Public (GitHub -> org pdp-connect ->
 // Packages -> the package -> Change visibility -> Public). This script does not
 // perform the flip; it only reports the gate state and exits non-zero until the
 // owner has cleared it.
@@ -45,7 +45,7 @@ import { fileURLToPath } from 'node:url';
 // The app-service image, mapped to its Railway service and Dockerfile stage.
 // Repository path only — no registry host, no tag.
 export const TEMPLATE_IMAGES = [
-  { image: 'vana-com/pdpp/railway-core', service: 'core', stage: 'railway-core' },
+  { image: 'pdp-connect/pdpp/railway-core', service: 'core', stage: 'railway-core' },
 ];
 
 // Map an anonymous GHCR pull-token HTTP status onto a package-visibility verdict.
@@ -130,7 +130,7 @@ export function summarizePublishReadiness(results) {
     blocked,
     ownerAction: ready
       ? null
-      : 'Flip each blocked package to Public: GitHub -> org vana-com -> Packages -> the package -> Change visibility -> Public, then re-run this probe.',
+      : 'Flip each blocked package to Public: GitHub -> org pdp-connect -> Packages -> the package -> Change visibility -> Public, then re-run this probe.',
   };
 }
 

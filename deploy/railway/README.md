@@ -5,7 +5,7 @@ reference implementation: one public Core app service, one durable Postgres
 backend, and no browser-backed connector runtime inside the deployed app.
 
 This is operator documentation for someone running their own instance. The
-Docker image at `ghcr.io/vana-com/pdpp/railway-core` is the forkable reference
+Docker image at `ghcr.io/pdp-connect/pdpp/railway-core` is the forkable reference
 implementation packaged for Railway.
 
 ## Pushbutton Railway template
@@ -23,7 +23,7 @@ The published template uses:
 
 | Service | Source | Public? | Purpose |
 |---|---|---:|---|
-| `core` | `ghcr.io/vana-com/pdpp/railway-core:<version-tag>` | yes | Console on Railway `$PORT`; reference AS/RS on loopback inside the same container. |
+| `core` | `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>` | yes | Console on Railway `$PORT`; reference AS/RS on loopback inside the same container. |
 | `Postgres` | Railway plugin | no | Durable records, grants, runs, sessions, and tokens. |
 
 Pin a concrete version tag, not `latest`, so the template is reproducible. The
@@ -150,7 +150,7 @@ pnpm docker:smoke
 
 For a live source project or scratch template deploy:
 
-1. Deploy `core` from `ghcr.io/vana-com/pdpp/railway-core:<version-tag>` and add
+1. Deploy `core` from `ghcr.io/pdp-connect/pdpp/railway-core:<version-tag>` and add
    Railway Postgres.
 2. Set `PDPP_REFERENCE_ORIGIN`, `PDPP_OWNER_PASSWORD`, and
    `PDPP_DATABASE_URL` exactly as above.

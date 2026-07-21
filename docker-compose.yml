@@ -5,13 +5,13 @@ services:
     # browser-backed collection inside the server container. Deployments that
     # run browser-backed connectors (ChatGPT, USAA, ...) INSIDE this container
     # must switch to the published browser-capable image:
-    #   PDPP_REFERENCE_IMAGE=ghcr.io/vana-com/pdpp/reference-browser:main
+    #   PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference-browser:main
     # Set that variable in .env.docker (or a gitignored
     # docker-compose.override.yml) and re-pull. Otherwise the next
     # `compose pull && up -d` reverts to a browser-free image and every
     # browser run fails at Patchright launch ("Executable doesn't exist at
     # /opt/patchright-browsers/...").
-    image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/vana-com/pdpp/reference:main}
+    image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}
     build:
       context: .
       dockerfile: Dockerfile
@@ -236,7 +236,7 @@ services:
   # existing operators. The build target is now the `console` stage.
   # See openspec/changes/split-public-site-and-operator-console.
   web:
-    image: ${PDPP_WEB_IMAGE:-ghcr.io/vana-com/pdpp/web:main}
+    image: ${PDPP_WEB_IMAGE:-ghcr.io/pdp-connect/pdpp/web:main}
     build:
       context: .
       dockerfile: Dockerfile
