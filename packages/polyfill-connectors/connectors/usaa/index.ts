@@ -1126,11 +1126,8 @@ async function emitDialogUnexpectedShapeDiagnostic(
 }
 
 /** Click Export, then confirm the date-range selector rendered. */
-async function openExportDialog(
-  page: Page,
-  located: LocatedExportPage,
-  onDiagnostics: DriveExportOptions["onDiagnostics"]
-): Promise<boolean> {
+async function openExportDialog(page: Page, located: LocatedExportPage, options: DriveExportOptions): Promise<boolean> {
+  const { onDiagnostics } = options;
   try {
     await located.export.click({ timeout: EXPORT_CLICK_TIMEOUT_MS });
   } catch (err) {
@@ -1147,6 +1144,9 @@ async function openExportDialog(
     if (onDiagnostics) {
       await emitDialogUnexpectedShapeDiagnostic(page, onDiagnostics);
     }
+    // Capture before Escape: the keypress below can dismiss/mutate the
+    // dialog surface, so the checkpoint must run on the still-intact page.
+    await captureExportCheckpoint(page, options, "dialog-not-open");
     await page.keyboard.press("Escape").catch((): undefined => undefined);
     return false;
   }
@@ -1389,9 +1389,8 @@ export async function driveExport(
     return noExportAffordanceFailure(page, options);
   }
 
-  const dialogOpen = await openExportDialog(page, located, onDiagnostics);
+  const dialogOpen = await openExportDialog(page, located, options);
   if (!dialogOpen) {
-    await captureExportCheckpoint(page, options, "dialog-not-open");
     return { kind: "failed" };
   }
 

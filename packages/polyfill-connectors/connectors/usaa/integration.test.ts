@@ -617,6 +617,100 @@ test("driveExport records account, challenge, and unrelated routes through the a
   }
 });
 
+/** A page with a recognized export button but no date-range select ever
+ *  rendering in the resulting dialog — drives driveExport into the
+ *  "dialog-not-open" branch, which presses Escape after failing to find
+ *  the select. Tracks call order so the test can prove the checkpoint
+ *  capture happens on the still-intact page, before Escape mutates it. */
+function makeDialogNotOpenPage(callOrder: string[]): Page {
+  return Object.assign({} as Page, {
+    evaluate() {
+      return Promise.resolve({
+        dialog_html_preview: null,
+        dialogs_open: 0,
+        export_candidates: [],
+        has_utility_bar: false,
+        nav_candidates: [],
+        title: "",
+        url: "https://www.usaa.com/my/checking?accountId=private",
+      });
+    },
+    goto() {
+      return Promise.resolve(null);
+    },
+    keyboard: {
+      press(key: string) {
+        callOrder.push(`keyboard:${key}`);
+        return Promise.resolve();
+      },
+    },
+    locator(selector: string) {
+      if (selector === "button.ent-as-utility-bar__item.export") {
+        return {
+          click() {
+            return Promise.resolve();
+          },
+          count() {
+            return Promise.resolve(1);
+          },
+          first() {
+            return this;
+          },
+        };
+      }
+      // Every other locator (the dialog select, the unexpected-shape
+      // dialog probe) reports not found.
+      return {
+        count() {
+          return Promise.resolve(0);
+        },
+        filter() {
+          return this;
+        },
+        first() {
+          return this;
+        },
+        innerHTML() {
+          return Promise.reject(new Error("no dialog"));
+        },
+      };
+    },
+    url() {
+      return "https://www.usaa.com/my/checking?accountId=private";
+    },
+  });
+}
+
+test("driveExport captures the dialog-not-open checkpoint before pressing Escape", async () => {
+  const callOrder: string[] = [];
+  const outcome = await driveExport(makeDialogNotOpenPage(callOrder), "https://www.usaa.com/my/checking", {
+    capture: {
+      baseDir: "/tmp/unused",
+      captureDom: (_page: Page, label: string) => {
+        callOrder.push(`capture:${label}`);
+        return Promise.resolve();
+      },
+      captureHttp: () => undefined,
+      markSucceeded: () => undefined,
+      finalize: () => Promise.resolve(),
+    } as unknown as NonNullable<Parameters<typeof driveExport>[2]["capture"]>,
+    captureLabel: "usaa-export",
+    settleDelayMs: 0,
+    sinceDate: "2026-01-01",
+    untilDate: "2026-07-16",
+  });
+
+  assert.deepEqual(outcome, { kind: "failed" });
+  const captureIdx = callOrder.indexOf("capture:usaa-export-dialog-not-open");
+  const escapeIdx = callOrder.indexOf("keyboard:Escape");
+  assert.notEqual(captureIdx, -1, "expected a dialog-not-open checkpoint capture");
+  assert.notEqual(escapeIdx, -1, "expected an Escape keypress to dismiss the dialog");
+  assert.ok(
+    captureIdx < escapeIdx,
+    `checkpoint capture must run before Escape mutates the page (capture=${captureIdx}, escape=${escapeIdx})`
+  );
+});
+
 test("runSingleLadderAttempt retains a logon interstitial on the existing re-auth failure outcome", async () => {
   const { deps, messages } = makeHarness();
   deps.browserSurface = "managed";
