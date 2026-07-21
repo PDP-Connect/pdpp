@@ -1261,10 +1261,11 @@ async function scanSessionSource(input: {
   sessionAccumulators: Map<string, SessionAccumulator>;
   source: ClaudeJsonlSource;
   telemetry: LocalJsonlTelemetry;
-}): Promise<{ cursor: ClaudeSessionFileCursorV1; rebuilt: boolean }> {
+}): Promise<{ cursor: ClaudeSessionFileCursorV1; rebuilt: boolean; sessionIds: Set<string> }> {
   const observation = input.cursor
     ? cloneObservations(input.cursor.observation, input.source.forcedSessionId)
     : makeJsonlObservations(input.source.forcedSessionId);
+  const sessionIds = new Set<string>();
   const result = await scanLocalJsonl({
     path: input.source.path,
     prior: input.cursor,
@@ -1293,12 +1294,16 @@ async function scanSessionSource(input: {
         obj,
         observation.messageCount - before
       );
+      if (observation.sessionId) {
+        sessionIds.add(observation.sessionId);
+      }
     },
   });
   observeLocalJsonlScan(input.telemetry, result);
   return {
     cursor: { ...result.cursor, observation },
     rebuilt: Boolean(input.cursor && result.decision.kind === "rebuild"),
+    sessionIds,
   };
 }
 
@@ -1555,6 +1560,33 @@ function streamFileMtimes(
   return state[stream]?.file_mtimes;
 }
 
+/**
+ * Read mtime-only transcript state for one stream's pre-v1 lineage. A legacy
+ * mtime is only an eligibility hint: the scanner still reads the source and
+ * returns a physical cursor before the migration can suppress its records.
+ * Messages and sessions deliberately call this separately: a current mtime in
+ * one stream is not proof that another stream was ever delivered.
+ */
+function readLegacyJsonlMtimes(value: unknown): Map<string, Set<number>> {
+  const mtimes = new Map<string, Set<number>>();
+  if (!isRecord(value)) {
+    return mtimes;
+  }
+  for (const [path, mtime] of Object.entries(value)) {
+    if (typeof mtime !== "number" || !Number.isFinite(mtime)) {
+      continue;
+    }
+    const known = mtimes.get(path) ?? new Set<number>();
+    known.add(mtime);
+    mtimes.set(path, known);
+  }
+  return mtimes;
+}
+
+function matchesLegacyJsonlMtime(mtimes: Map<string, Set<number>>, path: string, observedMtimeMs: number): boolean {
+  return mtimes.get(path)?.has(observedMtimeMs) ?? false;
+}
+
 // Guarded so `import "./index.ts"` in tests doesn't spin up the runtime
 // and block the Node event loop on stdin. Only fires when this module
 // IS the process entry point (i.e. `tsx connectors/claude_code/index.ts`).
@@ -1619,6 +1651,14 @@ if (isMainModule(import.meta.url)) {
 
         const messageRaw = typedState.messages;
         const sessionsRaw = typedState.sessions;
+        const messageUsesLegacyJsonlMtimes = messageRaw?.local_jsonl_cursor_version !== 1;
+        const sessionsUsesLegacyJsonlMtimes = sessionsRaw?.local_jsonl_cursor_version !== 1;
+        const messageLegacyJsonlMtimes = readLegacyJsonlMtimes(
+          messageUsesLegacyJsonlMtimes ? (messageRaw?.file_mtimes ?? typedState.file_mtimes) : undefined
+        );
+        const sessionLegacyJsonlMtimes = readLegacyJsonlMtimes(
+          sessionsUsesLegacyJsonlMtimes ? sessionsRaw?.file_mtimes : undefined
+        );
         const priorChildCursors =
           messageRaw?.local_jsonl_cursor_version === 1 ? readChildFileCursors(messageRaw.file_cursors) : {};
         const decodedSessionCursors =
@@ -1659,13 +1699,6 @@ if (isMainModule(import.meta.url)) {
           | undefined;
 
         if (requested.has("sessions")) {
-          const legacyBaseline =
-            sessionsRaw?.local_jsonl_cursor_version !== 1 &&
-            (
-              await Promise.all(
-                sources.map(async (source) => (await stat(source.path)).mtimeMs === sessionFileMtimes[source.path])
-              )
-            ).every(Boolean);
           const missingRichCursorForKnownFile = sources.some(
             (source) => sessionFileMtimes[source.path] !== undefined && !priorSessionCursors[source.path]
           );
@@ -1676,6 +1709,7 @@ if (isMainModule(import.meta.url)) {
           let sessionAccumulators = new Map<string, SessionAccumulator>(
             Object.entries(rebuildAll ? {} : priorSessionAggregates).map(([id, aggregate]) => [id, { ...aggregate }])
           );
+          const changedLegacySessionIds = new Set<string>();
           for (const source of sources) {
             const scanned = await scanSessionSource({
               cursor: rebuildAll ? undefined : priorSessionCursors[source.path],
@@ -1687,6 +1721,14 @@ if (isMainModule(import.meta.url)) {
             nextSessionCursors[source.path] = scanned.cursor;
             newSessionFileMtimes[source.path] = scanned.cursor.observed_mtime_ms;
             rebuildAll ||= scanned.rebuilt;
+            if (
+              sessionsUsesLegacyJsonlMtimes &&
+              !matchesLegacyJsonlMtime(sessionLegacyJsonlMtimes, source.path, scanned.cursor.observed_mtime_ms)
+            ) {
+              for (const sessionId of scanned.sessionIds) {
+                changedLegacySessionIds.add(sessionId);
+              }
+            }
           }
           if (rebuildAll && sessionSnapshotIsValid) {
             sessionAccumulators = new Map();
@@ -1709,7 +1751,16 @@ if (isMainModule(import.meta.url)) {
           await emitChangedSessions({
             emitRecord,
             next: sessionAccumulators,
-            prior: legacyBaseline ? Object.fromEntries(sessionAccumulators) : priorSessionAggregates,
+            // A legacy checkpoint has no aggregate snapshot. Treat only the
+            // session ids contributed by an mtime-mismatched/new source as
+            // changed; matching sources were fully scanned to establish their
+            // cursors and aggregate contribution, not replayed from an
+            // all-or-nothing migration switch.
+            prior: sessionsUsesLegacyJsonlMtimes
+              ? Object.fromEntries(
+                  [...sessionAccumulators].filter(([sessionId]) => !changedLegacySessionIds.has(sessionId))
+                )
+              : priorSessionAggregates,
             requested,
           });
           const sessionAggregates = Object.fromEntries(sessionAccumulators);
@@ -1766,22 +1817,33 @@ if (isMainModule(import.meta.url)) {
         }
 
         if (requested.has("messages") || requested.has("attachments")) {
-          const legacyBaseline =
-            messageRaw?.local_jsonl_cursor_version !== 1 &&
-            (
-              await Promise.all(
-                sources.map(async (source) => (await stat(source.path)).mtimeMs === messageFileMtimes[source.path])
-              )
-            ).every(Boolean);
           for (const source of sources) {
-            const cursor = await scanChildSource({
+            const candidateLegacyBaseline = messageUsesLegacyJsonlMtimes && messageLegacyJsonlMtimes.has(source.path);
+            let cursor = await scanChildSource({
               cursor: priorChildCursors[source.path],
               emitRecord,
-              emitRecords: !legacyBaseline,
+              emitRecords: !candidateLegacyBaseline,
               requested,
               source,
               telemetry,
             });
+            // The scan, not a pre-scan stat, decides whether the old mtime
+            // actually describes the bytes that were cursorized. A change in
+            // the small interval before the open snapshot is replayed from
+            // zero rather than being silently baselined.
+            if (
+              candidateLegacyBaseline &&
+              !matchesLegacyJsonlMtime(messageLegacyJsonlMtimes, source.path, cursor.observed_mtime_ms)
+            ) {
+              cursor = await scanChildSource({
+                cursor: undefined,
+                emitRecord,
+                emitRecords: true,
+                requested,
+                source,
+                telemetry,
+              });
+            }
             nextChildCursors[source.path] = cursor;
             newMessageFileMtimes[source.path] = cursor.observed_mtime_ms;
           }
