@@ -1,0 +1,130 @@
+name: remote-surface
+
+# Path-scoped CI for the published @opendatalabs/remote-surface boundary.
+#
+# packages/remote-surface was extracted to its own repo
+# (github.com/vana-com/remote-surface) in the LFDT transfer curation
+# (commit 1eae09c5b) and is no longer a pnpm workspace member — PDPP now
+# consumes it exclusively as the published npm package, declared by
+# reference-implementation (optional dependency) and apps/console (regular
+# dependency). This gate installs the real published package, asserts every
+# declaring importer resolves the same version, and runs the boundary test
+# that proves PDPP's consumer wiring (sessions/leases/protocol ownership)
+# against it.
+#
+# `pnpm --filter <name>` exits 0 when zero workspace projects match the
+# filter, so a stale filter here would silently verify nothing forever.
+# The "package still resolves in the workspace" step below fails loudly if
+# that ever becomes true again for @opendatalabs/remote-surface specifically.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "reference-implementation/runtime/browser-surface/remote-surface-optional.ts"
+      - "reference-implementation/test/remote-surface-reference-boundary.test.js"
+      - "reference-implementation/package.json"
+      - "apps/console/package.json"
+      - ".github/workflows/remote-surface.yml"
+      - "pnpm-lock.yaml"
+  pull_request:
+    paths:
+      - "reference-implementation/runtime/browser-surface/remote-surface-optional.ts"
+      - "reference-implementation/test/remote-surface-reference-boundary.test.js"
+      - "reference-implementation/package.json"
+      - "apps/console/package.json"
+      - ".github/workflows/remote-surface.yml"
+      - "pnpm-lock.yaml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: remote-surface-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify package boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Assert @opendatalabs/remote-surface is not a stale workspace filter target
+        # A `pnpm --filter @opendatalabs/remote-surface ...` command exits 0
+        # with zero matches — that's exactly how the old "Verify remote-surface
+        # package" step went false-green after the workspace package was
+        # removed (commit 1eae09c5b): the filter matched nothing, so pnpm
+        # reported success without running anything. List real workspace
+        # projects directly and fail closed if this name ever reappears
+        # among them.
+        run: |
+          pnpm -r list --depth -1 --json > /tmp/pnpm-workspace-projects.json
+          node -e "
+            const data = require('/tmp/pnpm-workspace-projects.json');
+            const match = data.find((p) => p.name === '@opendatalabs/remote-surface');
+            if (match) {
+              console.error('@opendatalabs/remote-surface is once again a pnpm workspace member at ' + match.path + '; restore the package-boundary verify step this workflow used before the LFDT extraction (commit 1eae09c5b).');
+              process.exit(1);
+            }
+          "
+
+      - name: Verify published package resolves at one consistent version across every importer
+        # Every workspace project that declares @opendatalabs/remote-surface
+        # (as a regular or optional dependency) must resolve to the SAME
+        # version. A prior repin bumped reference-implementation's specifier
+        # but left apps/console on the old range, producing a silent
+        # dual-install split that this workflow's RI-only check could not
+        # see (it only ever inspected reference-implementation). Enumerate
+        # every declaring importer from the repo-wide listing instead of
+        # naming projects here, so a future new consumer is covered
+        # automatically, and fail closed on any importer that is missing the
+        # package or resolves a different version than the rest.
+        run: |
+          pnpm list -r --depth 0 --json | node -e "
+            let data = '';
+            process.stdin.on('data', (chunk) => { data += chunk; });
+            process.stdin.on('end', () => {
+              const projects = JSON.parse(data);
+              const found = [];
+              for (const project of projects) {
+                const dep = project?.dependencies?.['@opendatalabs/remote-surface']
+                  || project?.optionalDependencies?.['@opendatalabs/remote-surface'];
+                if (dep) {
+                  found.push({ name: project.name, path: project.path, version: dep.version });
+                }
+              }
+              if (found.length === 0) {
+                console.error('@opendatalabs/remote-surface was not resolved as a dependency of any workspace project.');
+                process.exit(1);
+              }
+              const versions = new Set(found.map((f) => f.version));
+              for (const f of found) {
+                console.log('  ' + f.name + ' (' + f.path + ') -> @opendatalabs/remote-surface@' + f.version);
+              }
+              if (versions.size > 1) {
+                console.error('@opendatalabs/remote-surface resolves to multiple versions across importers: ' + Array.from(versions).join(', ') + '. Bump every declaring package.json to the same range and re-run pnpm install.');
+                process.exit(1);
+              }
+              console.log('All ' + found.length + ' importer(s) resolve @opendatalabs/remote-surface@' + found[0].version);
+            });
+          "
+
+      - name: Verify remote-surface reference boundary
+        run: node --test reference-implementation/test/remote-surface-reference-boundary.test.js

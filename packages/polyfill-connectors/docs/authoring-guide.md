@@ -1,0 +1,287 @@
+# PDPP Connector Authoring Guide
+
+This is the opinionated template every connector in this package now
+follows. Deviations happen — but if you're writing a new connector,
+start here and don't invent structure.
+
+## File layout
+
+```
+connectors/<name>/
+├── index.ts              # Runtime entry. runConnector({...}) guarded by isMainModule.
+├── parsers.ts            # Pure functions. Imported by index.ts + tests.
+├── types.ts              # Shared interfaces (record shapes, cursors).
+├── schemas.ts            # Zod validators (if the stream has a schema).
+├── parsers.test.ts       # node:test, table-driven, synthetic fixtures.
+├── integration.test.ts   # Optional. collect()-layer invariant tests.
+├── __fixtures__/         # Hand-crafted HTML/JSON. Committed.
+└── scrub-rules.ts        # Optional. Connector-specific PII patterns.
+```
+
+Captured live fixtures live at `fixtures/<name>/raw/` (gitignored).
+The scrubber (`bin/scrub-fixtures.ts`) produces
+`fixtures/<name>/scrubbed/` (not ignored). Commit scrubbed fixtures only
+after running the scrubber and reviewing the output by eye. For free-form
+text that regexes cannot safely classify, pass reviewed structured plans
+with `--llm-redactions-dir`; the scrubber validates those plans locally and
+fails closed without calling an API.
+
+## The runConnector contract
+
+Every connector ends with:
+
+```ts
+runConnector({
+  name: "<name>",
+  validateRecord,                // Zod-backed; see schemas.ts
+  browser: { profileName: "<n>" }, // ← only for browser connectors
+  async ensureSession({ context, page, sendInteraction }) { ... },
+  async collect(ctx) { ... },
+});
+```
+
+`collect(ctx)` is where business logic lives. It receives:
+
+- `ctx.requested` — `Map<stream, StreamScope>`. Check with
+  `requested.has("orders")` before doing work for that stream.
+- `ctx.state` — prior cursor, merged from prior runs.
+- `ctx.emit` — protocol messages (PROGRESS, SKIP_RESULT, STATE, …).
+- `ctx.emitRecord(stream, data)` — emit a RECORD, shape-checked against
+  the schema. Failures become SKIP_RESULT automatically.
+- `ctx.progress(msg)` — non-fatal status.
+- `ctx.capture` — fixture-capture handle (non-null when
+  `PDPP_CAPTURE_FIXTURES=1`).
+- Browser connectors also get `ctx.page` and `ctx.context`.
+
+## Rules the tooling enforces
+
+These are non-negotiable; Biome and lefthook fail the commit otherwise.
+
+- **No `any`**, no `!` non-null, no `@ts-ignore`, no `as unknown as X`
+  double-casts. Narrow types properly or write a declaration shim in
+  `types/*.d.ts`.
+- **Cognitive complexity ≤ 20** per function (Biome
+  `noExcessiveCognitiveComplexity`). Decompose into named helpers;
+  do NOT raise the threshold.
+- **Top-level regexes** when possible. Inside `page.evaluate()`
+  callbacks they must stay local (serialized to browser) — suppress
+  with `// biome-ignore lint/performance/useTopLevelRegex: runs in
+  browser context`.
+- **Imports use explicit `.ts` extensions** for local files. We run
+  `.ts` directly via `tsx`; no `.js` emission.
+- **Test files** (`*.test.ts`) are held to the same bar as production
+  code, except `useTopLevelRegex` and `noExcessiveCognitiveComplexity`
+  are relaxed (tests often do both).
+
+## Protocol conventions
+
+These are not auto-enforced but ARE enforced by code review + pinned
+by `integration.test.ts` in every connector with parent-child record
+streams. For the reference implementation, this is a quality target for
+live ingest behavior, not a core PDPP protocol rule.
+
+### Parent-first emit order
+
+> Historical note: gmail, chatgpt, and claude_code inverted this on
+> 2026-04-23 as an intentional behavior change, not a bug fix. See
+> [`behavior-changes-2026-04-23.md`](./behavior-changes-2026-04-23.md)
+> for the consumer-facing note.
+>
+> Owner decision (2026-04-23): keep this as the reference-quality
+> default even where it imposes material extra wall-clock on a large
+> real corpus. The benefit is cleaner live ingest semantics for
+> downstream incremental consumers, not richer final settled data.
+> Connector-specific exceptions require explicit owner sign-off after
+> measured evidence.
+
+When a connector emits streams that relate to each other (orders +
+order_items, accounts + transactions, sessions + messages,
+conversations + messages, threads + messages) the **parent record
+emits before any of its children**. Downstream consumers doing
+streaming upserts rely on this for referential integrity.
+
+Why this is worth caring about:
+- live ingest stays easier to reason about
+- incremental consumers can upsert parents before children without
+  ad hoc buffering
+- connector behavior stays more uniform across the fleet
+- agent-built consumers have fewer connector-specific ordering rules
+
+Concretely:
+- `emitOrderAndItems` in amazon emits `orders` before `order_items`.
+- `processConversationDetail` in chatgpt emits `conversations` before
+  `messages`.
+- `runAllMailPasses` in gmail emits `threads` before `messages`.
+- `scanProjectDirs` in claude_code uses a two-pass structure:
+  scan-for-accumulators → emit `sessions` → scan-for-messages.
+
+When the parent is an aggregate built by observing children (gmail
+threads, claude_code sessions), use one of:
+- A self-contained fetch that enumerates the parent independently
+  (gmail's `runThreadsPass` fetches `1:*` with `threadId` + `envelope`
+  and aggregates in-memory without reading the message bodies the
+  per-message pass needs).
+- A two-pass buildOnly/emit split (claude_code's `buildOnly: true`
+  flag threads through `processJsonlLine` to suppress emits while
+  still updating the accumulator).
+
+Integration tests MUST assert parent-index < first-child-index in the
+emit sequence. See `connectors/chatgpt/integration.test.ts` for the
+pattern.
+
+### Coverage and gap evidence (list-plus-detail connectors)
+
+A connector that fetches a list and then hydrates per-item detail (conversations
+→ messages, accounts → transactions, orders → order_items) SHOULD emit two
+reference-only signals so the runtime can tell a partial run from a complete one
+without guessing from the record count. Use the shared builders from
+`../../src/connector-runtime.ts` — do not hand-roll the message shapes:
+
+- `emitDetailCoverage(ctx, { stream, stateStream, requiredKeys, hydratedKeys, gapKeys })`
+  reports, once after the detail pass, what the run **considered**
+  (`requiredKeys`, the denominator) versus what it **hydrated** (`hydratedKeys`,
+  the numerator). `requiredKeys.length` is the `considered` value the Collection
+  Report uses to distinguish `partial` from `complete`
+  (`define-connector-progress-evidence-contract`); without it a collected-records
+  run reads as `considered: unknown`, never as proven `complete`.
+- `emitDetailGap(ctx, { stream, recordKey, reason, locator, ... })` records a
+  single record whose detail could not be hydrated this run but is expected to be
+  retried. The helper fixes the reference-only / pending / retryable spine; you
+  state only what varies. `stream`, `recordKey`, `reason`, and `locator` are
+  required. The optional, first-class `DETAIL_GAP` fields are:
+  - `parentStream` — the list/parent stream this detail stream hangs off (e.g.
+    `accounts` for Chase `transactions`, `orders` for Amazon `order_items`).
+  - `listCursor` — an opaque cursor so the next run resumes the parent list at
+    this gap instead of re-walking from the top.
+  - `error` — bounded error context fanned into `detail` and `last_error`
+    (`class`, optional `httpStatus`, optional `networkPressure`, and an optional
+    `message` carried on `last_error` only).
+
+  Any optional field you omit is left off the wire — a gap with no `error`
+  carries neither `detail` nor `last_error`, so a connector with nothing safe to
+  say (e.g. USAA's statement gaps) passes just the required four. Pick `reason`
+  honestly: `rate_limited` and `upstream_pressure` are the source-pressure
+  reasons that arm the cross-run cooldown governor
+  (`reference-implementation/runtime/scheduler-source-pressure-cooldown.ts`);
+  `retry_exhausted` and `temporary_unavailable` record a resumable gap without a
+  cooldown.
+
+The helper copies `error` onto the wire verbatim — it does NOT redact. You are
+responsible for passing a safe `error.networkPressure`: endpoint route, method,
+and error class only, with the attempt/max-attempt budget and any secret-bearing
+header stripped at the source before you hand it to the helper. See
+`connectors/chatgpt/index.ts` `omitAttemptBudget` (used by
+`makeDeferredConversationDetailGap`) for the worked stripping example, and
+`connectors/chatgpt/integration.test.ts` for the assertions that pin the emitted
+shapes.
+
+These are reference-only projections, not portable Collection Profile protocol: a
+connector that emits only `RECORD` / `STATE` / `DONE` still produces a valid
+Collection Report whose coverage axis reads `unknown`. Emit them when you have the
+evidence; do not fabricate a `considered` denominator you cannot substantiate.
+
+### `isMainModule` guard for `runConnector`
+
+Every connector's `index.ts` guards its bootstrap:
+
+```ts
+import { isMainModule } from "../../src/is-main-module.ts";
+
+if (isMainModule(import.meta.url)) {
+  runConnector({ ... });
+}
+```
+
+This lets tests import `index.ts` without the runtime kicking in and
+blocking the event loop on stdin. CLI execution
+(`tsx connectors/<name>/index.ts`) still works — that's what
+`isMainModule` returns true for.
+
+## Decomposition pattern
+
+When `collect()` grows beyond 20 complexity:
+
+1. Extract pure parsers to `parsers.ts`. A parser takes data, returns
+   data. No `page`, no `client`, no I/O.
+2. Bundle shared dependencies into a single `EmitDeps` interface:
+
+   ```ts
+   interface EmitDeps {
+     capture: CaptureDep;
+     emit: EmitFn;
+     emitRecord: EmitRecordFn;
+     emittedAt: string;
+     wantsItems: boolean;
+     wantsOrders: boolean;
+   }
+   ```
+
+3. Decompose `collect()` into per-stream async helpers that take
+   `EmitDeps` + the minimum other context they need. Gmail, amazon,
+   usaa are good references.
+
+## Test pattern
+
+`parsers.test.ts` — table-driven, synthetic fixtures. Gate real-fixture
+tests behind `existsSync`:
+
+```ts
+test("parseX: local real fixture parses ≥N records", {
+  skip: !existsSync(LOCAL_RAW_DIR),
+}, () => { ... });
+```
+
+`integration.test.ts` — covers `collect()` invariants consumers depend
+on. Mock `emitRecord` with `makeRecordingEmit(validateRecord)` from
+`src/test-harness.ts` so records land through the real zod shape-check;
+assert emit order, scope filtering, cursor advancement. Import the
+testable helpers directly from `./index.ts` — the `isMainModule` guard
+on `runConnector({...})` keeps the runtime from firing at import time.
+See amazon for the full pattern.
+
+## Fixture capture
+
+Set `PDPP_CAPTURE_FIXTURES=1` during a run to record DOM snapshots and
+emitted records under `fixtures/<name>/raw/<iso-timestamp>/`. Scrub
+them with `pnpm exec tsx bin/scrub-fixtures.ts <name>`. The default
+scrubber handles deterministic PII patterns and connector-specific rules.
+If a real capture includes free-form names, notes, profile text, or other
+semantic PII, generate and review structured redaction plans, then rerun
+with `--llm-redactions-dir <dir>`. Commit only reviewed scrubbed fixtures,
+never `raw/`.
+
+## Blob hydration (file/attachment bytes)
+
+Streams that carry binary payload (attachments, statement PDFs, files)
+must use the reference RS blob substrate, not stream-specific download
+URLs. The shape:
+
+- Connector fetches bytes from the source under its existing
+  authenticated session.
+- Connector uploads to `POST /v1/blobs?connector_id=…&stream=…&record_key=…`
+  using the streaming uploader from `connectors/gmail/index.ts`
+  (`makeReferenceBlobUploader`).
+- Connector emits a record with `blob_ref` (`blob_id`, `mime_type`,
+  `size_bytes`, `sha256`), `content_sha256`, and `hydration_status`
+  (`hydrated | failed | deferred | too_large`, plus `unavailable` /
+  `blocked` only when actually exercised).
+- Clients fetch via `GET /v1/blobs/{blob_id}` reached through
+  `blob_ref.fetch_url`. There is no `/content` or `/download` URL on
+  the PDPP API; do not invent one in the manifest or the connector.
+
+See `connector-authoring-guide.md` §12 for the full pattern, size
+policy, and failure handling.
+
+## Why each of these exists
+
+- `parsers.ts` — pure functions are cheap to test and impossible to
+  regress on network/auth flakes.
+- `types.ts` — shared record shapes between `parsers.ts` and
+  `index.ts` without circular imports.
+- `integration.test.ts` — unit tests on parsers prove record *shapes*
+  are correct. Integration tests prove the *sequence* of emit calls is
+  correct. Both matter.
+- `isMainModule` guard on `runConnector({...})` in `index.ts` — lets
+  tests import `index.ts` directly. Without it, the runtime would fire
+  at import time and block the test runner's event loop waiting for
+  the stdin protocol handshake.

@@ -1,0 +1,365 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/oura",
+  "connector_key": "oura",
+  "manifest_uri": "https://registry.pdpp.org/connectors/oura",
+  "version": "0.1.0",
+  "display_name": "Oura",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "personal_access_token",
+      "label": "Oura personal access token",
+      "description": "Use an Oura Ring personal access token for the account this connection should collect.",
+      "submit_label": "Create Oura connection and start first sync",
+      "fields": [
+        {
+          "name": "secret",
+          "label": "Oura personal access token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://cloud.ouraring.com/personal-access-tokens",
+          "help_text": "Create a personal access token in your Oura account developer settings, then paste it here.",
+          "env": [
+            "OURA_PERSONAL_ACCESS_TOKEN"
+          ]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 21600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Oura sleep/readiness/activity data updates a few times per day; six-hourly refresh is enough."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
+    },
+    "auth": {
+      "kind": "env",
+      "required": [
+        "OURA_PERSONAL_ACCESS_TOKEN"
+      ]
+    }
+  },
+  "streams": [
+    {
+      "name": "sleep",
+      "description": "Daily sleep sessions.",
+      "display": {
+        "label": "Your sleep sessions",
+        "detail": "Per-night: total sleep duration, stages (REM, deep, light), heart rate range, HRV, temperature deviation, efficiency, latency, timing."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "x_pdpp_role": "event-time"
+          },
+          "bedtime_start": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bedtime_end": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_sleep_duration": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rem_sleep_duration": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deep_sleep_duration": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "light_sleep_duration": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "efficiency": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "latency": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "average_heart_rate": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "lowest_heart_rate": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "average_hrv": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "temperature_delta": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sleep_score": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "amount"
+          }
+        },
+        "required": [
+          "id",
+          "day"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "day",
+      "consent_time_field": "day",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "day": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "day"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "readiness",
+      "description": "Daily readiness scores.",
+      "display": {
+        "label": "Your readiness",
+        "detail": "Daily readiness score with contributing factors (activity balance, recovery index, HRV balance, etc.)."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "x_pdpp_role": "event-time"
+          },
+          "score": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "amount"
+          },
+          "temperature_deviation": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "temperature_trend_deviation": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "contributors": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "day"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "day",
+      "consent_time_field": "day",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "day": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "day"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "activity",
+      "description": "Daily activity and movement.",
+      "display": {
+        "label": "Your activity",
+        "detail": "Daily steps, active calories, total calories, inactive/low/medium/high activity time, target progress."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "x_pdpp_role": "event-time"
+          },
+          "score": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "amount"
+          },
+          "active_calories": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total_calories": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "steps": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "target_calories": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "equivalent_walking_distance": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "day"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "day",
+      "consent_time_field": "day",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "day": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "day"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    }
+  ]
+}

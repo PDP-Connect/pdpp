@@ -1,0 +1,386 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/linkedin",
+  "connector_key": "linkedin",
+  "manifest_uri": "https://registry.pdpp.org/connectors/linkedin",
+  "version": "0.1.0",
+  "display_name": "LinkedIn",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      },
+      "browser": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "minimum_interval_seconds": 3600,
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
+      "background_safe": false,
+      "rationale": "LinkedIn aggressively blocks automated access; profile refresh is manual-only."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "profile",
+      "description": "The user's LinkedIn profile.",
+      "display": {
+        "label": "Your LinkedIn profile",
+        "detail": "Name, headline, summary, location, industry, current position, URL."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "headline": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "industry": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_position_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_company": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "full_name",
+            "headline",
+            "summary",
+            "location"
+          ],
+          "semantic_fields": [
+            "headline",
+            "summary"
+          ]
+        }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "experience",
+      "description": "Work experience entries.",
+      "display": {
+        "label": "Your work experience",
+        "detail": "Title, company, start/end dates, location, description per role."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "employment_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "start_date",
+      "consent_time_field": "start_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "company",
+            "location",
+            "description"
+          ],
+          "semantic_fields": [
+            "title",
+            "description"
+          ]
+        },
+        "range_filters": {
+          "start_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "end_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start_date"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "education",
+      "description": "Education entries.",
+      "display": {
+        "label": "Your education",
+        "detail": "School, degree, field of study, start/end dates."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "school": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "degree": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field_of_study": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "school",
+            "degree"
+          ]
+        },
+        "range_filters": {
+          "start_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "end_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start_date"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "skills",
+      "description": "Skills listed on the profile.",
+      "display": {
+        "label": "Your skills",
+        "detail": "Skill names plus endorsement counts if visible."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "endorsement_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

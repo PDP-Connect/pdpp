@@ -1,0 +1,79 @@
+<!--
+  LIVE-STRUCTURE fixture (2026-07-14): mirrors the real tag/class/attribute
+  shape captured from a live heb.com order-detail session — see
+  heb-live-verify-report.md. All personal/product values are PLACEHOLDERS;
+  the structure is real:
+    - each item row is a real <li data-qe-id="itemRow">, grouped inside a
+      <section> with a data-qe-id="orderDetailsGroupTitle" department name;
+    - each row emits TWO anchors to the same product-detail href — an
+      aria-hidden image-wrapper link with NO text (sorts first in document
+      order) and the real name link (a[data-qe-id="itemRowDetailsName"]).
+      A naive a[href*="/product-detail"] + dedup-by-href selector keeps the
+      empty-name anchor and drops the real one, so every item fails the
+      name-non-empty check — this fixture's "milk" item exercises that trap;
+    - data-qe-id="checkoutItemPrice" is the LINE TOTAL, not unit price (a
+      separate item-row-unit-price span carries the per-unit price);
+    - data-qe-id="orderItemQty" is "Qty: N" normally, or "Qty: N of M unit"
+      for a substituted/weighted item (N = actual fulfilled amount) — the
+      "eggs" item below exercises the substitution form.
+-->
+<!DOCTYPE html>
+<html>
+<body>
+  <main>
+    <h2>Order details</h2>
+    <section>
+      <h2 data-qe-id="orderDetailsGroupTitle">Dairy &amp; eggs</h2>
+      <ul>
+        <li data-qe-id="itemRow">
+          <span class="visuallyHidden">Item, H-E-B Organic 2% Reduced Fat Milk, half gal. Quantity: 2 each. Price: $4.29.</span>
+          <div>
+            <a tabindex="-1" aria-hidden="true" href="/product-detail/heb-organic-2-reduced-fat-milk/123456789">
+              <img alt="H-E-B Organic 2% Reduced Fat Milk" src="https://images.heb.com/is/image/HEBGrocery/prd-small/123456789.jpg?v=1">
+            </a>
+            <div>
+              <a data-qe-id="itemRowDetailsName" href="/product-detail/heb-organic-2-reduced-fat-milk/123456789">H-E-B Organic 2% Reduced Fat Milk</a>
+              <span data-qe-id="checkoutItemPrice">$4.29</span>
+              <span>$2.15 / ea</span>
+              <span data-qe-id="orderItemQty">Qty: 2</span>
+            </div>
+          </div>
+        </li>
+        <li data-qe-id="itemRow">
+          <span class="visuallyHidden">Item with preference, H-E-B Select Ingredients Large Eggs, 12 ct. Quantity: 1 each. Price: $3.98.</span>
+          <div>
+            <a tabindex="-1" aria-hidden="true" href="/product-detail/heb-select-ingredients-eggs/300500">
+              <img alt="H-E-B Select Ingredients Large Eggs" src="https://images.heb.com/is/image/HEBGrocery/prd-small/300500.jpg?v=1">
+            </a>
+            <div>
+              <a data-qe-id="itemRowDetailsName" href="/product-detail/heb-select-ingredients-eggs/300500">H-E-B Select Ingredients Large Eggs</a>
+              <span data-qe-id="checkoutItemPrice">$3.98</span>
+              <span>$3.98 / ea</span>
+              <span data-qe-id="orderItemQty">Qty: 1 of 2</span>
+            </div>
+          </div>
+        </li>
+      </ul>
+    </section>
+    <section>
+      <h2 data-qe-id="orderDetailsGroupTitle">Fruit &amp; vegetables</h2>
+      <ul>
+        <li data-qe-id="itemRow">
+          <span class="visuallyHidden">Item, Organic Bananas, Avg. 1.2 lbs. Quantity: 1.2 lbs. Price: $1.12.</span>
+          <div>
+            <a tabindex="-1" aria-hidden="true" href="/product-detail/organic-bananas/2001">
+              <img alt="Organic Bananas" src="https://images.heb.com/is/image/HEBGrocery/prd-small/2001.jpg?v=1">
+            </a>
+            <div>
+              <a data-qe-id="itemRowDetailsName" href="/product-detail/organic-bananas/2001">Organic Bananas</a>
+              <span data-qe-id="checkoutItemPrice">$1.12</span>
+              <span>$0.93 / lb</span>
+              <span data-qe-id="orderItemQty">Qty: 1.2 of 1.2 lbs</span>
+            </div>
+          </div>
+        </li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

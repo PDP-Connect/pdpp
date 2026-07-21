@@ -1,0 +1,247 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/uber",
+  "connector_key": "uber",
+  "manifest_uri": "https://registry.pdpp.org/connectors/uber",
+  "version": "0.1.0",
+  "display_name": "Uber",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      },
+      "browser": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "minimum_interval_seconds": 3600,
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
+      "background_safe": false,
+      "rationale": "Uber trip history is browser-scraped behind a login wall; refresh manually."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "trips",
+      "description": "Uber trips (ride-share + Uber Eats deliveries if mingled).",
+      "display": {
+        "label": "Your Uber trips",
+        "detail": "Trip date, pickup/dropoff locations, distance, duration, fare breakdown, driver, car type, status. Supports reconciliation to bank-statement 'UBER *TRIP' entries."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "product_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "pickup_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pickup_lat": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pickup_lng": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "dropoff_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dropoff_lat": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "dropoff_lng": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "distance_meters": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fare_total": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fare_total_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tip_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "surge_multiplier": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "driver_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vehicle_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipt_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "completed_at",
+      "consent_time_field": "requested_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "views": [
+        {
+          "id": "reconciliation",
+          "label": "Fields for YNAB matching",
+          "fields": [
+            "id",
+            "completed_at",
+            "fare_total",
+            "fare_total_cents",
+            "pickup_address",
+            "dropoff_address",
+            "product_type"
+          ]
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "driver_name",
+            "vehicle_description"
+          ]
+        },
+        "range_filters": {
+          "started_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "requested_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "started_at"
+          ],
+          "group_by": [
+            "status",
+            "product_type"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

@@ -1,0 +1,1305 @@
+# Design: Owner Console Product Experience
+
+## 1. Inputs
+
+Project context:
+
+- `docs/reference/voice-and-framing.md`
+
+This design also drew on owner feedback, targeted prior-art research, and worker-lane reports captured during the redesign; those working artifacts were kept in the untracked workstream area and are not part of the tracked tree.
+
+OpenSpec design notes:
+
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/owner-route-noun-inventory-20260618.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/owner-journey-atlas-packet-20260618.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/owner-implementation-packets-20260618.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/owner-noun-model-decision-20260618.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/initial-live-atlas-pass-20260618.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/friction-to-slvp-direction-20260618.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/owner-spine-charter-synthesis-20260618.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/feedback-refresh-20260619.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/surface-architecture-and-truth-packets-20260701.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/safe-demo-atlas-supplement-20260701.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/runs-explore-merge-owner-review-packet-20260701.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/full-spine-atlas-20260701.md`
+- `openspec/changes/redesign-owner-console-product-experience/design-notes/full-spine-atlas-review-20260701.md`
+
+## 2. Leadership Aperture
+
+The failure mode was not lack of effort. It was the wrong aperture.
+
+The previous loop moved directly from observed complaints to route-local fixes. That narrowed too early. The right sequence is:
+
+1. Wide aperture: classify the whole owner journey and product system failures.
+2. Medium aperture: derive the essential nouns, information architecture, state model, and gates.
+3. Narrow aperture: dispatch implementation packets only after acceptance checks are defined.
+
+This is the practical application of the leadership-aperture research: a product owner must move between system, strategy, and task lenses instead of treating every feedback note as a ticket.
+
+## 3. Product Promise
+
+The console succeeds when a motivated personal-server owner can truthfully say:
+
+- I know what data I have.
+- I know how to add more.
+- I know what is broken.
+- I know what to do next.
+- I trust this system.
+
+The console does not need to be a consumer social app. It does need to feel serious, calm, precise, and worth sharing with engineers, standards reviewers, family, friends, and curious external users who are willing to operate a personal-data server.
+
+## 4. What the owner's Feedback Means
+
+The feedback is baseline evidence, not a complete backlog. It contains many concrete defects, but the core signal is systemic:
+
+- The same object is named differently across nav, URLs, headings, and IDs.
+- The same fact is computed differently across surfaces.
+- Internal runtime/debug terms leak into owner paths.
+- Primary actions sometimes lead to dead ends, forensic pages, or unrelated setup pages.
+- Runs, traces, diagnostics, schedules, and device exporters are promoted as first-class destinations even when the owner is trying to manage a source.
+- Explore, stream detail, and source stream tables overlap without a crisp relationship.
+- Grants, packages, reads, traces, and owner tokens are shown as artifacts without enough semantic explanation of what the owner granted or what read occurred.
+- Local collector recovery gives commands but not a human explanation, progress, or a closed loop.
+- Bounded samples and artificial caps are not an acceptable substitute for full visibility; they are allowed only as labeled previews with a direct path to the full paginated or virtualized set.
+
+The root cause is incidental complexity: implementation growth leaked into product shape. The answer is not to decorate the current routes. The answer is to collapse the console to the essential objects and make every evidence layer subordinate to the subject it explains.
+
+## 5. Canonical Owner Journeys
+
+These IDs are the single source of truth for this change. Worker reports may use older local numbering; future packets SHALL use these IDs.
+
+| ID | Journey | Owner question | Primary surface |
+|---|---|---|---|
+| OJ1 | Source inventory | What data do I have, from which accounts/devices/files, and how current is it? | Sources |
+| OJ2 | Source setup and configuration | How do I add another source, name it, configure it, reauthorize it, revoke it, or change its schedule? | Add Data and Source detail |
+| OJ3 | Record inspection | Can I read, filter, verify, and share a view of the records? | Explore and stream-scoped record views |
+| OJ4 | Source recovery | What is broken, do I need to act, and what exact next action should I take? | Dashboard and Source detail |
+| OJ5 | Access and grants | Who can read parts of my data, what can they read, and what have they read? | Grants and Connect AI Apps |
+| OJ6 | Activity and audit evidence | What happened underneath this source, grant, read, run, or credential? | Runs, traces, timelines, diagnostics |
+
+`Know data` and `manage sources` are intentionally separate here. Inventory answers what exists and whether it is current. Setup/configuration answers how the owner changes the source set or source policy. Combining them was one cause of the earlier route and CTA confusion.
+
+## 6. Canonical Defect Taxonomy
+
+These root codes replace local worker numbering such as taxonomy `C*` or IA `IC-*` for future implementation packets.
+
+| Code | Root | First affected journeys |
+|---|---|---|
+| R1 | Source truth/projection drift: counts, freshness, coverage, last run, and samples disagree or are unlabeled. | OJ1, OJ3, OJ4 |
+| R2 | Noun and route drift: Sources, Connections, Records, Runs, Syncs, IDs, and URLs require translation. | OJ1, OJ2, OJ6 |
+| R3 | Setup action dishonesty: unavailable or advanced paths look like primary owner actions. | OJ2 |
+| R4 | Recovery agency/progress failure: source is broken but the owner cannot understand or close the loop. | OJ4 |
+| R5 | Record workbench weakness: filters, pagination, ID jump, rendering, and URL state are not SLVP-grade. | OJ3 |
+| R6 | Access/grant ambiguity: packages, grants, scopes, reads, and clients are hard to relate. | OJ5 |
+| R7 | Evidence-layer overload: runs, traces, timelines, diagnostics, and tokens are over-promoted or unreadable. | OJ6 |
+| R8 | Visual/interaction craft failures: selected states, layout, density, mobile, and row geometry undermine trust. | all |
+| R9 | Runtime or collector correctness gap: the console truth is blocked by missing runtime evidence or collector output. | OJ1, OJ4 |
+
+## 7. Iteration Log
+
+This plan intentionally went through multiple passes before settling on the final model.
+
+### Iteration 1: Raw Complaint Inventory
+
+Initial inventory captured surface-level complaints across Dashboard, Sources, Add Data, Explore, Runs, Grants, Traces, Owner Tokens, local collectors, and Chase.
+
+Rejected output: a bug backlog by page. That would repeat the previous failure.
+
+### Iteration 2: User Jobs
+
+The complaints were recast as jobs:
+
+- Triage what needs attention.
+- Add another account/source.
+- Understand whether a source is collecting.
+- Recover a local collector or broken connector.
+- Inspect records and verify counts.
+- Understand what an AI app or client can read.
+- Audit what was read.
+
+This exposed that Sources/Add Data/Explore/Recovery are the critical path, while traces/grants/tokens are important but should not derail the first product spine.
+
+### Iteration 3: Root Cause Clustering
+
+The taxonomy lane grouped defects into roots:
+
+- no single source of truth for attention/status
+- leaked internal semantics
+- incoherent noun model and route model
+- redundant surfaces without differentiated jobs
+- broken add-source path
+- recovery loop not closed
+- undefined status vocabulary
+- weak Explore search/filter/sort
+
+This moved the plan away from patching individual labels.
+
+### Iteration 4: Essential Noun Model
+
+The IA lane applied Rich Hickey's incidental vs essential complexity lens. The essential owner objects are:
+
+- Source: a configured account, device, artifact import, or provider-backed connection.
+- Stream: a slice of data within a source.
+- Record: the collected item the owner wants to read.
+- Grant: consent/disclosure authority for a client.
+- Read/Disclosure: an actual access event.
+- Run/Trace: evidence about collection or protocol activity.
+- Device, Credential, Schedule: policy or infrastructure attached to a source.
+
+Runs, traces, diagnostics, and device exporters are not primary owner destinations. They are evidence layers.
+
+### Iteration 5: Prior-Art Cross-Check
+
+The prior-art lane mapped the plan to established control-plane patterns:
+
+- Airbyte is connection-centric for data movement.
+- Temporal and Trigger.dev are run-centric only once the owner is debugging an execution.
+- Datadog/Sentry-style surfaces separate health summaries from forensic event detail.
+- Stripe/Plaid-quality reference surfaces separate docs, operations, and advanced/debug flows.
+
+This supports a source-centric console with trace/run evidence reachable from the source, not a flat nav where every artifact is equally primary.
+
+The later 2026-06-18 targeted prior-art corpus deepened that conclusion by interaction archetype:
+
+- record workbench: Datadog, GitHub, PostHog, Notion, DevTools, Algolia, and Airtable all point toward URL-backed filters, explicit selection, time controls, pagination or virtualization, and rich detail
+- setup/catalog: Stripe, Plaid, GitHub, Railway, Vercel, Supabase, Tailscale, and Google point toward staged prerequisites, exact scopes, validation, identity echo, and first-sync or check-in progress
+- recovery/liveness: Sentry, Temporal, Trigger.dev, and device-management flows point toward one cause, one closing action, progress, and terminal reconciliation
+- access review: Google, GitHub, Stripe, Plaid, and Apple point toward client-centered scope review, last-used/read facts, and revocation
+- evidence timelines: Datadog, Temporal, Sentry, and GitHub Actions point toward subject-scoped, dense, filterable event grammar rather than generic trace browsing
+- craft/mobile: modern product surfaces point toward consistent row affordances, touch targets, selected-state breathing room, master-detail breakpoints, and no horizontal overflow
+
+This corpus also adds a fresh-owner constraint: a motivated Docker/Railway owner who did not build PDPP must be able to go from instance readiness to one source, first records, and one AI-client grant without repo-checkout assumptions or chat memory.
+
+### Iteration 6: Voice And Framing Check
+
+The plan was checked against `docs/reference/voice-and-framing.md`.
+
+Decisions:
+
+- No hosted-service voice such as "we are fixing this" for a self-hosted reference instance.
+- No cybersecurity framing for normal owner recovery.
+- No unqualified connector claims when a connector cannot actually be set up.
+- No Core/Collection/Profile/RI conflation.
+- Connector-specific setup UI must be generated from connector capabilities, not hard-coded console knowledge.
+
+### Iteration 7: Technical Truth Gap Pass
+
+The technical-probe lane was scoped to safely identify likely ownership and verification paths for the most alarming facts:
+
+- Amazon count mismatch: verified as projection/IA, not data loss. Sources shows all-time retained count; Explore shows a six-row bounded sample with `window: "none"` and no "showing 6 of 1,183" context.
+- GitHub first-run success but missing/zero records: connector is healthy; trust gap is success copy decoupled from record yield plus conditional first-sync start semantics.
+- local collector recovery/draining/checking: mostly honest projection with owner-hostile copy; real gap is missing coverage diagnostics after collector recovery.
+- grant package count/internal source leakage: package-vs-grant hierarchy is unclear; internal leak is bounded to one `pg_lexical_backfill_*` source path in grant packages.
+- run/detail/trace navigation: Jump-to-ID works only on Enter with poor feedback; trace links grant but not grant package; timeline tables are hard to read and overflow.
+
+The key correction: nothing in the technical report proves data loss. The highest-confidence failures are projection, IA, and honesty gaps. That increases the priority of a single source of truth and clear projection labels. A polished UI over contradictory projections is still untrustworthy, but the first move should not be a broad storage rewrite.
+
+Named technical outcomes:
+
+- Amazon and similar count mismatches: treat "showing N of total" as an interim honesty label, not the final product answer. The final interaction must let the owner continue through the full set via pagination or virtualization, because the feedback explicitly rejects artificial caps as the cost of performance.
+- GitHub: fix setup/status copy and first-sync trigger semantics so setup success is not confused with records collected.
+- Local collector: fix missing coverage diagnostics and make recovery progress/closeout visible.
+- Grants: filter internal source artifacts from grant-package paths and explain package vs child grant.
+- Run/trace: improve jump feedback, package pivots, credential last-used visibility, and timeline readability.
+
+### Iteration 8: Sequence Pruning
+
+The plan was pruned by critical path:
+
+1. Owner must add data.
+2. Owner must know what data exists.
+3. Owner must inspect the data.
+4. Owner must recover collection.
+5. Owner must grant/connect AI apps.
+
+Everything else is a secondary surface until it supports one of those jobs.
+
+### Iteration 9: Delegation Model
+
+Delegated review/implementation work is useful for breadth, but must not own acceptance. Contributors produce reports, critique, implementation branches, screenshots, and red-team findings. The maintainer integrates, sets acceptance checks, and decides whether the result meets the bar.
+
+### Iteration 10: Live Source-Card Projection Defects
+
+The 2026-07-01 owner review exposed defects that were plain in the live Sources/source-detail card:
+
+- `auth` rows said `owner action required` for manual refresh/retry review actions, conflating authentication repair with every owner-runnable verdict action.
+- `config` stream counts used `summary.stream_count` while the visible stream table used the union of manifest, retained, and collection-report streams.
+- Owner-runnable verdict actions rendered twice: once as a body `NextActionCta`, then again in the passport footer.
+- Paused sources could receive a stale annotation that said they refresh on schedule because rendered-verdict copy read static assisted-refresh policy instead of the already-projected schedule-enabled progress mode.
+
+The correction belongs in the shared projections, not in connector-specific copy. The model now derives auth only from reauth evidence, stream counts from the same stream set the card renders, and one owner action from the server-owned verdict. The rendered-verdict stale annotation uses progress mode so disabled schedules use owner-run/manual language.
+
+Resource posture makes this especially important: conserve integration-and-signoff capacity; use delegated review for broad synthesis and independent critique.
+
+### Iteration 11: Owner Spine Synthesis
+
+The hard-surface charters for Sources/Syncs/Runs, Explore/stream records, Add Data/setup, Recovery/liveness, Grants/Connect, Evidence timelines, and fresh-owner onboarding were accepted only after an adversarial alignment review.
+
+The accepted synthesis is not seven page redesigns. It is one owner spine:
+
+1. confirm the instance can add real data;
+2. add one real Source with meaningful identity;
+3. watch first collection reach a terminal state;
+4. inspect the complete backing records through the shared workbench;
+5. understand and repair one broken/stale Source without diagnostic spelunking;
+6. connect one Client and understand what it can read and what it has read;
+7. open evidence only as scoped proof for a Source, Record, Grant, Read, or recovery action.
+
+This synthesis is the alignment gate for implementation. A page-local improvement that does not improve the owner spine is deferred unless it is a tiny opportunistic fix inside an accepted tranche. This is the concrete guard against the failure mode the owner identified: many correct local fixes that still do not create a console he would feel confident sharing.
+
+### Iteration 12: Final Gate Model
+
+The final plan replaces "tests passed" as a completion proxy with named gate artifacts:
+
+- product model accepted
+- journey ledger row exists
+- technical truth gap closed or tracked
+- desktop and mobile evidence captured
+- real browser path walked
+- console/network errors checked
+- no false primary action
+- no implementation jargon
+- independent adversarial review artifact with an explicit verdict
+- live deploy smoke with the same journey
+
+This is slower than a grep gate but faster than a week of reactive churn.
+
+### Iteration 13: Surface Architecture And Truth Packets
+
+The 2026-07-01 follow-up packet resolves the remaining foundation decisions that
+do not require new owner screenshots or a human-reviewed mock.
+
+Accepted decisions:
+
+- Sources, Add Data, Explore, and Grants/Connect AI Apps remain primary owner
+  surfaces.
+- Runs/Syncs, traces, schedules, device exporters, deployment, and owner tokens
+  remain useful but are evidence or administration surfaces unless the owner
+  intentionally enters them.
+- Runs/Syncs is retained as a secondary activity view until a human-reviewed mock
+  proves that its useful per-run and per-stream facts survive demotion or merge.
+- Explore and stream-scoped record views remain separate destinations with a
+  shared record model until a human-reviewed mock proves full merger is better.
+- `/dashboard` remains the implementation prefix for now; clean owner aliases
+  may be added only through subject-preserving route helpers.
+- Source is the owner-facing configured data-producing instance. Connector type,
+  collector, device, credential, and schedule are properties or supporting
+  concepts unless one of them is the owner's active repair/setup subject.
+
+The packet also converts the technical truth matrix into implementation
+contracts for counts, drill-through, full visibility, CTA subject scoping, and
+setup/recovery liveness.
+
+### Iteration 14: Safe Demo Atlas Supplement
+
+The 2026-07-01 safe-demo atlas supplement captures deterministic Dashboard,
+Sources, and Syncs/Runs screenshots from seeded dev-only fixtures. It proves
+that the safe screenshot path works without live owner data, and it corrected a
+private host-style fixture label to a role-neutral workstation label.
+
+This does not close the full atlas gate. Add Data, Explore, source recovery,
+Grants/Connect AI Apps, fresh-owner onboarding, tracked browser console/network
+receipts, and data-truth probes remain open.
+
+### Iteration 15: Runs And Explore Merge Owner-Review Packet
+
+The 2026-07-01 owner-review packet prepares the two remaining route merger
+decisions. It recommends retaining Syncs/Runs as a secondary activity/evidence
+view subordinate to Sources, and keeping Explore separate from stream record
+routes while sharing record rendering, URL/filter helpers, and record-detail
+links.
+
+Tasks 2.5 and 2.6 remain open until the owner reviews and accepts or revises the
+recommendations.
+
+### Iteration 16: Full Spine Evidence Atlas
+
+The 2026-07-01 full-spine atlas captures desktop and mobile screenshots plus
+browser console/network evidence for Dashboard, Sources, Syncs/Runs, Add Data,
+Explore, source recovery, Connect AI Apps, and Grants.
+
+The atlas uses live data only where safe seeded demo states already exist and
+dev-only synthetic fixtures for private or missing archetypes. Those fixtures
+are guarded by `NODE_ENV !== "production"` and explicit demo query params.
+
+The atlas found and fixed two local defects: Explore full-set escape links now
+wrap instead of concatenating, and connector-backed Grants source captions no
+longer expose `connector:` as normal owner copy.
+
+An independent adversarial review returned LAND for this atlas tranche and
+preserved residuals in `full-spine-atlas-review-20260701.md`.
+
+This closes the screenshot/browser-evidence atlas gap. It does not close the
+owner-return gate, data-truth probes, or the owner-reviewed route-merge
+decisions.
+
+### Iteration 17: 2026-07-03 Owner URL, Brand, Jump, And Owner-Access Decisions
+
+The 2026-07-03 owner review plus three read-only audits (URL/brand, jump
+navigation, and owner-access) resolve decisions the earlier iterations parked
+and add one durable-contract topology change. These are RI-owner decisions, not
+worker inferences.
+
+Accepted decisions:
+
+- Canonical clean owner routes replace the `/dashboard` prefix as the
+  owner-visible topology. Root console is `/`; sections are clean top-level
+  nouns: `/sources`, `/syncs`, `/audit`, `/explore`, `/grants`, `/connect`,
+  `/schedules`, with deployment/admin surfaces under clean top-level nouns.
+  `/dashboard/records` becomes `/sources`. This reverses the Iteration 13 "keep
+  `/dashboard` for now" leaning and the owner-docket `future-roadmap` parking of
+  `/dashboard/records/*` route retirement.
+- Legacy `/dashboard/*` routes SHALL NOT be preserved as redirects or repair
+  surfaces. Owner-agent/CLI links and generated owner actions must emit clean
+  routes directly rather than depending on compatibility behavior.
+- The owner-noun rename completes: Runs → Syncs, Traces → Audit, and the
+  already-shipped Records → Sources label is matched by the `/sources` route.
+  All four label surfaces (live shell `NAV_GROUPS`, command palette, legacy
+  shell, per-page breadcrumbs/headings) must agree; the audit found them
+  drifting today (Runs/Syncs split, "Traces" still live).
+- Default brand is PDPP with the PDPP logo/mark. The owner-visible wordmark
+  SHALL be `PDPP`, not `Recordroom`. `Recordroom` survives only as internal
+  component/CSS identifiers (`RecordroomShell`, `rr-*`), which are not
+  owner-visible and are optional cleanup. The `{host} · {build}` crumb SHALL
+  render in one owner-facing location, not duplicated top and bottom.
+- One command palette, one opener. Exactly one Ctrl/Cmd+K listener owns the
+  palette; the duplicate listener in `RecordroomShell` and the duplicate
+  operator-ui palette component are removed. The palette autofocuses on open,
+  closes on the first outside click, filters commands live with
+  type-ahead/autocomplete, and offers Explore/search as an explicit selectable
+  fallback row rather than the default Enter action that silently leaves the
+  palette. This is the same "one source of truth" principle applied to a
+  control that currently double-fires and computes its open state in two places.
+- Owner-access overview scaling. The Standing overview and its deep pages must
+  scale past a handful of bearers/grants: bearer preview + "+N more" + full
+  list; per-client token drilldown/details when `active_token_count > 1`;
+  consistent `IcTimestamp` semantics for the same field across surfaces;
+  collapsed zero-pending-approvals on the Grants page; discoverable grant
+  packages from the overview; and a read/audit ladder whose labels match what
+  each click actually shows (grouped preview → grouped list → per-event log).
+
+Label-only vs contract-changing split (governs sequencing, see §11 waves):
+
+- Label/presentation only (no contract, land first): wordmark → PDPP, crumb
+  de-duplication, Traces → Audit and Runs → Syncs label completion, palette
+  unification and behavior, bearer preview/collapse, timestamp consistency,
+  zero-pending collapse, read-ladder relabel, grant-package overview link.
+- Route/topology contract (durable, needs spec/voice reconciliation):
+  `/dashboard` prefix removal and `/dashboard/records` →
+  `/sources`, plus the sibling section moves. This modifies
+  `reference-surface-topology` requirements that pin `/dashboard/**` and the
+  Explore/Jump route literals.
+- Reference-implementation API contract (durable, additive, smallest viable):
+  RFC 7592 client-name update (`PATCH /oauth/register/:clientId`,
+  owner-gated, `client_name` only) for editable credential labels; a per-client
+  token listing endpoint returning a non-bearer public token id plus a
+  per-token revoke for the `active_token_count > 1` drilldown; and an optional
+  grant-package count so the overview badge need not page the full list. The
+  contract work is gated behind the label/presentation tranche and behind its
+  own journey/data-truth evidence.
+
+Jump vs Explore interaction with the topology change: the base spec's
+"separate record-content search from spine artifact lookup" requirement pins
+`/dashboard/explore` and `/dashboard/search`. Under the clean topology those
+become `/explore` and the Jump surface's clean equivalent. Removed legacy paths
+do not keep working; the unified palette's Enter behavior must not resurrect the
+"Enter silently redirects to Explore" defect the Jump audit found.
+
+### Iteration 18: 2026-07-09 Studio Review And State-Model Convergence
+
+Two blind assessments (design-studio and product-systems), a deterministic code
+audit, and a prior-art gap lane were reconciled in
+`design-notes/studio-critique-20260709.md`, with the 2026-07-09 owner
+operating-reset rollup and instance-health workstreams as primary friction
+evidence. Every load-bearing code claim was verified independently before
+acceptance.
+
+Accepted decisions:
+
+- **One server-derived owner state per source.** The server spine
+  (`computeConnectionHealth` + `synthesizeRenderedVerdict` +
+  `OwnerActionSurface`) is the asset; the defect is plurality. The reference
+  derives one closed owner-facing state (with a named resolver: owner, system,
+  or maintainer) and console surfaces consume it. The console's parallel
+  taxonomies — `deriveSourceStatus` raw-state path, the
+  `source-actionability.ts` status/work-group vocabulary, the legacy
+  client-side verdict fallback, ad-hoc badge/stall derivations — are deleted,
+  not reconciled. Migration is mostly deletion.
+- **Evidence age and posture become part of the verdict.** A defect verdict
+  read from a stale terminal run renders as that run's finding with its age
+  and a re-verification affordance, not as a bare current fact (USAA read
+  Degraded for ~23 days off pre-fix evidence; Chase's red was stale — both
+  07-09 macro lanes concluded "validation-needed, not code-defect").
+- **Headline attention counts are definitionally the filtered list** — same
+  server predicate, no console-side re-count.
+- **Every advertised state carries its wired action.** `reattach_schedule` /
+  `refresh_now` are emitted for owner-paused and refresh-due shapes; no
+  actionless "needs a refresh" text. Paused sources state their semantics
+  (no scheduled runs until resume; manual sync still available) with one
+  consistent copy.
+- **The owner-facing contract is ownership-first, not a taxonomy.** For each
+  source the console leads with four facts: what is happening (plain-language
+  cause or progress), who acts next (owner, system, or maintainer), the single
+  wired action when one exists, and evidence age. Lists organize by three
+  ownership groups (working / needs the owner / system-or-maintainer-owned).
+  The closed internal resolution stays a server-side contract; it is never a
+  vocabulary the owner must learn, and no persistent legend of internal states
+  is required — per-source copy states the concrete cause instead of forcing
+  an enum label. Verdict axis chips, disposition vocabulary, and diagnostics
+  narration move behind an advanced disclosure. Recovery leads with one cause,
+  one action, one banner. Mixed-stream sources get a blast-radius one-liner
+  ("3 of 5 streams collecting; 1 needs a code fix").
+- **The console gets its own governing charter, split from `.impeccable.md`.**
+  The leadership/demo brief correctly governs the public/reference surfaces
+  and was distorting the console toward forensic density and taxonomy leakage.
+  Console charter: calm, legible, action-first; the owner never learns
+  internal taxonomy; alarm reserved for owner-actionable breakage; Ink Carbon
+  tokens retained. This is a charter, not a parallel design system.
+
+Recorded disagreement and resolution: state cardinality. The design critique
+argued for ≤3 visible states; the systems critique for a closed 9-state enum.
+Resolution (owner-refined 2026-07-09): the closed set survives only as the
+internal server-side resolver — it earns its keep by making derivation
+exhaustive and deletion of console re-derivations safe. The owner-facing
+contract is task/action ownership, not the enum: what is happening, who acts
+next, what action is available, evidence age. The three groups organize lists;
+individual source copy states the concrete cause/progress. Final labels and
+copy principles are recommended from the prior-art research (Home Assistant
+Repairs' actionable queue, Start9's every-check-carries-an-action, Plaid's
+one-affordance repair) and validated by a comprehension check inside the
+design gate — not deferred to the owner as a blocking decision.
+
+Explicitly not restarted: 10.A–10.D landed work; the 2.5/2.6 merge decisions;
+active point changes that own their defect (`fix-detail-gap-locator-identity`,
+`define-stream-coverage-freshness-evidence`, `show-sync-start-feedback`,
+`complete-connection-repair-action-surfaces`, and siblings). Wave 10 sequences
+with them and deletes the duplication that forced the 07-09 verdict fix to be
+applied twice while still missing a third path.
+
+## 8. Essential Surface Model
+
+### Sources
+
+Sources are the primary collection object. A Source is a specific owner-configured data-producing instance: "Amazon - family account", "Claude Code on laptop", "Gmail - work", "WhatsApp import", or "GitHub PAT - the owner".
+
+Sources own:
+
+- source identity and owner label
+- connector type
+- account/device/artifact identity
+- credentials or local binding
+- streams
+- record counts
+- freshness
+- coverage
+- schedule
+- last meaningful run
+- next owner action
+
+The owner-facing noun is `Source`. The UI may internally use `connection_id`, but normal owner-facing navigation, headings, and CTAs SHALL use `Source`. `Connection` remains acceptable in API docs, protocol/debug views, logs, and advanced copy where the technical identifier matters.
+
+The Sources section's canonical owner route is `/sources` (Iteration 17). `/dashboard/records` and `/dashboard/records/*` are removed routes, not compatibility paths.
+
+### Streams
+
+Streams are children of sources. A stream view answers "what records are in this slice?" It should not feel like a different product from Explore.
+
+### Records And Explore
+
+Explore is the cross-source record workbench. It must share record rendering with stream views. It must support URL-addressable state, pagination/virtualization instead of artificial caps, source/stream/date/query filters, ID jump, and copyable links.
+
+A bounded sample may appear only as a preview or loading optimization. It must never be the terminal answer to "show me this stream" or "show me this source's records." Every sample needs an explicit full-set affordance that reaches the remaining records without requiring the owner to know an ID or write a query.
+
+### Grants And Reads
+
+Grants are the access/consent object. The owner should be able to answer:
+
+- Which clients can read?
+- What sources/streams/fields can they read?
+- What have they actually read?
+- What grants are active, revoked, expired, or single-use consumed?
+
+Grant packages need an explicit parent/child model. A package with many source-bound grants cannot be rendered as "one grant" without context.
+
+### Runs, Traces, Timelines
+
+Runs and traces are evidence layers. They remain important and first-class as evidence, but they should usually be reached from a source, grant, read, or run-specific error. A generic top-level run list should not be the normal path for understanding a source.
+
+Open design decision: do not remove or merge the current Runs/Syncs destination until a prior-art memo and owner-reviewed mock prove that the records-collected-per-stream-this-run view the owner valued is preserved in Sources or another clearer surface. The current leaning is source-centric evidence, not deletion by fiat.
+
+### Devices, Credentials, Schedules
+
+These are policies or infrastructure attached to sources. They should be visible where they explain a source's state, not as unrelated objects the owner must correlate manually.
+
+## 9. Critical Journey Ledger
+
+Each future implementation packet must map to at least one row here.
+
+| Journey | Owner question | Required answer | Primary surface | Evidence layer |
+|---|---|---|---|---|
+| OJ1 Source inventory | What data do I have? | Sources list and source detail show specific accounts/devices/files, streams, counts, freshness, and coverage consistently. | Sources | stream detail, read model |
+| OJ2 Source setup/configuration | How do I add or change sources? | Add Data shows only real setup/import paths as primary actions, supports multiple accounts for proven connectors, and source detail exposes naming, reauth, revoke, schedule, and config. | Add Data, Source detail | setup status, connector manifest |
+| OJ3 Record inspection | Can I read and verify records? | Explore and stream views show the same records with URL-shareable filters, honest sample/window labels, and no fake caps. | Explore | record detail, source filter |
+| OJ4 Source recovery | What is broken and what should I do? | Dashboard/source detail show one cause-specific action, progress, or an honest non-owner-action status. | Sources/Dashboard | run/trace/diagnostics |
+| OJ5 Access/grants | Who can read parts of me? | Client/grant surfaces show scope, package structure, active grants, revocations, and reads. | Grants/Connect AI Apps | disclosure trace |
+| OJ6 Activity/audit evidence | What happened under the hood? | Runs, traces, timelines, tokens, and diagnostics support the subject being inspected rather than replacing it. | Subject detail pages | run, trace, timeline, credential detail |
+
+## 10. Severity And Priority
+
+P0: trust and task blockers on the critical path.
+
+- add-source inability for proven connectors and multiple accounts
+- GitHub-style setup success that is decoupled from a settled first sync or record yield
+- missing local-collector coverage diagnostics after recovery
+- grant-package internal-source leakage
+- dead-end setup CTAs or provider links that do not actually configure the source
+- recovery actions that do not explain what is wrong or close the loop
+- internal sources/debug streams/deprecated alias warnings visible in owner paths
+- browser-session setup crashes
+- count/sample labels that make correct data look contradictory, such as Explore showing 6 rows without "of 1,183"
+- artificial caps or bounded samples with no full-set pagination/virtualization path
+- CTAs that drop subject context, perform a different verb than their label, or land on a generic surface when a source/grant/run/credential-specific target exists
+
+P1: comprehension blockers.
+
+- Sources vs Syncs/Runs vs Records route/noun drift
+- grant package count/scope ambiguity
+- traces/timelines that do not show the artifact the owner is looking for
+- Explore filter/search controls that are not self-explanatory or shareable
+- unknown/checking states that persist without explanation
+
+P2: craft and interaction quality.
+
+- selected-row highlight touching content
+- layout squish, row shape changes, table overflow
+- repeated source names, duplicate nav entries, missing rename reflection
+- mobile density and hit-target polish
+
+P3: expansion and delight.
+
+- record type-specific rendering beyond guaranteed manifest data
+- richer timelines/waterfalls
+- proactive source reminders
+- external-user onboarding narrative
+
+## 11. Implementation Waves
+
+Ordering constraint:
+
+- Wave 0 must complete before any implementation wave.
+- Wave 1 and the Wave 2 truth model for an affected surface must be accepted before workers start Wave 3 or later work on that same surface.
+- Wave 4 through Wave 8 must not begin as broad surface work until Waves 1-3 are accepted for the critical path.
+- Exceptions are allowed only for isolated P0 fixes that have their own journey ledger row and do not change the product model.
+
+### Wave 0: Evidence And Alignment
+
+Deliverables:
+
+- feedback synthesis and opportunity map
+- journey-keyed screenshot/PDF atlas
+- technical truth-gap matrix
+- current-route inventory and noun drift map
+- prior-art memo and owner-reviewed mock before deciding whether to merge Runs/Syncs into Sources or unify Explore/stream pages beyond shared record rendering
+- adversarial review of this plan
+
+No UI code should be merged from this wave except diagnostic harnesses or documentation.
+
+### Wave 1: Noun And Route Spine
+
+Goal: one owner-facing noun model.
+
+Work:
+
+- choose and document the owner noun for configured data sources
+- normalize nav labels, page headings, and CTA labels
+- replace the `/dashboard` prefix with clean owner routes
+- remove compatibility behavior for old owner routes
+- make "Source detail" an explicit destination, not hidden behind Reauthorize
+- make Add Data a primary action from Sources and the dashboard
+
+Gate:
+
+- owner can point to one object and say whether it is a source, stream, record, grant, run, or trace
+
+### Wave 2: Source Truth And Counts
+
+Goal: one source of truth for source status and record counts.
+
+Work:
+
+- reconcile source summary, stream counts, Explore scoped counts, last-run delta, and current held records
+- ensure "collected last run", "collected during the last run that found new data", and "total held" are separate facts
+- make every rollup count drill through to the counted subjects, or state why it cannot
+- ensure attention-count changes across reloads are explained by resolved/snoozed/no-longer-actionable state rather than silently changing
+- remove internal/deprecated source rows from owner surfaces or explain them as advanced/internal
+- make unknown/checking/fresh/stale/coverage states follow the rendered-verdict contract
+- show bounded samples as bounded samples, not as stream counts, and pair every sample with a full-set path
+- hide or tombstone retired/renamed streams so live stream rows do not click into "no longer advertises this stream" errors
+- gate "import complete" or "setup complete" copy on a settled first-run/record-yield state, or state explicitly that setup is complete while first collection is still running
+- fix missing coverage diagnostics after local collector recovery
+- add live-status-without-manual-refresh acceptance for setup, recovery, and first-sync status pages
+
+Gate:
+
+- a source's stream count matches the scoped record workbench or explains the filter/sample/delta difference
+
+### Wave 3: Add Data
+
+Goal: every primary setup action is real, specific, and generated from connector capability.
+
+Work:
+
+- show proven connectors as addable even if another account/source already exists
+- support owner naming and identity echo during setup
+- hide or separate unavailable sources from the primary add-now list
+- replace "server settings needed" jargon with exact operator requirement and action
+- provider-secret flows include exact scopes, links, expiration guidance, and validation before final submit
+- setup status auto-refreshes until the first run settles
+
+Gate:
+
+- owner can add a second source for an already-used connector and see it named, syncing, and searchable without manual route guessing
+
+### Wave 4: Inspect Data
+
+Goal: Explore becomes a trustworthy record workbench.
+
+Work:
+
+- unify record renderer between stream views and Explore
+- implement URL-backed filter state and copy-link
+- replace caps with pagination/virtualization; "showing N of M" alone is not sufficient for stream/source record inspection unless there is an obvious next-page or view-all path
+- implement ID jump with visible feedback, source/stream autocomplete, date range presets/custom range, and clear sort semantics
+- support richer sort affordances, including multiple keys where the backend can guarantee stable semantics
+- restore a performant time-distribution visualization as a filter aid
+- ensure multi-select interactions do not drop clicks
+- ensure every "View records" or "Explore" link scopes the record workbench to its source, stream, grant, or read subject through URL state
+
+Gate:
+
+- owner can move from source stream to Explore, verify the same records, refine the query, and share the URL
+
+Open design decision: shared record rendering is required, but a broader Explore-vs-stream-table merger needs prior-art review and an owner-reviewed mock. The current stream table may be preserving useful scoped context that Explore does not yet replace.
+
+### Wave 5: Recovery
+
+Goal: broken sources have one honest next action and a closed loop.
+
+Work:
+
+- local collector recovery explains what is wrong in human terms
+- commands show progress and final state, not a blinking cursor
+- the dashboard and CLI agree on the one command or UI action that closes the recovery loop; the dashboard must not hand the owner a low-level command whose own output says it does not complete recovery
+- dashboard and source detail auto-refresh/reconcile after recovery
+- terminal connector-code issues offer a real bug-report or maintainer-action path without hosted-service voice
+- Chase-style multi-condition failures aggregate into one owner-readable explanation with detail one click down
+
+Gate:
+
+- owner can recover or correctly defer one broken source without visiting generic Runs, Traces, or a wall of diagnostics
+
+### Wave 6: Grants, Reads, And Connect AI Apps
+
+Goal: access surfaces explain authority and actual reads.
+
+Work:
+
+- client view shows active grants, package children, source-bound scopes, and revocations
+- grant-package paths filter internal connector/source artifacts consistently with other owner lists
+- trace/read filters support client, grant, source, and status
+- trace detail links to the grant package when the event belongs to a package, not only to the child grant
+- "View Records" from a grant either scopes to grant-readable records or explicitly states the current limitation
+- owner tokens show provenance, last-used, scope, rename validation, and advanced/debug boundaries
+
+Gate:
+
+- owner can answer "what can ChatGPT read?" and "what did ChatGPT read?" without decoding trace internals
+
+### Wave 7: Activity Evidence Layer
+
+Goal: one reusable timeline/event component.
+
+Work:
+
+- design one dense event/timeline component for run, grant, trace, and disclosure evidence
+- fix table overflow and layout shifts
+- link each event to adjacent artifacts
+- demote generic trace browsing from primary owner path while preserving advanced forensic access
+
+Gate:
+
+- every timeline/detail surface uses the same component grammar and can be read without expanding dozens of identical boxes
+
+### Wave 8: Craft, Mobile, And Delight
+
+Goal: the console feels intentionally designed.
+
+Work:
+
+- visual hierarchy and layout pass on desktop and mobile
+- selected row, focus ring, density, and card geometry polish
+- source setup first-run narrative
+- empty/loading/transition states
+- short moments that reinforce "your data, under your control" without adding noise
+
+Gate:
+
+- pixel review passes for the canonical atlas and no P0/P1 product defects are open
+
+### Wave 9: 2026-07-03 URL/Brand/Palette/Owner-Access Convergence
+
+Goal: land the 2026-07-03 owner decisions with label-only polish separated from
+route/API contract changes, so no tranche punts the target by stopping at the
+easy half.
+
+This wave has three ordered tranches. A later tranche SHALL NOT be used to
+avoid completing an earlier one.
+
+Tranche 9a — label/brand/palette (presentation only, no durable contract):
+
+- Owner-visible wordmark renders `PDPP` with the PDPP logo/mark; `Recordroom`
+  no longer appears as owner copy. Component/CSS identifiers may keep the name.
+- The `{host} · {build}` crumb renders in exactly one owner-facing location.
+- Runs → Syncs and Traces → Audit label completion across the live shell nav,
+  command palette, legacy shell, and per-page breadcrumbs/headings; no surface
+  still says "Runs" or "Traces" as an owner label.
+- One command palette, one Ctrl/Cmd+K listener: remove the duplicate listener
+  and the duplicate palette component; autofocus on open; first outside click
+  closes; live type-ahead/autocomplete filtering over commands; Explore/search
+  is an explicit selectable fallback row, not the default Enter action.
+- Owner-access presentation: bearer preview + "+N more" + full-list link;
+  consistent `IcTimestamp` for the same field across the overview and tokens
+  page, with "issued" copy that degrades honestly when a client has more than
+  one token; collapse the zero-pending-approvals section on the Grants page;
+  relabel the read/audit ladder so each CTA matches what the click shows;
+  surface a grant-package link/badge from the overview.
+
+Gate: no owner-visible surface shows `Recordroom`, `Runs`, or `Traces` as a
+label; ⌘K and the Jump button open the same single palette, it is focused, it
+filters, and the first outside click closes it; the overview scales past a
+handful of bearers/grants without a wall or a dead-weight empty section.
+
+Tranche 9b — clean owner-route topology (durable route contract):
+
+- Introduce canonical routes: `/` (root console), `/sources`, `/syncs`,
+  `/audit`, `/explore`, `/grants`, `/connect`, `/schedules`, and clean
+  top-level nouns for deployment/admin surfaces.
+- `/dashboard/records` → `/sources`; retire `/dashboard` as an owner-visible
+  prefix.
+- Do not preserve legacy `/dashboard/*` routes as redirects, repair pages, or
+  generated links. Owner-agent/CLI links must use clean owner routes directly.
+- Keep the shared `routes.ts` `basePath` factory correct: the console basePath
+  moves without changing the `/sandbox` mirror; the sandbox-route-parity test is
+  reworked, not broken.
+- Reconcile `docs/reference/voice-and-framing.md` §2–§3 and the base
+  `reference-surface-topology` spec references to `/dashboard/**` with the new
+  topology.
+
+Gate: the owner reaches every section at its clean route; removed
+`/dashboard/*` routes are not compatibility routes; `/sandbox` is unchanged;
+voice guide and topology spec no longer contradict the shipped routes.
+
+Tranche 9c — owner-access reference contracts (durable, additive, smallest viable):
+
+- RFC 7592 client-name update (`PATCH /oauth/register/:clientId`, owner-gated,
+  `client_name` only) so an owner can edit a credential/client label in place.
+- Per-client token drilldown: a listing endpoint returning a non-bearer public
+  token id plus issued/expires per token, and a per-token revoke, exposed when
+  `active_token_count > 1`. The public token id MUST NOT leak the bearer.
+- Optional grant-package count so the overview badge does not page the full
+  list.
+
+Gate: owner can rename a credential and see it reflected everywhere in one
+render cycle; a client with multiple active tokens drills into individual
+tokens with per-token revoke; no owner-visible token id is a usable bearer;
+data-truth evidence backs the count/label claims.
+
+### Wave 10: 2026-07-09 State-Model Convergence
+
+Goal: one owner state per source, rendered identically everywhere, with
+evidence age, wired actions, and calm presentation — by deleting the console's
+parallel derivations over the existing server spine. Organized by complete
+owner journeys, not pages. Sequencing: 10a before 10b before 10c; 10d can
+overlap 10c. The charter split (studio-critique decision) is an artifact task
+and may land first.
+
+Tranche 10a — truth spine (journey: "is my system OK?" — OJ1/OJ4):
+
+- derive the closed owner state server-side from the existing snapshot
+  (state + resolver + `as_of` + posture `{observed | frozen-since-last-run}`),
+  adjacent to `synthesizeRenderedVerdict`
+- emit the missing `reattach_schedule`/`refresh_now` required actions for
+  owner-paused and refresh-due shapes
+- exhaustive cross-product property test: every axis combination resolves
+  deterministically to exactly one owner state with at most one primary owner
+  action
+
+Gate: for a Chase-shaped, USAA-shaped, owner-paused, never-run, and healthy
+fixture set, the derived state, resolver, action, and age are each the single
+documented expected value.
+
+Tranche 10b — console consumption by deletion (OJ1):
+
+- view models consume the server owner state; delete `deriveSourceStatus`'s
+  raw-state path, the `source-actionability.ts` parallel taxonomy, the legacy
+  client-side verdict fallback, `badgeState`, and the client-only recovery
+  stall threshold
+- share or generate the console wire types from server types (end
+  `ref-client.ts` hand-mirroring)
+- headline counts read the same server predicate as the lists
+- remove the dead sibling action set and dead exported components the code
+  audit confirmed
+
+Gate: Sources, source detail, Overview, Syncs, and notifications render the
+same ownership group, next-actor, and primary action for the same source in
+one live walkthrough; net console LOC
+decreases.
+
+Tranche 10c — calm presentation (journeys: "it's broken — fix it" and daily
+check-in — OJ4/OJ1):
+
+- ownership-first source presentation: plain-language what-is-happening, who
+  acts next, the one wired action, evidence age; lists organized by the three
+  ownership groups; no persistent internal-state legend; axis chips and
+  diagnostics behind an advanced disclosure
+- recovery/source detail leads with one cause, one action, one banner (no
+  duplicate verdict render); frozen defect states read "last run found X
+  (Nd ago)" with a re-check affordance
+- per-stream blast-radius one-liner for mixed-stream sources
+- one canonical timestamp component; one radius language; timeline primitive
+  consolidation for grant + audit
+- paused-source semantics copy, consistent across schedules, setup-status,
+  and auto-pause surfaces
+
+Gate: a non-engineer can state what is wrong and what to do in one read of a
+broken source's page; no owner-facing screen shows raw axis vocabulary by
+default.
+
+Tranche 10d — progress and pause journeys (OJ2/OJ4):
+
+- run-lifecycle live-status contract on every branch (queued → running →
+  phase → terminal) without manual refresh; progress presented as movement +
+  position, not fabricated percentages
+- pause/resume round-trip: pausing states its meaning, resuming reflects in
+  the owner state in one cycle
+- multi-condition failures aggregate to one owner cause with detail one click
+  down (Wave 5 contract, Chase-shaped fixture)
+
+Gate: owner completes pause → resume → refresh → watch-sync on a live source
+without a manual reload or an unexplained state.
+
+Wave 10 acceptance follows §13 gates (journey evidence, data-truth probes,
+adversarial review). Owner-facing labels/copy follow principles recommended
+from the prior-art research and are validated by a comprehension check inside
+the design gate; the internal resolver enum is not an owner-facing contract
+and requires no owner label review.
+
+## 12. Delegation Plan
+
+Use delegation for breadth and isolation, but do not outsource product judgment.
+
+Standing worker roles:
+
+- taxonomy lane: classify feedback and root causes
+- IA lane: challenge noun model and route structure
+- prior-art lane: map existing and new research to product decisions
+- technical-probe lane: safely verify data/projection/root-cause gaps
+- visual atlas lane: capture desktop/mobile screenshots and DOM facts
+- adversarial-review lane: attack proposed plan and implementation for false progress
+- implementation lanes: narrow packets only after acceptance rows exist
+
+Owner responsibilities:
+
+- define the acceptance packet
+- choose scope and priority
+- review diffs, pixels, and data truth
+- run or obtain live journey proof
+- decide merge/deploy readiness
+
+Worker constraints:
+
+- no deploys unless explicitly delegated under the live-stack mutex
+- no source/provider runs unless explicitly authorized
+- no product code changes for plan/research lanes
+- no remote pushes for every local branch
+- all web research lands in `docs/research/`
+- all broad behavior changes get OpenSpec coverage
+
+## 13. Acceptance Gates
+
+Every wave must pass:
+
+- OpenSpec validation if it changes durable behavior
+- journey ledger row with explicit acceptance checks
+- contract-matrix row mapping for every owner-visible claim changed by the tranche
+- desktop screenshot evidence
+- mobile screenshot evidence
+- browser console and failed-network evidence
+- data truth checks for affected counts/statuses/actions
+- vocabulary-boundary review showing owner, operator/debug, protocol, and connector-authored terms are in the right places
+- no primary CTA that cannot complete the promised action
+- no mocked-fetch-only proof for browser/provider paths
+- independent adversarial review for substantive tranches, written by a lane that did not implement the change and ending with `accept`, `accept_with_required_edits`, or `reject`
+- live-stack mutex and smoke evidence for deployment
+
+Gate artifacts:
+
+- Journey evidence: `tmp/workstreams/<tranche>-journey-evidence-<date>.md` with desktop and mobile screenshots, route sequence, console errors, failed requests, and verdict.
+- Data-truth proof: `tmp/workstreams/<tranche>-data-truth-<date>.md` with probe-style live read-only API or database evidence when counts, statuses, grants, or source state are affected.
+- Adversarial review: `tmp/workstreams/<tranche>-redteam-<date>.md` from a non-implementing lane.
+- Vocabulary review: `tmp/workstreams/<tranche>-vocabulary-boundary-<date>.md` showing no owner path depends on raw implementation/debug terms for comprehension.
+- Contract matrix: `tmp/workstreams/<tranche>-contract-matrix-<date>.md` listing the affected owner claim, source-of-truth field/API, accepted basis label, drill-through target, and full-set path for any bounded list.
+
+## 14. What This Plan Will Not Prove
+
+This plan can raise internal confidence that PDPP's console is coherent, honest, and ready for external testing. It cannot by itself prove that colleagues, Reddit users, family, or friends will feel delight. That requires external users after the critical trust and task blockers are gone.
+
+The target confidence model:
+
+- 70%: plan accepted and atlas complete
+- 80%: P0 waves pass real-browser and data-truth gates
+- 90%: independent adversarial review finds no journey blockers
+- 95%: the owner completes a fresh walkthrough without discovering a new trust or task blocker
+- 95%+ external delight: requires external users
+
+## 15. Current Confidence
+
+High confidence:
+
+- The failure is systemic IA/state-model drift rather than a finite list of UI bugs.
+- `Source` should be the owner-facing noun for configured data-producing instances.
+- The five most alarming technical observations are mostly projection/IA/honesty gaps, not data loss.
+- Implementation workers need journey evidence and independent red-team review before deploy readiness.
+- The owner rejects performance-motivated artificial caps as a final UX. Pagination, virtualization, or a real full-set path is required anywhere the owner is trying to inspect records.
+
+Medium-high confidence:
+
+- The console should be source-centric with grants/access as the second dominant product object.
+- Runs/traces/device exporters should usually act as evidence layers rather than the normal owner front door.
+- Waves 0-3 are the right first sequence for the critical path.
+- The current plan captures the main failure classes, but the contract matrix remains the safer authority for implementation details because it preserves every observed interaction expectation.
+
+Lower confidence until Wave 0 evidence:
+
+- Whether the current Runs/Syncs destination should be removed, merged, or retained as a secondary activity view.
+- Whether Explore and stream-scoped record tables should fully merge or share components while remaining separate destinations.
+- Whether a single 72-hour cycle can close enough P0/P1 issues to make the owner confident with external reviewers.
+
+The practical call: stop treating new feedback as a patch queue. Complete the product model, atlas, and truth-gap matrix, then implement by journey waves with strong gates.
+
+## 16. Prior-Art Synthesis For Implementation
+
+The 2026-06-18 prior-art corpus raises the plan's confidence, but it also tightens the bar. The implementation standard is not "route looks cleaner" or "tests passed." The standard is that each surface behaves like its interaction archetype.
+
+Decisions now backed by the corpus:
+
+- `Source` is the owner-facing primary collection noun.
+- Add Data primary actions are limited to paths the current instance can honestly complete.
+- Unavailable connectors may be visible only as separated, owner-readable secondary entries.
+- Full record visibility is required for source, stream, grant-readable, and Explore inspection. Samples are allowed only as previews with a full-set path.
+- Counts distinguish total held, current filter, current page or preview, latest-run yield, and latest meaningful run yield.
+- Setup is not complete until the owner sees credential acceptance plus first-collection progress or a clear waiting/failure state.
+- Recovery is not complete until the owner sees one human cause, one closing action, progress, and terminal reconciliation.
+- Access review is client-centric and answers both authority and actual reads.
+- Evidence timelines are subject-scoped and use a reusable event grammar.
+- Fresh owners must not need repo knowledge, internal IDs, or owner bearer-token copying for normal setup.
+
+Confidence after this pass:
+
+- broad diagnosis: 92%
+- critical path understanding: 88%
+- interaction-contract understanding: 82%
+- adjacent-class inference: 78%
+
+That is enough to proceed with Wave 0 acceptance packets and narrow P0 fixes. It is not enough to green-light broad UI implementation without the atlas, pixel evidence, and adversarial reviews described in the gates.
+
+## 17. Friction-To-Solution Governor
+
+the owner's feedback friction is the direction signal. Repeated confusion means the product contract is missing or incoherent; it does not mean the next worker should patch the closest string or component.
+
+Hard surfaces require a charter before broad implementation:
+
+- Sources / Syncs / Runs relationship
+- Add Data and connector setup
+- Explore / stream record workbench
+- Recovery and local collector liveness
+- Grants / reads / Connect AI Apps
+- Evidence timelines / traces
+- Fresh-owner onboarding
+
+Each charter must name the owner promise, friction evidence, prior-art anchor, product contract, useful facts to preserve, incidental complexity to demote, rabbit holes to avoid, and acceptance evidence. This is how the change avoids optimizing real but small detail problems while leaving the SLVP-tier interaction problem unsolved.
+
+The rabbit-hole filter is:
+
+- direct product-promise impact
+- trust blocker removed
+- reusable cross-journey contract established
+- or tiny opportunistic fix inside an already accepted tranche
+
+Everything else waits. This rule is deliberately strict because previous churn came from solving true local defects before the product model was settled.
+
+## Appendix A: SLVP Interaction Standards
+
+This appendix is the missing layer between product values and implementation packets.
+It exists because a surface can use the right nouns, preserve the right source of
+truth, and still feel sub-SLVP if the controls are clumsy. the owner's Explore feedback is
+the clearest example: a coherent record workbench still fails if selection is
+unclear, rapid multi-select drops intent, date presets fight each other, ID jump is
+not obviously actionable, or filters require memorized syntax.
+
+Each implementation packet SHALL identify the interaction archetype it is changing
+and inherit the standard below. If no archetype fits, the packet must define one
+before code starts.
+
+### A0. Product gestalt and personal-data dignity
+
+Use this for every owner-facing journey. It is the layer that prevents a set of
+locally-correct controls from still feeling like an inspired hallucination of a
+product.
+
+Required interaction contract:
+
+- The owner can state the surface's job in one sentence from the heading, primary
+  content, and primary action.
+- The surface leads with owner-relevant meaning before implementation evidence.
+- Debug detail, protocol terms, raw identifiers, and diagnostic payloads are
+  secondary unless the owner intentionally enters an advanced/debug path.
+- The product explains enough in-flow that a motivated Docker/Railway operator does
+  not need chat context or repo knowledge to continue.
+- Personal data is treated with calm agency: no alarmist copy, no false reassurance,
+  no buried risk, and no wall of text as the default answer.
+- A shareability review asks whether a colleague, family member, Reddit reader, or
+  standards reviewer would understand why the surface exists and why PDPP is worth
+  trusting.
+
+Must feel like: a coherent personal-data control plane. Must not feel like: a set of
+generated admin panels over a strong backend.
+
+### A1. Record workbench
+
+Use this for Explore, source stream record views, grant-readable record sets, and any
+surface whose job is "show me records."
+
+Prior-art anchors: Datadog Log Explorer, PostHog filters, Algolia-style faceted
+search, GitHub search, and browser-devtools-style inspection. The expected shape is
+query + typed filters + facets + time distribution + result list + in-place detail,
+all URL-backed.
+
+Required interaction contract:
+
+- Selection is obvious, reversible, keyboard-reachable, and visually separate from
+  row content.
+- Rapid multi-select interactions are accumulated instead of dropped while data is
+  loading.
+- Search and filters are discoverable through autocomplete, field suggestions,
+  operator menus, and value suggestions where the schema can support them.
+- Date presets and custom ranges are one control with one selected state, not
+  competing chips and duplicate summary boxes.
+- Sort controls expose the stable sort keys the backend can actually guarantee.
+- Jump-to-ID is a real control with visible success, not-found, and invalid-ID
+  states; otherwise it is removed.
+- The time-distribution chart is an interactive filter when the data volume makes it
+  useful; it is not removed as a performance workaround without an equivalent
+  replacement.
+- Record detail uses the richest guaranteed renderer available, with raw JSON as
+  supporting detail, not as a competing primary face.
+- Bounded previews must have an immediate full-set path. "Showing N of M" is a label,
+  not a substitute for pagination, virtualization, or another route to the complete
+  backing set.
+
+Must feel like: a modern data workbench. Must not feel like: a debug table with a few
+filters attached.
+
+### A2. Source setup and connector catalog
+
+Use this for Add Data, connector setup, provider-secret capture, browser setup,
+artifact import, and local collector enrollment.
+
+Prior-art anchors: Stripe/Plaid onboarding, GitHub token setup, Railway deployment
+templates, and connector self-service setup research already captured in this repo.
+
+Required interaction contract:
+
+- The primary catalog shows only actions this instance can honestly perform now.
+- Proven connectors remain addable for additional accounts, devices, or artifacts
+  when connector semantics allow them.
+- Unavailable, operator-gated, proof-gated, or future paths are separated from
+  primary add-now actions and phrased in owner language.
+- The owner sees prerequisites, exact scopes, links, identity echo, and naming before
+  committing.
+- The system validates credentials or setup inputs as early as practical.
+- Submitting setup starts a live status surface that progresses through accepted,
+  collecting, yielded records, completed with zero yield, failed, or waiting states
+  without manual refresh.
+
+Must feel like: the shortest honest path to add one more source. Must not feel like:
+deployment documentation disguised as a button.
+
+2026-06-19 Amazon browser setup correction:
+
+- The live `cin_af565613063f3fc2ffa7d2f4` failure proved that a connection-scoped
+  browser setup can look like it succeeded while silently using deployment-wide
+  `AMAZON_USERNAME` / `AMAZON_PASSWORD`.
+- That violates the setup archetype: adding another source must authenticate the
+  account for that source, not reuse an operator/deployment credential intended for
+  a different source.
+- The fix belongs at the connector/runtime boundary before UI polish: connection-
+  scoped browser profiles must require visible browser login unless that exact
+  profile is already authenticated.
+
+2026-06-19 source credential mode correction:
+
+- The rule is not "browser connectors never use credentials." The rule is that
+  provider-account credentials are always source-scoped. A stored username,
+  password, recovery code, app password, token, cookie, or OTP helper can be part
+  of setup only when it belongs to the source being created or reauthorized.
+- Deployment-wide provider-account credentials such as `AMAZON_USERNAME` /
+  `AMAZON_PASSWORD` must not satisfy a source setup or scheduled run. Deployment
+  env may configure the instance, encryption, collector transport, or source
+  app/client settings; it must not impersonate one provider account for all
+  sources.
+- Browser-backed setup has three owner choices:
+  1. Source-scoped stored credentials can assist the browser login where the
+     connector explicitly supports that mode. When the owner opts in, those
+     credentials may be reused for that same source after the browser session
+     expires; the owner should only be bothered when stored credentials are
+     absent, rejected, insufficient, or require fresh human action. Stored-
+     credential setup should start first collection on the durable setup-status
+     surface and escalate to the secure browser only when the existing run
+     interaction machinery reports login, OTP, challenge, or identity
+     confirmation is needed.
+  2. Source-scoped streamed browser login remains the default proof path and must
+     still happen when the source has not already proven an authenticated profile.
+  3. An optional ephemeral browser mode clears session and credential material
+     after collection; at least one connector must prove this mode before the UI
+     advertises it generally.
+- Existing OTP and login helpers are not obsolete. They should be preserved and
+  moved behind source-scoped credential resolution, not deleted as a proxy for
+  removing deployment-wide credentials.
+- Setup success requires source identity evidence: the UI/runtime must know which
+  source account or browser profile is authenticated before records are accepted
+  for a new source.
+
+2026-07-01 stored-credential repair correction:
+
+- Browser-backed connectors with source-scoped username/password runtime support
+  must also declare manifest-owned credential capture. Otherwise a source with a
+  rejected stored credential can be routed to browser-session repair that cannot
+  update the credential blocking scheduled runs.
+- The static-secret owner form must treat `username_password` and
+  `secret_bundle` as sealed multi-field credential bundles. Capturing only the
+  first secret field is valid for single-secret connectors, but drops required
+  login fields for browser-backed username/password sources.
+- Source detail must expose the stored-credential update path proactively when a
+  connector declares it, not only after failure. Browser-session reconnect is the
+  fallback for browser-bound connectors with no manifest-owned credential surface.
+
+### A3. Source inventory and status
+
+Use this for Sources, dashboard source summaries, stream lists, and source detail.
+
+Prior-art anchors: Sentry issue lists, Linear issue state, Airbyte connection lists,
+and Datadog monitor status pages.
+
+Required interaction contract:
+
+- Health, freshness, coverage, schedule, and owner action are distinct facts.
+- Status color always has a text label and maps to the same predicate used in
+  dashboard/runs summaries.
+- Counts identify their basis: total held, current page or preview, current filter,
+  latest run yield, latest meaningful run yield, and backing total.
+- Rollup counts drill through to exactly the counted subjects.
+- Source detail is a first-class destination. It is never reachable only through a
+  side-effecting verb such as Reauthorize.
+- Stream rows that cannot open because a stream was renamed or retired are hidden or
+  tombstoned with an explicit reason.
+
+Must feel like: an inventory the owner can trust. Must not feel like: several
+projections trying to explain one another.
+
+### A4. Recovery and long-running operations
+
+Use this for broken sources, local collector recovery, browser sessions, imports,
+first sync, reauthorization, upload drains, and backfills.
+
+Prior-art anchors: Sentry resolution flows, Linear issue remediation, Temporal run
+status, and Stripe setup status.
+
+Required interaction contract:
+
+- The surface leads with one human cause and one next action, or explicitly says no
+  owner action is available.
+- Commands and buttons must be the closing action for the stated problem, or the
+  limitation is stated before the owner acts.
+- Progress is visible during long operations through stage, count, rate, heartbeat, or
+  other available evidence.
+- The initiating surface reconciles to a terminal state without requiring a manual
+  refresh.
+- Diagnostic detail is one click down and scoped to the source/run/device being
+  repaired.
+
+Must feel like: the system knows what happened and is helping me close the loop. Must
+not feel like: a wall of forensics or a blinking terminal cursor.
+
+### A5. Access, grants, reads, and clients
+
+Use this for Grants, Connect AI Apps, client detail, read history, owner tokens, and
+credential activity.
+
+Prior-art anchors: Google account app access, GitHub Authorized OAuth Apps, Plaid
+consent, and the repo's access-transparency prior-art note.
+
+Required interaction contract:
+
+- The list groups by client/app when answering "who can read?"
+- Client detail shows what that client can read in the same concrete terms the owner
+  consented to: sources, streams, fields, time/change bounds, status, and revocation.
+- Read/activity history is filterable by client, grant/package, source, stream, and
+  time.
+- Last-used and last-read facts are first-class where available.
+- Internal maintenance sources, package mechanics, and raw grant child structure do
+  not replace the owner-facing scope summary.
+
+Must feel like: an access review. Must not feel like: a trace browser that happens to
+contain grant events.
+
+### A6. Evidence timelines and forensic detail
+
+Use this for Runs, Traces, timelines, event subscriptions, diagnostics, and advanced
+operator drill-down.
+
+Prior-art anchors: Datadog traces/logs, Temporal history, Sentry event detail, and
+GitHub Actions logs.
+
+Required interaction contract:
+
+- Evidence is reached from the subject it explains unless the owner intentionally
+  opens an advanced/debug browser.
+- Timeline density is high enough to scan, with expansion for detail instead of
+  dozens of visually identical boxes.
+- Events are filterable and linked to adjacent artifacts: source, stream, run, trace,
+  grant, read, credential, device.
+- Tables do not overflow or shift layout when expanded.
+- Raw event payloads are available, but the primary view states what happened in
+  owner/operator language.
+
+Must feel like: a precise audit trail. Must not feel like: raw JSON wrapped in cards.
+
+### A7. Craft, affordance, and motion
+
+Use this for every owner-facing surface.
+
+Required interaction contract:
+
+- Clickable rows, buttons, links, and disabled states are visually distinct and
+  consistent among siblings.
+- Focus rings and selected states have breathing room and never touch content.
+- Desktop layouts avoid crushed sidebars and empty gutters; mobile layouts preserve
+  hierarchy without horizontal overflow.
+- Loading and transition states preserve owner intent. If the owner clicks several
+  filters quickly, the final state reflects all accepted input.
+- Motion is purposeful: progress, relationship, or state change. It is not decorative
+  camouflage for missing information.
+
+Must feel like: a product with taste and care. Must not feel like: a generated
+dashboard that happens to pass tests.

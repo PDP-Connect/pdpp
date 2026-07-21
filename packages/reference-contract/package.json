@@ -1,0 +1,37 @@
+{
+  "name": "@pdpp/reference-contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JSON-Schema-first route manifests, validators, OpenAPI artifacts, and typed helpers for the PDPP reference implementation.",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./common": "./src/common/index.ts",
+    "./public": "./src/public/index.ts",
+    "./reference": "./src/reference/index.ts",
+    "./builders": "./src/builders/index.ts",
+    "./openapi": "./src/openapi/index.ts",
+    "./validate": "./src/validate.ts"
+  },
+  "scripts": {
+    "generate:openapi": "node ./src/openapi/generate.ts",
+    "generate:docs": "node ./src/docs/generate.ts",
+    "generate:all": "node ./src/openapi/generate.ts && node ./src/docs/generate.ts",
+    "check:generated": "pnpm run generate:all && node ./scripts/check-generated.js",
+    "test": "node --test --test-force-exit test/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "verify": "pnpm typecheck && pnpm check && pnpm test"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.12",
+    "ultracite": "7.6.0"
+  },
+  "license": "Apache-2.0"
+}

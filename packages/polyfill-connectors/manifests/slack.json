@@ -1,0 +1,2289 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/slack",
+  "connector_key": "slack",
+  "manifest_uri": "https://registry.pdpp.org/connectors/slack",
+  "version": "0.6.0",
+  "display_name": "Slack",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      },
+      "filesystem": {
+        "required": true
+      }
+    },
+    "external_tools": [
+      {
+        "name": "slackdump",
+        "license": "AGPL-3.0",
+        "purpose": "Session-token Slack archive export",
+        "install_hint": "go install github.com/rusq/slackdump/v4/cmd/slackdump@latest",
+        "detect": {
+          "executable": "slackdump",
+          "args": [
+            "version"
+          ],
+          "exit_code": 0
+        }
+      }
+    ]
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "secret_bundle",
+      "label": "Slack workspace credentials",
+      "description": "Paste the session credentials from your Slack browser session. These are captured and sealed per-connection; the deployment does not need env vars.",
+      "submit_label": "Create Slack connection and start first sync",
+      "fields": [
+        {
+          "name": "slack_workspace",
+          "label": "Slack workspace domain",
+          "type": "text",
+          "required": true,
+          "secret": false,
+          "identity": true,
+          "autocomplete": "off",
+          "placeholder": "myteam (from myteam.slack.com)",
+          "help_text": "Enter just the subdomain — e.g. 'myteam' from myteam.slack.com.",
+          "env": [
+            "SLACK_WORKSPACE"
+          ]
+        },
+        {
+          "name": "slack_token",
+          "label": "Slack session token (xoxc-…)",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://github.com/rusq/slackdump/wiki/How-to-get-your-Slack-credentials",
+          "help_text": "Copy the xoxc-… token from your browser's Slack JS context. See the runbook link for exact steps.",
+          "env": [
+            "SLACK_TOKEN"
+          ]
+        },
+        {
+          "name": "slack_cookie",
+          "label": "Slack 'd' cookie",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_text": "Copy the 'd' cookie from your browser while logged in to Slack. Same runbook as above.",
+          "env": [
+            "SLACK_COOKIE"
+          ]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "credentials"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 1800,
+      "minimum_interval_seconds": 600,
+      "maximum_staleness_seconds": 7200,
+      "interaction_posture": "credentials",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Slack credentials are durable and the Docker reference deployment includes the slackdump runtime; refresh moderately."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
+    }
+  },
+  "streams": [
+    {
+      "name": "workspace",
+      "description": "Authenticated Slack workspace: team identity, authenticated user/bot identity, enterprise affiliation, primary URL.",
+      "display": {
+        "label": "Slack workspace",
+        "detail": "Workspace name, domain, team ID, the authenticated user (whose session this is), and enterprise parent (if any)."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enterprise_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enterprise_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icon_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authenticated_user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authenticated_username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authenticated_bot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "fetched_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "domain",
+            "enterprise_name",
+            "url"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "fetched_at"
+          ]
+        }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "channels",
+      "description": "Public/private channels, DMs, and group DMs visible to the authenticated user. Structural and identity fields only; member count is in the channel_stats stream.",
+      "display": {
+        "label": "Your Slack channels",
+        "detail": "Channel name, type flags (is_im/is_mpim/is_private/is_shared/is_archived), creator, topic and purpose (with last-set time), created-at. Member counts are in channel_stats."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "name_normalized": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_channel": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_group": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_im": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_mpim": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_private": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_shared": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_ext_shared": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_org_shared": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_general": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_member": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_read_only": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "creator": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "topic_creator": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topic_last_set": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "purpose": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose_creator": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose_last_set": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "shared_team_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "context_team_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "previous_names": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "has_canvas": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "canvas_file_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "posting_restricted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "threads_restricted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "created",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "name_normalized",
+            "topic",
+            "purpose"
+          ],
+          "semantic_fields": [
+            "topic",
+            "purpose"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "channel_stats",
+      "description": "Sampled member counts per channel, keyed by {channel_id}:{YYYY-MM-DD}. One record per channel per calendar day (UTC); re-running on the same day is idempotent. Preserves a time series of membership volume without creating false entity-version churn on the channels stream.",
+      "display": {
+        "label": "Slack channel member counts (daily)",
+        "detail": "Daily snapshot of num_members for each channel. Each record covers one calendar day."
+      },
+      "semantics": "append",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "observed_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "num_members": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "channel_id",
+          "observed_on"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "observed_on",
+      "consent_time_field": "observed_on",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "channel",
+          "stream": "channels",
+          "foreign_key": "channel_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {},
+        "range_filters": {
+          "observed_on": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "num_members": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "observed_on"
+          ]
+        }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "channel_memberships",
+      "description": "Channel ↔ user edges where slackdump could enumerate members.",
+      "display": {
+        "label": "Channel memberships",
+        "detail": "For each channel we could see the membership of, one row per user. Includes DMs (channel member is the DM counterpart)."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "channel_id",
+          "user_id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "relationships": [
+        {
+          "name": "channel",
+          "stream": "channels",
+          "foreign_key": "channel_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "user",
+          "stream": "users",
+          "foreign_key": "user_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "users",
+      "description": "Users (human + bot) visible to the authenticated principal.",
+      "display": {
+        "label": "People and bots in your Slack workspace",
+        "detail": "Username, real name, display name, email (when visible), timezone, bot flag, admin/owner flags, deletion status."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "real_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "real_name_normalized": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "display_name_normalized": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "status_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status_emoji": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status_expiration": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tz": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tz_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tz_offset": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_bot": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_admin": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_owner": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_primary_owner": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_restricted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_ultra_restricted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_stranger": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_invited_user": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_app_user": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "deleted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "has_2fa": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "two_factor_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_192_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enterprise_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "real_name",
+            "display_name",
+            "first_name",
+            "last_name",
+            "email",
+            "title",
+            "status_text"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "messages",
+      "description": "All messages across visible channels. Thread structure preserved via thread_ts. Slack marks deletions with subtype='tombstone' so messages stream is effectively mutable despite the append-only semantic class.",
+      "display": {
+        "label": "Your Slack messages",
+        "detail": "Channel, author, timestamp, text, thread parent, reply count + reply_user_ids (who replied), edited-at, client_msg_id (dedup), subtype (joins/leaves/bot/tombstone), pinned status, block-kit metadata."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "team_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_msg_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ts": {
+            "type": "string"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "thread_ts": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_thread_parent": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "reply_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reply_user_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "latest_reply": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subtype": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_tombstone": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "edited_ts": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "edited_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_files": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "file_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "has_attachments": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "attachment_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "has_blocks": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "reaction_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "is_pinned": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "pinned_to": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "metadata_event_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "channel_id",
+          "ts"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "sent_at",
+      "consent_time_field": "sent_at",
+      "selection": {
+        "fields": true,
+        "resources": true,
+        "resource_field": "channel_id"
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "channel",
+          "stream": "channels",
+          "foreign_key": "channel_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "author",
+          "stream": "users",
+          "foreign_key": "user_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "message_attachments",
+          "stream": "message_attachments",
+          "foreign_key": "message_id",
+          "cardinality": "has_many"
+        },
+        {
+          "name": "reactions",
+          "stream": "reactions",
+          "foreign_key": "message_id",
+          "cardinality": "has_many"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "text",
+            "subtype",
+            "metadata_event_type"
+          ],
+          "semantic_fields": [
+            "text"
+          ]
+        },
+        "range_filters": {
+          "sent_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "reply_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "file_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "attachment_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "reaction_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "sum": [
+            "reply_count",
+            "file_count",
+            "attachment_count",
+            "reaction_count"
+          ],
+          "min": [
+            "sent_at",
+            "reply_count",
+            "file_count",
+            "attachment_count",
+            "reaction_count"
+          ],
+          "max": [
+            "sent_at",
+            "reply_count",
+            "file_count",
+            "attachment_count",
+            "reaction_count"
+          ],
+          "group_by": [
+            "has_attachments",
+            "has_files",
+            "is_thread_parent",
+            "is_tombstone"
+          ],
+          "group_by_time": [
+            "sent_at"
+          ]
+        },
+        "expand": [
+          {
+            "name": "message_attachments",
+            "default_limit": 10,
+            "max_limit": 50
+          },
+          {
+            "name": "reactions",
+            "default_limit": 25,
+            "max_limit": 200
+          }
+        ]
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "message_attachments",
+      "description": "Link-preview unfurls and bot-generated rich attachments inlined on messages. One row per (message, attachment index).",
+      "display": {
+        "label": "Link previews and message attachments",
+        "detail": "Unfurled links (URL, title, description, source service, thumbnail) and bot-generated rich attachments on messages."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "fallback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "service_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service_icon": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "title_link": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "from_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thumb_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author_link": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "message_id",
+          "channel_id",
+          "index"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "relationships": [
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "fallback",
+            "service_name",
+            "title",
+            "text",
+            "author_name"
+          ],
+          "semantic_fields": [
+            "title",
+            "text",
+            "fallback"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "messages",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "reactions",
+      "description": "Reactions as (message, emoji, user) triples.",
+      "display": {
+        "label": "Slack reactions",
+        "detail": "One row per (message, emoji, user). Emoji name, reacting user, reacted-to message."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "emoji": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          }
+        },
+        "required": [
+          "id",
+          "message_id",
+          "channel_id",
+          "user_id",
+          "emoji"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "relationships": [
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "user",
+          "stream": "users",
+          "foreign_key": "user_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "messages",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "files",
+      "description": "File attachments referenced in messages. Metadata only by default.",
+      "display": {
+        "label": "Files shared in Slack",
+        "detail": "Filename, mimetype, size, upload time, uploader, public/private flags, title."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "mimetype": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filetype": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pretty_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "uploader_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_public": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_external": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_starred": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "external_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permalink": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url_private": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "original_w": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "original_h": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "created",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "title",
+            "pretty_type"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "size": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "original_w": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "original_h": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "canvases",
+      "description": "Slack Canvas documents attached to channels (mimetype application/vnd.slack-docs, filetype 'quip'). Archive captures canvas metadata; content bodies live behind files.slack.com authenticated URLs and are not materialized here.",
+      "display": {
+        "label": "Slack canvases",
+        "detail": "For each channel canvas: canvas file ID, host channel, author, size, is_empty flag, quip thread ID (Slack's internal doc ID), title, created/updated time, permalink. Document bodies are not in this export."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "file_id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "author_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_empty": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "quip_thread_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "content_markdown": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "mimetype": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filetype": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pretty_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "updated": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "permalink": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url_private": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "file_id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "channel",
+          "stream": "channels",
+          "foreign_key": "channel_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "author",
+          "stream": "users",
+          "foreign_key": "author_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "name",
+            "content_markdown"
+          ],
+          "semantic_fields": [
+            "title",
+            "content_markdown"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "content_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "stars",
+      "required": false,
+      "description": "Messages, files, or channels the user has starred/saved. Collected via a direct stars.list call using the connector's existing session credential (slackdump's archive mode does not call this method, but the credential it already captures does).",
+      "display": {
+        "label": "Your starred and saved items",
+        "detail": "Messages, files, and channels you starred or saved in Slack."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "item_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "channel_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_ts": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "starred_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "starred_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "starred_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "starred_at"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "user_groups",
+      "required": false,
+      "description": "Workspace user groups (@engineering, @design, etc.): handle, description, members. Collected via a direct usergroups.list call using the connector's existing session credential (slackdump's archive mode does not call this method, but the credential it already captures does).",
+      "display": {
+        "label": "Slack user groups",
+        "detail": "Group handles like @engineering, their names, descriptions, and membership."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "is_external": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_subteam": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "member_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "channel_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "created": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "updated": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deleted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "handle",
+            "name",
+            "description"
+          ],
+          "semantic_fields": [
+            "description"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "reminders",
+      "required": false,
+      "description": "User-owned Slack reminders. Collected via a direct reminders.list call using the connector's existing session credential (slackdump's archive mode does not call this method, but the credential it already captures does).",
+      "display": {
+        "label": "Your Slack reminders",
+        "detail": "Reminders you set in Slack: text, trigger time, target user or channel, completion state."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "creator_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "recurring": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "time": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "scheduled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "complete_ts": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "scheduled_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "text"
+          ],
+          "semantic_fields": [
+            "text"
+          ]
+        },
+        "range_filters": {
+          "scheduled_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "completed_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "scheduled_at"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "dm_read_states",
+      "required": false,
+      "description": "Per-DM last_read timestamps (conversations.info last_read / unread_count_display). Collected via direct conversations.info calls scoped to DM/MPIM channels, using the connector's existing session credential (slackdump's archive mode strips these fields, but the credential it already captures can call the method directly).",
+      "display": {
+        "label": "DM read states",
+        "detail": "For each direct message or multi-party DM, the last message timestamp the user has read and the unread count."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "last_read": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_read_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "unread_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "unread_count_display": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "channel_id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "last_read",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "channel",
+          "stream": "channels",
+          "foreign_key": "channel_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "range_filters": {
+          "last_read_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "unread_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "unread_count_display": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "last_read"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "full",
+      "label": "Your complete Slack history",
+      "streams": [
+        {
+          "name": "workspace"
+        },
+        {
+          "name": "channels"
+        },
+        {
+          "name": "channel_stats"
+        },
+        {
+          "name": "channel_memberships"
+        },
+        {
+          "name": "users"
+        },
+        {
+          "name": "messages"
+        },
+        {
+          "name": "message_attachments"
+        },
+        {
+          "name": "reactions"
+        },
+        {
+          "name": "files"
+        },
+        {
+          "name": "canvases"
+        },
+        {
+          "name": "stars"
+        },
+        {
+          "name": "user_groups"
+        },
+        {
+          "name": "reminders"
+        },
+        {
+          "name": "dm_read_states"
+        }
+      ]
+    },
+    {
+      "id": "messages_only",
+      "label": "Messages and people, no files",
+      "streams": [
+        {
+          "name": "workspace"
+        },
+        {
+          "name": "channels"
+        },
+        {
+          "name": "users"
+        },
+        {
+          "name": "messages"
+        }
+      ]
+    },
+    {
+      "id": "directory",
+      "label": "Directory only (no message content)",
+      "streams": [
+        {
+          "name": "workspace"
+        },
+        {
+          "name": "channels"
+        },
+        {
+          "name": "users"
+        }
+      ]
+    }
+  ]
+}

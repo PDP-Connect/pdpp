@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "src/collector-runner.ts",
+    "src/connector-runtime-protocol.ts",
+    "src/is-main-module.ts",
+    "src/local-device-client.ts",
+    "src/local-device-envelope.ts",
+    "src/local-device-queue.ts",
+    "src/runner/index.ts",
+    "src/runtime-capabilities.ts",
+    "src/safe-emit.ts",
+    "src/scope-filters.ts",
+    "types/**/*.d.ts"
+  ],
+  "exclude": ["node_modules", "fixtures", "**/__fixtures__", "**/*.test.ts"]
+}

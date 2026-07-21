@@ -1,0 +1,8 @@
+# Build output. Produced by `pnpm build` (tsc → dist/) and rebuilt automatically
+# on install via the `prepare` script, so it is never committed. The published
+# npm tarball still ships `dist/` (see the `files` field in package.json); it is
+# only the git tree that stays source-only.
+/dist/
+
+# npm pack output.
+*.tgz

@@ -1,0 +1,6 @@
+# These are committed, fully-synthetic local-collector source-home fixtures.
+# Repo-root ignores (e.g. *.log, .codex/) would otherwise swallow realistic
+# fixture filenames like debug.log; un-ignore the whole source-home trees so
+# the fixtures stay committable and survive a clean checkout / CI.
+!claude_code/source-home/**
+!codex/source-home/**

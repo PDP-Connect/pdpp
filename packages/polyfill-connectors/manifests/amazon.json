@@ -1,0 +1,392 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/amazon",
+  "connector_key": "amazon",
+  "manifest_uri": "https://registry.pdpp.org/connectors/amazon",
+  "version": "0.1.0",
+  "display_name": "Amazon",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      },
+      "browser": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "username_password",
+      "label": "Amazon sign-in details",
+      "description": "Seal the Amazon sign-in details for this source. The connector uses them only for this source's browser-backed collection.",
+      "submit_label": "Save Amazon credential and start first sync",
+      "fields": [
+        {
+          "name": "username",
+          "label": "Amazon email or phone",
+          "type": "text",
+          "required": true,
+          "secret": true,
+          "autocomplete": "username",
+          "env": [
+            "AMAZON_USERNAME"
+          ]
+        },
+        {
+          "name": "password",
+          "label": "Amazon password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "current-password",
+          "env": [
+            "AMAZON_PASSWORD"
+          ]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action",
+      "otp"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "minimum_interval_seconds": 7200,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "otp_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
+      "background_safe": true,
+      "assisted_after_owner_auth": true,
+      "rationale": "Amazon remains manual by default because sign-in and anti-bot checks are common, but an owner can explicitly opt into a background schedule after authenticating the connection."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
+    }
+  },
+  "streams": [
+    {
+      "name": "orders",
+      "description": "Amazon retail orders scraped from Your Orders.",
+      "display": {
+        "label": "Your Amazon orders",
+        "detail": "Order IDs, dates, totals, delivery status, shipping summaries, payment method summary, recipient name. Per-item breakdowns live in the order_items stream."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "order_date": {
+            "type": "string",
+            "format": "date",
+            "x_pdpp_role": "event-time"
+          },
+          "order_total": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "order_total_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "delivery_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status_detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "recipient_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "shipping_address_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payment_method_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gift_order": {
+            "type": "boolean"
+          },
+          "digital_order": {
+            "type": "boolean"
+          },
+          "item_count": {
+            "type": "integer"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "order_date"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "order_date",
+      "consent_time_field": "order_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "views": [
+        {
+          "id": "reconciliation",
+          "label": "Fields for matching to bank/YNAB transactions",
+          "fields": [
+            "id",
+            "order_date",
+            "order_total",
+            "order_total_cents",
+            "payment_method_summary",
+            "delivery_status",
+            "item_count"
+          ]
+        },
+        {
+          "id": "full",
+          "label": "Everything on the order row",
+          "fields": [
+            "id",
+            "order_date",
+            "order_total",
+            "order_total_cents",
+            "delivery_status",
+            "status_detail",
+            "recipient_name",
+            "shipping_address_summary",
+            "payment_method_summary",
+            "gift_order",
+            "digital_order",
+            "item_count",
+            "fetched_at"
+          ]
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "recipient_name",
+            "shipping_address_summary",
+            "status_detail",
+            "payment_method_summary"
+          ]
+        },
+        "range_filters": {
+          "order_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "order_total_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "item_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "order_date"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "order_items",
+      "description": "Line items within Amazon orders.",
+      "display": {
+        "label": "Your order line items",
+        "detail": "Product titles, ASINs, per-unit prices, quantities, sellers, product URLs, item-level return/refund status."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "order_date": {
+            "type": "string",
+            "format": "date",
+            "x_pdpp_role": "event-time"
+          },
+          "asin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit_price": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "seller": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "item_image_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "returned": {
+            "type": "boolean"
+          },
+          "refund_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "order_id",
+          "order_date",
+          "name"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "order_date",
+      "consent_time_field": "order_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "order",
+          "stream": "orders",
+          "foreign_key": "order_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "seller"
+          ]
+        },
+        "range_filters": {
+          "order_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "unit_price_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "quantity": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "order_date"
+          ]
+        }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "reconciliation",
+      "label": "Orders for bank/YNAB matching",
+      "streams": [
+        {
+          "name": "orders",
+          "view": "reconciliation"
+        },
+        {
+          "name": "order_items"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "../node_modules/@biomejs/biome/configuration_schema.json",
+  "root": false,
+  "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
+  "formatter": {
+    "lineWidth": 120
+  },
+  "files": {
+    "ignoreUnknown": true,
+    // During the JS → TS migration, Biome lints and formats only the
+    // TypeScript modules that have already landed in that form. Every
+    // remaining .js file (server/, lib/, runtime/, cli/, examples/,
+    // test/, scripts/) is exempt until its own slice upgrades it.
+    // Renaming a file to .ts immediately pulls it under the strict bar.
+    "includes": [
+      "server/**/*.ts",
+      "lib/**/*.ts",
+      "runtime/**/*.ts",
+      "cli/**/*.ts",
+      "test/**/*.ts",
+      "scripts/**/*.ts",
+      "examples/**/*.ts",
+      "*.jsonc",
+      "*.json",
+      "!report.*.json",
+      "!node_modules"
+    ]
+  },
+  "linter": {
+    "rules": {
+      "style": {
+        // Closed TypeScript unions should handle every case explicitly without
+        // a redundant default. Open-ended switches over strings/numbers still
+        // use default branches in code.
+        "useDefaultSwitchClause": "off"
+      },
+      "nursery": {
+        "useExhaustiveSwitchCases": "error"
+      }
+    }
+  }
+}

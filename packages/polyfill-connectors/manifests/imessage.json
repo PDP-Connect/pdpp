@@ -1,0 +1,125 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/imessage",
+  "connector_key": "imessage",
+  "manifest_uri": "https://registry.pdpp.org/connectors/imessage",
+  "version": "0.1.0",
+  "display_name": "iMessage (macOS)",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      },
+      "local_device": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "public_listing": {
+      "listed": false,
+      "status": "unproven",
+      "rationale": "Hidden from the reference dashboard catalog until an operator proves a local macOS Messages database run on this deployment and explicitly opts it into listing."
+    },
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 300,
+      "maximum_staleness_seconds": 21600,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "iMessage history is read from the operator's local macOS Messages database. Docker/provider scheduled runs must use a local collector or an explicitly mounted IMESSAGE_DB_PATH."
+    }
+  },
+  "streams": [
+    {
+      "name": "messages",
+      "description": "iMessage + SMS messages from ~/Library/Messages/chat.db (macOS).",
+      "display": {
+        "label": "Your iMessages",
+        "detail": "Sender/recipient, text content, timestamp, service (iMessage or SMS), is_from_me flag, attachment presence."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "chat_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_from_me": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "date": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "date_read": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_attachments": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "date"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "date",
+      "consent_time_field": "date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "text"
+          ],
+          "semantic_fields": [
+            "text"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

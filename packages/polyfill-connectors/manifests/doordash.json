@@ -1,0 +1,235 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/doordash",
+  "connector_key": "doordash",
+  "manifest_uri": "https://registry.pdpp.org/connectors/doordash",
+  "version": "0.1.0",
+  "display_name": "DoorDash",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      },
+      "browser": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "minimum_interval_seconds": 3600,
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
+      "background_safe": false,
+      "rationale": "DoorDash order history is browser-scraped; treat as manual to avoid bot-detection signals."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "orders",
+      "description": "DoorDash food-delivery orders.",
+      "display": {
+        "label": "Your DoorDash orders",
+        "detail": "Order date, restaurant, items, prices, tips, tax, delivery status, delivery address, fee breakdown."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "order_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "restaurant_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subtotal_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tax_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tip_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "delivery_fee_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "service_fee_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "delivery_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payment_method_summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "item_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "order_date",
+      "consent_time_field": "order_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "restaurant_name"
+          ]
+        },
+        "range_filters": {
+          "order_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "order_date"
+          ],
+          "group_by": [
+            "status"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "order_items",
+      "description": "Individual items within DoorDash orders.",
+      "display": {
+        "label": "Your DoorDash order items",
+        "detail": "Item name, quantity, unit price, customizations."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "unit_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "customizations": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "order_id",
+          "name"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "order",
+          "stream": "orders",
+          "foreign_key": "order_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name"
+          ]
+        }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

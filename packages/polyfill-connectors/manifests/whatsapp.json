@@ -1,0 +1,370 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/whatsapp",
+  "connector_key": "whatsapp",
+  "manifest_uri": "https://registry.pdpp.org/connectors/whatsapp",
+  "version": "0.1.0",
+  "display_name": "WhatsApp (chat export)",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": false
+      },
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "manual_or_upload",
+    "manual_or_upload": {
+      "label": "WhatsApp chat export",
+      "description": "Export one WhatsApp chat, then import the .txt file or the .zip from 'with media'. Repeat for each chat you want this WhatsApp source to cover.",
+      "acquisition_methods": [
+        {
+          "label": "Export one chat from WhatsApp",
+          "platform": "mobile",
+          "posture": "primary",
+          "detail": "Open the chat in WhatsApp, use Export chat, choose with or without media, then upload the .txt or .zip here.",
+          "help_url": "https://faq.whatsapp.com/1180414079177245"
+        },
+        {
+          "label": "Add another chat to the same source later",
+          "platform": "mobile",
+          "posture": "secondary",
+          "detail": "WhatsApp exports are per-chat. Import more .txt or .zip exports in any order from the same source page; repeated exports are safe and keep their own coverage receipt.",
+          "help_url": "https://faq.whatsapp.com/1180414079177245"
+        },
+        {
+          "label": "Media folder sync",
+          "platform": "device",
+          "posture": "advanced",
+          "detail": "Zip exports can include media files. When the import run has blob-upload support, PDPP keeps those files as WhatsApp attachment records with blob references."
+        }
+      ],
+      "accepted_file_extensions": [
+        ".txt",
+        ".zip"
+      ],
+      "import_dir_env_var": "WHATSAPP_EXPORT_DIR",
+      "help_url": "https://faq.whatsapp.com/1180414079177245",
+      "help_text": "WhatsApp does not expose personal messages through an account API or OAuth grant. This source imports owner-provided chat export files.",
+      "large_file_fallback": "Large exports upload in the browser as staged artifacts. If an export exceeds the deployment limit, use the server import-folder handoff for the .txt or .zip file.",
+      "validation": {
+        "kind": "whatsapp_chat_export",
+        "max_file_bytes": 1073741824
+      },
+      "validation_expectations": [
+        "Detected WhatsApp chat export",
+        "Estimated messages and participants",
+        "Detected message date range",
+        "Duplicate, empty, unsupported, or too-large file status",
+        "Whether media files are absent, referenced but not included, or included for attachment import"
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "WhatsApp data comes from a manual chat export; refresh requires a new export."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
+    }
+  },
+  "streams": [
+    {
+      "name": "chats",
+      "description": "Imported WhatsApp chats (one per .txt export).",
+      "display": {
+        "label": "Your WhatsApp chats",
+        "detail": "Chat title (derived from export filename), participant list, message count, date range."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "participants": {
+            "type": "array"
+          },
+          "message_count": {
+            "type": "integer"
+          },
+          "first_message_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "last_message_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "last_message_date",
+      "consent_time_field": "first_message_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        },
+        "range_filters": {
+          "first_message_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "first_message_date"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "messages",
+      "description": "Messages from WhatsApp chat exports.",
+      "display": {
+        "label": "Your WhatsApp messages",
+        "detail": "Author, timestamp, text content per message. Media attachments are represented in the attachments stream when the export includes them."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "chat_id": {
+            "type": "string"
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "has_attachment": {
+            "type": "boolean"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "chat_id",
+          "sent_at"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "sent_at",
+      "consent_time_field": "sent_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "chat",
+          "stream": "chats",
+          "foreign_key": "chat_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "author",
+            "content"
+          ],
+          "semantic_fields": [
+            "content"
+          ]
+        },
+        "range_filters": {
+          "sent_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "sent_at"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "attachments",
+      "description": "Media files included in WhatsApp chat export zip files.",
+      "display": {
+        "label": "Your WhatsApp media attachments",
+        "detail": "Filename, MIME type, size, linked chat/message when detectable, and a blob reference when the media file was retained."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "chat_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filename": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "content_sha256": {
+            "type": "string"
+          },
+          "hydration_status": {
+            "type": "string",
+            "enum": [
+              "deferred",
+              "failed",
+              "hydrated"
+            ]
+          },
+          "hydration_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blob_ref": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "blob_id": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "blob_id",
+              "mime_type",
+              "sha256",
+              "size_bytes"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "chat_id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "content_sha256",
+          "hydration_status"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "chat",
+          "stream": "chats",
+          "foreign_key": "chat_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

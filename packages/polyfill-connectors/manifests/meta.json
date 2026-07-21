@@ -1,0 +1,204 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/meta",
+  "connector_key": "meta",
+  "manifest_uri": "https://registry.pdpp.org/connectors/meta",
+  "version": "0.1.0",
+  "display_name": "Instagram (Meta)",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      },
+      "browser": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "minimum_interval_seconds": 3600,
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
+      "background_safe": false,
+      "rationale": "Instagram (Meta) blocks repeated automated access; refresh manually."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "profile",
+      "description": "The user's Instagram profile.",
+      "display": {
+        "label": "Your Instagram profile",
+        "detail": "Username, name, bio, follower/following counts, post count."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string",
+            "x_pdpp_role": "actor"
+          },
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "bio": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "follower_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "following_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "post_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "is_verified": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "username"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "username",
+            "full_name",
+            "bio"
+          ],
+          "semantic_fields": [
+            "bio"
+          ]
+        }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "posts",
+      "description": "Posts on the user's own timeline.",
+      "display": {
+        "label": "Your posts",
+        "detail": "Caption, media type, timestamp, like/comment counts, location if tagged."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "caption": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "media_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "like_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "comment_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "location_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "taken_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "taken_at",
+      "consent_time_field": "taken_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "caption"
+          ],
+          "semantic_fields": [
+            "caption"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

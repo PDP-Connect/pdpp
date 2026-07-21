@@ -1,0 +1,133 @@
+# Pre-commit gates.
+#
+# The floor is enforced by tooling, not review. If anything fails, the commit
+# is rejected — no "just this once" escape. Speed matters (< 3s for the common
+# case), so jobs run in parallel and most are scoped to staged files.
+#
+# `{staged_files}` is a list of staged paths RELATIVE TO THE REPO ROOT.
+# Invoke tools from the repo root and let them discover their own config.
+
+pre-commit:
+  parallel: true
+  jobs:
+    # Auto-format + fix safe lints on staged .ts / config files. Anything
+    # Biome can repair (quote style, whitespace, sort imports, useLiteralKeys,
+    # etc.) is repaired in-place. stage_fixed=true writes the fixes back
+    # into the index so the commit picks them up. Changes that aren't
+    # auto-fixable fall through to the :lint job below and fail the commit.
+    - name: polyfill-connectors:format
+      glob: "packages/polyfill-connectors/**/*.{ts,jsonc,json}"
+      root: "packages/polyfill-connectors"
+      run: pnpm exec biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+
+    # Lint .ts + config files (no-write; the format job already applied
+    # safe fixes). Reports anything still violating rules after auto-fix.
+    - name: polyfill-connectors:lint
+      glob: "packages/polyfill-connectors/**/*.{ts,jsonc,json}"
+      root: "packages/polyfill-connectors"
+      run: pnpm exec biome check --no-errors-on-unmatched {staged_files}
+
+    # Type-check runs on the whole package, not just staged files, because
+    # a change in one file can break types in another.
+    - name: polyfill-connectors:typecheck
+      glob: "packages/polyfill-connectors/**/*.{ts,js}"
+      run: pnpm --dir packages/polyfill-connectors run typecheck
+
+    - name: polyfill-connectors:no-double-cast
+      # Biome/Ultracite has no equivalent to typescript-eslint's
+      # consistent-type-assertions yet. Grep for `as unknown as X` as a
+      # stop-gap until that rule lands upstream.
+      glob: "packages/polyfill-connectors/**/*.ts"
+      run: |
+        if grep -nE "as[[:space:]]+unknown[[:space:]]+as[[:space:]]" {staged_files}; then
+          echo "✗ Found 'as unknown as X' double-cast — narrow the type properly instead."
+          exit 1
+        fi
+
+    - name: spec:check
+      glob: "{spec-*.md,apps/site/content/docs/spec-*.md,apps/site/content/docs/README.md,scripts/spec-check.mjs}"
+      run: pnpm spec:check
+
+    # Bounded-statement wrapper enforcement.
+    # Spec: openspec/changes/bound-spine-and-record-read-paths/specs/
+    #       reference-implementation-architecture/spec.md
+    #       Requirement: "New direct DB prepare usage SHALL be blocked at the staged-file boundary"
+    #
+    # Three gates, all grep-based per the codebase precedent above. They
+    # fire on staged-file diffs, so existing call sites that have not yet
+    # been migrated are not flagged retroactively — only new introductions
+    # are blocked. Grandfathered call sites remain tracked by OpenSpec.
+
+    - name: reference-implementation:complexity-mass-ratchet
+      glob: "reference-implementation/{lib,server,runtime}/**/*.{ts,tsx,js,jsx}"
+      run: node reference-implementation/scripts/quality-ratchet/check-mass-ratchet.mjs --files "{staged_files}"
+    - name: reference-implementation:no-direct-prepare
+      # Direct `db.prepare(sql)` is forbidden outside three legitimate
+      # locations:
+      #   - `reference-implementation/lib/db.ts` (the wrapper itself)
+      #   - `reference-implementation/server/db.js` (engine bootstrap)
+      #   - `reference-implementation/server/queries/index.ts` (the
+      #     registry, which calls `db.prepare(query.sql)` at boot to
+      #     validate every loaded artifact against the live schema)
+      # Everywhere else, use the typed wrapper primitives (`getOne` /
+      # `getMany` / `iterate` / `exec` / `allowUnboundedReadAcknowledged` /
+      # `iterateDynamicSqlAcknowledged`) exported from `lib/db.ts`.
+      glob: "reference-implementation/{lib,server,runtime,cli}/**/*.{ts,js}"
+      run: |
+        offending=$(echo "{staged_files}" | tr ' ' '\n' \
+          | grep -v '^reference-implementation/lib/db\.ts$' \
+          | grep -v '^reference-implementation/server/db\.js$' \
+          | grep -v '^reference-implementation/server/queries/index\.ts$' \
+          | grep -v '^$')
+        if [ -z "$offending" ]; then exit 0; fi
+        if echo "$offending" | xargs grep -nE '(^|[^a-zA-Z_])(db|getDb\(\))\.prepare\(' 2>/dev/null; then
+          echo "✗ Direct .prepare(...) is forbidden outside the wrapper."
+          echo "  Use the typed wrapper primitives from lib/db.ts:"
+          echo "    getOne, getMany, iterate, exec,"
+          echo "    allowUnboundedReadAcknowledged, iterateDynamicSqlAcknowledged."
+          echo "  Spec: openspec/specs/reference-implementation-architecture/spec.md"
+          echo "  Requirement: 'New direct DB prepare usage SHALL be blocked at the staged-file boundary'"
+          exit 1
+        fi
+
+    # The escape hatches `allowUnboundedReadAcknowledged` and
+    # `iterateDynamicSqlAcknowledged` are intentionally long and grep-
+    # friendly. Their function names ARE the review trigger — any reader
+    # encountering a call site sees the loud name and reads the
+    # surrounding code to understand why the escape hatch was used.
+    # Per-call comment-proximity enforcement was considered and rejected
+    # because (a) it produces ceremony rather than substance — a wall of
+    # `REVIEWED-*` comments becomes noise reviewers learn to skip, and
+    # (b) it false-positives on legitimate patterns where one comment
+    # block at function entry covers multiple calls in the body. PR
+    # review is the right tool for "is this escape hatch justified?";
+    # lefthook is the right tool for "did you bypass the wrapper?".
+
+# Pre-push gate. Deliberately the FAST gate only (reference-implementation
+# typecheck, ~4s), not the full test suite — a multi-minute pre-push hook on a
+# high-velocity direct-to-main workflow would just get bypassed with
+# --no-verify. Typecheck catches the most common pre-merge break (the type
+# errors that previously sat red on main for days). The full suite still runs
+# in CI / as the required check before merge.
+#
+# Scoped to changes under reference-implementation so unrelated pushes (docs,
+# other packages) aren't taxed. Run `git push --no-verify` to bypass in a
+# genuine emergency.
+pre-push:
+  parallel: false
+  jobs:
+    - name: reference-implementation:typecheck
+      glob: "reference-implementation/**/*.{ts,tsx}"
+      run: pnpm --dir reference-implementation run typecheck
+
+    # Non-blocking OpenSpec archive-rot warning. Surfaces changes under
+    # openspec/changes/ that look archive-due (implementation done, or their
+    # referenced code already exists on main) but are still sitting active —
+    # the rot that accumulates because the owner-only post-merge closeout
+    # (live deploy, owner review) never gets ticked. This is a REMINDER, not a
+    # gate: the script exits 0, and the trailing `|| true` guarantees a script
+    # error can never block a push. Archiving is owner-only (see CONTRIBUTING),
+    # so failing the push here would be wrong.
+    - name: openspec:archive-rot-warning
+      run: node scripts/openspec-archive-check.mjs || true

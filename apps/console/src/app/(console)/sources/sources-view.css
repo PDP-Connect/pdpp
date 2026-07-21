@@ -1,0 +1,560 @@
+/* Recordroom — Sources (the loading dock). Master-detail layout for the
+ * redesigned console. Ported from docs/design-system/ink-carbon/project/recordroom/
+ * sources.css and rebound to the real records surface. Token-driven only:
+ * every color/length references a CSS var from @pdpp/brand/ink-carbon.css. The kit
+ * primitives (.pdpp-sheet, .pdpp-kv, .pdpp-table, .pdpp-endorse, .pdpp-btn)
+ * carry their own styling — this file only does the page-level grid + the
+ * Sources-specific list/dot/manifest chrome the kit does not provide. */
+
+.rr-s {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.7fr);
+  gap: 24px;
+  align-items: start;
+}
+
+/* ── Instance list ── */
+.rr-s-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-strong);
+  min-width: 0;
+}
+
+/* The mobile affordance is a <Link> (anchor) that must render identically to
+   the desktop <button>. Both share `.rr-s-item`; this resets anchor chrome. */
+a.rr-s-item {
+  text-decoration: none;
+  color: inherit;
+}
+
+.rr-s-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  padding: 10px 12px 11px 14px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-state, 0.12s ease);
+  /* D-4/D-5: ensure children ellipsis-clip inside the card */
+  min-width: 0;
+  overflow: hidden;
+}
+
+.rr-s-item:hover {
+  background: var(--muted);
+}
+
+/* B-2 unified active treatment: left-2 --primary accent + tint fill */
+.rr-s-item.is-on {
+  background: var(--primary-tint);
+  box-shadow: inset 3px 0 0 var(--primary), inset 0 0 0 1px var(--border-strong);
+}
+
+.rr-s-item__name {
+  /* The bold human name is the clear primary identity on row 1. */
+  grid-row: 1;
+  grid-column: 1;
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rr-s-item.is-revoked .rr-s-item__name {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--muted-foreground);
+}
+
+/* Account line — row 2, the muted metadata line under the name. The kind label
+   is folded in at the end (an inline trailing segment). Constrained to column 1
+   (the flexible track) so the auto flag column never forces this span wider than
+   the viewport, and ellipsis clipping is reliable at any width. */
+.rr-s-item__line {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  grid-row: 2;
+  grid-column: 1;
+}
+
+.rr-s-item__cue {
+  grid-row: 3;
+  grid-column: 1 / -1;
+  width: fit-content;
+  margin-top: 2px;
+  border-left: 2px solid var(--warning);
+  background: var(--warning-tint);
+  padding: 2px 7px;
+  color: var(--foreground);
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+/* Health dot — pinned top-right on row 1, aligned with the name, so the
+   identity + health pair is the clean primary scan line and the dot is never
+   crowded by the kind label. */
+.rr-s-item__flag {
+  grid-row: 1;
+  grid-column: 2;
+  justify-self: end;
+  align-self: center;
+}
+
+/* Status dot — color is the ONE place state color is spent in the list.
+   At 10px the unicode glyphs (●◐⊘○) can read as stray punctuation on mobile.
+   13px + explicit block display lifts them into clearly intentional indicators
+   while staying unobtrusive on desktop. The flag container (.rr-s-item__flag)
+   provides the touch-target area so the dot itself stays visually small. */
+.rr-s-dot {
+  font-size: 13px;
+  line-height: 1;
+  display: block;
+}
+.rr-s-dot[data-tone="success"] {
+  color: var(--success);
+}
+.rr-s-dot[data-tone="warning"] {
+  color: var(--warning);
+}
+.rr-s-dot[data-tone="destructive"] {
+  color: var(--destructive);
+}
+.rr-s-dot[data-tone="muted"] {
+  color: var(--muted-foreground);
+}
+
+/* ── Add-a-source footer ── */
+.rr-s-end {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 0 0;
+}
+.rr-s-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--primary);
+  text-align: left;
+  cursor: pointer;
+  width: fit-content;
+}
+.rr-s-link:hover {
+  text-decoration: underline;
+}
+.rr-s-end__note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+
+/* ── Detail column ── */
+.rr-s-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  min-width: 0;
+}
+
+.rr-s-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Next-action CTA pill — surfaces the formatted next_action honestly. */
+.rr-s-cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  border-left: 2px solid var(--warning);
+  background: var(--warning-tint);
+  padding: 8px 12px;
+}
+.rr-s-cta__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.rr-s-cta__label:hover {
+  text-decoration: underline;
+}
+.rr-s-cta__caveat,
+.rr-s-cta__hint {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+
+/* Revoke confirmation ceremony row. */
+.rr-s-revoke {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--destructive);
+  background: var(--destructive-tint);
+  padding: 12px;
+  margin-top: 4px;
+}
+.rr-s-revoke__copy {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  margin: 0;
+}
+.rr-s-revoke__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--foreground);
+}
+.rr-s-revoke__row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Inline action result / error banner. */
+.rr-s-toast {
+  font-size: 11.5px;
+  line-height: 1.5;
+  padding: 8px 12px;
+  border-left: 2px solid var(--muted-foreground);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.rr-s-toast[data-tone="error"] {
+  border-left-color: var(--destructive);
+  background: var(--destructive-tint);
+  color: var(--destructive);
+}
+.rr-s-toast[data-tone="ok"] {
+  border-left-color: var(--success);
+  background: var(--success-tint);
+  color: var(--foreground);
+}
+
+/* Revoked passport note (standing fact). */
+.rr-s-revoked-note {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+  border-left: 2px solid var(--muted-foreground);
+  background: var(--muted);
+  padding: 8px 12px;
+}
+
+/* ── Stream manifest ── */
+.rr-s-manifest {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.rr-s-mini-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 6px;
+}
+.rr-s-mini-head__t {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin: 0;
+}
+.rr-s-mini-head__n {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+/* Stream manifest table — show useful collection facts when present, and an
+   explicit unavailable state when the reference has not produced per-stream
+   facts. No dash-only rows: empty facts are still a meaningful state. */
+.rr-s-cols {
+  --cols: minmax(0, 1fr) minmax(13rem, 1.4fr) minmax(10rem, 1fr) 6.5rem;
+}
+@media (max-width: 640px) {
+  .rr-s-cols {
+    --cols: minmax(0, 1fr) minmax(0, 1.25fr);
+  }
+  /* Hide coverage + Explore columns on narrow screens; the collection column
+     still says whether facts exist, and tapping the row remains the reader. */
+  .rr-s-cols .pdpp-table__h:nth-child(3),
+  .rr-s-cols .pdpp-table__h:nth-child(4),
+  .rr-s-cols .pdpp-table__row > *:nth-child(3),
+  .rr-s-cols .pdpp-table__row > *:nth-child(4) {
+    display: none;
+  }
+}
+
+.rr-s-stream-row {
+  text-decoration: none;
+  color: inherit;
+}
+
+.rr-s-stream {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--primary);
+}
+
+.rr-s-stream-fact,
+.rr-s-stream-subfact {
+  display: block;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--muted-foreground);
+}
+.rr-s-stream-fact {
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.rr-s-stream-fact.is-muted {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+.rr-s-stream-subfact {
+  margin-top: 2px;
+}
+.rr-s-stream-subfact.is-warning {
+  color: var(--warning);
+}
+.rr-s-stream-chip {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  padding: 1px 6px;
+  font-size: 0.68rem;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.rr-s-stream-chip[data-tone="success"] {
+  border-color: color-mix(in oklab, var(--success) 30%, transparent);
+  background: var(--success-tint);
+  color: var(--success);
+}
+.rr-s-stream-chip[data-tone="warning"] {
+  border-color: color-mix(in oklab, var(--warning) 38%, transparent);
+  background: var(--warning-tint);
+  color: var(--warning);
+}
+.rr-s-stream-chip[data-tone="danger"] {
+  border-color: color-mix(in oklab, var(--destructive) 38%, transparent);
+  background: var(--destructive-tint);
+  color: var(--destructive);
+}
+.rr-s-readby {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr-s-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+  max-width: 62ch;
+}
+
+/* Empty state. */
+.rr-s-empty {
+  border: 1px dashed var(--border-strong);
+  padding: 32px;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+}
+
+/* ── Revoked sources disclosure ──
+   Stripe/Linear pattern: inactive items remain accessible, not noise.
+   The <details> collapses revoked rows by default; expand to inspect, navigate
+   detail, or delete. The summary uses the same border-top treatment as active
+   rows but is muted and low-emphasis — not a list item, just a toggle. */
+.rr-s-revoked-group {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.rr-s-revoked-group__summary {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  padding: 8px 0;
+  cursor: pointer;
+  user-select: none;
+  list-style: none; /* hide default marker */
+}
+/* Custom marker via ::before so we can style it with a token color. */
+.rr-s-revoked-group__summary::before {
+  content: "▸ ";
+  font-size: 9px;
+  opacity: 0.6;
+}
+.rr-s-revoked-group[open] > .rr-s-revoked-group__summary::before {
+  content: "▾ ";
+}
+/* Firefox ships its own marker on <summary>; suppress it. */
+.rr-s-revoked-group__summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Duplicate fallback sources — active data, collapsed only when several
+   same-type sources still use generated labels. This keeps the list navigable
+   without hiding any source or implying cleanup happened automatically. */
+.rr-s-duplicate-group {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+}
+.rr-s-duplicate-group__summary {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--foreground);
+  padding: 10px 12px 8px 14px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.rr-s-duplicate-group__summary::before {
+  content: "▸ ";
+  font-size: 9px;
+  color: var(--muted-foreground);
+}
+.rr-s-duplicate-group[open] > .rr-s-duplicate-group__summary::before {
+  content: "▾ ";
+}
+.rr-s-duplicate-group__summary::-webkit-details-marker {
+  display: none;
+}
+.rr-s-duplicate-group__note {
+  margin: 0;
+  padding: 0 12px 10px 14px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* Version-churn advisory — quiet, protocol-toned, informational.
+   Advisories now render ABOVE the list (leads, not trails) so they are never
+   orphaned at the bottom on mobile. Stays on the muted/border palette
+   regardless of review state: retained history is not an alarm. The eyebrow
+   carries the mono protocol voice; the body is muted prose. No warning amber,
+   no copper consent tone here. */
+.rr-s-churn,
+.rr-s-runtime,
+.rr-s-duplicates {
+  margin-bottom: 16px;
+  border-left: 2px solid var(--border-strong);
+  padding: 10px 14px;
+  background: var(--muted);
+  max-width: 72ch;
+}
+.rr-s-churn__eyebrow {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.rr-s-churn__head {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+.rr-s-churn__signal {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.rr-s-churn__note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}
+.rr-s-duplicates__link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--primary);
+  text-decoration: none;
+}
+.rr-s-duplicates__link:hover {
+  text-decoration: underline;
+}
+
+/* ── Responsive: mobile push navigation ──
+   These MUST come after all base rules so they win in the cascade.
+   At ≤800px: hide the in-place detail panel and the desktop button affordance;
+   the mobile <Link> affordance (rr-s-item--mobile) pushes to the connection
+   detail page. At >800px: hide the mobile link, show the desktop button. */
+@media (max-width: 800px) {
+  .rr-s {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .rr-s-detail {
+    display: none;
+  }
+  .rr-s-item.rr-s-item--desktop {
+    display: none;
+  }
+  /* On narrow screens let the meta line wrap rather than clip mid-word.
+     The ellipsis behavior works well on desktop (wide column), but at 390px
+     the connector key clips to "· CHA…" or "OPENAI COD…" — wrapping is
+     more honest. The grid row expands naturally; the flag column stays in
+     row 1 (aligned with the name) via grid-row: 1.
+     !important needed: Next.js bundles sources-view.css into both
+     records/page.css AND records/loading.css; the loading.css copy has a
+     display:flex + white-space:nowrap that appears later in the cascade and
+     would silently win without !important. */
+  .rr-s-item__line {
+    display: block !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+  }
+}
+
+@media (min-width: 801px) {
+  .rr-s-item.rr-s-item--mobile {
+    display: none;
+  }
+}

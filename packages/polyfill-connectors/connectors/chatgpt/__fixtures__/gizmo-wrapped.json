@@ -1,0 +1,30 @@
+{
+  "resource": {
+    "gizmo": {
+      "id": "g-abc",
+      "short_url": "https://chatgpt.com/g/g-abc",
+      "display": {
+        "name": "Rubber Duck",
+        "description": "Talks back",
+        "welcome_message": "quack",
+        "category": "productivity",
+        "tags": ["debug"]
+      },
+      "config": {
+        "instructions": "Help debug code",
+        "tools": [
+          { "type": "code_interpreter" },
+          "browser",
+          { "name": "dalle" }
+        ]
+      },
+      "author": {
+        "user_id": "U42",
+        "display_name": "Alice"
+      },
+      "created_at": 1700000000,
+      "updated_at": 1710000000,
+      "sharing": "public"
+    }
+  }
+}

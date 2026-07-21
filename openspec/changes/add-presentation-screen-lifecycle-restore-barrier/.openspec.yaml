@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-07-18
+goal: Prevent connector automation from resuming on a viewer-mutated screen geometry.

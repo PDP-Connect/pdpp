@@ -1,0 +1,255 @@
+name: docker-images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    # reference-implementation/** is intentionally excluded to avoid rebuilding
+    # 4 images on every ref-impl commit (the repo's single largest CI cost).
+    # Coverage is preserved elsewhere:
+    #   - The console Docker image transpiles pdpp-reference-implementation, so
+    #     ref-impl changes CAN affect a Docker console build. That path is
+    #     exercised by reference-implementation.yml, which runs the console
+    #     standalone/integration builds on every ref-impl change.
+    #   - The release pipeline's validate-release-images job (semantic-release.yml)
+    #     still builds all Docker images before any publish.
+    # So removing this trigger trades earlier-but-redundant Docker feedback for a
+    # large cost saving, without losing build-safety on a real release.
+    paths:
+      - ".dockerignore"
+      - ".env.docker.example"
+      - ".github/workflows/docker-images.yml"
+      - "Dockerfile"
+      - "apps/console/**"
+      - "deploy/railway/**"
+      - "docker-compose*.yml"
+      - "package.json"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "scripts/docker-smoke.sh"
+  pull_request:
+    # See the push trigger above: reference-implementation/** is excluded on
+    # purpose so ref-impl-only changes don't rebuild the Docker image matrix.
+    paths:
+      - ".dockerignore"
+      - ".env.docker.example"
+      - ".github/workflows/docker-images.yml"
+      - "Dockerfile"
+      - "apps/console/**"
+      - "deploy/railway/**"
+      - "docker-compose*.yml"
+      - "package.json"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "scripts/docker-smoke.sh"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image to build on manual dispatch
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - reference
+          - reference-browser
+          - web
+          - railway-core
+      platforms:
+        description: Publish platforms on manual dispatch
+        required: false
+        default: linux/amd64,linux/arm64
+        type: string
+
+concurrency:
+  group: docker-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate ${{ matrix.image }}
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: reference
+            target: reference
+            title: PDPP reference AS/RS
+            description: PDPP reference authorization server and resource server
+          - image: web
+            target: console
+            title: PDPP reference operator console
+            description: PDPP browser-facing reference operator console
+          - image: reference-browser
+            target: reference-browser
+            title: PDPP reference AS/RS (browser-capable)
+            description: PDPP reference AS/RS with Patchright/Chromium for browser-backed connectors (ChatGPT, USAA, ...)
+          - image: railway-core
+            target: railway-core
+            title: PDPP Railway Core node
+            description: PDPP Railway pushbutton Core node with console and loopback AS/RS
+
+    steps:
+      - name: Checkout
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        uses: actions/checkout@v4
+
+      - name: Compute image name
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          echo "PDPP_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract Docker metadata
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.PDPP_IMAGE }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build image
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        uses: docker/build-push-action@v6
+        with:
+          # Pull from both the target's own scope and the reference scope.
+          # reference-browser extends the browsers stage (large ~300 MB layer)
+          # and shares the base layers with reference; pulling from both scopes
+          # lets BuildKit reuse those layers without rebuilding them.
+          cache-from: |
+            type=gha,scope=${{ matrix.target }}
+            type=gha,scope=reference
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            PDPP_REFERENCE_REVISION=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          target: ${{ matrix.target }}
+
+  publish:
+    name: publish ${{ matrix.image }}
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: reference
+            target: reference
+            title: PDPP reference AS/RS
+            description: PDPP reference authorization server and resource server
+          - image: reference-browser
+            target: reference-browser
+            title: PDPP reference AS/RS (browser-capable)
+            description: PDPP reference AS/RS with Patchright/Chromium for browser-backed connectors (ChatGPT, USAA, ...)
+          - image: web
+            target: console
+            title: PDPP reference operator console
+            description: PDPP browser-facing reference operator console
+          - image: railway-core
+            target: railway-core
+            title: PDPP Railway Core node
+            description: PDPP Railway pushbutton Core node with console and loopback AS/RS
+
+    steps:
+      - name: Checkout
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        uses: actions/checkout@v4
+
+      - name: Compute image name
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          echo "PDPP_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.PDPP_IMAGE }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push image
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.image == 'all' || github.event.inputs.image == matrix.image
+        uses: docker/build-push-action@v6
+        with:
+          # Pull from both the target's own scope and the reference scope.
+          # reference-browser extends the browsers stage (large ~300 MB layer)
+          # and shares the base layers with reference; pulling from both scopes
+          # lets BuildKit reuse those layers without rebuilding them.
+          cache-from: |
+            type=gha,scope=${{ matrix.target }}
+            type=gha,scope=reference
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            PDPP_REFERENCE_REVISION=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}
+          provenance: mode=max
+          push: true
+          sbom: true
+          tags: ${{ steps.meta.outputs.tags }}
+          target: ${{ matrix.target }}

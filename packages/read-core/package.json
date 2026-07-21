@@ -1,0 +1,38 @@
+{
+  "name": "@pdpp/read-core",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Pure, adapter-agnostic primitives for shaping PDPP read results into bounded previews, continuation descriptors, handle metadata, and escalation paths.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PDP-Connect/pdpp.git",
+    "directory": "packages/read-core"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "verify": "pnpm test"
+  },
+  "keywords": [
+    "pdpp",
+    "personal-data",
+    "read",
+    "read-surface"
+  ],
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": false,
+    "registry": "https://registry.npmjs.org/",
+    "tag": "latest"
+  }
+}

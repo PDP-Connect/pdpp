@@ -1,0 +1,78 @@
+{
+  "name": "pdpp-reference-implementation",
+  "version": "0.1.0",
+  "description": "Forkable PDPP reference implementation with AS/RS, runtime, CLI, and conformance-style tests.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pdpp": "./cli/index.js"
+  },
+  "exports": {
+    "./reference-local-defaults": "./server/reference-local-defaults.ts",
+    "./reference-topology": "./server/reference-topology.ts",
+    "./connection-setup-plan": "./server/connection-setup-plan.ts",
+    "./owner-session": "./server/owner-session.ts",
+    "./deployment-diagnostics": "./server/deployment-diagnostics.ts",
+    "./operations/as-authorization-server-metadata": "./operations/as-authorization-server-metadata/index.ts",
+    "./operations/ref-spine-correlations-list": "./operations/ref-spine-correlations-list/index.ts",
+    "./operations/ref-spine-events-page": "./operations/ref-spine-events-page/index.ts",
+    "./operations/rs-streams-list": "./operations/rs-streams-list/index.ts",
+    "./operations/rs-streams-detail": "./operations/rs-streams-detail/index.ts",
+    "./operations/rs-schema-get": "./operations/rs-schema-get/index.ts",
+    "./operations/rs-records-list": "./operations/rs-records-list/index.ts",
+    "./operations/rs-records-detail": "./operations/rs-records-detail/index.ts",
+    "./operations/rs-search-lexical": "./operations/rs-search-lexical/index.ts",
+    "./operations/rs-search-semantic": "./operations/rs-search-semantic/index.ts",
+    "./operations/rs-search-hybrid": "./operations/rs-search-hybrid/index.ts",
+    "./operations/rs-blobs-upload": "./operations/rs-blobs-upload/index.ts",
+    "./operations/rs-blobs-read": "./operations/rs-blobs-read/index.ts",
+    "./operations/rs-records-delete-stream": "./operations/rs-records-delete-stream/index.ts",
+    "./operations/rs-records-delete": "./operations/rs-records-delete/index.ts",
+    "./operations/rs-records-ingest": "./operations/rs-records-ingest/index.ts",
+    "./operations/rs-protected-resource-metadata": "./operations/rs-protected-resource-metadata/index.ts",
+    "./operations/ref-dataset-summary": "./operations/ref-dataset-summary/index.ts"
+  },
+  "scripts": {
+    "//dev": "Default dev is quiet again. Use `pnpm dev:trace-gc` only when investigating native/V8 crash behavior under load. Diagnostic reports go to ../tmp/node-reports/ and exclude env/network sections so connector credentials are not persisted.",
+    "dev": "sh -c 'mkdir -p ../tmp/node-reports && node --env-file-if-exists=../.env.local --import ./server/dev-env-defaults.js --report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=../tmp/node-reports server/index.js'",
+    "dev:trace-gc": "sh -c 'mkdir -p ../tmp/node-reports && node --env-file-if-exists=../.env.local --import ./server/dev-env-defaults.js --report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=../tmp/node-reports --trace-gc --trace-gc-verbose server/index.js'",
+    "server": "sh -c 'PDPP_REFERENCE_OPERATIONAL_DEFAULTS=${PDPP_REFERENCE_OPERATIONAL_DEFAULTS:-1} node --env-file-if-exists=../.env.local server/index.js'",
+    "cli": "node cli/index.js",
+    "example-client": "node examples/third-party-app/server.js",
+    "test": "node scripts/run-tests.js",
+    "test:semantic-multilingual-smoke": "PDPP_MULTILINGUAL_MINILM_SMOKE=1 node --test --test-timeout=240000 --test-name-pattern \"multilingual-minilm profile\" test/semantic-retrieval.test.js",
+    "test:live-cdp": "PDPP_TEST_LIVE_CDP=1 node --test test/run-interaction-stream-cdp-live.test.js",
+    "test:live-neko": "PDPP_TEST_LIVE_NEKO=1 node --test test/run-interaction-stream-neko-live.test.js",
+    "typecheck": "tsc --noEmit",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "verify": "pnpm typecheck && pnpm check"
+  },
+  "dependencies": {
+    "@fastify/formbody": "^8.0.2",
+    "@huggingface/transformers": "^4.2.0",
+    "@pdpp/mcp-server": "workspace:*",
+    "@pdpp/reference-contract": "workspace:*",
+    "better-sqlite3": "^12.9.0",
+    "express": "^4.18.3",
+    "fastify": "^5.6.1",
+    "ipaddr.js": "2.3.0",
+    "patchright": "^1.59.4",
+    "pg": "^8.20.0",
+    "pino": "^10.3.1",
+    "qs": "^6.14.0",
+    "sqlite-vec": "^0.1.9",
+    "undici": "^7.24.4",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.12",
+    "jsdom": "^29.1.1",
+    "pino-pretty": "^13.0.0",
+    "ultracite": "7.6.0"
+  },
+  "license": "Apache-2.0",
+  "optionalDependencies": {
+    "@opendatalabs/remote-surface": "^0.3.1"
+  }
+}

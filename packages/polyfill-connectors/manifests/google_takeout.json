@@ -1,0 +1,286 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/google-takeout",
+  "connector_key": "google-takeout",
+  "manifest_uri": "https://registry.pdpp.org/connectors/google-takeout",
+  "version": "0.1.0",
+  "display_name": "Google Takeout",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": false
+      },
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Google Takeout requires the user to request and download a fresh archive; refresh cannot run in the background."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "location_history",
+      "description": "Location history from Google Maps Timeline.",
+      "display": {
+        "label": "Your Google location history",
+        "detail": "Places you've been with timestamps, lat/lon, accuracy, activity type when available. Parsed from Google Takeout Records.json."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "latitude": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "longitude": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "accuracy_meters": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "activity_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "velocity_mps": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "altitude_m": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "timestamp"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "youtube_watch_history",
+      "description": "YouTube watch history.",
+      "display": {
+        "label": "Your YouTube watch history",
+        "detail": "Videos watched with watch time, video URL, title, channel name."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "watched_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "video_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "video_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "channel_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "channel_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "watched_at"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "watched_at",
+      "consent_time_field": "watched_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "watched_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "watched_at"
+          ]
+        },
+        "search": {
+          "lexical_fields": [
+            "video_title",
+            "channel_name"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "search_history",
+      "description": "Google search queries from My Activity.",
+      "display": {
+        "label": "Your Google search history",
+        "detail": "Search queries with timestamps and products (Search, Maps, Images, etc.)."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "product": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "timestamp"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ]
+        },
+        "search": {
+          "lexical_fields": [
+            "query"
+          ],
+          "semantic_fields": [
+            "query"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

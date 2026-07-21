@@ -1,0 +1,331 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "google-maps",
+  "connector_key": "google-maps",
+  "manifest_uri": "https://registry.pdpp.org/connectors/google-maps",
+  "version": "0.1.0",
+  "display_name": "Google Maps Timeline Import",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": false
+      },
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "manual_or_upload",
+    "manual_or_upload": {
+      "label": "Google Maps Timeline export file",
+      "description": "Export Timeline data from the Google Maps mobile app or Android location settings, then provide the JSON export to PDPP.",
+      "acquisition_methods": [
+        {
+          "label": "Export from Android",
+          "platform": "android",
+          "posture": "primary",
+          "detail": "Open Android Settings > Location > Location services > Timeline > Export Timeline data, then share or upload the JSON file.",
+          "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DAndroid&hl=en"
+        },
+        {
+          "label": "Export from iPhone",
+          "platform": "ios",
+          "posture": "primary",
+          "detail": "Open Google Maps Settings > Location & Privacy > Export Timeline data, then share or upload the JSON file.",
+          "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DiOS&hl=en"
+        },
+        {
+          "label": "Import-folder handoff",
+          "platform": "server",
+          "posture": "secondary",
+          "detail": "For a large export, place the file in the configured server import folder and start the same manual import flow."
+        },
+        {
+          "label": "Takeout backup probe",
+          "platform": "takeout",
+          "posture": "advanced",
+          "detail": "Use only as a best-effort backup probe after a first archive proves current Timeline records. Takeout's two-month cadence is not a phone-export cooldown."
+        }
+      ],
+      "accepted_file_names": [
+        "Timeline.json",
+        "timeline.json",
+        "location-history.json",
+        "Records.json"
+      ],
+      "import_dir_env_var": "GOOGLE_MAPS_TIMELINE_DIR",
+      "help_url": "https://support.google.com/maps/answer/6258979?co=GENIE.Platform%3DAndroid&hl=en",
+      "help_text": "Google Maps Timeline points and segments are not exposed by Google's documented Data Portability API. This source imports an owner-provided Timeline export file; no Google account sign-in is used.",
+      "large_file_fallback": "Use the server import-folder handoff for large Timeline archives instead of waiting on a browser upload.",
+      "validation": {
+        "kind": "google_maps_timeline",
+        "max_file_bytes": 104857600
+      },
+      "validation_expectations": [
+        "Detected Timeline format",
+        "Estimated points and segments",
+        "Detected date range",
+        "Duplicate, stale, empty, or unsupported file status"
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Google Maps Timeline imports require the owner to export a fresh Timeline JSON file from Google Maps or Android settings. Google's documented Data Portability API exposes other Maps resource groups, but not Timeline points or Timeline segments, so this connector does not authenticate to Google or refresh in the background."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
+    }
+  },
+  "streams": [
+    {
+      "name": "timeline_points",
+      "description": "Timestamped Google Maps Timeline location points.",
+      "display": {
+        "label": "Your Google Maps location points",
+        "detail": "Timestamped latitude/longitude observations from Google Maps Timeline exports, including source format and activity hints when available."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "latitude": {
+            "type": "number"
+          },
+          "longitude": {
+            "type": "number"
+          },
+          "accuracy_meters": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "altitude_m": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "velocity_mps": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "activity_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "segment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_format": {
+            "type": "string",
+            "enum": [
+              "legacy_records",
+              "semantic_segments",
+              "timeline_objects"
+            ]
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "raw_location",
+              "timeline_path",
+              "visit_location",
+              "activity_start",
+              "activity_end"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "timestamp",
+          "latitude",
+          "longitude",
+          "source_format",
+          "source_kind"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ],
+          "group_by": [
+            "activity_type"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "timeline_segments",
+      "description": "Google Maps Timeline visits, activities, and path segments.",
+      "display": {
+        "label": "Your Google Maps visits and activities",
+        "detail": "Normalized Timeline visits, activities, and movement segments when the export provides semantic Timeline entries."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "end_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "segment_kind": {
+            "type": "string",
+            "enum": [
+              "path",
+              "visit",
+              "activity"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "source_format": {
+            "type": "string",
+            "enum": [
+              "legacy_records",
+              "semantic_segments",
+              "timeline_objects"
+            ]
+          },
+          "latitude": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "longitude": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "place_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "semantic_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "activity_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "probability": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "start_time",
+          "segment_kind",
+          "source_format"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "start_time",
+      "consent_time_field": "start_time",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "start_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "end_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start_time"
+          ],
+          "group_by": [
+            "segment_kind"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

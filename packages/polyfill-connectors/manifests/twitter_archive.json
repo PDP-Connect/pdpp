@@ -1,0 +1,233 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/twitter-archive",
+  "connector_key": "twitter-archive",
+  "manifest_uri": "https://registry.pdpp.org/connectors/twitter-archive",
+  "version": "0.1.0",
+  "display_name": "Twitter/X Archive",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Twitter/X archive must be requested from the platform; refresh cannot run in the background."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "tweets",
+      "description": "Tweets (posts) authored by the user.",
+      "display": {
+        "label": "Your tweets",
+        "detail": "Tweet text, timestamps, reply/retweet/quote relationships, media counts."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "favorite_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retweet_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "in_reply_to_status_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_reply_to_screen_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lang": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "media_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "url_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "created_at"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "created_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "text"
+          ],
+          "semantic_fields": [
+            "text"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ],
+          "group_by": [
+            "lang"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "direct_messages",
+      "description": "Direct messages to/from the user.",
+      "display": {
+        "label": "Your DMs",
+        "detail": "Sender, recipient, timestamp, text per DM."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sender_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recipient_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          }
+        },
+        "required": [
+          "id",
+          "created_at"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "created_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "text"
+          ],
+          "semantic_fields": [
+            "text"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

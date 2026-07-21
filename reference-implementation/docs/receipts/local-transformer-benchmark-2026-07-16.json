@@ -1,0 +1,141 @@
+{
+  "kind": "pdpp_local_transformer_benchmark_receipt",
+  "recorded_at": "2026-07-16T18:54:19.629Z",
+  "input_count": 100,
+  "measured_rounds": 2,
+  "backend_identity": "minilm:Xenova/all-MiniLM-L6-v2:q4:384:cosine",
+  "selected_default": {
+    "work_limit": 1,
+    "rationale": "No higher work limit was at least 15% faster while remaining within 10% of the fastest median."
+  },
+  "runs": [
+    {
+      "concurrency": 1,
+      "rounds": [
+        {
+          "concurrency": 1,
+          "elapsed_ms": 1342,
+          "output_count": 100,
+          "output_dimensions": 384,
+          "output_equal_to_baseline": true,
+          "parent_high_water": 1,
+          "actual_child_high_water": 1,
+          "peak_parent_rss_bytes": 132845568,
+          "peak_child_rss_bytes": 220684288,
+          "peak_combined_rss_bytes": 353529856,
+          "errors": []
+        },
+        {
+          "concurrency": 1,
+          "elapsed_ms": 1324,
+          "output_count": 100,
+          "output_dimensions": 384,
+          "output_equal_to_baseline": true,
+          "parent_high_water": 1,
+          "actual_child_high_water": 1,
+          "peak_parent_rss_bytes": 133238784,
+          "peak_child_rss_bytes": 247590912,
+          "peak_combined_rss_bytes": 380829696,
+          "errors": []
+        }
+      ],
+      "median_elapsed_ms": 1333
+    },
+    {
+      "concurrency": 2,
+      "rounds": [
+        {
+          "concurrency": 2,
+          "elapsed_ms": 1176,
+          "output_count": 100,
+          "output_dimensions": 384,
+          "output_equal_to_baseline": true,
+          "parent_high_water": 2,
+          "actual_child_high_water": 2,
+          "peak_parent_rss_bytes": 134418432,
+          "peak_child_rss_bytes": 201433088,
+          "peak_combined_rss_bytes": 335851520,
+          "errors": []
+        },
+        {
+          "concurrency": 2,
+          "elapsed_ms": 1257,
+          "output_count": 100,
+          "output_dimensions": 384,
+          "output_equal_to_baseline": true,
+          "parent_high_water": 2,
+          "actual_child_high_water": 2,
+          "peak_parent_rss_bytes": 135598080,
+          "peak_child_rss_bytes": 207470592,
+          "peak_combined_rss_bytes": 343068672,
+          "errors": []
+        }
+      ],
+      "median_elapsed_ms": 1216.5
+    },
+    {
+      "concurrency": 4,
+      "rounds": [
+        {
+          "concurrency": 4,
+          "elapsed_ms": 1310,
+          "output_count": 100,
+          "output_dimensions": 384,
+          "output_equal_to_baseline": true,
+          "parent_high_water": 4,
+          "actual_child_high_water": 4,
+          "peak_parent_rss_bytes": 136187904,
+          "peak_child_rss_bytes": 201506816,
+          "peak_combined_rss_bytes": 337694720,
+          "errors": []
+        },
+        {
+          "concurrency": 4,
+          "elapsed_ms": 1236,
+          "output_count": 100,
+          "output_dimensions": 384,
+          "output_equal_to_baseline": true,
+          "parent_high_water": 4,
+          "actual_child_high_water": 4,
+          "peak_parent_rss_bytes": 136384512,
+          "peak_child_rss_bytes": 204292096,
+          "peak_combined_rss_bytes": 340017152,
+          "errors": []
+        }
+      ],
+      "median_elapsed_ms": 1273
+    },
+    {
+      "concurrency": 8,
+      "rounds": [
+        {
+          "concurrency": 8,
+          "elapsed_ms": 1284,
+          "output_count": 100,
+          "output_dimensions": 384,
+          "output_equal_to_baseline": true,
+          "parent_high_water": 8,
+          "actual_child_high_water": 8,
+          "peak_parent_rss_bytes": 136384512,
+          "peak_child_rss_bytes": 199376896,
+          "peak_combined_rss_bytes": 335761408,
+          "errors": []
+        },
+        {
+          "concurrency": 8,
+          "elapsed_ms": 1259,
+          "output_count": 100,
+          "output_dimensions": 384,
+          "output_equal_to_baseline": true,
+          "parent_high_water": 8,
+          "actual_child_high_water": 8,
+          "peak_parent_rss_bytes": 137170944,
+          "peak_child_rss_bytes": 201170944,
+          "peak_combined_rss_bytes": 338210816,
+          "errors": []
+        }
+      ],
+      "median_elapsed_ms": 1271.5
+    }
+  ]
+}

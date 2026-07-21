@@ -1,0 +1,94 @@
+<!doctype html>
+<!--
+  Trimmed extract from the real captured run:
+    fixtures/chase/raw/2026-05-15T13-48-45-588Z/dom/dashboard-accounts.html
+
+  The full capture is 724K. This trimmed shape preserves what the parser
+  actually keys off — the dashboard overview's recent-activity MDS table —
+  while keeping the fixture small enough to read in review. Merchant labels
+  and amounts are from the real run; they're already non-sensitive enough
+  for a committed fixture per the existing dashboard-accounts-button-shape
+  pattern.
+-->
+<html>
+  <head><title>Accounts - chase.com</title></head>
+  <body>
+    <button id="accounts-name-link-button-1212486749" type="button">
+      Sapphire Preferred (...9241)
+    </button>
+    <table
+      id="ovd-recent-activity-table-dataTableId-mds-diy-data-table"
+      data-testid="ovd-recent-activity-table-dataTableId-mds-diy-data-table"
+      class="mds-activity-table"
+      tabindex="-1"
+    >
+      <thead>
+        <tr
+          id="ovd-recent-activity-table-dataTableIdmds-activity-table__column-headers"
+          class="mds-activity-table__header-row--relaxed"
+        >
+          <th>Date</th>
+          <th>Description</th>
+          <th>Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          id="ovd-recent-activity-table-dataTableId-row-1"
+          class="mds-activity-table__row mds-activity-table__row--relaxed mds-activity-table__row--activated data-table-for-channel__subdued"
+          data-index="1"
+          tabindex="-1"
+          data-values="Pending (2),STDAVIDS PARTNERSHIP,$158.04,"
+        >
+          <td>Pending (2)</td>
+          <td>STDAVIDS PARTNERSHIP</td>
+          <td>$158.04</td>
+        </tr>
+        <tr
+          id="ovd-recent-activity-table-dataTableId-row-2"
+          class="mds-activity-table__row mds-activity-table__row--relaxed mds-activity-table__row--activated data-table-for-channel__subdued mds-activity-table__row--solid"
+          data-index="2"
+          tabindex="-1"
+          data-values="Pending (2),SP REBELSTORK,$101.24,"
+        >
+          <td>Pending (2)</td>
+          <td>SP REBELSTORK</td>
+          <td>$101.24</td>
+        </tr>
+        <tr
+          id="ovd-recent-activity-table-dataTableId-row-3"
+          class="mds-activity-table__row mds-activity-table__row--relaxed mds-activity-table__row--activated"
+          data-index="3"
+          tabindex="-1"
+          data-values="May 14, 2026,PET HEALTH INSURANCE,$39.08,"
+        >
+          <td>May 14, 2026</td>
+          <td>PET HEALTH INSURANCE</td>
+          <td>$39.08</td>
+        </tr>
+        <tr
+          id="ovd-recent-activity-table-dataTableId-row-4"
+          class="mds-activity-table__row mds-activity-table__row--relaxed mds-activity-table__row--activated"
+          data-index="4"
+          tabindex="-1"
+          data-values="May 14, 2026,PET HEALTH INSURANCE,$98.84,"
+        >
+          <td>May 14, 2026</td>
+          <td>PET HEALTH INSURANCE</td>
+          <td>$98.84</td>
+        </tr>
+        <tr
+          id="ovd-recent-activity-table-dataTableId-row-5"
+          class="mds-activity-table__row mds-activity-table__row--relaxed mds-activity-table__row--activated mds-activity-table__row--solid"
+          data-index="5"
+          tabindex="-1"
+          data-values="May 14, 2026,PET HEALTH INSURANCE,$70.99,"
+        >
+          <td>May 14, 2026</td>
+          <td>PET HEALTH INSURANCE</td>
+          <td>$70.99</td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>

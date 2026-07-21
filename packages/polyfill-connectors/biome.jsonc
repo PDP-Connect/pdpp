@@ -1,0 +1,93 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "root": false,
+  "extends": ["ultracite/biome/core", "ultracite/biome/type-aware"],
+  "formatter": {
+    "lineWidth": 120
+  },
+  "files": {
+    "ignoreUnknown": true,
+    // Everything TypeScript in src/, connectors/, bin/ is linted and
+    // formatted — including *.test.ts so tests are held to the same bar.
+    // Handcrafted fixture artifacts and captured DOM/JSONL live under
+    // __fixtures__/ or fixtures/ and are excluded (they're literal data,
+    // not code). Build outputs and vendored deps are excluded too.
+    "includes": [
+      "src/**/*.ts",
+      "connectors/**/*.ts",
+      "bin/**/*.ts",
+      "bench/**/*.ts",
+      "*.jsonc",
+      "*.json",
+      "!node_modules",
+      "!fixtures",
+      "!**/__fixtures__",
+      "!dist"
+    ]
+  },
+  "overrides": [
+    {
+      // Cognitive-complexity error gate for production source (src/, bin/,
+      // connectors/). Every migration escape valve that once lived here —
+      // useTopLevelRegex, noNestedTernary, noAssignInExpressions,
+      // noBitwiseOperators, noImplicitAnyLet, noEvolvingTypes, useTemplate,
+      // and (as of 2026-04-22) noExcessiveCognitiveComplexity — has been
+      // eliminated and its violations fixed in-place. This override keeps
+      // noExcessiveCognitiveComplexity at "error" so any production
+      // function above Biome's default budget of 20 fails CI, matching
+      // the bar every other package already holds. Tests are excluded
+      // (see the *.test.ts override below) because parametric test
+      // bodies can legitimately exceed the budget.
+      "includes": [
+        "src/**/*.ts",
+        "bin/**/*.ts",
+        "connectors/**/*.ts",
+        "!**/*.test.ts"
+      ],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "error"
+          }
+        }
+      }
+    },
+    {
+      // Runner-slice barrel. `src/runner/index.ts` is the load-bearing entry
+      // for the publishable `@pdpp/local-collector` package — it exists
+      // specifically to give that package a single import path. The
+      // noBarrelFile perf concern (large module graphs of unused modules)
+      // does not apply: every module re-exported here is used by the
+      // collector loop, and the file is intentionally narrow.
+      "includes": ["src/runner/index.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    },
+    {
+      // Test-file override. Tests are held to the same typecheck + style
+      // bar as production code, with two exceptions that are test-idiomatic:
+      // (a) useTopLevelRegex — test bodies routinely use inline
+      //     /^\d{3}-.../ for `assert.match` calls; perf is irrelevant in
+      //     a test runner, and hoisting them would hurt readability.
+      // (b) noExcessiveCognitiveComplexity — parametric test bodies can
+      //     exceed 20 when iterating many cases; splitting them into
+      //     named helpers hurts the at-a-glance diff when a case fails.
+      "includes": ["**/*.test.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "useTopLevelRegex": "off"
+          },
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "off"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+.git
+.vercel
+**/.vercel
+.claude
+.agents
+.codex
+.playwright-mcp
+
+node_modules
+**/node_modules
+.next
+**/.next
+.generated
+**/.generated
+*.tsbuildinfo
+
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.docker.example
+
+local
+tmp
+docs/inbox
+docs/outbox
+demo_archived
+
+packages/polyfill-connectors/.pdpp-data
+**/.pdpp-data
+packages/polyfill-connectors/fixtures/*/raw
+
+# Kernel core_pattern drops core.PID into the crashing process's CWD; a
+# crash-looping connector run once baked a ~10GB core into the allocator
+# image via COPY.
+**/core.[0-9]*
+reference-implementation/.cache
+reference-implementation/report.*.json
+
+/*.png
+/*.yml
+!docker-compose.yml
+!lefthook.yml

@@ -1,0 +1,165 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/pocket",
+  "connector_key": "pocket",
+  "manifest_uri": "https://registry.pdpp.org/connectors/pocket",
+  "version": "0.1.0",
+  "display_name": "Pocket",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "recommended_interval_seconds": 21600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Pocket upstream API was shut down by Mozilla on 2025-07-08; the connector cannot run regardless of refresh mode."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "deprecated_upstream",
+      "rationale": "Mozilla shut Pocket down on 2025-07-08; no upstream API remains to fetch from."
+    }
+  },
+  "streams": [
+    {
+      "name": "items",
+      "description": "Saved articles/links in Pocket.",
+      "display": {
+        "label": "Your Pocket saves",
+        "detail": "Titles, URLs, tags, time added, archive status, favorite flag, reading time estimate."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "time_added": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "time_updated": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "time_read": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_favorited": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array"
+          },
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "favorite": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "word_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reading_time_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "url"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "time_updated",
+      "consent_time_field": "time_added",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "author"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "time_added"
+          ]
+        },
+        "range_filters": {
+          "time_added": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

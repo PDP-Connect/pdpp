@@ -1,0 +1,262 @@
+services:
+  reference:
+    # The default GHCR image (and the `reference` build target below) is
+    # deliberately browser-free: managed-platform Core deploys do not run
+    # browser-backed collection inside the server container. Deployments that
+    # run browser-backed connectors (ChatGPT, USAA, ...) INSIDE this container
+    # must switch to the published browser-capable image:
+    #   PDPP_REFERENCE_IMAGE=ghcr.io/vana-com/pdpp/reference-browser:main
+    # Set that variable in .env.docker (or a gitignored
+    # docker-compose.override.yml) and re-pull. Otherwise the next
+    # `compose pull && up -d` reverts to a browser-free image and every
+    # browser run fails at Patchright launch ("Executable doesn't exist at
+    # /opt/patchright-browsers/...").
+    image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/vana-com/pdpp/reference:main}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: reference
+      args:
+        PDPP_REFERENCE_REVISION: ${PDPP_REFERENCE_REVISION:-unknown}
+    # Reserved local-transformer semantic execution fail-stops
+    # (process.exit(1)) rather than serving with unaccounted-for transformer
+    # capacity when a compute child cannot be confirmed dead — see
+    # local-transformer-executor.ts's #failStop and the "Local transformer
+    # execution SHALL be killable and fenced" requirement in
+    # openspec/changes/correct-local-collector-ingest-throughput/specs/
+    # reference-implementation-runtime/spec.md. `unless-stopped` is the real
+    # supervisor this container needs: Docker restarts the process after that
+    # fail-stop (or any crash/host reboot) so sticky reservations can resume,
+    # and only an explicit `docker stop`/`compose down` opts back out. This
+    # MUST stay paired with PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT
+    # below — the env guard exists precisely to refuse boot if this policy
+    # (or an equivalent one) is missing.
+    restart: unless-stopped
+    environment:
+      AS_PORT: "7662"
+      RS_PORT: "7663"
+      PDPP_REFERENCE_MODE: composed
+      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3002}
+      PDPP_TRUSTED_HOSTS: ${PDPP_TRUSTED_HOSTS:-}
+      AS_PUBLIC_URL: ${AS_PUBLIC_URL:-}
+      RS_PUBLIC_URL: ${RS_PUBLIC_URL:-}
+      # Explicit internal RS base for server-internal hosted-MCP self-calls.
+      # Keep this distinct from RS_PUBLIC_URL so the adapter does not hairpin
+      # PATCH/GET/POST/DELETE self-calls through the public reverse proxy.
+      PDPP_RS_URL: ${PDPP_RS_URL:-http://127.0.0.1:7663}
+      AS_ISSUER: ${AS_ISSUER:-}
+      PDPP_WEB_BASE_URL: ${PDPP_WEB_BASE_URL:-}
+      # CANONICAL DEPLOY: `bash scripts/reference-stack.sh up --build-app`
+      # (or `pnpm docker:reference:build-all`). That script ALWAYS passes
+      # `--env-file .env.docker`, which supplies PDPP_STORAGE_BACKEND=postgres
+      # + PDPP_DATABASE_URL — the real store (the live `pdpp` Postgres DB holding
+      # all records). Do NOT hand-roll `docker compose up` without --env-file:
+      # without the backend vars the server falls back to SQLite, and a bad
+      # SQLITE path crashes boot ("Cannot open database because the directory
+      # does not exist").
+      #
+      # The default below lives INSIDE the persistent pdpp-home volume
+      # (/root/.pdpp, see the `volumes:` mount) so even a no-env-file fallback
+      # opens a writable path instead of crashing on a missing /var/lib dir.
+      # When PDPP_STORAGE_BACKEND=postgres this SQLite path is inert
+      # (canonical record/blob storage is Postgres; only local-only caches use
+      # SQLite — see .env.docker).
+      PDPP_DB_PATH: ${PDPP_DB_PATH:-/root/.pdpp/pdpp.sqlite}
+      PDPP_STORAGE_BACKEND: ${PDPP_STORAGE_BACKEND:-}
+      PDPP_DATABASE_URL: ${PDPP_DATABASE_URL:-}
+      PDPP_EMBEDDING_CACHE_DIR: ${PDPP_EMBEDDING_CACHE_DIR:-/var/cache/pdpp/transformers}
+      PDPP_EMBEDDING_DOWNLOAD_ALLOWED: ${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-1}
+      # Asserts that a supervisor will restart this container after the local
+      # semantic backend's confirmed fail-stop (process.exit(1)). TRUE here
+      # only because `restart: unless-stopped` is set above — never set this
+      # to 1 without a real restart policy backing it (search-semantic.js
+      # rejects production local-semantic startup otherwise).
+      PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT: "1"
+      PDPP_REFERENCE_OPERATIONAL_DEFAULTS: "1"
+      PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:-}
+      PDPP_OWNER_SUBJECT_ID: ${PDPP_OWNER_SUBJECT_ID:-owner_local}
+      PDPP_CREDENTIAL_ENCRYPTION_KEY: ${PDPP_CREDENTIAL_ENCRYPTION_KEY:-}
+      PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE: ${PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE:-}
+      PDPP_DCR_INITIAL_ACCESS_TOKENS: ${PDPP_DCR_INITIAL_ACCESS_TOKENS:-}
+      PDPP_WEB_PUSH_VAPID_PUBLIC_KEY: ${PDPP_WEB_PUSH_VAPID_PUBLIC_KEY:-}
+      PDPP_WEB_PUSH_VAPID_PRIVATE_KEY: ${PDPP_WEB_PUSH_VAPID_PRIVATE_KEY:-}
+      PDPP_WEB_PUSH_VAPID_SUBJECT: ${PDPP_WEB_PUSH_VAPID_SUBJECT:-}
+      GOOGLE_DATAPORTABILITY_CLIENT_ID: ${GOOGLE_DATAPORTABILITY_CLIENT_ID:-}
+      GOOGLE_DATAPORTABILITY_CLIENT_SECRET: ${GOOGLE_DATAPORTABILITY_CLIENT_SECRET:-}
+      GOOGLE_DATAPORTABILITY_REDIRECT_URI: ${GOOGLE_DATAPORTABILITY_REDIRECT_URI:-}
+      GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS: ${GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS:-}
+      YNAB_PERSONAL_ACCESS_TOKEN: ${YNAB_PERSONAL_ACCESS_TOKEN:-}
+      YNAB_PAT: ${YNAB_PAT:-}
+      USAA_USERNAME: ${USAA_USERNAME:-}
+      USAA_PASSWORD: ${USAA_PASSWORD:-}
+      GOOGLE_APP_PASSWORD_PDPP: ${GOOGLE_APP_PASSWORD_PDPP:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      # Gmail attachment hydration/backfill uploads bytes through the
+      # reference blob API. Operators mint this token from the deployment-token
+      # surface and supply it only for connector runs that need blob upload.
+      PDPP_OWNER_TOKEN: ${PDPP_OWNER_TOKEN:-}
+      PDPP_GMAIL_MAX_ATTACHMENT_BYTES: ${PDPP_GMAIL_MAX_ATTACHMENT_BYTES:-}
+      PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS: ${PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS:-}
+      PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES: ${PDPP_GMAIL_ATTACHMENT_BACKFILL_PAGE_BYTES:-}
+      CHATGPT_USERNAME: ${CHATGPT_USERNAME:-}
+      CHATGPT_PASSWORD: ${CHATGPT_PASSWORD:-}
+      PDPP_CHATGPT_SIDE_EFFECT_PROBE: ${PDPP_CHATGPT_SIDE_EFFECT_PROBE:-}
+      PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN: ${PDPP_CHATGPT_MAX_DETAIL_FETCHES_PER_RUN:-}
+      PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS: ${PDPP_CHATGPT_MAX_RUN_WALL_CLOCK_MS:-}
+      PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER: ${PDPP_CHATGPT_DETAIL_RATE_LIMIT_STOP_AFTER:-}
+      PDPP_CAPTURE_FIXTURES: ${PDPP_CAPTURE_FIXTURES:-}
+      # Live/debug capture artifacts belong in persistent runtime storage, not
+      # in the deploy checkout. A checkout bind can disappear after a temp
+      # deploy worktree is reaped, which can wedge connector startup while
+      # capture mode is enabled.
+      PDPP_CAPTURE_ROOT_DIR: ${PDPP_CAPTURE_ROOT_DIR:-/root/.pdpp/fixture-captures}
+      PDPP_BROWSER_SURFACE_DIAGNOSTICS: ${PDPP_BROWSER_SURFACE_DIAGNOSTICS:-}
+      # Operator-forced browser-surface routing. Leave EMPTY in the normal
+      # managed deployment: when PDPP_NEKO_MANAGED_CONNECTORS is configured
+      # (docker-compose.neko.yml), the controller leases a surface per run and
+      # injects the full PDPP_BROWSER_SURFACE_* block into the connector child
+      # (reference-implementation/runtime/browser-surface-leases.ts), so these
+      # globals are not needed and a static URL here would point managed
+      # connectors at the wrong profile in dynamic mode. Set them only to pin
+      # ALL browser connectors to one remote CDP endpoint (e.g. a single-neko
+      # deployment that does not run the lease manager).
+      PDPP_BROWSER_SURFACE_REQUIRED: ${PDPP_BROWSER_SURFACE_REQUIRED:-}
+      PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: ${PDPP_BROWSER_SURFACE_REMOTE_CDP_URL:-}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_SERVER_URL: ${NTFY_SERVER_URL:-}
+      NTFY_USERNAME: ${NTFY_USERNAME:-}
+      NTFY_PASSWORD: ${NTFY_PASSWORD:-}
+      GMAIL_ADDRESS: ${GMAIL_ADDRESS:-}
+      GMAIL_USER: ${GMAIL_USER:-}
+      GITHUB_USERNAME: ${GITHUB_USERNAME:-}
+      GITHUB_PASSWORD: ${GITHUB_PASSWORD:-}
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PERSONAL_ACCESS_TOKEN:-}
+      SLACK_WORKSPACE: ${SLACK_WORKSPACE:-}
+      SLACK_TOKEN: ${SLACK_TOKEN:-}
+      SLACK_COOKIE: ${SLACK_COOKIE:-}
+      SLACKDUMP_BIN: ${SLACKDUMP_BIN:-/opt/pdpp-tools/slackdump/slackdump}
+      CHASE_USERNAME: ${CHASE_USERNAME:-}
+      CHASE_PASSWORD: ${CHASE_PASSWORD:-}
+      AMAZON_USERNAME: ${AMAZON_USERNAME:-}
+      AMAZON_PASSWORD: ${AMAZON_PASSWORD:-}
+      REDDIT_USERNAME: ${REDDIT_USERNAME:-}
+      REDDIT_PASSWORD: ${REDDIT_PASSWORD:-}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      NOTION_API_TOKEN: ${NOTION_API_TOKEN:-}
+      OURA_PERSONAL_ACCESS_TOKEN: ${OURA_PERSONAL_ACCESS_TOKEN:-}
+      STRAVA_ACCESS_TOKEN: ${STRAVA_ACCESS_TOKEN:-}
+      CLAUDE_CODE_HOME: ${CLAUDE_CODE_HOME:-/imports/claude}
+      CLAUDE_CODE_PROJECTS_DIR: ${CLAUDE_CODE_PROJECTS_DIR:-/imports/claude/projects}
+      CODEX_HOME: ${CODEX_HOME:-/imports/codex}
+      # Browser-backed connectors that need a visible browser (ChatGPT, USAA,
+      # etc.) cannot run inside this container — see
+      # `openspec/changes/introduce-local-collector-runner`. Run them via the
+      # workspace collector on a host that can render a visible Chromium:
+      #   pnpm exec pdpp collector enroll --base-url <url> --code <code>
+      #   pnpm exec pdpp collector run    --base-url <url> --connector <id> ...
+      # The public @pdpp/local-collector package currently ships the
+      # filesystem-class Claude Code / Codex collectors, not browser-backed
+      # Patchright connectors.
+    ports:
+      - "${PDPP_REFERENCE_AS_PORT:-7662}:7662"
+      - "${PDPP_REFERENCE_RS_PORT:-7663}:7663"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # SQLite mount intentionally omitted: this compose runs Postgres as
+      # the storage backend. To re-run the migration tool, do it on the
+      # host with the SQLite file at `./packages/polyfill-connectors/
+      # .pdpp-data/pdpp.sqlite` and the host-published Postgres port.
+      - pdpp-transformers:/var/cache/pdpp/transformers
+      - pdpp-home:/root/.pdpp
+      # File connector imports. Override the host-side paths with
+      # PDPP_DOCKER_CLAUDE_CODE_HOME / PDPP_DOCKER_CODEX_HOME when running
+      # claude_code or codex inside this Docker service.
+      - ${PDPP_DOCKER_CLAUDE_CODE_HOME:-./packages/polyfill-connectors/.pdpp-imports/claude}:/imports/claude:ro
+      - ${PDPP_DOCKER_CODEX_HOME:-./packages/polyfill-connectors/.pdpp-imports/codex}:/imports/codex:ro
+      # Optional external-tool mount. slackdump is AGPL-licensed and is not
+      # bundled into the stock reference image; mount a host-provided directory
+      # containing a `slackdump` executable when running the Slack connector.
+      - ${PDPP_DOCKER_SLACKDUMP_DIR:-./packages/polyfill-connectors/.pdpp-tools/slackdump}:/opt/pdpp-tools/slackdump:ro
+    # Health = AS and RS are both listening and serving public metadata.
+    # Embedding-model download and semantic backfill run in the background
+    # after listen and are intentionally NOT part of "healthy".
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:7662/.well-known/oauth-authorization-server >/dev/null && curl -fsS http://localhost:7663/.well-known/oauth-protected-resource >/dev/null",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  # Postgres runtime storage. Brought up unconditionally so the reference
+  # service can depend on it. Enable Postgres as the runtime backend by
+  # setting PDPP_STORAGE_BACKEND=postgres and PDPP_DATABASE_URL in
+  # .env.docker; otherwise the reference falls back to the SQLite default.
+  # Used by env-gated conformance/runtime proofs such as
+  # `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`,
+  # `reference-implementation/test/consent-device-auth-conformance-postgres.test.js`,
+  # and `reference-implementation/test/postgres-runtime-storage.test.js`
+  # (see openspec/changes/add-postgres-runtime-storage).
+  postgres:
+    image: ${PDPP_POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    environment:
+      POSTGRES_USER: ${PDPP_POSTGRES_USER:-pdpp}
+      POSTGRES_PASSWORD: ${PDPP_POSTGRES_PASSWORD:-pdpp}
+      POSTGRES_DB: ${PDPP_POSTGRES_DB:-pdpp}
+    # Loopback-only by default. The proof service ships with default
+    # `pdpp/pdpp` credentials and must not be reachable from LAN/WAN out of
+    # the box. Operators who deliberately want LAN exposure must change
+    # `PDPP_POSTGRES_BIND_HOST` AND set non-default credentials.
+    ports:
+      - "${PDPP_POSTGRES_BIND_HOST:-127.0.0.1}:${PDPP_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - pdpp-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${PDPP_POSTGRES_USER:-pdpp} -d ${PDPP_POSTGRES_DB:-pdpp}",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # Operator console service. Renamed/repurposed from the previous "web"
+  # service so the operator default (`docker compose up`) brings up the
+  # self-hosted dashboard + BFF instead of the public pdpp.dev surface.
+  # The service alias is kept as `web` to preserve docker-compose env-var
+  # contracts (PDPP_WEB_IMAGE, PDPP_WEB_PORT, PDPP_WEB_BASE_URL) for
+  # existing operators. The build target is now the `console` stage.
+  # See openspec/changes/split-public-site-and-operator-console.
+  web:
+    image: ${PDPP_WEB_IMAGE:-ghcr.io/vana-com/pdpp/web:main}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: console
+    depends_on:
+      reference:
+        condition: service_healthy
+    environment:
+      PDPP_REFERENCE_MODE: composed
+      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3002}
+      PDPP_WEB_BASE_URL: ${PDPP_WEB_BASE_URL:-}
+      PDPP_AS_URL: http://reference:7662
+      PDPP_RS_URL: http://reference:7663
+      PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:-}
+      PDPP_OWNER_SUBJECT_ID: ${PDPP_OWNER_SUBJECT_ID:-owner_local}
+      PDPP_ENABLE_DASHBOARD: ${PDPP_ENABLE_DASHBOARD:-1}
+    ports:
+      - "${PDPP_WEB_PORT:-3002}:3000"
+
+volumes:
+  pdpp-transformers:
+  pdpp-home:
+  pdpp-postgres-data:

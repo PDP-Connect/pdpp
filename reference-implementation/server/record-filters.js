@@ -1,0 +1,277 @@
+import { randomBytes } from 'crypto';
+
+const SUPPORTED_RANGE_OPERATORS = new Set(['gte', 'gt', 'lte', 'lt']);
+
+export function invalidQueryError(message, code = 'invalid_request') {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+export function getFieldSchema(manifestStream, field) {
+  return manifestStream?.schema?.properties?.[field] || null;
+}
+
+export function nonNullSchemaTypes(schema) {
+  const raw = schema?.type;
+  if (raw == null) return new Set();
+  const list = Array.isArray(raw) ? raw : [raw];
+  return new Set(list.filter((t) => t !== 'null'));
+}
+
+const SCALAR_SCHEMA_TYPES = new Set(['boolean', 'integer', 'number', 'string']);
+
+function isScalarFieldSchema(fieldSchema) {
+  const types = nonNullSchemaTypes(fieldSchema);
+  if (types.size !== 1) return false;
+  const [only] = types;
+  return SCALAR_SCHEMA_TYPES.has(only);
+}
+
+function isRangeQueryableSchema(fieldSchema) {
+  const types = nonNullSchemaTypes(fieldSchema);
+  if (types.size !== 1) return false;
+  if (types.has('integer') || types.has('number')) return true;
+  if (types.has('string')) {
+    return fieldSchema?.format === 'date' || fieldSchema?.format === 'date-time';
+  }
+  return false;
+}
+
+function parseIntegerValue(value) {
+  if (typeof value === 'number' && Number.isInteger(value)) return value;
+  if (typeof value !== 'string' || !/^-?\d+$/.test(value.trim())) return null;
+  return Number.parseInt(value.trim(), 10);
+}
+
+function parseNumberValue(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function parseDateValue(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function coerceComparableValue(value, fieldSchema, { strict = false } = {}) {
+  if (value == null) return null;
+
+  const types = nonNullSchemaTypes(fieldSchema);
+  const only = types.size === 1 ? [...types][0] : null;
+
+  if (only === 'integer') {
+    const parsed = parseIntegerValue(value);
+    if (parsed == null && strict) throw invalidQueryError(`Invalid integer value for '${String(value)}'`);
+    return parsed;
+  }
+
+  if (only === 'number') {
+    const parsed = parseNumberValue(value);
+    if (parsed == null && strict) throw invalidQueryError(`Invalid number value for '${String(value)}'`);
+    return parsed;
+  }
+
+  if (only === 'string' && ['date', 'date-time'].includes(fieldSchema?.format)) {
+    const parsed = parseDateValue(value);
+    if (parsed == null && strict) throw invalidQueryError(`Invalid date value for '${String(value)}'`);
+    return parsed;
+  }
+
+  return String(value);
+}
+
+function normalizeExactFilterValue(value, field) {
+  if (value != null && typeof value === 'object') {
+    throw invalidQueryError(`Exact filter on '${field}' must use a scalar value`);
+  }
+  return String(value);
+}
+
+function compileRangeFilter(field, rawValue, fieldSchema, manifestStream) {
+  const operatorEntries = Object.entries(rawValue);
+  if (!operatorEntries.length) {
+    throw invalidQueryError(`Range filter on '${field}' must include at least one operator`);
+  }
+  if (!isRangeQueryableSchema(fieldSchema)) {
+    throw invalidQueryError(`Range filters are not supported on '${field}'`);
+  }
+
+  const declaredOperators = manifestStream?.query?.range_filters?.[field];
+  if (!Array.isArray(declaredOperators) || !declaredOperators.length) {
+    throw invalidQueryError(`Range filters are not declared for '${field}'`);
+  }
+  const declaredOperatorSet = new Set(declaredOperators);
+  const operators = {};
+
+  for (const [operator, operand] of operatorEntries) {
+    if (!SUPPORTED_RANGE_OPERATORS.has(operator)) {
+      throw invalidQueryError(`Unsupported range operator '${operator}' on '${field}'`);
+    }
+    if (!declaredOperatorSet.has(operator)) {
+      throw invalidQueryError(`Range operator '${operator}' is not declared for '${field}'`);
+    }
+    const comparable = coerceComparableValue(operand, fieldSchema, { strict: true });
+    if (comparable == null) {
+      throw invalidQueryError(`Invalid range value for '${field}'`);
+    }
+    operators[operator] = comparable;
+  }
+
+  return { field, kind: 'range', fieldSchema, operators };
+}
+
+export function compileRequestFilters(filter, streamGrant, manifestStream) {
+  if (filter == null) return [];
+  if (!filter || typeof filter !== 'object' || Array.isArray(filter)) {
+    throw invalidQueryError('filter must use filter[field]=value or filter[field][op]=value');
+  }
+
+  const compiled = [];
+  for (const [field, rawValue] of Object.entries(filter)) {
+    if (streamGrant.fields && !streamGrant.fields.includes(field)) {
+      throw invalidQueryError(`Filter on field '${field}' not in grant`, 'field_not_granted');
+    }
+
+    const fieldSchema = getFieldSchema(manifestStream, field);
+    if (!fieldSchema) {
+      // Per-stream schema miss: field exists in the request but not this
+      // stream's manifest schema. Code 'filter_field_not_in_schema' lets
+      // fan-out owner-mode paths skip inapplicable connectors without
+      // suppressing hard per-field errors (undeclared range, unsupported op).
+      throw invalidQueryError(`Unknown field: ${field}`, 'filter_field_not_in_schema');
+    }
+
+    if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+      compiled.push(compileRangeFilter(field, rawValue, fieldSchema, manifestStream));
+      continue;
+    }
+
+    if (!isScalarFieldSchema(fieldSchema)) {
+      throw invalidQueryError(`Exact filters are supported only on top-level scalar fields; '${field}' is not scalar`);
+    }
+
+    compiled.push({
+      field,
+      kind: 'exact',
+      value: normalizeExactFilterValue(rawValue, field),
+    });
+  }
+
+  return compiled;
+}
+
+export function passesRequestFilters(data, filters) {
+  if (!filters?.length) return true;
+
+  for (const filter of filters) {
+    const value = data?.[filter.field];
+
+    if (filter.kind === 'exact') {
+      if (String(value) !== filter.value) return false;
+      continue;
+    }
+
+    const comparable = coerceComparableValue(value, filter.fieldSchema);
+    if (comparable == null) return false;
+    if (filter.operators.gte != null && comparable < filter.operators.gte) return false;
+    if (filter.operators.gt != null && comparable <= filter.operators.gt) return false;
+    if (filter.operators.lte != null && comparable > filter.operators.lte) return false;
+    if (filter.operators.lt != null && comparable >= filter.operators.lt) return false;
+  }
+
+  return true;
+}
+
+export function passesTimeRange(data, timeRange, consentTimeField) {
+  if (!timeRange || !consentTimeField) return true;
+  const val = data[consentTimeField];
+  if (!val) return false;
+  const t = new Date(val).getTime();
+  if (isNaN(t)) return false;
+  if (timeRange.since && t < new Date(timeRange.since).getTime()) return false;
+  if (timeRange.until && t >= new Date(timeRange.until).getTime()) return false;
+  return true;
+}
+
+export function passesGrantRecordConstraints(data, recordKey, streamGrant, manifestStream) {
+  if (streamGrant?.resources?.length && !streamGrant.resources.includes(recordKey)) {
+    return false;
+  }
+  return passesTimeRange(data, streamGrant?.time_range, manifestStream?.consent_time_field);
+}
+
+export function compileSingleStreamSearchFilter({ manifest, grant, streamName, filter }) {
+  if (!streamName) return null;
+  const manifestStream = (manifest?.streams || []).find((s) => s.name === streamName);
+  if (!manifestStream) return null;
+  const streamGrant = (grant?.streams || []).find((s) => s.name === streamName);
+  if (!streamGrant) return null;
+  return {
+    streamName,
+    filters: compileRequestFilters(filter, streamGrant, manifestStream),
+  };
+}
+
+export function fingerprintDeclaredFields(declaredFields) {
+  const unique = Array.from(new Set(declaredFields));
+  unique.sort();
+  return JSON.stringify(unique);
+}
+
+export function jsonPathForTopLevelField(field) {
+  return `$."${String(field).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+export function generateSnapshotId() {
+  return `snap_${randomBytes(8).toString('hex')}`;
+}
+
+export function hashSearchPlanSummary({ perConnectorPlans, isOwner }) {
+  const summary = perConnectorPlans.map((p) => ({
+    c: p.connectorId,
+    e: p.planEntries
+      .map((pe) => ({
+        i: pe.connectorInstanceId || null,
+        s: pe.streamName,
+        f: pe.searchableFields.slice().sort(),
+      }))
+      .sort((a, b) => {
+        const ia = a.i || '';
+        const ib = b.i || '';
+        if (ia !== ib) return ia < ib ? -1 : 1;
+        return a.s < b.s ? -1 : a.s > b.s ? 1 : 0;
+      }),
+  })).sort((a, b) => (a.c || '') < (b.c || '') ? -1 : (a.c || '') > (b.c || '') ? 1 : 0);
+  return JSON.stringify({ isOwner, summary });
+}
+
+export function hasGrantRecordConstraints(streamGrant) {
+  return !!(
+    streamGrant?.time_range
+    || (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0)
+  );
+}
+
+export function needsCandidateRecordScan(streamGrant, compiledFilters) {
+  return !!(compiledFilters?.length || hasGrantRecordConstraints(streamGrant));
+}
+
+export function allowedCandidateRecordKeysFromRows(rows, { streamGrant, manifestStream, compiledFilters }) {
+  const allowed = [];
+  for (const row of rows) {
+    let data;
+    try {
+      data = row.record_json ? JSON.parse(row.record_json) : null;
+    } catch {
+      continue;
+    }
+    if (!passesGrantRecordConstraints(data, row.record_key, streamGrant, manifestStream)) continue;
+    if (!passesRequestFilters(data, compiledFilters)) continue;
+    allowed.push(row.record_key);
+  }
+  return allowed;
+}

@@ -1,0 +1,230 @@
+services:
+  reference:
+    depends_on:
+      - registry-mock
+    networks:
+      - default
+      - pdpp_neko_dynamic
+    environment:
+      PDPP_ENABLE_STREAM_PLAYGROUND: "1"
+      PDPP_STREAM_PLAYGROUND_BACKEND: ${PDPP_STREAM_PLAYGROUND_BACKEND:-neko}
+      PDPP_STREAM_PLAYGROUND_DOCKER: "1"
+      PDPP_STREAM_PLAYGROUND_NEKO_BASE_URL: ${PDPP_STREAM_PLAYGROUND_NEKO_BASE_URL:-http://neko:8080/neko}
+      PDPP_NEKO_BASE_URL: ${PDPP_NEKO_BASE_URL-http://neko:8080/neko}
+      PDPP_NEKO_PROXY_ALLOWED_HOSTS: ${PDPP_NEKO_PROXY_ALLOWED_HOSTS:-neko:8080}
+      PDPP_NEKO_PROXY_AUTOLOGIN: ${PDPP_NEKO_PROXY_AUTOLOGIN:-1}
+      PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL: ${PDPP_STREAM_PLAYGROUND_NEKO_CDP_HTTP_URL:-http://neko:9223}
+      PDPP_NEKO_CDP_HTTP_URL: ${PDPP_NEKO_CDP_HTTP_URL-http://neko:9223}
+      PDPP_NEKO_WINDOW_SETTLE_URL: ${PDPP_NEKO_WINDOW_SETTLE_URL:-http://neko:9223/pdpp/window-settle}
+      # Static managed n.eko mode exposes exactly one browser surface. The
+      # controller owns leasing, queueing, and child-process CDP env injection;
+      # connectors should not discover the static CDP endpoint directly.
+      PDPP_NEKO_MANAGED_CONNECTORS: ${PDPP_NEKO_MANAGED_CONNECTORS:-https://registry.pdpp.org/connectors/chatgpt}
+      PDPP_NEKO_SURFACE_MODE: ${PDPP_NEKO_SURFACE_MODE:-static}
+      PDPP_NEKO_SURFACE_CAP: ${PDPP_NEKO_SURFACE_CAP:-1}
+      PDPP_NEKO_STATIC_PROFILE_KEY: ${PDPP_NEKO_STATIC_PROFILE_KEY-https://registry.pdpp.org/connectors/chatgpt}
+      PDPP_NEKO_BROWSER_OWNER_MODE: ${PDPP_NEKO_BROWSER_OWNER_MODE:-neko-owned}
+      # Dynamic mode is opt-in only. Operators must set
+      # PDPP_NEKO_SURFACE_MODE=dynamic and clear the static-only URL/profile
+      # settings before this allocator URL is used by the reference runtime.
+      PDPP_NEKO_ALLOCATOR_URL: ${PDPP_NEKO_ALLOCATOR_URL:-}
+      PDPP_NEKO_PROFILE_STORAGE_POLICY: ${PDPP_NEKO_PROFILE_STORAGE_POLICY:-}
+      PDPP_NEKO_PROFILE_STORAGE_ROOT: ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-}
+      PDPP_NEKO_READINESS_TIMEOUT_MS: ${PDPP_NEKO_READINESS_TIMEOUT_MS:-}
+      # strict = adapter never issues Runtime.enable / Page.addScript / etc
+      # against the user's tab. Required for Cloudflare Turnstile to pass —
+      # any CDP touch on the page is detected by Turnstile's challenge JS.
+      # See docs/reference/binary-content-invariant-design-brief.md for the layered
+      # stealth design rationale and the fingerprint-probe.mjs investigation
+      # that established Runtime.enable as the dominant detection vector.
+      PDPP_NEKO_STEALTH_MODE: ${PDPP_NEKO_STEALTH_MODE:-strict}
+      NEKO_CONTROL_USERNAME: ${NEKO_CONTROL_USERNAME:-admin}
+      NEKO_CONTROL_PASSWORD: ${NEKO_CONTROL_PASSWORD:-}
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-neko}
+      NEKO_USERNAME: ${NEKO_USERNAME:-user}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
+
+  neko:
+    image: ${NEKO_IMAGE:-pdpp-neko:local}
+    build:
+      context: .
+      dockerfile: docker/neko/Dockerfile
+      args:
+        NEKO_BASE_IMAGE: ${NEKO_BASE_IMAGE:-ghcr.io/m1k1o/neko/chromium:3.0@sha256:13264ee217ecccda06b07aa7543dc12d8f9a423ace344b6bda6ebf6d2ecea193}
+    # n.eko's HTTP/control port stays on the private Compose network and is
+    # reached by the reference app via service DNS. Only WebRTC media mux ports
+    # are published to the host for browser clients.
+    shm_size: "2gb"
+    environment:
+      NEKO_SERVER_BIND: 0.0.0.0:8080
+      NEKO_SERVER_PATH_PREFIX: /neko
+      NEKO_SERVER_PROXY: "true"
+      NEKO_MEMBER_PROVIDER: ${NEKO_MEMBER_PROVIDER:-multiuser}
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: ${NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD:-}
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: ${NEKO_MEMBER_MULTIUSER_USER_PASSWORD:-}
+      NEKO_SESSION_IMPLICIT_HOSTING: "true"
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-neko}
+      NEKO_USERNAME: ${NEKO_USERNAME:-user}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
+      NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
+      NEKO_WEBRTC_UDPMUX: ${NEKO_WEBRTC_PORT:-59000}
+      NEKO_WEBRTC_TCPMUX: ${NEKO_WEBRTC_PORT:-59000}
+      NEKO_WEBRTC_ICELITE: "1"
+      NEKO_WEBRTC_NAT1TO1: ${NEKO_WEBRTC_NAT1TO1:-127.0.0.1}
+      NEKO_WEBRTC_ICESERVERS: ${NEKO_WEBRTC_ICESERVERS:-[]}
+      PDPP_NEKO_CDP_PROXY_PORT: "9223"
+    ports:
+      - "${NEKO_WEBRTC_PORT:-59000}:59000/tcp"
+      - "${NEKO_WEBRTC_PORT:-59000}:59000/udp"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O /dev/null http://127.0.0.1:8080/neko/health && wget -q -O /dev/null http://127.0.0.1:9223/json/version && supervisorctl status chromium | grep -q RUNNING",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  neko-allocator:
+    image: ${NEKO_ALLOCATOR_IMAGE:-pdpp-neko-allocator:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: reference
+    profiles: ["neko-dynamic"]
+    command: ["node", "reference-implementation/server/neko-surface-allocator-server.ts"]
+    networks:
+      - default
+      - pdpp_neko_dynamic
+    environment:
+      PDPP_NEKO_ALLOCATOR_HOST: 0.0.0.0
+      PDPP_NEKO_ALLOCATOR_PORT: ${PDPP_NEKO_ALLOCATOR_PORT:-7331}
+      # Dynamic surfaces attach to a dedicated network the allocator itself
+      # owns (see neko-surface-allocator-server.ts#ensureNetworkExists), not
+      # Compose's implicit per-project default network. `docker compose down`
+      # unconditionally tears down every network it created, regardless of
+      # `--remove-orphans`; an externally-managed network is invisible to
+      # that teardown, so an ordinary redeploy cannot break dynamic surface
+      # reachability. The name is fixed, not COMPOSE_PROJECT_NAME-scoped,
+      # because its whole purpose is to outlive any one project's lifecycle.
+      PDPP_NEKO_DOCKER_NETWORK: ${PDPP_NEKO_DOCKER_NETWORK:-pdpp_neko_dynamic}
+      # Required by the allocator with NO code-level default (see
+      # NekoSurfaceAllocatorServerOptions#deploymentId) — two independently
+      # configured allocator instances sharing a Docker host (e.g. a
+      # throwaway smoke/test instance and this real deployment) must never
+      # be able to collide by omission. Deliberately defaults to
+      # COMPOSE_PROJECT_NAME itself, not a separate literal: this identity
+      # must equal the Compose-assigned com.docker.compose.project label for
+      # #isOwnedByThisDeployment to safely recognize this project's own
+      # pre-existing unnamespaced legacy containers (see
+      # migrate-in-place notes below) without a misconfigurable opt-in flag.
+      # A throwaway/smoke instance MUST override both COMPOSE_PROJECT_NAME
+      # and this to distinct, generated values (see
+      # docker-neko-network-migration-smoke.sh's own denylist) — never rely
+      # on or reproduce this default.
+      PDPP_NEKO_DEPLOYMENT_ID: ${PDPP_NEKO_DEPLOYMENT_ID:-${COMPOSE_PROJECT_NAME:-pdpp}}
+      # Existing surfaces from before pdpp_neko_dynamic existed are still
+      # attached only to Compose's implicit default network (see
+      # neko-surface-allocator-server.ts#migrateContainerNetworkIfNeeded).
+      # Naming it explicitly here — rather than having the allocator infer it
+      # — keeps "which network may this allocator ever detach" an explicit,
+      # reviewable config value, never a guess.
+      PDPP_NEKO_LEGACY_DOCKER_NETWORK: ${PDPP_NEKO_LEGACY_DOCKER_NETWORK:-${COMPOSE_PROJECT_NAME:-pdpp}_default}
+      PDPP_NEKO_PROFILE_STORAGE_ROOT: ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/var/lib/pdpp/neko-profiles}
+      PDPP_NEKO_PROFILE_OWNER_UID: ${PDPP_NEKO_PROFILE_OWNER_UID:-1000}
+      PDPP_NEKO_PROFILE_OWNER_GID: ${PDPP_NEKO_PROFILE_OWNER_GID:-1000}
+      PDPP_NEKO_WEBRTC_HOST_PORT_START: ${PDPP_NEKO_WEBRTC_HOST_PORT_START:-59001}
+      PDPP_NEKO_WEBRTC_HOST_PORT_END: ${PDPP_NEKO_WEBRTC_HOST_PORT_END:-59010}
+      PDPP_NEKO_STREAM_BASE_URL_TEMPLATE: ${PDPP_NEKO_STREAM_BASE_URL_TEMPLATE:-http://{container_name}:8080/neko}
+      PDPP_NEKO_CDP_BASE_URL_TEMPLATE: ${PDPP_NEKO_CDP_BASE_URL_TEMPLATE:-http://{container_name}:9223/}
+      NEKO_IMAGE: ${NEKO_IMAGE:-pdpp-neko:local}
+      NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
+      NEKO_WEBRTC_NAT1TO1: ${NEKO_WEBRTC_NAT1TO1:-127.0.0.1}
+      NEKO_WEBRTC_ICESERVERS: ${NEKO_WEBRTC_ICESERVERS:-[]}
+      NEKO_MEMBER_PROVIDER: ${NEKO_MEMBER_PROVIDER:-multiuser}
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: ${NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD:-}
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: ${NEKO_MEMBER_MULTIUSER_USER_PASSWORD:-}
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-neko}
+      NEKO_USERNAME: ${NEKO_USERNAME:-user}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
+    expose:
+      - "7331"
+    volumes:
+      # Dynamic allocation requires Docker control of sibling n.eko containers.
+      # Do not enable this profile unless the allocator image is trusted.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Bind the host profile root at the same absolute path so allocator
+      # mkdir/chown/chmod calls affect the Docker bind source, not sidecar-only
+      # storage. Docker-created bind sources are root-owned and break Chromium.
+      - ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/var/lib/pdpp/neko-profiles}:${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/var/lib/pdpp/neko-profiles}
+
+  coturn:
+    image: ${TURN_IMAGE:-coturn/coturn:4.6.3-alpine}
+    profiles: ["turn"]
+    command:
+      - -n
+      - --log-file=stdout
+      - --fingerprint
+      - --lt-cred-mech
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --realm=${TURN_REALM:-pdpp.local}
+      - --server-name=${TURN_REALM:-pdpp.local}
+      - --external-ip=${TURN_PUBLIC_IP:-127.0.0.1}
+      - --min-port=${TURN_MIN_PORT:-49160}
+      - --max-port=${TURN_MAX_PORT:-49200}
+      - --user=${TURN_USERNAME:-pdpp}:${TURN_PASSWORD:-pdpp-turn-dev}
+    ports:
+      - "${TURN_PORT:-3478}:3478/tcp"
+      - "${TURN_PORT:-3478}:3478/udp"
+      - "${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}:${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}/udp"
+
+  registry-mock:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./packages/polyfill-connectors/manifests:/usr/share/nginx/html/connectors:ro
+    configs:
+      - source: registry_mock_nginx
+        target: /etc/nginx/conf.d/default.conf
+    networks:
+      default:
+        aliases:
+          - registry.pdpp.org
+
+  web:
+    depends_on:
+      neko:
+        condition: service_healthy
+    environment:
+      PDPP_ENABLE_STREAM_PLAYGROUND: "1"
+    volumes:
+      - ./tmp:/app/tmp
+
+networks:
+  default: {}
+  # Owned and created by the allocator/deploy script (see
+  # neko-surface-allocator-server.ts#ensureNetworkExists and
+  # scripts/reference-stack.sh), not by Compose. Declaring it `external`
+  # means `docker compose down` never attempts to create or remove it,
+  # regardless of `--remove-orphans` — dynamic n.eko containers attached to
+  # it keep their identity and reachability across an ordinary redeploy.
+  pdpp_neko_dynamic:
+    external: true
+    name: ${PDPP_NEKO_DOCKER_NETWORK:-pdpp_neko_dynamic}
+
+configs:
+  registry_mock_nginx:
+    content: |
+      server {
+        listen 80;
+        server_name registry.pdpp.org;
+        root /usr/share/nginx/html;
+        location /connectors/ {
+          types { }
+          default_type application/json;
+          try_files $$uri $$uri.json =404;
+        }
+      }

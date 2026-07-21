@@ -1,0 +1,52 @@
+<!--
+  LIVE-STRUCTURE fixture (2026-07-15): the __NEXT_DATA__ JSON shape below is a
+  minimal, hand-scrubbed transcription of the structure observed in a
+  retained out-of-repo live capture (heb-live-html/05-orders-list.html; see
+  openspec/changes/complete-heb-structured-collection/design.md Decision 1
+  for the field-by-field evidence this fixture proves).
+
+  Every key name, nesting level, and value TYPE below is real
+  (props.pageProps.orders[], .page, .pages[]). Every PII VALUE (orderId, store
+  name/lat-long, address nickname, price) is a synthetic placeholder that does
+  not appear in the live capture. Five orders are retained: four share the
+  single observed `fulfillmentType: "CURBSIDE_DELIVERY"` (the only value seen
+  across all captured pages/orders — the DOM "Delivery to"/"Curbside at" split
+  does NOT correspond to a second observed fulfillmentType value, so the
+  fulfillment_method mapping stays evidence-gated to only this one value), one
+  (order 5) has a deliberately malformed/missing `orders[]` row shape to
+  exercise the per-row structured-parse-fails-fall-back-to-DOM path.
+-->
+<!DOCTYPE html>
+<html>
+<body>
+  <main>
+    <div data-qe-id="orderResults">
+      <div>
+        <div>
+          <div data-qe-id="orderDetailsCard">
+            <div>
+              <p data-qe-id="orderDetailsHeader">Curbside at H-E-B Synthetic Store</p>
+              <p data-qe-id="orderDetailsDate">Jul 7, 2026, 4:00&#8211;5:00pm</p>
+              <p data-qe-id="orderDetailsTotal">Total:<!-- --> <span>$100.00<!-- -->, <!-- -->10<!-- --> <!-- -->items</span><br>Status:<!-- --> <span data-qe-id="orderDetailsStatus">Delivered</span></p>
+            </div>
+            <div>
+              <a aria-label="View details of curbside order HEBFIXTURE0000000001 scheduled for 4:00pm." data-qe-id="viewDetailsButton" href="/my-account/order-history/HEBFIXTURE0000000001">View details</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <nav role="navigation" aria-label="Pagination Navigation">
+      <ul data-qe-id="paginationList">
+        <li><a data-qe-id="paginationListNum" aria-current="true" href="/my-account/your-orders?page=1">1</a></li>
+        <li><a data-qe-id="paginationListNum" aria-current="false" href="/my-account/your-orders?page=2">2</a></li>
+        <li><a data-qe-id="paginationListNum" aria-current="false" href="/my-account/your-orders?page=3">3</a></li>
+        <li><a data-qe-id="paginationListNum" aria-current="false" href="/my-account/your-orders?page=4">4</a></li>
+      </ul>
+    </nav>
+  </main>
+  <script id="__NEXT_DATA__" type="application/json">
+{"props":{"pageProps":{"orders":[{"orderId":"HEBFIXTURE0000000001","status":"PAYMENT_RECEIPTED","orderStatusMessageShort":"Delivered","orderChangesOverview":{"reviewChangesEligible":false,"unfulfilledCount":0,"__typename":"OrderChangesOverview"},"fulfillmentType":"CURBSIDE_DELIVERY","address":{"nickname":"1 Synthetic Fixture Ln","__typename":"FulfillmentAddress"},"store":{"name":"H-E-B Synthetic Store","latitude":1.0,"longitude":-1.0,"__typename":"CurbsideStore"},"orderTimeslot":{"startDateTime":"2026-07-07T16:00:00Z","endDateTime":"2026-07-07T17:00:00Z","__typename":"OrderTimeslot"},"thirdPartyShopAndDeliver":null,"totalPrice":{"formattedAmount":"$100.00","__typename":"DisplayPrice"},"productCount":10,"__typename":"Order"},{"orderId":"HEBFIXTURE0000000002","status":"PAYMENT_RECEIPTED","orderStatusMessageShort":"Delivered","orderChangesOverview":{"reviewChangesEligible":false,"unfulfilledCount":2,"__typename":"OrderChangesOverview"},"fulfillmentType":"CURBSIDE_DELIVERY","address":{"nickname":"1 Synthetic Fixture Ln","__typename":"FulfillmentAddress"},"store":{"name":"H-E-B Synthetic Store","latitude":1.0,"longitude":-1.0,"__typename":"CurbsideStore"},"orderTimeslot":{"startDateTime":"2026-06-16T15:00:00Z","endDateTime":"2026-06-16T16:00:00Z","__typename":"OrderTimeslot"},"thirdPartyShopAndDeliver":null,"totalPrice":{"formattedAmount":"$50.00","__typename":"DisplayPrice"},"productCount":5,"__typename":"Order"},{"orderId":"HEBFIXTURE0000000003","status":"ORDER_CANCELED","orderStatusMessageShort":"Order canceled","orderChangesOverview":{"reviewChangesEligible":false,"unfulfilledCount":0,"__typename":"OrderChangesOverview"},"fulfillmentType":"CURBSIDE_DELIVERY","address":{"nickname":"1 Synthetic Fixture Ln","__typename":"FulfillmentAddress"},"store":{"name":"H-E-B Synthetic Store","latitude":1.0,"longitude":-1.0,"__typename":"CurbsideStore"},"orderTimeslot":{"startDateTime":"2026-05-08T16:00:00Z","endDateTime":"2026-05-08T17:00:00Z","__typename":"OrderTimeslot"},"thirdPartyShopAndDeliver":null,"totalPrice":{"formattedAmount":"$0.00","__typename":"DisplayPrice"},"productCount":0,"__typename":"Order"},{"orderId":"HEBFIXTURE0000000004","status":"PAYMENT_RECEIPTED","orderStatusMessageShort":"Delivered","orderChangesOverview":{"reviewChangesEligible":false,"unfulfilledCount":0,"__typename":"OrderChangesOverview"},"fulfillmentType":"CURBSIDE_DELIVERY","address":{"nickname":"1 Synthetic Fixture Ln","__typename":"FulfillmentAddress"},"store":{"name":"H-E-B Synthetic Store","latitude":1.0,"longitude":-1.0,"__typename":"CurbsideStore"},"orderTimeslot":null,"thirdPartyShopAndDeliver":null,"totalPrice":{"formattedAmount":"$75.00","__typename":"DisplayPrice"},"productCount":7,"__typename":"Order"},{"orderId":"not-a-real-heb-order-id","status":null,"orderStatusMessageShort":null}],"page":1,"pages":[{"to":"?page=1"},{"to":"?page=2"},{"to":"?page=3"},{"to":"?page=4"}],"hasFrequentlyPurchased":true,"errorMessage":null,"_head":{"pageTitle":"Your orders | HEB.com","pageDescription":null,"ogPageTitle":"Your orders | HEB.com","ogPageDescription":null,"pageCanonical":null,"imageUrl":null,"prev":null,"next":null}},"page":"/my-account/your-orders","query":{},"buildId":"fixture-build-id","assetPrefix":"https://cx.static.heb.com","isFallback":false,"gssp":true,"appGip":true,"locale":"en","locales":["en","es"],"defaultLocale":"en"}}
+  </script>
+</body>
+</html>

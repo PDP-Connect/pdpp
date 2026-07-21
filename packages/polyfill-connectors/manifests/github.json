@@ -1,0 +1,1371 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/github",
+  "connector_key": "github",
+  "manifest_uri": "https://registry.pdpp.org/connectors/github",
+  "version": "0.5.0",
+  "display_name": "GitHub",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "personal_access_token",
+      "label": "GitHub personal access token",
+      "description": "Use a GitHub personal access token for the account this connection should collect.",
+      "submit_label": "Create GitHub connection and start first sync",
+      "fields": [
+        {
+          "name": "secret",
+          "label": "GitHub personal access token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://github.com/settings/tokens",
+          "help_text": "Create a token in GitHub developer settings, then paste it here.",
+          "env": [
+            "GITHUB_PERSONAL_ACCESS_TOKEN",
+            "GITHUB_TOKEN"
+          ]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 600,
+      "maximum_staleness_seconds": 21600,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "GitHub uses a personal access token with documented rate limits; hourly refresh is safe."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
+    }
+  },
+  "streams": [
+    {
+      "name": "user",
+      "description": "The authenticated user's stable profile and identity fields. Sampled metrics (followers, following, public_repos, public_gists) are in the user_stats stream.",
+      "display": {
+        "label": "Your GitHub profile",
+        "detail": "Username, display name, bio, email if public, company, location, blog, twitter_username, avatar, created_at and updated_at. Follower/following/repo counts are in user_stats."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bio": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "company": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blog": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "twitter_username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "login"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "login",
+            "name",
+            "bio",
+            "company",
+            "location",
+            "blog",
+            "twitter_username"
+          ],
+          "semantic_fields": [
+            "bio"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "expand": [
+          {
+            "name": "user_stats",
+            "default_limit": 30,
+            "max_limit": 365
+          }
+        ],
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at",
+            "created_at"
+          ]
+        }
+      },
+      "relationships": [
+        {
+          "name": "user_stats",
+          "stream": "user_stats",
+          "foreign_key": "user_id",
+          "cardinality": "has_many"
+        }
+      ],
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "user_stats",
+      "description": "Sampled metrics for the authenticated user, keyed by {user_id}:{YYYY-MM-DD}. One record per calendar day (UTC); re-running on the same day is idempotent. Preserves a time series of follower/following/repo counts without creating false entity-version churn on the user stream.",
+      "display": {
+        "label": "Your GitHub profile metrics (daily)",
+        "detail": "Daily snapshot of public_repos, public_gists, followers, following counts. Each record covers one calendar day."
+      },
+      "semantics": "append",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string",
+            "x_pdpp_role": "actor"
+          },
+          "observed_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "public_repos": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "public_gists": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "followers": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "following": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "observed_on"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "observed_on",
+      "consent_time_field": "observed_on",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {},
+        "range_filters": {
+          "observed_on": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "followers": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "following": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "public_repos": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "public_gists": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "observed_on"
+          ]
+        }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "repositories",
+      "description": "Repositories owned or contributed to by the user.",
+      "display": {
+        "label": "Your repositories",
+        "detail": "Full repo metadata: name, description, languages, topics, stars, forks, open issues, default branch, visibility, fork/archive status, created/updated/pushed timestamps."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "full_name": {
+            "type": "string"
+          },
+          "owner_login": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "private": {
+            "type": "boolean"
+          },
+          "fork": {
+            "type": "boolean"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "default_branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topics": {
+            "type": "array"
+          },
+          "stargazers_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "forks_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "open_issues_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "watchers_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "size_kb": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "license_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "html_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "homepage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "pushed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "full_name"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "pushed_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "full_name",
+            "owner_login",
+            "description",
+            "default_branch",
+            "language",
+            "license_key",
+            "homepage"
+          ],
+          "semantic_fields": [
+            "description"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "pushed_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "stargazers_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "forks_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "open_issues_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "watchers_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "size_kb": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "pushed_at",
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "starred",
+      "description": "Repositories the user has starred, with starred_at timestamp.",
+      "display": {
+        "label": "Your starred repositories",
+        "detail": "Full repo metadata for every star you've given, plus the time you starred it."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "full_name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stargazers_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "html_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "starred_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "full_name"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "starred_at",
+      "consent_time_field": "starred_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "full_name",
+            "description",
+            "language"
+          ],
+          "semantic_fields": [
+            "description"
+          ]
+        },
+        "range_filters": {
+          "starred_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "stargazers_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "starred_at"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "issues",
+      "description": "Issues and pull requests across all repos the user has access to, authored by or assigned to them. GitHub's /issues endpoint returns both issues and PRs; the is_pull_request flag lets downstream consumers split them.",
+      "display": {
+        "label": "Your issues and PRs",
+        "detail": "Issue/PR number, title, body (capped at 20000 chars), labels, assignees, milestone, reactions, comment count, repository, state, timestamps, and a flag indicating which are pull requests."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_login": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "milestone_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_full_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "html_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "comments": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reactions_total_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "is_pull_request": {
+            "type": "boolean"
+          },
+          "pull_request_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "draft": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "body",
+            "state_reason",
+            "user_login",
+            "milestone_title",
+            "repository_full_name"
+          ],
+          "semantic_fields": [
+            "title",
+            "body"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "closed_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "comments": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "reactions_total_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at",
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "pull_requests",
+      "description": "Pull requests authored by the user, with PR-specific detail (merge state, diff stats, base/head refs, reviewers). Sourced via the GitHub search API (type:pr author:<you>); PRs the user only reviewed are NOT included — that requires a follow-up reviewer: query.",
+      "display": {
+        "label": "Your pull requests",
+        "detail": "PRs you authored, including merge timestamp and committer, additions/deletions, changed files count, base and head refs, requested reviewers, and review-comment counts."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_login": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "milestone_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_full_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "html_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "comments": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reactions_total_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "draft": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "merged_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "merged_by_login": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commits_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "additions": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deletions": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "changed_files": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "base_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "head_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_reviewers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "review_comments_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "body",
+            "state_reason",
+            "user_login",
+            "milestone_title",
+            "repository_full_name",
+            "base_ref",
+            "head_ref",
+            "merged_by_login"
+          ],
+          "semantic_fields": [
+            "title",
+            "body"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "closed_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "merged_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "comments": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "reactions_total_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "commits_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "additions": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "deletions": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "changed_files": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "review_comments_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at",
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "gists",
+      "description": "Gists the user has created (public and secret).",
+      "display": {
+        "label": "Your gists",
+        "detail": "Gist description, visibility, URL, up to 10 files per gist with filename/language/size/raw URL, comment count, created/updated timestamps."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "public": {
+            "type": "boolean"
+          },
+          "html_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "language": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "size": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "raw_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "files_truncated": {
+            "type": "boolean"
+          },
+          "files_total_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "comments_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "description"
+          ],
+          "semantic_fields": [
+            "description"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "files_total_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "comments_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at",
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "basic",
+      "label": "Profile + repos + stars",
+      "streams": [
+        {
+          "name": "user"
+        },
+        {
+          "name": "user_stats"
+        },
+        {
+          "name": "repositories"
+        },
+        {
+          "name": "starred"
+        }
+      ]
+    },
+    {
+      "id": "full",
+      "label": "Everything (profile, repos, stars, issues, PRs, gists)",
+      "streams": [
+        {
+          "name": "user"
+        },
+        {
+          "name": "user_stats"
+        },
+        {
+          "name": "repositories"
+        },
+        {
+          "name": "starred"
+        },
+        {
+          "name": "issues"
+        },
+        {
+          "name": "pull_requests"
+        },
+        {
+          "name": "gists"
+        }
+      ]
+    }
+  ]
+}

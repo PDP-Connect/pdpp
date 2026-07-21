@@ -1,0 +1,39 @@
+{
+  "type": "multipart/mixed",
+  "childNodes": [
+    {
+      "type": "multipart/alternative",
+      "childNodes": [
+        {
+          "type": "text/plain",
+          "parameters": { "charset": "utf-8" },
+          "encoding": "quoted-printable",
+          "size": 412
+        },
+        {
+          "type": "text/html",
+          "parameters": { "charset": "utf-8" },
+          "encoding": "quoted-printable",
+          "size": 1820
+        }
+      ]
+    },
+    {
+      "type": "image/png",
+      "parameters": { "name": "inline-image.png" },
+      "disposition": "inline",
+      "dispositionParameters": { "filename": "inline-image.png" },
+      "id": "<image1@example.com>",
+      "encoding": "base64",
+      "size": 24576
+    },
+    {
+      "type": "application/pdf",
+      "parameters": { "name": "invoice.pdf" },
+      "disposition": "attachment",
+      "dispositionParameters": { "filename": "invoice.pdf" },
+      "encoding": "base64",
+      "size": 102400
+    }
+  ]
+}

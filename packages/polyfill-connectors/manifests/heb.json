@@ -1,0 +1,461 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/heb",
+  "connector_key": "heb",
+  "manifest_uri": "https://registry.pdpp.org/connectors/heb",
+  "version": "0.2.0",
+  "display_name": "H-E-B",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      },
+      "browser": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "username_password",
+      "label": "H-E-B sign-in details",
+      "description": "Save the H-E-B sign-in details for this source so the session can be repaired automatically later. If you do not want to save them, use the secure browser login path instead.",
+      "submit_label": "Save sign-in details and start first sync",
+      "fields": [
+        {
+          "name": "username",
+          "label": "H-E-B email or phone",
+          "type": "text",
+          "required": true,
+          "secret": true,
+          "autocomplete": "username",
+          "env": [
+            "HEB_USERNAME"
+          ]
+        },
+        {
+          "name": "password",
+          "label": "H-E-B password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "current-password",
+          "env": [
+            "HEB_PASSWORD"
+          ]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action",
+      "otp"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "minimum_interval_seconds": 7200,
+      "interaction_posture": "otp_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
+      "background_safe": true,
+      "assisted_after_owner_auth": true,
+      "rationale": "H-E-B is fronted by Imperva Incapsula and supports passkeys plus verification codes; manual by default because sign-in and bot challenges are common. Parsers are verified against real logged-in heb.com DOM (order list + order detail). background_safe:true makes background scheduling available once the owner opts in after authenticating; recommended_mode stays manual so it never auto-runs unattended."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
+    }
+  },
+  "streams": [
+    {
+      "name": "orders",
+      "required": true,
+      "description": "H-E-B curbside/delivery orders scraped from Your Orders. Preferred source is the order-list page's embedded structured data when present and trustworthy; the rendered-DOM parser is a fail-safe fallback for a page or row where structured data is absent, malformed, or untrustworthy. In-store purchases are not available from heb.com and do not appear here.",
+      "display": {
+        "label": "Your H-E-B orders",
+        "detail": "Order date, total, fulfillment method (curbside/delivery), fulfillment location, status, item count, and (when the structured source supplies them) status code, timeslot, store name, and unfulfilled-item count. Curbside/delivery orders only; in-store purchases are not available from heb.com. Per-item breakdowns live in the order_items stream."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "order_date": {
+            "type": "string",
+            "format": "date",
+            "x_pdpp_role": "event-time"
+          },
+          "fulfillment_method": {
+            "type": "string",
+            "enum": [
+              "curbside",
+              "delivery",
+              "unknown"
+            ]
+          },
+          "fulfillment_location": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "status_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine-readable order status code from the structured order-list source (e.g. \"PAYMENT_RECEIPTED\"), distinct from the human-readable `status` message. An honest bounded/open string reflecting values actually observed in structured source evidence, not a closed enum inferred from one account's order history. Null when the structured source did not supply this row."
+          },
+          "store_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Fulfilling store name from the structured order-list source. Null when the structured source did not supply this row."
+          },
+          "timeslot_start": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Delivery/pickup timeslot start (ISO-8601 UTC) from the structured order-list source. Null when the structured source did not supply this row."
+          },
+          "timeslot_end": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Delivery/pickup timeslot end (ISO-8601 UTC) from the structured order-list source. Null when the structured source did not supply this row."
+          },
+          "total": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "item_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "unfulfilled_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Count of purchase-line items the source reports as unfulfilled on this order, from the structured order-list source's orderChangesOverview.unfulfilledCount. Distinct from item_count (the order's total item count). Null when the structured source did not supply this row."
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "order_date"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "order_date",
+      "consent_time_field": "order_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "items",
+          "stream": "order_items",
+          "foreign_key": "order_id",
+          "cardinality": "has_many"
+        }
+      ],
+      "views": [
+        {
+          "id": "reconciliation",
+          "label": "Fields for matching to bank/YNAB transactions",
+          "fields": [
+            "id",
+            "order_date",
+            "total",
+            "total_cents",
+            "fulfillment_method"
+          ]
+        },
+        {
+          "id": "full",
+          "label": "Everything on the order row",
+          "fields": [
+            "id",
+            "order_date",
+            "fulfillment_method",
+            "fulfillment_location",
+            "status",
+            "status_code",
+            "store_name",
+            "timeslot_start",
+            "timeslot_end",
+            "total",
+            "total_cents",
+            "item_count",
+            "unfulfilled_count",
+            "fetched_at"
+          ]
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "fulfillment_location",
+            "status",
+            "store_name"
+          ]
+        },
+        "range_filters": {
+          "order_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "total_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "item_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "timeslot_start": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "timeslot_end": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "sum": [
+            "total_cents"
+          ],
+          "group_by": [
+            "fulfillment_method",
+            "status",
+            "status_code"
+          ],
+          "group_by_time": [
+            "order_date"
+          ]
+        },
+        "expand": [
+          {
+            "name": "items",
+            "default_limit": 25,
+            "max_limit": 200
+          }
+        ]
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "order_items",
+      "required": true,
+      "description": "Line items within H-E-B orders. Curbside/delivery orders only; in-store purchases are not available from heb.com. product_id is the H-E-B provider/catalog identifier observed on the order-detail purchase line, not a global product identity (GTIN/UPC/EAN); no such field is collected because no live-evidenced H-E-B response has been shown to carry one on the purchase line, and this connector does not crawl product pages to obtain one.",
+      "display": {
+        "label": "Your H-E-B order line items",
+        "detail": "Product name, department, H-E-B product id, product URL, image, quantity, line total, denormalized order date."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "department": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "product_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "product_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "media"
+          },
+          "quantity": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "line_total": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line_total_cents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "order_date": {
+            "type": "string",
+            "format": "date",
+            "x_pdpp_role": "event-time"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "order_id",
+          "name",
+          "order_date"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "order_date",
+      "consent_time_field": "order_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "order",
+          "stream": "orders",
+          "foreign_key": "order_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "department"
+          ],
+          "semantic_fields": [
+            "name"
+          ]
+        },
+        "range_filters": {
+          "order_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "line_total_cents": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "quantity": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "sum": [
+            "line_total_cents"
+          ],
+          "group_by": [
+            "department"
+          ],
+          "group_by_time": [
+            "order_date"
+          ],
+          "count_distinct": [
+            "product_id"
+          ]
+        }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "manual_as_of"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "reconciliation",
+      "label": "Orders for bank/YNAB matching",
+      "streams": [
+        {
+          "name": "orders",
+          "view": "reconciliation"
+        },
+        {
+          "name": "order_items"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+# Fixture capture: raw/ contains unscrubbed PII from live runs. Never commit.
+# `fixtures/*/scrubbed/` is intentionally not ignored; scrubbed fixtures may
+# be committed after scrubber output and human review.
+fixtures/*/raw/
+
+# Local data + cache
+.pdpp-data/
+.pdpp-tools/

@@ -1,0 +1,25 @@
+{
+  "title": "PDPP Docs",
+  "root": true,
+  "pages": [
+    "---Specification---",
+    "index",
+    "spec-core",
+    "spec-collection-profile",
+    "spec-ext-lexical-search",
+    "spec-ext-aggregation",
+    "spec-semantic-retrieval-extension",
+    "spec-deferred",
+    "open-questions",
+    "---Guides---",
+    "reference-implementation",
+    "reference-implementation-examples",
+    "spec-architecture",
+    "---Design rationale---",
+    "spec-auth-design",
+    "spec-change-tracking",
+    "spec-connector-ecosystem",
+    "---Archive---",
+    "spec-data-query-api"
+  ]
+}

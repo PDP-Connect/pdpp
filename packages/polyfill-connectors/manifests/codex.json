@@ -1,0 +1,1184 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/codex",
+  "connector_key": "codex",
+  "manifest_uri": "https://registry.pdpp.org/connectors/codex",
+  "version": "0.3.0",
+  "display_name": "OpenAI Codex CLI",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 300,
+      "maximum_staleness_seconds": 21600,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Codex CLI session state lives on local disk; re-reading it is cheap."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
+    }
+  },
+  "streams": [
+    {
+      "name": "sessions",
+      "description": "Codex CLI sessions. Canonical metadata comes from ~/.codex/state_5.sqlite#threads (title, archived, tokens_used, first_user_message, sandbox_policy, approval_mode), enriched with message/tool-call counts from the on-disk rollout JSONL.",
+      "display": {
+        "label": "Your Codex CLI sessions",
+        "detail": "Title, working directory, git commit/branch, model provider, CLI version, approval mode, sandbox policy, token usage, and counts."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "originator": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cli_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "git_commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "git_branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "last_event_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "message_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "function_call_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "tokens_used": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "first_user_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sandbox_policy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approval_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rollout_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "last_event_at",
+      "consent_time_field": "started_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "cwd",
+            "originator",
+            "model_provider",
+            "git_branch",
+            "title",
+            "first_user_message",
+            "sandbox_policy",
+            "approval_mode"
+          ],
+          "semantic_fields": [
+            "title",
+            "first_user_message"
+          ]
+        },
+        "range_filters": {
+          "started_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "last_event_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "message_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "function_call_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "tokens_used": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "last_event_at",
+            "started_at"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "messages",
+      "description": "Messages within Codex sessions: user prompts, assistant responses, and reasoning placeholders.",
+      "display": {
+        "label": "Your Codex messages",
+        "detail": "Role (user/assistant), text content, timestamp, session reference. Reasoning traces are referenced but content is encrypted and not stored."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "timestamp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "session_id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "session",
+          "stream": "sessions",
+          "foreign_key": "session_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "role",
+            "type",
+            "content"
+          ],
+          "semantic_fields": [
+            "content"
+          ]
+        },
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "sessions",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "function_calls",
+      "description": "Tool invocations and their outputs (shell commands, file ops) recorded in Codex sessions.",
+      "display": {
+        "label": "Codex tool calls",
+        "detail": "Tool name, arguments, call_id, and output preview. Includes shell commands Codex ran and their results."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "arguments": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timestamp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "session_id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "session",
+          "stream": "sessions",
+          "foreign_key": "session_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "arguments",
+            "output_preview"
+          ],
+          "semantic_fields": [
+            "arguments",
+            "output_preview"
+          ]
+        },
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "sessions",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "rules",
+      "description": "Personal trust-registry rules recorded in ~/.codex/rules/*.rules — the de-facto log of approval decisions. One record per rule line. The stream is named `rules` to match the real local directory; `approval_rules` was backlog shorthand, not an on-disk source name.",
+      "display": {
+        "label": "Your Codex approval rules",
+        "detail": "Each rule line (e.g. prefix_rule / decision=allow) from your .rules files, with ruleset and position."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ruleset": {
+            "type": "string"
+          },
+          "rule_text": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "rule_index": {
+            "type": "integer"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "ruleset",
+          "rule_text",
+          "rule_index"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "ruleset",
+            "rule_text",
+            "path"
+          ],
+          "semantic_fields": [
+            "rule_text"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "prompts",
+      "description": "User-authored prompt templates from ~/.codex/prompts/*.md. Frontmatter (name, description) is parsed; body is the prompt content.",
+      "display": {
+        "label": "Your Codex prompts",
+        "detail": "Name, description, body, and source path for each prompt template."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "description",
+            "content",
+            "path"
+          ],
+          "semantic_fields": [
+            "description",
+            "content"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "skills",
+      "description": "User-authored skills from ~/.codex/skills/<name>/SKILL.md. Frontmatter (name, description) is parsed; body is the skill content.",
+      "display": {
+        "label": "Your Codex skills",
+        "detail": "Name, description, body, and source path for each skill."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "description",
+            "content",
+            "path"
+          ],
+          "semantic_fields": [
+            "description",
+            "content"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "history",
+      "description": "Metadata-only inventory for Codex history.jsonl. Prompt-history payloads are not collected in this tranche.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "session_index",
+      "description": "Metadata-only inventory for Codex session_index.jsonl.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "coverage_diagnostics",
+      "description": "Safe coverage status for known Codex local stores, including excluded auth-adjacent stores without payloads or raw absolute paths.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "stream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "status",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "logs",
+      "description": "Deferred Codex logs inventory; log payloads require deterministic redaction before collection.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "deferred",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "shell_snapshots",
+      "description": "Metadata-only inventory for Codex shell snapshots; shell content is not collected.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "config_inventory",
+      "description": "Metadata-only inventory for non-secret Codex configuration; raw config payloads are not collected.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "cache_inventory",
+      "description": "Metadata-only inventory for Codex cache stores; raw cache payloads are not collected.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "full",
+      "label": "Your full Codex history",
+      "streams": [
+        {
+          "name": "sessions"
+        },
+        {
+          "name": "messages"
+        },
+        {
+          "name": "function_calls"
+        },
+        {
+          "name": "rules"
+        },
+        {
+          "name": "prompts"
+        },
+        {
+          "name": "skills"
+        }
+      ]
+    },
+    {
+      "id": "messages_only",
+      "label": "Just prompts and responses",
+      "streams": [
+        {
+          "name": "sessions"
+        },
+        {
+          "name": "messages"
+        }
+      ]
+    },
+    {
+      "id": "authoring",
+      "label": "Your prompts, skills, and approval rules",
+      "streams": [
+        {
+          "name": "rules"
+        },
+        {
+          "name": "prompts"
+        },
+        {
+          "name": "skills"
+        }
+      ]
+    }
+  ]
+}

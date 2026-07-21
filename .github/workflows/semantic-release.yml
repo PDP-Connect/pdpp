@@ -1,0 +1,325 @@
+name: semantic-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: semantic-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-version:
+    name: resolve next version
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      new-release-published: ${{ steps.version.outputs.new-release-published }}
+      new-release-version: ${{ steps.version.outputs.new-release-version }}
+      new-release-git-tag: ${{ steps.version.outputs.new-release-git-tag }}
+      new-release-major-minor: ${{ steps.version.outputs.new-release-major-minor }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "lts/*"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Determine next version
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          pnpm exec semantic-release --dry-run 2>&1 | tee "$RUNNER_TEMP/semantic-release-dry-run.log"
+          node scripts/semantic-release-github-output.mjs dry-run "$RUNNER_TEMP/semantic-release-dry-run.log"
+
+  quality:
+    name: release quality checks
+    needs: resolve-version
+    if: needs.resolve-version.outputs.new-release-published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "lts/*"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify generated reference contract
+        run: pnpm reference-contract:check-generated
+
+      - name: Typecheck reference implementation
+        run: pnpm --dir reference-implementation run typecheck
+
+      - name: Check spec docs drift
+        run: pnpm spec:check
+
+      - name: Check package release policy
+        run: pnpm release:policy-check
+
+      - name: Test package release policy checks
+        run: pnpm release:policy-check:test
+
+      - name: Test dist-tag posture classifier
+        run: pnpm release:dist-tag-check:test
+
+      - name: Typecheck operator console app
+        run: pnpm --dir apps/console run types:check
+
+      - name: Verify CLI package
+        run: pnpm --filter @pdpp/cli run verify
+
+      - name: Verify local collector package
+        run: pnpm --filter @pdpp/local-collector run verify
+
+      - name: Verify MCP server package
+        run: pnpm --filter @pdpp/mcp-server run verify
+
+      - name: Verify read-core package
+        run: pnpm --filter @pdpp/read-core run verify
+
+  validate-release-images:
+    name: validate release image ${{ matrix.image }}
+    needs: resolve-version
+    if: needs.resolve-version.outputs.new-release-published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: reference
+            target: reference
+            title: PDPP reference AS/RS
+            description: PDPP reference authorization server and resource server
+          - image: reference-browser
+            target: reference-browser
+            title: PDPP reference AS/RS (browser-capable)
+            description: PDPP reference AS/RS with Patchright/Chromium for browser-backed connectors (ChatGPT, USAA, ...)
+          - image: web
+            target: console
+            title: PDPP reference operator console
+            description: PDPP browser-facing reference operator console
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Compute image name
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          echo "PDPP_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
+
+      # No QEMU here: this validate build is amd64-only (see platforms below),
+      # so cross-arch emulation isn't needed. The publish-images job keeps QEMU
+      # because it builds multi-arch.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.PDPP_IMAGE }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.resolve-version.outputs.new-release-version }}
+          tags: |
+            type=raw,value=${{ needs.resolve-version.outputs.new-release-version }}
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          cache-from: |
+            type=gha,scope=${{ matrix.target }}-release
+            type=gha,scope=reference-release
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}-release
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            PDPP_REFERENCE_REVISION=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # amd64-only for this validate build (push: false). It's a
+          # constructability smoke test, and the arm64 Chromium/Patchright build
+          # adds 10-24 min with no CI value here. The publish-images job below
+          # stays multi-arch (linux/amd64,linux/arm64).
+          platforms: linux/amd64
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          target: ${{ matrix.target }}
+
+  release:
+    name: publish GitHub and npm release
+    needs: [resolve-version, quality]
+    if: needs.resolve-version.outputs.new-release-published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      published: ${{ steps.semantic-release.outputs.new-release-published }}
+      version: ${{ steps.semantic-release.outputs.new-release-version }}
+      git-tag: ${{ steps.semantic-release.outputs.new-release-git-tag }}
+      major-minor: ${{ steps.semantic-release.outputs.new-release-major-minor }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "lts/*"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Run semantic-release
+        id: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm release
+
+  publish-images:
+    name: publish release image ${{ matrix.image }}
+    needs: [release, validate-release-images]
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: reference
+            target: reference
+            title: PDPP reference AS/RS
+            description: PDPP reference authorization server and resource server
+          - image: reference-browser
+            target: reference-browser
+            title: PDPP reference AS/RS (browser-capable)
+            description: PDPP reference AS/RS with Patchright/Chromium for browser-backed connectors (ChatGPT, USAA, ...)
+          - image: web
+            target: console
+            title: PDPP reference operator console
+            description: PDPP browser-facing reference operator console
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Compute image name
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          echo "PDPP_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.PDPP_IMAGE }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.release.outputs.version }}
+          tags: |
+            type=raw,value=${{ needs.release.outputs.version }}
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          cache-from: |
+            type=gha,scope=${{ matrix.target }}-release
+            type=gha,scope=reference-release
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}-release
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            PDPP_REFERENCE_REVISION=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          provenance: mode=max
+          push: true
+          sbom: true
+          tags: ${{ steps.meta.outputs.tags }}
+          target: ${{ matrix.target }}

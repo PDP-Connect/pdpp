@@ -1,0 +1,64 @@
+{
+  "name": "@pdpp/local-collector",
+  "version": "0.0.0",
+  "description": "Publishable local collector runtime for PDPP: filesystem-class connectors (Claude Code, Codex) plus the device-exporter ingest client.",
+  "type": "module",
+  "private": false,
+  "main": "./dist/local-collector/src/runner.js",
+  "types": "./dist/local-collector/src/runner.d.ts",
+  "bin": {
+    "pdpp-local-collector": "dist/local-collector/bin/pdpp-local-collector.js"
+  },
+  "exports": {
+    "./runner": {
+      "types": "./dist/local-collector/src/runner.d.ts",
+      "import": "./dist/local-collector/src/runner.js"
+    },
+    "./errors": {
+      "types": "./dist/local-collector/src/errors.d.ts",
+      "import": "./dist/local-collector/src/errors.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "prepare": "pnpm build",
+    "prepack": "pnpm build",
+    "test": "node --test --import tsx 'test/*.test.js'",
+    "pack-install-run": "node scripts/pack-install-run.mjs",
+    "validate:package": "pnpm build && node scripts/validate-package.mjs",
+    "verify": "pnpm test && pnpm validate:package"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "keywords": [
+    "pdpp",
+    "personal-data",
+    "collector",
+    "data-portability"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PDP-Connect/pdpp.git",
+    "directory": "packages/local-collector"
+  },
+  "bugs": {
+    "url": "https://github.com/PDP-Connect/pdpp/issues"
+  },
+  "homepage": "https://github.com/PDP-Connect/pdpp#readme",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": false,
+    "registry": "https://registry.npmjs.org/",
+    "tag": "latest"
+  }
+}

@@ -1,0 +1,312 @@
+# reference-implementation-runtime Specification
+
+## Purpose
+TBD - created by archiving change add-reference-runtime-spec. Update Purpose after archive.
+## Requirements
+### Requirement: Runtime SHALL construct a bounded START envelope
+The reference runtime SHALL send each connector a `START` envelope containing a concrete `run_id`, `collection_mode`, normalized `scope`, validated stream-keyed `state` when state persistence is enabled, and the runtime bindings available to that run.
+
+#### Scenario: No explicit scope is supplied
+- **WHEN** the reference runtime starts a connector without an explicit scope
+- **THEN** it SHALL derive `START.scope.streams` from the connector manifest stream names
+- **AND** it SHALL reject manifests that leave the derived scope empty
+
+#### Scenario: Explicit scope is supplied
+- **WHEN** the reference runtime starts a connector with an explicit scope
+- **THEN** it SHALL require at least one named stream
+- **AND** it SHALL reject wildcard stream names, streams not declared in the manifest, unresolved `view` names, and issuance-time `necessity` values
+- **AND** it SHALL validate optional `resources`, `fields`, and `time_range` members before sending `START`
+
+#### Scenario: Field-scoped stream is normalized
+- **WHEN** a stream scope supplies an explicit `fields` array
+- **THEN** the reference runtime SHALL add manifest-required fields, primary-key fields, and any consent-time field needed for a requested time range
+- **AND** it SHALL preserve caller-requested fields without duplicating additions
+
+#### Scenario: Runtime bindings are advertised
+- **WHEN** a connector run starts
+- **THEN** the reference runtime SHALL advertise `network` and `filesystem` bindings
+- **AND** it SHALL advertise `interactive` only when an interaction handler is available
+
+### Requirement: Runtime SHALL enforce scoped connector output
+The reference runtime SHALL validate connector output against the active scope, manifest, and run phase before ingesting records, staging state, reporting progress, recording known gaps, or completing the run.
+
+#### Scenario: Record is outside the active scope
+- **WHEN** a connector emits a `RECORD` for an undeclared stream, outside the stream's declared `resources`, outside requested `fields`, or outside the stream `time_range` when a manifest consent-time field is available
+- **THEN** the reference runtime SHALL fail the run as a connector protocol violation
+- **AND** it SHALL NOT ingest the offending record
+
+#### Scenario: State checkpoint is outside the active scope
+- **WHEN** a connector emits a `STATE` checkpoint for an undeclared stream or with a cursor that is neither an object nor null
+- **THEN** the reference runtime SHALL fail the run as a connector protocol violation
+- **AND** it SHALL NOT persist that checkpoint
+
+#### Scenario: Progress or skip result names an undeclared stream
+- **WHEN** a connector emits `PROGRESS` or `SKIP_RESULT` with a stream not present in `START.scope.streams`
+- **THEN** the reference runtime SHALL fail the run as a connector protocol violation
+- **AND** for `PROGRESS` it SHALL expose a runtime-authored violation subtype of `progress_for_undeclared_stream`
+
+#### Scenario: Connector emits after terminal DONE
+- **WHEN** a connector emits any message after a terminal `DONE`
+- **THEN** the reference runtime SHALL fail the run as a connector protocol violation
+- **AND** it SHALL NOT commit staged state for that run
+
+### Requirement: Runtime SHALL maintain checkpointed streaming integrity
+The reference runtime SHALL stream records to the resource server in batches, flush a stream before staging that stream's `STATE`, and commit staged state only after terminal validation succeeds and state persistence is enabled. The reference runtime SHALL NOT commit staged state when a run is cancelled. When a record-batch ingest is rejected as `not_found` for a stream that is present in the run's START scope, the reference runtime SHALL treat it as a transient per-stream gap rather than a terminal run failure: it SHALL NOT stage or commit that stream's cursor, it SHALL record a transient known gap and a stream-skipped timeline event for that stream, and it SHALL continue collecting and committing the run's other in-scope streams.
+
+#### Scenario: Successful persistent run
+- **WHEN** a connector emits scoped records, scoped state, and `DONE status="succeeded"` with a matching `records_emitted` count and compatible exit code
+- **THEN** the reference runtime SHALL flush buffered records
+- **AND** it SHALL persist staged state for each staged stream
+- **AND** it SHALL report a checkpoint summary with `commit_status: "committed"`
+
+#### Scenario: State persistence is disabled
+- **WHEN** a connector run starts with `persistState` disabled
+- **THEN** the reference runtime SHALL send `START.state` as null
+- **AND** it SHALL NOT persist staged state
+- **AND** it SHALL report a checkpoint summary with `commit_status: "disabled"`
+
+#### Scenario: Checkpoint commit partially fails
+- **WHEN** record ingest succeeds but committing one or more staged stream states fails after terminal success
+- **THEN** the reference runtime SHALL fail the run as a runtime error
+- **AND** it SHALL report how many state streams were staged and committed
+- **AND** it SHALL include a known gap for the partial or missing checkpoint commit
+
+#### Scenario: Terminal validation fails
+- **WHEN** terminal exit code or `DONE.records_emitted` validation fails
+- **THEN** the reference runtime SHALL fail the run as a connector protocol violation
+- **AND** it SHALL report observed and reported record counts when they differ
+- **AND** it SHALL NOT commit staged state
+
+#### Scenario: Run is cancelled before terminal success
+- **WHEN** a run is cancelled and its connector child exits without emitting `DONE status="succeeded"`
+- **THEN** the reference runtime SHALL preserve records already flushed to the resource server
+- **AND** it SHALL NOT commit staged cursor state for that run
+
+#### Scenario: Ingest is rejected as not_found for a stream in the run's START scope
+- **WHEN** a record-batch ingest returns HTTP 404 `not_found` for a stream that is present in the run's START scope
+- **THEN** the reference runtime SHALL NOT fail the run for that rejection
+- **AND** it SHALL drop that stream's buffered batch without treating it as flushed
+- **AND** it SHALL NOT stage or commit that stream's cursor, so a later run re-collects it
+- **AND** it SHALL record a transient known gap and a `run.stream_skipped` timeline event for that stream
+- **AND** it SHALL continue to collect, flush, and commit the run's other in-scope streams
+
+#### Scenario: Ingest is rejected for a reason other than a scope-stream not_found
+- **WHEN** a record-batch ingest is rejected with any status other than a 404 `not_found`, or with a `not_found` for a stream not present in the run's START scope
+- **THEN** the reference runtime SHALL fail the run as it does today
+- **AND** it SHALL NOT reclassify the rejection as a transient per-stream gap
+
+### Requirement: Runtime SHALL persist safe run timeline events
+The reference runtime SHALL emit durable spine events for runtime-observable run lifecycle milestones without storing connector secret responses in those events. When an owner cancels a run, the reference runtime SHALL record the cancellation request and a terminal event that preserves the owner-cancel intent.
+
+#### Scenario: Run starts
+- **WHEN** the reference runtime sends `START`
+- **THEN** it SHALL record a `run.started` event with run source, collection mode, grant id when supplied, state commit intent, advertised bindings, and scoped stream names
+
+#### Scenario: State is staged
+- **WHEN** the reference runtime accepts a scoped `STATE` checkpoint
+- **THEN** it SHALL record `run.state_staged` with the stream id, cursor, checkpoint mode, staged-state count, and state commit intent
+
+#### Scenario: Progress is reported
+- **WHEN** the connector emits valid `PROGRESS`
+- **THEN** the reference runtime SHALL record `run.progress_reported`
+- **AND** it SHALL include stream, message, count, and total only when supplied and valid
+
+#### Scenario: Stream is skipped
+- **WHEN** the connector emits valid `SKIP_RESULT`
+- **THEN** the reference runtime SHALL record `run.stream_skipped`
+- **AND** it SHALL include a bounded known-gap projection with reason, message, scope, and recovery hint when available
+
+#### Scenario: Owner cancellation is requested
+- **WHEN** the reference runtime observes an owner cancellation signal for an in-flight run that has no terminal event yet
+- **THEN** it SHALL record a non-terminal `run.cancel_requested` event for that run
+- **AND** it SHALL begin terminating the connector child process for only that run
+
+#### Scenario: Run reaches a terminal state
+- **WHEN** the run completes, fails, or is cancelled
+- **THEN** the reference runtime SHALL record `run.completed`, `run.failed`, or `run.cancelled`
+- **AND** the terminal event SHALL include record counts, checkpoint status, staged and committed state counts, terminal reason when applicable, connector error summary when applicable, and bounded known gaps
+
+#### Scenario: Owner-cancelled run reaches its terminal state
+- **WHEN** a run whose cancellation was requested by the owner exits without `DONE status="succeeded"`
+- **THEN** the reference runtime SHALL record a terminal `run.cancelled` event rather than a generic connector-exit failure
+- **AND** the terminal reason SHALL distinguish a graceful owner cancellation from one that required force-terminating the connector child
+
+### Requirement: Runtime SHALL broker interactions as in-process pauses
+The reference runtime SHALL treat connector `INTERACTION` messages as blocking in-process pauses that are completed by a matching `INTERACTION_RESPONSE` while the connector child process remains alive. The reference runtime SHALL additionally monitor the browser surface during a `manual_action` or browser-surface-backed `otp` interaction wait and SHALL fail closed by cancelling the open interaction if the surface becomes unavailable before the owner responds.
+
+#### Scenario: Interaction is accepted
+- **WHEN** a connector emits a valid `INTERACTION` and the run advertised `interactive`
+- **THEN** the reference runtime SHALL record `run.interaction_required`
+- **AND** it SHALL wait for a matching response or timeout before sending `INTERACTION_RESPONSE` to the connector
+
+#### Scenario: Interaction completes
+- **WHEN** the interaction handler returns `success`, `cancelled`, or `timeout` for the current interaction request id
+- **THEN** the reference runtime SHALL record `run.interaction_completed` with status, kind, and stream
+- **AND** it SHALL NOT record submitted credential, OTP, or manual-action response data in the durable run timeline
+
+#### Scenario: Interaction is unavailable
+- **WHEN** a connector emits `INTERACTION` but `START.bindings` omitted `interactive`
+- **THEN** the reference runtime SHALL fail the run as a connector protocol violation
+- **AND** it SHALL NOT record interaction-required or interaction-completed events for that invalid interaction
+
+#### Scenario: Connector emits output while waiting
+- **WHEN** a connector emits another message or invalid JSONL while the runtime is waiting for the current interaction response
+- **THEN** the reference runtime SHALL fail the run as a connector protocol violation
+- **AND** it SHALL terminate the connector child process
+
+#### Scenario: Browser surface is lost during interaction wait
+- **WHEN** a connector emits a `manual_action` or `otp` INTERACTION with an active browser surface
+- **AND** the browser surface becomes unreachable (CDP HTTP probe fails) before the owner responds
+- **THEN** the reference runtime SHALL detect the surface loss via periodic mid-wait polling
+- **AND** it SHALL emit `run.browser_surface_lost` with `interaction_id`, `kind`, and a `browser_surface_probe` envelope carrying the typed failure code and detail
+- **AND** it SHALL cancel the pending interaction and record `run.interaction_completed { status: "cancelled" }`
+- **AND** it SHALL clear the pending interaction entry so any subsequent owner response is rejected as stale
+
+### Requirement: Controller SHALL expose safe owner run controls
+
+The reference runtime controller SHALL provide owner-only run control behavior for manual runs, pending interactions, active-run conflict detection, single-run cancellation, schedule management, and abandoned controller-managed run reconciliation.
+
+#### Scenario: Managed scheduled run proves owner auth repair is required
+
+- **WHEN** a non-manual controller-managed connector run reaches a terminal failure whose bounded terminal evidence identifies credential or source-session repair as required
+- **THEN** the scheduler SHALL mark the existing owner-attention gate for that connector instance
+- **AND** a later scheduled tick SHALL skip through the existing needs-human gate instead of relaunching the connector
+- **AND** a later owner-started manual run SHALL clear that gate before attempting repair
+
+### Requirement: Controller SHALL disambiguate local connector implementations
+The reference runtime controller SHALL resolve local connector paths deterministically when reference fixture manifests and polyfill connector manifests share a connector id.
+
+#### Scenario: Active manifest matches a polyfill connector
+- **WHEN** a connector id exists in both reference fixture manifests and polyfill manifests
+- **AND** the active manifest fingerprint matches the polyfill manifest fingerprint
+- **THEN** the controller SHALL resolve the runnable polyfill connector implementation
+
+#### Scenario: No active manifest is supplied
+- **WHEN** the controller resolves a connector id without an active manifest
+- **AND** a runnable polyfill implementation exists for that connector id
+- **THEN** it SHALL prefer the runnable polyfill implementation
+
+#### Scenario: Polyfill-only connector is requested
+- **WHEN** a connector id exists only in the polyfill connector registry and has a runnable implementation
+- **THEN** the controller SHALL resolve the polyfill connector path
+
+### Requirement: Scheduler SHALL preserve runtime results and avoid unsafe retries
+
+The reference scheduler SHALL preserve runtime result metadata in history, stop overlapping attempts for the same connection, avoid unsafe retries for deterministic failures, and bound each direct connector attempt with a progress watchdog so active-run state cannot remain open indefinitely after the attempt stops making progress.
+
+#### Scenario: Scheduled direct run exceeds its progress watchdog budget
+- **WHEN** a scheduler-managed direct connector attempt emits no valid progress for the configured watchdog budget before reaching a terminal runtime result
+- **THEN** the scheduler SHALL request cancellation for that connector attempt
+- **AND** it SHALL persist a terminal failed run record with a timeout reason
+- **AND** it SHALL clear the durable active-run row for that connection
+
+#### Scenario: Scheduled direct run keeps making progress
+- **WHEN** a scheduler-managed direct connector attempt runs longer than the configured watchdog budget
+- **AND** it emits valid connector progress before the watchdog expires
+- **THEN** the scheduler SHALL keep the attempt active
+- **AND** it SHALL NOT fail the run solely because elapsed wall-clock exceeded the watchdog interval
+
+### Requirement: Scheduler SHALL handle single-use and disabled grants conservatively
+The reference scheduler SHALL treat `single_use` grants and deterministic grant lifecycle failures as reference orchestration concerns rather than connector wire-protocol extensions.
+
+#### Scenario: Single-use run succeeds
+- **WHEN** a scheduled connector with `grantAccessMode: "single_use"` completes successfully
+- **THEN** the scheduler SHALL mark the connector grant exhausted
+- **AND** later ticks SHALL emit skipped run records instead of starting another connector process
+- **AND** state persistence SHALL be disabled for the single-use run
+
+#### Scenario: Single-use run fails before success
+- **WHEN** a scheduled connector with `grantAccessMode: "single_use"` fails before any successful run consumes the grant
+- **THEN** the scheduler SHALL keep the grant reusable for a later scheduled attempt
+- **AND** state persistence SHALL remain disabled for those single-use attempts
+
+#### Scenario: Deterministic grant lifecycle failure occurs
+- **WHEN** a scheduled run fails with `grant_consumed`, `grant_expired`, `grant_invalid`, or `grant_revoked`
+- **THEN** the scheduler SHALL disable future connector attempts for that grant
+- **AND** it SHALL emit one skipped run record explaining that the grant is no longer usable
+- **AND** later intervals SHALL remain quiet until the schedule is restarted with usable grant state
+
+### Requirement: Browser-backed runtime helpers SHALL use local operator profiles
+Reference polyfill browser helpers SHALL use local persistent browser profile directories and operator-controlled interaction hooks for browser-backed connectors.
+
+#### Scenario: Browser connector uses default profile binding
+- **WHEN** a browser-backed connector does not supply a profile name
+- **THEN** the helper runtime SHALL use the connector name as the profile name
+- **AND** it SHALL acquire a persistent browser context under the local `.pdpp` profile directory
+
+#### Scenario: Browser profile name is invalid
+- **WHEN** a browser-backed connector requests a profile name outside `[A-Za-z0-9_-]+`
+- **THEN** browser acquisition SHALL fail before launching the browser context
+
+#### Scenario: Session probe fails
+- **WHEN** a browser-backed connector supplies a session probe and the probe reports that the session is not live
+- **THEN** the helper runtime SHALL request `manual_action` interaction with a bounded timeout
+- **AND** it SHALL fail the connector run if the session still is not live after the interaction completes
+
+#### Scenario: Browser tracing is enabled
+- **WHEN** `PDPP_TRACE=1` is set for a browser-backed connector helper run
+- **THEN** the helper runtime SHALL attempt to produce a replayable Playwright trace
+- **AND** it SHALL emit progress messages naming trace start and final trace output or trace-write failure
+
+### Requirement: Run handles SHALL remain resolvable until and after terminal state
+
+Every run identifier returned by a control surface SHALL remain resolvable
+to a status until and after the run reaches a terminal state — this covers
+the run-now 202 acknowledgement, scheduler projections, and cancellation
+acknowledgements. The reference implementation SHALL expose an owner-session route
+`GET /_ref/runs/{run_id}` that resolves a run handle to its current status:
+`active` while the controller's run bookkeeping owns the run or while a
+`run.started` event exists without a terminal event, and the terminal status
+(`completed` | `failed` | `cancelled` | `abandoned`) once a terminal spine
+event exists — independent of the flight-state `controller_active_runs`
+table, whose rows are deleted when a run settles. Failure information served
+by the route SHALL be the typed, bounded fields already persisted on the
+run's terminal spine event (terminal reason, failure origin, bounded
+messages); the route SHALL NOT expose connector secrets or bearer tokens.
+
+#### Scenario: Active run resolves
+
+- **WHEN** an owner requests `GET /_ref/runs/{run_id}` for a run that has
+  been acknowledged with 202 and has not yet reached a terminal state
+- **THEN** the route SHALL respond 200 with status `active`
+- **AND** it SHALL include the run id, trace id, connector identity, and
+  started timestamp from the controller's active-run bookkeeping
+- **AND** it SHALL link to the run's timeline route
+
+#### Scenario: Terminal run resolves
+
+- **WHEN** an owner requests `GET /_ref/runs/{run_id}` for a run whose
+  terminal spine event has been recorded, regardless of how long ago the run
+  settled
+- **THEN** the route SHALL respond 200 with the terminal status derived from
+  the run's most-recent terminal spine event
+- **AND** it SHALL include the terminal reason when the terminal event
+  carries one, started and completed timestamps, and — for failed or
+  abandoned runs — a typed failure summary bounded to the fields persisted
+  on the terminal event
+
+#### Scenario: Unknown run id gets a typed 404
+
+- **WHEN** an owner requests `GET /_ref/runs/{run_id}` for an identifier
+  with no active-run bookkeeping and no spine events
+- **THEN** the route SHALL respond with the reference error envelope and a
+  typed `not_found` code naming the `run_id` parameter
+- **AND** it SHALL NOT fall through to the transport's default unknown-route
+  response
+
+#### Scenario: Launch crash leaves the handle resolvable
+
+- **WHEN** a run acknowledged with 202 crashes before the runtime records
+  `run.started` (a throw in the launch path before the connector child
+  spawns)
+- **THEN** the controller SHALL record a typed terminal `run.failed` event
+  with reason `launch_failed`, a bounded failure message, and zero records
+- **AND** it SHALL log the failure with the run id and trace id
+- **AND** `GET /_ref/runs/{run_id}` SHALL subsequently resolve the handle to
+  status `failed`
+
+#### Scenario: Post-spawn failures are not double-terminated
+
+- **WHEN** a run's in-flight task rejects after the runtime has already
+  recorded a terminal spine event for that run
+- **THEN** the controller SHALL NOT emit a second terminal event for the run

@@ -1,0 +1,160 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/ical",
+  "connector_key": "ical",
+  "manifest_uri": "https://registry.pdpp.org/connectors/ical",
+  "version": "0.1.0",
+  "display_name": "Calendar (iCal)",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Calendar imports come from .ics exports the owner provides; refresh requires a new file."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "events",
+      "description": "Calendar events from .ics files.",
+      "display": {
+        "label": "Your calendar events",
+        "detail": "Event title, start/end time, location, attendees, organizer, description."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "calendar_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "end": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "all_day": {
+            "type": "boolean"
+          },
+          "organizer_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attendees": {
+            "type": "array"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rrule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "uid",
+          "start"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "start",
+      "consent_time_field": "start",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "summary",
+            "description",
+            "location"
+          ],
+          "semantic_fields": [
+            "summary",
+            "description"
+          ]
+        },
+        "range_filters": {
+          "start": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start"
+          ],
+          "group_by": [
+            "status"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

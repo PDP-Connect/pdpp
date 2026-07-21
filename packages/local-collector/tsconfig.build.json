@@ -1,0 +1,59 @@
+{
+  "extends": "../polyfill-connectors/tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "noEmit": false,
+    "outDir": "dist",
+    "removeComments": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "..",
+    "sourceMap": false,
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": [
+    "bin/**/*.ts",
+    "src/**/*.ts",
+    // Bundled filesystem-class connectors compiled into the tarball so the
+    // generic runtime can spawn them. This list is the collector's PACKAGING
+    // manifest (what ships), kept in lockstep with the connector-owned
+    // `LOCAL_COLLECTOR_DEFINITIONS` registry — a test
+    // (`bundled connector dist entries match the injected definitions`)
+    // asserts the two never drift. The runtime itself names no connector.
+    "../polyfill-connectors/connectors/claude_code/**/*.ts",
+    "../polyfill-connectors/connectors/codex/**/*.ts",
+    "../polyfill-connectors/src/collector-definition.ts",
+    "../polyfill-connectors/src/collector-registry.ts",
+    "../polyfill-connectors/src/auth.ts",
+    "../polyfill-connectors/src/browser-handoff.ts",
+    "../polyfill-connectors/src/collector-build-info.ts",
+    "../polyfill-connectors/src/collector-protocol.ts",
+    "../polyfill-connectors/src/collector-runner.ts",
+    "../polyfill-connectors/src/connector-runtime-protocol.ts",
+    "../polyfill-connectors/src/connector-runtime.ts",
+    "../polyfill-connectors/src/fixture-capture.ts",
+    "../polyfill-connectors/src/is-main-module.ts",
+    "../polyfill-connectors/src/local-device-client.ts",
+    "../polyfill-connectors/src/local-device-envelope.ts",
+    "../polyfill-connectors/src/local-device-outbox.ts",
+    "../polyfill-connectors/src/local-device-queue.ts",
+    "../polyfill-connectors/src/local-source-inventory.ts",
+    "../polyfill-connectors/src/pdpp-safe-text.ts",
+    "../polyfill-connectors/src/runner/index.ts",
+    "../polyfill-connectors/src/runtime-capabilities.ts",
+    "../polyfill-connectors/src/safe-emit.ts",
+    "../polyfill-connectors/src/safe-text-preview.ts",
+    "../polyfill-connectors/src/schema-registry.ts",
+    "../polyfill-connectors/src/scope-filters.ts",
+    "../polyfill-connectors/src/shutdown-hook.ts",
+    "../polyfill-connectors/src/streaming-target-registration.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "../polyfill-connectors/**/*.test.ts",
+    "**/__fixtures__/**",
+    "../polyfill-connectors/fixtures/**"
+  ]
+}

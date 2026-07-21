@@ -1,0 +1,243 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { buildCollectorStartMessage } from "../src/collector-runner.ts";
+import { buildConnectorSpec, parseArgs, scopedDefaultQueuePath } from "./collector-runner.ts";
+
+// These tests pin the START wire for stream backfill:
+// CLI argv → parseArgs → buildConnectorSpec → buildCollectorStartMessage.
+// They prove that `--backfill-streams attachments` reaches the connector
+// subprocess as `START.streamsToBackfill`.
+//
+// The resumable operator loop now lives in `runCollectorConnector` and
+// `LocalDeviceClient` (state GET/PUT) — see
+// `src/collector-runner.test.ts` for the load/replay/persist regression.
+
+test("CLI run --connector gmail uses bundled defaults so operators don't need --command/--args/--streams", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "gmail",
+    "--device-id",
+    "dev",
+    "--device-token",
+    "tok",
+    "--source-instance-id",
+    "src",
+  ]);
+  const spec = buildConnectorSpec(options);
+  assert.equal(spec.connector_id, "gmail");
+  assert.equal(spec.command, "tsx");
+  assert.deepEqual(spec.args, ["connectors/gmail/index.ts"]);
+  // Gmail streams must include attachments so the connector hydrates
+  // new-UID attachments on every incremental run; backfill is opt-in.
+  assert.ok(spec.streams.includes("attachments"));
+  assert.ok(spec.streams.includes("messages"));
+  // Network binding is required so the runtime gate refuses to run
+  // Gmail in a profile that doesn't advertise network access.
+  assert.equal(spec.runtime_requirements?.bindings?.network?.required, true);
+  // No backfill requested unless --backfill-streams is passed.
+  assert.equal(spec.streamsToBackfill, undefined);
+});
+
+test("CLI --backfill-streams reaches the connector as START.streamsToBackfill", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "gmail",
+    "--device-id",
+    "dev",
+    "--device-token",
+    "tok",
+    "--source-instance-id",
+    "src",
+    "--backfill-streams",
+    "attachments",
+  ]);
+  const spec = buildConnectorSpec(options);
+  assert.deepEqual(spec.streamsToBackfill, ["attachments"]);
+
+  // This is the wire the Gmail audit Finding 1 said was missing.
+  // buildCollectorStartMessage is what runs against `child.stdin`
+  // in collectConnectorMessages — emitting a START line that the
+  // Gmail connector reads and routes into runAllMailPasses, which
+  // honors streamsToBackfill to walk a bounded historical UID window.
+  // The subprocess's STATE emit is persisted/replayed by future runs through
+  // `runCollectorConnector` per OpenSpec
+  // `design-local-collector-state-sync`.
+  const start = buildCollectorStartMessage(spec.streams, spec.streamsToBackfill);
+  assert.deepEqual(start.streamsToBackfill, ["attachments"]);
+  assert.equal(start.type, "START");
+});
+
+test("CLI --resources reaches the connector as START scope resources", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "slack",
+    "--device-id",
+    "dev",
+    "--device-token",
+    "tok",
+    "--source-instance-id",
+    "src",
+    "--streams",
+    "messages,reactions",
+    "--resources",
+    "messages:C07JYF0U8BY|C016X99931T",
+  ]);
+  const spec = buildConnectorSpec(options);
+  const start = buildCollectorStartMessage(spec.streams, spec.streamsToBackfill, null, spec.resources);
+
+  assert.deepEqual(start.scope.streams, [
+    { name: "messages", resources: ["C07JYF0U8BY", "C016X99931T"] },
+    { name: "reactions" },
+  ]);
+});
+
+test("CLI local-agent defaults request safe inventory and coverage streams", () => {
+  const claude = buildConnectorSpec(
+    parseArgs([
+      "run",
+      "--base-url",
+      "http://127.0.0.1:7662",
+      "--connector",
+      "claude_code",
+      "--device-id",
+      "dev",
+      "--device-token",
+      "tok",
+      "--source-instance-id",
+      "src",
+    ])
+  );
+  assert.deepEqual(
+    claude.streams,
+    [
+      "sessions",
+      "messages",
+      "attachments",
+      "memory_notes",
+      "skills",
+      "slash_commands",
+      "file_history",
+      "cache_inventory",
+      "coverage_diagnostics",
+      "debug_artifacts",
+      "downloads",
+      "backup_inventory",
+      "config_inventory",
+    ],
+    "unscoped Claude Code runs should request all safe local completeness streams"
+  );
+
+  const codex = buildConnectorSpec(
+    parseArgs([
+      "run",
+      "--base-url",
+      "http://127.0.0.1:7662",
+      "--connector",
+      "codex",
+      "--device-id",
+      "dev",
+      "--device-token",
+      "tok",
+      "--source-instance-id",
+      "src",
+    ])
+  );
+  assert.deepEqual(
+    codex.streams,
+    [
+      "sessions",
+      "messages",
+      "function_calls",
+      "rules",
+      "prompts",
+      "skills",
+      "history",
+      "session_index",
+      "logs",
+      "shell_snapshots",
+      "config_inventory",
+      "cache_inventory",
+      "coverage_diagnostics",
+    ],
+    "unscoped Codex runs should request all safe local completeness streams"
+  );
+  assert(!claude.streams.includes("context_mode"), "Claude context_mode remains diagnostics-only");
+  assert(!codex.streams.includes("context_mode"), "Codex context_mode remains diagnostics-only");
+  assert(!codex.streams.includes("memories"), "Codex memories remain diagnostics-only");
+});
+
+test("CLI --backfill-streams supports comma-separated lists (forward compatibility for additional historical streams)", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "gmail",
+    "--device-id",
+    "dev",
+    "--device-token",
+    "tok",
+    "--source-instance-id",
+    "src",
+    "--backfill-streams",
+    "attachments, message_bodies",
+  ]);
+  const spec = buildConnectorSpec(options);
+  assert.deepEqual(spec.streamsToBackfill, ["attachments", "message_bodies"]);
+});
+
+test("CLI run without --connector defaults still rejects unknown connectors that have no streams supplied", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "unknown_connector_id",
+    "--device-id",
+    "dev",
+    "--device-token",
+    "tok",
+    "--source-instance-id",
+    "src",
+  ]);
+  assert.throws(() => buildConnectorSpec(options), /requires --streams/);
+});
+
+test("CLI prefers connection id alias while preserving source-instance compatibility", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "codex",
+    "--device-id",
+    "dev",
+    "--device-token",
+    "tok",
+    "--connection-id",
+    "conn-1",
+  ]);
+
+  assert.equal(options.sourceInstanceId, "conn-1");
+});
+
+test("default collector queue path is scoped by connection id", () => {
+  assert.equal(
+    scopedDefaultQueuePath("/tmp/collector-runner-queue.json", "/tmp/collector-runner-queue.json", "conn/a b"),
+    "/tmp/collector-runner-queue.conn_2Fa_20b.json"
+  );
+  assert.equal(
+    scopedDefaultQueuePath("/tmp/custom.json", "/tmp/collector-runner-queue.json", "conn/a b"),
+    "/tmp/custom.json"
+  );
+});

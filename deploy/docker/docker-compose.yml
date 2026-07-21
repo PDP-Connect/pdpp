@@ -1,0 +1,105 @@
+# Minimal production Docker Compose for a self-hosted PDPP Core node.
+#
+#   reference  - the PDPP Authorization Server + Resource Server runtime
+#   web        - the operator console (dashboard + proxy in front of the AS/RS)
+#   postgres   - durable storage with pgvector (semantic search index)
+#
+# Setup (see ./README.md for the full runbook):
+#
+#   curl -fsSLO https://raw.githubusercontent.com/PDP-Connect/pdpp/main/deploy/docker/docker-compose.yml
+#   printf 'PDPP_OWNER_PASSWORD=%s\nPDPP_CREDENTIAL_ENCRYPTION_KEY=%s\n' \
+#     "$(openssl rand -base64 24)" "$(openssl rand -hex 32)" > .env
+#   docker compose up -d
+#
+# This file is intentionally small. The repository-root docker-compose.yml is
+# the development/owner stack (connector credentials, fixture mounts, browser
+# services) — do not start here if you only want to run a node.
+services:
+  reference:
+    image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/vana-com/pdpp/reference:main}
+    restart: unless-stopped
+    environment:
+      # The single public origin this node advertises in its OAuth metadata.
+      # For anything beyond a local trial, set this to your HTTPS domain.
+      PDPP_REFERENCE_MODE: composed
+      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}
+      # Postgres is the storage backend; the runtime selects it because this
+      # database URL is present. Credentials live on the compose-private
+      # network only (no published Postgres port).
+      PDPP_DATABASE_URL: postgresql://pdpp:${PDPP_POSTGRES_PASSWORD:-pdpp}@postgres:5432/pdpp
+      # Required secrets — generate once into .env (see header). The owner
+      # password gates the dashboard; the encryption key seals any connector
+      # credentials you store, so back it up with the database.
+      PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:?generate into .env — see deploy/docker/README.md}
+      PDPP_CREDENTIAL_ENCRYPTION_KEY: ${PDPP_CREDENTIAL_ENCRYPTION_KEY:?generate into .env — see deploy/docker/README.md}
+      # Semantic search: allow the one-time embedding-model download and cache
+      # it on a volume. Set to 0 for a leaner, lexical-only node.
+      PDPP_EMBEDDING_DOWNLOAD_ALLOWED: ${PDPP_EMBEDDING_DOWNLOAD_ALLOWED:-1}
+      PDPP_EMBEDDING_CACHE_DIR: /var/cache/pdpp/transformers
+      # `restart: unless-stopped` above is the real supervisor this asserts;
+      # see docker-compose.yml (repo root) for the full rationale. Never set
+      # this to 1 without an equivalent restart policy backing it.
+      PDPP_LOCAL_TRANSFORMER_SUPERVISOR_RESTART_CONTRACT: "1"
+      PDPP_REFERENCE_OPERATIONAL_DEFAULTS: "1"
+      # Optional Google Data Portability OAuth app material. Required only to
+      # let owners add the API-backed Google Maps Data Portability source.
+      GOOGLE_DATAPORTABILITY_CLIENT_ID: ${GOOGLE_DATAPORTABILITY_CLIENT_ID:-}
+      GOOGLE_DATAPORTABILITY_CLIENT_SECRET: ${GOOGLE_DATAPORTABILITY_CLIENT_SECRET:-}
+      GOOGLE_DATAPORTABILITY_REDIRECT_URI: ${GOOGLE_DATAPORTABILITY_REDIRECT_URI:-}
+      GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS: ${GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS:-}
+    volumes:
+      - pdpp-transformers:/var/cache/pdpp/transformers
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Healthy = both protocol listeners answer their public metadata.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:7662/.well-known/oauth-authorization-server >/dev/null && curl -fsS http://localhost:7663/.well-known/oauth-protected-resource >/dev/null",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  # Operator console: the only service published to the host. It proxies the
+  # full protocol surface, so one origin (port 3000 by default) fronts the node.
+  web:
+    image: ${PDPP_WEB_IMAGE:-ghcr.io/vana-com/pdpp/web:main}
+    restart: unless-stopped
+    environment:
+      PDPP_REFERENCE_MODE: composed
+      PDPP_REFERENCE_ORIGIN: ${PDPP_REFERENCE_ORIGIN:-http://localhost:3000}
+      PDPP_AS_URL: http://reference:7662
+      PDPP_RS_URL: http://reference:7663
+      PDPP_OWNER_PASSWORD: ${PDPP_OWNER_PASSWORD:?generate into .env — see deploy/docker/README.md}
+      PDPP_ENABLE_DASHBOARD: "1"
+    ports:
+      - "${PDPP_WEB_PORT:-3000}:3000"
+    depends_on:
+      reference:
+        condition: service_healthy
+
+  postgres:
+    image: ${PDPP_POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pdpp
+      POSTGRES_PASSWORD: ${PDPP_POSTGRES_PASSWORD:-pdpp}
+      POSTGRES_DB: pdpp
+    # No published port: Postgres is reachable only from the compose network.
+    # If you publish one, change PDPP_POSTGRES_PASSWORD first.
+    volumes:
+      - pdpp-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pdpp -d pdpp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  pdpp-postgres-data:
+  pdpp-transformers:

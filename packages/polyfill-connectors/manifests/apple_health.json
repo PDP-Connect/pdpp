@@ -1,0 +1,238 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/apple-health",
+  "connector_key": "apple-health",
+  "manifest_uri": "https://registry.pdpp.org/connectors/apple-health",
+  "version": "0.1.0",
+  "display_name": "Apple Health",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Apple Health imports require the user to produce a new export.xml from iOS; cannot be refreshed in the background."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
+    }
+  },
+  "streams": [
+    {
+      "name": "records",
+      "description": "Apple Health records from an export.xml.",
+      "display": {
+        "label": "Your Apple Health records",
+        "detail": "Every Health record: type (steps, heart rate, sleep, weight, etc.), source (app/device), value, unit, start/end dates. Expected from a Health.app export."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "source_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "source_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "value_raw": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "start_date"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "start_date",
+      "consent_time_field": "start_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "start_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "end_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start_date"
+          ],
+          "group_by": [
+            "type"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "workouts",
+      "description": "Apple Health workouts.",
+      "display": {
+        "label": "Your workouts",
+        "detail": "Workout type, duration, energy burned, distance, start/end dates."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "workout_activity_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_minutes": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "total_energy_burned_kcal": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "total_distance_km": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "source_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "start_date"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "start_date",
+      "consent_time_field": "start_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "start_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "end_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "start_date"
+          ],
+          "group_by": [
+            "workout_activity_type"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "name": "@pdpp/mcp-server",
+  "version": "0.0.0",
+  "description": "Local stdio MCP adapter for grant-scoped PDPP reads and event-subscription management.",
+  "type": "module",
+  "bin": {
+    "pdpp-mcp-server": "bin/pdpp-mcp-server.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./server": "./src/server.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:read-surface": "node --test test/hostile-client-read-evidence.test.js test/server.integration.test.js",
+    "verify": "pnpm test && node bin/pdpp-mcp-server.js --help",
+    "pack:dry-run": "pnpm pack --dry-run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@pdpp/cli": ">=0.18.11 <1.0.0",
+    "@pdpp/read-core": ">=0.18.11 <1.0.0",
+    "zod": "^3.25.76"
+  },
+  "keywords": [
+    "pdpp",
+    "personal-data",
+    "mcp",
+    "model-context-protocol"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PDP-Connect/pdpp.git",
+    "directory": "packages/mcp-server"
+  },
+  "bugs": {
+    "url": "https://github.com/PDP-Connect/pdpp/issues"
+  },
+  "homepage": "https://github.com/PDP-Connect/pdpp#readme",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": false,
+    "registry": "https://registry.npmjs.org/",
+    "tag": "latest"
+  }
+}

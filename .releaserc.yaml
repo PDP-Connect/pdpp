@@ -1,0 +1,169 @@
+# Single release channel: 0.x versions released from `main` to npm's default
+# `latest` dist-tag. There is no prerelease branch — semver 0.x already signals
+# prelaunch, and a second moving branch proved to be pure drift risk.
+branches:
+  - name: main
+tagFormat: "v${version}"
+preset: "conventionalcommits"
+# @pdpp/cli, @pdpp/local-collector, and @pdpp/mcp-server publish from a single
+# shared version stream. To keep the release-notes per-package readable, we
+# define typed sections per Conventional Commit scope so e.g.
+# `feat(local-collector): ...` lands under "Features (@pdpp/local-collector)"
+# and `feat(cli): ...` lands under "Features (@pdpp/cli)", with commits
+# that don't carry a recognised scope falling back to the generic sections.
+# See openspec/changes/publish-pdpp-local-collector/design.md §5.
+plugins:
+  - - "@semantic-release/commit-analyzer"
+    - preset: conventionalcommits
+      presetConfig:
+        types:
+          - type: feat
+            scope: local-collector
+            section: "Features (@pdpp/local-collector)"
+          - type: fix
+            scope: local-collector
+            section: "Bug Fixes (@pdpp/local-collector)"
+          - type: perf
+            scope: local-collector
+            section: "Performance Improvements (@pdpp/local-collector)"
+          - type: feat
+            scope: cli
+            section: "Features (@pdpp/cli)"
+          - type: fix
+            scope: cli
+            section: "Bug Fixes (@pdpp/cli)"
+          - type: perf
+            scope: cli
+            section: "Performance Improvements (@pdpp/cli)"
+          - type: feat
+            scope: mcp-server
+            section: "Features (@pdpp/mcp-server)"
+          - type: fix
+            scope: mcp-server
+            section: "Bug Fixes (@pdpp/mcp-server)"
+          - type: perf
+            scope: mcp-server
+            section: "Performance Improvements (@pdpp/mcp-server)"
+          - type: feat
+            scope: read-core
+            section: "Features (@pdpp/read-core)"
+          - type: fix
+            scope: read-core
+            section: "Bug Fixes (@pdpp/read-core)"
+          - type: perf
+            scope: read-core
+            section: "Performance Improvements (@pdpp/read-core)"
+          - type: feat
+            section: "Features"
+          - type: fix
+            section: "Bug Fixes"
+          - type: perf
+            section: "Performance Improvements"
+          - type: revert
+            section: "Reverts"
+          - type: docs
+            section: "Documentation"
+            hidden: true
+          - type: style
+            section: "Styles"
+            hidden: true
+          - type: chore
+            section: "Miscellaneous Chores"
+            hidden: true
+          - type: refactor
+            section: "Code Refactoring"
+            hidden: true
+          - type: test
+            section: "Tests"
+            hidden: true
+          - type: build
+            section: "Build System"
+            hidden: true
+          - type: ci
+            section: "Continuous Integration"
+            hidden: true
+  - - "@semantic-release/release-notes-generator"
+    - preset: conventionalcommits
+      presetConfig:
+        types:
+          - type: feat
+            scope: local-collector
+            section: "Features (@pdpp/local-collector)"
+          - type: fix
+            scope: local-collector
+            section: "Bug Fixes (@pdpp/local-collector)"
+          - type: perf
+            scope: local-collector
+            section: "Performance Improvements (@pdpp/local-collector)"
+          - type: feat
+            scope: cli
+            section: "Features (@pdpp/cli)"
+          - type: fix
+            scope: cli
+            section: "Bug Fixes (@pdpp/cli)"
+          - type: perf
+            scope: cli
+            section: "Performance Improvements (@pdpp/cli)"
+          - type: feat
+            scope: mcp-server
+            section: "Features (@pdpp/mcp-server)"
+          - type: fix
+            scope: mcp-server
+            section: "Bug Fixes (@pdpp/mcp-server)"
+          - type: perf
+            scope: mcp-server
+            section: "Performance Improvements (@pdpp/mcp-server)"
+          - type: feat
+            scope: read-core
+            section: "Features (@pdpp/read-core)"
+          - type: fix
+            scope: read-core
+            section: "Bug Fixes (@pdpp/read-core)"
+          - type: perf
+            scope: read-core
+            section: "Performance Improvements (@pdpp/read-core)"
+          - type: feat
+            section: "Features"
+          - type: fix
+            section: "Bug Fixes"
+          - type: perf
+            section: "Performance Improvements"
+          - type: revert
+            section: "Reverts"
+          - type: docs
+            section: "Documentation"
+            hidden: true
+          - type: style
+            section: "Styles"
+            hidden: true
+          - type: chore
+            section: "Miscellaneous Chores"
+            hidden: true
+          - type: refactor
+            section: "Code Refactoring"
+            hidden: true
+          - type: test
+            section: "Tests"
+            hidden: true
+          - type: build
+            section: "Build System"
+            hidden: true
+          - type: ci
+            section: "Continuous Integration"
+            hidden: true
+  - - "@semantic-release/npm"
+    - pkgRoot: "packages/cli"
+  - - "@semantic-release/npm"
+    - pkgRoot: "packages/local-collector"
+  - - "@semantic-release/npm"
+    - pkgRoot: "packages/mcp-server"
+  - - "@semantic-release/npm"
+    - pkgRoot: "packages/read-core"
+  - - "@semantic-release/github"
+    - successComment: false
+      failComment: false
+      failTitle: false
+      labels: false
+      releasedLabels: false
+  - - "@semantic-release/exec"
+    - publishCmd: "node scripts/semantic-release-github-output.mjs publish ${nextRelease.version} ${nextRelease.gitTag}"

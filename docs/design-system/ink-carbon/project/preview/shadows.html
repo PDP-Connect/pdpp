@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- @dsCard group="Spacing" name="Elevation" subtitle="Nothing floats — retention casts carbon instead of shadow" viewport="700x230" -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>PDPP · Elevation</title>
+<link href="../colors_and_type.css" rel="stylesheet"/>
+<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 22px 24px 32px; background: var(--background); display: grid; grid-template-columns: 1fr 1fr; gap: 26px; font-family: var(--font-sans); }
+.lbl { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); margin-bottom: 8px; }
+.flat { background: var(--card); border: 1px solid var(--border-strong); padding: 16px; font-size: 12.5px; color: var(--muted-foreground); }
+.flat b { color: var(--foreground); font-weight: 600; }
+</style>
+</head>
+<body>
+<div>
+  <div class="lbl">resting state — flat, always</div>
+  <div class="flat"><b>No drop shadows.</b> A sheet sits on the page like paper on a desk. Floating layers (menus, dialogs) are the single exception.</div>
+</div>
+<div>
+  <div class="lbl">retained state — the carbon is the elevation</div>
+  <div class="pdpp-carbon">
+    <div class="flat"><b>Depth means something here:</b> a second copy exists, and it is yours.</div>
+  </div>
+</div>
+</body>
+</html>

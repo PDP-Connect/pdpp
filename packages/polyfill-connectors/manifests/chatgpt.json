@@ -1,0 +1,824 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/chatgpt",
+  "connector_key": "chatgpt",
+  "manifest_uri": "https://registry.pdpp.org/connectors/chatgpt",
+  "version": "0.1.0",
+  "display_name": "ChatGPT",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      },
+      "browser": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "username_password",
+      "label": "ChatGPT sign-in details",
+      "description": "Seal the ChatGPT sign-in details for this source. The connector may use them only during owner-mediated credential or session recovery for this connection; scheduled runs reuse current session evidence and do not prompt for credentials.",
+      "submit_label": "Save ChatGPT credential and start first sync",
+      "fields": [
+        {
+          "name": "username",
+          "label": "ChatGPT email",
+          "type": "email",
+          "required": true,
+          "secret": true,
+          "autocomplete": "username",
+          "placeholder": "you@example.com",
+          "env": [
+            "CHATGPT_USERNAME"
+          ]
+        },
+        {
+          "name": "password",
+          "label": "ChatGPT password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "current-password",
+          "env": [
+            "CHATGPT_PASSWORD"
+          ]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "manual_action"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "high",
+      "background_safe": true,
+      "assisted_after_owner_auth": true,
+      "rationale": "ChatGPT requires owner-authenticated browser state. Automatic refresh is session-reuse-only; owner-mediated repair handles provider login challenges through runtime assistance evidence."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
+    }
+  },
+  "streams": [
+    {
+      "name": "conversations",
+      "description": "ChatGPT conversations.",
+      "display": {
+        "label": "Your conversations",
+        "detail": "Conversation list with titles, create/update times, archived/starred flags, workspace (if enterprise), current-branch tip. Messages are a separate stream."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "create_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "update_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "is_archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_starred": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_node": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_count_on_current_branch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "gizmo_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "update_time",
+      "consent_time_field": "create_time",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        },
+        "range_filters": {
+          "create_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "update_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "message_count_on_current_branch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "update_time",
+            "create_time"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "messages",
+      "description": "Messages within conversations, flattened from ChatGPT's tree structure to the current-branch path. Parent_id is preserved for tree reconstruction.",
+      "display": {
+        "label": "Your messages",
+        "detail": "Each message on the current branch of every conversation: role, content, model, create time, tool calls, citations, attachment IDs. Alt branches are not exported (parent_id preserved for rebuild)."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "children_ids": {
+            "type": "array"
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_slug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "create_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "citations": {
+            "type": "array"
+          },
+          "tool_calls": {
+            "type": "array"
+          },
+          "attachment_ids": {
+            "type": "array"
+          },
+          "on_current_branch": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "create_time",
+      "consent_time_field": "create_time",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "conversation",
+          "stream": "conversations",
+          "foreign_key": "conversation_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "role",
+            "content",
+            "model_slug",
+            "finish_reason"
+          ],
+          "semantic_fields": [
+            "content"
+          ]
+        },
+        "range_filters": {
+          "create_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "create_time"
+          ]
+        }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "memories",
+      "description": "Saved memories ChatGPT has about the user.",
+      "display": {
+        "label": "ChatGPT memories",
+        "detail": "Saved facts ChatGPT remembers about you, with created/updated timestamps. Deletions detected via diff — API does not emit tombstones."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "content"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "content"
+          ],
+          "semantic_fields": [
+            "content"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at",
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "custom_gpts",
+      "description": "Custom GPTs (gizmos) the user has authored via the GPT builder.",
+      "display": {
+        "label": "Your custom GPTs",
+        "detail": "Custom GPTs you built: name, description, system instructions, enabled tools (code_interpreter, browse, dalle), welcome message, author, visibility, and share URL slug."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "short_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "display_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_welcome_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instructions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tools": {
+            "type": "array"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "author_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_public": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "display_name",
+            "display_description",
+            "display_welcome_message",
+            "instructions",
+            "author_name",
+            "category"
+          ],
+          "semantic_fields": [
+            "display_description",
+            "display_welcome_message",
+            "instructions"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at",
+            "created_at"
+          ],
+          "group_by": [
+            "category"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "custom_instructions",
+      "description": "The user's custom instructions (the 'What would you like ChatGPT to know about you' and 'How would you like ChatGPT to respond' fields).",
+      "display": {
+        "label": "Your custom instructions",
+        "detail": "The two free-text fields from Settings → Personalization → Custom Instructions: 'about you' context and preferred response style, plus whether they're currently enabled. Singleton — only one set per user."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "about_user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_style": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "updated_at",
+      "consent_time_field": "updated_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "about_user",
+            "response_style"
+          ],
+          "semantic_fields": [
+            "about_user",
+            "response_style"
+          ]
+        },
+        "range_filters": {
+          "updated_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "updated_at"
+          ]
+        }
+      },
+      "coverage_strategy": "singleton_presence",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "shared_conversations",
+      "description": "Conversations the user has shared via public link.",
+      "display": {
+        "label": "Your shared conversations",
+        "detail": "Share records for conversations you've made public: the share ID, the underlying conversation, the public URL, anonymous flag, and any highlighted text."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "share_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "anonymous": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "is_public": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "highlighted_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "created_at",
+      "consent_time_field": "created_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "conversation",
+          "stream": "conversations",
+          "foreign_key": "conversation_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title",
+            "highlighted_text"
+          ],
+          "semantic_fields": [
+            "title",
+            "highlighted_text"
+          ]
+        },
+        "range_filters": {
+          "created_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_at"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "chats",
+      "label": "Your conversation history",
+      "streams": [
+        {
+          "name": "conversations"
+        },
+        {
+          "name": "messages"
+        },
+        {
+          "name": "shared_conversations"
+        }
+      ]
+    },
+    {
+      "id": "authored",
+      "label": "Things you authored in ChatGPT",
+      "streams": [
+        {
+          "name": "custom_gpts"
+        },
+        {
+          "name": "custom_instructions"
+        }
+      ]
+    },
+    {
+      "id": "memories_only",
+      "label": "Memories and custom instructions",
+      "streams": [
+        {
+          "name": "memories"
+        },
+        {
+          "name": "custom_instructions"
+        }
+      ]
+    },
+    {
+      "id": "full",
+      "label": "Everything: chats, memories, custom GPTs, custom instructions, shares",
+      "streams": [
+        {
+          "name": "conversations"
+        },
+        {
+          "name": "messages"
+        },
+        {
+          "name": "memories"
+        },
+        {
+          "name": "custom_gpts"
+        },
+        {
+          "name": "custom_instructions"
+        },
+        {
+          "name": "shared_conversations"
+        }
+      ]
+    }
+  ]
+}

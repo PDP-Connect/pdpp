@@ -1,0 +1,17 @@
+<!--
+  SYNTHETIC fixture, not a live capture. Represents a legitimate "no more
+  orders" terminal page: real page chrome (h3, breadcrumb-like nav) present,
+  but zero order links and no pagination — distinguishes a genuine end-of-list
+  from selector drift or an Incapsula block. Not a live capture; see
+  docs/research/heb-site-knowledge-2026-07-14.md.
+-->
+<!DOCTYPE html>
+<html>
+<body>
+  <main>
+    <h3>Your Orders</h3>
+    <nav aria-label="breadcrumb">Home &gt; My Account &gt; Order History</nav>
+    <p data-testid="no-orders-message">You have no more orders to show.</p>
+  </main>
+</body>
+</html>

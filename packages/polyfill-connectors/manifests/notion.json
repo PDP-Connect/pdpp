@@ -1,0 +1,290 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/notion",
+  "connector_key": "notion",
+  "manifest_uri": "https://registry.pdpp.org/connectors/notion",
+  "version": "0.1.0",
+  "display_name": "Notion",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "personal_access_token",
+      "label": "Notion internal integration token",
+      "description": "Use a Notion internal integration token for the workspace this connection should collect. The integration must be connected to the pages you want to collect.",
+      "submit_label": "Create Notion connection and start first sync",
+      "fields": [
+        {
+          "name": "secret",
+          "label": "Notion integration token",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "off",
+          "help_url": "https://www.notion.so/profile/integrations",
+          "help_text": "Create an internal integration at notion.so/profile/integrations, then paste the token here. The integration must be connected to the pages you want to collect.",
+          "env": [
+            "NOTION_API_TOKEN"
+          ]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 900,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Notion integration tokens are durable; hourly refresh is safe for typical workspaces."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
+    },
+    "auth": {
+      "kind": "env",
+      "required": [
+        "NOTION_API_TOKEN"
+      ]
+    }
+  },
+  "streams": [
+    {
+      "name": "pages",
+      "description": "Notion pages and database items accessible to the integration.",
+      "display": {
+        "label": "Your Notion pages",
+        "detail": "Page title, parent, archived flag, created/edited timestamps, URL. Block content (rich text) is fetched per-page separately."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "created_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "last_edited_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_by_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_edited_by_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "last_edited_time",
+      "consent_time_field": "created_time",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        },
+        "range_filters": {
+          "created_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_time"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "databases",
+      "description": "Notion databases.",
+      "display": {
+        "label": "Your Notion databases",
+        "detail": "Database titles, parent, property schema."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "parent_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "created_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "last_edited_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "property_names": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "last_edited_time",
+      "consent_time_field": "created_time",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "title"
+          ],
+          "semantic_fields": [
+            "title"
+          ]
+        },
+        "range_filters": {
+          "created_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "created_time"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    }
+  ]
+}

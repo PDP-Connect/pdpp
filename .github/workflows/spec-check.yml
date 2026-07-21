@@ -1,0 +1,53 @@
+name: spec-check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/spec-check.yml"
+      - "apps/site/content/docs/spec-*.md"
+      - "apps/site/content/docs/README.md"
+      - "package.json"
+      - "scripts/spec-check.mjs"
+      - "spec-*.md"
+  pull_request:
+    paths:
+      - ".github/workflows/spec-check.yml"
+      - "apps/site/content/docs/spec-*.md"
+      - "apps/site/content/docs/README.md"
+      - "package.json"
+      - "scripts/spec-check.mjs"
+      - "spec-*.md"
+  workflow_dispatch: {}
+
+concurrency:
+  group: spec-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spec-check:
+    name: root/site spec drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Check spec docs drift
+        run: pnpm spec:check

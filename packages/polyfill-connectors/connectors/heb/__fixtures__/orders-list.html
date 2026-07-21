@@ -1,0 +1,68 @@
+<!--
+  LIVE-STRUCTURE fixture (2026-07-14): mirrors the real tag/class/attribute
+  shape captured from a live heb.com "Your Orders" session — see
+  heb-live-verify-report.md. All personal values (address, totals, order ids)
+  are PLACEHOLDERS; the data-qe-id hooks, card boundary
+  ([data-qe-id="orderDetailsCard"] wraps BOTH the date/total/status text AND
+  the "View details" link — there is no <li> anywhere on this page, so
+  .closest("li") from the link finds nothing useful), and pagination nav
+  reflect the real structure.
+-->
+<!DOCTYPE html>
+<html>
+<body>
+  <main>
+    <div data-qe-id="orderResults">
+      <div>
+        <div>
+          <div data-qe-id="orderDetailsCard">
+            <div>
+              <p data-qe-id="orderDetailsHeader">Curbside at H-E-B plus! Austin Mueller</p>
+              <p data-qe-id="orderDetailsDate">Jul 14, 2026, 11:00am&#8211;12:00pm</p>
+              <p data-qe-id="orderDetailsTotal">Total:<!-- --> <span>$87.45<!-- -->, <!-- -->12<!-- --> <!-- -->items</span><br>Status:<!-- --> <span data-qe-id="orderDetailsStatus">Delivered</span></p>
+            </div>
+            <div>
+              <a aria-label="View details of curbside order HEB1029384756 scheduled for 4:00pm." data-qe-id="viewDetailsButton" href="/my-account/order-history/HEB1029384756">View details</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div>
+          <div data-qe-id="orderDetailsCard">
+            <div>
+              <p data-qe-id="orderDetailsHeader">Delivery to <!-- -->123 Placeholder Ave</p>
+              <p data-qe-id="orderDetailsDate">Jun 2, 2026, 10:00&#8211;11:00am</p>
+              <p data-qe-id="orderDetailsTotal">Total:<!-- --> <span>$42.10<!-- -->, <!-- -->5<!-- --> <!-- -->items</span><br>Status:<!-- --> <span data-qe-id="orderDetailsStatus">Processing</span></p>
+            </div>
+            <div>
+              <a aria-label="View details of delivery order HEB1029384700 scheduled for 3:00pm." data-qe-id="viewDetailsButton" href="/my-account/order-history/HEB1029384700">View details</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div>
+          <div data-qe-id="orderDetailsCard">
+            <div>
+              <p data-qe-id="orderDetailsHeader">Curbside at H-E-B plus! Austin Mueller</p>
+              <p data-qe-id="orderDetailsDate">May 20, 2026, 2:00&#8211;3:00pm</p>
+              <p data-qe-id="orderDetailsTotal">Total:<!-- --> <span>$0.00<!-- -->, <!-- -->0<!-- --> <!-- -->items</span><br>Status:<!-- --> <span data-qe-id="orderDetailsStatus">Order canceled</span></p>
+            </div>
+            <div>
+              <a aria-label="View details of curbside order HEB1029384600 scheduled for 8:00pm." data-qe-id="viewDetailsButton" href="/my-account/order-history/HEB1029384600">View details</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <nav role="navigation" aria-label="Pagination Navigation">
+      <ul data-qe-id="paginationList">
+        <li><a data-qe-id="paginationListNum" aria-current="true" href="/my-account/your-orders?page=1">1</a></li>
+        <li><a data-qe-id="paginationListNum" aria-current="false" href="/my-account/your-orders?page=2">2</a></li>
+        <li><a data-qe-id="paginationListNum" aria-current="false" href="/my-account/your-orders?page=3">3</a></li>
+      </ul>
+    </nav>
+  </main>
+</body>
+</html>

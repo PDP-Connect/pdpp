@@ -1,0 +1,201 @@
+# Deploy a PDPP Core node on Railway
+
+This runbook describes the selected Railway pushbutton shape for the PDPP
+reference implementation: one public Core app service, one durable Postgres
+backend, and no browser-backed connector runtime inside the deployed app.
+
+This is operator documentation for someone running their own instance. The
+Docker image at `ghcr.io/vana-com/pdpp/railway-core` is the forkable reference
+implementation packaged for Railway.
+
+## Pushbutton Railway template
+
+The user-facing path is a published Railway Template with this button shape:
+
+```md
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/pdpp-core-template-source?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core)
+```
+
+Published template code: `pdpp-core-template-source`. Do not present a
+placeholder template URL as a live deploy button.
+
+The published template uses:
+
+| Service | Source | Public? | Purpose |
+|---|---|---:|---|
+| `core` | `ghcr.io/vana-com/pdpp/railway-core:<version-tag>` | yes | Console on Railway `$PORT`; reference AS/RS on loopback inside the same container. |
+| `Postgres` | Railway plugin | no | Durable records, grants, runs, sessions, and tokens. |
+
+Pin a concrete version tag, not `latest`, so the template is reproducible. The
+GHCR package must be anonymously pullable before the template is published:
+
+```sh
+pnpm railway:ghcr-public --tag <version-tag>
+```
+
+## Topology
+
+One public service, one private loopback AS/RS pair, one storage backend.
+
+```
+internet ──HTTPS──▶ core (public Railway app service)
+                       ├─ console listens on Railway $PORT
+                       ├─ AS listens on 127.0.0.1:7662
+                       └─ RS listens on 127.0.0.1:7663
+                            │
+                            ▼
+                         Postgres (Railway plugin)
+```
+
+Why this is the selected button shape: live Railway testing showed that a
+separate private `reference` image service needs an explicit service `PORT` to
+boot reliably, and Railway turns that `PORT` variable into a required deploy-page
+prompt. The `railway-core` image removes that prompt while preserving the
+protocol shape: the public console still fronts the full protocol surface, and
+the AS/RS listeners remain non-public loopback endpoints.
+
+The older split-service artifacts (`console.env.example`, `reference.env.example`,
+`railway.console.json`, `railway.reference.json`, and `reference.Dockerfile`)
+remain available for manual operator experiments. They are not the selected
+published-button path.
+
+## Environment
+
+Set these variables on the `core` service. Use
+[`core.env.example`](./core.env.example) as the service-specific template and
+[`env.example`](./env.example) as a consolidated reference.
+
+```sh
+PDPP_REFERENCE_ORIGIN=https://${{core.RAILWAY_PUBLIC_DOMAIN}}
+PDPP_OWNER_PASSWORD=<required user-provided secret>
+PDPP_CREDENTIAL_ENCRYPTION_KEY=${{ secret(64) }}
+PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}
+```
+
+Optional Google Maps Data Portability API support requires deployment-level
+Google OAuth app material on the same `core` service:
+
+```sh
+GOOGLE_DATAPORTABILITY_CLIENT_ID=<google-oauth-client-id>
+GOOGLE_DATAPORTABILITY_CLIENT_SECRET=<google-oauth-client-secret>
+GOOGLE_DATAPORTABILITY_REDIRECT_URI=https://${{core.RAILWAY_PUBLIC_DOMAIN}}/_ref/provider-auth/callback
+# Optional: comma-separated documented Maps resource groups; blank = connector default.
+GOOGLE_DATAPORTABILITY_RESOURCE_GROUPS=
+```
+
+These are OAuth app settings for the deployment, not owner account credentials.
+Do not use a Gmail/Google app password for this source; Google Data Portability
+requires OAuth scopes and a matching redirect URI.
+
+Do not set `PORT`, `AS_PORT`, `RS_PORT`, `PDPP_AS_URL`, or `PDPP_RS_URL` as
+Railway variables on the `core` service. Railway injects `PORT`; the image
+supervisor owns the internal AS/RS ports and loopback proxy targets. Keeping
+those constants out of Railway service variables is what prevents extra
+pushbutton prompts.
+
+Preflight the selected env locally before deploying:
+
+```sh
+node scripts/check-railway-deploy-env.mjs --core deploy/railway/core.env.example
+```
+
+The committed example intentionally fails on the empty owner password. A real
+operator env should pass.
+
+## Storage
+
+The selected template uses Railway Postgres:
+
+```sh
+PDPP_DATABASE_URL=${{Postgres.DATABASE_URL}}
+```
+
+The runtime selects Postgres automatically when `PDPP_DATABASE_URL` is present
+and bootstraps the schema idempotently at startup. No separate migrate step is
+required for first boot.
+
+SQLite on a mounted Railway volume is a manual fallback. If used, set
+`PDPP_STORAGE_BACKEND=sqlite` and point `PDPP_DB_PATH` onto the mounted volume;
+the unmounted default path is not durable across redeploys.
+
+## Security posture
+
+- `PDPP_OWNER_PASSWORD` is required and non-empty for any public origin. This is
+  now enforced at startup: an internet-facing deployment (non-loopback
+  `PDPP_REFERENCE_ORIGIN`/`AS_PUBLIC_URL`, `NODE_ENV=production`, or
+  `PDPP_HOSTED=1`) with no password refuses to boot rather than silently
+  exposing the owner control plane. To intentionally run an unauthenticated
+  owner surface (never for a public deployment), set
+  `PDPP_ALLOW_UNAUTHENTICATED_OWNER=1`.
+- `PDPP_CREDENTIAL_ENCRYPTION_KEY` is generated by the Railway template. It is
+  the instance-level wrapping key for owner-captured static-secret connector
+  credentials; it is not a per-connector source credential.
+- Railway terminates HTTPS and forwards the protocol; owner-session and CSRF
+  cookies are marked `Secure`.
+- The owner-session signing key derives from `PDPP_OWNER_PASSWORD`, so a stable
+  password keeps owner sessions valid across restarts.
+- Browser-backed connector collection is out of scope for the Core button and
+  should run through a separate local collector or explicit browser profile.
+
+## First-live-test gate
+
+Run local checks before requesting or publishing a live Railway template:
+
+```sh
+pnpm railway:template:test
+pnpm railway:env-check:test
+pnpm railway:mcp-query-smoke:test
+pnpm docker:smoke
+```
+
+For a live source project or scratch template deploy:
+
+1. Deploy `core` from `ghcr.io/vana-com/pdpp/railway-core:<version-tag>` and add
+   Railway Postgres.
+2. Set `PDPP_REFERENCE_ORIGIN`, `PDPP_OWNER_PASSWORD`, and
+   `PDPP_DATABASE_URL` exactly as above.
+3. Generate a public domain for `core`.
+4. Confirm `/.well-known/oauth-authorization-server` returns HTTP 200 at the
+   public origin.
+5. Confirm AS `issuer`, RS `resource`, and RS `authorization_servers[0]` all
+   equal the public origin.
+6. Confirm anonymous `/dashboard` redirects to `/owner/login`.
+7. Run the deterministic MCP smoke:
+
+   ```sh
+   node scripts/railway-mcp-query-smoke.mjs \
+     --origin https://<core-domain> \
+     --owner-password "$PDPP_OWNER_PASSWORD"
+   ```
+
+8. Restart the `core` service, then rerun the smoke with `--no-seed` to prove
+   stored records and owner login survive restart.
+
+## Template publication
+
+Use [`template.md`](./template.md) for the publication handoff. The button is
+ready for user-facing placement after the 2026-06-06 live gate:
+
+- `pnpm railway:ghcr-public --tag sha-6581820` passed.
+- A source project with exactly `core` plus Postgres passes the live gate above.
+- Railway generates and publishes the template.
+- A fresh scratch project deployed from the published template passes the live
+  smoke and restart smoke.
+
+## Rollback and cleanup
+
+- Roll back a bad deploy from Railway's Deployments tab by redeploying the prior
+  known-good image tag. Stored data lives in Postgres, not the app container.
+- Tear down by deleting the `core` service and Postgres plugin. Removing
+  Postgres removes stored data.
+
+## Cost note
+
+The selected button runs one always-on application service plus a storage
+backend on the operator's Railway account.
+
+## Related
+
+- [`scripts/railway-mcp-query-smoke.mjs`](../../scripts/railway-mcp-query-smoke.mjs)
+- [`scripts/check-railway-deploy-env.mjs`](../../scripts/check-railway-deploy-env.mjs)
+- [`scripts/check-railway-ghcr-public.mjs`](../../scripts/check-railway-ghcr-public.mjs)

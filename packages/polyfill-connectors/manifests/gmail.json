@@ -1,0 +1,853 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/gmail",
+  "connector_key": "gmail",
+  "manifest_uri": "https://registry.pdpp.org/connectors/gmail",
+  "version": "0.2.0",
+  "display_name": "Gmail",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "static_secret",
+    "credential_capture": {
+      "kind": "app_password",
+      "label": "Google app password",
+      "description": "Use a Gmail address and a Google app password for the mailbox this connection should collect.",
+      "submit_label": "Create Gmail connection and start first sync",
+      "fields": [
+        {
+          "name": "account_email",
+          "label": "Gmail address",
+          "type": "email",
+          "required": true,
+          "secret": false,
+          "identity": true,
+          "autocomplete": "email",
+          "placeholder": "you@example.com",
+          "env": [
+            "GMAIL_ADDRESS",
+            "GMAIL_USER"
+          ]
+        },
+        {
+          "name": "secret",
+          "label": "Google app password",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "autocomplete": "one-time-code",
+          "help_url": "https://myaccount.google.com/apppasswords",
+          "help_text": "Create an app password in your Google Account, then paste it here.",
+          "env": [
+            "GOOGLE_APP_PASSWORD_PDPP",
+            "GMAIL_APP_PASSWORD"
+          ]
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "credentials"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 900,
+      "minimum_interval_seconds": 300,
+      "maximum_staleness_seconds": 3600,
+      "interaction_posture": "credentials",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Gmail uses durable IMAP credentials and tolerates frequent background polling."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
+    }
+  },
+  "streams": [
+    {
+      "name": "messages",
+      "description": "Individual messages in All Mail. Derived from Gmail's X-GM-MSGID.",
+      "display": {
+        "label": "Your messages",
+        "detail": "Email metadata and envelopes: sender, recipients, subject, date, labels, flags, attachment presence, short snippet. Full bodies live in the separate email-text stream, and attachment file bytes live behind attachment blob references."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_type": "text",
+            "x_pdpp_role": "primary-title"
+          },
+          "from_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_type": "person",
+            "x_pdpp_role": "actor"
+          },
+          "from_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to": {
+            "type": "array"
+          },
+          "cc": {
+            "type": "array"
+          },
+          "bcc": {
+            "type": "array"
+          },
+          "reply_to": {
+            "type": "array"
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_type": "timestamp",
+            "x_pdpp_role": "event-time"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_reply_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "references": {
+            "type": "array"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "labels": {
+            "type": "array"
+          },
+          "is_draft": {
+            "type": "boolean"
+          },
+          "is_flagged": {
+            "type": "boolean"
+          },
+          "is_seen": {
+            "type": "boolean"
+          },
+          "is_answered": {
+            "type": "boolean"
+          },
+          "has_attachments": {
+            "type": "boolean"
+          },
+          "snippet": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_type": "text",
+            "x_pdpp_role": "secondary"
+          }
+        },
+        "required": [
+          "id",
+          "thread_id",
+          "received_at"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "received_at",
+      "consent_time_field": "received_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "views": [
+        {
+          "id": "envelope",
+          "label": "Envelope only (no snippet)",
+          "fields": [
+            "id",
+            "thread_id",
+            "subject",
+            "from_name",
+            "from_email",
+            "to",
+            "cc",
+            "date",
+            "received_at",
+            "labels"
+          ]
+        },
+        {
+          "id": "reconciliation",
+          "label": "Fields for matching emails to transactions",
+          "fields": [
+            "id",
+            "thread_id",
+            "subject",
+            "from_name",
+            "from_email",
+            "date",
+            "received_at",
+            "labels",
+            "snippet"
+          ]
+        },
+        {
+          "id": "full",
+          "label": "All envelope + flag fields",
+          "fields": [
+            "id",
+            "thread_id",
+            "subject",
+            "from_name",
+            "from_email",
+            "to",
+            "cc",
+            "bcc",
+            "reply_to",
+            "date",
+            "received_at",
+            "message_id",
+            "in_reply_to",
+            "references",
+            "size_bytes",
+            "labels",
+            "is_draft",
+            "is_flagged",
+            "is_seen",
+            "is_answered",
+            "has_attachments",
+            "snippet"
+          ]
+        }
+      ],
+      "relationships": [
+        {
+          "name": "message_bodies",
+          "stream": "message_bodies",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        },
+        {
+          "name": "attachments",
+          "stream": "attachments",
+          "foreign_key": "message_id",
+          "cardinality": "has_many"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "subject",
+            "from_name",
+            "from_email",
+            "snippet"
+          ],
+          "semantic_fields": [
+            "subject",
+            "snippet"
+          ]
+        },
+        "range_filters": {
+          "received_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "size_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "sum": [
+            "size_bytes"
+          ],
+          "min": [
+            "received_at",
+            "date",
+            "size_bytes"
+          ],
+          "max": [
+            "received_at",
+            "date",
+            "size_bytes"
+          ],
+          "group_by": [
+            "has_attachments",
+            "is_seen",
+            "is_flagged",
+            "is_answered",
+            "is_draft"
+          ],
+          "group_by_time": [
+            "received_at",
+            "date"
+          ]
+        },
+        "expand": [
+          {
+            "name": "message_bodies"
+          },
+          {
+            "name": "attachments",
+            "default_limit": 10,
+            "max_limit": 50
+          }
+        ]
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "threads",
+      "description": "Email threads, keyed by Gmail's X-GM-THRID. Derived from messages.",
+      "display": {
+        "label": "Your conversations",
+        "detail": "One row per email thread: participants, message counts, first/last dates, labels, unread/flagged counts."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "participant_emails": {
+            "type": "array"
+          },
+          "message_count": {
+            "type": "integer"
+          },
+          "first_message_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_message_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "labels": {
+            "type": "array"
+          },
+          "unread_count": {
+            "type": "integer"
+          },
+          "flagged_count": {
+            "type": "integer"
+          },
+          "has_attachments": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "message_count"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "last_message_date",
+      "consent_time_field": "first_message_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "subject"
+          ],
+          "semantic_fields": [
+            "subject"
+          ]
+        },
+        "range_filters": {
+          "first_message_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "last_message_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "message_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "unread_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "flagged_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "last_message_date",
+            "first_message_date"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "labels",
+      "description": "Gmail system + user labels.",
+      "display": {
+        "label": "Your labels",
+        "detail": "Standard Gmail labels (INBOX, Sent, Starred, etc.) and user-created labels."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "canonical_name": {
+            "type": "string"
+          },
+          "is_system": {
+            "type": "boolean"
+          },
+          "parent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "primary_key": [
+        "name"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "canonical_name",
+            "parent_name"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "message_bodies",
+      "description": "Full text and/or HTML body of each message, keyed 1:1 with messages. Kept in a separate stream so body content (sensitive, large) is independently grantable from headers/metadata.",
+      "display": {
+        "label": "The text of your emails",
+        "detail": "This is the stream that carries the actual written content of each email — the plain-text body and, when present, the HTML body. It is separate from 'Your messages' (which holds only headers like sender, subject, and date). Granting this stream gives a client access to what your emails say, not just who they're from."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "body_text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "body_html": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body_text_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "body_html_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "body_source": {
+            "type": "string",
+            "enum": [
+              "text_plain",
+              "text_html",
+              "html_stripped",
+              "empty"
+            ]
+          },
+          "content_languages": {
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "charset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "message_id",
+          "body_source"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "body_text"
+          ],
+          "semantic_fields": [
+            "body_text"
+          ]
+        },
+        "range_filters": {
+          "body_text_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "body_html_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "messages",
+      "freshness_strategy": "scheduled_window"
+    },
+    {
+      "name": "attachments",
+      "description": "Attachment metadata and, when hydrated, a blob reference for the attachment file bytes.",
+      "display": {
+        "label": "Your attachments",
+        "detail": "Filename, content-type, size, inline/attached disposition, and hydration status. When `blob_ref` is granted, clients can fetch the actual attachment file bytes through the blob endpoint."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "filename": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "content_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_inline": {
+            "type": "boolean"
+          },
+          "encoding": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "part_index": {
+            "type": "string"
+          },
+          "message_received_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "blob_ref": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "blob_id": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "blob_id",
+              "mime_type",
+              "size_bytes",
+              "sha256"
+            ],
+            "additionalProperties": true
+          },
+          "content_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hydration_status": {
+            "type": "string",
+            "enum": [
+              "hydrated",
+              "failed",
+              "deferred",
+              "too_large"
+            ]
+          },
+          "hydration_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "message_id",
+          "part_index",
+          "message_received_at",
+          "hydration_status"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "message_received_at",
+      "consent_time_field": "message_received_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "message",
+          "stream": "messages",
+          "foreign_key": "message_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "filename",
+            "content_type",
+            "content_id"
+          ]
+        },
+        "range_filters": {
+          "message_received_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "size_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "message_received_at"
+          ]
+        }
+      },
+      "coverage_strategy": "parent_detail_accounting",
+      "freshness_strategy": "scheduled_window"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "reconciliation",
+      "label": "Email for transaction reconciliation",
+      "streams": [
+        {
+          "name": "labels"
+        },
+        {
+          "name": "messages",
+          "view": "reconciliation"
+        },
+        {
+          "name": "attachments"
+        }
+      ]
+    },
+    {
+      "id": "full_archive",
+      "label": "Full Gmail envelope archive",
+      "streams": [
+        {
+          "name": "labels"
+        },
+        {
+          "name": "messages",
+          "view": "full"
+        },
+        {
+          "name": "threads"
+        },
+        {
+          "name": "attachments"
+        },
+        {
+          "name": "message_bodies"
+        }
+      ]
+    }
+  ]
+}

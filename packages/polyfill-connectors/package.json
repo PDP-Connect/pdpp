@@ -1,0 +1,45 @@
+{
+  "dependencies": {
+    "@streamparser/json": "^0.0.22",
+    "better-sqlite3": "^12.9.0",
+    "dotenv": "^17.4.2",
+    "imapflow": "^1.3.2",
+    "linkedom": "^0.18.12",
+    "ofx-js": "^0.2.0",
+    "p-queue": "^9.2.0",
+    "p-retry": "^8.0.0",
+    "patchright": "^1.59.4",
+    "pdf-parse": "^2.4.5",
+    "playwright": "^1.59.1",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
+  },
+  "name": "@pdpp/polyfill-connectors",
+  "bin": {
+    "pdpp-local-device-exporter": "./bin/local-device-exporter.ts"
+  },
+  "exports": {
+    "./runner": "./src/runner/index.ts",
+    "./collectors": "./src/collector-registry.ts",
+    "./connectors/claude_code": "./connectors/claude_code/index.ts",
+    "./connectors/codex": "./connectors/codex/index.ts"
+  },
+  "scripts": {
+    "postinstall": "node ./scripts/install-patchright-browser.mjs",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "test": "node --test --test-timeout=30000 --import tsx 'bin/**/*.test.ts' 'connectors/**/*.test.ts' 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm typecheck && pnpm check"
+  },
+  "type": "module",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Polyfill connectors for non-PDPP platforms (YNAB, Gmail, Amazon, ChatGPT, USAA).",
+  "devDependencies": {
+    "@biomejs/biome": "2.4.12",
+    "@types/ws": "^8.18.1",
+    "ultracite": "7.6.0"
+  },
+  "license": "Apache-2.0"
+}

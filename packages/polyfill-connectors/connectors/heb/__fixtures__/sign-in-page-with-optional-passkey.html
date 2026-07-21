@@ -1,0 +1,29 @@
+<!--
+  SYNTHETIC fixture, derived from a live H-E-B sign-in page shape captured on
+  2026-07-14 and scrubbed of personal data. The live page showed a visible
+  email/password form alongside optional passkey and one-time-code affordances.
+  The purpose of this fixture is to prove the form wins while the optional
+  alternatives do not trigger owner handoff.
+-->
+<!DOCTYPE html>
+<html>
+  <body>
+    <main>
+      <h3>Log in</h3>
+      <p>Email</p>
+      <p>Email me a one-time code</p>
+      <form action="/oidc/auth">
+        <label>
+          Email
+          <input type="email" name="email" />
+        </label>
+        <label>
+          Enter password
+          <input type="password" name="password" />
+        </label>
+        <button type="submit">Continue</button>
+      </form>
+      <p>Or, log in with a passkey</p>
+    </main>
+  </body>
+</html>

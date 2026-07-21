@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- @dsCard group="Components" name="Grant record" subtitle="The full sheet — kv block, endorsement, actions" viewport="700x330" -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>PDPP · Grant record</title>
+<link href="../colors_and_type.css" rel="stylesheet"/>
+<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
+<style>
+body { margin: 0; padding: 22px 24px 30px; background: var(--background); }
+.head-right { display: flex; align-items: center; gap: 10px; }
+</style>
+</head>
+<body>
+<div class="pdpp-carbon" style="max-width: 560px;">
+  <div class="pdpp-sheet">
+    <div class="pdpp-sheet__head">
+      <h3 class="pdpp-sheet__title">Longview Planning</h3>
+      <span class="head-right">
+        <span class="pdpp-endorse pdpp-endorse--active">active</span>
+        <span class="pdpp-sheet__serial">grt_lngvw_01</span>
+      </span>
+    </div>
+    <div class="pdpp-sheet__body">
+      <div class="pdpp-kv">
+        <div class="pdpp-kv__row"><span class="pdpp-kv__k">purpose</span><span class="pdpp-kv__v">long_term_financial_planning</span></div>
+        <div class="pdpp-kv__row"><span class="pdpp-kv__k">scopes</span><span class="pdpp-kv__v">pay_statements.read · employment.read</span></div>
+        <div class="pdpp-kv__row"><span class="pdpp-kv__k">issued</span><span class="pdpp-kv__v">2025-10-14 09:22Z</span></div>
+        <div class="pdpp-kv__row"><span class="pdpp-kv__k">expires</span><span class="pdpp-kv__v">2026-12-14 09:22Z</span></div>
+      </div>
+    </div>
+    <div class="pdpp-sheet__foot">
+      <span class="pdpp-copyline">Carbon — your copy stays here</span>
+      <button class="pdpp-btn pdpp-btn--destructive pdpp-btn--sm" type="button">Revoke</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

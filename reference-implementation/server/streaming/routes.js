@@ -1,0 +1,1695 @@
+/**
+ * Run-interaction streaming companion routes (reference-only).
+ *
+ * Owner-authenticated mint:
+ *   POST /_ref/runs/:runId/run-interaction-stream
+ *     body: { interaction_id, viewport?: { width, height, screenWidth?, screenHeight?, deviceScaleFactor?, mobile? } }
+ *     emits run.stream_session_requested
+ *
+ * Token-only frame channel (SSE):
+ *   GET  /_ref/run-interaction-streams/:token/events
+ *     emits run.stream_session_opened on attach, run.stream_session_resolved on close
+ *
+ * Token-only input dispatch:
+ *   POST /_ref/run-interaction-streams/:token/input
+ *     body: an input event matching `mapInputEventToCdp`
+ *
+ * Token-only viewport:
+ *   POST /_ref/run-interaction-streams/:token/viewport
+ *
+ * Token-only n.eko viewer entry:
+ *   GET  /_ref/run-interaction-streams/:token/neko
+ *     sets a short-lived /neko cookie and redirects to the same-origin proxy
+ *   GET  /_ref/run-interaction-streams/:token/neko/session
+ *     sets the same cookie and returns direct n.eko client configuration
+ *
+ * The token is the only credential the viewer presents after mint. It is short
+ * lived (default 5 min), reconnect-safe for repeated SSE attaches, scoped to
+ * one (run, interaction, browser session), and invalidated when the interaction
+ * resolves or the run ends. The token never authorizes record reads, consent
+ * approval, grant issuance, or unrelated browser access.
+ */
+import http from 'node:http';
+import https from 'node:https';
+import { createHash, randomBytes } from 'node:crypto';
+import net from 'node:net';
+import tls from 'node:tls';
+import {
+  buildReferenceWireAttachedPayload,
+  buildReferenceWireBackendReadyPayload,
+  buildReferenceWireCompanionEventPayload,
+  buildReferenceWireFramePayload,
+  normalizeReferenceWireViewportPayload,
+  parseReferenceWireInputPayload,
+  parseReferenceWireInputTelemetryCursor,
+} from './protocol-wire.ts';
+import { emitSpineEvent } from '../../lib/spine.ts';
+import { createInputTelemetry } from './input-telemetry.ts';
+import { registerRemoteTelemetrySink } from './remote-telemetry-registry.ts';
+
+const NEKO_PROXY_COOKIE = 'pdpp_neko_stream';
+const PRESENTATION_ATTACHMENT_COOKIE = 'pdpp_stream_attachment';
+const DEFAULT_NEKO_PROXY_PATH = '/neko/';
+const NEKO_PROXY_MUTATING_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+]);
+
+function pdppError(res, status, code, message, param = null) {
+  const body = { error: { type: 'invalid_request_error', code, message } };
+  if (param) body.error.param = param;
+  if (status === 401) {
+    res.status(status).header('WWW-Authenticate', 'Bearer realm="pdpp-stream"').json(body);
+    return;
+  }
+  res.status(status).json(body);
+}
+
+function parseAllowedHosts(value) {
+  const entries = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(',')
+      : [];
+  return new Set(
+    entries
+      .map((entry) => String(entry).trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function isLoopbackHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'localhost' || host === '::1' || host === '0:0:0:0:0:0:0:1' || host.startsWith('127.');
+}
+
+function assertAllowedNekoOrigin(origin, allowedHosts, approvedOrigin) {
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    const err = new Error('n.eko proxy target origin is invalid');
+    err.code = 'invalid_neko_origin';
+    throw err;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    const err = new Error('n.eko proxy target must use http or https');
+    err.code = 'invalid_neko_origin';
+    throw err;
+  }
+  const host = parsed.hostname.toLowerCase();
+  const hostPort = `${host}:${parsed.port || (parsed.protocol === 'https:' ? '443' : '80')}`;
+  if (typeof approvedOrigin === 'function' && approvedOrigin(parsed) === true) return parsed;
+  if (isLoopbackHost(host) || allowedHosts.has(host) || allowedHosts.has(hostPort)) return parsed;
+  const err = new Error('n.eko proxy target host is not allowlisted');
+  err.code = 'neko_origin_not_allowed';
+  throw err;
+}
+
+function parseCookieHeader(header) {
+  const cookies = new Map();
+  for (const part of String(header || '').split(';')) {
+    const [rawName, ...rawValue] = part.trim().split('=');
+    if (!rawName) continue;
+    cookies.set(rawName, decodeURIComponent(rawValue.join('=') || ''));
+  }
+  return cookies;
+}
+
+function stripCookie(header, cookieNames) {
+  const names = new Set(Array.isArray(cookieNames) ? cookieNames : [cookieNames]);
+  return String(header || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => {
+      const separator = part.indexOf('=');
+      const name = separator === -1 ? part : part.slice(0, separator);
+      return part && !names.has(name);
+    })
+    .join('; ');
+}
+
+function setNekoProxyCookie(res, token, maxAgeSeconds, cookieName) {
+  const boundedMaxAge = Math.max(1, Math.min(600, Math.floor(maxAgeSeconds || 1)));
+  res.header(
+    'Set-Cookie',
+    `${cookieName}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/neko; Max-Age=${boundedMaxAge}`,
+  );
+}
+
+function setPresentationAttachmentCookie(res, attachmentId, maxAgeSeconds, cookieName) {
+  const boundedMaxAge = Math.max(1, Math.min(600, Math.floor(maxAgeSeconds || 1)));
+  const value = `${cookieName}=${encodeURIComponent(attachmentId)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${boundedMaxAge}`;
+  // SSE hijacks the Fastify reply before its normal header flush. Write to
+  // the raw response so the controller cookie survives that handoff.
+  if (res.raw && typeof res.raw.setHeader === 'function') {
+    res.raw.setHeader('Set-Cookie', value);
+    return;
+  }
+  res.header('Set-Cookie', value);
+}
+
+function serializeProxyBody(req, headers) {
+  const method = String(req.method || 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD') {
+    delete headers['content-length'];
+    return null;
+  }
+  if (req.body === undefined || req.body === null) {
+    delete headers['content-length'];
+    return null;
+  }
+  const body = Buffer.isBuffer(req.body)
+    ? req.body
+    : typeof req.body === 'string'
+      ? Buffer.from(req.body)
+      : Buffer.from(JSON.stringify(req.body));
+  headers['content-length'] = String(body.length);
+  return body;
+}
+
+function buildProxyHeaders(sourceHeaders, targetUrl, cookieNames, { upgrade = false } = {}) {
+  const headers = {};
+  for (const [rawName, value] of Object.entries(sourceHeaders || {})) {
+    const name = rawName.toLowerCase();
+    if (HOP_BY_HOP_HEADERS.has(name)) continue;
+    if (name === 'authorization') continue;
+    if (name === 'host') continue;
+    if (!upgrade && name === 'upgrade') continue;
+    headers[name] = Array.isArray(value) ? value.join(', ') : value;
+  }
+  if (sourceHeaders?.cookie) {
+    const cookie = stripCookie(sourceHeaders.cookie, cookieNames);
+    if (cookie) headers.cookie = cookie;
+    else delete headers.cookie;
+  }
+  headers.host = targetUrl.host;
+  if (upgrade) {
+    headers.connection = 'Upgrade';
+    headers.upgrade = sourceHeaders?.upgrade || 'websocket';
+  }
+  return headers;
+}
+
+function writeUpgradeError(socket, status, message) {
+  if (socket.destroyed) return;
+  socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  socket.destroy();
+}
+
+function proxyUpgradeRequest(rawReq, socket, head, targetUrl, cookieNames) {
+  const useTls = targetUrl.protocol === 'https:';
+  const port = Number(targetUrl.port || (useTls ? 443 : 80));
+  const headers = buildProxyHeaders(rawReq.headers, targetUrl, cookieNames, { upgrade: true });
+  const upstream = useTls
+    ? tls.connect({ host: targetUrl.hostname, port, servername: targetUrl.hostname })
+    : net.connect({ host: targetUrl.hostname, port });
+
+  upstream.once('connect', () => {
+    const path = `${targetUrl.pathname}${targetUrl.search}`;
+    upstream.write(`${rawReq.method} ${path} HTTP/${rawReq.httpVersion}\r\n`);
+    for (const [name, value] of Object.entries(headers)) {
+      upstream.write(`${name}: ${value}\r\n`);
+    }
+    upstream.write('\r\n');
+    if (head?.length) upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  upstream.once('error', () => writeUpgradeError(socket, 502, 'Bad Gateway'));
+  socket.once('error', () => upstream.destroy());
+}
+
+function safeRunId(req) {
+  return decodeURIComponent(req.params.runId);
+}
+
+// Closed set of stream-reach give-up reasons. Mirrors the client classifier in
+// `apps/console/.../stream/stream-reach-diagnostics.ts`. The package boundary
+// (reference server cannot import from the console app) means this list is
+// duplicated, not shared; the server is the authoritative clamp so a malformed
+// or hostile client cannot widen the spine's reason vocabulary.
+const STREAM_REACH_REASONS = new Set([
+  'invalid_token',
+  'session_consumed',
+  'session_expired',
+  'companion_unavailable',
+  'unreachable_origin',
+  'unknown',
+]);
+
+function sanitizeStreamReachReason(value) {
+  return typeof value === 'string' && STREAM_REACH_REASONS.has(value) ? value : 'unknown';
+}
+
+// HTTP status observed by the client's give-up probe. Kept as a small bounded
+// integer or null; never an arbitrary client-supplied value in the spine.
+function sanitizeStreamReachHttpStatus(value) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+
+function pickViewport(input) {
+  return normalizeReferenceWireViewportPayload(input);
+}
+
+function normalizeViewportForNeko(viewport) {
+  if (!viewport) return null;
+  // n.eko delivers pointer/touch input through the native browser window,
+  // not through CDP Input.dispatch*. If we expose a high-DPR virtual screen
+  // (screenWidth = width * dpr, deviceScaleFactor > 1), the video can look
+  // sharp while native input lands in screen-pixel coordinates outside the
+  // emulated CSS viewport. Keep n.eko in one coordinate space: CSS viewport,
+  // X screen, WebRTC frame, and native input all use the same width/height.
+  //
+  // CRITICAL — mobile / hasTouch / userAgent emulation is intentionally
+  // stripped for n.eko backends. Reasons:
+  //   1. Stealth: Emulation.setUserAgentOverride lies the UA but does NOT
+  //      lie about TLS fingerprint, Client Hints (sec-ch-ua-platform), GPU
+  //      profile, or process model. Cloudflare detects the inconsistency
+  //      instantly and re-challenges the user. See docs/reference/neko-stealth-design-brief.md.
+  //   2. Input bouncing: when mobile=true + hasTouch=true, Chromium
+  //      dispatches synthetic TouchEvents in parallel with the real mouse
+  //      events that n.eko forwards from the user's tap. The dual-channel
+  //      input causes focus/blur churn, which manifests as the soft
+  //      keyboard opening and immediately closing on the user's phone.
+  //
+  // Mobile users still get a streamed video — they just see the desktop
+  // rendering of the target site, which is what every real human-on-mobile
+  // browser-as-a-service product (Browserbase, Browserless, Cloudflare's
+  // Browser Rendering) does too.
+  const sanitized = { ...viewport };
+  delete sanitized.mobile;
+  delete sanitized.hasTouch;
+  delete sanitized.userAgent;
+  return {
+    ...sanitized,
+    deviceScaleFactor: 1,
+    screenHeight: viewport.height,
+    screenWidth: viewport.width,
+  };
+}
+
+function viewportForCompanionBackend(backend, viewport) {
+  if (!viewport) return viewport;
+  if (backend === 'neko') return normalizeViewportForNeko(viewport);
+  // CDP backend (reference container's Patchright-driven Chrome) is also
+  // streamed via WebRTC to the user. The same stealth + input-bouncing
+  // arguments from normalizeViewportForNeko apply here: emulating mobile
+  // creates a UA/TLS/fingerprint inconsistency that bot-protection systems
+  // (Cloudflare Turnstile, etc.) detect, AND it makes Chromium dispatch
+  // synthetic TouchEvents alongside the mouse events the streaming layer
+  // forwards from the user's tap, causing focus/blur churn and soft-keyboard
+  // flicker. Strip the same fields for CDP as we do for neko.
+  const sanitized = { ...viewport };
+  delete sanitized.mobile;
+  delete sanitized.hasTouch;
+  delete sanitized.userAgent;
+  return sanitized;
+}
+
+function viewportsMatch(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return a === b;
+  const keys = ['width', 'height', 'screenWidth', 'screenHeight', 'deviceScaleFactor', 'hasTouch', 'mobile', 'userAgent'];
+  return keys.every((key) => a[key] === b[key]);
+}
+
+async function resolveCompanionBackend(companion) {
+  if (typeof companion?.resolveBackend === 'function') {
+    return companion.resolveBackend();
+  }
+  return typeof companion?.backend === 'string' ? companion.backend : 'cdp';
+}
+
+/**
+ * @param {object} deps
+ * @param {object} deps.app                    fastify app
+ * @param {object} deps.controller             controller exposing getPendingInteraction
+ * @param {object} deps.ownerAuth              owner auth middleware bag
+ * @param {object} deps.streamingSessions      session store (createStreamingSessionStore)
+ * @param {Function|null} deps.companionFactory   ({ run_id, interaction_id }) => Companion.
+ *                                                When `null`, mint fails closed with 503
+ *                                                `streaming_companion_unavailable` instead of
+ *                                                handing out a token that only fails at attach.
+ * @param {Function} deps.makeBrowserSessionId optional id minter for tests
+ * @param {Function} deps.now                  optional clock for tests
+ * @param {Function} deps.emitTimelineEvent    optional override for tests; defaults to emitSpineEvent
+ * @param {Function} deps.listRunEventsPage    optional bounded run timeline reader for no-response assistance minting
+ * @param {object} deps.browserSurfaceLeaseManager optional active browser-surface lease manager
+ * @param {string} deps.nekoProxyPath          same-origin n.eko proxy path
+ * @param {string|string[]} deps.nekoProxyAllowedHosts non-loopback n.eko hosts allowed for proxying
+ * @param {Function} deps.isNekoProxyTargetApproved dynamic n.eko proxy approval hook
+ * @param {{ username: string, password: string }|null} deps.nekoProxyAutoLogin n.eko auto-login query params
+ * @param {Function} deps.makePresentationAttachmentId optional controller-attachment id minter for tests
+ * @param {Function|null} deps.onPresentationRestoreFailure terminal recovery hook for failed screen restore
+ * @param {Function} deps.setTimeoutImpl optional presentation-expiry scheduler for tests
+ * @param {Function} deps.clearTimeoutImpl optional presentation-expiry canceller for tests
+ */
+export function registerStreamingRoutes({
+  app,
+  controller,
+  ownerAuth,
+  streamingSessions,
+  companionFactory,
+  makeBrowserSessionId,
+  now = () => Date.now(),
+  emitTimelineEvent = emitSpineEvent,
+  listRunEventsPage = null,
+  browserSurfaceLeaseManager = null,
+  nekoProxyPath = DEFAULT_NEKO_PROXY_PATH,
+  nekoProxyAllowedHosts = [],
+  isNekoProxyTargetApproved = null,
+  nekoProxyCookieName = NEKO_PROXY_COOKIE,
+  nekoProxyAutoLogin = null,
+  nekoWindowSettleProbe = null,
+  presentationAttachmentCookieName = PRESENTATION_ATTACHMENT_COOKIE,
+  makePresentationAttachmentId = () => randomBytes(18).toString('base64url'),
+  onPresentationRestoreFailure = null,
+  setTimeoutImpl = setTimeout,
+  clearTimeoutImpl = clearTimeout,
+}) {
+  if (!app || !ownerAuth || !streamingSessions) {
+    throw new Error('registerStreamingRoutes: missing dependency');
+  }
+  if (companionFactory != null && typeof companionFactory !== 'function') {
+    throw new Error('registerStreamingRoutes: companionFactory must be a function or null');
+  }
+  if (typeof makePresentationAttachmentId !== 'function') {
+    throw new Error('registerStreamingRoutes: makePresentationAttachmentId must be a function');
+  }
+  if (nekoWindowSettleProbe != null && typeof nekoWindowSettleProbe !== 'function') {
+    throw new Error('registerStreamingRoutes: nekoWindowSettleProbe must be a function or null');
+  }
+
+  // Companion instances by browser_session_id. One companion per pending
+  // interaction; reused for the SSE attach + input POSTs while the session is
+  // alive.
+  const companions = new Map();
+  // The browser-session token is deliberately reconnect-safe, so it is not
+  // enough to identify the controlling presentation. The first SSE attach
+  // mints an HttpOnly same-origin attachment id. A reconnect with that cookie
+  // remains the controller; every other attachment is observational.
+  const controllingAttachments = new Map();
+  // Bearer records expire by design. A presentation lifecycle cannot: it owns
+  // a mutated shared screen until restoration or safe retirement completes.
+  const presentationLifecycles = new Map();
+  // Serialize controller viewport requests before they reach a companion. The
+  // n.eko companion also fences screen mutations, but this host-level queue
+  // preserves request order across every streaming backend and reconnect.
+  const presentationViewportDispatches = new Map();
+  // Per-session input telemetry ring. Records four event kinds:
+  //   wire.input.received / wire.input.dispatched / wire.input.error /
+  //   remote.page.<eventType>. Polled by the viewer via
+  //   GET /_ref/run-interaction-streams/:token/input-telemetry?since=<seq>
+  // and merged into the same /api/stream-debug sink as phone-side events,
+  // joined on `correlationId`. Debug-only, never affects streaming UX.
+  const inputTelemetry = createInputTelemetry();
+  // Companions can register a per-session remote-page event sink by calling
+  // companion.attachRemoteTelemetry(fn). The factory (cdp-adapter / playground
+  // remote-cdp factory) wires Patchright `exposeBinding` to forward in-page
+  // `__pdppRemoteTelemetry(payload)` calls here. The forwarding path is
+  // best-effort and never throws back into the page.
+  const remoteTelemetrySinks = new Map(); // browser_session_id → unsubscribe fn
+  const allowedNekoHosts = parseAllowedHosts(nekoProxyAllowedHosts);
+  const nekoAutoLogin =
+    nekoProxyAutoLogin &&
+    typeof nekoProxyAutoLogin === 'object' &&
+    String(nekoProxyAutoLogin.username || '').trim() &&
+    String(nekoProxyAutoLogin.password || '').trim()
+      ? {
+          username: String(nekoProxyAutoLogin.username).trim(),
+          password: String(nekoProxyAutoLogin.password).trim(),
+        }
+      : null;
+
+  function getCompanion(browser_session_id) {
+    return companions.get(browser_session_id) || null;
+  }
+
+  function presentationKey(run_id, interaction_id) {
+    return `${run_id}\0${interaction_id}`;
+  }
+
+  function presentationLifecycleFor(run_id, interaction_id) {
+    return presentationLifecycles.get(presentationKey(run_id, interaction_id)) || null;
+  }
+
+  function clearPresentationExpiry(lifecycle) {
+    if (lifecycle.expiryTimer == null) return;
+    clearTimeoutImpl(lifecycle.expiryTimer);
+    lifecycle.expiryTimer = null;
+  }
+
+  function schedulePresentationExpiry(lifecycle) {
+    const delayMs = Math.max(0, lifecycle.expires_at - now());
+    lifecycle.expiryTimer = setTimeoutImpl(async () => {
+      try {
+        await invalidateForInteractionResolved({
+          run_id: lifecycle.run_id,
+          interaction_id: lifecycle.interaction_id,
+          reason: 'stream_session_expired',
+        });
+      } catch {
+        // A failed restore invokes terminal recovery. The bearer record is
+        // already expired, so there is no safe retry through token auth.
+      }
+    }, delayMs);
+    lifecycle.expiryTimer?.unref?.();
+  }
+
+  function rememberPresentationLifecycle(session, companion) {
+    const lifecycle = {
+      browser_session_id: session.browser_session_id,
+      companion,
+      expires_at: session.expires_at,
+      expiryTimer: null,
+      interaction_id: session.interaction_id,
+      run_id: session.run_id,
+      terminalization: null,
+    };
+    presentationLifecycles.set(presentationKey(lifecycle.run_id, lifecycle.interaction_id), lifecycle);
+    schedulePresentationExpiry(lifecycle);
+    return lifecycle;
+  }
+
+  async function dispatchPresentationViewport(browser_session_id, companion, viewport) {
+    const prior = presentationViewportDispatches.get(browser_session_id) || Promise.resolve();
+    const dispatched = prior
+      .catch(() => undefined)
+      .then(() => companion.dispatch({ type: 'viewport', ...viewport }));
+    presentationViewportDispatches.set(browser_session_id, dispatched);
+    try {
+      await dispatched;
+    } finally {
+      if (presentationViewportDispatches.get(browser_session_id) === dispatched) {
+        presentationViewportDispatches.delete(browser_session_id);
+      }
+    }
+  }
+
+  async function destroyCompanion(browser_session_id, { fallbackCompanion = null, propagateStopFailure = false } = {}) {
+    const companion = companions.get(browser_session_id) || fallbackCompanion;
+    if (!companion) return;
+    companions.delete(browser_session_id);
+    controllingAttachments.delete(browser_session_id);
+    presentationViewportDispatches.delete(browser_session_id);
+    const unsubscribe = remoteTelemetrySinks.get(browser_session_id);
+    remoteTelemetrySinks.delete(browser_session_id);
+    if (typeof unsubscribe === 'function') {
+      try {
+        unsubscribe();
+      } catch {
+        /* unsubscribe is best-effort */
+      }
+    }
+    try {
+      inputTelemetry.drop(browser_session_id);
+    } catch {
+      /* best-effort */
+    }
+    try {
+      await companion.stop();
+    } catch (err) {
+      if (propagateStopFailure) throw err;
+      // Best-effort teardown: companion errors must not bubble out of cleanup.
+    }
+  }
+
+  function attachmentIdFrom(req, session) {
+    return parseCookieHeader(req.headers?.cookie).get(presentationAttachmentCookieNameFor(session)) || null;
+  }
+
+  function presentationAttachmentCookieNameFor(session) {
+    const sessionId = String(session?.browser_session_id || '');
+    const scope = createHash('sha256').update(sessionId).digest('base64url');
+    return `${presentationAttachmentCookieName}_${scope}`;
+  }
+
+  function attachPresentationController(session, req, res) {
+    const existing = controllingAttachments.get(session.browser_session_id);
+    const presented = attachmentIdFrom(req, session);
+    if (existing) return existing === presented;
+    const attachmentId = makePresentationAttachmentId();
+    if (typeof attachmentId !== 'string' || attachmentId.length === 0) {
+      throw new Error('presentation attachment id minter returned an invalid id');
+    }
+    controllingAttachments.set(session.browser_session_id, attachmentId);
+    setPresentationAttachmentCookie(
+      res,
+      attachmentId,
+      (session.expires_at - now()) / 1000,
+      presentationAttachmentCookieNameFor(session),
+    );
+    return true;
+  }
+
+  function isControllingPresentationAttachment(session, req) {
+    const controllerAttachment = controllingAttachments.get(session.browser_session_id);
+    return Boolean(controllerAttachment && controllerAttachment === attachmentIdFrom(req, session));
+  }
+
+  async function terminalizePresentation(lifecycle, { invalidateBearer, reason }) {
+    if (lifecycle.terminalization) {
+      return await lifecycle.terminalization;
+    }
+
+    const terminalReason = reason || 'interaction_resolved';
+    clearPresentationExpiry(lifecycle);
+    if (invalidateBearer) {
+      streamingSessions.invalidate({
+        run_id: lifecycle.run_id,
+        interaction_id: lifecycle.interaction_id,
+        reason: terminalReason,
+      });
+    }
+    const presentationTarget = lifecycle.companion?.getNekoProxyTarget?.() || null;
+    const terminalization = (async () => {
+      try {
+        await destroyCompanion(lifecycle.browser_session_id, {
+          fallbackCompanion: lifecycle.companion,
+          propagateStopFailure: true,
+        });
+        await emit('run.stream_session_resolved', {
+          run_id: lifecycle.run_id,
+          interaction_id: lifecycle.interaction_id,
+          status: 'completed',
+          data: { browser_session_id: lifecycle.browser_session_id, reason: terminalReason },
+        });
+      } catch (err) {
+        try {
+          if (typeof onPresentationRestoreFailure === 'function') {
+            await onPresentationRestoreFailure({
+              browser_session_id: lifecycle.browser_session_id,
+              interaction_id: lifecycle.interaction_id,
+              reason: terminalReason,
+              run_id: lifecycle.run_id,
+              error: err,
+              surface_id: presentationTarget?.surface_id || null,
+              lease_id: presentationTarget?.lease_id || null,
+            });
+          }
+        } finally {
+          await emit('run.stream_session_resolved', {
+            run_id: lifecycle.run_id,
+            interaction_id: lifecycle.interaction_id,
+            status: 'surface_failed',
+            data: {
+              browser_session_id: lifecycle.browser_session_id,
+              reason: terminalReason,
+              restore_failed: true,
+            },
+          });
+        }
+        const restoreError = new Error('Presentation screen restore failed; the interaction was not resumed');
+        restoreError.code = 'presentation_restore_failed';
+        restoreError.cause = err;
+        throw restoreError;
+      }
+    })();
+    lifecycle.terminalization = terminalization;
+    try {
+      return await terminalization;
+    } finally {
+      const key = presentationKey(lifecycle.run_id, lifecycle.interaction_id);
+      if (presentationLifecycles.get(key) === lifecycle) {
+        presentationLifecycles.delete(key);
+      }
+    }
+  }
+
+  async function invalidateForInteractionResolved({ run_id, interaction_id, reason }) {
+    const lifecycle = presentationLifecycleFor(run_id, interaction_id);
+    if (!lifecycle) {
+      streamingSessions.invalidate({ run_id, interaction_id, reason: reason || 'interaction_resolved' });
+      return;
+    }
+    await terminalizePresentation(lifecycle, { invalidateBearer: true, reason });
+  }
+
+  async function restoreOrRetirePresentationForRun({ run_id, reason }) {
+    const lifecycle = [...presentationLifecycles.values()].find((candidate) => candidate.run_id === run_id);
+    if (!lifecycle) return;
+    await terminalizePresentation(lifecycle, { invalidateBearer: true, reason: reason || 'run_cleanup' });
+  }
+
+  async function emit(event_type, payload) {
+    try {
+      await emitTimelineEvent({
+        event_type,
+        actor_type: 'reference',
+        actor_id: 'run-interaction-stream',
+        object_type: 'run',
+        object_id: payload.run_id,
+        run_id: payload.run_id,
+        interaction_id: payload.interaction_id,
+        status: payload.status || 'started',
+        data: payload.data || {},
+      });
+    } catch {
+      // Spine emit best-effort: refusing to mint over a logging error would
+      // give worse UX than a missing diagnostic event.
+    }
+  }
+
+  function mintError(status, code, message, param = null) {
+    const err = new Error(message);
+    err.status = status;
+    err.code = code;
+    err.param = param;
+    return err;
+  }
+
+  function eventData(event) {
+    return event && event.data && typeof event.data === 'object' && !Array.isArray(event.data)
+      ? event.data
+      : {};
+  }
+
+  function eventAssistanceId(event) {
+    const data = eventData(event);
+    return typeof data.assistance_request_id === 'string' && data.assistance_request_id.length > 0
+      ? data.assistance_request_id
+      : typeof event?.interaction_id === 'string' && event.interaction_id.length > 0
+        ? event.interaction_id
+        : null;
+  }
+
+  function hasBrowserSurfaceAttachment(data) {
+    return Array.isArray(data.attachments) && data.attachments.some((attachment) =>
+      attachment && typeof attachment === 'object' && attachment.kind === 'browser_surface'
+    );
+  }
+
+  function isTerminalAssistanceEvent(event) {
+    return (
+      event?.event_type === 'run.assistance_cancelled' ||
+      event?.event_type === 'run.assistance_escalated' ||
+      event?.event_type === 'run.assistance_resolved' ||
+      event?.event_type === 'run.assistance_timed_out'
+    );
+  }
+
+  function isNoResponseBrowserAssistanceData(data) {
+    return (
+      data.progress_posture === 'blocked' &&
+      data.owner_action === 'operate_attachment' &&
+      data.response_contract === 'none' &&
+      hasBrowserSurfaceAttachment(data)
+    );
+  }
+
+  function collectTerminalAssistanceIds(events) {
+    const terminalIds = new Set();
+    for (const event of events) {
+      if (isTerminalAssistanceEvent(event)) {
+        const id = eventAssistanceId(event);
+        if (id) terminalIds.add(id);
+      }
+    }
+    return terminalIds;
+  }
+
+  function noResponseBrowserAssistanceIdOf(event, terminalIds) {
+    if (!event || event.event_type !== 'run.assistance_requested') return null;
+    const id = eventAssistanceId(event);
+    if (!id || terminalIds.has(id)) return null;
+    return isNoResponseBrowserAssistanceData(eventData(event)) ? id : null;
+  }
+
+  function currentNoResponseBrowserAssistanceId(events) {
+    const terminalIds = collectTerminalAssistanceIds(events);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const id = noResponseBrowserAssistanceIdOf(events[index], terminalIds);
+      if (id) return id;
+    }
+    return null;
+  }
+
+  async function isCurrentNoResponseBrowserAssistance(runId, assistanceId) {
+    if (typeof listRunEventsPage !== 'function') return false;
+    const page = await listRunEventsPage(runId, { cursor: null, limit: 5000 });
+    const events = Array.isArray(page?.events) ? page.events : Array.isArray(page?.data) ? page.data : [];
+    return currentNoResponseBrowserAssistanceId(events) === assistanceId;
+  }
+
+  async function assertManagedSurfaceWindowSettleBehavior(surface) {
+    if (typeof surface.cdp_url !== 'string' || surface.cdp_url.length === 0) {
+      throw mintError(
+        503,
+        'managed_surface_window_settle_unavailable',
+        'The managed browser surface cannot prove its window-settle readiness.',
+      );
+    }
+    if (!nekoWindowSettleProbe) {
+      throw mintError(
+        503,
+        'managed_surface_window_settle_unavailable',
+        'The managed browser surface cannot prove its window-settle readiness.',
+      );
+    }
+    let settleEndpoint;
+    try {
+      settleEndpoint = new URL('/pdpp/window-settle', surface.cdp_url).toString();
+    } catch {
+      throw mintError(
+        503,
+        'managed_surface_window_settle_unavailable',
+        'The managed browser surface cannot prove its window-settle readiness.',
+      );
+    }
+    try {
+      const response = await nekoWindowSettleProbe(settleEndpoint);
+      if (!response?.ok) throw new Error('window settle endpoint was not successful');
+      const status = await response.json();
+      if (
+        status?.settled !== true ||
+        !Number.isInteger(status?.width) || status.width < 1 ||
+        !Number.isInteger(status?.height) || status.height < 1
+      ) {
+        throw new Error('window settle endpoint returned an invalid status');
+      }
+    } catch {
+      throw mintError(
+        503,
+        'managed_surface_window_settle_unavailable',
+        'The managed browser surface is restarting. Please retry this action.',
+      );
+    }
+    return settleEndpoint;
+  }
+
+  async function buildBrowserSurfaceAssistanceTarget(runId, assistanceId) {
+    if (!browserSurfaceLeaseManager || typeof browserSurfaceLeaseManager.listLeases !== 'function') {
+      return null;
+    }
+    const lease = browserSurfaceLeaseManager
+      .listLeases()
+      .find((candidate) => candidate?.run_id === runId && candidate.status === 'leased');
+    if (!lease?.surface_id || typeof browserSurfaceLeaseManager.getSurface !== 'function') {
+      return null;
+    }
+    const surface = browserSurfaceLeaseManager.getSurface(lease.surface_id);
+    if (!surface || surface.health !== 'ready') return null;
+    if (surface.surface_id !== lease.surface_id) return null;
+    if (surface.connector_id !== lease.connector_id) return null;
+    if (surface.active_lease_id !== lease.lease_id) return null;
+    if (surface.profile_key !== lease.profile_key) return null;
+    if (!surface.stream_base_url) return null;
+    // The surface's persisted endpoint is diagnostic/legacy lifecycle data;
+    // the live, no-query behavior probe above is the only attachment gate.
+    // Keep passing the endpoint required by the presentation lifecycle, but
+    // derive it from the same origin we just proved rather than metadata.
+    const windowSettleEndpoint = await assertManagedSurfaceWindowSettleBehavior(surface);
+    return {
+      backend: 'neko',
+      base_url: surface.stream_base_url,
+      ...(surface.cdp_url ? { cdp_http_url: surface.cdp_url } : {}),
+      window_settle_endpoint: windowSettleEndpoint,
+      surface_id: surface.surface_id,
+      lease_id: lease.lease_id,
+      profile_key: lease.profile_key,
+      interaction_id: assistanceId,
+    };
+  }
+
+  async function resolveMintScope(runId, interactionId) {
+    const pending = controller.getPendingInteraction(runId);
+    if (pending) {
+      if (pending.interaction_id !== interactionId) {
+        throw mintError(
+          409,
+          'interaction_id_mismatch',
+          `Pending interaction is ${pending.interaction_id}, not ${interactionId}`,
+          'interaction_id',
+        );
+      }
+      if (!['manual_action', 'otp'].includes(pending.kind)) {
+        throw mintError(
+          409,
+          'stream_not_supported_for_kind',
+          `Streaming is not supported for interaction kind ${pending.kind}`,
+        );
+      }
+      return {
+        kind: pending.kind,
+        target: await buildBrowserSurfaceAssistanceTarget(runId, pending.interaction_id),
+      };
+    }
+
+    if (await isCurrentNoResponseBrowserAssistance(runId, interactionId)) {
+      const target = await buildBrowserSurfaceAssistanceTarget(runId, interactionId);
+      if (!target) {
+        throw mintError(
+          503,
+          'streaming_companion_unavailable',
+          'A browser-surface assistance request is current, but no ready browser surface is available for this run.',
+        );
+      }
+      return { kind: 'manual_action', target };
+    }
+
+    throw mintError(409, 'no_pending_interaction', 'No pending interaction for this run');
+  }
+
+  function getNekoProxySession(token) {
+    const session = streamingSessions.authorize({ token });
+    const companion = getCompanion(session.browser_session_id);
+    if (!companion || typeof companion.getNekoProxyTarget !== 'function') {
+      const err = new Error('n.eko companion is not available');
+      err.code = 'companion_unavailable';
+      throw err;
+    }
+    const target = companion.getNekoProxyTarget();
+    if (!target?.origin) {
+      const err = new Error('n.eko proxy target is not available');
+      err.code = 'neko_proxy_unavailable';
+      throw err;
+    }
+    const origin = assertAllowedNekoOrigin(target.origin, allowedNekoHosts, (parsed) =>
+      typeof isNekoProxyTargetApproved === 'function'
+        ? isNekoProxyTargetApproved(target, { session, origin: parsed })
+        : false,
+    );
+    return { session, companion, origin };
+  }
+
+  function getNekoCookieSession(req) {
+    const token = parseCookieHeader(req.headers?.cookie).get(nekoProxyCookieName);
+    if (!token) {
+      const err = new Error('n.eko stream cookie is missing');
+      err.code = 'invalid_token';
+      throw err;
+    }
+    return getNekoProxySession(token);
+  }
+
+  function isStateChangingNekoProxyMethod(method) {
+    return NEKO_PROXY_MUTATING_METHODS.has(String(method || 'GET').toUpperCase());
+  }
+
+  function buildNekoTargetUrl(origin, reqUrl) {
+    const base = new URL(origin.href);
+    const incoming = new URL(reqUrl || nekoProxyPath, 'http://pdpp.local');
+    let suffix = incoming.pathname;
+    if (suffix === '/neko') {
+      suffix = '/';
+    } else if (suffix.startsWith('/neko/')) {
+      suffix = suffix.slice('/neko'.length);
+    }
+
+    const basePath = base.pathname.endsWith('/') ? base.pathname.slice(0, -1) : base.pathname;
+    if (!basePath) {
+      base.pathname =
+        incoming.pathname === '/neko'
+          ? '/neko/'
+          : incoming.pathname.startsWith('/neko')
+            ? incoming.pathname
+            : suffix;
+    } else {
+      const suffixPath = suffix.startsWith('/') ? suffix : `/${suffix}`;
+      base.pathname = `${basePath}${suffixPath}`;
+    }
+    base.search = incoming.search;
+    base.hash = '';
+    return base;
+  }
+
+  function shouldInjectNekoBase(req, targetUrl, upstreamRes) {
+    const method = String(req.method || 'GET').toUpperCase();
+    const contentType = String(upstreamRes.headers?.['content-type'] || '');
+    return method === 'GET' && targetUrl.pathname === '/neko/' && /^text\/html\b/i.test(contentType);
+  }
+
+  function withoutContentLength(headers) {
+    const next = { ...(headers || {}) };
+    for (const key of Object.keys(next)) {
+      if (key.toLowerCase() === 'content-length') delete next[key];
+    }
+    return next;
+  }
+
+  function injectNekoEmbedChrome(html) {
+    const base = '<base href="/neko/">';
+    const style = `<style data-pdpp-neko-embed>
+html,body,#neko,.neko-main{width:100%!important;height:100%!important;margin:0!important;overflow:hidden!important;background:#000!important}
+body>p{display:none!important}
+#neko .header-container,#neko .video-menu,#neko .chat,#neko .chat-container,#neko .sidebar,#neko .side,#neko .control-container,#neko .status-container,#neko .footer{display:none!important}
+#neko .neko-main{display:block!important}
+#neko .video-container,#neko .video,#neko .player{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;display:flex!important;background:#000!important}
+#neko .player-container,#neko video,#neko textarea.overlay,#neko .player-aspect,#neko .emotes{inset:0!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;margin:0!important}
+#neko textarea.overlay{resize:none!important}
+</style>`;
+    const script = `<script data-pdpp-neko-embed>
+(function(){function focusOverlay(){var el=document.querySelector('textarea.overlay')||document.querySelector('textarea')||document.querySelector('input[type="text"]');if(el&&typeof el.focus==='function'){try{el.focus({preventScroll:true});}catch(_){el.focus();}}}document.documentElement.setAttribute('data-pdpp-neko-embed','1');document.addEventListener('pointerdown',focusOverlay,true);document.addEventListener('touchstart',focusOverlay,{capture:true,passive:true});window.addEventListener('message',function(event){if(event.origin!==location.origin)return;if(event.data&&event.data.type==='pdpp-neko-focus')focusOverlay();});setTimeout(focusOverlay,250);})();
+</script>`;
+    let next = html;
+    if (!/<base\s/i.test(next)) {
+      next = /<head(\s[^>]*)?>/i.test(next)
+        ? next.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${base}`)
+        : `${base}${next}`;
+    }
+    if (!/data-pdpp-neko-embed/.test(next)) {
+      next = /<\/head>/i.test(next)
+        ? next.replace(/<\/head>/i, `${style}${script}</head>`)
+        : `${style}${script}${next}`;
+    }
+    return next;
+  }
+
+  async function handleNekoHttpProxy(req, res) {
+    let authorized;
+    try {
+      authorized = getNekoCookieSession(req);
+    } catch (err) {
+      const status =
+        err.code === 'session_not_attached' ? 409 : err.code === 'session_expired' ? 410 : 401;
+      return pdppError(res, status, err.code || 'invalid_token', err.message);
+    }
+
+    // Remote-surface Core §3.2 admission rule: n.eko's generic proxy is
+    // another presentation mutation transport, not an observer bypass.
+    if (isStateChangingNekoProxyMethod(req.method) && !isControllingPresentationAttachment(authorized.session, req)) {
+      return pdppError(
+        res,
+        409,
+        'presentation_attachment_not_controlling',
+        'Only the controlling stream attachment may mutate the presentation through the n.eko proxy',
+      );
+    }
+
+    const targetUrl = buildNekoTargetUrl(authorized.origin, req.raw?.url || req.url || nekoProxyPath);
+    const headers = buildProxyHeaders(req.headers, targetUrl, [
+      nekoProxyCookieName,
+      presentationAttachmentCookieNameFor(authorized.session),
+    ]);
+    const body = serializeProxyBody(req, headers);
+    const transport = targetUrl.protocol === 'https:' ? https : http;
+
+    res.hijack();
+    const raw = res.raw;
+    const upstream = transport.request(
+      {
+        method: req.method,
+        protocol: targetUrl.protocol,
+        hostname: targetUrl.hostname,
+        port: targetUrl.port || undefined,
+        path: `${targetUrl.pathname}${targetUrl.search}`,
+        headers,
+      },
+      (upstreamRes) => {
+        if (shouldInjectNekoBase(req, targetUrl, upstreamRes)) {
+          let html = '';
+          upstreamRes.setEncoding('utf8');
+          upstreamRes.on('data', (chunk) => {
+            html += chunk;
+          });
+          upstreamRes.on('end', () => {
+            raw.writeHead(upstreamRes.statusCode || 502, upstreamRes.statusMessage, withoutContentLength(upstreamRes.headers));
+            raw.end(injectNekoEmbedChrome(html));
+          });
+          return;
+        }
+        raw.writeHead(upstreamRes.statusCode || 502, upstreamRes.statusMessage, upstreamRes.headers);
+        upstreamRes.pipe(raw);
+      },
+    );
+    upstream.once('error', () => {
+      if (raw.destroyed) return;
+      raw.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+      raw.end(JSON.stringify({ error: { type: 'api_error', code: 'neko_proxy_failed' } }));
+    });
+    if (body) upstream.end(body);
+    else upstream.end();
+  }
+
+  function handleNekoUpgrade(rawReq, socket, head) {
+    const parsed = new URL(rawReq.url || '/', 'http://localhost');
+    if (parsed.pathname !== '/neko' && !parsed.pathname.startsWith('/neko/')) return false;
+    try {
+      const authorized = getNekoCookieSession({ headers: rawReq.headers });
+      const targetUrl = buildNekoTargetUrl(authorized.origin, rawReq.url || nekoProxyPath);
+      proxyUpgradeRequest(rawReq, socket, head, targetUrl, [
+        nekoProxyCookieName,
+        presentationAttachmentCookieNameFor(authorized.session),
+      ]);
+      return true;
+    } catch (err) {
+      const status = err.code === 'session_expired' ? 410 : err.code === 'session_not_attached' ? 409 : 401;
+      writeUpgradeError(socket, status, status === 410 ? 'Gone' : status === 409 ? 'Conflict' : 'Unauthorized');
+      return true;
+    }
+  }
+
+  // ── Mint ──────────────────────────────────────────────────────────────────
+  app.post(
+    '/_ref/runs/:runId/run-interaction-stream',
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      try {
+        if (!controller || typeof controller.getPendingInteraction !== 'function') {
+          return pdppError(res, 404, 'not_found', 'Controller is not configured on this server');
+        }
+        const runId = safeRunId(req);
+        const body = req.body || {};
+        const interactionId = String(body.interaction_id || '').trim();
+        if (!interactionId) {
+          return pdppError(res, 400, 'invalid_request', 'interaction_id is required', 'interaction_id');
+        }
+        const mintScope = await resolveMintScope(runId, interactionId);
+        // Fail closed when no real CDP companion is configured. The viewer
+        // must not receive a token that only errors at attach time; that
+        // makes the dashboard primary action a dead button.
+        if (typeof companionFactory !== 'function') {
+          return pdppError(
+            res,
+            503,
+            'streaming_companion_unavailable',
+            'Streaming companion is not configured on this server. The connector runtime must register a CDP page-target ws URL for the run via the run-target registry, or a streamingCompanionFactory must be injected, to enable run-interaction streaming.',
+          );
+        }
+        const viewport = pickViewport(body.viewport);
+        // Stripe-style optional idempotency key. Lets the dashboard collapse a
+        // duplicate mint (StrictMode double-invoke that slipped past the
+        // event-handler fix, fetch retry, operator double-tap) into the same
+        // session record so the prior token isn't superseded out from under
+        // the in-flight viewer. Absent / blank / non-string => legacy mint
+        // behaviour (always supersedes).
+        const idempotencyKey =
+          typeof body.idempotency_key === 'string' && body.idempotency_key.length > 0
+            ? body.idempotency_key
+            : null;
+        const browser_session_id =
+          (typeof makeBrowserSessionId === 'function' ? makeBrowserSessionId() : null) ||
+          `bs_${Math.floor(now()).toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+        const { token, session, idempotency_replayed } = streamingSessions.mint({
+          run_id: runId,
+          interaction_id: interactionId,
+          browser_session_id,
+          viewport,
+          idempotency_key: idempotencyKey,
+        });
+
+        const priorLifecycle = presentationLifecycleFor(runId, interactionId);
+        if (priorLifecycle && priorLifecycle.browser_session_id !== session.browser_session_id) {
+          // Superseding a bearer token cannot silently strand the older
+          // presentation. Its terminalizer deliberately leaves the newly
+          // minted bearer record intact while restoring the old screen.
+          await terminalizePresentation(priorLifecycle, {
+            invalidateBearer: false,
+            reason: 'stream_session_superseded',
+          });
+        }
+
+        // On a replay we MUST reuse the existing companion bound to the
+        // original session's browser_session_id. Building a second companion
+        // and overwriting the map entry would tear the live one down at next
+        // attach. The replayed session.browser_session_id may differ from the
+        // freshly-generated one above, so always key the lookup off the
+        // session record returned by the store.
+        const effectiveBrowserSessionId = session.browser_session_id;
+        let companion = companions.get(effectiveBrowserSessionId) || null;
+        if (!companion) {
+          companion = companionFactory({
+            run_id: runId,
+            interaction_id: interactionId,
+            browser_session_id: effectiveBrowserSessionId,
+            target: mintScope.target,
+          });
+          companions.set(effectiveBrowserSessionId, companion);
+          // Layer-D wiring: subscribe to the process-local remote-telemetry
+          // registry keyed by runId. The playground's Patchright page
+          // populates it via `page.exposeBinding('__pdppRemoteTelemetry')`.
+          // Companions for non-playground runs (real connector flows) will
+          // simply see an empty sink — no harm done.
+          try {
+            const unsubscribe = registerRemoteTelemetrySink(runId, (payload) => {
+              if (!payload || typeof payload !== 'object') return;
+              try {
+                inputTelemetry.push(effectiveBrowserSessionId, {
+                  source: 'remote_page',
+                  kind: typeof payload.type === 'string' ? `remote.page.${payload.type}` : 'remote.page.unknown',
+                  ...payload,
+                });
+              } catch {
+                /* telemetry must never break the page */
+              }
+            });
+            remoteTelemetrySinks.set(effectiveBrowserSessionId, unsubscribe);
+          } catch {
+            /* sink registration is best-effort */
+          }
+        }
+        if (!presentationLifecycleFor(runId, interactionId) && companion) {
+          rememberPresentationLifecycle(session, companion);
+        }
+
+        // Don't double-emit the spine event on a pure replay — the original
+        // mint already published `run.stream_session_requested`. Replays are a
+        // dashboard-side hygiene mechanism, not a new logical request.
+        if (!idempotency_replayed) {
+          await emit('run.stream_session_requested', {
+            run_id: runId,
+            interaction_id: interactionId,
+            status: 'started',
+            data: {
+              browser_session_id: effectiveBrowserSessionId,
+              expires_at_ms: session.expires_at,
+              viewport,
+              kind: mintScope.kind,
+            },
+          });
+        }
+
+        return res.status(201).json({
+          object: 'run_interaction_stream_session',
+          run_id: runId,
+          interaction_id: interactionId,
+          browser_session_id: effectiveBrowserSessionId,
+          token,
+          expires_at_ms: session.expires_at,
+          idempotency_replayed: idempotency_replayed === true,
+          viewer_path: `/_ref/run-interaction-streams/${encodeURIComponent(token)}/events`,
+          input_path: `/_ref/run-interaction-streams/${encodeURIComponent(token)}/input`,
+          viewport_path: `/_ref/run-interaction-streams/${encodeURIComponent(token)}/viewport`,
+        });
+      } catch (err) {
+        if (err && typeof err.status === 'number' && typeof err.code === 'string') {
+          return pdppError(res, err.status, err.code, err.message, err.param || null);
+        }
+        return pdppError(res, 500, 'api_error', err.message || 'mint failed');
+      }
+    },
+  );
+
+  // ── Stream-reach give-up beacon (owner-authenticated) ──────────────────────
+  // After the viewer's pre-attach retry loop gives up, the client classifies
+  // the give-up (via one token-scoped status probe it runs itself, because
+  // EventSource hides the attach HTTP status) and reports the typed reason here
+  // so the failure class is auditable from the run timeline. This route never
+  // receives the stream token, proxy cookie, or raw viewer URL — only the
+  // closed-set reason and the observed HTTP status. The reason is clamped
+  // server-side so a malformed client cannot widen the spine's vocabulary.
+  app.post(
+    '/_ref/runs/:runId/run-interaction-stream/reach-failure',
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      if (!controller || typeof controller.getPendingInteraction !== 'function') {
+        return pdppError(res, 404, 'not_found', 'Controller is not configured on this server');
+      }
+      const runId = safeRunId(req);
+      const body = req.body || {};
+      const interactionId = String(body.interaction_id || '').trim();
+      if (!interactionId) {
+        return pdppError(res, 400, 'invalid_request', 'interaction_id is required', 'interaction_id');
+      }
+      // Bind the beacon to the run's interaction scope so a stray POST cannot
+      // attribute a reach failure to the wrong interaction. A give-up often
+      // coincides with the interaction having just resolved or expired (that is
+      // frequently *why* reach failed), so we do NOT require the interaction to
+      // still be pending. When an interaction IS still pending for this run, it
+      // must match the reported id; when none is pending, the beacon is accepted
+      // as a diagnostic for an interaction that has already ended. The mint
+      // route already proved the run/interaction pairing was real when it issued
+      // the token, and this route grants no authority — it only records a
+      // diagnostic spine event behind the owner-session gate.
+      const pending = controller.getPendingInteraction(runId);
+      if (pending && pending.interaction_id !== interactionId) {
+        return pdppError(
+          res,
+          409,
+          'interaction_id_mismatch',
+          `Pending interaction is ${pending.interaction_id}, not ${interactionId}`,
+          'interaction_id',
+        );
+      }
+      const reason = sanitizeStreamReachReason(body.reason);
+      const httpStatus = sanitizeStreamReachHttpStatus(body.http_status);
+      // Status is a descriptive sub-resource status, NOT `failed`/`rejected`.
+      // A connector run can succeed even when the operator's stream viewer gave
+      // up reaching the surface, so this diagnostic must not pollute run-summary
+      // status (`summarizeEvents` flags any `failed`/`rejected` event as a
+      // terminal failure). This mirrors `run.browser_surface_probe_failed`,
+      // which uses `surface_failed` for the same reason.
+      await emit('run.stream_reach_failed', {
+        run_id: runId,
+        interaction_id: interactionId,
+        status: 'stream_reach_failed',
+        data: { reason, http_status: httpStatus },
+      });
+      return res.status(202).json({
+        object: 'run_interaction_stream_reach_failure',
+        run_id: runId,
+        interaction_id: interactionId,
+        reason,
+        http_status: httpStatus,
+      });
+    },
+  );
+
+  // ── SSE attach (token-only) ───────────────────────────────────────────────
+  app.get('/_ref/run-interaction-streams/:token/events', async (req, res) => {
+    let session;
+    try {
+      session = streamingSessions.attach({ token: req.params.token });
+    } catch (err) {
+      const status = err.code === 'session_consumed' ? 409 : err.code === 'session_expired' ? 410 : 401;
+      return pdppError(res, status, err.code || 'invalid_token', err.message);
+    }
+    const companion = getCompanion(session.browser_session_id);
+    if (!companion) {
+      return pdppError(res, 410, 'companion_unavailable', 'Streaming companion is no longer attached');
+    }
+    let controllingAttachment = false;
+    try {
+      controllingAttachment = attachPresentationController(session, req, res);
+    } catch (err) {
+      return pdppError(res, 500, err.code || 'api_error', err.message || 'stream attachment setup failed');
+    }
+
+    res.hijack();
+    const raw = res.raw;
+    raw.statusCode = 200;
+    raw.setHeader('Content-Type', 'text/event-stream');
+    raw.setHeader('Cache-Control', 'no-cache, no-transform');
+    raw.setHeader('Connection', 'keep-alive');
+    raw.setHeader('X-Accel-Buffering', 'no');
+    raw.flushHeaders?.();
+
+    function writeEvent(name, data) {
+      raw.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+    }
+
+    writeEvent('attached', buildReferenceWireAttachedPayload({
+      runId: session.run_id,
+      interactionId: session.interaction_id,
+      browserSessionId: session.browser_session_id,
+      viewport: session.viewport,
+    }));
+    if (!controllingAttachment) {
+      writeEvent('presentation_observer', { browser_session_id: session.browser_session_id });
+    }
+
+    const unsubscribe = companion.onFrame((frame) => {
+      writeEvent('frame', buildReferenceWireFramePayload(frame));
+      // CDP `Page.startScreencast` only delivers the next frame after the
+      // previous one is acknowledged. Without this ack the stream stalls
+      // after the first frame against a real Chromium. Best-effort: a
+      // failed ack must not crash the SSE response (the next frame's ack
+      // can recover, and if the companion really is gone, teardown will
+      // fire from the close handler).
+      if (Number.isFinite(frame.sessionId) && typeof companion.ackFrame === 'function') {
+        Promise.resolve(companion.ackFrame(frame.sessionId)).catch(() => {
+          /* best-effort ack; surfaced via companion logger if configured */
+        });
+      }
+    });
+    // Out-of-band wire events: URL changes, popup open/close. These are
+    // separate SSE event types so the viewer's EventSource can register a
+    // handler per event name and ignore the rest. Companions that predate
+    // this contract may not expose `onEvent`; treat the absence as "no
+    // out-of-band events available" rather than failing attach.
+    const unsubscribeEvents =
+      typeof companion.onEvent === 'function'
+        ? companion.onEvent((event) => {
+            const payload = buildReferenceWireCompanionEventPayload(event);
+            if (!payload) return;
+            // Forward unknown event kinds as-is so newer companions can add
+            // event types without a route change. Tests can assert against
+            // the discriminator via the SSE event name.
+            writeEvent(payload.name, payload.data);
+          })
+        : () => {};
+
+    // SSE keepalive: write a comment ping every 15 seconds to reset the
+    // keepaliveTimeout on Fastify/HTTP intermediaries (default 30s).
+    // SSE comments (lines starting with `:`) are ignored by EventSource clients.
+    const keepAliveInterval = setInterval(() => {
+      try {
+        raw.write(': keepalive\n\n');
+      } catch {
+        /* best-effort keepalive; socket may already be gone */
+      }
+    }, 15_000);
+
+    let perConnectionClosed = false;
+    /**
+     * Per-SSE-connection cleanup. Fires when the viewer's socket drops for
+     * any reason (browser tab close, network blip, HMR reload). Tears down
+     * THIS connection's resources only (keepalive timer, frame/event
+     * subscriptions). Does NOT invalidate the streaming session — the
+     * companion stays alive, and the operator can reconnect with the same
+     * token to resume frames. Session-terminal teardown is reserved for
+     * companion_start_failed, invalidateForInteractionResolved, and TTL
+     * expiry — events that mean the human assist is over, not that the
+     * transport blipped.
+     */
+    function closePerConnection() {
+      if (perConnectionClosed) return;
+      perConnectionClosed = true;
+      clearInterval(keepAliveInterval);
+      try {
+        unsubscribe();
+      } catch {
+        /* unsubscribe best-effort */
+      }
+      try {
+        unsubscribeEvents();
+      } catch {
+        /* unsubscribe best-effort */
+      }
+    }
+
+    /**
+     * Session-terminal teardown. Invalidates the streaming session so no
+     * subsequent input or attach can succeed, emits the spine event, and
+     * destroys the underlying companion. Used only for events that end the
+     * human-assist lifecycle, not for transport blips.
+     */
+    let terminalTorn = false;
+    async function tearDownSession(reason) {
+      if (terminalTorn) return;
+      terminalTorn = true;
+      closePerConnection();
+      try {
+        await invalidateForInteractionResolved({
+          run_id: session.run_id,
+          interaction_id: session.interaction_id,
+          reason,
+        });
+      } catch {
+        // The terminalizer has invalidated the token and invoked the surface
+        // recovery hook. This connection is already terminal; do not turn a
+        // failed restore into a socket-close retry loop.
+      }
+      try {
+        raw.end();
+      } catch {
+        /* socket may already be gone */
+      }
+    }
+
+    req.raw.on('close', () => {
+      closePerConnection();
+    });
+
+    try {
+      const backend = await resolveCompanionBackend(companion);
+      const startViewport = viewportForCompanionBackend(backend, session.viewport || null);
+      await companion.start(startViewport);
+      const settledBackend = await resolveCompanionBackend(companion);
+      const settledViewport = viewportForCompanionBackend(settledBackend, session.viewport || null);
+      if (settledViewport && !viewportsMatch(startViewport, settledViewport)) {
+        await companion.dispatch({ type: 'viewport', ...settledViewport });
+      }
+    } catch (err) {
+      writeEvent('error', { code: err.code || 'companion_start_failed', message: err.message });
+      await tearDownSession('companion_start_failed');
+      return;
+    }
+
+    const backend = typeof companion.backend === 'string' ? companion.backend : 'cdp';
+    writeEvent('backend_ready', buildReferenceWireBackendReadyPayload({
+      backend,
+      token: req.params.token,
+      browserOwnerMode: companion.browserOwnerMode?.bind(companion),
+      stealthMode: companion.stealthMode?.bind(companion),
+    }));
+
+    await emit('run.stream_session_opened', {
+      run_id: session.run_id,
+      interaction_id: session.interaction_id,
+      status: 'started',
+      data: { browser_session_id: session.browser_session_id, viewport: session.viewport },
+    });
+  });
+
+  // ── Input dispatch (token-only) ───────────────────────────────────────────
+  app.post('/_ref/run-interaction-streams/:token/input', async (req, res) => {
+    let session;
+    try {
+      session = streamingSessions.authorize({ token: req.params.token });
+    } catch (err) {
+      const status = err.code === 'session_not_attached' ? 409 : 401;
+      return pdppError(res, status, err.code || 'invalid_token', err.message);
+    }
+    // Remote-surface Core §3.2 admission rule: observer attachments are
+    // read-only; only this session's controller may change the presentation.
+    if (!isControllingPresentationAttachment(session, req)) {
+      return pdppError(
+        res,
+        409,
+        'presentation_attachment_not_controlling',
+        'Only the controlling stream attachment may send presentation input',
+      );
+    }
+    const companion = getCompanion(session.browser_session_id);
+    if (!companion) {
+      return pdppError(res, 410, 'companion_unavailable', 'Streaming companion is no longer attached');
+    }
+    // Layer C telemetry: capture receipt of the wire event with its
+    // correlationId (set by the phone-side overlay). The body is the raw
+    // wire shape (type/action/x/y/...), so we record it verbatim minus the
+    // correlationId promoted to a top-level field.
+    const body = parseReferenceWireInputPayload(req.body);
+    const correlationId = typeof body.correlationId === 'string' ? body.correlationId : null;
+    const wireSeq = typeof body.wireSeq === 'number' ? body.wireSeq : null;
+    const receivedAtMs = Date.now();
+    try {
+      inputTelemetry.push(session.browser_session_id, {
+        source: 'server',
+        kind: 'wire.input.received',
+        correlationId,
+        wireSeq,
+        action: body.action || null,
+        eventType: body.type || null,
+        x: typeof body.x === 'number' ? body.x : null,
+        y: typeof body.y === 'number' ? body.y : null,
+      });
+    } catch {
+      /* telemetry must never block input */
+    }
+    try {
+      await companion.dispatch(body);
+      try {
+        inputTelemetry.push(session.browser_session_id, {
+          source: 'server',
+          kind: 'wire.input.dispatched',
+          correlationId,
+          wireSeq,
+          action: body.action || null,
+          eventType: body.type || null,
+          dispatchLatencyMs: Date.now() - receivedAtMs,
+        });
+      } catch {
+        /* best-effort */
+      }
+    } catch (err) {
+      try {
+        inputTelemetry.push(session.browser_session_id, {
+          source: 'server',
+          kind: 'wire.input.error',
+          correlationId,
+          wireSeq,
+          action: body.action || null,
+          eventType: body.type || null,
+          errorCode: err.code || 'invalid_input',
+          errorMessage: err.message || String(err),
+        });
+      } catch {
+        /* best-effort */
+      }
+      return pdppError(res, 400, err.code || 'invalid_input', err.message);
+    }
+    return res.status(202).json({ object: 'run_interaction_stream_input_ack' });
+  });
+
+  // ── Input telemetry drain (debug-only) ───────────────────────────────────
+  // The viewer polls this every ~500ms (gated by ?stream_debug=1) to merge
+  // server-side and remote-page events with phone-side events in the
+  // on-screen overlay. Token-only auth; response shape is { seq, records }.
+  app.get('/_ref/run-interaction-streams/:token/input-telemetry', async (req, res) => {
+    let session;
+    try {
+      session = streamingSessions.authorize({ token: req.params.token });
+    } catch (err) {
+      const status = err.code === 'session_not_attached' ? 409 : 401;
+      return pdppError(res, status, err.code || 'invalid_token', err.message);
+    }
+    const { since } = parseReferenceWireInputTelemetryCursor(req.query.since);
+    const { seq, records } = inputTelemetry.readSince(session.browser_session_id, since);
+    return res.status(200).json({
+      object: 'run_interaction_stream_input_telemetry',
+      seq,
+      records,
+    });
+  });
+
+  // ── Viewport (token-only) ────────────────────────────────────────────────
+  app.post('/_ref/run-interaction-streams/:token/viewport', async (req, res) => {
+    let session;
+    try {
+      session = streamingSessions.authorize({ token: req.params.token });
+    } catch (err) {
+      const status = err.code === 'session_not_attached' ? 409 : 401;
+      return pdppError(res, status, err.code || 'invalid_token', err.message);
+    }
+    const viewport = pickViewport(req.body || {});
+    if (!viewport) {
+      return pdppError(res, 400, 'invalid_request', 'viewport.width and viewport.height are required', 'viewport');
+    }
+    if (!isControllingPresentationAttachment(session, req)) {
+      return pdppError(
+        res,
+        409,
+        'presentation_attachment_not_controlling',
+        'Only the controlling stream attachment may change the presentation viewport',
+      );
+    }
+    const companion = getCompanion(session.browser_session_id);
+    if (!companion) {
+      return pdppError(res, 410, 'companion_unavailable', 'Streaming companion is no longer attached');
+    }
+    try {
+      const backend = await resolveCompanionBackend(companion);
+      const companionViewport = viewportForCompanionBackend(backend, viewport);
+      await dispatchPresentationViewport(session.browser_session_id, companion, companionViewport);
+    } catch (err) {
+      return pdppError(res, 400, err.code || 'invalid_input', err.message);
+    }
+    return res.status(202).json({
+      object: 'run_interaction_stream_viewport_ack',
+      viewport: viewportForCompanionBackend(await resolveCompanionBackend(companion), viewport),
+    });
+  });
+
+  // ── n.eko viewer entry + proxy (stream-token scoped) ───────────────────────
+  function nekoProxyBasePath() {
+    return nekoProxyPath.endsWith('/') ? nekoProxyPath.slice(0, -1) : nekoProxyPath;
+  }
+
+  function buildNekoClientConfig() {
+    const serverPath = nekoProxyBasePath() || '/neko';
+    return {
+      object: 'run_interaction_neko_client',
+      server_path: serverPath,
+      status_path: `${serverPath}/__pdpp/status`,
+      login: nekoAutoLogin
+        ? {
+            username: nekoAutoLogin.username,
+            password: nekoAutoLogin.password,
+          }
+        : {
+            username: 'user',
+            password: 'neko',
+          },
+    };
+  }
+
+  function authorizeNekoEntryToken(req, res) {
+    let authorized;
+    try {
+      authorized = getNekoProxySession(req.params.token);
+    } catch (err) {
+      const status =
+        err.code === 'session_not_attached' ? 409 : err.code === 'session_expired' ? 410 : 401;
+      pdppError(res, status, err.code || 'invalid_token', err.message);
+      return null;
+    }
+    setNekoProxyCookie(
+      res,
+      req.params.token,
+      (authorized.session.expires_at - now()) / 1000,
+      nekoProxyCookieName,
+    );
+    return authorized;
+  }
+
+  async function handleNekoEntry(req, res) {
+    if (!authorizeNekoEntryToken(req, res)) return;
+    const entryPath = nekoProxyBasePath();
+    const params = new URLSearchParams({ pdpp_stream: Math.floor(now()).toString(36), embed: '1' });
+    if (nekoAutoLogin) {
+      params.set('usr', nekoAutoLogin.username);
+      params.set('pwd', nekoAutoLogin.password);
+    }
+    return res.redirect(302, `${entryPath}?${params.toString()}`);
+  }
+
+  async function handleNekoClientConfig(req, res) {
+    if (!authorizeNekoEntryToken(req, res)) return;
+    return res.status(200).json(buildNekoClientConfig());
+  }
+
+  app.get('/_ref/run-interaction-streams/:token/neko', handleNekoEntry);
+  app.get('/_ref/run-interaction-streams/:token/neko/', handleNekoEntry);
+  app.get('/_ref/run-interaction-streams/:token/neko/session', handleNekoClientConfig);
+  app.get('/_ref/run-interaction-streams/:token/neko/session/', handleNekoClientConfig);
+
+  async function handleNekoStatus(req, res) {
+    let authorized;
+    try {
+      authorized = getNekoCookieSession(req);
+    } catch (err) {
+      const status =
+        err.code === 'session_not_attached' ? 409 : err.code === 'session_expired' ? 410 : 401;
+      return pdppError(res, status, err.code || 'invalid_token', err.message);
+    }
+    const companion = authorized.companion;
+    if (!companion || typeof companion.queryNekoStatus !== 'function') {
+      return res.status(200).json({
+        object: 'run_interaction_neko_status',
+        control_available: false,
+      });
+    }
+    try {
+      const status = await companion.queryNekoStatus();
+      if (status == null) {
+        return res.status(200).json({
+          object: 'run_interaction_neko_status',
+          control_available: false,
+        });
+      }
+      return res.status(200).json({
+        object: 'run_interaction_neko_status',
+        control_available: true,
+        native_control_available: true,
+        status,
+      });
+    } catch (err) {
+      return res.status(200).json({
+        object: 'run_interaction_neko_status',
+        control_available: false,
+        diagnostic_error: {
+          code: err.code || 'neko_status_failed',
+          message: err.message || 'n.eko status failed',
+        },
+      });
+    }
+  }
+
+  app.get('/neko/__pdpp/status', handleNekoStatus);
+
+  for (const method of ['get', 'post', 'put', 'delete', 'patch', 'options']) {
+    app[method]('/neko', handleNekoHttpProxy);
+    app[method]('/neko/*', handleNekoHttpProxy);
+  }
+
+  return {
+    /**
+     * Hook for the controller to call when an interaction resolves or the run
+     * ends. Invalidates the token and tears down the companion if any.
+     */
+    invalidateForInteractionResolved,
+    restoreOrRetirePresentationForRun,
+    handleUpgrade: handleNekoUpgrade,
+    _internal: { companions, getCompanion, handleNekoUpgrade },
+  };
+}

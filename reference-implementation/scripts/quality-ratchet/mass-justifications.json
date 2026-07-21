@@ -1,0 +1,17 @@
+{
+  "lib/postgres-spine.js": {
+    "allowed_mass": 132,
+    "reason": "mergeEventRows fix for a silent data-loss bug (distinct rows sharing a null/duplicate event_seq collapsed onto the same dedup key). The fix needs a two-key (event_seq, event_id) comparator, which Biome's cognitive-complexity scoring counts as added mass even when extracted into its own named function (compareEventRowOrder) — tried extraction first; it did not reduce the file-level score. Correctness over a lower number here.",
+    "date": "2026-07-20"
+  },
+  "lib/spine.ts": {
+    "allowed_mass": 101,
+    "reason": "loadEventsForSummaries batches the summary-hydration N+1 (one query per correlation id -> one query for the whole page) via a ROW_NUMBER()-partitioned fetch plus a per-id grouping pass (building the id->rows Map, iterating placeholders, hydrating rows). That control flow — not the SQL string literal itself — is what Biome's cognitive-complexity scoring counts as added mass; the SQL text's explicit `(event_seq IS NULL), event_seq, event_id` ordering is necessary because summarizeEvents derives status/source/browser-surface state from array position (first/last event, reverse scans), so the grouped rows must arrive in a caller-guaranteed total order rather than relying on the window function's undocumented partition-membership-only guarantee. This mass was already present at PR #368's head without a justification entry; adding one here rather than reducing it further, since the batching mechanism and its ordering contract are load-bearing correctness, not incidental style.",
+    "date": "2026-07-20"
+  },
+  "server/connector-manifest-validation.ts": {
+    "allowed_mass": 124,
+    "reason": "Port of main's external-tool detection hardening (security fix e6e96933b) + owner-cancel/recovery surfaces from #199/#190 reconciliation; behavior required by main's test contract. Queued for decomposition in the Phase-1 drain.",
+    "date": "2026-07-06"
+  }
+}

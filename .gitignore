@@ -1,0 +1,96 @@
+node_modules/
+.vercel/
+.vercel
+local/
+
+# Environment files with secrets
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# Local ad-hoc notes (not committed)
+agent-access.md
+
+# Working artifacts
+*.log
+*.png
+*.yml
+__pycache__/
+*.pyc
+# Commit-anchored Explorer UAT evidence is durable proof, not a working artifact.
+!docs/explorer/uat/**/*.png
+!lefthook.yml
+!.github/**/*.yml
+!docker-compose.yml
+!docker-compose.dev.yml
+!docker-compose.neko.yml
+core.*
+# `core.*` is for core dumps; committed deploy env examples are exempt.
+!deploy/*/core.env.example
+tmp/
+docs/inbox/
+docs/outbox/
+packages/polyfill-connectors/.pdpp-data/
+reference-implementation/report.*.json
+perf-results/
+.agents/
+# .claude/ is tracked for project hooks and working state
+# but some contents are ignored:
+.claude/projects/
+.claude/CLAUDE.local.md
+# Runtime artifacts from the steward scheduler — machine-local
+# (carry session ids, PIDs, absolute paths). Not portable.
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
+# Agent scratch worktrees — local-only, not portable
+.claude/worktrees/
+.playwright-mcp/
+.impeccable.md
+skills-lock.json
+skills/*
+!skills/pdpp-data-access/
+!skills/pdpp-data-access/**
+
+# Agent config dirs (from skills installer)
+.adal/
+.augment/
+.bob/
+.codebuddy/
+.codex/
+.commandcode/
+.continue/
+.cortex/
+.crush/
+.factory/
+.goose/
+.iflow/
+.junie/
+.kilocode/
+.kiro/
+.kode/
+.mcpjam/
+.mux/
+.neovate/
+.openhands/
+.pi/
+.pochi/
+.qoder/
+.qwen/
+.roo/
+.trae/
+.vibe/
+.windsurf/
+.zencoder/
+
+# Design-review screenshot evidence — kept on disk, never committed (binary bloat)
+design-evidence/**/*.png
+
+# root clutter guards (curation 2026-07-09)
+/*.png
+/*.log
+/tmp/
+/inbox/
+/screenshots-*/
+/perf-results/
+packages/local-collector/dist-collector/

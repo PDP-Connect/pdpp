@@ -1,0 +1,69 @@
+name: openspec-archive-check
+
+# Non-blocking reporter for OpenSpec archive rot.
+#
+# Surfaces changes under openspec/changes/ that look archive-due (all
+# implementation tasks done, or their referenced code already exists on the
+# ref) but are still sitting active — the rot that accumulates because the
+# owner-only post-merge closeout (live deploy, owner review) never gets ticked.
+#
+# This job NEVER fails the build. Archiving is owner-only (see CONTRIBUTING.md),
+# so a hard gate here would block legitimate merges. The findings land in the
+# step summary as a reminder for the owner's next archive sweep.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/openspec-archive-check.yml"
+      - "openspec/changes/**"
+      - "scripts/openspec-archive-check.mjs"
+  pull_request:
+    paths:
+      - ".github/workflows/openspec-archive-check.yml"
+      - "openspec/changes/**"
+      - "scripts/openspec-archive-check.mjs"
+  workflow_dispatch: {}
+
+concurrency:
+  group: openspec-archive-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  archive-check:
+    name: openspec archive-due (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need main present so the "referenced code exists on ref" probe can
+          # read the target tree rather than falling back to the working tree.
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run archive-check unit tests
+        run: node --test scripts/openspec-archive-check.test.mjs
+
+      - name: Report archive-due changes (non-blocking)
+        run: |
+          # The script exits 0 by default; the report goes to the job summary.
+          # Compare against origin/main so PRs measure "landed on main", not the
+          # branch under test.
+          ref=origin/main
+          git rev-parse --verify "$ref" >/dev/null 2>&1 || ref=main
+          {
+            echo '## OpenSpec archive-due report'
+            echo
+            echo '```'
+            node scripts/openspec-archive-check.mjs --ref "$ref"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Mirror to the log too, still non-blocking.
+          node scripts/openspec-archive-check.mjs --ref "$ref"

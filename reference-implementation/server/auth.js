@@ -1,0 +1,6195 @@
+/**
+ * PDPP Authorization Server — grant issuance + token management
+ *
+ * Simplified AS for the current reference flow:
+ * - Implements a real owner device flow for CLI/self-export
+ * - Stages PDPP client requests through a PAR-backed pending-consent substrate
+ * - Issues opaque bearer tokens (random strings)
+ * - Implements RFC 7662-style introspection with PDPP extensions
+ */
+import { randomBytes } from 'crypto';
+import {
+  BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
+  BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
+} from '@pdpp/reference-contract';
+import { getDb, runWithSqliteBusyRetry } from './db.js';
+import {
+  allowUnboundedReadAcknowledged,
+  exec,
+  getOne,
+  referenceQueries,
+  transaction,
+} from '../lib/db.ts';
+import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
+import {
+  isPostgresStorageBackend,
+  postgresQuery,
+  withPostgresTransaction,
+} from './postgres-storage.js';
+import {
+  canonicalConnectorKey,
+  canonicalConnectorKeyFromManifest,
+  isConnectorKey,
+} from './connector-key.js';
+import {
+  listActiveBindingsForGrant,
+  projectBindingForWire,
+} from './connection-identity.js';
+import {
+  base64UrlSha256,
+  generateOAuthRefreshToken,
+  generateToken,
+  hashOAuthRefreshToken,
+  PKCE_CODE_VERIFIER_RE,
+  SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS,
+} from './oauth-substrate/primitives.ts';
+import {
+  invalidConnectorManifest,
+  resolveManifestSensitivity,
+  validateConnectorManifest,
+} from './connector-manifest-validation.ts';
+
+function generateId(prefix = 'id') {
+  return `${prefix}_${randomBytes(8).toString('hex')}`;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function expiresInIso(seconds) {
+  return new Date(Date.now() + seconds * 1000).toISOString();
+}
+
+function isExpired(row) {
+  return new Date(row.expires_at).getTime() <= Date.now();
+}
+
+async function pgOne(sql, params = []) {
+  const result = await postgresQuery(sql, params);
+  return result.rows[0] || null;
+}
+
+async function pgExec(sql, params = []) {
+  const result = await postgresQuery(sql, params);
+  return { changes: result.rowCount || 0 };
+}
+
+let configuredNativeManifest = null;
+const LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES = new Map([
+  ['claude_code', 'claude-code'],
+  ['codex', 'codex'],
+]);
+const PENDING_CONSENT_REQUEST_URI_PREFIX = 'urn:pdpp:pending-consent:';
+const SUPPORTED_CLIENT_AUTH_METHODS = new Set(['none']);
+const SUPPORTED_DYNAMIC_CLIENT_GRANT_TYPES = new Set([
+  'authorization_code',
+  'refresh_token',
+  'urn:ietf:params:oauth:grant-type:device_code',
+]);
+const SUPPORTED_DYNAMIC_CLIENT_RESPONSE_TYPES = new Set(['code']);
+const SUPPORTED_DYNAMIC_CLIENT_APPLICATION_TYPES = new Set(['web', 'native']);
+const SUPPORTED_REGISTRATION_MODES = new Set(['dynamic', 'pre_registered_public']);
+const SUPPORTED_DYNAMIC_CLIENT_METADATA_FIELDS = new Set([
+  'application_type',
+  'client_name',
+  'client_uri',
+  'grant_types',
+  'logo_uri',
+  'policy_uri',
+  'redirect_uris',
+  'response_types',
+  'token_endpoint_auth_method',
+  'tos_uri',
+]);
+const SUPPORTED_PENDING_REQUEST_FIELDS = new Set([
+  'authorization_details',
+  'client_display',
+  'client_id',
+  'parent_package_id',
+  'scenario_id',
+]);
+const SUPPORTED_AUTHORIZATION_DETAIL_FIELDS = new Set([
+  'access_mode',
+  'purpose_code',
+  'purpose_description',
+  'retention',
+  'source',
+  'streams',
+  'type',
+]);
+const SUPPORTED_STREAM_SELECTION_FIELDS = new Set([
+  'client_claims',
+  'connection_id',
+  'fields',
+  'name',
+  'necessity',
+  'resources',
+  'time_range',
+  'view',
+]);
+const SUPPORTED_NORMALIZED_PENDING_REQUEST_FIELDS = new Set([
+  'client',
+  'manifest_version',
+  'request_kind',
+  'request_version',
+  'selection',
+  'source_binding',
+  'storage_binding',
+  'trace_context',
+]);
+const SUPPORTED_PENDING_CLIENT_FIELDS = new Set([
+  'client_display',
+  'client_id',
+  'registration_mode',
+]);
+const SUPPORTED_ACCESS_MODES = new Set(['single_use', 'continuous']);
+const SUPPORTED_PENDING_SELECTION_FIELDS = new Set([
+  'access_mode',
+  'purpose_code',
+  'purpose_description',
+  'retention',
+  'streams',
+  'type',
+]);
+function cloneJson(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function bindingError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function resolveConfiguredNativeStorageBinding(opts = {}) {
+  const nativeManifest = resolveConfiguredNativeManifest(opts);
+  const connectorId = nativeManifest?.storage_binding?.connector_id;
+  return isNonEmptyString(connectorId) ? { connector_id: connectorId } : null;
+}
+
+export function buildPendingConsentRequestUri(deviceCode) {
+  return `${PENDING_CONSENT_REQUEST_URI_PREFIX}${deviceCode}`;
+}
+
+export function parsePendingConsentRequestUri(requestUri) {
+  if (typeof requestUri !== 'string' || !requestUri.startsWith(PENDING_CONSENT_REQUEST_URI_PREFIX)) {
+    return null;
+  }
+  const deviceCode = requestUri.slice(PENDING_CONSENT_REQUEST_URI_PREFIX.length).trim();
+  return deviceCode || null;
+}
+
+export function buildPendingConsentAuthorizationUrl(requestUri, opts = {}) {
+  const baseUrl = opts.baseUrl || process.env.AS_PUBLIC_URL || `http://localhost:${process.env.AS_PORT || '7662'}`;
+  return `${baseUrl}/consent?request_uri=${encodeURIComponent(requestUri)}`;
+}
+
+export function configureNativeManifest(manifest = null) {
+  configuredNativeManifest = manifest ? cloneJson(manifest) : null;
+}
+
+/**
+ * Return a defensive copy of the currently-configured native manifest, or
+ * null when the reference is running in polyfill mode. Diagnostics-only:
+ * callers that need the manifest for an auth decision go through
+ * getManifestForStorageBinding / getConnectorManifest.
+ */
+export function getConfiguredNativeManifest() {
+  return configuredNativeManifest ? cloneJson(configuredNativeManifest) : null;
+}
+
+function resolveConfiguredNativeManifest(opts = {}) {
+  return opts.nativeManifest || configuredNativeManifest || null;
+}
+
+function normalizeClientDisplay(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const next = {
+    name: raw.name || null,
+    uri: raw.uri || null,
+    logo_uri: raw.logo_uri || null,
+    policy_uri: raw.policy_uri || null,
+    tos_uri: raw.tos_uri || null,
+  };
+  return Object.values(next).some(Boolean) ? next : null;
+}
+
+function normalizeStringArray(value, fieldName) {
+  if (value == null) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) {
+    const err = new Error(`${fieldName} must be an array of non-empty strings`);
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+  return value.map((item) => item.trim());
+}
+
+function normalizeUri(value, fieldName) {
+  if (value == null) return undefined;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const trimmed = value.trim();
+  try {
+    new URL(trimmed);
+  } catch {
+    const err = new Error(`${fieldName} must be a valid absolute URI`);
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+  return trimmed;
+}
+
+function normalizeUriArray(value, fieldName) {
+  const values = normalizeStringArray(value, fieldName);
+  if (!values) return undefined;
+  return values.map((item) => normalizeUri(item, fieldName));
+}
+
+function isLoopbackRedirectHost(hostname) {
+  // URL.hostname keeps IPv6 literals bracketed (e.g. "[::1]"); strip the
+  // brackets before comparing so IPv6 loopback is recognized (RFC 8252).
+  const normalized = String(hostname || '')
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+  return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
+}
+
+function isLoopbackHttpRedirectUri(redirectUri) {
+  const parsed = new URL(redirectUri);
+  return parsed.protocol === 'http:' && isLoopbackRedirectHost(parsed.hostname);
+}
+
+function inferApplicationTypeFromRedirectUris(redirectUris = []) {
+  return redirectUris.some((redirectUri) => isLoopbackHttpRedirectUri(redirectUri)) ? 'native' : undefined;
+}
+
+function validateAuthorizationCodeRedirectUris(redirectUris = [], applicationType = 'web') {
+  for (const redirectUri of redirectUris) {
+    const parsed = new URL(redirectUri);
+    if (applicationType === 'native' && parsed.protocol === 'http:' && isLoopbackRedirectHost(parsed.hostname)) {
+      continue;
+    }
+    if (parsed.protocol !== 'https:') {
+      const err = new Error(
+        applicationType === 'native'
+          ? 'authorization_code redirect_uris must use https, or loopback http for native clients'
+          : 'authorization_code redirect_uris must use https for web clients',
+      );
+      err.code = 'invalid_client_metadata';
+      throw err;
+    }
+  }
+}
+
+function normalizeClientRegistrationMetadata(input = {}) {
+  const tokenEndpointAuthMethod = input.token_endpoint_auth_method || 'none';
+  if (!SUPPORTED_CLIENT_AUTH_METHODS.has(tokenEndpointAuthMethod)) {
+    const err = new Error(`Unsupported token_endpoint_auth_method: ${tokenEndpointAuthMethod}`);
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+
+  if (input.client_secret != null) {
+    const err = new Error('client_secret must not be supplied; the current reference only registers public clients');
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+
+  const unsupportedFields = Object.keys(input).filter((field) => !SUPPORTED_DYNAMIC_CLIENT_METADATA_FIELDS.has(field));
+  if (unsupportedFields.length) {
+    const err = new Error(`Unsupported client metadata fields: ${unsupportedFields.join(', ')}`);
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+
+  const metadata = {
+    client_name: typeof input.client_name === 'string' && input.client_name.trim() ? input.client_name.trim() : null,
+    redirect_uris: normalizeUriArray(input.redirect_uris, 'redirect_uris'),
+    grant_types: normalizeStringArray(input.grant_types, 'grant_types'),
+    response_types: normalizeStringArray(input.response_types, 'response_types'),
+    application_type: typeof input.application_type === 'string' && input.application_type.trim()
+      ? input.application_type.trim()
+      : undefined,
+    client_uri: normalizeUri(input.client_uri, 'client_uri'),
+    logo_uri: normalizeUri(input.logo_uri, 'logo_uri'),
+    policy_uri: normalizeUri(input.policy_uri, 'policy_uri'),
+    tos_uri: normalizeUri(input.tos_uri, 'tos_uri'),
+    token_endpoint_auth_method: tokenEndpointAuthMethod,
+  };
+
+  if (metadata.grant_types?.length) {
+    const unsupported = metadata.grant_types.filter((type) => !SUPPORTED_DYNAMIC_CLIENT_GRANT_TYPES.has(type));
+    if (unsupported.length) {
+      const err = new Error(`Unsupported grant_types metadata values: ${unsupported.join(', ')}`);
+      err.code = 'invalid_client_metadata';
+      throw err;
+    }
+  }
+
+  if (metadata.response_types?.length) {
+    const unsupported = metadata.response_types.filter((type) => !SUPPORTED_DYNAMIC_CLIENT_RESPONSE_TYPES.has(type));
+    if (unsupported.length) {
+      const err = new Error(`Unsupported response_types metadata values: ${unsupported.join(', ')}`);
+      err.code = 'invalid_client_metadata';
+      throw err;
+    }
+  }
+
+  if (metadata.application_type) {
+    if (!SUPPORTED_DYNAMIC_CLIENT_APPLICATION_TYPES.has(metadata.application_type)) {
+      const err = new Error(`Unsupported application_type metadata value: ${metadata.application_type}`);
+      err.code = 'invalid_client_metadata';
+      throw err;
+    }
+  } else if (metadata.redirect_uris?.length) {
+    metadata.application_type = inferApplicationTypeFromRedirectUris(metadata.redirect_uris);
+  }
+
+  const wantsAuthorizationCode =
+    metadata.grant_types?.includes('authorization_code') || metadata.response_types?.includes('code');
+  if (metadata.grant_types?.includes('refresh_token') && !metadata.grant_types?.includes('authorization_code')) {
+    const err = new Error('refresh_token grant_type requires authorization_code');
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+  if (wantsAuthorizationCode && !metadata.redirect_uris?.length) {
+    const err = new Error('redirect_uris is required for authorization_code clients');
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+  if (wantsAuthorizationCode) {
+    validateAuthorizationCodeRedirectUris(metadata.redirect_uris, metadata.application_type || 'web');
+  }
+
+  return {
+    client_name: metadata.client_name,
+    redirect_uris: metadata.redirect_uris,
+    grant_types: metadata.grant_types,
+    response_types: metadata.response_types,
+    application_type: metadata.application_type,
+    client_uri: metadata.client_uri,
+    logo_uri: metadata.logo_uri,
+    policy_uri: metadata.policy_uri,
+    tos_uri: metadata.tos_uri,
+    token_endpoint_auth_method: metadata.token_endpoint_auth_method,
+  };
+}
+
+function buildClientDisplayFromRegistration(metadata = {}) {
+  return normalizeClientDisplay({
+    name: metadata.client_name,
+    uri: metadata.client_uri,
+    logo_uri: metadata.logo_uri,
+    policy_uri: metadata.policy_uri,
+    tos_uri: metadata.tos_uri,
+  });
+}
+
+function applyRegisteredClientToPendingRequestClient(request, registeredClient) {
+  request.client = {
+    ...request.client,
+    client_id: registeredClient.client_id,
+    registration_mode: registeredClient.registration_mode || 'pre_registered_public',
+    client_display: buildClientDisplayFromRegistration(registeredClient.metadata),
+  };
+}
+
+function normalizeStreamSelection(stream = {}) {
+  return {
+    name: stream.name,
+    necessity: stream.necessity || undefined,
+    view: stream.view || undefined,
+    fields: Array.isArray(stream.fields) ? stream.fields : undefined,
+    time_range: stream.time_range || undefined,
+    resources: Array.isArray(stream.resources) ? stream.resources : undefined,
+    client_claims: stream.client_claims || undefined,
+    connection_id: typeof stream.connection_id === 'string' && stream.connection_id
+      ? stream.connection_id
+      : undefined,
+  };
+}
+
+function isEnvelopeRequest(input) {
+  return Array.isArray(input?.authorization_details);
+}
+
+function invalidGrantInitiationRequest(message) {
+  const err = new Error(message);
+  err.code = 'invalid_request';
+  throw err;
+}
+
+function requireStagedRequestEnvelope(input) {
+  if (!input || typeof input !== 'object') {
+    invalidGrantInitiationRequest('Grant initiation requires a JSON object body');
+  }
+
+  const unsupportedRequestFields = Object.keys(input).filter((field) => !SUPPORTED_PENDING_REQUEST_FIELDS.has(field));
+  if (unsupportedRequestFields.length) {
+    invalidGrantInitiationRequest(`Unsupported request fields: ${unsupportedRequestFields.join(', ')}`);
+  }
+
+  if (!isEnvelopeRequest(input)) {
+    invalidGrantInitiationRequest('Grant initiation requires authorization_details');
+  }
+
+  if (typeof input.client_id !== 'string' || !input.client_id.trim()) {
+    invalidGrantInitiationRequest('Grant initiation requires client_id');
+  }
+
+  if (input.authorization_details.length < 1) {
+    invalidGrantInitiationRequest('authorization_details must contain at least one entry');
+  }
+
+  return input.client_id.trim();
+}
+
+// A purpose_code must be a syntactically valid absolute URI (spec-core.md:428):
+// a scheme plus scheme-specific part, e.g. https://pdpp.org/purpose/analytics.
+// Bare tokens like "analytics" or "assist.summarize" are not absolute URIs and
+// are rejected for syntax; this is independent of whether the code is in any
+// registry (unknown absolute URIs MUST still be accepted).
+function isAbsoluteUriPurposeCode(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  // URL parsing accepts a scheme; require a non-empty scheme followed by ':'.
+  return typeof parsed.protocol === 'string' && parsed.protocol.length > 1;
+}
+
+function normalizeAuthorizationDetail(detail, index, opts = {}) {
+  const invalidRequest = (message) => {
+    const err = new Error(message);
+    err.code = 'invalid_request';
+    throw err;
+  };
+  const at = `authorization_details[${index}]`;
+  if (!detail || detail.type !== 'https://pdpp.org/data-access') {
+    invalidRequest('Unsupported authorization_details type');
+  }
+  if ('connector_id' in detail || 'provider_id' in detail) {
+    invalidRequest("authorization_details must use source: { kind: 'connector' | 'provider_native', id }");
+  }
+  const unsupportedDetailFields = Object.keys(detail).filter((field) => !SUPPORTED_AUTHORIZATION_DETAIL_FIELDS.has(field));
+  if (unsupportedDetailFields.length) {
+    invalidRequest(`Unsupported authorization_details fields: ${unsupportedDetailFields.join(', ')}`);
+  }
+  if (!Array.isArray(detail.streams) || detail.streams.length === 0) {
+    invalidRequest(`${at}.streams must be a non-empty array`);
+  }
+  if (!SUPPORTED_ACCESS_MODES.has(detail.access_mode)) {
+    invalidRequest(`${at}.access_mode must be "single_use" or "continuous"`);
+  }
+  // purpose_code must be a syntactically valid absolute URI (spec-core.md:428).
+  // The AS validates SYNTAX only here; it MUST NOT reject a code merely for being
+  // unrecognized. Registry membership is advisory, enforced (if at all) by local
+  // policy elsewhere.
+  if (detail.purpose_code !== undefined && !isAbsoluteUriPurposeCode(detail.purpose_code)) {
+    invalidRequest(`${at}.purpose_code must be a syntactically valid absolute URI`);
+  }
+  for (const stream of detail.streams) {
+    if (!stream || typeof stream !== 'object') {
+      invalidRequest(`${at}.streams entries must be objects`);
+    }
+    const unsupportedStreamFields = Object.keys(stream).filter((field) => !SUPPORTED_STREAM_SELECTION_FIELDS.has(field));
+    if (unsupportedStreamFields.length) {
+      invalidRequest(`Unsupported stream selection fields on '${stream.name || 'unknown'}': ${unsupportedStreamFields.join(', ')}`);
+    }
+  }
+
+  const nativeManifest = resolveConfiguredNativeManifest(opts);
+  const configuredNativeProviderId = nativeManifest?.provider_id || null;
+  const configuredNativeStorageBinding = resolveConfiguredNativeStorageBinding(opts);
+  const configuredNativeStorageConnectorId = configuredNativeStorageBinding?.connector_id || null;
+  const detailSource = detail.source;
+  if (!detailSource || typeof detailSource !== 'object' || Array.isArray(detailSource)) {
+    invalidRequest(`${at}.source must be { kind: 'connector' | 'provider_native', id }`);
+  }
+  const detailSourceKeys = Object.keys(detailSource).sort();
+  if (detailSourceKeys.length !== 2 || detailSourceKeys[0] !== 'id' || detailSourceKeys[1] !== 'kind') {
+    invalidRequest(`${at}.source must include only kind and id`);
+  }
+  const bindingKind = detailSource.kind;
+  const sourceId = detailSource.id;
+  if (!['connector', 'provider_native'].includes(bindingKind) || !isNonEmptyString(sourceId)) {
+    invalidRequest(`${at}.source.kind must be 'connector' or 'provider_native' and source.id is required`);
+  }
+  if (bindingKind === 'provider_native' && configuredNativeProviderId && sourceId !== configuredNativeProviderId) {
+    invalidRequest(`Unknown source: { kind: 'provider_native', id: '${sourceId}' }`);
+  }
+  // Normalize URL-shaped first-party connector ids to their canonical short
+  // keys at the grant-initiation boundary so pending consents and issued
+  // grants always store a canonical connector_id, not a registry URL.
+  // Unknown / custom connector ids are preserved as-is (fail open) so
+  // third-party manifests continue to work without being in the allowlist.
+  const rawSourceConnectorId = bindingKind === 'connector' ? sourceId : configuredNativeStorageConnectorId;
+  const resolvedConnectorId = rawSourceConnectorId
+    ? (canonicalConnectorKey(rawSourceConnectorId) ?? rawSourceConnectorId)
+    : rawSourceConnectorId;
+  if (!resolvedConnectorId) {
+    invalidRequest(`${at}.source requires configured native storage for provider_native access`);
+  }
+
+  // Use the canonical connector id in the source binding too so that
+  // source_binding.id === storage_binding.connector_id, which the approval
+  // path validates. For provider_native grants the source id is the
+  // provider_id (not a connector_id), so we only normalize connector sources.
+  const canonicalSourceId = bindingKind === 'connector'
+    ? (canonicalConnectorKey(sourceId) ?? sourceId)
+    : sourceId;
+  const sourceBinding = { kind: bindingKind, id: canonicalSourceId };
+
+  return {
+    selection: {
+      type: detail.type,
+      purpose_code: detail.purpose_code,
+      purpose_description: detail.purpose_description || undefined,
+      access_mode: detail.access_mode,
+      retention: detail.retention || undefined,
+      streams: (detail.streams || []).map(normalizeStreamSelection),
+    },
+    source_binding: sourceBinding,
+    storage_binding: { connector_id: resolvedConnectorId },
+  };
+}
+
+function normalizePendingGrantRequest(input, opts = {}) {
+  const clientId = requireStagedRequestEnvelope(input);
+  if (input.authorization_details.length !== 1) {
+    invalidGrantInitiationRequest('Exactly one authorization_details entry is supported in this flow; use the staged batch path for multi-entry requests');
+  }
+  // Defensive guard: `initiateGrant` routes parent-linked add-source requests
+  // to the staged lineage path, even when they add exactly one source.
+  if (input.parent_package_id !== undefined && input.parent_package_id !== null) {
+    invalidGrantInitiationRequest('parent_package_id is only supported on the staged batch path');
+  }
+  const entry = normalizeAuthorizationDetail(input.authorization_details[0], 0, opts);
+  return {
+    request_kind: 'pdpp_selection_request',
+    request_version: 'reference.v1',
+    client: {
+      client_id: clientId,
+      client_display: normalizeClientDisplay(input.client_display),
+    },
+    selection: entry.selection,
+    source_binding: entry.source_binding,
+    storage_binding: entry.storage_binding,
+  };
+}
+
+function normalizeStagedGrantRequestBatch(input, opts = {}) {
+  const clientId = requireStagedRequestEnvelope(input);
+  const entries = input.authorization_details.map((detail, index) => normalizeAuthorizationDetail(detail, index, opts));
+  const entryCount = entries.length;
+  const overSoftCap = entryCount > BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP;
+  // The soft cap is a reference-contract policy constant, not a hard limit
+  // (design.md rejects a hard cap). Over-cap requests are accepted but
+  // flagged — never silently truncated — and the over-cap sources are named
+  // so the owner sees exactly which sources push past the cap.
+  const overCapSources = overSoftCap
+    ? entries
+        .slice(BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP)
+        .map((entry) => describeSourceBinding(entry.source_binding))
+    : [];
+  return {
+    request_kind: 'pdpp_selection_request_batch',
+    request_version: 'reference.v1',
+    client: {
+      client_id: clientId,
+      client_display: normalizeClientDisplay(input.client_display),
+    },
+    entries,
+    entry_count: entryCount,
+    soft_cap: BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
+    warning_threshold: BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
+    soft_cap_warning: entryCount >= BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
+    over_soft_cap: overSoftCap,
+    over_cap_sources: overCapSources,
+    // Incremental add-source lineage. `parent_package_id` links this staged
+    // batch to a prior same-client package so the dashboard can render a
+    // cumulative per-client view. It is grouping/audit metadata, not a new
+    // authorization primitive: it never re-issues, widens, or mutates the
+    // prior package's child grants. Validity (existence, same client, same
+    // owner, active) is enforced at initiation and re-checked at approval,
+    // before any new package row or child grant is written.
+    parent_package_id: normalizeParentPackageIdInput(input.parent_package_id),
+  };
+}
+
+function normalizeParentPackageIdInput(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || !value.trim()) {
+    invalidGrantInitiationRequest('parent_package_id must be a non-empty string when provided');
+  }
+  return value.trim();
+}
+
+function isStagedBatchRequest(request) {
+  return request?.request_kind === 'pdpp_selection_request_batch' && Array.isArray(request.entries);
+}
+
+function getRequestTraceContext(request, scenarioId) {
+  if (request?.trace_context?.trace_id && request?.trace_context?.request_id) {
+    return request.trace_context;
+  }
+  return createTraceContext({ scenarioId });
+}
+
+function getPersistedPendingTraceContext(row = {}) {
+  if (row?.trace_id && row?.request_id) {
+    return {
+      request_id: row.request_id,
+      trace_id: row.trace_id,
+      ...(row.scenario_id ? { scenario_id: row.scenario_id } : {}),
+    };
+  }
+  return null;
+}
+
+function requirePersistedPendingTraceContext(row = {}) {
+  const traceContext = getPersistedPendingTraceContext(row);
+  if (traceContext) return traceContext;
+  throw bindingError('invalid_request', 'Pending consent row is missing persisted trace correlation');
+}
+
+function getRequestSourceBinding(request = {}) {
+  return request.source_binding || null;
+}
+
+function getRequestStorageBinding(request = {}) {
+  return request.storage_binding?.connector_id ? request.storage_binding : null;
+}
+
+function attachTraceContext(err, traceContext) {
+  if (traceContext?.trace_id) err.trace_id = traceContext.trace_id;
+  if (traceContext?.request_id) err.request_id = traceContext.request_id;
+  if (traceContext?.scenario_id) err.scenario_id = traceContext.scenario_id;
+  return err;
+}
+
+function buildPendingRequestRejectionData(request = {}, pending = {}) {
+  return {
+    user_code: pending.user_code,
+    source: describeSourceBinding(getRequestSourceBinding(request)),
+    access_mode: request.selection?.access_mode || null,
+    purpose_code: request.selection?.purpose_code || null,
+    stream_names: (request.selection?.streams || []).map((stream) => stream.name),
+  };
+}
+
+async function emitPendingConsentRejected(request, pending, err, opts = {}) {
+  const traceContext = getPersistedPendingTraceContext(pending);
+  if (!traceContext) {
+    return err;
+  }
+  attachTraceContext(err, traceContext);
+  await emitSpineEvent({
+    event_type: 'request.rejected',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    ...(opts.subjectId
+      ? {
+          subject_type: 'subject',
+          subject_id: opts.subjectId,
+        }
+      : {}),
+    object_type: 'pending_consent',
+    object_id: pending.device_code,
+    status: 'rejected',
+    client_id: request.client?.client_id || null,
+    data: {
+      ...buildPendingRequestRejectionData(request, pending),
+      error: {
+        code: err.code || 'api_error',
+        message: err.message,
+      },
+    },
+  });
+  return err;
+}
+
+function requireStructuredPendingRequestShape(request = {}) {
+  const unsupportedRequestFields = Object.keys(request).filter((field) => !SUPPORTED_NORMALIZED_PENDING_REQUEST_FIELDS.has(field));
+  if (unsupportedRequestFields.length) {
+    throw bindingError('invalid_request', `Unsupported pending request fields: ${unsupportedRequestFields.join(', ')}`);
+  }
+  if (request.request_kind !== 'pdpp_selection_request') {
+    throw bindingError('invalid_request', 'request_kind must be pdpp_selection_request');
+  }
+  if (request.request_version !== 'reference.v1') {
+    throw bindingError('invalid_request', 'request_version must be reference.v1');
+  }
+  if (!request.client || typeof request.client !== 'object') {
+    throw bindingError('invalid_request', 'client is required');
+  }
+  const unsupportedClientFields = Object.keys(request.client).filter((field) => !SUPPORTED_PENDING_CLIENT_FIELDS.has(field));
+  if (unsupportedClientFields.length) {
+    throw bindingError('invalid_request', `Unsupported pending client fields: ${unsupportedClientFields.join(', ')}`);
+  }
+  if (!isNonEmptyString(request.client.client_id)) {
+    throw bindingError('invalid_request', 'client.client_id is required');
+  }
+  if (!request.selection || typeof request.selection !== 'object') {
+    throw bindingError('invalid_request', 'selection is required');
+  }
+  const unsupportedSelectionFields = Object.keys(request.selection).filter((field) => !SUPPORTED_PENDING_SELECTION_FIELDS.has(field));
+  if (unsupportedSelectionFields.length) {
+    throw bindingError('invalid_request', `Unsupported pending selection fields: ${unsupportedSelectionFields.join(', ')}`);
+  }
+  if (request.selection.type !== 'https://pdpp.org/data-access') {
+    throw bindingError('invalid_request', 'selection.type must be https://pdpp.org/data-access');
+  }
+  if (!Array.isArray(request.selection.streams) || request.selection.streams.length === 0) {
+    throw bindingError('invalid_request', 'selection.streams must be a non-empty array');
+  }
+  for (const stream of request.selection.streams) {
+    if (!stream || typeof stream !== 'object') {
+      throw bindingError('invalid_request', 'selection.streams entries must be objects');
+    }
+    const unsupportedStreamFields = Object.keys(stream).filter((field) => !SUPPORTED_STREAM_SELECTION_FIELDS.has(field));
+    if (unsupportedStreamFields.length) {
+      throw bindingError('invalid_request', `Unsupported pending stream selection fields on '${stream.name || 'unknown'}': ${unsupportedStreamFields.join(', ')}`);
+    }
+  }
+}
+
+function requireStructuredSourceBinding(sourceBinding, { code, fieldName }) {
+  if (!sourceBinding || typeof sourceBinding !== 'object' || Array.isArray(sourceBinding)) {
+    throw bindingError(code, `${fieldName} is required`);
+  }
+  if (!hasExactBindingKeys(sourceBinding, ['kind', 'id'])) {
+    throw bindingError(code, `${fieldName} must include only kind and id`);
+  }
+  if (!['connector', 'provider_native'].includes(sourceBinding.kind)) {
+    throw bindingError(code, `${fieldName}.kind must be 'connector' or 'provider_native'`);
+  }
+  if (!isNonEmptyString(sourceBinding.id)) {
+    throw bindingError(code, `${fieldName}.id is required`);
+  }
+  return { kind: sourceBinding.kind, id: sourceBinding.id };
+}
+
+function requireStructuredStorageBinding(storageBinding, { code, fieldName }) {
+  if (!storageBinding || typeof storageBinding !== 'object' || !isNonEmptyString(storageBinding.connector_id)) {
+    throw bindingError(code, `${fieldName}.connector_id is required`);
+  }
+  return { connector_id: storageBinding.connector_id };
+}
+
+function hasExactBindingKeys(value, expectedKeys = []) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actualKeys = Object.keys(value).sort();
+  const sortedExpectedKeys = [...expectedKeys].sort();
+  if (actualKeys.length !== sortedExpectedKeys.length) return false;
+  return sortedExpectedKeys.every((key, index) => actualKeys[index] === key);
+}
+
+function requireStructuredPendingRequestBindings(request = {}) {
+  const requestSourceBinding = getRequestSourceBinding(request);
+  const requestStorageBinding = getRequestStorageBinding(request);
+  const sourceBinding = requireStructuredSourceBinding(requestSourceBinding, {
+    code: 'invalid_request',
+    fieldName: 'source_binding',
+  });
+  const storageBinding = requireStructuredStorageBinding(requestStorageBinding, {
+    code: 'invalid_request',
+    fieldName: 'storage_binding',
+  });
+  if (!hasExactBindingKeys(requestStorageBinding, ['connector_id'])) {
+    throw bindingError('invalid_request', 'storage_binding must include only connector_id');
+  }
+
+  if (
+    sourceBinding.kind === 'connector'
+    && sourceBinding.id !== storageBinding.connector_id
+  ) {
+    throw bindingError('invalid_request', 'source_binding.id must match storage_binding.connector_id for connector access');
+  }
+
+  if (sourceBinding.kind === 'provider_native') {
+    const nativeManifest = resolveConfiguredNativeManifest();
+    const nativeStorageBinding = resolveConfiguredNativeStorageBinding();
+    if (!nativeManifest?.provider_id || !nativeStorageBinding?.connector_id) {
+      throw bindingError('invalid_request', 'native provider access requires a configured native manifest');
+    }
+    if (sourceBinding.id !== nativeManifest.provider_id) {
+      throw bindingError('invalid_request', 'source_binding.id must match the configured native provider');
+    }
+    if (storageBinding.connector_id !== nativeStorageBinding.connector_id) {
+      throw bindingError('invalid_request', 'storage_binding.connector_id must match the configured native storage binding');
+    }
+  }
+
+  return { sourceBinding, storageBinding };
+}
+
+function requireGrantManifestForBindings(sourceBinding, storageBinding, opts = {}) {
+  const grantStorageConnectorId = storageBinding?.connector_id || null;
+  return getManifestForStorageBinding(storageBinding, opts).then((manifest) => {
+    if (manifest) return manifest;
+    const source = sourceBinding?.kind && sourceBinding?.id
+      ? `{ kind: '${sourceBinding.kind}', id: '${sourceBinding.id}' }`
+      : `{ kind: 'connector', id: '${grantStorageConnectorId || 'unknown'}' }`;
+    const err = new Error(`Unknown source: ${source}`);
+    err.code = 'invalid_request';
+    throw err;
+  });
+}
+
+function resolveGrantSelection(selection = {}, manifest = {}) {
+  let streams = selection.streams || [];
+  if (streams.length === 1 && streams[0].name === '*') {
+    // Expanding the wildcard MUST preserve a per-stream `connection_id`
+    // constraint. A wildcard pinned to a connection (the hosted MCP picker's
+    // whole-source approval for a chosen sibling connection) means "every
+    // stream, but only from this connection" — dropping the pin here would
+    // silently fan the grant back in across every connection of the connector.
+    const wildcardConnectionId = isNonEmptyString(streams[0].connection_id) ? streams[0].connection_id : null;
+    streams = manifest.streams.map((stream) => (
+      wildcardConnectionId
+        ? { name: stream.name, connection_id: wildcardConnectionId }
+        : { name: stream.name }
+    ));
+  }
+
+  return streams.map((streamRequest) => {
+    const manifestStream = manifest.streams.find((stream) => stream.name === streamRequest.name);
+    if (!manifestStream) {
+      throw bindingError('invalid_request', `Unknown stream: ${streamRequest.name}`);
+    }
+
+    if (streamRequest.time_range && !manifestStream.consent_time_field) {
+      throw bindingError('invalid_request', `Stream '${streamRequest.name}' does not support time_range (no consent_time_field)`);
+    }
+
+    if (streamRequest.view && streamRequest.fields) {
+      throw bindingError('invalid_request', `Stream '${streamRequest.name}' view and fields are mutually exclusive`);
+    }
+
+    const resolved = { name: streamRequest.name };
+    if (streamRequest.view) {
+      const viewDef = (manifestStream.views || []).find((view) => view.id === streamRequest.view);
+      if (!viewDef) {
+        throw bindingError('invalid_request', `Unknown view '${streamRequest.view}' on stream '${streamRequest.name}'`);
+      }
+      resolved.view = streamRequest.view;
+      resolved.fields = viewDef.fields;
+    } else if (streamRequest.fields) {
+      if (!manifestStream.selection?.fields) {
+        throw bindingError('invalid_request', `Stream '${streamRequest.name}' does not support field-level selection`);
+      }
+      if (
+        !Array.isArray(streamRequest.fields)
+        || streamRequest.fields.length === 0
+        || streamRequest.fields.some((field) => !isNonEmptyString(field))
+      ) {
+        throw bindingError('invalid_request', `Stream '${streamRequest.name}' fields must be a non-empty array of field names`);
+      }
+      const allowedFields = new Set(Object.keys(manifestStream.schema?.properties || {}));
+      const unknownFields = streamRequest.fields.filter((field) => !allowedFields.has(field));
+      if (unknownFields.length) {
+        throw bindingError('invalid_request', `Unknown fields on stream '${streamRequest.name}': ${unknownFields.join(', ')}`);
+      }
+      resolved.fields = streamRequest.fields;
+    }
+    if (streamRequest.time_range) resolved.time_range = streamRequest.time_range;
+    if (streamRequest.resources) resolved.resources = streamRequest.resources;
+    if (typeof streamRequest.connection_id === 'string' && streamRequest.connection_id) {
+      resolved.connection_id = streamRequest.connection_id;
+    }
+    return resolved;
+  });
+}
+
+function requireStructuredGrantBindings(grant = {}, storageBinding) {
+  const sourceBinding = requireStructuredSourceBinding(grant?.source, {
+    code: 'grant_invalid',
+    fieldName: 'grant.source',
+  });
+  const normalizedStorageBinding = requireStructuredStorageBinding(storageBinding, {
+    code: 'grant_invalid',
+    fieldName: 'grant_storage_binding',
+  });
+  if (!hasExactBindingKeys(storageBinding, ['connector_id'])) {
+    throw bindingError('grant_invalid', 'grant_storage_binding must include only connector_id');
+  }
+
+  if (
+    sourceBinding.kind === 'connector'
+    && sourceBinding.id !== normalizedStorageBinding.connector_id
+  ) {
+    throw bindingError('grant_invalid', 'grant.source.id must match grant_storage_binding.connector_id for connector access');
+  }
+
+  if (sourceBinding.kind === 'provider_native') {
+    const nativeManifest = resolveConfiguredNativeManifest();
+    const nativeStorageBinding = resolveConfiguredNativeStorageBinding();
+    if (!nativeManifest?.provider_id || !nativeStorageBinding?.connector_id) {
+      throw bindingError('grant_invalid', 'provider-native grants require a configured native manifest');
+    }
+    if (sourceBinding.id !== nativeManifest.provider_id) {
+      throw bindingError('grant_invalid', 'grant.source.id must match the configured native provider');
+    }
+    if (normalizedStorageBinding.connector_id !== nativeStorageBinding.connector_id) {
+      throw bindingError('grant_invalid', 'grant_storage_binding.connector_id must match the configured native storage binding');
+    }
+  }
+
+  return { sourceBinding, storageBinding: normalizedStorageBinding };
+}
+
+function describeSourceBinding(sourceBinding) {
+  if (['connector', 'provider_native'].includes(sourceBinding?.kind) && isNonEmptyString(sourceBinding.id)) {
+    return { kind: sourceBinding.kind, id: sourceBinding.id };
+  }
+  return null;
+}
+
+function describeGrantSource(grant) {
+  return describeSourceBinding(grant?.source);
+}
+
+// Hosted MCP grant packages persist a `connection_id` on each member's
+// `source_json`, so package consumers (e.g., the MCP fan-out search) can
+// disambiguate child grants whose `{kind,id}` source binding alone collides
+// — e.g., two Codex connections under the same connector. The grant
+// storage_binding itself stays `{connector_id}` only, per main's invariant
+// (see `requireStructuredStorageBinding`).
+function enrichSourceWithConnectionId(source, connectionId) {
+  if (!source || typeof source !== 'object') return source;
+  if (source.connection_id || !isNonEmptyString(connectionId)) return source;
+  return { ...source, connection_id: connectionId };
+}
+
+function normalizeStorageBinding(storageBinding) {
+  if (!storageBinding?.connector_id) return null;
+  return { connector_id: storageBinding.connector_id };
+}
+
+function serializeStorageBinding(storageBinding) {
+  return storageBinding ? JSON.stringify(storageBinding) : null;
+}
+
+function parseStorageBindingJson(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed?.connector_id ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPersistedGrantStorageBinding(row = {}) {
+  return parseStorageBindingJson(row.storage_binding_json);
+}
+
+function describePersistedGrantSource(row = {}) {
+  try {
+    const grant = JSON.parse(row.grant_json);
+    const sourceBinding = requireStructuredSourceBinding(grant?.source, {
+      code: 'grant_invalid',
+      fieldName: 'grant.source',
+    });
+    return describeSourceBinding(sourceBinding);
+  } catch {
+    return null;
+  }
+}
+
+function buildGrantInvalidError(context = {}) {
+  const err = new Error('Grant is malformed or no longer valid');
+  err.code = 'grant_invalid';
+  if (context.request_id) {
+    err.request_id = context.request_id;
+  }
+  if (context.trace_id) {
+    err.trace_id = context.trace_id;
+  }
+  return err;
+}
+
+function hasExactFieldSet(fields = [], expectedFields = []) {
+  if (!Array.isArray(fields) || !Array.isArray(expectedFields) || fields.length !== expectedFields.length) {
+    return false;
+  }
+  const actual = new Set(fields);
+  if (actual.size !== expectedFields.length) return false;
+  return expectedFields.every((field) => actual.has(field));
+}
+
+export function requireGrantContractAgainstManifest(grant = {}, manifest = {}) {
+  if (!isNonEmptyString(grant?.manifest_version)) {
+    throw bindingError('grant_invalid', 'grant.manifest_version is required');
+  }
+  if (!SUPPORTED_ACCESS_MODES.has(grant?.access_mode)) {
+    throw bindingError('grant_invalid', 'grant.access_mode must be "single_use" or "continuous"');
+  }
+  if (!isNonEmptyString(manifest?.version) || grant.manifest_version !== manifest.version) {
+    throw bindingError(
+      'grant_invalid',
+      `grant.manifest_version '${grant.manifest_version}' does not match current manifest version '${manifest?.version || 'unknown'}'`,
+    );
+  }
+  if (!Array.isArray(grant?.streams) || grant.streams.length === 0) {
+    throw bindingError('grant_invalid', 'grant.streams must be a non-empty array');
+  }
+
+  for (const streamGrant of grant.streams) {
+    if (!isNonEmptyString(streamGrant?.name)) {
+      throw bindingError('grant_invalid', 'grant.streams entries must include a non-empty name');
+    }
+
+    const manifestStream = manifest.streams?.find((stream) => stream.name === streamGrant.name);
+    if (!manifestStream) {
+      throw bindingError('grant_invalid', `Unknown stream in persisted grant: ${streamGrant.name}`);
+    }
+
+    if (streamGrant.time_range && !manifestStream.consent_time_field) {
+      throw bindingError(
+        'grant_invalid',
+        `Persisted grant stream '${streamGrant.name}' does not support time_range (no consent_time_field)`,
+      );
+    }
+
+    if (streamGrant.view) {
+      const viewDef = (manifestStream.views || []).find((view) => view.id === streamGrant.view);
+      if (!viewDef) {
+        throw bindingError(
+          'grant_invalid',
+          `Unknown persisted grant view '${streamGrant.view}' on stream '${streamGrant.name}'`,
+        );
+      }
+      if (!Array.isArray(streamGrant.fields) || !streamGrant.fields.length || streamGrant.fields.some((field) => !isNonEmptyString(field))) {
+        throw bindingError(
+          'grant_invalid',
+          `Persisted grant view '${streamGrant.view}' on stream '${streamGrant.name}' must include resolved fields`,
+        );
+      }
+      if (!hasExactFieldSet(streamGrant.fields, viewDef.fields)) {
+        throw bindingError(
+          'grant_invalid',
+          `Persisted grant view '${streamGrant.view}' on stream '${streamGrant.name}' no longer matches the manifest view definition`,
+        );
+      }
+      continue;
+    }
+
+    if (!streamGrant.fields) continue;
+    if (!manifestStream.selection?.fields) {
+      throw bindingError(
+        'grant_invalid',
+        `Persisted grant stream '${streamGrant.name}' does not support field-level selection`,
+      );
+    }
+    if (
+      !Array.isArray(streamGrant.fields)
+      || streamGrant.fields.length === 0
+      || streamGrant.fields.some((field) => !isNonEmptyString(field))
+    ) {
+      throw bindingError(
+        'grant_invalid',
+        `Persisted grant stream '${streamGrant.name}' fields must be a non-empty array of field names`,
+      );
+    }
+    const allowedFields = new Set(Object.keys(manifestStream.schema?.properties || {}));
+    const unknownFields = streamGrant.fields.filter((field) => !allowedFields.has(field));
+    if (unknownFields.length) {
+      throw bindingError(
+        'grant_invalid',
+        `Unknown fields in persisted grant stream '${streamGrant.name}': ${unknownFields.join(', ')}`,
+      );
+    }
+  }
+}
+
+function requirePendingRequestContractAgainstManifest(request = {}, manifest = {}) {
+  if (!isNonEmptyString(request?.manifest_version)) {
+    throw bindingError('invalid_request', 'pending request manifest_version is required');
+  }
+  if (!isNonEmptyString(manifest?.version) || request.manifest_version !== manifest.version) {
+    throw bindingError(
+      'invalid_request',
+      `Pending consent request manifest_version '${request.manifest_version}' does not match current manifest version '${manifest?.version || 'unknown'}'`,
+    );
+  }
+  return resolveGrantSelection(request.selection, manifest);
+}
+
+async function requirePendingRequestClientRegistration(request = {}, opts = {}) {
+  const clientId = request?.client?.client_id || null;
+  if (!clientId) {
+    throw bindingError('invalid_request', 'client.client_id is required');
+  }
+  const registeredClient = await resolveOAuthClient(clientId, opts);
+  if (!registeredClient) {
+    throw bindingError('invalid_client', `Unknown client_id: ${clientId}`);
+  }
+  applyRegisteredClientToPendingRequestClient(request, registeredClient);
+  return registeredClient;
+}
+
+export function requirePersistedGrantState(row = {}) {
+  try {
+    const grant = JSON.parse(row.grant_json);
+    const bindings = requireStructuredGrantBindings(
+      grant,
+      readPersistedGrantStorageBinding(row),
+    );
+    grant.source = describeSourceBinding(bindings.sourceBinding);
+    return {
+      grant,
+      sourceBinding: bindings.sourceBinding,
+      storageBinding: bindings.storageBinding,
+    };
+  } catch {
+    throw buildGrantInvalidError();
+  }
+}
+
+export async function requireResolvedPersistedGrantState(row = {}, opts = {}) {
+  try {
+    const {
+      grant,
+      sourceBinding,
+      storageBinding,
+    } = requirePersistedGrantState(row);
+    const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+    requireGrantContractAgainstManifest(grant, manifest);
+    return {
+      grant,
+      sourceBinding,
+      storageBinding,
+      manifest,
+    };
+  } catch (err) {
+    if (err?.code === 'grant_invalid') {
+      throw buildGrantInvalidError();
+    }
+    throw err;
+  }
+}
+
+// ─── Consent + owner-device-auth stores ────────────────────────────────────
+//
+// Two cohesive, domain-local stores for the consent and owner-device-auth
+// drift seams. Each method is the SAME conceptual row op differing ONLY by SQL
+// dialect (placeholder $1.. vs ?, the params_json::text cast, boolean coercion
+// true|null vs 1|null). Dialect SQL/queries move VERBATIM from the old inline
+// branches; the adapters return RAW rows (or perform the write) and any
+// caller-side concerns (the approval_id guard, JSON.stringify, trace context,
+// nowIso timestamps) stay in the calling function. The backend is selected
+// ONCE per op via isPostgresStorageBackend(), mirroring the existing
+// search.js getSearchIndexStore / VectorIndex / BlobStore precedent. Each
+// backend keeps its OWN coercion; the boolean ai_training_consented is
+// true|null on Postgres and 1|null on SQLite and must NOT be unified.
+
+const postgresPendingConsentStore = {
+  getByDeviceCode: (deviceCode) =>
+    pgOne(
+      `SELECT device_code, user_code, params_json::text AS params_json, status,
+              subject_id, grant_id, token_id, ai_training_consented,
+              request_id, trace_id, scenario_id, created_at, expires_at,
+              approved_at, denied_at, interval_seconds, last_polled_at, approval_id
+       FROM pending_consents
+       WHERE device_code = $1`,
+      [deviceCode],
+    ),
+  getByApprovalId: (approvalId) =>
+    pgOne(
+      `SELECT device_code, user_code, params_json::text AS params_json, status,
+              subject_id, grant_id, token_id, ai_training_consented,
+              request_id, trace_id, scenario_id, created_at, expires_at,
+              approved_at, denied_at, interval_seconds, last_polled_at, approval_id
+       FROM pending_consents
+       WHERE approval_id = $1`,
+      [approvalId],
+    ),
+  insert: ({ deviceCode, userCode, params, traceContext, createdAt, expiresAt, approvalId }) =>
+    pgExec(
+      `INSERT INTO pending_consents(
+         device_code, user_code, params_json, status,
+         request_id, trace_id, scenario_id, created_at, expires_at, approval_id
+       ) VALUES($1, $2, $3::jsonb, 'pending', $4, $5, $6, $7, $8, $9)`,
+      [
+        deviceCode,
+        userCode,
+        JSON.stringify(params),
+        traceContext.request_id,
+        traceContext.trace_id,
+        traceContext.scenario_id || null,
+        createdAt,
+        expiresAt,
+        approvalId,
+      ],
+    ),
+  markApproved: ({ deviceCode, subjectId, grantId, tokenId, aiTrainingConsented, approvedAt }) =>
+    pgExec(
+      `UPDATE pending_consents
+       SET status = 'approved',
+           subject_id = $1,
+           grant_id = $2,
+           token_id = $3,
+           ai_training_consented = $4,
+           approved_at = $5
+       WHERE device_code = $6`,
+      [subjectId, grantId, tokenId, aiTrainingConsented ? true : null, approvedAt, deviceCode],
+    ),
+  markDenied: ({ deviceCode, deniedAt }) =>
+    pgExec(
+      `UPDATE pending_consents
+       SET status = 'denied', denied_at = $1
+       WHERE device_code = $2 AND status = 'pending'`,
+      [deniedAt, deviceCode],
+    ),
+  markExpired: ({ deviceCode }) =>
+    pgExec(
+      "UPDATE pending_consents SET status = 'expired' WHERE device_code = $1 AND status = 'pending'",
+      [deviceCode],
+    ),
+  updateLastPolled: ({ deviceCode, polledAt }) =>
+    pgExec(
+      "UPDATE pending_consents SET last_polled_at = $1 WHERE device_code = $2",
+      [polledAt, deviceCode],
+    ),
+};
+
+const sqlitePendingConsentStore = {
+  getByDeviceCode: (deviceCode) =>
+    getOne(referenceQueries.authPendingConsentsGetByDeviceCode, [deviceCode]),
+  getByApprovalId: (approvalId) =>
+    getOne(referenceQueries.authPendingConsentsGetByApprovalId, [approvalId]),
+  insert: ({ deviceCode, userCode, params, traceContext, createdAt, expiresAt, approvalId }) =>
+    exec(referenceQueries.authPendingConsentsInsert, [
+      deviceCode,
+      userCode,
+      JSON.stringify(params),
+      traceContext.request_id,
+      traceContext.trace_id,
+      traceContext.scenario_id || null,
+      createdAt,
+      expiresAt,
+      approvalId,
+    ]),
+  markApproved: ({ deviceCode, subjectId, grantId, tokenId, aiTrainingConsented, approvedAt }) =>
+    exec(referenceQueries.authPendingConsentsMarkApproved, [
+      subjectId,
+      grantId,
+      tokenId,
+      aiTrainingConsented ? 1 : null,
+      approvedAt,
+      deviceCode,
+    ]),
+  markDenied: ({ deviceCode, deniedAt }) =>
+    exec(referenceQueries.authPendingConsentsMarkDenied, [deniedAt, deviceCode]),
+  markExpired: ({ deviceCode }) =>
+    exec(referenceQueries.authPendingConsentsMarkExpired, [deviceCode]),
+  updateLastPolled: ({ deviceCode, polledAt }) =>
+    exec(referenceQueries.authPendingConsentsUpdateLastPolled, [polledAt, deviceCode]),
+};
+
+function getPendingConsentStore() {
+  return isPostgresStorageBackend() ? postgresPendingConsentStore : sqlitePendingConsentStore;
+}
+
+const postgresOwnerDeviceAuthStore = {
+  getByDeviceCode: (deviceCode) =>
+    pgOne(
+      `SELECT *
+       FROM owner_device_auth
+       WHERE device_code = $1`,
+      [deviceCode],
+    ),
+  getByUserCode: (userCode) =>
+    pgOne(
+      `SELECT *
+       FROM owner_device_auth
+       WHERE user_code = $1`,
+      [userCode],
+    ),
+  getByApprovalId: (approvalId) =>
+    pgOne(
+      `SELECT *
+       FROM owner_device_auth
+       WHERE approval_id = $1`,
+      [approvalId],
+    ),
+  insert: ({ deviceCode, userCode, clientId, intervalSeconds, createdAt, expiresAt, requestId, traceId, scenarioId, approvalId }) =>
+    pgExec(
+      `INSERT INTO owner_device_auth(
+         device_code, user_code, client_id, status, interval_seconds,
+         created_at, expires_at, request_id, trace_id, scenario_id, approval_id
+       ) VALUES($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        deviceCode,
+        userCode,
+        clientId,
+        intervalSeconds,
+        createdAt,
+        expiresAt,
+        requestId,
+        traceId,
+        scenarioId,
+        approvalId,
+      ],
+    ),
+  markApproved: ({ deviceCode, subjectId, tokenId, approvedAt }) =>
+    pgExec(
+      `UPDATE owner_device_auth
+       SET status = 'approved',
+           subject_id = $1,
+           token_id = $2,
+           approved_at = $3
+       WHERE device_code = $4`,
+      [subjectId, tokenId, approvedAt, deviceCode],
+    ),
+  markDenied: ({ deviceCode, deniedAt }) =>
+    pgExec(
+      `UPDATE owner_device_auth
+       SET status = 'denied', denied_at = $1
+       WHERE device_code = $2 AND status = 'pending'`,
+      [deniedAt, deviceCode],
+    ),
+  markExpired: ({ deviceCode }) =>
+    pgExec(
+      "UPDATE owner_device_auth SET status = 'expired' WHERE device_code = $1 AND status = 'pending'",
+      [deviceCode],
+    ),
+  updateLastPolled: ({ deviceCode, polledAt }) =>
+    pgExec(
+      "UPDATE owner_device_auth SET last_polled_at = $1 WHERE device_code = $2",
+      [polledAt, deviceCode],
+    ),
+};
+
+const sqliteOwnerDeviceAuthStore = {
+  getByDeviceCode: (deviceCode) =>
+    getOne(referenceQueries.authOwnerDeviceAuthGetByDeviceCode, [deviceCode]),
+  getByUserCode: (userCode) =>
+    getOne(referenceQueries.authOwnerDeviceAuthGetByUserCode, [userCode]),
+  getByApprovalId: (approvalId) =>
+    getOne(referenceQueries.authOwnerDeviceAuthGetByApprovalId, [approvalId]),
+  insert: ({ deviceCode, userCode, clientId, intervalSeconds, createdAt, expiresAt, requestId, traceId, scenarioId, approvalId }) =>
+    exec(referenceQueries.authOwnerDeviceAuthInsert, [
+      deviceCode,
+      userCode,
+      clientId,
+      intervalSeconds,
+      createdAt,
+      expiresAt,
+      requestId,
+      traceId,
+      scenarioId,
+      approvalId,
+    ]),
+  markApproved: ({ deviceCode, subjectId, tokenId, approvedAt }) =>
+    exec(referenceQueries.authOwnerDeviceAuthMarkApproved, [
+      subjectId,
+      tokenId,
+      approvedAt,
+      deviceCode,
+    ]),
+  markDenied: ({ deviceCode, deniedAt }) =>
+    exec(referenceQueries.authOwnerDeviceAuthMarkDenied, [deniedAt, deviceCode]),
+  markExpired: ({ deviceCode }) =>
+    exec(referenceQueries.authOwnerDeviceAuthMarkExpired, [deviceCode]),
+  updateLastPolled: ({ deviceCode, polledAt }) =>
+    exec(referenceQueries.authOwnerDeviceAuthUpdateLastPolled, [polledAt, deviceCode]),
+};
+
+function getOwnerDeviceAuthStore() {
+  return isPostgresStorageBackend() ? postgresOwnerDeviceAuthStore : sqliteOwnerDeviceAuthStore;
+}
+
+// ─── Registered-client / CIMD-document / connector-catalog stores ────────────
+//
+// Three cohesive, domain-local stores for the oauth_clients,
+// cimd_client_documents, and connectors drift seams. Each method is the SAME
+// conceptual row op differing ONLY by SQL dialect (placeholder $1.. vs ?, the
+// ::jsonb / ::text casts, column order). Dialect SQL moves VERBATIM from the
+// old inline branches; the adapters return RAW rows (or perform the write) and
+// any caller-side concerns (mapRegisteredClientRow, the redirect_uris JSON
+// shaping, the active-token-count orchestration, spine events) stay in the
+// calling function. The backend is selected ONCE per op via
+// isPostgresStorageBackend(), mirroring the getPendingConsentStore /
+// getOwnerDeviceAuthStore precedent above. Each backend keeps its own read
+// primitive (postgresQuery/pgOne/pgExec vs getOne/exec/allowUnboundedReadAcknowledged).
+
+const postgresRegisteredClientStore = {
+  upsert: ({ clientId, registrationMode, tokenEndpointAuthMethod, clientSecret, persistedMetadataJson, timestamp }) =>
+    pgExec(
+      `INSERT INTO oauth_clients(
+         client_id, registration_mode, token_endpoint_auth_method,
+         client_secret, metadata_json, created_at, updated_at
+       ) VALUES($1, $2, $3, $4, $5::jsonb, $6, $7)
+       ON CONFLICT (client_id) DO UPDATE SET
+         registration_mode = EXCLUDED.registration_mode,
+         token_endpoint_auth_method = EXCLUDED.token_endpoint_auth_method,
+         client_secret = EXCLUDED.client_secret,
+         metadata_json = EXCLUDED.metadata_json,
+         updated_at = EXCLUDED.updated_at`,
+      [
+        clientId,
+        registrationMode,
+        tokenEndpointAuthMethod,
+        clientSecret,
+        persistedMetadataJson,
+        timestamp,
+        timestamp,
+      ],
+    ),
+  getByClientId: (clientId) =>
+    pgOne(
+      `SELECT client_id, registration_mode, token_endpoint_auth_method,
+              client_secret, metadata_json::text AS metadata_json, created_at, updated_at
+       FROM oauth_clients
+       WHERE client_id = $1`,
+      [clientId],
+    ),
+  listByIssuerSubject: async (subjectId) =>
+    (await postgresQuery(
+      `SELECT client_id, client_secret, registration_mode, token_endpoint_auth_method,
+              metadata_json::text AS metadata_json, created_at, updated_at
+       FROM oauth_clients
+       WHERE registration_mode = 'dynamic'
+         AND metadata_json->>'issuer_subject_id' = $1
+       ORDER BY created_at DESC`,
+      [subjectId],
+    )).rows,
+  countActiveTokensByClientId: (clientId) =>
+    pgOne(
+      `SELECT COUNT(*)::int AS active_token_count
+       FROM tokens
+       WHERE client_id = $1 AND revoked = FALSE`,
+      [clientId],
+    ),
+  deleteByClientId: (clientId) =>
+    pgExec("DELETE FROM oauth_clients WHERE client_id = $1", [clientId]),
+};
+
+const sqliteRegisteredClientStore = {
+  upsert: ({ clientId, registrationMode, tokenEndpointAuthMethod, clientSecret, persistedMetadataJson, timestamp }) =>
+    exec(referenceQueries.authOauthClientsUpsert, [
+      clientId,
+      registrationMode,
+      tokenEndpointAuthMethod,
+      clientSecret,
+      persistedMetadataJson,
+      timestamp,
+      timestamp,
+    ]),
+  getByClientId: (clientId) =>
+    getOne(referenceQueries.authOauthClientsGetByClientId, [clientId]),
+  // REVIEWED-BOUNDED: per-operator dashboard-issued tokens are operator-scale
+  // (small in practice). The query's @max_rows=256 caps pathological growth.
+  listByIssuerSubject: (subjectId) =>
+    allowUnboundedReadAcknowledged(referenceQueries.authOauthClientsListByIssuerSubject, [subjectId]),
+  countActiveTokensByClientId: (clientId) =>
+    getOne(referenceQueries.authTokensCountActiveByClientId, [clientId]),
+  deleteByClientId: (clientId) =>
+    exec(referenceQueries.authOauthClientsDeleteByClientId, [clientId]),
+};
+
+function getRegisteredClientStore() {
+  return isPostgresStorageBackend() ? postgresRegisteredClientStore : sqliteRegisteredClientStore;
+}
+
+const postgresCimdStore = {
+  insert: ({ documentId, clientName, redirectUrisJson, logoUri, now }) =>
+    pgExec(
+      `INSERT INTO cimd_client_documents(document_id, client_name, redirect_uris, logo_uri, created_at, updated_at)
+       VALUES($1, $2, $3::jsonb, $4, $5, $6)`,
+      [documentId, clientName, redirectUrisJson, logoUri, now, now],
+    ),
+  getById: (documentId) =>
+    pgOne(
+      `SELECT document_id, client_name, redirect_uris::text AS redirect_uris, logo_uri, created_at, updated_at
+       FROM cimd_client_documents WHERE document_id = $1`,
+      [documentId],
+    ),
+  listAll: async () =>
+    (await postgresQuery(
+      'SELECT document_id, client_name, redirect_uris::text AS redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents ORDER BY created_at DESC',
+    )).rows,
+};
+
+const sqliteCimdStore = {
+  insert: ({ documentId, clientName, redirectUrisJson, logoUri, now }) =>
+    getDb().prepare(
+      'INSERT INTO cimd_client_documents(document_id, client_name, redirect_uris, logo_uri, created_at, updated_at) VALUES(?,?,?,?,?,?)',
+    ).run(documentId, clientName, redirectUrisJson, logoUri, now, now),
+  getById: (documentId) =>
+    getDb().prepare(
+      'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents WHERE document_id = ?',
+    ).get(documentId),
+  listAll: () =>
+    getDb().prepare(
+      'SELECT document_id, client_name, redirect_uris, logo_uri, created_at, updated_at FROM cimd_client_documents ORDER BY created_at DESC',
+    ).all(),
+};
+
+function getCimdStore() {
+  return isPostgresStorageBackend() ? postgresCimdStore : sqliteCimdStore;
+}
+
+const postgresConnectorCatalogStore = {
+  upsert: ({ connectorId, manifestJson }) =>
+    pgExec(
+      `INSERT INTO connectors(connector_id, manifest)
+       VALUES($1, $2::jsonb)
+       ON CONFLICT (connector_id) DO UPDATE SET manifest = EXCLUDED.manifest`,
+      [connectorId, manifestJson],
+    ),
+  listIds: async () =>
+    (await postgresQuery(
+      `SELECT connector_id
+       FROM connectors
+       ORDER BY connector_id ASC`,
+    )).rows,
+  getManifestById: (connectorId) =>
+    pgOne(
+      `SELECT manifest::text AS manifest
+       FROM connectors
+       WHERE connector_id = $1`,
+      [connectorId],
+    ),
+};
+
+const sqliteConnectorCatalogStore = {
+  upsert: ({ connectorId, manifestJson }) =>
+    exec(referenceQueries.authConnectorsUpsert, [connectorId, manifestJson]),
+  // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
+  listIds: () => allowUnboundedReadAcknowledged(referenceQueries.authConnectorsListIds),
+  getManifestById: (connectorId) =>
+    getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]),
+};
+
+function getConnectorCatalogStore() {
+  return isPostgresStorageBackend() ? postgresConnectorCatalogStore : sqliteConnectorCatalogStore;
+}
+
+async function getPendingConsentRow(deviceCode) {
+  return getPendingConsentStore().getByDeviceCode(deviceCode);
+}
+
+async function createPendingConsent(deviceCode, userCode, params, expiresAt) {
+  const createdAt = nowIso();
+  const traceContext = getRequestTraceContext(params);
+  // approval_id is the non-redeemable opaque public id for `_ref/approvals`
+  // projections. Generated alongside the row so every public read surface
+  // has a stable id without exposing the live device_code.
+  const approvalId = generateId('appr');
+  await getPendingConsentStore().insert({
+    deviceCode,
+    userCode,
+    params,
+    traceContext,
+    createdAt,
+    expiresAt,
+    approvalId,
+  });
+}
+
+export async function getPendingConsentRowByApprovalId(approvalId) {
+  if (typeof approvalId !== 'string' || !approvalId) return null;
+  return getPendingConsentStore().getByApprovalId(approvalId);
+}
+
+async function markPendingConsentApproved(deviceCode, { subjectId, grantId, tokenId, aiTrainingConsented }) {
+  await getPendingConsentStore().markApproved({
+    deviceCode,
+    subjectId,
+    grantId,
+    tokenId,
+    aiTrainingConsented,
+    approvedAt: nowIso(),
+  });
+}
+
+async function markPendingConsentDenied(deviceCode) {
+  await getPendingConsentStore().markDenied({ deviceCode, deniedAt: nowIso() });
+}
+
+async function markPendingConsentExpired(deviceCode) {
+  await getPendingConsentStore().markExpired({ deviceCode });
+}
+
+async function updatePendingConsentLastPolled(deviceCode) {
+  const polledAt = nowIso();
+  await getPendingConsentStore().updateLastPolled({ deviceCode, polledAt });
+}
+
+async function getOwnerDeviceAuthRow(deviceCode) {
+  return getOwnerDeviceAuthStore().getByDeviceCode(deviceCode);
+}
+
+async function getOwnerDeviceAuthRowByUserCode(userCode) {
+  return getOwnerDeviceAuthStore().getByUserCode(userCode);
+}
+
+async function createOwnerDeviceAuth({
+  deviceCode,
+  userCode,
+  clientId,
+  intervalSeconds,
+  expiresAt,
+  requestId = null,
+  traceId = null,
+  scenarioId = null,
+}) {
+  // approval_id mirrors `pending_consents.approval_id` — see
+  // createPendingConsent for rationale.
+  const approvalId = generateId('appr');
+  await getOwnerDeviceAuthStore().insert({
+    deviceCode,
+    userCode,
+    clientId,
+    intervalSeconds,
+    createdAt: nowIso(),
+    expiresAt,
+    requestId,
+    traceId,
+    scenarioId,
+    approvalId,
+  });
+}
+
+export async function getOwnerDeviceAuthRowByApprovalId(approvalId) {
+  if (typeof approvalId !== 'string' || !approvalId) return null;
+  return getOwnerDeviceAuthStore().getByApprovalId(approvalId);
+}
+
+async function markOwnerDeviceAuthApproved(deviceCode, { subjectId, tokenId }) {
+  await getOwnerDeviceAuthStore().markApproved({
+    deviceCode,
+    subjectId,
+    tokenId,
+    approvedAt: nowIso(),
+  });
+}
+
+async function markOwnerDeviceAuthDenied(deviceCode) {
+  await getOwnerDeviceAuthStore().markDenied({ deviceCode, deniedAt: nowIso() });
+}
+
+async function markOwnerDeviceAuthExpired(deviceCode) {
+  await getOwnerDeviceAuthStore().markExpired({ deviceCode });
+}
+
+async function updateOwnerDeviceAuthLastPolled(deviceCode) {
+  await getOwnerDeviceAuthStore().updateLastPolled({ deviceCode, polledAt: nowIso() });
+}
+
+function buildInvalidRegisteredClientError(clientId) {
+  const err = new Error(`Registered client ${clientId} is malformed or no longer valid`);
+  err.code = 'invalid_client';
+  return err;
+}
+
+function attachOwnerDeviceTraceContext(err, row) {
+  if (!err || !row) return err;
+  if (row.request_id) err.request_id = row.request_id;
+  if (row.trace_id) err.trace_id = row.trace_id;
+  if (row.scenario_id) err.scenario_id = row.scenario_id;
+  return err;
+}
+
+function mapRegisteredClientRow(row) {
+  if (!row) return null;
+  let rawMetadata;
+  try {
+    rawMetadata = JSON.parse(row.metadata_json);
+  } catch {
+    throw buildInvalidRegisteredClientError(row.client_id);
+  }
+  let metadata;
+  try {
+    // Strip the spec-only client metadata to its supported field set, but
+    // re-attach reference-only stamps the route layer added (e.g.
+    // `issuer_subject_id` from owner-session-authed DCR). The normalizer
+    // strict-rejects unknown fields, so we hold these aside, normalize,
+    // then merge them back in.
+    const referenceOnlyStamps = {};
+    if (typeof rawMetadata?.issuer_subject_id === 'string' && rawMetadata.issuer_subject_id) {
+      referenceOnlyStamps.issuer_subject_id = rawMetadata.issuer_subject_id;
+    }
+    const stripped = { ...rawMetadata };
+    delete stripped.issuer_subject_id;
+    metadata = normalizeClientRegistrationMetadata(stripped);
+    Object.assign(metadata, referenceOnlyStamps);
+  } catch {
+    throw buildInvalidRegisteredClientError(row.client_id);
+  }
+  if (metadata.token_endpoint_auth_method !== row.token_endpoint_auth_method) {
+    throw buildInvalidRegisteredClientError(row.client_id);
+  }
+  return {
+    client_id: row.client_id,
+    registration_mode: row.registration_mode,
+    token_endpoint_auth_method: row.token_endpoint_auth_method,
+    client_secret: row.client_secret || null,
+    metadata,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+async function upsertRegisteredClient({
+  clientId,
+  registrationMode,
+  metadata,
+  clientSecret = null,
+}) {
+  if (!SUPPORTED_REGISTRATION_MODES.has(registrationMode)) {
+    const err = new Error(`Unsupported registration mode: ${registrationMode}`);
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+
+  // Hold reference-only stamps (e.g. `issuer_subject_id` injected by the
+  // owner-session-authed DCR route) aside; the spec normalizer rejects
+  // unknown fields, but these stamps must round-trip to disk so downstream
+  // listings/deletions can scope by operator. Strip before normalization,
+  // re-attach after, persist the merged JSON.
+  const referenceOnlyStamps = {};
+  if (metadata && typeof metadata.issuer_subject_id === 'string' && metadata.issuer_subject_id) {
+    referenceOnlyStamps.issuer_subject_id = metadata.issuer_subject_id;
+  }
+  const inputForSpecNormalize = { ...metadata };
+  delete inputForSpecNormalize.issuer_subject_id;
+  const normalizedMetadata = normalizeClientRegistrationMetadata(inputForSpecNormalize);
+  const persistedMetadata = { ...normalizedMetadata, ...referenceOnlyStamps };
+  const timestamp = nowIso();
+  await getRegisteredClientStore().upsert({
+    clientId,
+    registrationMode,
+    tokenEndpointAuthMethod: normalizedMetadata.token_endpoint_auth_method,
+    clientSecret,
+    persistedMetadataJson: JSON.stringify(persistedMetadata),
+    timestamp,
+  });
+}
+
+export async function seedPreRegisteredClients(clients = [], opts = {}) {
+  // Startup seeding races against a sibling process that may still be
+  // shutting down (Docker dev compose runs `node --watch`, and `--watch`
+  // restart can briefly overlap with the old process's WAL writer). The
+  // canonical SQLite `busy_timeout` covers most of this window; the
+  // bounded application-level retry below covers the residual gap on
+  // slow hosts / bind-mounted volumes where the lock release becomes
+  // visible to the new opener fractionally late.
+  const onRetry = typeof opts.onRetry === 'function' ? opts.onRetry : null;
+  for (const client of clients) {
+    if (!client?.client_id) continue;
+    if (isPostgresStorageBackend()) {
+      await upsertRegisteredClient({
+        clientId: client.client_id,
+        registrationMode: client.registration_mode || 'pre_registered_public',
+        metadata: client.metadata || {
+          client_name: client.client_name || client.client_id,
+          token_endpoint_auth_method: client.token_endpoint_auth_method || 'none',
+        },
+        clientSecret: client.client_secret || null,
+      });
+      continue;
+    }
+    await runWithSqliteBusyRetry(
+      () => upsertRegisteredClient({
+        clientId: client.client_id,
+        registrationMode: client.registration_mode || 'pre_registered_public',
+        metadata: client.metadata || {
+          client_name: client.client_name || client.client_id,
+          token_endpoint_auth_method: client.token_endpoint_auth_method || 'none',
+        },
+        clientSecret: client.client_secret || null,
+      }),
+      { onRetry, ...(opts.retry || {}) },
+    );
+  }
+}
+
+export async function getRegisteredClient(clientId) {
+  if (!clientId) return null;
+  const row = await getRegisteredClientStore().getByClientId(clientId);
+  return mapRegisteredClientRow(row || null);
+}
+
+// ─── CIMD document store ─────────────────────────────────────────────────────
+
+export async function createCimdDocument({ clientName, redirectUris, logoUri } = {}) {
+  const { randomBytes: rb } = await import('node:crypto');
+  const documentId = `cimd_${rb(12).toString('hex')}`;
+  const now = nowIso();
+  const redirectUrisJson = JSON.stringify(Array.isArray(redirectUris) ? redirectUris : []);
+  await getCimdStore().insert({
+    documentId,
+    clientName: clientName || null,
+    redirectUrisJson,
+    logoUri: logoUri || null,
+    now,
+  });
+  return documentId;
+}
+
+export async function getCimdDocument(documentId) {
+  if (!documentId) return null;
+  const row = await getCimdStore().getById(documentId);
+  if (!row) return null;
+  return {
+    document_id: row.document_id,
+    client_name: row.client_name || null,
+    redirect_uris: (() => { try { return JSON.parse(row.redirect_uris); } catch { return []; } })(),
+    logo_uri: row.logo_uri || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export async function listCimdDocuments() {
+  const rows = await getCimdStore().listAll();
+  return rows.map((row) => ({
+    document_id: row.document_id,
+    client_name: row.client_name || null,
+    redirect_uris: (() => { try { return JSON.parse(row.redirect_uris); } catch { return []; } })(),
+    logo_uri: row.logo_uri || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }));
+}
+
+export async function deleteCimdDocument(documentId, { clientId = null, requestId = null, traceId = null } = {}) {
+  const { invalidateCimdCache } = await import('./cimd.js');
+  const existingDocument = await getCimdDocument(documentId);
+  if (!existingDocument) {
+    const err = new Error(`CIMD document not found: ${documentId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  let revokeResult = null;
+  if (clientId) {
+    revokeResult = await revokeClientAccessArtifacts(clientId, {
+      requestId,
+      traceId,
+      subscriptionDisableReason: 'client_deleted',
+    });
+  }
+  if (isPostgresStorageBackend()) {
+    const result = await pgExec(
+      'DELETE FROM cimd_client_documents WHERE document_id = $1',
+      [documentId],
+    );
+    if ((result.changes ?? 0) === 0) {
+      const err = new Error(`CIMD document not found: ${documentId}`);
+      err.code = 'not_found';
+      throw err;
+    }
+  } else {
+    getDb().prepare('DELETE FROM cimd_client_documents WHERE document_id = ?').run(documentId);
+  }
+  if (clientId) {
+    invalidateCimdCache(clientId);
+    await emitSpineEvent({
+      event_type: 'client.deleted',
+      trace_id: traceId || undefined,
+      scenario_id: undefined,
+      request_id: requestId || undefined,
+      actor_type: 'authorization_server',
+      actor_id: 'pdpp_as',
+      object_type: 'client',
+      object_id: clientId,
+      status: 'succeeded',
+      client_id: clientId,
+      data: {
+        registration_mode: 'client_id_metadata_document',
+        document_id: documentId,
+        revoked_grant_count: revokeResult?.revokedGrantIds.length ?? 0,
+        revoked_package_count: revokeResult?.revokedPackageIds.length ?? 0,
+        revoked_owner_token_count: revokeResult?.revokedOwnerTokenCount ?? 0,
+        disabled_subscription_count: revokeResult?.disabledSubscriptionCount ?? 0,
+      },
+    });
+  } else {
+    // Best effort for callers that only know the document id.
+    invalidateCimdCache(documentId);
+  }
+}
+
+async function bindDynamicClientToApprovingOwner(registeredClient, subjectId) {
+  if (!(registeredClient?.client_id && subjectId)) {
+    return registeredClient;
+  }
+  if (registeredClient.registration_mode !== 'dynamic') {
+    return registeredClient;
+  }
+  const existingSubject = registeredClient.metadata?.issuer_subject_id || null;
+  if (existingSubject) {
+    if (existingSubject !== subjectId) {
+      const err = new Error('Dynamic client is bound to a different owner subject');
+      err.code = 'forbidden';
+      throw err;
+    }
+    return registeredClient;
+  }
+
+  await upsertRegisteredClient({
+    clientId: registeredClient.client_id,
+    registrationMode: registeredClient.registration_mode,
+    metadata: {
+      ...registeredClient.metadata,
+      issuer_subject_id: subjectId,
+    },
+    clientSecret: registeredClient.client_secret || null,
+  });
+  return (await getRegisteredClient(registeredClient.client_id)) || registeredClient;
+}
+
+/**
+ * Operator-scoped listing of dynamic clients the dashboard registered on
+ * behalf of a particular owner-session subject. Backs `GET /_ref/clients?owner=true`.
+ * Returns `[{ client_id, client_name, created_at, active_token_count }]`.
+ *
+ * Spec: openspec/changes/dcr-per-owner-token-with-revoke/specs/
+ *       reference-implementation-architecture/spec.md
+ */
+export async function listOwnerIssuedClients(subjectId) {
+  if (!subjectId) return [];
+  const store = getRegisteredClientStore();
+  const rows = await store.listByIssuerSubject(subjectId);
+  const projected = await Promise.all(rows.map(async (row) => {
+    const mapped = mapRegisteredClientRow(row);
+    if (!mapped) return null;
+    const countRow = await store.countActiveTokensByClientId(mapped.client_id);
+    return {
+      client_id: mapped.client_id,
+      client_name: mapped.metadata.client_name || null,
+      created_at: mapped.created_at,
+      active_token_count: countRow ? Number(countRow.active_token_count) || 0 : 0,
+    };
+  }));
+  return projected.filter(Boolean);
+}
+
+/**
+ * Derive a stable, NON-REVERSIBLE public token id from the literal bearer.
+ * `tokens.token_id` stores the raw bearer (see `redactSpineEventForPublic`),
+ * so it must never leave the AS. This digest is a one-way SHA-256 of the
+ * bearer, prefixed `tok_`, safe to render and to use as a per-token revoke
+ * handle: knowing the public id does not recover the bearer.
+ */
+function deriveOwnerTokenPublicId(tokenId) {
+  return `tok_${base64UrlSha256(tokenId)}`;
+}
+
+/**
+ * Project one active-token row for owner-console display. Drops the literal
+ * bearer (`token_id`) entirely and replaces it with the non-reversible public
+ * id. This is the single choke point that guarantees no bearer leaks through
+ * the per-client token listing.
+ */
+function projectOwnerClientTokenRow(row) {
+  return {
+    object: 'owner_client_token',
+    token_id_public: deriveOwnerTokenPublicId(row.token_id),
+    token_kind: row.token_kind,
+    created_at: row.created_at,
+    expires_at: row.expires_at ?? null,
+  };
+}
+
+/**
+ * Assert the acting owner-session subject registered `clientId` (dynamic
+ * client whose `metadata.issuer_subject_id` matches). Mirrors the guard in
+ * `deleteRegisteredClient`/`updateRegisteredClientName` so the per-client
+ * token surfaces cannot be used to read or revoke another operator's tokens.
+ * Throws `not_found` (unknown/pre-registered) or `forbidden` (wrong owner).
+ */
+async function requireOwnerClient(clientId, actingSubjectId) {
+  const client = await getRegisteredClient(clientId);
+  if (!client || client.registration_mode !== 'dynamic') {
+    const err = new Error(`Unknown client_id: ${clientId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  const ownerSubject = client.metadata.issuer_subject_id || null;
+  if (!ownerSubject || ownerSubject !== actingSubjectId) {
+    const err = new Error('Caller is not the operator who registered this client');
+    err.code = 'forbidden';
+    throw err;
+  }
+  return client;
+}
+
+/**
+ * Owner-scoped listing of a client's active bearer tokens. Backs
+ * `GET /_ref/clients/:clientId/tokens?owner=true` and the per-client
+ * drilldown surfaced when `active_token_count > 1`.
+ *
+ * Returns `[{ object, token_id_public, token_kind, created_at, expires_at }]`
+ * — the literal bearer is never included. Throws `not_found`/`forbidden` when
+ * the acting subject does not own the client.
+ */
+export async function listActiveTokensForOwnerClient(clientId, actingSubjectId) {
+  if (!clientId) return [];
+  await requireOwnerClient(clientId, actingSubjectId);
+  const rows = await getTokenStore().listActiveByClientId(clientId);
+  return rows.map((row) => projectOwnerClientTokenRow(row));
+}
+
+/**
+ * Owner-scoped per-token revoke. Revokes exactly one of a client's bearers,
+ * addressed by its non-bearer public id, without deleting the client or
+ * touching its other tokens. The public id is matched against the digest of
+ * each live bearer server-side (the bearer never leaves the AS), and the
+ * revoke is additionally scoped to `client_id` so a public id minted for one
+ * client cannot revoke another client's token.
+ *
+ * Returns `{ revoked: boolean, token_id_public }`. `revoked` is false when no
+ * active token matches the public id (idempotent / already-revoked). Throws
+ * `not_found`/`forbidden` when the acting subject does not own the client.
+ */
+export async function revokeOwnerClientTokenByPublicId(clientId, tokenIdPublic, actingSubjectId) {
+  if (!clientId) {
+    const err = new Error('client_id is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+  if (!isNonEmptyString(tokenIdPublic)) {
+    const err = new Error('token_id_public is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+  await requireOwnerClient(clientId, actingSubjectId);
+  const store = getTokenStore();
+  const rows = await store.listActiveByClientId(clientId);
+  const match = rows.find((row) => deriveOwnerTokenPublicId(row.token_id) === tokenIdPublic);
+  if (!match) {
+    return { revoked: false, token_id_public: tokenIdPublic };
+  }
+  const result = await store.revokeByTokenId(match.token_id, clientId);
+  const changes = result?.changes ?? result?.rowCount ?? 0;
+  const revoked = Number(changes) > 0;
+  if (revoked) {
+    await emitSpineEvent({
+      event_type: 'token.revoked',
+      actor_type: 'subject',
+      actor_id: actingSubjectId,
+      subject_type: 'subject',
+      subject_id: actingSubjectId,
+      object_type: 'token',
+      object_id: '<redacted-token-id>',
+      status: 'succeeded',
+      client_id: clientId,
+      data: {
+        revocation_path: 'owner_console_per_token',
+        token_id_public: tokenIdPublic,
+        token_kind: match.token_kind,
+      },
+    });
+  }
+  return { revoked, token_id_public: tokenIdPublic };
+}
+
+async function revokeClientAccessArtifacts(
+  clientId,
+  { requestId, traceId, subscriptionDisableReason = 'client_deleted' } = {},
+) {
+  // Package refresh tokens are package-bound, not child-grant-bound. Capture
+  // active packages before child grants are revoked so client deletion cannot
+  // leave refreshable hosted-MCP packages behind.
+  const packageRows = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT package_id
+         FROM grant_packages
+         WHERE client_id = $1 AND status = 'active'
+         ORDER BY created_at ASC`,
+        [clientId],
+      )).rows
+    : allowUnboundedReadAcknowledged(referenceQueries.authGrantPackagesListAll, [])
+        .filter((row) => row.client_id === clientId && row.status === 'active')
+        .map((row) => ({ package_id: row.package_id }));
+
+  // Cascade-revoke any client-token grants tied to this client. Owner self-
+  // export tokens (via the device flow) live in `tokens` directly with
+  // grant_id=NULL, so they don't show up here — they're handled by the
+  // separate token-cascade below.
+  // REVIEWED-BOUNDED: per-token clients in operator usage have at most a few
+  // active grants. The query's @max_rows=1024 bounds pathological cases.
+  const grantRows = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT grant_id
+         FROM grants
+         WHERE client_id = $1 AND status = 'active'
+         ORDER BY issued_at ASC`,
+        [clientId],
+      )).rows
+    : allowUnboundedReadAcknowledged(referenceQueries.authGrantsListActiveIdsByClientId, [clientId]);
+  const revokedGrantIds = [];
+  for (const row of grantRows) {
+    try {
+      await revokeGrant(row.grant_id, { request_id: requestId, trace_id: traceId });
+      revokedGrantIds.push(row.grant_id);
+    } catch (err) {
+      // Best-effort revoke: a grant that's already revoked / consumed is
+      // not an error for the client-delete cascade. Anything else
+      // propagates and aborts the delete (we'd rather leave the client
+      // row in place than lie about cascade completeness).
+      if (err?.code === 'grant_invalid' || err?.code === 'not_found') {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  const revokedPackageIds = [];
+  for (const row of packageRows) {
+    try {
+      const result = await revokeGrantPackage(row.package_id, { request_id: requestId, trace_id: traceId });
+      if (result.status !== 'revoked') {
+        const err = new Error(`Failed to revoke every child grant in package ${row.package_id}`);
+        err.code = 'grant_package_revoke_partial';
+        err.result = result;
+        throw err;
+      }
+      revokedPackageIds.push(row.package_id);
+    } catch (err) {
+      if (err?.code === 'already_revoked' || err?.code === 'not_found') {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  // Cascade-revoke any owner self-export tokens issued against this client.
+  // This is what makes per-token DCR's "Revoke" button cascade to the bearer
+  // for owner tokens (which never have a grant row).
+  const tokenRevoke = await getTokenStore().revokeByClientId(clientId);
+  const revokedOwnerTokenCount = tokenRevoke?.changes ?? 0;
+  const disabledSubscriptionCount = await disableClientEventSubscriptionsForDeletedClient(
+    clientId,
+    subscriptionDisableReason,
+  );
+
+  return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount, disabledSubscriptionCount };
+}
+
+// Owner-facing client labels are short display strings, not credential
+// material. Cap the update path defensively (RFC 7591 registration itself
+// applies no length ceiling, but the owner-console rename affordance is a
+// good place to keep a single-line label single-line without touching the
+// register path's behaviour).
+const MAX_CLIENT_NAME_LENGTH = 256;
+
+/**
+ * RFC 7592 client-metadata update, owner-session-gated by the route. The
+ * reference supports editing exactly one field: the owner-facing
+ * `client_name` label. Everything else about the client (scope, bearer
+ * material, registration mode) is immutable here — an owner renames the
+ * credential's label, they do not re-scope it.
+ *
+ * Guards mirror `deleteRegisteredClient`:
+ * - Refuses non-dynamic clients (protects pre-registered seeds).
+ * - Refuses if the acting subject is not the registering operator
+ *   (`metadata.issuer_subject_id`), stopping cross-operator edits.
+ *
+ * On success the client's `metadata.client_name` is replaced and
+ * `oauth_clients.updated_at` is bumped (via `upsertRegisteredClient`), so
+ * the next `GET /_ref/clients?owner=true` read reflects the rename in one
+ * render cycle. Returns the re-read projection
+ * `{ client_id, client_name, created_at, updated_at }`.
+ *
+ * Throws an error with a `code` of `not_found` | `forbidden` |
+ * `invalid_client_metadata` otherwise.
+ */
+export async function updateRegisteredClientName(clientId, { clientName, actingSubjectId } = {}) {
+  if (!clientId) {
+    const err = new Error('client_id is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+  if (typeof clientName !== 'string' || !clientName.trim()) {
+    const err = new Error('client_name must be a non-empty string');
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+  const trimmedName = clientName.trim();
+  if (trimmedName.length > MAX_CLIENT_NAME_LENGTH) {
+    const err = new Error(`client_name must be at most ${MAX_CLIENT_NAME_LENGTH} characters`);
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
+
+  const client = await getRegisteredClient(clientId);
+  if (!client) {
+    const err = new Error(`Unknown client_id: ${clientId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  if (client.registration_mode !== 'dynamic') {
+    const err = new Error('Pre-registered clients cannot be updated via the registration management API');
+    err.code = 'forbidden';
+    throw err;
+  }
+  const ownerSubject = client.metadata.issuer_subject_id || null;
+  if (!ownerSubject || ownerSubject !== actingSubjectId) {
+    const err = new Error('Caller is not the operator who registered this client');
+    err.code = 'forbidden';
+    throw err;
+  }
+
+  // Preserve every other metadata field (including the reference-only
+  // `issuer_subject_id` stamp); overwrite only the label. `mapped.metadata`
+  // is already a normalized round-trip, so re-normalization in
+  // `upsertRegisteredClient` is lossless. The upsert bumps `updated_at`.
+  await upsertRegisteredClient({
+    clientId,
+    registrationMode: client.registration_mode,
+    metadata: { ...client.metadata, client_name: trimmedName },
+    clientSecret: client.client_secret || null,
+  });
+
+  const updated = await getRegisteredClient(clientId);
+  return {
+    client_id: clientId,
+    client_name: updated?.metadata.client_name || null,
+    created_at: updated?.created_at || client.created_at,
+    updated_at: updated?.updated_at || null,
+  };
+}
+
+/**
+ * RFC 7592 client deletion, owner-session-gated by the route.
+ * - Refuses non-dynamic clients (protects pre-registered seeds).
+ * - Refuses if the acting subject doesn't match the registered
+ *   `metadata.issuer_subject_id` (stops cross-operator deletes).
+ * - Cascade-revokes every active grant and hosted-MCP grant package tied to
+ *   the client via the existing revoke codepaths so spine events fire.
+ * - Idempotent on subsequent calls (returns `not_found`).
+ *
+ * Returns revoked grant/package/token counts on success. Throws an error
+ * with a `code` of `not_found` | `forbidden` otherwise.
+ */
+export async function deleteRegisteredClient(clientId, { actingSubjectId, requestId, traceId } = {}) {
+  if (!clientId) {
+    const err = new Error('client_id is required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+
+  const client = await getRegisteredClient(clientId);
+  if (!client) {
+    const err = new Error(`Unknown client_id: ${clientId}`);
+    err.code = 'not_found';
+    throw err;
+  }
+  if (client.registration_mode !== 'dynamic') {
+    const err = new Error('Pre-registered clients cannot be deleted via the registration management API');
+    err.code = 'forbidden';
+    throw err;
+  }
+  const ownerSubject = client.metadata.issuer_subject_id || null;
+  if (!ownerSubject || ownerSubject !== actingSubjectId) {
+    const err = new Error('Caller is not the operator who registered this client');
+    err.code = 'forbidden';
+    throw err;
+  }
+
+  const {
+    revokedGrantIds,
+    revokedPackageIds,
+    revokedOwnerTokenCount,
+    disabledSubscriptionCount,
+  } = await revokeClientAccessArtifacts(clientId, { requestId, traceId });
+
+  await getRegisteredClientStore().deleteByClientId(clientId);
+
+  await emitSpineEvent({
+    event_type: 'client.deleted',
+    trace_id: traceId,
+    scenario_id: undefined,
+    request_id: requestId,
+    actor_type: 'subject',
+    actor_id: actingSubjectId,
+    subject_type: 'subject',
+    subject_id: actingSubjectId,
+    object_type: 'client',
+    object_id: clientId,
+    status: 'succeeded',
+    client_id: clientId,
+    data: {
+      registration_mode: 'dynamic',
+      revoked_grant_count: revokedGrantIds.length,
+      revoked_package_count: revokedPackageIds.length,
+      revoked_owner_token_count: revokedOwnerTokenCount,
+      disabled_subscription_count: disabledSubscriptionCount,
+    },
+  });
+
+  return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount, disabledSubscriptionCount };
+}
+
+async function disableClientEventSubscriptionsForDeletedClient(clientId, disabledReason = 'client_deleted') {
+  const disabledAt = nowIso();
+  if (isPostgresStorageBackend()) {
+    const rows = (
+      await postgresQuery(
+        `SELECT subscription_id, status
+           FROM client_event_subscriptions
+          WHERE client_id = $1
+          ORDER BY created_at ASC`,
+        [clientId],
+      )
+    ).rows;
+    let affected = 0;
+    for (const row of rows) {
+      if (row.status === 'deleted' || row.status === 'disabled_revoked') continue;
+      await pgExec(
+        `UPDATE client_event_queue
+            SET status = 'dropped'
+          WHERE subscription_id = $1
+            AND status = 'pending'`,
+        [row.subscription_id],
+      );
+      await pgExec(
+        `UPDATE client_event_subscriptions
+            SET status = 'disabled_revoked',
+                updated_at = $1,
+                disabled_at = $1,
+                disabled_reason = $2
+          WHERE subscription_id = $3`,
+        [disabledAt, disabledReason, row.subscription_id],
+      );
+      affected += 1;
+    }
+    return affected;
+  }
+
+  const rows = allowUnboundedReadAcknowledged(referenceQueries.clientEventSubscriptionsListSubscriptionsByClient, [
+    clientId,
+  ]);
+  let affected = 0;
+  for (const row of rows) {
+    if (row.status === 'deleted' || row.status === 'disabled_revoked') continue;
+    exec(referenceQueries.clientEventSubscriptionsDropQueuedForSubscription, [row.subscription_id]);
+    exec(referenceQueries.clientEventSubscriptionsUpdateStatus, [
+      'disabled_revoked',
+      disabledAt,
+      disabledAt,
+      disabledReason,
+      row.subscription_id,
+    ]);
+    affected += 1;
+  }
+  return affected;
+}
+
+export async function registerDynamicClient(input = {}, extraMetadata = {}) {
+  const metadata = normalizeClientRegistrationMetadata(input);
+
+  // Optional reference-only stamps the route layer can pass through after
+  // strict spec-field normalization. Today only `issuer_subject_id` is used
+  // — the dashboard injects the operator's signed-in subject so
+  // `_ref/clients?owner=true` can scope listings/deletions to that operator.
+  // Anonymous callers cannot set this because the route never reads the
+  // field from the request body — it only honors the owner-session subject.
+  // See openspec/changes/dcr-per-owner-token-with-revoke/.
+  if (typeof extraMetadata.issuer_subject_id === 'string' && extraMetadata.issuer_subject_id) {
+    metadata.issuer_subject_id = extraMetadata.issuer_subject_id;
+  }
+
+  const clientId = generateId('cli');
+  await upsertRegisteredClient({
+    clientId,
+    registrationMode: 'dynamic',
+    metadata,
+    clientSecret: null,
+  });
+  const registered = await getRegisteredClient(clientId);
+  // Seed optional identity URI fields from AS_PUBLIC_URL when the registrant
+  // omitted them. This gives PDPP's own AS a stable, discoverable identity in
+  // every DCR response without altering any caller-supplied values.
+  const asBase = process.env.AS_PUBLIC_URL
+    ? process.env.AS_PUBLIC_URL.replace(/\/+$/, '')
+    : null;
+  return {
+    client_id: registered.client_id,
+    client_id_issued_at: Math.floor(new Date(registered.created_at).getTime() / 1000),
+    token_endpoint_auth_method: registered.token_endpoint_auth_method,
+    client_name: registered.metadata.client_name || null,
+    redirect_uris: registered.metadata.redirect_uris || undefined,
+    grant_types: registered.metadata.grant_types || undefined,
+    response_types: registered.metadata.response_types || undefined,
+    application_type: registered.metadata.application_type || undefined,
+    client_uri: registered.metadata.client_uri || (asBase ? asBase : undefined),
+    logo_uri: registered.metadata.logo_uri || (asBase ? `${asBase}/icon.svg` : undefined),
+    policy_uri: registered.metadata.policy_uri || (asBase ? asBase : undefined),
+    tos_uri: registered.metadata.tos_uri || (asBase ? asBase : undefined),
+  };
+}
+
+let registerConnectorPhaseHook = null;
+
+/** Test-only registration phase seam; production never installs a hook. */
+export function __setRegisterConnectorPhaseHookForTest(hook) {
+  registerConnectorPhaseHook = typeof hook === 'function' ? hook : null;
+}
+
+async function maybeRegisterConnectorPhaseForTest(point, context) {
+  await registerConnectorPhaseHook?.(point, context);
+}
+
+/**
+ * Register or update a connector manifest
+ */
+export async function registerConnector(manifest, options = {}) {
+  validateConnectorManifest(manifest);
+  const { connectorId, storedManifest } = normalizeConnectorManifestForStorage(manifest);
+  await getConnectorCatalogStore().upsert({
+    connectorId,
+    manifestJson: JSON.stringify(storedManifest),
+  });
+  await maybeRegisterConnectorPhaseForTest('after-manifest-persisted', { connectorId, manifest: storedManifest });
+
+  if (isPostgresStorageBackend()) {
+    const {
+      invalidatePostgresRecordManifestCache,
+      postgresBackfillRecordSortPositionsForManifest,
+    } = await import('./postgres-records.js');
+    invalidatePostgresRecordManifestCache(connectorId);
+    await postgresBackfillRecordSortPositionsForManifest(storedManifest);
+  } else {
+    const { backfillSqliteRecordSemanticTimesForManifest } = await import('./records.js');
+    await backfillSqliteRecordSemanticTimesForManifest(storedManifest);
+  }
+
+  if (options.backfillRetrievalIndexes === false) {
+    return connectorId;
+  }
+
+  // Lexical retrieval index drift-detect + backfill. Handles three cases
+  // the write-path maintenance (search.js#lexicalIndexUpsert) cannot:
+  //   1. A connector is registered for the first time on a DB that already
+  //      has records under that connector_id (e.g. a reset that preserved
+  //      records but dropped the connector row).
+  //   2. A connector's manifest is updated to add lexical_fields where it
+  //      previously declared none.
+  //   3. A connector's manifest is updated to add or remove lexical_fields
+  //      entries on an already-participating stream.
+  // No-op for connectors with no participating streams.
+  // Lazy import keeps the records ↔ search ↔ auth cycle clean.
+  const { lexicalIndexBackfillForManifest } = await import('./search.js');
+  await lexicalIndexBackfillForManifest({ manifest: storedManifest });
+
+  // Semantic retrieval index drift-detect + backfill. Parallel to lexical;
+  // handles the same three cases for semantic_fields, plus the backend-
+  // identity change case (model_id/dimensions/distance_metric drift).
+  // No-op when no embedding backend is configured (semanticRetrievalSupported
+  // === false at startServer time) or when no stream declares semantic_fields.
+  const { semanticIndexBackfillForManifest, getSemanticBackend } = await import('./search-semantic.js');
+  if (getSemanticBackend()) {
+    await semanticIndexBackfillForManifest({ manifest: storedManifest });
+  }
+  return connectorId;
+}
+
+function normalizeConnectorManifestForStorage(manifest) {
+  const connectorId = canonicalConnectorKeyFromManifest(manifest) ?? manifest.connector_id;
+  const storedManifest = {
+    ...cloneJson(manifest),
+    connector_key: connectorId,
+    connector_id: connectorId,
+  };
+  if (!storedManifest.manifest_uri && isNonEmptyString(manifest.connector_id)) {
+    const originalConnectorId = manifest.connector_id.trim();
+    if (originalConnectorId !== connectorId) {
+      storedManifest.manifest_uri = originalConnectorId;
+    }
+  }
+  return { connectorId, storedManifest };
+}
+
+/**
+ * List all registered connector_ids. Returned in stable id order so callers
+ * (e.g. the lexical retrieval extension's owner-mode cross-connector
+ * fan-out) get deterministic enumeration.
+ */
+export async function listRegisteredConnectorIds() {
+  const rows = await getConnectorCatalogStore().listIds();
+  return rows.map((row) => row.connector_id);
+}
+
+/**
+ * Get manifest by connector_id
+ */
+export async function getConnectorManifest(connectorId) {
+  if (!connectorId) return null;
+
+  const row = await getConnectorManifestRow(connectorId);
+  if (!row) return null;
+  try {
+    return parseAndValidateConnectorManifestRow(row, connectorId);
+  } catch (err) {
+    const legacyAlias = await getLegacyLocalConnectorAliasManifest(connectorId);
+    if (legacyAlias) {
+      return legacyAlias;
+    }
+    throw err;
+  }
+}
+
+async function getConnectorManifestRow(connectorId) {
+  const store = getConnectorCatalogStore();
+  const exact = await store.getManifestById(connectorId);
+  if (exact) return exact;
+  const canonical = canonicalConnectorKey(connectorId);
+  if (!canonical || canonical === connectorId) return null;
+  return store.getManifestById(canonical);
+}
+
+function parseAndValidateConnectorManifestRow(row, connectorId) {
+  try {
+    const manifest = JSON.parse(row.manifest);
+    // Read-path validation: skip the reference cursor_field sort-compat check
+    // so stale DB manifests (pre-guardrail) still flow through to the records
+    // module's in-memory fallback. Registration-time paths enforce the full
+    // check; see validateConnectorManifest.
+    validateConnectorManifest(manifest, 'connector_invalid', { skipCursorFieldSortCheck: true });
+    return manifest;
+  } catch {
+    throw invalidConnectorManifest(`Connector manifest for ${connectorId} is malformed or no longer valid`, 'connector_invalid');
+  }
+}
+
+async function getLegacyLocalConnectorAliasManifest(connectorId) {
+  const canonicalConnectorId = LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES.get(connectorId);
+  if (!canonicalConnectorId) return null;
+  const canonicalRow = await getConnectorManifestRow(canonicalConnectorId);
+  if (!canonicalRow) return null;
+  const manifest = parseAndValidateConnectorManifestRow(canonicalRow, canonicalConnectorId);
+  return cloneJson(manifest);
+}
+
+export async function getManifestForStorageBinding(storageBinding, opts = {}) {
+  const connectorId = storageBinding?.connector_id || null;
+  if (!connectorId) return null;
+
+  const nativeManifest = resolveConfiguredNativeManifest(opts);
+  if (nativeManifest?.storage_binding?.connector_id === connectorId) {
+    return cloneJson(nativeManifest);
+  }
+
+  return getConnectorManifest(connectorId);
+}
+
+/**
+ * Resolve a CIMD client_id to a synthetic registered-client shape.
+ * Handles same-origin (local) lookup and external fetch with SSRF guards.
+ * Throws with err.code = 'cimd_fetch_failed' or 'invalid_request' on failure.
+ */
+export async function revokeCimdClientAccessForSecurityMetadataChange(
+  { clientId, previousSecurityHash = null, nextSecurityHash = null },
+  opts = {},
+) {
+  const requestId = opts.requestId || opts.request_id || null;
+  const traceId = opts.traceId || opts.trace_id || null;
+  const revokeResult = await revokeClientAccessArtifacts(clientId, {
+    requestId,
+    traceId,
+    subscriptionDisableReason: 'client_metadata_changed',
+  });
+  await emitSpineEvent({
+    event_type: 'client.metadata_changed',
+    trace_id: traceId || undefined,
+    scenario_id: opts.scenarioId || opts.scenario_id || undefined,
+    request_id: requestId || undefined,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    object_type: 'client',
+    object_id: clientId,
+    status: 'succeeded',
+    client_id: clientId,
+    data: {
+      registration_mode: 'client_id_metadata_document',
+      reason: 'security_relevant_metadata_changed',
+      previous_security_hash: previousSecurityHash,
+      next_security_hash: nextSecurityHash,
+      revoked_grant_count: revokeResult.revokedGrantIds.length,
+      revoked_package_count: revokeResult.revokedPackageIds.length,
+      revoked_owner_token_count: revokeResult.revokedOwnerTokenCount,
+      disabled_subscription_count: revokeResult.disabledSubscriptionCount,
+    },
+  });
+}
+
+async function resolveCimdClientForGrant(clientId, opts = {}) {
+  const {
+    isCimdClientId,
+    validateCimdUrl,
+    fetchCimdDocument,
+    buildCimdRegisteredClient,
+  } = await import('./cimd.js');
+
+  if (!isCimdClientId(clientId)) return null;
+
+  // Validate URL structure before any fetch
+  validateCimdUrl(clientId);
+
+  // Same-origin check: if client_id matches our issuer + /oauth/client-metadata/:id,
+  // resolve from local storage instead of a network self-fetch.
+  const issuerBase = opts.issuerBase || opts.baseUrl || process.env.AS_PUBLIC_URL || null;
+  if (issuerBase) {
+    try {
+      const issuerUrl = new URL(issuerBase);
+      const clientUrl = new URL(clientId);
+      if (
+        clientUrl.origin === issuerUrl.origin
+        && clientUrl.pathname.startsWith('/oauth/client-metadata/')
+      ) {
+        const docId = clientUrl.pathname.replace('/oauth/client-metadata/', '').replace(/^\//, '');
+        const localDoc = await getCimdDocument(docId);
+        if (!localDoc) {
+          const err = new Error(`CIMD local document not found for ${clientId}`);
+          err.code = 'invalid_client';
+          throw err;
+        }
+        const doc = {
+          client_id: clientId,
+          client_name: localDoc.client_name,
+          redirect_uris: localDoc.redirect_uris,
+          logo_uri: localDoc.logo_uri,
+          token_endpoint_auth_method: 'none',
+        };
+        return buildCimdRegisteredClient(clientId, doc);
+      }
+    } catch (err) {
+      if (err.code === 'invalid_client' || err.code === 'invalid_request') throw err;
+      // URL parse failure — fall through to external fetch
+    }
+  }
+
+  // External fetch with SSRF guards, timeout, size cap
+  const { doc } = await fetchCimdDocument(clientId, {
+    onSecurityRelevantMetadataChange: (event) =>
+      revokeCimdClientAccessForSecurityMetadataChange(event, opts),
+  });
+  return buildCimdRegisteredClient(clientId, doc);
+}
+
+export async function resolveOAuthClient(clientId, opts = {}) {
+  let registeredClient = await getRegisteredClient(clientId);
+  if (registeredClient) return registeredClient;
+  const { isCimdClientId } = await import('./cimd.js');
+  if (isCimdClientId(clientId)) {
+    registeredClient = await resolveCimdClientForGrant(clientId, opts);
+  }
+  return registeredClient;
+}
+
+/**
+ * Persist a pending grant-approval request and expose it as a PAR-backed consent request.
+ * Returns the staged request URI plus the consent URL for the primary request/approval flow.
+ */
+export async function initiateGrant(input, opts = {}) {
+  const hasParentPackageId = input?.parent_package_id !== undefined && input?.parent_package_id !== null;
+  if (Array.isArray(input?.authorization_details) && (input.authorization_details.length > 1 || hasParentPackageId)) {
+    return initiateStagedGrantBatch(input, opts);
+  }
+  const normalized = normalizePendingGrantRequest(input, opts);
+  requireStructuredPendingRequestShape(normalized);
+  const traceContext = getRequestTraceContext(normalized, opts.scenarioId || input?.scenario_id);
+  normalized.trace_context = traceContext;
+  const sourceBinding = getRequestSourceBinding(normalized);
+
+  try {
+    const registeredClient = await resolveOAuthClient(normalized.client.client_id, opts);
+    if (!registeredClient) {
+      const err = new Error(`Unknown client_id: ${normalized.client.client_id}`);
+      err.code = 'invalid_client';
+      throw err;
+    }
+    applyRegisteredClientToPendingRequestClient(normalized, registeredClient);
+    const storageBinding = getRequestStorageBinding(normalized);
+    const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+    resolveGrantSelection(normalized.selection, manifest);
+    normalized.manifest_version = manifest.version;
+
+    const deviceCode = generateId('dc');
+    const userCode = randomBytes(3).toString('hex').toUpperCase();
+    const verificationBaseUrl = opts.baseUrl || process.env.AS_PUBLIC_URL || `http://localhost:${process.env.AS_PORT || '7662'}`;
+    const expiresAt = expiresInIso(300);
+
+    await createPendingConsent(deviceCode, userCode, normalized, expiresAt);
+    const requestEventData = {
+      user_code: userCode,
+      source: describeSourceBinding(sourceBinding),
+      access_mode: normalized.selection?.access_mode || null,
+      purpose_code: normalized.selection?.purpose_code || null,
+      stream_names: (normalized.selection?.streams || []).map((stream) => stream.name),
+    };
+
+    await emitSpineEvent({
+      event_type: 'request.submitted',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      request_id: traceContext.request_id,
+      actor_type: 'client',
+      actor_id: normalized.client.client_id,
+      object_type: 'pending_consent',
+      object_id: deviceCode,
+      status: 'succeeded',
+      client_id: normalized.client.client_id,
+      data: requestEventData,
+    });
+
+    const requestUri = buildPendingConsentRequestUri(deviceCode);
+    return {
+      request_uri: requestUri,
+      authorization_url: buildPendingConsentAuthorizationUrl(requestUri, { baseUrl: verificationBaseUrl }),
+      user_code: userCode,
+      expires_in: 300,
+      trace_context: traceContext,
+    };
+  } catch (err) {
+    err.trace_id = traceContext.trace_id;
+    err.request_id = traceContext.request_id;
+    err.scenario_id = traceContext.scenario_id;
+    await emitSpineEvent({
+      event_type: 'request.rejected',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      request_id: traceContext.request_id,
+      actor_type: 'client',
+      actor_id: normalized.client?.client_id || 'unknown',
+      object_type: 'request',
+      object_id: traceContext.request_id,
+      status: 'rejected',
+      client_id: normalized.client?.client_id || null,
+      data: {
+        source: describeSourceBinding(sourceBinding),
+        access_mode: normalized.selection?.access_mode || null,
+        purpose_code: normalized.selection?.purpose_code || null,
+        stream_names: (normalized.selection?.streams || []).map((stream) => stream.name),
+        error: {
+          code: err.code || 'api_error',
+          message: err.message,
+        },
+      },
+    });
+    throw err;
+  }
+}
+
+function asSingleEntryRequestSlice(batchRequest, entry) {
+  return {
+    request_kind: 'pdpp_selection_request',
+    request_version: batchRequest.request_version,
+    client: batchRequest.client,
+    selection: entry.selection,
+    source_binding: entry.source_binding,
+    storage_binding: entry.storage_binding,
+    ...(entry.manifest_version ? { manifest_version: entry.manifest_version } : {}),
+    ...(batchRequest.trace_context ? { trace_context: batchRequest.trace_context } : {}),
+  };
+}
+
+async function initiateStagedGrantBatch(input, opts = {}) {
+  const batch = normalizeStagedGrantRequestBatch(input, opts);
+  const traceContext = getRequestTraceContext(batch, opts.scenarioId || input?.scenario_id);
+  batch.trace_context = traceContext;
+  const firstSource = batch.entries[0]?.source_binding || null;
+
+  try {
+    const registeredClient = await resolveOAuthClient(batch.client.client_id, opts);
+    if (!registeredClient) {
+      const err = new Error(`Unknown client_id: ${batch.client.client_id}`);
+      err.code = 'invalid_client';
+      throw err;
+    }
+    applyRegisteredClientToPendingRequestClient(batch, registeredClient);
+
+    // Incremental add-source linkage: validate the parent now (same client,
+    // exists, active) so a malformed/cross-client link fails closed before a
+    // pending consent is created. The owner-scoped re-check happens at
+    // approval, when the approving subject is known.
+    await requireValidParentPackageLinkage(batch.parent_package_id, {
+      clientId: registeredClient.client_id,
+    });
+
+    for (const entry of batch.entries) {
+      const slice = asSingleEntryRequestSlice(batch, entry);
+      requireStructuredPendingRequestShape(slice);
+      const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(slice);
+      entry.source_binding = describeSourceBinding(sourceBinding);
+      entry.storage_binding = normalizeStorageBinding(storageBinding);
+      const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+      resolveGrantSelection(entry.selection, manifest);
+      entry.manifest_version = manifest.version;
+    }
+
+    const deviceCode = generateId('dc');
+    const userCode = randomBytes(3).toString('hex').toUpperCase();
+    const verificationBaseUrl = opts.baseUrl || process.env.AS_PUBLIC_URL || `http://localhost:${process.env.AS_PORT || '7662'}`;
+    const expiresAt = expiresInIso(300);
+
+    await createPendingConsent(deviceCode, userCode, batch, expiresAt);
+    await emitSpineEvent({
+      event_type: 'request.submitted',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      request_id: traceContext.request_id,
+      actor_type: 'client',
+      actor_id: batch.client.client_id,
+      object_type: 'pending_consent',
+      object_id: deviceCode,
+      status: 'succeeded',
+      client_id: batch.client.client_id,
+      data: {
+        user_code: userCode,
+        staged: true,
+        entry_count: batch.entry_count,
+        soft_cap_warning: batch.soft_cap_warning,
+        over_soft_cap: batch.over_soft_cap,
+        over_cap_sources: batch.over_cap_sources,
+        ...(batch.parent_package_id ? { parent_package_id: batch.parent_package_id } : {}),
+        sources: batch.entries.map((entry) => describeSourceBinding(entry.source_binding)),
+      },
+    });
+
+    const requestUri = buildPendingConsentRequestUri(deviceCode);
+    return {
+      request_uri: requestUri,
+      authorization_url: buildPendingConsentAuthorizationUrl(requestUri, { baseUrl: verificationBaseUrl }),
+      user_code: userCode,
+      expires_in: 300,
+      trace_context: traceContext,
+    };
+  } catch (err) {
+    err.trace_id = traceContext.trace_id;
+    err.request_id = traceContext.request_id;
+    err.scenario_id = traceContext.scenario_id;
+    await emitSpineEvent({
+      event_type: 'request.rejected',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      request_id: traceContext.request_id,
+      actor_type: 'client',
+      actor_id: batch.client?.client_id || 'unknown',
+      object_type: 'request',
+      object_id: traceContext.request_id,
+      status: 'rejected',
+      client_id: batch.client?.client_id || null,
+      data: {
+        source: describeSourceBinding(firstSource),
+        staged: true,
+        entry_count: batch.entry_count,
+        error: {
+          code: err.code || 'api_error',
+          message: err.message,
+        },
+      },
+    });
+    throw err;
+  }
+}
+
+async function buildBatchConsentCards(request, opts = {}) {
+  const cards = [];
+  for (let index = 0; index < request.entries.length; index += 1) {
+    const entry = request.entries[index];
+    const slice = asSingleEntryRequestSlice(request, entry);
+    requireStructuredPendingRequestShape(slice);
+    const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(slice);
+    entry.source_binding = describeSourceBinding(sourceBinding);
+    entry.storage_binding = normalizeStorageBinding(storageBinding);
+    const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+    slice.manifest_version = entry.manifest_version;
+    const resolvedStreams = requirePendingRequestContractAgainstManifest(slice, manifest);
+    cards.push({
+      index,
+      source: describeSourceBinding(sourceBinding),
+      sensitivity: resolveManifestSensitivity(manifest),
+      access_mode: entry.selection?.access_mode || null,
+      purpose_code: entry.selection?.purpose_code || null,
+      retention: entry.selection?.retention ?? null,
+      resolvedStreams,
+      manifestStreamNames: Array.isArray(manifest?.streams)
+        ? manifest.streams.map((stream) => stream.name).filter((name) => typeof name === 'string')
+        : null,
+    });
+  }
+  return cards;
+}
+
+function summarizeBatchCumulativeRisk(cards = []) {
+  return {
+    source_count: cards.length,
+    sensitive_source_count: cards.filter((card) => card.sensitivity === 'sensitive').length,
+    continuous_access_count: cards.filter((card) => card.access_mode === 'continuous').length,
+    no_time_bound_count: cards.filter((card) => cardHasNoTimeBound(card)).length,
+    no_field_projection_count: cards.filter((card) => {
+      const streams = Array.isArray(card.resolvedStreams) ? card.resolvedStreams : [];
+      return streams.some((stream) => !Array.isArray(stream.fields) || stream.fields.length === 0);
+    }).length,
+    total_stream_count: cards.reduce((total, card) => (
+      total + (Array.isArray(card.resolvedStreams) ? card.resolvedStreams.length : 0)
+    ), 0),
+  };
+}
+
+function cardRequestsAllStreams(card) {
+  const manifestNames = Array.isArray(card?.manifestStreamNames) ? card.manifestStreamNames : null;
+  const resolved = Array.isArray(card?.resolvedStreams) ? card.resolvedStreams : [];
+  if (!manifestNames || manifestNames.length === 0 || resolved.length === 0) return false;
+  const requested = new Set(resolved.map((stream) => stream.name));
+  return manifestNames.every((name) => requested.has(name));
+}
+
+function cardHasNoTimeBound(card) {
+  const resolved = Array.isArray(card?.resolvedStreams) ? card.resolvedStreams : [];
+  if (resolved.length === 0) return true;
+  return resolved.some((stream) => !stream.time_range);
+}
+
+function evaluateBatchApproveAllGate(cards = []) {
+  const reasons = [];
+  const sensitiveCount = cards.filter((card) => card.sensitivity === 'sensitive').length;
+  if (cards.some((card) => card.access_mode === 'continuous' && cardRequestsAllStreams(card))) {
+    reasons.push('continuous_all_streams');
+  }
+  if (cards.some((card) => card.sensitivity === 'sensitive' && cardHasNoTimeBound(card))) {
+    reasons.push('sensitive_no_time_bound');
+  }
+  if (sensitiveCount >= 3) {
+    reasons.push('three_or_more_sensitive_sources');
+  }
+  return {
+    approve_all_suppressed: reasons.length > 0,
+    suppression_reasons: reasons,
+  };
+}
+
+// Owner-driven per-source narrowing applied at approval time. The owner may
+// reduce a staged entry's streams, reduce a stream's fields, and tighten a
+// `time_range.since` bound, but MUST NOT widen beyond what the client
+// staged and the owner reviewed. Narrowing is validated against the staged
+// resolved baseline (`resolveGrantSelection(entry.selection, manifest)`), which
+// is the authoritative ceiling of what the client asked for. Anything not a
+// subset/tightening of that baseline is rejected before any grant is issued.
+//
+// Shape (per staged source index):
+//   { streams?: string[], fields?: { [stream]: string[] }, since?: { [stream]: ISO } }
+// `streams` keeps only the named subset; an empty/missing `streams` keeps all
+// baseline streams. `fields[stream]` narrows that stream's field set to a
+// subset of its baseline fields. `since[stream]` sets/tightens that stream's
+// time bound. Streams dropped by `streams` are removed entirely.
+function narrowingHasAnyDirective(narrowing) {
+  if (!narrowing || typeof narrowing !== 'object') return false;
+  return (
+    Array.isArray(narrowing.streams)
+    || (narrowing.fields && typeof narrowing.fields === 'object')
+    || (narrowing.since && typeof narrowing.since === 'object')
+  );
+}
+
+function parseIsoInstant(value, { sourceLabel, streamName }) {
+  if (!isNonEmptyString(value)) {
+    throw bindingError(
+      'invalid_request',
+      `Narrowed time bound for '${sourceLabel}' stream '${streamName}' must be a non-empty ISO-8601 string`,
+    );
+  }
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) {
+    throw bindingError(
+      'invalid_request',
+      `Narrowed time bound '${value}' for '${sourceLabel}' stream '${streamName}' is not a valid ISO-8601 instant`,
+    );
+  }
+  return ms;
+}
+
+function narrowResolvedSelectionForSource(baselineResolved, narrowing, sourceLabel) {
+  const baseline = Array.isArray(baselineResolved) ? baselineResolved : [];
+  if (!narrowingHasAnyDirective(narrowing)) {
+    return baseline;
+  }
+
+  const baselineByName = new Map(baseline.map((stream) => [stream.name, stream]));
+
+  // 1. Resolve which streams the owner keeps. Absent/empty keeps the full
+  //    baseline; any named stream must exist in the baseline (no widening to a
+  //    stream the client did not stage).
+  let keptNames;
+  if (Array.isArray(narrowing.streams)) {
+    if (narrowing.streams.length === 0) {
+      throw bindingError(
+        'invalid_request',
+        `Narrowed stream set for '${sourceLabel}' must keep at least one stream`,
+      );
+    }
+    const seen = new Set();
+    for (const name of narrowing.streams) {
+      if (!isNonEmptyString(name)) {
+        throw bindingError('invalid_request', `Narrowed stream name for '${sourceLabel}' must be a non-empty string`);
+      }
+      if (!baselineByName.has(name)) {
+        throw bindingError(
+          'invalid_request',
+        `Cannot narrow '${sourceLabel}' to stream '${name}': it was not in the staged request (widening is forbidden)`,
+        );
+      }
+      seen.add(name);
+    }
+    keptNames = baseline.map((stream) => stream.name).filter((name) => seen.has(name));
+  } else {
+    keptNames = baseline.map((stream) => stream.name);
+  }
+
+  const fieldsNarrowing = narrowing.fields && typeof narrowing.fields === 'object' ? narrowing.fields : {};
+  const sinceNarrowing = narrowing.since && typeof narrowing.since === 'object' ? narrowing.since : {};
+
+  // Reject directives that reference a stream the owner is not keeping — those
+  // can only be a client/UI mistake and must not silently no-op.
+  for (const targetMap of [fieldsNarrowing, sinceNarrowing]) {
+    for (const streamName of Object.keys(targetMap)) {
+      if (!keptNames.includes(streamName)) {
+        throw bindingError(
+          'invalid_request',
+          `Narrowing references '${sourceLabel}' stream '${streamName}', which is not in the approved stream set`,
+        );
+      }
+    }
+  }
+
+  return keptNames.map((name) => {
+    const baseStream = baselineByName.get(name);
+    const narrowed = { ...baseStream };
+
+    // 2. Field narrowing: the narrowed set must be a non-empty subset of the
+    //    baseline fields. If the baseline carried no `fields` (full record),
+    //    the baseline ceiling is the manifest-resolved stream and we cannot
+    //    safely subset against an unknown set here, so we forbid field
+    //    narrowing on an unprojected stream and require the client/UI to stage
+    //    a projection first. This keeps "no widen" provable.
+    if (Object.prototype.hasOwnProperty.call(fieldsNarrowing, name)) {
+      const requestedFields = fieldsNarrowing[name];
+      if (!Array.isArray(requestedFields) || requestedFields.length === 0) {
+        throw bindingError(
+          'invalid_request',
+          `Narrowed field set for '${sourceLabel}' stream '${name}' must be a non-empty array`,
+        );
+      }
+      const baselineFields = Array.isArray(baseStream.fields) ? baseStream.fields : null;
+      if (!baselineFields) {
+        throw bindingError(
+          'invalid_request',
+          `Cannot narrow fields for '${sourceLabel}' stream '${name}': the staged request placed no field projection on it, so a field subset cannot be proven to be narrower`,
+        );
+      }
+      const baselineFieldSet = new Set(baselineFields);
+      const seenFields = new Set();
+      for (const field of requestedFields) {
+        if (!isNonEmptyString(field)) {
+          throw bindingError('invalid_request', `Narrowed field name for '${sourceLabel}' stream '${name}' must be a non-empty string`);
+        }
+        if (!baselineFieldSet.has(field)) {
+          throw bindingError(
+            'invalid_request',
+            `Cannot narrow '${sourceLabel}' stream '${name}' to field '${field}': it was not in the staged field set (widening is forbidden)`,
+          );
+        }
+        seenFields.add(field);
+      }
+      // Preserve baseline ordering; drop a `view` since fields now diverge from it.
+      narrowed.fields = baselineFields.filter((field) => seenFields.has(field));
+      if (narrowed.view) delete narrowed.view;
+    }
+
+    // 3. Time narrowing: tighten an existing `since`. The narrowed `since` must
+    //    be greater than or equal to the staged `since` (a later start is a
+    //    narrower window). We only allow tightening a stream that ALREADY
+    //    carries a staged time bound: the resolved baseline does not tell us
+    //    whether an unbounded stream supports `time_range` at all (that lives in
+    //    the manifest's `consent_time_field`), so adding a brand-new bound here
+    //    could persist an unenforceable range. Tighten-only keeps "no widen"
+    //    provable from the baseline alone.
+    if (Object.prototype.hasOwnProperty.call(sinceNarrowing, name)) {
+      const baselineSince = baseStream.time_range?.since;
+      if (!isNonEmptyString(baselineSince)) {
+        throw bindingError(
+          'invalid_request',
+          `Cannot set a time bound on '${sourceLabel}' stream '${name}': the staged request placed no time bound on it, so a tighter bound cannot be proven against it`,
+        );
+      }
+      const requestedSince = sinceNarrowing[name];
+      const requestedMs = parseIsoInstant(requestedSince, { sourceLabel, streamName: name });
+      const baselineMs = Date.parse(baselineSince);
+      if (!Number.isNaN(baselineMs) && requestedMs < baselineMs) {
+        throw bindingError(
+          'invalid_request',
+          `Cannot narrow '${sourceLabel}' stream '${name}' to start at '${requestedSince}': that is earlier than the staged bound '${baselineSince}' (widening is forbidden)`,
+        );
+      }
+      narrowed.time_range = { ...baseStream.time_range, since: requestedSince };
+    }
+
+    return narrowed;
+  });
+}
+
+async function getPendingConsentBatch(request, row, opts = {}) {
+  try {
+    await requirePendingRequestClientRegistration(request, opts);
+    const cards = await buildBatchConsentCards(request);
+    return {
+      request,
+      batch: true,
+      userCode: row.user_code,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      cards,
+      cumulativeRisk: summarizeBatchCumulativeRisk(cards),
+      approveAllGate: evaluateBatchApproveAllGate(cards),
+      softCapWarning: Boolean(request.soft_cap_warning),
+      overSoftCap: Boolean(request.over_soft_cap),
+      overCapSources: Array.isArray(request.over_cap_sources) ? request.over_cap_sources : [],
+      softCap: request.soft_cap ?? BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
+    };
+  } catch (err) {
+    await emitPendingConsentRejected(
+      { client: request.client, selection: request.entries?.[0]?.selection, source_binding: request.entries?.[0]?.source_binding },
+      row,
+      err,
+    );
+    throw err;
+  }
+}
+
+function resolveApprovedEntryIndexes(request, opts) {
+  const total = request.entries.length;
+  if (opts.approvedSourceIndexes === undefined || opts.approvedSourceIndexes === null) {
+    return Array.from({ length: total }, (_unused, index) => index);
+  }
+  if (!Array.isArray(opts.approvedSourceIndexes)) {
+    throw bindingError('invalid_request', 'approved_source_indexes must be an array of staged entry indexes');
+  }
+  const seen = new Set();
+  for (const raw of opts.approvedSourceIndexes) {
+    const index = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isInteger(index) || index < 0 || index >= total) {
+      throw bindingError('invalid_request', `approved_source_indexes contains an out-of-range entry index: ${raw}`);
+    }
+    seen.add(index);
+  }
+  if (seen.size === 0) {
+    throw bindingError('invalid_request', 'approved_source_indexes must approve at least one staged source');
+  }
+  return Array.from(seen).sort((a, b) => a - b);
+}
+
+async function approveStagedGrantBatch(deviceCode, pending, request, subjectId, opts = {}) {
+  const traceContext = requirePersistedPendingTraceContext(pending);
+  request.trace_context = traceContext;
+
+  let approvedIndexes;
+  try {
+    approvedIndexes = resolveApprovedEntryIndexes(request, opts);
+    const isApproveAll = opts.approvedSourceIndexes === undefined || opts.approvedSourceIndexes === null;
+    if (isApproveAll) {
+      const gate = evaluateBatchApproveAllGate(await buildBatchConsentCards(request, opts));
+      if (gate.approve_all_suppressed) {
+        const err = new Error(
+          `Approve-all is not available for this request (${gate.suppression_reasons.join(', ')}); confirm each source individually`,
+        );
+        err.code = 'invalid_request';
+        err.param = 'approved_source_indexes';
+        throw err;
+      }
+      if (opts.confirmedApproveAll !== true) {
+        const err = new Error('Approve-all requires a re-asserting confirmation of the per-source list');
+        err.code = 'invalid_request';
+        err.param = 'confirm_approve_all';
+        throw err;
+      }
+    }
+  } catch (err) {
+    await emitPendingConsentRejected(
+      { client: request.client, selection: request.entries?.[0]?.selection, source_binding: request.entries?.[0]?.source_binding },
+      pending,
+      err,
+      { subjectId },
+    );
+    throw err;
+  }
+
+  const approvedEntries = approvedIndexes.map((index) => request.entries[index]);
+  for (const entry of approvedEntries) {
+    if (entry.selection?.purpose_code === 'https://pdpp.org/purpose/ai_training') {
+      const err = new Error('Staged batch consent does not cover ai_training; request it as a single-entry grant');
+      err.code = 'invalid_request';
+      err.param = 'purpose_code';
+      throw err;
+    }
+  }
+
+  // One access mode per package (tranche scope guard). Every child grant a package issues
+  // must carry the same access mode; per-source access-mode mixing is not offered in this
+  // tranche. An owner who needs different modes for different sources runs separate ceremonies.
+  const approvedAccessModes = new Set(
+    approvedEntries.map((entry) => entry.selection?.access_mode || null),
+  );
+  if (approvedAccessModes.size > 1) {
+    const err = new Error(
+      `A batch package applies one access mode to every source; the approved sources mix access modes (${Array.from(
+        approvedAccessModes,
+      )
+        .map((mode) => mode ?? 'unspecified')
+        .sort()
+        .join(', ')}). Run a separate ceremony per access mode.`,
+    );
+    err.code = 'invalid_request';
+    err.param = 'access_mode';
+    throw err;
+  }
+
+  const sourceNarrowing = opts.sourceNarrowing && typeof opts.sourceNarrowing === 'object'
+    ? opts.sourceNarrowing
+    : {};
+  // Owner narrowing is keyed by staged source index. A directive that targets a
+  // source the owner did not approve can only be a UI/client mistake and must
+  // not silently no-op, so reject it before issuing anything.
+  for (const key of Object.keys(sourceNarrowing)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || !approvedIndexes.includes(index)) {
+      const err = new Error(
+        `Narrowing references staged source index ${key}, which is not in the approved set`,
+      );
+      err.code = 'invalid_request';
+      err.param = 'source_narrowing';
+      throw err;
+    }
+  }
+
+  let registeredClient;
+  let parentPackage = null;
+  const resolvedEntries = [];
+  try {
+    registeredClient = await requirePendingRequestClientRegistration(request, opts);
+    // Re-validate incremental add-source linkage now that the approving owner
+    // (subjectId) is known. Fail closed before any new package row or child
+    // grant is written if the parent is missing, cross-client, cross-owner,
+    // or no longer active. The prior package and its child grants are never
+    // re-issued or mutated by this link.
+    parentPackage = await requireValidParentPackageLinkage(request.parent_package_id, {
+      clientId: registeredClient.client_id,
+      subjectId,
+    });
+    for (let position = 0; position < approvedEntries.length; position += 1) {
+      const entry = approvedEntries[position];
+      const stagedIndex = approvedIndexes[position];
+      const slice = asSingleEntryRequestSlice(request, entry);
+      requireStructuredPendingRequestShape(slice);
+      const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(slice);
+      entry.source_binding = describeSourceBinding(sourceBinding);
+      entry.storage_binding = normalizeStorageBinding(storageBinding);
+      const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+      slice.manifest_version = entry.manifest_version;
+      const baselineStreams = requirePendingRequestContractAgainstManifest(slice, manifest);
+      // Apply owner per-source narrowing against the staged resolved baseline.
+      // narrowResolvedSelectionForSource proves the result is a subset/tightening
+      // of what the client staged; widening throws invalid_request here, before
+      // any package row or child grant is written.
+      const resolvedStreams = narrowResolvedSelectionForSource(
+        baselineStreams,
+        sourceNarrowing[stagedIndex],
+        sourceBinding?.id || `source ${stagedIndex + 1}`,
+      );
+      resolvedEntries.push({ entry, slice, sourceBinding, storageBinding, manifest, resolvedStreams });
+    }
+  } catch (err) {
+    await emitPendingConsentRejected(
+      { client: request.client, selection: request.entries?.[0]?.selection, source_binding: request.entries?.[0]?.source_binding },
+      pending,
+      err,
+      { subjectId },
+    );
+    throw err;
+  }
+
+  const packageId = generateId('gpkg');
+  const createdAt = nowIso();
+  const packageEnvelope = {
+    version: 'reference.batch_consent.v1',
+    package_id: packageId,
+    subject: { id: subjectId },
+    client: {
+      client_id: registeredClient.client_id,
+      ...(request.client?.client_display ? { client_display: request.client.client_display } : {}),
+    },
+    staged_source_count: request.entries.length,
+    approved_source_count: resolvedEntries.length,
+    approved_source_indexes: approvedIndexes,
+    source_bounded_child_grants: true,
+    ...(parentPackage ? { parent_package_id: parentPackage.package_id } : {}),
+  };
+
+  const parentPackageId = parentPackage ? parentPackage.package_id : null;
+  await getGrantPackageStore().insertPackage({
+    packageId,
+    subjectId,
+    clientId: registeredClient.client_id,
+    packageJson: JSON.stringify(packageEnvelope),
+    parentPackageId,
+    traceId: traceContext.trace_id,
+    scenarioId: traceContext.scenario_id,
+    createdAt,
+    approvedAt: createdAt,
+  });
+
+  const childGrants = [];
+  for (const resolved of resolvedEntries) {
+    const { grant, token } = await persistChildGrantForPackage({
+      request: resolved.slice,
+      registeredClient,
+      subjectId,
+      sourceBinding: resolved.sourceBinding,
+      storageBinding: resolved.storageBinding,
+      manifest: resolved.manifest,
+      resolvedStreams: resolved.resolvedStreams,
+      traceContext,
+    });
+    const source = describePackageMemberSource(grant);
+    const addedAt = nowIso();
+    await getGrantPackageStore().insertPackageMember({
+      packageId,
+      grantId: grant.grant_id,
+      tokenId: token,
+      sourceJson: JSON.stringify(source),
+      addedAt,
+    });
+    childGrants.push({ grant, token, source });
+  }
+
+  await emitSpineEvent({
+    event_type: 'consent.approved',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'subject',
+    actor_id: subjectId,
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'pending_consent',
+    object_id: deviceCode,
+    status: 'succeeded',
+    client_id: registeredClient.client_id,
+    data: {
+      user_code: pending.user_code,
+      package_id: packageId,
+      approved_source_indexes: approvedIndexes,
+    },
+  });
+
+  const packageToken = await issuePackageToken(packageId, subjectId, registeredClient.client_id, null, {
+    traceContext,
+    source: 'batch_consent_package',
+  });
+
+  await emitSpineEvent({
+    event_type: 'grant_package.issued',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'grant_package',
+    object_id: packageId,
+    status: 'succeeded',
+    client_id: registeredClient.client_id,
+    token_id: packageToken,
+    data: {
+      child_grant_ids: childGrants.map((entry) => entry.grant.grant_id),
+      sources: childGrants.map((entry) => entry.source),
+    },
+  });
+
+  await markPendingConsentApproved(deviceCode, {
+    subjectId,
+    grantId: packageId,
+    tokenId: packageToken,
+    aiTrainingConsented: false,
+  });
+
+  return {
+    grant: {
+      package: true,
+      package_id: packageId,
+      grant_id: packageId,
+      child_grants: childGrants.map((entry) => ({
+        grant_id: entry.grant.grant_id,
+        source: entry.source,
+      })),
+    },
+    token: packageToken,
+    package: true,
+    package_id: packageId,
+  };
+}
+
+/**
+ * Get pending consent request for display in consent UI
+ */
+export async function getPendingConsent(deviceCode, opts = {}) {
+  const row = await getPendingConsentRow(deviceCode);
+  if (!row) return null;
+  if (row.status !== 'pending') return null;
+  if (isExpired(row)) {
+    await markPendingConsentExpired(deviceCode);
+    return null;
+  }
+  const request = JSON.parse(row.params_json);
+  request.trace_context = requirePersistedPendingTraceContext(row);
+  if (isStagedBatchRequest(request)) {
+    return getPendingConsentBatch(request, row, opts);
+  }
+  let resolvedStreams = null;
+  let manifestStreamNames = null;
+  try {
+    requireStructuredPendingRequestShape(request);
+    await requirePendingRequestClientRegistration(request, opts);
+    const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request);
+    request.source_binding = describeSourceBinding(sourceBinding);
+    request.storage_binding = normalizeStorageBinding(storageBinding);
+    const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding);
+    resolvedStreams = requirePendingRequestContractAgainstManifest(request, manifest);
+    manifestStreamNames = Array.isArray(manifest?.streams)
+      ? manifest.streams.map((stream) => stream.name).filter((name) => typeof name === 'string')
+      : null;
+  } catch (err) {
+    await emitPendingConsentRejected(request, row, err);
+    throw err;
+  }
+  return {
+    request,
+    userCode: row.user_code,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    resolvedStreams,
+    manifestStreamNames,
+  };
+}
+
+/**
+ * Approve a pending grant request — creates the grant and access token
+ * Called by the current consent surface after user approval.
+ * This is grant issuance, not owner authentication.
+ */
+export async function approveGrant(deviceCode, subjectId = 'owner_local', opts = {}) {
+  const pending = await getPendingConsentRow(deviceCode);
+  if (!pending) {
+    const err = new Error('Unknown device code');
+    err.code = 'not_found';
+    throw err;
+  }
+  if (pending.status !== 'pending') {
+    const err = new Error('Pending consent request is not available');
+    err.code = 'not_found';
+    throw err;
+  }
+  if (isExpired(pending)) {
+    await markPendingConsentExpired(deviceCode);
+    const err = new Error('Pending consent request has expired');
+    err.code = 'not_found';
+    throw err;
+  }
+
+  const request = JSON.parse(pending.params_json);
+  if (isStagedBatchRequest(request)) {
+    return approveStagedGrantBatch(deviceCode, pending, request, subjectId, opts);
+  }
+  const traceContext = requirePersistedPendingTraceContext(pending);
+  request.trace_context = traceContext;
+  let registeredClient;
+  let sourceBinding;
+  let storageBinding;
+  let manifest;
+  let resolvedStreams;
+
+  try {
+    requireStructuredPendingRequestShape(request);
+    registeredClient = await requirePendingRequestClientRegistration(request, opts);
+    ({ sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request));
+    request.source_binding = describeSourceBinding(sourceBinding);
+    request.storage_binding = normalizeStorageBinding(storageBinding);
+    manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+    resolvedStreams = requirePendingRequestContractAgainstManifest(request, manifest);
+  } catch (err) {
+    await emitPendingConsentRejected(request, pending, err, { subjectId });
+    throw err;
+  }
+
+  const selection = request.selection;
+  const client = request.client || {};
+
+  // The AS MUST obtain explicit affirmative consent before issuing ai_training grants.
+  // A missing affirmation is a consent-policy rejection, not an internal failure;
+  // surface it as a typed PDPP error envelope (status 400, code `invalid_request`)
+  // so callers do not see it as a generic 500.
+  const { ai_training_consented } = opts;
+  if (selection.purpose_code === 'https://pdpp.org/purpose/ai_training' && !ai_training_consented) {
+    const err = new Error('Explicit affirmative consent required for ai_training purpose');
+    err.code = 'invalid_request';
+    err.param = 'ai_training_consented';
+    throw err;
+  }
+
+  const grantId = generateId('grt');
+  const issuedAt = nowIso();
+  const expiresAt = selection.access_mode === 'single_use'
+    ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24h reference default
+    : null;
+
+  const persistedSource = describeSourceBinding(sourceBinding);
+  const persistedStorageBinding = normalizeStorageBinding(storageBinding);
+
+  const grant = {
+    version: '0.1.0',
+    grant_id: grantId,
+    issued_at: issuedAt,
+    subject: { id: subjectId },
+    client: {
+      client_id: registeredClient.client_id,
+      registration_mode: registeredClient.registration_mode || 'pre_registered_public',
+      ...(client.client_display ? { client_display: client.client_display } : {}),
+    },
+    source: persistedSource,
+    manifest_version: manifest.version,
+    purpose_code: selection.purpose_code,
+    purpose_description: selection.purpose_description,
+    access_mode: selection.access_mode,
+    streams: resolvedStreams,
+    retention: selection.retention,
+    expires_at: expiresAt,
+  };
+
+  // Same grants-row INSERT the grant-package child-grant flow uses; reuse the
+  // shared store method so the two call sites cannot drift.
+  await getGrantPackageStore().insertChildGrant({
+    grantId,
+    subjectId,
+    clientId: registeredClient.client_id,
+    storageBindingJson: serializeStorageBinding(persistedStorageBinding),
+    grantJson: JSON.stringify(grant),
+    accessMode: selection.access_mode,
+    issuedAt,
+    expiresAt,
+    traceId: traceContext.trace_id,
+    scenarioId: traceContext.scenario_id,
+  });
+
+  await emitSpineEvent({
+    event_type: 'consent.approved',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'subject',
+    actor_id: subjectId,
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'pending_consent',
+    object_id: deviceCode,
+    status: 'succeeded',
+    grant_id: grantId,
+    client_id: registeredClient.client_id,
+    data: {
+      user_code: pending.user_code,
+      source: describeSourceBinding(sourceBinding),
+    },
+  });
+
+  const grantIssuedEventData = {
+    source: describeGrantSource(grant),
+    access_mode: selection.access_mode,
+    purpose_code: selection.purpose_code,
+    stream_names: resolvedStreams.map((stream) => stream.name),
+    retention: selection.retention ?? null,
+  };
+
+  await emitSpineEvent({
+    event_type: 'grant.issued',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'grant',
+    object_id: grantId,
+    status: 'succeeded',
+    grant_id: grantId,
+    client_id: registeredClient.client_id,
+    data: grantIssuedEventData,
+  });
+
+  // Issue access token
+  const token = await issueToken(grantId, subjectId, registeredClient.client_id, expiresAt, {
+    traceContext,
+    source: 'grant_approval',
+  });
+
+  await markPendingConsentApproved(deviceCode, {
+    subjectId,
+    grantId,
+    tokenId: token,
+    aiTrainingConsented: ai_training_consented,
+  });
+
+  return { grant, token };
+}
+
+function buildGrantScopedDeviceExchangeError(code, message, row = null) {
+  const err = new Error(message);
+  err.code = code;
+  if (row) {
+    attachTraceContext(err, getPersistedPendingTraceContext(row));
+  }
+  return err;
+}
+
+function parsePendingConsentParams(row) {
+  try {
+    return JSON.parse(row.params_json);
+  } catch {
+    throw buildGrantScopedDeviceExchangeError('invalid_grant', 'Pending consent request is malformed', row);
+  }
+}
+
+/**
+ * Redeem an approved pending-consent device code as a grant-scoped MCP
+ * client token. This intentionally uses the existing pending-consent grant
+ * machinery: device authorization is only a headless transport into the same
+ * approval path, not a parallel grant engine.
+ */
+export async function exchangeGrantScopedDeviceCode({ clientId, deviceCode }) {
+  if (!clientId || !deviceCode) {
+    throw buildGrantScopedDeviceExchangeError('invalid_request', 'client_id and device_code are required');
+  }
+
+  const row = await getPendingConsentRow(deviceCode);
+  if (!row) {
+    throw buildGrantScopedDeviceExchangeError('invalid_grant', 'Unknown or invalid device_code');
+  }
+
+  const request = parsePendingConsentParams(row);
+  const requestClientId = request?.client?.client_id;
+  if (requestClientId !== clientId) {
+    throw buildGrantScopedDeviceExchangeError('invalid_client', 'device_code is not bound to this client_id', row);
+  }
+
+  if (row.status === 'pending' && isExpired(row)) {
+    await markPendingConsentExpired(deviceCode);
+    throw buildGrantScopedDeviceExchangeError('expired_token', 'Device code has expired', row);
+  }
+
+  if (row.status === 'pending') {
+    if (row.last_polled_at) {
+      const intervalSeconds = Number.isFinite(Number(row.interval_seconds)) && Number(row.interval_seconds) > 0
+        ? Number(row.interval_seconds)
+        : 2;
+      const sinceLastPollMs = Date.now() - new Date(row.last_polled_at).getTime();
+      if (sinceLastPollMs < intervalSeconds * 1000) {
+        throw buildGrantScopedDeviceExchangeError('slow_down', 'Polling too quickly', row);
+      }
+    }
+    await updatePendingConsentLastPolled(deviceCode);
+    throw buildGrantScopedDeviceExchangeError('authorization_pending', 'Authorization still pending', row);
+  }
+
+  if (row.status === 'denied') {
+    throw buildGrantScopedDeviceExchangeError('access_denied', 'The resource owner denied the request', row);
+  }
+
+  if (row.status === 'expired') {
+    throw buildGrantScopedDeviceExchangeError('expired_token', 'Device code has expired', row);
+  }
+
+  if (row.status !== 'approved' || !row.token_id) {
+    throw buildGrantScopedDeviceExchangeError('invalid_grant', 'Device code is not redeemable', row);
+  }
+
+  const tokenInfo = await introspect(row.token_id);
+  if (!tokenInfo.active) {
+    throw buildGrantScopedDeviceExchangeError('expired_token', 'Client token is no longer active', row);
+  }
+  if (tokenInfo.pdpp_token_kind !== 'client' && tokenInfo.pdpp_token_kind !== 'mcp_package') {
+    throw buildGrantScopedDeviceExchangeError('invalid_grant', 'Device code did not redeem to a grant-scoped MCP client token', row);
+  }
+  if (tokenInfo.client_id !== clientId) {
+    throw buildGrantScopedDeviceExchangeError('invalid_client', 'Client token is not bound to this client_id', row);
+  }
+
+  const exp = Number.isFinite(tokenInfo.exp) && tokenInfo.exp
+    ? tokenInfo.exp
+    : Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
+  const payload = {
+    access_token: row.token_id,
+    token_type: 'Bearer',
+    expires_in: Math.max(exp - Math.floor(Date.now() / 1000), 0),
+    trace_context: getPersistedPendingTraceContext(row),
+  };
+
+  if (tokenInfo.pdpp_token_kind === 'mcp_package') {
+    payload.grant_package_id = tokenInfo.grant_package_id || row.grant_id || null;
+  } else {
+    payload.grant_id = tokenInfo.grant_id || row.grant_id || null;
+  }
+
+  return payload;
+}
+
+function isUsableAuthorizationCodePkceChallenge(challenge, method) {
+  return (
+    isNonEmptyString(challenge)
+    && PKCE_CODE_VERIFIER_RE.test(challenge)
+    && SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS.has(method)
+  );
+}
+
+function buildOAuthAuthorizationCodeError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function clientSupportsOAuthRefreshToken(registeredClient) {
+  return registeredClient?.metadata?.grant_types?.includes('refresh_token') === true;
+}
+
+function buildOAuthRefreshTokenError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+async function issueOAuthRefreshToken({ clientId, grantId, subjectId, expiresAt = null }) {
+  const refreshToken = generateOAuthRefreshToken();
+  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
+  const createdAt = nowIso();
+  await getRefreshTokenStore().insert({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt });
+  return refreshToken;
+}
+
+async function issueOAuthRefreshTokenForPackage({ clientId, packageId, subjectId, expiresAt = null }) {
+  const refreshToken = generateOAuthRefreshToken();
+  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
+  const createdAt = nowIso();
+  await getRefreshTokenStore().insertForPackage({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt });
+  return refreshToken;
+}
+
+// Grant-package row operations. One adapter per backend; the dialect SQL
+// moves verbatim from the inline `isPostgresStorageBackend()` branches that
+// previously lived in each helper below. Every method is a single conceptual
+// row operation (one statement, or the cohesive revoke cascade); all
+// orchestration (spine events, the child-grant loop, envelope building,
+// row normalization, partial-failure accounting) stays caller-side so the
+// adapters remain thin and dialect-only.
+const postgresGrantPackageStore = {
+  insertPackageToken: ({ tokenId, packageId, subjectId, clientId, expiresAt }) =>
+    pgExec(
+      `INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at)
+       VALUES($1, NULL, $2, $3, $4, 'mcp_package', $5)`,
+      [tokenId, packageId, subjectId, clientId, expiresAt],
+    ),
+  getPackageById: (packageId) =>
+    pgOne(
+      `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
+              parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+         FROM grant_packages
+         WHERE package_id = $1`,
+      [packageId],
+    ),
+  insertChildGrant: ({ grantId, subjectId, clientId, storageBindingJson, grantJson, accessMode, issuedAt, expiresAt, traceId, scenarioId }) =>
+    pgExec(
+      `INSERT INTO grants(
+         grant_id, subject_id, client_id, storage_binding_json, grant_json,
+         access_mode, issued_at, expires_at, trace_id, scenario_id
+       ) VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10)`,
+      [grantId, subjectId, clientId, storageBindingJson, grantJson, accessMode, issuedAt, expiresAt, traceId, scenarioId],
+    ),
+  insertPackage: ({ packageId, subjectId, clientId, packageJson, parentPackageId, traceId, scenarioId, createdAt, approvedAt }) =>
+    pgExec(
+      `INSERT INTO grant_packages(
+         package_id, subject_id, client_id, status, package_json,
+         parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, $9, NULL)`,
+      [packageId, subjectId, clientId, packageJson, parentPackageId, traceId, scenarioId, createdAt, approvedAt],
+    ),
+  insertPackageMember: ({ packageId, grantId, tokenId, sourceJson, addedAt }) =>
+    pgExec(
+      `INSERT INTO grant_package_members(
+         package_id, grant_id, token_id, source_json, status, added_at, revoked_at
+       ) VALUES($1, $2, $3, $4::jsonb, 'active', $5, NULL)`,
+      [packageId, grantId, tokenId, sourceJson, addedAt],
+    ),
+  listActiveMembers: async (packageId) =>
+    (await postgresQuery(
+      `SELECT gm.package_id, gm.grant_id, gm.token_id, gm.source_json::text AS source_json,
+              gm.status, gm.added_at, gm.revoked_at,
+              g.status AS grant_status, g.grant_json::text AS grant_json,
+              g.storage_binding_json::text AS storage_binding_json,
+              t.revoked AS token_revoked, t.expires_at AS token_expires_at
+       FROM grant_package_members gm
+       JOIN grants g ON gm.grant_id = g.grant_id
+       JOIN tokens t ON gm.token_id = t.token_id
+       WHERE gm.package_id = $1
+         AND gm.status = 'active'
+       ORDER BY gm.added_at, gm.grant_id`,
+      [packageId],
+    )).rows,
+  listAllMembers: async (packageId) =>
+    (await postgresQuery(
+      `SELECT gm.package_id, gm.grant_id, gm.source_json::text AS source_json,
+              gm.status AS member_status, gm.added_at, gm.revoked_at AS member_revoked_at,
+              g.status AS grant_status
+         FROM grant_package_members gm
+         JOIN grants g ON gm.grant_id = g.grant_id
+         WHERE gm.package_id = $1
+         ORDER BY gm.added_at, gm.grant_id`,
+      [packageId],
+    )).rows,
+  getPackageIdForGrant: (grantId) =>
+    pgOne(
+      `SELECT package_id
+         FROM grant_package_members
+         WHERE grant_id = $1
+         ORDER BY added_at
+         LIMIT 1`,
+      [grantId],
+    ),
+  markMemberRevoked: ({ packageId, grantId, revokedAt }) =>
+    pgExec(
+      `UPDATE grant_package_members
+       SET status = 'revoked', revoked_at = $1
+       WHERE package_id = $2 AND grant_id = $3 AND status = 'active'`,
+      [revokedAt, packageId, grantId],
+    ),
+  markPackageRevokedCascade: async ({ packageId, revokedAt }) => {
+    await pgExec(
+      "UPDATE grant_packages SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
+      [revokedAt, packageId],
+    );
+    await pgExec("UPDATE tokens SET revoked = TRUE WHERE package_id = $1", [packageId]);
+    await pgExec(
+      "UPDATE grant_package_members SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
+      [revokedAt, packageId],
+    );
+    await pgExec(
+      "UPDATE oauth_refresh_tokens SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'",
+      [revokedAt, packageId],
+    );
+  },
+};
+
+const sqliteGrantPackageStore = {
+  insertPackageToken: ({ tokenId, packageId, subjectId, clientId, expiresAt }) =>
+    exec(referenceQueries.authTokensInsertMcpPackage, [tokenId, packageId, subjectId, clientId, expiresAt]),
+  getPackageById: (packageId) =>
+    getOne(referenceQueries.authGrantPackagesGetById, [packageId]),
+  insertChildGrant: ({ grantId, subjectId, clientId, storageBindingJson, grantJson, accessMode, issuedAt, expiresAt, traceId, scenarioId }) =>
+    exec(referenceQueries.authGrantsInsert, [
+      grantId,
+      subjectId,
+      clientId,
+      storageBindingJson,
+      grantJson,
+      accessMode,
+      issuedAt,
+      expiresAt,
+      traceId,
+      scenarioId,
+    ]),
+  insertPackage: ({ packageId, subjectId, clientId, packageJson, parentPackageId, traceId, scenarioId, createdAt, approvedAt }) =>
+    exec(referenceQueries.authGrantPackagesInsert, [
+      packageId,
+      subjectId,
+      clientId,
+      packageJson,
+      parentPackageId,
+      traceId,
+      scenarioId,
+      createdAt,
+      approvedAt,
+    ]),
+  insertPackageMember: ({ packageId, grantId, tokenId, sourceJson, addedAt }) =>
+    exec(referenceQueries.authGrantPackageMembersInsert, [
+      packageId,
+      grantId,
+      tokenId,
+      sourceJson,
+      addedAt,
+    ]),
+  listActiveMembers: (packageId) =>
+    allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListActiveByPackage, [packageId]),
+  listAllMembers: (packageId) =>
+    allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListAllByPackage, [packageId]),
+  getPackageIdForGrant: (grantId) =>
+    getOne(referenceQueries.authGrantPackageMembersGetPackageIdByGrant, [grantId]),
+  markMemberRevoked: ({ packageId, grantId, revokedAt }) =>
+    exec(referenceQueries.authGrantPackageMembersMarkRevokedByGrant, [revokedAt, packageId, grantId]),
+  markPackageRevokedCascade: ({ packageId, revokedAt }) => {
+    exec(referenceQueries.authGrantPackagesMarkRevoked, [revokedAt, packageId]);
+    exec(referenceQueries.authTokensRevokeByPackage, [packageId]);
+    exec(referenceQueries.authGrantPackageMembersMarkRevokedByPackage, [revokedAt, packageId]);
+    exec(referenceQueries.authOauthRefreshTokensRevokeByPackage, [revokedAt, packageId]);
+  },
+};
+
+function getGrantPackageStore() {
+  return isPostgresStorageBackend() ? postgresGrantPackageStore : sqliteGrantPackageStore;
+}
+
+// Three cohesive, domain-local stores for the dialect-only token /
+// oauth-authorization-code / oauth-refresh-token row seams. Each method is the
+// SAME conceptual row op differing ONLY by SQL dialect (placeholder $1.. vs ?,
+// the introspection join, status literals). Dialect SQL/queries move VERBATIM
+// from the old inline `isPostgresStorageBackend()` branches; the adapters
+// return RAW rows (or perform the write and return its `{ changes }`) and the
+// orchestration (row shaping, expiry checks, PKCE verification, error mapping,
+// spine events, single-use guards) stays in the calling functions. The backend
+// is selected ONCE per op via isPostgresStorageBackend(), mirroring the
+// existing getPendingConsentStore / getOwnerDeviceAuthStore / getGrantPackageStore
+// precedent.
+//
+// SKIPPED (left as honest inline keeps, not folded into these stores):
+//   - issueToken: the Postgres branch is a withPostgresTransaction(SELECT ...
+//     FOR UPDATE, UPDATE consumed, INSERT token) and the SQLite branch is a
+//     synchronous transaction(); divergent multi-statement control flow, not a
+//     single dialect-only op.
+//   - the grant-revoke and grant-package-revoke token / refresh-token cascades:
+//     multi-statement cascades already isolated in their orchestration
+//     (revokeGrant, markPackageRevokedCascade); wrapping adds an incidental hop.
+const postgresOAuthCodeStore = {
+  upsertPending: ({ id, deviceCode, clientId, redirectUri, state, codeChallenge, codeChallengeMethod, createdAt, expiresAt }) =>
+    pgExec(
+      `INSERT INTO oauth_authorization_codes(
+         id, device_code, client_id, redirect_uri, state, code_challenge,
+         code_challenge_method, status, created_at, expires_at
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9)
+       ON CONFLICT(device_code) DO UPDATE SET
+         client_id = excluded.client_id,
+         redirect_uri = excluded.redirect_uri,
+         state = excluded.state,
+         code_challenge = excluded.code_challenge,
+         code_challenge_method = excluded.code_challenge_method,
+         status = 'pending',
+         code = NULL,
+         grant_id = NULL,
+         token_id = NULL,
+         created_at = excluded.created_at,
+         expires_at = excluded.expires_at,
+         issued_at = NULL,
+         consumed_at = NULL`,
+      [id, deviceCode, clientId, redirectUri, state, codeChallenge, codeChallengeMethod, createdAt, expiresAt],
+    ),
+  getByDeviceCode: (deviceCode) =>
+    pgOne(
+      `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at
+         FROM oauth_authorization_codes
+         WHERE device_code = $1`,
+      [deviceCode],
+    ),
+  markExpiredByDeviceCode: (deviceCode) =>
+    pgExec(
+      `UPDATE oauth_authorization_codes SET status = 'expired' WHERE device_code = $1 AND status = 'pending'`,
+      [deviceCode],
+    ),
+  issueForPackageDeviceCode: ({ code, packageId, token, issuedAt, expiresAt, deviceCode }) =>
+    pgExec(
+      `UPDATE oauth_authorization_codes
+       SET code = $1, grant_id = NULL, package_id = $2, token_id = $3, status = 'issued',
+           issued_at = $4, expires_at = $5
+       WHERE device_code = $6 AND status = 'pending'`,
+      [code, packageId, token, issuedAt, expiresAt, deviceCode],
+    ),
+  issueForDeviceCode: ({ code, grantId, token, issuedAt, expiresAt, deviceCode }) =>
+    pgExec(
+      `UPDATE oauth_authorization_codes
+       SET code = $1, grant_id = $2, token_id = $3, status = 'issued',
+           issued_at = $4, expires_at = $5
+       WHERE device_code = $6 AND status = 'pending'`,
+      [code, grantId, token, issuedAt, expiresAt, deviceCode],
+    ),
+  getByCode: (code) =>
+    pgOne(
+      `SELECT id, code, client_id, redirect_uri, code_challenge, code_challenge_method,
+                status, grant_id, package_id, token_id, expires_at, consumed_at
+         FROM oauth_authorization_codes
+         WHERE code = $1`,
+      [code],
+    ),
+  consumeCode: ({ consumedAt, code }) =>
+    pgExec(
+      `UPDATE oauth_authorization_codes
+         SET status = 'consumed', consumed_at = $1
+         WHERE code = $2 AND status = 'issued' AND consumed_at IS NULL`,
+      [consumedAt, code],
+    ),
+};
+
+const sqliteOAuthCodeStore = {
+  upsertPending: ({ id, deviceCode, clientId, redirectUri, state, codeChallenge, codeChallengeMethod, createdAt, expiresAt }) =>
+    exec(referenceQueries.authOauthAuthorizationCodesUpsertPending, [
+      id,
+      deviceCode,
+      clientId,
+      redirectUri,
+      state,
+      codeChallenge,
+      codeChallengeMethod,
+      createdAt,
+      expiresAt,
+    ]),
+  getByDeviceCode: (deviceCode) =>
+    getOne(referenceQueries.authOauthAuthorizationCodesGetByDeviceCode, [deviceCode]),
+  markExpiredByDeviceCode: (deviceCode) =>
+    exec(referenceQueries.authOauthAuthorizationCodesMarkExpiredByDeviceCode, [deviceCode]),
+  issueForPackageDeviceCode: ({ code, packageId, token, issuedAt, expiresAt, deviceCode }) =>
+    exec(
+      referenceQueries.authOauthAuthorizationCodesIssuePackageForDeviceCode,
+      [code, packageId, token, issuedAt, expiresAt, deviceCode],
+    ),
+  issueForDeviceCode: ({ code, grantId, token, issuedAt, expiresAt, deviceCode }) =>
+    exec(
+      referenceQueries.authOauthAuthorizationCodesIssueForDeviceCode,
+      [code, grantId, token, issuedAt, expiresAt, deviceCode],
+    ),
+  getByCode: (code) =>
+    getOne(referenceQueries.authOauthAuthorizationCodesGetByCode, [code]),
+  consumeCode: ({ consumedAt, code }) =>
+    exec(
+      referenceQueries.authOauthAuthorizationCodesConsumeCode,
+      [consumedAt, code],
+    ),
+};
+
+function getOAuthCodeStore() {
+  return isPostgresStorageBackend() ? postgresOAuthCodeStore : sqliteOAuthCodeStore;
+}
+
+const postgresRefreshTokenStore = {
+  insert: ({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt }) =>
+    pgExec(
+      `INSERT INTO oauth_refresh_tokens(
+         refresh_token_hash, client_id, grant_id, subject_id, status,
+         created_at, expires_at, last_used_at, revoked_at
+       ) VALUES($1, $2, $3, $4, 'active', $5, $6, NULL, NULL)`,
+      [refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt],
+    ),
+  insertForPackage: ({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt }) =>
+    pgExec(
+      `INSERT INTO oauth_refresh_tokens(
+         refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
+         created_at, expires_at, last_used_at, revoked_at
+       ) VALUES($1, $2, NULL, $3, $4, 'active', $5, $6, NULL, NULL)`,
+      [refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt],
+    ),
+  getByTokenHash: (refreshTokenHash) =>
+    pgOne(
+      `SELECT refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
+                created_at, expires_at, last_used_at, revoked_at
+         FROM oauth_refresh_tokens
+         WHERE refresh_token_hash = $1`,
+      [refreshTokenHash],
+    ),
+  markUsed: ({ usedAt, refreshTokenHash }) =>
+    pgExec(
+      `UPDATE oauth_refresh_tokens
+       SET last_used_at = $1
+       WHERE refresh_token_hash = $2 AND status = 'active'`,
+      [usedAt, refreshTokenHash],
+    ),
+};
+
+const sqliteRefreshTokenStore = {
+  insert: ({ refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt }) =>
+    exec(referenceQueries.authOauthRefreshTokensInsert, [
+      refreshTokenHash,
+      clientId,
+      grantId,
+      subjectId,
+      createdAt,
+      expiresAt,
+    ]),
+  insertForPackage: ({ refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt }) =>
+    exec(referenceQueries.authOauthRefreshTokensInsertPackage, [
+      refreshTokenHash,
+      clientId,
+      packageId,
+      subjectId,
+      createdAt,
+      expiresAt,
+    ]),
+  getByTokenHash: (refreshTokenHash) =>
+    getOne(referenceQueries.authOauthRefreshTokensGetByToken, [refreshTokenHash]),
+  markUsed: ({ usedAt, refreshTokenHash }) =>
+    exec(referenceQueries.authOauthRefreshTokensMarkUsed, [usedAt, refreshTokenHash]),
+};
+
+function getRefreshTokenStore() {
+  return isPostgresStorageBackend() ? postgresRefreshTokenStore : sqliteRefreshTokenStore;
+}
+
+const postgresTokenStore = {
+  insertOwner: ({ tokenId, subjectId, clientId, expiresAt }) =>
+    pgExec(
+      `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+       VALUES($1, NULL, $2, $3, 'owner', $4)`,
+      [tokenId, subjectId, clientId, expiresAt],
+    ),
+  getIntrospection: (token) =>
+    pgOne(
+      `SELECT t.token_id, t.grant_id, t.package_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
+                g.status AS grant_status,
+                g.grant_json::text AS grant_json,
+                g.trace_id,
+                g.scenario_id,
+                gp.status AS package_status,
+                gp.package_json::text AS package_json,
+                gp.trace_id AS package_trace_id,
+                gp.scenario_id AS package_scenario_id,
+                g.storage_binding_json::text AS storage_binding_json
+         FROM tokens t
+         LEFT JOIN grants g ON t.grant_id = g.grant_id
+         LEFT JOIN grant_packages gp ON t.package_id = gp.package_id
+         WHERE t.token_id = $1`,
+      [token],
+    ),
+  revokeByClientId: (clientId) =>
+    pgExec("UPDATE tokens SET revoked = TRUE WHERE client_id = $1 AND revoked = FALSE", [clientId]),
+  // REVIEWED-BOUNDED: live bearers per operator client are operator-scale
+  // (small). The mirrored SQLite query's @max_rows=256 caps pathological growth.
+  listActiveByClientId: async (clientId) =>
+    (await postgresQuery(
+      `SELECT token_id, token_kind, created_at, expires_at
+       FROM tokens
+       WHERE client_id = $1 AND revoked = FALSE
+       ORDER BY created_at DESC`,
+      [clientId],
+    )).rows,
+  revokeByTokenId: (tokenId, clientId) =>
+    pgExec(
+      "UPDATE tokens SET revoked = TRUE WHERE token_id = $1 AND client_id = $2 AND revoked = FALSE",
+      [tokenId, clientId],
+    ),
+};
+
+const sqliteTokenStore = {
+  insertOwner: ({ tokenId, subjectId, clientId, expiresAt }) =>
+    exec(referenceQueries.authTokensInsertOwner, [tokenId, subjectId, clientId, expiresAt]),
+  getIntrospection: (token) =>
+    getOne(referenceQueries.authTokensGetIntrospection, [token]),
+  revokeByClientId: (clientId) =>
+    exec(referenceQueries.authTokensRevokeByClientId, [clientId]),
+  listActiveByClientId: (clientId) =>
+    allowUnboundedReadAcknowledged(referenceQueries.authTokensListActiveByClientId, [clientId]),
+  revokeByTokenId: (tokenId, clientId) =>
+    exec(referenceQueries.authTokensRevokeByTokenId, [tokenId, clientId]),
+};
+
+function getTokenStore() {
+  return isPostgresStorageBackend() ? postgresTokenStore : sqliteTokenStore;
+}
+
+async function issuePackageToken(packageId, subjectId, clientId, expiresAt = null, meta = {}) {
+  const tokenId = generateToken();
+  await getGrantPackageStore().insertPackageToken({ tokenId, packageId, subjectId, clientId, expiresAt });
+
+  await emitSpineEvent({
+    event_type: 'token.issued',
+    trace_id: meta.traceContext?.trace_id || undefined,
+    scenario_id: meta.traceContext?.scenario_id || undefined,
+    request_id: meta.traceContext?.request_id || undefined,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'token',
+    object_id: tokenId,
+    status: 'succeeded',
+    client_id: clientId,
+    token_id: tokenId,
+    data: {
+      token_kind: 'mcp_package',
+      grant_package_id: packageId,
+      issuance_path: meta.source || 'hosted_mcp_package',
+    },
+  });
+
+  return tokenId;
+}
+
+function parsePackageJson(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function normalizePackageRow(row) {
+  if (!row) return null;
+  return {
+    package_id: row.package_id,
+    subject_id: row.subject_id,
+    client_id: row.client_id,
+    status: row.status,
+    package: parsePackageJson(row.package_json),
+    parent_package_id: row.parent_package_id || null,
+    trace_id: row.trace_id || null,
+    scenario_id: row.scenario_id || null,
+    created_at: row.created_at,
+    approved_at: row.approved_at,
+    revoked_at: row.revoked_at || null,
+  };
+}
+
+/**
+ * Fetch a raw grant_packages row (status-agnostic) for lineage validation.
+ * Mirrors the column set used by `getGrantPackageForOwner` and includes
+ * `parent_package_id` so the linkage chain can be walked.
+ */
+async function getGrantPackageRow(packageId) {
+  if (!isNonEmptyString(packageId)) return null;
+  const row = await getGrantPackageStore().getPackageById(packageId);
+  return normalizePackageRow(row);
+}
+
+/**
+ * Validate an incremental add-source `parent_package_id` against the staged
+ * batch's client and owner. Fails closed (typed `invalid_request`) when the
+ * parent is missing, belongs to a different client, belongs to a different
+ * owner, or is not active. Returns the normalized parent package row when
+ * valid. `parent_package_id` is lineage/cumulative-view metadata only; this
+ * check governs whether a *new* package may record the link, never whether
+ * the prior package's grants change (they never do).
+ */
+async function requireValidParentPackageLinkage(parentPackageId, { clientId, subjectId } = {}) {
+  if (parentPackageId === undefined || parentPackageId === null) return null;
+  const linkageError = (message) => {
+    const err = new Error(message);
+    err.code = 'invalid_request';
+    err.param = 'parent_package_id';
+    return err;
+  };
+  if (!isNonEmptyString(parentPackageId)) {
+    throw linkageError('parent_package_id must be a non-empty string');
+  }
+  const parent = await getGrantPackageRow(parentPackageId);
+  if (!parent) {
+    throw linkageError(`parent_package_id ${parentPackageId} does not exist`);
+  }
+  if (isNonEmptyString(clientId) && parent.client_id !== clientId) {
+    throw linkageError('parent_package_id belongs to a different client; cross-client lineage is not allowed');
+  }
+  if (isNonEmptyString(subjectId) && parent.subject_id !== subjectId) {
+    throw linkageError('parent_package_id belongs to a different owner; cross-owner lineage is not allowed');
+  }
+  if (parent.status !== 'active') {
+    throw linkageError(`parent_package_id ${parentPackageId} is ${parent.status}; cannot link to an inactive package`);
+  }
+  return parent;
+}
+
+function describePackageMemberSource(grant, connectionId = null, metadata = null) {
+  const source = describeGrantSource(grant);
+  if (!source) return null;
+  return {
+    ...source,
+    ...(isNonEmptyString(connectionId) ? { connection_id: connectionId } : {}),
+    ...(metadata?.display_name ? { display_name: metadata.display_name } : {}),
+    ...(metadata?.connector_display_name ? { connector_display_name: metadata.connector_display_name } : {}),
+  };
+}
+
+function isRawConnectionDisplayName(source) {
+  return isNonEmptyString(source?.connection_id) && source.display_name === source.connection_id;
+}
+
+async function normalizePersistedPackageMemberSource(source, { ownerSubjectId = null } = {}) {
+  if (!source || typeof source !== 'object') return source;
+  if (!isRawConnectionDisplayName(source)) return source;
+
+  const sanitized = { ...source };
+  const connectorId = isNonEmptyString(sanitized.id) ? sanitized.id : null;
+  if (isNonEmptyString(ownerSubjectId) && connectorId) {
+    const active = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
+    const binding = active.find((row) => row.connectorInstanceId === sanitized.connection_id) || null;
+    const displayName = projectBindingForWire(binding)?.display_name || null;
+    if (displayName) {
+      sanitized.display_name = displayName;
+      return sanitized;
+    }
+  }
+
+  delete sanitized.display_name;
+  return sanitized;
+}
+
+/**
+ * Persist one source-bounded child grant + access token for a hosted MCP
+ * grant package. Mirrors the durable steps in `approveGrant` for one
+ * `authorization_details[]` entry, without the consent-row / pending-consent
+ * coupling. Returns `{ grant, token, expiresAt }`.
+ *
+ * The package envelope is a transport convenience — it does NOT change the
+ * Core invariant that each issued grant is source-bounded.
+ */
+async function persistChildGrantForPackage({
+  request,
+  registeredClient,
+  subjectId,
+  sourceBinding,
+  storageBinding,
+  manifest,
+  resolvedStreams,
+  traceContext,
+}) {
+  const selection = request.selection;
+  const client = request.client || {};
+
+  // Hosted MCP packages never carry ai_training; reject if a client tries.
+  if (selection.purpose_code === 'https://pdpp.org/purpose/ai_training') {
+    const err = new Error('Hosted MCP package consent does not cover ai_training');
+    err.code = 'invalid_request';
+    err.param = 'purpose_code';
+    throw err;
+  }
+
+  const grantId = generateId('grt');
+  const issuedAt = nowIso();
+  const expiresAt = selection.access_mode === 'single_use'
+    ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    : null;
+
+  const persistedSource = describeSourceBinding(sourceBinding);
+  const persistedStorageBinding = normalizeStorageBinding(storageBinding);
+
+  const grant = {
+    version: '0.1.0',
+    grant_id: grantId,
+    issued_at: issuedAt,
+    subject: { id: subjectId },
+    client: {
+      client_id: registeredClient.client_id,
+      registration_mode: registeredClient.registration_mode || 'pre_registered_public',
+      ...(client.client_display ? { client_display: client.client_display } : {}),
+    },
+    source: persistedSource,
+    manifest_version: manifest.version,
+    purpose_code: selection.purpose_code,
+    purpose_description: selection.purpose_description,
+    access_mode: selection.access_mode,
+    streams: resolvedStreams,
+    retention: selection.retention,
+    expires_at: expiresAt,
+  };
+
+  await getGrantPackageStore().insertChildGrant({
+    grantId,
+    subjectId,
+    clientId: registeredClient.client_id,
+    storageBindingJson: serializeStorageBinding(persistedStorageBinding),
+    grantJson: JSON.stringify(grant),
+    accessMode: selection.access_mode,
+    issuedAt,
+    expiresAt,
+    traceId: traceContext.trace_id,
+    scenarioId: traceContext.scenario_id,
+  });
+
+  await emitSpineEvent({
+    event_type: 'grant.issued',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'grant',
+    object_id: grantId,
+    status: 'succeeded',
+    grant_id: grantId,
+    client_id: registeredClient.client_id,
+    data: {
+      source: describeGrantSource(grant),
+      access_mode: selection.access_mode,
+      purpose_code: selection.purpose_code,
+      stream_names: resolvedStreams.map((stream) => stream.name),
+      retention: selection.retention ?? null,
+    },
+  });
+
+  const token = await issueToken(grantId, subjectId, registeredClient.client_id, expiresAt, {
+    traceContext,
+    source: 'hosted_mcp_package_child',
+  });
+
+  return { grant, token, expiresAt };
+}
+
+/**
+ * Create one hosted MCP grant package: one independent source-bounded child
+ * grant per `authorization_details[]` entry, plus a single package-bound
+ * access token returned to the client. The package token never replaces or
+ * weakens child-grant enforcement — the RS still authorizes every read
+ * through the child grant whose source matches the request.
+ *
+ * @param {object} args
+ * @param {string} args.clientId
+ * @param {object[]} args.authorizationDetails — one entry per selected source.
+ * @param {object[]} args.storageBindings — same-index `{connector_id}` per detail.
+ * @param {string[]} args.connectionIds — same-index `connection_id` per detail
+ *   (may be null for connectors without owner-configured connection rows).
+ * @param {object[]} args.sourceMetadata — display hints per detail.
+ * @param {string} [args.subjectId]
+ * @param {object} [args.opts]
+ */
+export async function createHostedMcpGrantPackage({
+  clientId,
+  authorizationDetails,
+  storageBindings = [],
+  connectionIds = [],
+  sourceMetadata = [],
+  subjectId = 'owner_local',
+  opts = {},
+}) {
+  if (!isNonEmptyString(clientId)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'client_id is required');
+  }
+  if (!Array.isArray(authorizationDetails) || authorizationDetails.length === 0) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'At least one source must be selected');
+  }
+
+  const registeredClient = await resolveOAuthClient(clientId, opts);
+  if (!registeredClient) {
+    throw buildOAuthAuthorizationCodeError('invalid_client', 'Unknown client_id');
+  }
+
+  const packageId = generateId('gpkg');
+  const traceContext = createTraceContext({ scenarioId: opts.scenarioId });
+  const createdAt = nowIso();
+  const packageEnvelope = {
+    version: 'reference.mcp_package.v1',
+    package_id: packageId,
+    subject: { id: subjectId },
+    client: {
+      client_id: clientId,
+      registration_mode: registeredClient.registration_mode || 'pre_registered_public',
+      client_display: buildClientDisplayFromRegistration(registeredClient.metadata),
+    },
+    approved_source_count: authorizationDetails.length,
+    source_bounded_child_grants: true,
+  };
+
+  await getGrantPackageStore().insertPackage({
+    packageId,
+    subjectId,
+    clientId,
+    packageJson: JSON.stringify(packageEnvelope),
+    parentPackageId: null,
+    traceId: traceContext.trace_id,
+    scenarioId: traceContext.scenario_id,
+    createdAt,
+    approvedAt: createdAt,
+  });
+
+  const childGrants = [];
+  for (const [index, detail] of authorizationDetails.entries()) {
+    const request = normalizePendingGrantRequest(
+      { client_id: clientId, authorization_details: [detail] },
+      opts,
+    );
+    const selectedStorageBinding = normalizeStorageBinding(storageBindings[index]);
+    if (selectedStorageBinding) {
+      request.storage_binding = selectedStorageBinding;
+    }
+    requireStructuredPendingRequestShape(request);
+    request.trace_context = traceContext;
+    const childRegisteredClient = await requirePendingRequestClientRegistration(request, opts);
+    const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request);
+    request.source_binding = describeSourceBinding(sourceBinding);
+    request.storage_binding = normalizeStorageBinding(storageBinding);
+    const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+    request.manifest_version = manifest.version;
+    const resolvedStreams = resolveGrantSelection(request.selection, manifest);
+    const { grant, token } = await persistChildGrantForPackage({
+      request,
+      registeredClient: childRegisteredClient,
+      subjectId,
+      sourceBinding,
+      storageBinding,
+      manifest,
+      resolvedStreams,
+      traceContext,
+    });
+    const connectionId = isNonEmptyString(connectionIds[index]) ? connectionIds[index] : null;
+    const source = describePackageMemberSource(grant, connectionId, sourceMetadata[index]);
+    const addedAt = nowIso();
+    await getGrantPackageStore().insertPackageMember({
+      packageId,
+      grantId: grant.grant_id,
+      tokenId: token,
+      sourceJson: JSON.stringify(source),
+      addedAt,
+    });
+    childGrants.push({ grant, token, source, connection_id: connectionId });
+  }
+
+  const packageToken = await issuePackageToken(packageId, subjectId, clientId, null, {
+    traceContext,
+    source: 'hosted_mcp_package',
+  });
+
+  await emitSpineEvent({
+    event_type: 'grant_package.issued',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'grant_package',
+    object_id: packageId,
+    status: 'succeeded',
+    client_id: clientId,
+    token_id: packageToken,
+    data: {
+      child_grant_ids: childGrants.map((entry) => entry.grant.grant_id),
+      sources: childGrants.map((entry) => entry.source),
+    },
+  });
+
+  return {
+    package: {
+      ...packageEnvelope,
+      child_grants: childGrants.map((entry) => ({
+        grant_id: entry.grant.grant_id,
+        source: entry.source,
+      })),
+    },
+    package_id: packageId,
+    token: packageToken,
+    child_grants: childGrants,
+    trace_context: traceContext,
+  };
+}
+
+/**
+ * Resolve a hosted-MCP package id to its currently active members. Each
+ * member entry exposes the child grant, its access token, its storage
+ * binding, and an enriched `source` (with `connection_id` when known) that
+ * the MCP fan-out can use to scope per-source reads.
+ *
+ * Returns `null` when the package itself is missing or revoked. An active
+ * package with all members revoked returns `{ package, members: [] }`.
+ */
+export async function getGrantPackageAccess(packageId) {
+  if (!isNonEmptyString(packageId)) return null;
+  const store = getGrantPackageStore();
+  const packageRow = await store.getPackageById(packageId);
+  const grantPackage = normalizePackageRow(packageRow);
+  if (!grantPackage || grantPackage.status !== 'active') {
+    return null;
+  }
+
+  const memberRows = await store.listActiveMembers(packageId);
+
+  const activeMembers = [];
+  for (const row of memberRows) {
+    if (row.grant_status !== 'active' || row.token_revoked) continue;
+    if (row.token_expires_at && new Date(row.token_expires_at).getTime() <= Date.now()) continue;
+    let grantState;
+    try {
+      grantState = requirePersistedGrantState(row);
+    } catch {
+      continue;
+    }
+    const persistedSource = await normalizePersistedPackageMemberSource(
+      parsePackageJson(row.source_json) || describeGrantSource(grantState.grant),
+      { ownerSubjectId: grantPackage.subject_id },
+    );
+    activeMembers.push({
+      package_id: packageId,
+      grant_id: row.grant_id,
+      token: row.token_id,
+      source: persistedSource,
+      grant: grantState.grant,
+      grant_storage_binding: grantState.storageBinding,
+      connection_id: persistedSource?.connection_id || null,
+    });
+  }
+
+  return {
+    package: grantPackage,
+    members: activeMembers,
+  };
+}
+
+/**
+ * Owner-facing list of every grant package the deployment has issued,
+ * ordered by created_at DESC. Each row exposes the package metadata plus
+ * the count of `grant_package_members` so the operator UI can render the
+ * blast radius before the operator clicks into the detail page.
+ *
+ * Reference-only operator surface. Not part of the PDPP protocol; do
+ * not expose to clients.
+ */
+function encodeGrantPackageCursor(row) {
+  return Buffer.from(JSON.stringify({
+    created_at: row.created_at,
+    package_id: row.package_id,
+  }), 'utf8').toString('base64url');
+}
+
+function decodeGrantPackageCursor(cursor) {
+  if (!isNonEmptyString(cursor)) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    if (
+      decoded
+      && isNonEmptyString(decoded.created_at)
+      && isNonEmptyString(decoded.package_id)
+    ) {
+      return {
+        created_at: decoded.created_at,
+        package_id: decoded.package_id,
+      };
+    }
+  } catch {
+    // handled below
+  }
+  const err = new Error('Invalid grant package cursor');
+  err.code = 'invalid_cursor';
+  throw err;
+}
+
+export async function listGrantPackagesForOwner(opts = {}) {
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 50;
+  const cursor = decodeGrantPackageCursor(opts.cursor);
+  let rows;
+  if (isPostgresStorageBackend()) {
+    const params = [];
+    let where = '';
+    if (cursor) {
+      params.push(cursor.created_at, cursor.package_id);
+      where = 'WHERE (gp.created_at < $1 OR (gp.created_at = $1 AND gp.package_id < $2))';
+    }
+    params.push(limit + 1);
+    const limitPlaceholder = `$${params.length}`;
+    rows = (await postgresQuery(
+      `SELECT gp.package_id, gp.subject_id, gp.client_id, gp.status,
+              gp.parent_package_id, gp.trace_id, gp.scenario_id, gp.created_at, gp.approved_at, gp.revoked_at,
+              (SELECT COUNT(*) FROM grant_package_members gpm
+                 WHERE gpm.package_id = gp.package_id) AS member_count
+         FROM grant_packages gp
+         ${where}
+         ORDER BY gp.created_at DESC, gp.package_id DESC
+         LIMIT ${limitPlaceholder}`,
+      params,
+    )).rows;
+  } else {
+    rows = [
+      ...allowUnboundedReadAcknowledged(referenceQueries.authGrantPackagesListAll, []),
+    ];
+    if (cursor) {
+      rows = rows.filter((row) => (
+        row.created_at < cursor.created_at
+        || (row.created_at === cursor.created_at && row.package_id < cursor.package_id)
+      ));
+    }
+    rows = rows.slice(0, limit + 1);
+  }
+  const normalized = rows
+    .map((row) => {
+      const pkg = normalizePackageRow(row);
+      if (!pkg) return null;
+      const memberCount =
+        row.member_count === null || row.member_count === undefined
+          ? 0
+          : Number(row.member_count);
+      return {
+        ...pkg,
+        member_count: Number.isFinite(memberCount) ? memberCount : 0,
+      };
+    })
+    .filter((row) => row !== null);
+  const data = normalized.slice(0, limit);
+  const hasMore = normalized.length > limit;
+  const tail = hasMore ? data.at(-1) : null;
+  return {
+    data,
+    has_more: hasMore,
+    next_cursor: tail ? encodeGrantPackageCursor(tail) : null,
+    limit,
+  };
+}
+
+/**
+ * Cheap total grant-package count for the owner-console overview badge. Lets
+ * the overview surface package presence/count without paging the full
+ * `/_ref/grant-packages` list. Owner-session-gated by the route. Returns a
+ * non-negative integer.
+ */
+export async function countGrantPackagesForOwner() {
+  if (isPostgresStorageBackend()) {
+    const row = await pgOne('SELECT COUNT(*)::int AS package_count FROM grant_packages');
+    const count = row ? Number(row.package_count) : 0;
+    return Number.isFinite(count) ? count : 0;
+  }
+  const row = getOne(referenceQueries.authGrantPackagesCount, []);
+  const count = row ? Number(row.package_count) : 0;
+  return Number.isFinite(count) ? count : 0;
+}
+
+/**
+ * Owner-facing detail view of a grant package, regardless of status.
+ * Returns the package row + every member row (active and revoked) so
+ * the operator can see the full child-grant cascade after revocation.
+ * Unlike `getGrantPackageAccess` (consumed by the MCP fan-out, which
+ * needs only active members of an active package), this helper is
+ * non-discriminatory.
+ *
+ * Returns `null` when the package id does not exist.
+ */
+export async function getGrantPackageForOwner(packageId) {
+  if (!isNonEmptyString(packageId)) return null;
+  const store = getGrantPackageStore();
+  const packageRow = await store.getPackageById(packageId);
+  const grantPackage = normalizePackageRow(packageRow);
+  if (!grantPackage) return null;
+
+  // For operator visibility we ALWAYS return every member row, even ones
+  // marked revoked, so the operator can see the cascade history on a
+  // revoked package detail page. The MCP fan-out path uses
+  // `getGrantPackageAccess`, which intentionally hides revoked rows.
+  const memberRows = await store.listAllMembers(packageId);
+
+  const children = await Promise.all(memberRows.map(async (row) => ({
+    grant_id: row.grant_id,
+    grant_status: row.grant_status,
+    member_status: row.member_status,
+    added_at: row.added_at,
+    revoked_at: row.member_revoked_at || null,
+    source: await normalizePersistedPackageMemberSource(parsePackageJson(row.source_json) || null, {
+      ownerSubjectId: grantPackage.subject_id,
+    }),
+  })));
+
+  return {
+    ...grantPackage,
+    member_count: children.length,
+    children,
+  };
+}
+
+/**
+ * Direct children of a package in the add-source lineage: every package
+ * whose `parent_package_id` equals `packageId`. Used to walk the lineage
+ * tree downward when assembling the cumulative per-client view. Returns
+ * normalized package rows (no members).
+ */
+async function listGrantPackagesByParent(packageId) {
+  if (!isNonEmptyString(packageId)) return [];
+  if (isPostgresStorageBackend()) {
+    const rows = (await postgresQuery(
+      `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
+              parent_package_id, trace_id, scenario_id, created_at, approved_at, revoked_at
+         FROM grant_packages
+         WHERE parent_package_id = $1
+         ORDER BY created_at, package_id`,
+      [packageId],
+    )).rows;
+    return rows.map(normalizePackageRow).filter(Boolean);
+  }
+  // SQLite: the package count per deployment is bounded (small enumeration
+  // table); filter the all-packages listing by parent in JS rather than add
+  // another registered query.
+  const rows = allowUnboundedReadAcknowledged(referenceQueries.authGrantPackagesListAll, []);
+  return rows
+    .map(normalizePackageRow)
+    .filter((pkg) => pkg && pkg.parent_package_id === packageId);
+}
+
+/**
+ * Cumulative per-client view across one client's linked add-source packages.
+ *
+ * Given any package in a lineage, resolves the lineage ROOT by following
+ * `parent_package_id` to the top, then walks the tree downward to gather every
+ * linked package for the SAME client and owner. Returns the root, the ordered
+ * lineage, and the union of child grants across the lineage so the dashboard
+ * can render the cumulative picture a client currently holds.
+ *
+ * Lineage is grouping/audit metadata only: each child grant in the returned
+ * `children` array remains independently revocable, and `package_id` /
+ * `parent_package_id` carry no source or stream authority. Cross-client and
+ * cross-owner packages are never mixed into the cumulative view — the walk is
+ * scoped to the root package's client_id and subject_id and skips any linked
+ * row that does not match (a fail-closed guard against a tampered link).
+ *
+ * Returns `null` when the starting package id does not exist.
+ */
+export async function getCumulativeClientAccessForPackage(packageId) {
+  if (!isNonEmptyString(packageId)) return null;
+  const start = await getGrantPackageRow(packageId);
+  if (!start) return null;
+
+  // Walk up to the lineage root. Bound the walk by a visited set so a
+  // corrupt cycle cannot loop forever.
+  const visitedUp = new Set();
+  let root = start;
+  while (root.parent_package_id && !visitedUp.has(root.package_id)) {
+    visitedUp.add(root.package_id);
+    const parent = await getGrantPackageRow(root.parent_package_id);
+    if (!parent) break;
+    // Scope guard: a parent that does not match the starting client/owner is
+    // not part of this client's cumulative view; stop ascending there.
+    if (parent.client_id !== start.client_id || parent.subject_id !== start.subject_id) break;
+    root = parent;
+  }
+
+  const clientId = root.client_id;
+  const subjectId = root.subject_id;
+
+  // Walk the tree downward from the root, gathering same-client/owner packages.
+  const lineageIds = [];
+  const seen = new Set();
+  const queue = [root.package_id];
+  while (queue.length) {
+    const current = queue.shift();
+    if (seen.has(current)) continue;
+    seen.add(current);
+    lineageIds.push(current);
+    const childPackages = await listGrantPackagesByParent(current);
+    for (const child of childPackages) {
+      if (child.client_id !== clientId || child.subject_id !== subjectId) continue;
+      if (!seen.has(child.package_id)) queue.push(child.package_id);
+    }
+  }
+
+  // Assemble per-package detail (with members) in lineage order.
+  const packages = [];
+  const cumulativeChildren = [];
+  for (const id of lineageIds) {
+    const detail = await getGrantPackageForOwner(id);
+    if (!detail) continue;
+    packages.push({
+      package_id: detail.package_id,
+      parent_package_id: detail.parent_package_id,
+      status: detail.status,
+      created_at: detail.created_at,
+      approved_at: detail.approved_at,
+      revoked_at: detail.revoked_at,
+      member_count: detail.member_count,
+    });
+    for (const child of detail.children) {
+      cumulativeChildren.push({ ...child, package_id: detail.package_id });
+    }
+  }
+
+  const activeChildren = cumulativeChildren.filter(
+    (child) => child.grant_status === 'active' && child.member_status === 'active',
+  );
+
+  return {
+    client_id: clientId,
+    subject_id: subjectId,
+    root_package_id: root.package_id,
+    package_count: packages.length,
+    packages,
+    children: cumulativeChildren,
+    active_child_count: activeChildren.length,
+  };
+}
+
+/**
+ * Resolve a child grant to its parent package id, if any. The binding
+ * fact lives on `grant_package_members`, the table that joins child
+ * grants to the package they were approved under. The MCP refresh token
+ * issued alongside the package carries `tokens.package_id` but has a
+ * NULL `grant_id`, so it does not participate in this lookup; only the
+ * per-source child grants appear in `grant_package_members`.
+ *
+ * Returns `null` for grants that are not bound to a package.
+ */
+export async function getGrantPackageIdForGrant(grantId) {
+  if (!isNonEmptyString(grantId)) return null;
+  const row = await getGrantPackageStore().getPackageIdForGrant(grantId);
+  return row?.package_id ?? null;
+}
+
+async function listActiveGrantPackageMembersForRevocation(packageId) {
+  if (!isNonEmptyString(packageId)) return [];
+  return getGrantPackageStore().listActiveMembers(packageId);
+}
+
+async function markGrantPackageMemberRevoked(packageId, grantId, revokedAt) {
+  await getGrantPackageStore().markMemberRevoked({ packageId, grantId, revokedAt });
+}
+
+async function markGrantPackageRevoked(packageId, revokedAt) {
+  await getGrantPackageStore().markPackageRevokedCascade({ packageId, revokedAt });
+}
+
+function normalizePackageRevokeError(grantId, err) {
+  const code = isNonEmptyString(err?.code) ? err.code : 'revoke_failed';
+  const message = isNonEmptyString(err?.message) ? err.message : 'Child grant revoke failed';
+  return {
+    grant_id: grantId,
+    error: { code, message },
+  };
+}
+
+export async function revokeGrantPackage(packageId, context = {}) {
+  const activeMembers = await listActiveGrantPackageMembersForRevocation(packageId);
+  const revokedChildGrants = [];
+  const notRevokedChildGrants = [];
+
+  for (const member of activeMembers) {
+    if (member.grant_status !== 'active') continue;
+    try {
+      await revokeGrant(member.grant_id, context);
+      const childRevokedAt = nowIso();
+      await markGrantPackageMemberRevoked(packageId, member.grant_id, childRevokedAt);
+      revokedChildGrants.push(member.grant_id);
+    } catch (err) {
+      notRevokedChildGrants.push(normalizePackageRevokeError(member.grant_id, err));
+    }
+  }
+
+  if (notRevokedChildGrants.length) {
+    await emitSpineEvent({
+      event_type: 'grant_package.revoke_partial',
+      trace_id: context.trace_id || undefined,
+      scenario_id: context.scenario_id || undefined,
+      request_id: context.request_id || undefined,
+      actor_type: 'authorization_server',
+      actor_id: 'pdpp_as',
+      object_type: 'grant_package',
+      object_id: packageId,
+      status: 'failed',
+      data: {
+        revoked_child_grants: revokedChildGrants,
+        not_revoked_child_grants: notRevokedChildGrants,
+      },
+    });
+    return {
+      status: 'partial_failure',
+      package_id: packageId,
+      revoked_at: null,
+      revoked_child_grants: revokedChildGrants,
+      not_revoked_child_grants: notRevokedChildGrants,
+    };
+  }
+
+  const now = nowIso();
+  await markGrantPackageRevoked(packageId, now);
+
+  await emitSpineEvent({
+    event_type: 'grant_package.revoked',
+    trace_id: context.trace_id || undefined,
+    scenario_id: context.scenario_id || undefined,
+    request_id: context.request_id || undefined,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    object_type: 'grant_package',
+    object_id: packageId,
+    status: 'succeeded',
+    data: {
+      revoked_child_grants: revokedChildGrants,
+    },
+  });
+  return {
+    status: 'revoked',
+    package_id: packageId,
+    revoked_at: now,
+    revoked_child_grants: revokedChildGrants,
+    not_revoked_child_grants: [],
+  };
+}
+
+export async function issueOAuthAuthorizationCodeForPackageDeviceCode(deviceCode, { packageId, token }) {
+  if (!isNonEmptyString(deviceCode)) return null;
+  const oauthCodeStore = getOAuthCodeStore();
+  const row = await oauthCodeStore.getByDeviceCode(deviceCode);
+
+  if (!row || row.status !== 'pending') return null;
+  if (isExpired(row)) {
+    await oauthCodeStore.markExpiredByDeviceCode(deviceCode);
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'OAuth authorization request has expired');
+  }
+
+  const code = generateId('oacode');
+  const issuedAt = nowIso();
+  const expiresAt = expiresInIso(300);
+  await oauthCodeStore.issueForPackageDeviceCode({ code, packageId, token, issuedAt, expiresAt, deviceCode });
+
+  return {
+    code,
+    client_id: row.client_id,
+    redirect_uri: row.redirect_uri,
+    state: row.state || null,
+    expires_at: expiresAt,
+  };
+}
+
+export async function stageOAuthAuthorizationCodeRequest({
+  deviceCode,
+  clientId,
+  redirectUri,
+  state = null,
+  codeChallenge,
+  codeChallengeMethod,
+  expiresInSeconds = 300,
+}) {
+  if (!isNonEmptyString(deviceCode)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'device_code is required');
+  }
+  if (!isNonEmptyString(clientId)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'client_id is required');
+  }
+  if (!isNonEmptyString(redirectUri)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'redirect_uri is required');
+  }
+  if (!isUsableAuthorizationCodePkceChallenge(codeChallenge, codeChallengeMethod)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'code_challenge_method must be S256 and code_challenge must be 43-128 characters');
+  }
+
+  const row = {
+    id: generateId('oac'),
+    deviceCode,
+    clientId,
+    redirectUri,
+    state: state || null,
+    codeChallenge,
+    codeChallengeMethod,
+    createdAt: nowIso(),
+    expiresAt: expiresInIso(expiresInSeconds),
+  };
+
+  await getOAuthCodeStore().upsertPending({
+    id: row.id,
+    deviceCode: row.deviceCode,
+    clientId: row.clientId,
+    redirectUri: row.redirectUri,
+    state: row.state,
+    codeChallenge: row.codeChallenge,
+    codeChallengeMethod: row.codeChallengeMethod,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+  });
+
+  return { ...row, status: 'pending' };
+}
+
+export async function issueOAuthAuthorizationCodeForDeviceCode(deviceCode, { grantId, token }) {
+  if (!isNonEmptyString(deviceCode)) return null;
+  const oauthCodeStore = getOAuthCodeStore();
+  const row = await oauthCodeStore.getByDeviceCode(deviceCode);
+
+  if (!row || row.status !== 'pending') return null;
+  if (isExpired(row)) {
+    await oauthCodeStore.markExpiredByDeviceCode(deviceCode);
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'OAuth authorization request has expired');
+  }
+
+  const code = generateId('oacode');
+  const issuedAt = nowIso();
+  const expiresAt = expiresInIso(300);
+  await oauthCodeStore.issueForDeviceCode({ code, grantId, token, issuedAt, expiresAt, deviceCode });
+
+  return {
+    code,
+    client_id: row.client_id,
+    redirect_uri: row.redirect_uri,
+    state: row.state || null,
+    expires_at: expiresAt,
+  };
+}
+
+export async function exchangeOAuthAuthorizationCode({
+  code,
+  clientId,
+  redirectUri,
+  codeVerifier,
+  baseUrl = null,
+  issuerBase = null,
+}) {
+  if (!isNonEmptyString(code)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'code is required');
+  }
+  if (!isNonEmptyString(clientId)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'client_id is required');
+  }
+  if (!isNonEmptyString(redirectUri)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'redirect_uri is required');
+  }
+  if (!isNonEmptyString(codeVerifier)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'code_verifier is required');
+  }
+  if (!PKCE_CODE_VERIFIER_RE.test(codeVerifier)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'code_verifier must be 43-128 unreserved URI characters');
+  }
+
+  const oauthCodeStore = getOAuthCodeStore();
+  const row = await oauthCodeStore.getByCode(code);
+
+  if (!row || row.status !== 'issued' || row.consumed_at) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code is invalid or already used');
+  }
+  if (isExpired(row)) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code has expired');
+  }
+  if (row.client_id !== clientId) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code client_id mismatch');
+  }
+  if (row.redirect_uri !== redirectUri) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code redirect_uri mismatch');
+  }
+  if (row.code_challenge_method !== 'S256' || base64UrlSha256(codeVerifier) !== row.code_challenge) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code PKCE verification failed');
+  }
+
+  const registeredClient = await resolveOAuthClient(clientId, { baseUrl, issuerBase });
+  if (!registeredClient) {
+    throw buildOAuthAuthorizationCodeError('invalid_client', 'Unknown client_id');
+  }
+
+  const consumedAt = nowIso();
+  const updated = await oauthCodeStore.consumeCode({ consumedAt, code });
+
+  if (!updated.changes) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code is invalid or already used');
+  }
+
+  const response = {
+    access_token: row.token_id,
+    token_type: 'Bearer',
+    ...(row.package_id ? { grant_package_id: row.package_id } : { grant_id: row.grant_id }),
+  };
+
+  if (clientSupportsOAuthRefreshToken(registeredClient)) {
+    const tokenInfo = await introspect(row.token_id);
+    const tokenMatches = row.package_id
+      ? tokenInfo.grant_package_id === row.package_id && tokenInfo.pdpp_token_kind === 'mcp_package'
+      : tokenInfo.grant_id === row.grant_id && tokenInfo.pdpp_token_kind === 'client';
+    if (!tokenInfo.active || tokenInfo.client_id !== clientId || !tokenMatches) {
+      throw buildOAuthAuthorizationCodeError('invalid_grant', 'Issued grant token is no longer active');
+    }
+    response.refresh_token = row.package_id
+      ? await issueOAuthRefreshTokenForPackage({
+          clientId,
+          packageId: row.package_id,
+          subjectId: tokenInfo.subject_id,
+          expiresAt: tokenInfo.exp ? new Date(tokenInfo.exp * 1000).toISOString() : null,
+        })
+      : await issueOAuthRefreshToken({
+          clientId,
+          grantId: row.grant_id,
+          subjectId: tokenInfo.subject_id,
+          expiresAt: tokenInfo.exp ? new Date(tokenInfo.exp * 1000).toISOString() : null,
+        });
+  }
+
+  return response;
+}
+
+export async function exchangeOAuthRefreshToken({
+  refreshToken,
+  clientId,
+}) {
+  if (!isNonEmptyString(refreshToken)) {
+    throw buildOAuthRefreshTokenError('invalid_request', 'refresh_token is required');
+  }
+  if (!isNonEmptyString(clientId)) {
+    throw buildOAuthRefreshTokenError('invalid_request', 'client_id is required');
+  }
+
+  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
+  const refreshTokenStore = getRefreshTokenStore();
+  const row = await refreshTokenStore.getByTokenHash(refreshTokenHash);
+
+  if (!row || row.status !== 'active' || row.revoked_at) {
+    throw buildOAuthRefreshTokenError('invalid_grant', 'Refresh token is invalid');
+  }
+  if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
+    throw buildOAuthRefreshTokenError('invalid_grant', 'Refresh token has expired');
+  }
+  if (row.client_id !== clientId) {
+    throw buildOAuthRefreshTokenError('invalid_grant', 'Refresh token client_id mismatch');
+  }
+
+  const registeredClient = await getRegisteredClient(clientId);
+  if (!registeredClient || !clientSupportsOAuthRefreshToken(registeredClient)) {
+    throw buildOAuthRefreshTokenError('invalid_grant', 'Client is not registered for refresh_token');
+  }
+
+  let accessToken;
+  try {
+    if (row.package_id) {
+      const grantPackage = await getGrantPackageAccess(row.package_id);
+      if (!grantPackage) {
+        const err = new Error('Grant package is no longer active');
+        err.code = 'package_revoked';
+        throw err;
+      }
+      accessToken = await issuePackageToken(row.package_id, row.subject_id, row.client_id, row.expires_at || null, {
+        source: 'oauth_refresh_token',
+      });
+    } else {
+      accessToken = await issueToken(row.grant_id, row.subject_id, row.client_id, row.expires_at || null, {
+        source: 'oauth_refresh_token',
+      });
+    }
+  } catch (err) {
+    const code = [
+      'grant_revoked',
+      'grant_invalid',
+      'grant_consumed',
+      'package_revoked',
+      'not_found',
+    ].includes(err?.code) ? 'invalid_grant' : (err?.code || 'invalid_grant');
+    throw buildOAuthRefreshTokenError(code, err?.message || 'Refresh token grant is no longer valid');
+  }
+
+  const usedAt = nowIso();
+  await refreshTokenStore.markUsed({ usedAt, refreshTokenHash });
+
+  return {
+    access_token: accessToken,
+    token_type: 'Bearer',
+    refresh_token: refreshToken,
+    ...(row.package_id ? { grant_package_id: row.package_id } : { grant_id: row.grant_id }),
+  };
+}
+
+/**
+ * Consent exchange-code store.
+ *
+ * The HTML branch of `POST /consent/approve` SHALL NOT render the live client
+ * bearer to the browser; instead it mints a single-use opaque exchange code,
+ * stores `{ code -> { grantId, token, grant, expiresAt, consumed } }` here,
+ * and tells the caller to redeem the code at `POST /consent/exchange`.
+ *
+ * In-memory by design: the reference is single-process, the codes are
+ * short-lived, and a code that survives a process restart would weaken the
+ * "short-lived single-use ticket" property. See
+ * openspec/changes/harden-consent-token-handoff/design.md.
+ */
+const consentExchangeCodes = new Map();
+const CONSENT_EXCHANGE_CODE_TTL_MS = 5 * 60 * 1000;
+
+function pruneExpiredConsentExchangeCodes(now = Date.now()) {
+  for (const [code, entry] of consentExchangeCodes) {
+    if (entry.consumed || entry.expiresAt <= now) {
+      consentExchangeCodes.delete(code);
+    }
+  }
+}
+
+export function createConsentExchangeCode({ grantId, token, grant, ttlMs = CONSENT_EXCHANGE_CODE_TTL_MS }) {
+  if (!grantId || !token || !grant) {
+    throw new Error('createConsentExchangeCode requires grantId, token, and grant');
+  }
+  pruneExpiredConsentExchangeCodes();
+  const code = `cex_${randomBytes(32).toString('hex')}`;
+  consentExchangeCodes.set(code, {
+    grantId,
+    token,
+    grant,
+    expiresAt: Date.now() + ttlMs,
+    consumed: false,
+  });
+  return code;
+}
+
+export function consumeConsentExchangeCode(code) {
+  if (typeof code !== 'string' || code.length === 0) {
+    return { ok: false, reason: 'unknown' };
+  }
+  const entry = consentExchangeCodes.get(code);
+  if (!entry) {
+    return { ok: false, reason: 'unknown' };
+  }
+  if (entry.consumed) {
+    return { ok: false, reason: 'consumed' };
+  }
+  if (entry.expiresAt <= Date.now()) {
+    consentExchangeCodes.delete(code);
+    return { ok: false, reason: 'expired' };
+  }
+  entry.consumed = true;
+  consentExchangeCodes.delete(code);
+  return {
+    ok: true,
+    grantId: entry.grantId,
+    token: entry.token,
+    grant: entry.grant,
+  };
+}
+
+/** Test-only escape hatch: clear the in-memory exchange-code store. */
+export function _resetConsentExchangeCodes() {
+  consentExchangeCodes.clear();
+}
+
+/**
+ * Deny and clear a pending grant request
+ */
+export async function denyGrant(deviceCode) {
+  const pending = await getPendingConsentRow(deviceCode);
+  if (!pending || pending.status !== 'pending') return false;
+  if (isExpired(pending)) {
+    await markPendingConsentExpired(deviceCode);
+    return false;
+  }
+  await markPendingConsentDenied(deviceCode);
+
+  const request = JSON.parse(pending.params_json);
+  const traceContext = requirePersistedPendingTraceContext(pending);
+  request.trace_context = traceContext;
+  const { sourceBinding } = requireStructuredPendingRequestBindings(request);
+  await emitSpineEvent({
+    event_type: 'consent.denied',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'subject',
+    actor_id: pending.subject_id || 'owner_local',
+    object_type: 'pending_consent',
+    object_id: deviceCode,
+    status: 'denied',
+    client_id: request.client?.client_id || null,
+    data: {
+      user_code: pending.user_code,
+      source: describeSourceBinding(sourceBinding),
+    },
+  });
+
+  return true;
+}
+
+/**
+ * Start an owner device authorization flow (RFC 8628-shaped).
+ * Returns { device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval }.
+ */
+export async function initiateOwnerDeviceAuthorization(clientId, opts = {}) {
+  const traceContext = createTraceContext({ scenarioId: opts.scenarioId });
+  try {
+    if (!clientId) {
+      const err = new Error('client_id is required');
+      err.code = 'invalid_request';
+      throw err;
+    }
+    const registeredClient = await getRegisteredClient(clientId);
+    if (!registeredClient) {
+      const err = new Error(`Unknown client_id: ${clientId}`);
+      err.code = 'invalid_client';
+      throw err;
+    }
+
+    const deviceCode = generateId('dc_owner');
+    const userCode = randomBytes(3).toString('hex').toUpperCase();
+    const verificationBaseUrl = opts.baseUrl || process.env.AS_PUBLIC_URL || `http://localhost:${process.env.AS_PORT || '7662'}`;
+    const expiresIn = opts.expiresIn || 300;
+    const interval = opts.interval || 1;
+    const expiresAt = expiresInIso(expiresIn);
+
+    await createOwnerDeviceAuth({
+      deviceCode,
+      userCode,
+      clientId,
+      intervalSeconds: interval,
+      expiresAt,
+      requestId: traceContext.request_id,
+      traceId: traceContext.trace_id,
+      scenarioId: traceContext.scenario_id,
+    });
+
+    await emitSpineEvent({
+      event_type: 'request.submitted',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      request_id: traceContext.request_id,
+      actor_type: 'client',
+      actor_id: registeredClient.client_id,
+      object_type: 'owner_device_auth',
+      object_id: deviceCode,
+      status: 'succeeded',
+      client_id: registeredClient.client_id,
+      data: {
+        issuance_path: 'owner_device_flow',
+        user_code: userCode,
+      },
+    });
+
+    return {
+      device_code: deviceCode,
+      user_code: userCode,
+      verification_uri: `${verificationBaseUrl}/device`,
+      verification_uri_complete: `${verificationBaseUrl}/device?user_code=${encodeURIComponent(userCode)}`,
+      expires_in: expiresIn,
+      interval,
+      trace_context: traceContext,
+    };
+  } catch (err) {
+    err.trace_id = traceContext.trace_id;
+    err.request_id = traceContext.request_id;
+    err.scenario_id = traceContext.scenario_id;
+    await emitSpineEvent({
+      event_type: 'request.rejected',
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      request_id: traceContext.request_id,
+      actor_type: 'client',
+      actor_id: clientId || 'unknown',
+      object_type: 'request',
+      object_id: traceContext.request_id,
+      status: 'rejected',
+      client_id: clientId || null,
+      data: {
+        issuance_path: 'owner_device_flow',
+        error: {
+          code: err.code || 'invalid_request',
+          message: err.message,
+        },
+      },
+    });
+    throw err;
+  }
+}
+
+/**
+ * Look up an owner-device authorization request by user code for verification UI.
+ */
+export async function getOwnerDeviceAuthorizationByUserCode(userCode) {
+  if (!userCode) return null;
+  const row = await getOwnerDeviceAuthRowByUserCode(userCode);
+  if (!row) return null;
+  if (row.status !== 'pending') return null;
+  if (isExpired(row)) {
+    await markOwnerDeviceAuthExpired(row.device_code);
+    return null;
+  }
+  let registeredClient;
+  try {
+    registeredClient = await getRegisteredClient(row.client_id);
+  } catch (err) {
+    if (err?.code === 'invalid_client') {
+      return null;
+    }
+    throw err;
+  }
+  if (!registeredClient) {
+    return null;
+  }
+  return {
+    device_code: row.device_code,
+    user_code: row.user_code,
+    client_id: registeredClient.client_id,
+    interval: row.interval_seconds,
+    created_at: row.created_at,
+    expires_at: row.expires_at,
+  };
+}
+
+/**
+ * Approve an owner-device authorization and mint an owner token.
+ */
+export async function approveOwnerDeviceAuthorization(userCode, subjectId = 'owner_local') {
+  const pending = await getOwnerDeviceAuthRowByUserCode(userCode);
+  if (!pending) {
+    const err = new Error('Unknown user code');
+    err.code = 'not_found';
+    throw err;
+  }
+  if (pending.status !== 'pending') {
+    throw attachOwnerDeviceTraceContext(Object.assign(new Error('Owner device authorization is not available'), {
+      code: 'not_found',
+    }), pending);
+  }
+  if (isExpired(pending)) {
+    await markOwnerDeviceAuthExpired(pending.device_code);
+    throw attachOwnerDeviceTraceContext(Object.assign(new Error('Owner device authorization has expired'), {
+      code: 'not_found',
+    }), pending);
+  }
+  let registeredClient;
+  try {
+    registeredClient = await getRegisteredClient(pending.client_id);
+  } catch (err) {
+    if (err?.code === 'invalid_client') {
+      throw attachOwnerDeviceTraceContext(err, pending);
+    }
+    throw err;
+  }
+  if (!registeredClient) {
+    const err = new Error(`Unknown client_id: ${pending.client_id}`);
+    err.code = 'invalid_client';
+    throw attachOwnerDeviceTraceContext(err, pending);
+  }
+  try {
+    registeredClient = await bindDynamicClientToApprovingOwner(registeredClient, subjectId);
+  } catch (err) {
+    throw attachOwnerDeviceTraceContext(err, pending);
+  }
+
+  const traceContext = pending.trace_id
+    ? {
+        request_id: pending.request_id || undefined,
+        trace_id: pending.trace_id,
+        scenario_id: pending.scenario_id || undefined,
+      }
+    : null;
+
+  await emitSpineEvent({
+    event_type: 'consent.approved',
+    trace_id: traceContext?.trace_id || undefined,
+    scenario_id: traceContext?.scenario_id || undefined,
+    request_id: traceContext?.request_id || undefined,
+    actor_type: 'subject',
+    actor_id: subjectId,
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'owner_device_auth',
+    object_id: pending.device_code,
+    status: 'succeeded',
+    client_id: registeredClient.client_id,
+    data: {
+      issuance_path: 'owner_device_flow',
+      user_code: pending.user_code,
+    },
+  });
+
+  const token = await issueOwnerToken(subjectId, {
+    traceContext,
+    clientId: registeredClient.client_id,
+    userCode: pending.user_code,
+  });
+  await markOwnerDeviceAuthApproved(pending.device_code, { subjectId, tokenId: token });
+
+  return {
+    access_token: token,
+    token_type: 'Bearer',
+    expires_in: 365 * 24 * 60 * 60,
+    subject_id: subjectId,
+  };
+}
+
+export async function denyOwnerDeviceAuthorization(userCode, subjectId = 'owner_local') {
+  const pending = await getOwnerDeviceAuthRowByUserCode(userCode);
+  if (!pending) {
+    const err = new Error('Unknown user code');
+    err.code = 'not_found';
+    throw err;
+  }
+  if (pending.status !== 'pending') {
+    throw attachOwnerDeviceTraceContext(Object.assign(new Error('Owner device authorization is not available'), {
+      code: 'not_found',
+    }), pending);
+  }
+  if (isExpired(pending)) {
+    await markOwnerDeviceAuthExpired(pending.device_code);
+    throw attachOwnerDeviceTraceContext(Object.assign(new Error('Owner device authorization has expired'), {
+      code: 'not_found',
+    }), pending);
+  }
+
+  const traceContext = pending.trace_id
+    ? {
+        request_id: pending.request_id || undefined,
+        trace_id: pending.trace_id,
+        scenario_id: pending.scenario_id || undefined,
+      }
+    : null;
+
+  await markOwnerDeviceAuthDenied(pending.device_code);
+  await emitSpineEvent({
+    event_type: 'request.rejected',
+    trace_id: traceContext?.trace_id || undefined,
+    scenario_id: traceContext?.scenario_id || undefined,
+    request_id: traceContext?.request_id || undefined,
+    actor_type: 'subject',
+    actor_id: subjectId,
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'owner_device_auth',
+    object_id: pending.device_code,
+    status: 'rejected',
+    client_id: pending.client_id,
+    data: {
+      issuance_path: 'owner_device_flow',
+      user_code: pending.user_code,
+      error: {
+        code: 'access_denied',
+        message: 'The resource owner denied the request',
+      },
+    },
+  });
+}
+
+/**
+ * RFC 8628-style device-code polling for owner tokens.
+ */
+export async function exchangeOwnerDeviceCode({ clientId, deviceCode }) {
+  if (!clientId || !deviceCode) {
+    const err = new Error('client_id and device_code are required');
+    err.code = 'invalid_request';
+    throw err;
+  }
+
+  const row = await getOwnerDeviceAuthRow(deviceCode);
+  if (!row || row.client_id !== clientId) {
+    const err = new Error('Unknown or invalid device_code');
+    err.code = 'invalid_grant';
+    throw err;
+  }
+  let registeredClient;
+  try {
+    registeredClient = await getRegisteredClient(clientId);
+  } catch (err) {
+    if (err?.code === 'invalid_client') {
+      throw attachOwnerDeviceTraceContext(err, row);
+    }
+    throw err;
+  }
+  if (!registeredClient) {
+    const err = new Error(`Unknown client_id: ${clientId}`);
+    err.code = 'invalid_client';
+    throw attachOwnerDeviceTraceContext(err, row);
+  }
+
+  if (row.status === 'pending' && isExpired(row)) {
+    await markOwnerDeviceAuthExpired(deviceCode);
+    throw attachOwnerDeviceTraceContext(Object.assign(new Error('Device code has expired'), {
+      code: 'expired_token',
+    }), row);
+  }
+
+  if (row.status === 'denied') {
+    throw attachOwnerDeviceTraceContext(Object.assign(new Error('The resource owner denied the request'), {
+      code: 'access_denied',
+    }), row);
+  }
+
+  if (row.status === 'expired') {
+    throw attachOwnerDeviceTraceContext(Object.assign(new Error('Device code has expired'), {
+      code: 'expired_token',
+    }), row);
+  }
+
+  if (row.status === 'pending') {
+    if (row.last_polled_at) {
+      const sinceLastPollMs = Date.now() - new Date(row.last_polled_at).getTime();
+      if (sinceLastPollMs < row.interval_seconds * 1000) {
+        throw attachOwnerDeviceTraceContext(Object.assign(new Error('Polling too quickly'), {
+          code: 'slow_down',
+        }), row);
+      }
+    }
+    await updateOwnerDeviceAuthLastPolled(deviceCode);
+    throw attachOwnerDeviceTraceContext(Object.assign(new Error('Authorization still pending'), {
+      code: 'authorization_pending',
+    }), row);
+  }
+
+  const tokenInfo = await introspect(row.token_id);
+  if (!tokenInfo.active || !tokenInfo.exp) {
+    throw attachOwnerDeviceTraceContext(Object.assign(new Error('Owner token is no longer active'), {
+      code: 'expired_token',
+    }), row);
+  }
+
+  return {
+    access_token: row.token_id,
+    token_type: 'Bearer',
+    expires_in: Math.max(tokenInfo.exp - Math.floor(Date.now() / 1000), 0),
+    trace_context: row.trace_id
+      ? {
+          request_id: row.request_id || undefined,
+          trace_id: row.trace_id,
+          scenario_id: row.scenario_id || undefined,
+        }
+      : null,
+  };
+}
+
+/**
+ * Issue an access token bound to a grant
+ */
+export async function issueToken(grantId, subjectId, clientId, expiresAt, meta = {}) {
+  if (isPostgresStorageBackend()) {
+    const { tokenId, grantRow, persistedGrant } = await withPostgresTransaction(async (client) => {
+      const result = await client.query(
+        `SELECT access_mode, consumed, status, trace_id, scenario_id,
+                grant_json::text AS grant_json,
+                storage_binding_json::text AS storage_binding_json
+         FROM grants
+         WHERE grant_id = $1
+         FOR UPDATE`,
+        [grantId],
+      );
+      const row = result.rows[0] || null;
+
+      if (!row) {
+        const err = new Error(`Unknown grant: ${grantId}`);
+        err.code = 'grant_invalid';
+        throw err;
+      }
+
+      if (row.status !== 'active') {
+        const err = new Error(
+          row.status === 'revoked'
+            ? 'Grant has been revoked'
+            : `Grant is not active: ${row.status}`
+        );
+        err.code = row.status === 'revoked' ? 'grant_revoked' : 'grant_invalid';
+        throw err;
+      }
+
+      if (row.access_mode === 'single_use') {
+        if (row.consumed) {
+          const err = new Error('Grant has already been consumed');
+          err.code = 'grant_consumed';
+          throw err;
+        }
+        await client.query("UPDATE grants SET consumed = TRUE WHERE grant_id = $1", [grantId]);
+      }
+
+      const nextTokenId = generateToken();
+      await client.query(
+        `INSERT INTO tokens(token_id, grant_id, subject_id, client_id, token_kind, expires_at)
+         VALUES($1, $2, $3, $4, 'client', $5)`,
+        [nextTokenId, grantId, subjectId, clientId, expiresAt],
+      );
+      return {
+        tokenId: nextTokenId,
+        grantRow: row,
+        persistedGrant: requirePersistedGrantState(row).grant,
+      };
+    });
+
+    await emitSpineEvent({
+      event_type: 'token.issued',
+      trace_id: meta.traceContext?.trace_id || grantRow.trace_id || undefined,
+      scenario_id: meta.traceContext?.scenario_id || grantRow.scenario_id || undefined,
+      request_id: meta.traceContext?.request_id || undefined,
+      actor_type: 'authorization_server',
+      actor_id: 'pdpp_as',
+      subject_type: 'subject',
+      subject_id: subjectId,
+      object_type: 'token',
+      object_id: tokenId,
+      status: 'succeeded',
+      grant_id: grantId,
+      client_id: clientId,
+      token_id: tokenId,
+      data: {
+        token_kind: 'client',
+        issuance_path: meta.source || 'grant',
+        source: describeGrantSource(persistedGrant),
+      },
+    });
+
+    return tokenId;
+  }
+
+  // better-sqlite3 transactions must be synchronous. We prepare the body as a
+  // synchronous function and wrap it; the public export stays `async` because
+  // external callers `await issueToken(...)`.
+  return transaction(() => {
+    const grantRow = getOne(referenceQueries.authGrantsGetForIssuance, [grantId]);
+
+    if (!grantRow) {
+      const err = new Error(`Unknown grant: ${grantId}`);
+      err.code = 'grant_invalid';
+      throw err;
+    }
+
+    if (grantRow.status !== 'active') {
+      const err = new Error(
+        grantRow.status === 'revoked'
+          ? 'Grant has been revoked'
+          : `Grant is not active: ${grantRow.status}`
+      );
+      err.code = grantRow.status === 'revoked' ? 'grant_revoked' : 'grant_invalid';
+      throw err;
+    }
+
+    if (grantRow.access_mode === 'single_use') {
+      if (grantRow.consumed) {
+        const err = new Error('Grant has already been consumed');
+        err.code = 'grant_consumed';
+        throw err;
+      }
+      exec(referenceQueries.authGrantsMarkConsumed, [grantId]);
+    }
+
+    const tokenId = generateToken();
+    exec(referenceQueries.authTokensInsertClient, [
+      tokenId,
+      grantId,
+      subjectId,
+      clientId,
+      expiresAt,
+    ]);
+
+    const { grant: persistedGrant } = requirePersistedGrantState(grantRow);
+    // emitSpineEvent is sync internally; calling without await is fine
+    // because the INSERT it triggers has completed before this returns.
+    emitSpineEvent({
+      event_type: 'token.issued',
+      trace_id: meta.traceContext?.trace_id || grantRow.trace_id || undefined,
+      scenario_id: meta.traceContext?.scenario_id || grantRow.scenario_id || undefined,
+      request_id: meta.traceContext?.request_id || undefined,
+      actor_type: 'authorization_server',
+      actor_id: 'pdpp_as',
+      subject_type: 'subject',
+      subject_id: subjectId,
+      object_type: 'token',
+      object_id: tokenId,
+      status: 'succeeded',
+      grant_id: grantId,
+      client_id: clientId,
+      token_id: tokenId,
+      data: {
+        token_kind: 'client',
+        issuance_path: meta.source || 'grant',
+        source: describeGrantSource(persistedGrant),
+      },
+    });
+
+    return tokenId;
+  });
+}
+async function issueOwnerTokenRecord(subjectId, meta = {}) {
+  const tokenId = generateToken();
+  const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  // Record the issuing client_id when the caller knows it (per-token DCR
+  // path). Pre-DCR callers pass NULL and the row stays as before.
+  // See openspec/changes/dcr-per-owner-token-with-revoke/.
+  await getTokenStore().insertOwner({ tokenId, subjectId, clientId: meta.clientId || null, expiresAt });
+  await emitSpineEvent({
+    event_type: 'token.issued',
+    trace_id: meta.traceContext?.trace_id || undefined,
+    scenario_id: meta.traceContext?.scenario_id || undefined,
+    request_id: meta.traceContext?.request_id || undefined,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'token',
+    object_id: tokenId,
+    status: 'succeeded',
+    client_id: meta.clientId || null,
+    token_id: tokenId,
+    data: {
+      token_kind: 'owner',
+      issuance_path: 'owner_device_flow',
+      ...(meta.userCode ? { user_code: meta.userCode } : {}),
+    },
+  });
+  return { tokenId, expiresAt };
+}
+
+/**
+ * Reference bootstrap helper for issuing an owner token for a subject.
+ * This remains useful for isolated harness setup, but the public owner path is the device flow.
+ */
+export async function issueOwnerToken(subjectId, meta = {}) {
+  const { tokenId } = await issueOwnerTokenRecord(subjectId, meta);
+  return tokenId;
+}
+
+/**
+ * RFC 7662-style introspection with PDPP extensions
+ */
+export async function introspect(token) {
+  const row = await getTokenStore().getIntrospection(token);
+
+  if (!row) return { active: false };
+
+  if (row.revoked) {
+    return {
+      active: false,
+      inactive_reason: row.token_kind === 'client' ? 'grant_revoked' : 'token_revoked',
+      ...(row.token_kind === 'client'
+        ? {
+            grant_id: row.grant_id,
+            client_id: row.client_id,
+            subject_id: row.subject_id,
+            trace_id: row.trace_id,
+            scenario_id: row.scenario_id,
+          }
+        : row.token_kind === 'mcp_package'
+          ? {
+              grant_package_id: row.package_id,
+              client_id: row.client_id,
+              subject_id: row.subject_id,
+              trace_id: row.package_trace_id,
+              scenario_id: row.package_scenario_id,
+            }
+          : {}),
+    };
+  }
+
+  // Check expiry
+  if (row.expires_at && new Date(row.expires_at) < new Date()) {
+    return {
+      active: false,
+      inactive_reason: row.token_kind === 'client' ? 'grant_expired' : 'token_expired',
+      ...(row.token_kind === 'client'
+        ? {
+            grant_id: row.grant_id,
+            client_id: row.client_id,
+            subject_id: row.subject_id,
+            trace_id: row.trace_id,
+            scenario_id: row.scenario_id,
+          }
+        : row.token_kind === 'mcp_package'
+          ? {
+              grant_package_id: row.package_id,
+              client_id: row.client_id,
+              subject_id: row.subject_id,
+              trace_id: row.package_trace_id,
+              scenario_id: row.package_scenario_id,
+            }
+          : {}),
+    };
+  }
+
+  // Check grant still active (for client tokens)
+  if (row.token_kind === 'client' && row.grant_status !== 'active') {
+    return {
+      active: false,
+      inactive_reason: 'grant_revoked',
+      grant_id: row.grant_id,
+      client_id: row.client_id,
+      subject_id: row.subject_id,
+      trace_id: row.trace_id,
+      scenario_id: row.scenario_id,
+    };
+  }
+
+  if (row.token_kind === 'mcp_package' && row.package_status !== 'active') {
+    return {
+      active: false,
+      inactive_reason: 'package_revoked',
+      grant_package_id: row.package_id,
+      client_id: row.client_id,
+      subject_id: row.subject_id,
+      trace_id: row.package_trace_id,
+      scenario_id: row.package_scenario_id,
+    };
+  }
+
+  const result = {
+    active: true,
+    pdpp_token_kind: row.token_kind,
+    subject_id: row.subject_id,
+    exp: row.expires_at ? Math.floor(new Date(row.expires_at).getTime() / 1000) : null,
+  };
+
+  if (row.token_kind === 'owner' && row.client_id) {
+    result.client_id = row.client_id;
+  }
+
+  if (row.token_kind === 'mcp_package') {
+    result.grant_package_id = row.package_id;
+    result.client_id = row.client_id;
+    result.package = parsePackageJson(row.package_json);
+    result.trace_id = row.package_trace_id;
+    result.scenario_id = row.package_scenario_id;
+  }
+
+  if (row.token_kind === 'client') {
+    try {
+      const {
+        grant: parsedGrant,
+        storageBinding: grantStorageBinding,
+      } = requirePersistedGrantState(row);
+      try {
+        const manifest = await getManifestForStorageBinding(grantStorageBinding);
+        // A missing manifest (unregistered connector) is NOT an introspection
+        // failure: the token is still valid and the read path resolves the
+        // connector connector-first (yielding a precise not_found there). Only
+        // validate the grant contract when a manifest is present.
+        if (manifest) {
+          requireGrantContractAgainstManifest(parsedGrant, manifest);
+        }
+      } catch (err) {
+        // A semantic grant-invalid projects the token inactive. Any OTHER error —
+        // an unexpected manifest-store / DB fault — MUST propagate so introspection
+        // fails closed: it can never swallow an infrastructure failure and fall
+        // through to marking the token active.
+        if (err?.code === 'grant_invalid') {
+          return {
+            active: false,
+            inactive_reason: 'grant_invalid',
+            grant_id: row.grant_id,
+            client_id: row.client_id,
+            subject_id: row.subject_id,
+            trace_id: row.trace_id,
+            scenario_id: row.scenario_id,
+          };
+        }
+        throw err;
+      }
+      result.grant_id = row.grant_id;
+      result.client_id = row.client_id;
+      result.grant = parsedGrant;
+      result.grant_storage_binding = grantStorageBinding;
+      result.trace_id = row.trace_id;
+      result.scenario_id = row.scenario_id;
+    } catch (err) {
+      // A parse/semantic grant-invalid projects the token inactive. An unexpected
+      // (infrastructure) error propagates to the caller so introspection can
+      // never resolve an outage into an authorization decision.
+      if (err?.code !== 'grant_invalid') {
+        throw err;
+      }
+      return {
+        active: false,
+        inactive_reason: 'grant_invalid',
+        grant_id: row.grant_id,
+        client_id: row.client_id,
+        subject_id: row.subject_id,
+        trace_id: row.trace_id,
+        scenario_id: row.scenario_id,
+      };
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Revoke a grant
+ */
+export async function revokeGrant(grantId, context = {}) {
+  const row0 = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT client_id, subject_id, trace_id, scenario_id,
+                grant_json::text AS grant_json,
+                storage_binding_json::text AS storage_binding_json
+         FROM grants
+         WHERE grant_id = $1`,
+        [grantId],
+      )
+    : getOne(referenceQueries.authGrantsGetForRevocation, [grantId]);
+
+  let parsedGrant = null;
+  if (row0) {
+    try {
+      const {
+        grant,
+        storageBinding,
+      } = requirePersistedGrantState(row0);
+      const manifest = await getManifestForStorageBinding(storageBinding);
+      if (manifest) {
+        requireGrantContractAgainstManifest(grant, manifest);
+      }
+      parsedGrant = grant;
+    } catch (err) {
+      if (err?.code === 'grant_invalid') {
+        const row = row0;
+        const sourceDescriptor = describePersistedGrantSource(row);
+        await emitSpineEvent({
+          event_type: 'grant.revoke_rejected',
+          trace_id: row.trace_id || undefined,
+          scenario_id: row.scenario_id || undefined,
+          request_id: context.request_id || undefined,
+          actor_type: 'authorization_server',
+          actor_id: 'pdpp_as',
+          subject_type: 'subject',
+          subject_id: row.subject_id,
+          object_type: 'grant',
+          object_id: grantId,
+          status: 'rejected',
+          grant_id: grantId,
+          client_id: row.client_id,
+          data: {
+            ...(sourceDescriptor ? { source: sourceDescriptor } : {}),
+            error: {
+              code: 'grant_invalid',
+              message: 'Grant is malformed or no longer valid',
+            },
+          },
+        });
+        throw buildGrantInvalidError({
+          request_id: context.request_id,
+          trace_id: row.trace_id,
+        });
+      }
+      throw err;
+    }
+  }
+
+  if (isPostgresStorageBackend()) {
+    await pgExec("UPDATE grants SET status = 'revoked' WHERE grant_id = $1", [grantId]);
+    // Also revoke all tokens for this grant.
+    await pgExec("UPDATE tokens SET revoked = TRUE WHERE grant_id = $1", [grantId]);
+    await pgExec(
+      "UPDATE oauth_refresh_tokens SET status = 'revoked', revoked_at = $1 WHERE grant_id = $2 AND status = 'active'",
+      [nowIso(), grantId],
+    );
+  } else {
+    exec(referenceQueries.authGrantsMarkRevoked, [grantId]);
+    // Also revoke all tokens for this grant
+    exec(referenceQueries.authTokensRevokeByGrant, [grantId]);
+    exec(referenceQueries.authOauthRefreshTokensRevokeByGrant, [nowIso(), grantId]);
+  }
+
+  if (row0 && parsedGrant) {
+    const row = row0;
+    await emitSpineEvent({
+      event_type: 'grant.revoked',
+      trace_id: row.trace_id || undefined,
+      scenario_id: row.scenario_id || undefined,
+      actor_type: 'authorization_server',
+      actor_id: 'pdpp_as',
+      request_id: context.request_id || undefined,
+      subject_type: 'subject',
+      subject_id: row.subject_id,
+      object_type: 'grant',
+      object_id: grantId,
+      status: 'succeeded',
+      grant_id: grantId,
+      client_id: row.client_id,
+      data: {
+        source: describeGrantSource(parsedGrant),
+      },
+    });
+  }
+
+  return {
+    request_id: context.request_id || null,
+    trace_id: row0?.trace_id || null,
+  };
+}

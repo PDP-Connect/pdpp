@@ -1,0 +1,1200 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/claude-code",
+  "connector_key": "claude-code",
+  "manifest_uri": "https://registry.pdpp.org/connectors/claude-code",
+  "version": "0.3.0",
+  "display_name": "Claude Code",
+  "runtime_requirements": {
+    "bindings": {
+      "filesystem": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [],
+    "refresh_policy": {
+      "recommended_mode": "automatic",
+      "recommended_interval_seconds": 3600,
+      "minimum_interval_seconds": 300,
+      "maximum_staleness_seconds": 21600,
+      "interaction_posture": "none",
+      "rate_limit_sensitivity": "low",
+      "bot_detection_sensitivity": "low",
+      "background_safe": true,
+      "rationale": "Claude Code session logs live on local disk; re-reading them is cheap and has no platform cost."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
+    }
+  },
+  "streams": [
+    {
+      "name": "sessions",
+      "description": "Claude Code sessions. One session = one CLI invocation in a specific project directory.",
+      "display": {
+        "label": "Your Claude Code sessions",
+        "detail": "Session start time, duration, project directory, git branch, Claude Code version, total message count."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "project_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "git_branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "last_event_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "message_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entrypoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "last_event_at",
+      "consent_time_field": "started_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "project_path",
+            "cwd",
+            "git_branch",
+            "version",
+            "user_type",
+            "entrypoint"
+          ]
+        },
+        "range_filters": {
+          "started_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "last_event_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "message_count": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "last_event_at",
+            "started_at"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "messages",
+      "description": "Messages within Claude Code sessions: user prompts and assistant responses. Includes both top-level session transcripts and nested subagent (sidechain) transcripts.",
+      "display": {
+        "label": "Your Claude Code messages",
+        "detail": "Role (user/assistant), text content, timestamp, parent message (for threading), session reference, subagent id when the message came from a sidechain run."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "parent_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "timestamp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "is_sidechain": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "user_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "session_id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "session",
+          "stream": "sessions",
+          "foreign_key": "session_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "role",
+            "type",
+            "content",
+            "user_type",
+            "agent_id"
+          ],
+          "semantic_fields": [
+            "content"
+          ]
+        },
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "sessions",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "attachments",
+      "description": "Non-message events: hook outputs, tool uses, file snapshots, plus tool-results blob files written to disk.",
+      "display": {
+        "label": "Claude Code events",
+        "detail": "System events attached to sessions: tool calls, hook outputs, file-history snapshots, permission-mode changes, and persisted tool-result files."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "parent_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hook_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_use_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "timestamp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          }
+        },
+        "required": [
+          "id",
+          "session_id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "timestamp",
+      "consent_time_field": "timestamp",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "relationships": [
+        {
+          "name": "session",
+          "stream": "sessions",
+          "foreign_key": "session_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "event_type",
+            "hook_name",
+            "content_preview"
+          ],
+          "semantic_fields": [
+            "content_preview"
+          ]
+        },
+        "range_filters": {
+          "timestamp": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "content_bytes": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "timestamp"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "sessions",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "skills",
+      "description": "User-authored Claude Code skills installed under ~/.claude/skills/<skill>/SKILL.md. Each record captures frontmatter metadata and the full body (capped at 20k chars).",
+      "display": {
+        "label": "Your Claude Code skills",
+        "detail": "Skill name, description, full SKILL.md body, frontmatter, and on-disk path."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "frontmatter": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "description",
+            "source",
+            "content"
+          ],
+          "semantic_fields": [
+            "description",
+            "content"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "memory_notes",
+      "description": "Project-scoped Claude Code memory notes under ~/.claude/projects/<project>/memory/*.md. Each record captures frontmatter metadata and the note body (capped at 20k chars).",
+      "display": {
+        "label": "Your Claude Code memory notes",
+        "detail": "Project path, note path, name, description, body, frontmatter, and on-disk path."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "project_path": {
+            "type": "string"
+          },
+          "note_path": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "frontmatter": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "project_path",
+          "note_path"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "project_path",
+            "note_path",
+            "name",
+            "description",
+            "content"
+          ],
+          "semantic_fields": [
+            "description",
+            "content"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "state_stream": "sessions",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "slash_commands",
+      "description": "User-authored Claude Code slash commands under ~/.claude/commands/*.md. Each record captures frontmatter, the command body (capped at 20k chars), and the file's absolute path.",
+      "display": {
+        "label": "Your custom slash commands",
+        "detail": "Command name, description, full command body, frontmatter, and on-disk path."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "primary-title"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "frontmatter": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "description",
+            "content"
+          ],
+          "semantic_fields": [
+            "description",
+            "content"
+          ]
+        },
+        "range_filters": {
+          "mtime_epoch": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "file_history",
+      "description": "Metadata-only inventory for Claude Code file-history stores. Does not emit file-history payload content.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "cache_inventory",
+      "description": "Metadata-only inventory for Claude Code cache stores; raw cache payloads are not collected.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "coverage_diagnostics",
+      "description": "Safe coverage status for known Claude Code local stores, including excluded auth-adjacent stores without payloads or raw absolute paths.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "stream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "status",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "debug_artifacts",
+      "description": "Deferred Claude Code debug artifact inventory; payloads require deterministic redaction before collection.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "deferred",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "downloads",
+      "description": "Deferred Claude Code downloads inventory; payloads require owner approval before collection.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "deferred",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "backup_inventory",
+      "description": "Metadata-only inventory for Claude Code backup stores; raw backup payloads are not collected.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    },
+    {
+      "name": "config_inventory",
+      "description": "Metadata-only inventory for non-secret Claude Code configuration; raw config payloads are not collected.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x_pdpp_role": "event-time"
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "required": false,
+      "coverage_policy": "inventory_only",
+      "coverage_strategy": "snapshot_import_receipt",
+      "freshness_strategy": "device_heartbeat"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "full",
+      "label": "Your full Claude Code history",
+      "streams": [
+        {
+          "name": "sessions"
+        },
+        {
+          "name": "messages"
+        },
+        {
+          "name": "attachments"
+        },
+        {
+          "name": "skills"
+        },
+        {
+          "name": "memory_notes"
+        },
+        {
+          "name": "slash_commands"
+        }
+      ]
+    },
+    {
+      "id": "messages_only",
+      "label": "Just prompts and responses",
+      "streams": [
+        {
+          "name": "sessions"
+        },
+        {
+          "name": "messages"
+        }
+      ]
+    },
+    {
+      "id": "customizations",
+      "label": "Your skills, memory notes, and slash commands",
+      "streams": [
+        {
+          "name": "skills"
+        },
+        {
+          "name": "memory_notes"
+        },
+        {
+          "name": "slash_commands"
+        }
+      ]
+    }
+  ]
+}

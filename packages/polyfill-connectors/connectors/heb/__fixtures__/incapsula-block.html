@@ -1,0 +1,17 @@
+<!--
+  SYNTHETIC fixture, not a live capture. Represents the Incapsula empty-shell
+  block heuristic from docs/research/heb-site-knowledge-2026-07-14.md
+  ("Bot protection: Imperva Incapsula (confirmed)"): no h3, no breadcrumb, no
+  [data-testid], document.body.children.length <= 2, and at least one iframe.
+  The `_Incapsula_Resource` comment marker is present on every real H-E-B page
+  (including non-blocked ones) and must NOT alone signal a block.
+-->
+<!DOCTYPE html>
+<html>
+<body>
+  <!-- _Incapsula_Resource -->
+  <div id="challenge-wrapper">
+    <iframe src="https://geo.captcha-delivery.com/challenge"></iframe>
+  </div>
+</body>
+</html>

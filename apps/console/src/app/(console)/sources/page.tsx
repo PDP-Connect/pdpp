@@ -1,0 +1,163 @@
+/**
+ * Sources — the Ink Carbon "loading dock" view.
+ *
+ * Reskinned per docs/design-system/ink-carbon/project/recordroom/rr-sources.jsx: a
+ * master-detail over the owner's configured source instances. The left list is
+ * health-flagged; the right "passport" (a Sheet) carries identity + a KV block
+ * + foot actions; below it a stream manifest Table links every stream into
+ * Explore. Records are never rendered here — Explore is the one reader.
+ *
+ * Data path is REAL: the page fetches connector summaries through the existing
+ * owner-token `liveDashboardDataSource.listConnectorSummaries()` and projects
+ * them with the pure `toSourcesView` mapping. The route id is unchanged
+ * (`/sources`); redirects + tests pin it. The Sync and Revoke
+ * mutations bind to the same server actions the prior surface used
+ * (`runConnectorNowAction`, `revokeConnectionAction`, `reactivateConnectionAction`).
+ *
+ * A DEV-ONLY seeded demo (`?demo=mixed|healthy|attention`, blocked in
+ * production) lets a reviewer screenshot every status flag and the revoke
+ * ceremony without a live server. The live path never imports the fixtures
+ * when `demo` is absent.
+ */
+import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";
+import { ServerUnreachable } from "../components/shell.tsx";
+import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
+import { liveDashboardDataSource } from "../lib/data-source.ts";
+import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import type { RefConnectorSummary } from "../lib/ref-client.ts";
+import { listConnectorManifests } from "../lib/rs-client.ts";
+import { reactivateConnectionAction, revokeConnectionAction } from "./[connector]/actions.ts";
+import { RecordsPagePoller } from "./records-page-poller.tsx";
+import { SourcesView } from "./sources-view.tsx";
+import {
+  buildSourcesChurnAdvisory,
+  buildSourcesRuntimeAdvisory,
+  type SourcesRuntimeAdvisory,
+  toSourcesView,
+} from "./sources-view-model.ts";
+
+export const dynamic = "force-dynamic";
+
+const SCHEME_RE = /^https?:\/\//;
+
+function stripScheme(url: string): string {
+  return url.replace(SCHEME_RE, "");
+}
+
+async function resolveHost(): Promise<string> {
+  try {
+    return stripScheme(await getReferencePublicOrigin());
+  } catch {
+    return "this server";
+  }
+}
+
+export default async function RecordsIndexPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ demo?: string; error?: string; message?: string }>;
+}) {
+  const params = searchParams ? await searchParams : {};
+  const host = await resolveHost();
+
+  // DEV-ONLY seeded demo. Gated by NODE_ENV so production never reads fixtures.
+  const demoParam = typeof params.demo === "string" ? params.demo : undefined;
+  if (process.env.NODE_ENV !== "production" && demoParam) {
+    const { buildSourcesDemoSummaries, buildSourcesDemoChurnRows, isSourcesDemoScenario } = await import(
+      "./sources-demo-data.ts"
+    );
+    const scenario = isSourcesDemoScenario(demoParam) ? demoParam : "mixed";
+    const instances = toSourcesView(buildSourcesDemoSummaries(scenario));
+    // Seed a churn advisory for the demo so the protocol-toned notice is
+    // screenshot-able without a live version-stats route.
+    const churnAdvisory = buildSourcesChurnAdvisory(buildSourcesDemoChurnRows(scenario));
+    return (
+      <RecordroomShellWithPalette build="pdpp 0.1.0" host={host}>
+        <SourcesHeader notice={`Seeded demo · ${scenario} · fictional data`} />
+        {/* interactive=false: the demo never reaches a live server, so the
+            mutating Sync/Revoke controls are read-only here. */}
+        <SourcesView churnAdvisory={churnAdvisory} instances={instances} interactive={false} />
+      </RecordroomShellWithPalette>
+    );
+  }
+
+  let summaries: RefConnectorSummary[];
+  let runtimeAdvisory: SourcesRuntimeAdvisory | null = null;
+  let manifests: Awaited<ReturnType<typeof listConnectorManifests>>;
+  try {
+    const [response, connectorManifests] = await Promise.all([
+      liveDashboardDataSource.listConnectorSummaries(),
+      listConnectorManifests(),
+    ]);
+    summaries = response.data;
+    runtimeAdvisory = buildSourcesRuntimeAdvisory(response.runtime);
+    manifests = connectorManifests;
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      return (
+        <RecordroomShellWithPalette build="pdpp 0.1.0" host={host}>
+          <SourcesHeader />
+          <ServerUnreachable />
+        </RecordroomShellWithPalette>
+      );
+    }
+    throw err;
+  }
+
+  const instances = toSourcesView(summaries, { manifests });
+  // The poller is mounted unconditionally; `running` (derived from any active
+  // run) only selects the fast vs. idle cadence. Named `runningCount` to match
+  // the records-poller mount invariant.
+  const runningCount = summaries.filter(
+    (s) => s.last_run != null && isActiveConnectorRunSummaryStatus(s.last_run.status)
+  ).length;
+
+  return (
+    <RecordroomShellWithPalette build="pdpp 0.1.0" host={host}>
+      <SourcesHeader error={params.error} message={params.message} />
+      <SourcesView
+        instances={instances}
+        interactive={true}
+        reactivateAction={reactivateConnectionAction}
+        revokeAction={revokeConnectionAction}
+        runtimeAdvisory={runtimeAdvisory}
+      />
+      <RecordsPagePoller running={runningCount > 0} />
+    </RecordroomShellWithPalette>
+  );
+}
+
+function SourcesHeader({ error, message, notice }: { error?: string; message?: string; notice?: string }) {
+  return (
+    <header style={{ marginBottom: 24, maxWidth: 760 }}>
+      <h1 className="pdpp-heading text-foreground" style={{ margin: "0 0 4px" }}>
+        Sources
+      </h1>
+      <p
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 11,
+          color: "var(--muted-foreground)",
+          margin: 0,
+        }}
+      >
+        your loading dock · each source pushes into your streams · nothing leaves
+      </p>
+      {notice ? (
+        <div className="rr-s-toast" data-tone="ok" role="status" style={{ marginTop: 12 }}>
+          {notice}
+        </div>
+      ) : null}
+      {error ? (
+        <div className="rr-s-toast" data-tone="error" role="status" style={{ marginTop: 12 }}>
+          {error}
+        </div>
+      ) : null}
+      {message && !error ? (
+        <div className="rr-s-toast" data-tone="ok" role="status" style={{ marginTop: 12 }}>
+          {message}
+        </div>
+      ) : null}
+    </header>
+  );
+}

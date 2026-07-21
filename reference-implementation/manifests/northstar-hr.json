@@ -1,0 +1,208 @@
+{
+  "provider_id": "northstar_hr",
+  "storage_binding": {
+    "connector_id": "northstar_hr_native"
+  },
+  "version": "0.1.0",
+  "name": "Northstar HR",
+  "streams": [
+    {
+      "name": "pay_statements",
+      "semantics": "urn:pdpp:stream:pay_statements",
+      "primary_key": "statement_id",
+      "cursor_field": "issued_at",
+      "consent_time_field": "pay_period_end",
+      "selection": {
+        "type": "object"
+      },
+      "schema": {
+        "type": "object",
+        "required": [
+          "statement_id",
+          "pay_period_start",
+          "pay_period_end",
+          "gross_pay",
+          "net_pay"
+        ],
+        "properties": {
+          "statement_id": {
+            "type": "string"
+          },
+          "employer": {
+            "type": "string"
+          },
+          "pay_period_start": {
+            "type": "string",
+            "format": "date"
+          },
+          "pay_period_end": {
+            "type": "string",
+            "format": "date"
+          },
+          "issued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "gross_pay": {
+            "type": "number"
+          },
+          "net_pay": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "employee_id": {
+            "type": "string"
+          }
+        }
+      },
+      "views": [
+        {
+          "id": "summary",
+          "fields": [
+            "employer",
+            "pay_period_start",
+            "pay_period_end",
+            "gross_pay",
+            "net_pay",
+            "currency"
+          ]
+        }
+      ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "equity_grants",
+      "semantics": "urn:pdpp:stream:equity_grants",
+      "primary_key": "grant_id",
+      "cursor_field": "granted_at",
+      "consent_time_field": "granted_at",
+      "selection": {
+        "type": "object"
+      },
+      "schema": {
+        "type": "object",
+        "required": [
+          "grant_id",
+          "grant_type",
+          "quantity",
+          "granted_at"
+        ],
+        "properties": {
+          "grant_id": {
+            "type": "string"
+          },
+          "employer": {
+            "type": "string"
+          },
+          "grant_type": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number"
+          },
+          "strike_price": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "granted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "vesting_start_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "vesting_end_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "employee_id": {
+            "type": "string"
+          }
+        }
+      },
+      "views": [
+        {
+          "id": "summary",
+          "fields": [
+            "employer",
+            "grant_type",
+            "quantity",
+            "currency",
+            "granted_at",
+            "vesting_start_date",
+            "vesting_end_date"
+          ]
+        }
+      ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "benefits_enrollments",
+      "semantics": "urn:pdpp:stream:benefits_enrollments",
+      "primary_key": "enrollment_id",
+      "cursor_field": "effective_date",
+      "consent_time_field": "effective_date",
+      "selection": {
+        "type": "object"
+      },
+      "schema": {
+        "type": "object",
+        "required": [
+          "enrollment_id",
+          "plan_name",
+          "coverage_level",
+          "effective_date"
+        ],
+        "properties": {
+          "enrollment_id": {
+            "type": "string"
+          },
+          "employer": {
+            "type": "string"
+          },
+          "plan_name": {
+            "type": "string"
+          },
+          "coverage_level": {
+            "type": "string"
+          },
+          "effective_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "employee_cost_monthly": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "employee_id": {
+            "type": "string"
+          }
+        }
+      },
+      "views": [
+        {
+          "id": "summary",
+          "fields": [
+            "employer",
+            "plan_name",
+            "coverage_level",
+            "effective_date",
+            "employee_cost_monthly",
+            "currency"
+          ]
+        }
+      ],
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

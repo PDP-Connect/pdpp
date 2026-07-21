@@ -1,0 +1,159 @@
+name: reference-implementation
+
+# Path-scoped CI for the reference AS/RS, runtime, CLI, and contract boundary.
+# This catches regressions before release/docker-image workflows and keeps the
+# load-bearing reference implementation under the same review discipline as the
+# connector and package workspaces.
+#
+# The apps/console/** trigger is here because two integration tests in the
+# reference suite (composed-origin.test.js, dashboard-proxy-redirect.test.js)
+# build apps/console and spawn its standalone server to exercise the
+# dashboard/BFF/proxy. The apps/site/** trigger is here because the RS/dataset
+# import-boundary tests read the public sandbox source from apps/site/src/app/
+# sandbox/**. Both were retargeted from the legacy apps/web app by the
+# split-public-site-and-operator-console migration; the triggers moved with them.
+
+on:
+  # PR-only (no push-to-main trigger). This is now a REQUIRED check on the main
+  # ruleset, so it must emit a terminal status on every PR. The path decision
+  # lives inside the job instead of in `pull_request.paths`; otherwise docs-only
+  # PRs can be blocked by a required context that never appears.
+  pull_request: {}
+  # Supports GitHub merge queue without changing the required check context.
+  merge_group: {}
+  workflow_dispatch: {}
+
+concurrency:
+  group: reference-implementation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  verify:
+    name: typecheck + full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Classify reference-impacting changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${BASE_SHA}" ]]; then
+            echo "reference_impacting=true" >> "$GITHUB_OUTPUT"
+            echo "workflow_dispatch has no PR base; running full reference suite."
+            exit 0
+          fi
+
+          git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" > "$RUNNER_TEMP/reference-changed-files.txt"
+
+          reference_impacting=false
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/reference-implementation.yml|\
+              package.json|\
+              pnpm-lock.yaml|\
+              pnpm-workspace.yaml|\
+              apps/console/*|apps/console/**|\
+              apps/site/*|apps/site/**|\
+              packages/mcp-server/*|packages/mcp-server/**|\
+              packages/read-core/*|packages/read-core/**|\
+              packages/polyfill-connectors/*|packages/polyfill-connectors/**|\
+              packages/reference-contract/*|packages/reference-contract/**|\
+              openspec/changes/complete-mcp-slvp-surface/*|openspec/changes/complete-mcp-slvp-surface/**|\
+              docs/research/mcp-slvp-*.md|\
+              reference-implementation/*|reference-implementation/**|\
+              scripts/check-console-health-surfaces.mjs|\
+              scripts/check-console-health-surfaces.test.mjs|\
+              scripts/check-owner-journey-acceptance.mjs|\
+              scripts/check-owner-journey-acceptance.test.mjs|\
+              scripts/owner-journey-acceptance/*|scripts/owner-journey-acceptance/**|\
+              scripts/stream-evidence-inventory.mjs|\
+              scripts/stream-health-audit/*|scripts/stream-health-audit/**|\
+              scripts/check-stream-health-audit.mjs|\
+              docs/reference/stream-evidence-inventory.md|\
+              .releaserc.yaml|\
+              scripts/check-package-release-policy.mjs|\
+              scripts/check-package-release-policy.test.mjs|\
+              packages/*/package.json)
+                reference_impacting=true
+                break
+                ;;
+            esac
+          done < "$RUNNER_TEMP/reference-changed-files.txt"
+
+          echo "reference_impacting=${reference_impacting}" >> "$GITHUB_OUTPUT"
+          if [[ "${reference_impacting}" == "true" ]]; then
+            echo "Reference-impacting changes detected; running full reference suite."
+          else
+            echo "No reference-impacting changes detected; required context will pass without heavy reference tests."
+          fi
+
+      - name: Install pnpm
+        if: steps.changes.outputs.reference_impacting == 'true'
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node.js
+        if: steps.changes.outputs.reference_impacting == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        if: steps.changes.outputs.reference_impacting == 'true'
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck reference implementation
+        if: steps.changes.outputs.reference_impacting == 'true'
+        run: pnpm --dir reference-implementation run typecheck
+
+      - name: Test console view models
+        if: steps.changes.outputs.reference_impacting == 'true'
+        run: pnpm --dir apps/console run test:view-models
+
+      - name: Test console stream route
+        if: steps.changes.outputs.reference_impacting == 'true'
+        run: pnpm --dir apps/console run test:stream
+
+      - name: Test owner journey acceptance harness
+        if: steps.changes.outputs.reference_impacting == 'true'
+        run: pnpm owner-journey:acceptance:test
+
+      - name: Check stream evidence inventory is current
+        if: steps.changes.outputs.reference_impacting == 'true'
+        run: pnpm stream-evidence:check
+
+      - name: Test stream health audit
+        if: steps.changes.outputs.reference_impacting == 'true'
+        run: node --test reference-implementation/test/stream-health-audit.test.js
+
+      - name: Test console health surface gate
+        if: steps.changes.outputs.reference_impacting == 'true'
+        run: pnpm console:health-surface-gate:test
+
+      - name: Test reference implementation
+        if: steps.changes.outputs.reference_impacting == 'true'
+        env:
+          PDPP_TEST_CONCURRENCY: "2"
+        run: pnpm --dir reference-implementation run test
+
+      - name: Report non-reference skip
+        if: steps.changes.outputs.reference_impacting != 'true'
+        run: |
+          echo "No files in the reference required-check scope changed."
+          echo "Emitting successful required context without running the heavy reference suite."

@@ -1,0 +1,195 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/google-maps-data-portability",
+  "connector_key": "google-maps-data-portability",
+  "manifest_uri": "https://registry.pdpp.org/connectors/google-maps-data-portability",
+  "version": "0.1.0",
+  "display_name": "Google Maps Data Portability",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "setup": {
+    "modality": "provider_authorization",
+    "deployment_config": [
+      "GOOGLE_DATAPORTABILITY_CLIENT_ID",
+      "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+      "GOOGLE_DATAPORTABILITY_REDIRECT_URI"
+    ]
+  },
+  "capabilities": {
+    "auth": {
+      "kind": "oauth",
+      "deployment_config": [
+        "GOOGLE_DATAPORTABILITY_CLIENT_ID",
+        "GOOGLE_DATAPORTABILITY_CLIENT_SECRET",
+        "GOOGLE_DATAPORTABILITY_REDIRECT_URI"
+      ],
+      "resource_groups": [
+        "maps.aliased_places",
+        "maps.commute_routes",
+        "maps.commute_settings",
+        "maps.ev_profile",
+        "maps.factual_contributions",
+        "maps.offering_contributions",
+        "maps.photos_videos",
+        "maps.questions_answers",
+        "maps.reviews",
+        "maps.starred_places",
+        "maps.vehicle_profile",
+        "myactivity.maps",
+        "mymaps.maps"
+      ],
+      "scopes": [
+        "https://www.googleapis.com/auth/dataportability.maps.aliased_places",
+        "https://www.googleapis.com/auth/dataportability.maps.commute_routes",
+        "https://www.googleapis.com/auth/dataportability.maps.commute_settings",
+        "https://www.googleapis.com/auth/dataportability.maps.ev_profile",
+        "https://www.googleapis.com/auth/dataportability.maps.factual_contributions",
+        "https://www.googleapis.com/auth/dataportability.maps.offering_contributions",
+        "https://www.googleapis.com/auth/dataportability.maps.photos_videos",
+        "https://www.googleapis.com/auth/dataportability.maps.questions_answers",
+        "https://www.googleapis.com/auth/dataportability.maps.reviews",
+        "https://www.googleapis.com/auth/dataportability.maps.starred_places",
+        "https://www.googleapis.com/auth/dataportability.maps.vehicle_profile",
+        "https://www.googleapis.com/auth/dataportability.myactivity.maps",
+        "https://www.googleapis.com/auth/dataportability.mymaps.maps"
+      ]
+    },
+    "human_interaction": [
+      "manual_action"
+    ],
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "interaction_posture": "manual_action_likely",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Google Data Portability API exports require a deployment-level Google OAuth/Data Portability application plus owner authorization. Timeline points and segments are not documented Data Portability resources, so this source is separate from Google Maps Timeline Import."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
+    }
+  },
+  "external_docs": [
+    {
+      "label": "Google Data Portability API methods",
+      "url": "https://developers.google.com/data-portability/user-guide/methods"
+    },
+    {
+      "label": "Google Data Portability Maps scopes",
+      "url": "https://developers.google.com/data-portability/user-guide/scopes"
+    }
+  ],
+  "streams": [
+    {
+      "name": "archive_jobs",
+      "description": "Google Data Portability archive job status for documented Maps resource groups.",
+      "display": {
+        "label": "Your Google Maps export jobs",
+        "detail": "Archive lifecycle evidence from Google's Data Portability API: requested resource group, job id, access type, state, and export time. This is not Timeline location history."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "resource_group": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "archive_job_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          },
+          "start_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "export_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "download_url_count": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "google_data_portability_api"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "resource_group",
+          "download_url_count",
+          "source"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "export_time",
+      "consent_time_field": "export_time",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "range_filters": {
+          "export_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "start_time": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by": [
+            "state",
+            "access_type"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+<!--
+  SYNTHETIC fixture, not a live capture. Represents a logged-out landing when
+  the deep session probe navigates to /my-account/your-orders and H-E-B
+  redirects to sign-in. See design-notes/heb-connector-manifest-design-2026-07-14.md
+  "Collector plan" §1: URL alone is not trusted; also check for a visible
+  password form.
+-->
+<!DOCTYPE html>
+<html>
+<body>
+  <main>
+    <h3>Sign In</h3>
+    <form action="/sign-in">
+      <input type="text" name="email" />
+      <input type="password" name="password" />
+      <button type="submit">Sign In</button>
+    </form>
+  </main>
+</body>
+</html>

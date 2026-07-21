@@ -1,0 +1,368 @@
+{
+  "protocol_version": "0.1.0",
+  "connector_id": "https://registry.pdpp.org/connectors/spotify",
+  "connector_key": "spotify",
+  "manifest_uri": "https://registry.pdpp.org/connectors/spotify",
+  "version": "0.1.0",
+  "display_name": "Spotify",
+  "runtime_requirements": {
+    "bindings": {
+      "network": {
+        "required": true
+      }
+    }
+  },
+  "capabilities": {
+    "human_interaction": [
+      "credentials"
+    ],
+    "public_listing": {
+      "listed": false,
+      "status": "unproven",
+      "rationale": "Hidden from the reference dashboard catalog until a credentialed run proves useful records in the deployment."
+    },
+    "refresh_policy": {
+      "recommended_mode": "manual",
+      "recommended_interval_seconds": 21600,
+      "minimum_interval_seconds": 3600,
+      "maximum_staleness_seconds": 86400,
+      "interaction_posture": "credentials",
+      "rate_limit_sensitivity": "medium",
+      "bot_detection_sensitivity": "low",
+      "background_safe": false,
+      "rationale": "Spotify v0.1 requires a user-provided SPOTIFY_ACCESS_TOKEN and is not yet proven in the reference deployment; do not schedule it as an automatic background connector until a credentialed run succeeds."
+    }
+  },
+  "streams": [
+    {
+      "name": "playlists",
+      "description": "User's playlists.",
+      "display": {
+        "label": "Your playlists",
+        "detail": "Playlist names, ownership, public/collaborative flags, track counts, snapshot IDs."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "owner_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "owner_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "actor"
+          },
+          "public": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "collaborative": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "track_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "snapshot_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "x_pdpp_role": "secondary"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "owner_name",
+            "description"
+          ],
+          "semantic_fields": [
+            "description"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "saved_tracks",
+      "description": "User's saved/liked tracks.",
+      "display": {
+        "label": "Your saved tracks",
+        "detail": "Liked tracks, when they were added, artist/album context."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "artist_names": {
+            "type": "array"
+          },
+          "album_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "popularity": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "added_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "isrc": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "added_at",
+      "consent_time_field": "added_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name",
+            "album_name"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "added_at"
+          ]
+        },
+        "range_filters": {
+          "added_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "top_artists",
+      "description": "Top artists per time range (short/medium/long).",
+      "display": {
+        "label": "Your top artists",
+        "detail": "Top artists over last 4 weeks, 6 months, and all time."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "genres": {
+            "type": "array"
+          },
+          "popularity": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "followers": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "time_range": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "primary_key": [
+        "id",
+        "time_range"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "name"
+          ]
+        }
+      },
+      "coverage_strategy": "full_inventory",
+      "freshness_strategy": "manual_as_of"
+    },
+    {
+      "name": "recently_played",
+      "description": "Recent play events (max 50 via Web API).",
+      "display": {
+        "label": "Your recent plays",
+        "detail": "Recent track plays with played_at timestamps. API limited to last 50."
+      },
+      "semantics": "append_only",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "track_id": {
+            "type": "string"
+          },
+          "track_name": {
+            "type": "string",
+            "x_pdpp_role": "primary-title"
+          },
+          "artist_names": {
+            "type": "array",
+            "x_pdpp_role": "actor"
+          },
+          "album_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "played_at": {
+            "type": "string",
+            "format": "date-time",
+            "x_pdpp_role": "event-time"
+          },
+          "context_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "track_id",
+          "played_at"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "played_at",
+      "consent_time_field": "played_at",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": true,
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "track_name",
+            "album_name"
+          ]
+        },
+        "aggregations": {
+          "count": true,
+          "group_by_time": [
+            "played_at"
+          ]
+        },
+        "range_filters": {
+          "played_at": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      },
+      "coverage_strategy": "checkpoint_window",
+      "freshness_strategy": "manual_as_of"
+    }
+  ]
+}

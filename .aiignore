@@ -1,0 +1,12 @@
+# Heavy/generated content agents should not read into context
+node_modules/
+dist/
+build/
+.next/
+pnpm-lock.yaml
+*.png
+*.jpg
+*.jpeg
+*.log
+tmp/
+packages/local-collector/dist-collector/
