@@ -284,6 +284,72 @@ test("M17: matching legacy mtimes establish rich state without transcript replay
   assert.equal((migrated.states.messages as { local_jsonl_cursor_version: number }).local_jsonl_cursor_version, 1);
 });
 
+test("M17 live legacy shape: 11,378 mtime entries baseline matching sources while replaying only 58 changed contributors", async () => {
+  // Payload-free reproduction of the preserved 11:43 checkpoint: both
+  // stream maps have 11,378 mtime entries, no v1/file_cursors, and a small
+  // changed subset. The 10,000 stable rows make an accidental all-source
+  // migration replay conspicuous without carrying any real transcript data.
+  const source = await makeSource();
+  const stableRows = Array.from({ length: 10_000 }, (_value, index) =>
+    transcriptLine(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, "2026-07-21T00:00:00Z")
+  );
+  await writeFile(source.top, `${stableRows.join("\n")}\n`);
+  const subagentsDir = join(source.projects, "-tmp-incremental", SESSION_ID, "subagents");
+  const changedSources = await Promise.all(
+    Array.from({ length: 58 }, async (_value, index) => {
+      const path = join(subagentsDir, `forensic-changed-${String(index).padStart(2, "0")}.jsonl`);
+      await writeFile(
+        path,
+        `${transcriptLine(`00000000-0000-4000-8000-${String(20_000 + index).padStart(12, "0")}`, "2026-07-21T00:01:00Z")}\n`
+      );
+      return path;
+    })
+  );
+  const sourcePaths = [source.top, source.subagent, ...changedSources];
+  const legacyMtimes: Record<string, number> = Object.fromEntries(
+    Array.from({ length: 11_378 - sourcePaths.length }, (_value, index) => [`/forensic-only/${index}.jsonl`, 0])
+  );
+  legacyMtimes[source.top] = (await (await import("node:fs/promises")).stat(source.top)).mtimeMs;
+  legacyMtimes[source.subagent] = (await (await import("node:fs/promises")).stat(source.subagent)).mtimeMs;
+  for (const path of changedSources) {
+    legacyMtimes[path] = 0;
+  }
+  assert.equal(Object.keys(legacyMtimes).length, 11_378, "fixture preserves the forensic legacy map count");
+
+  const migrated = await run({
+    ...source,
+    state: {
+      messages: { file_mtimes: legacyMtimes },
+      sessions: { file_mtimes: structuredClone(legacyMtimes) },
+    },
+  });
+  assert.equal(
+    migrated.records.filter((record) => record.stream === "messages").length,
+    58,
+    "only mtime-mismatched sources replay; 10,001 matching rows establish cursors without records"
+  );
+  assert.equal(migrated.records.filter((record) => record.stream === "sessions").length, 1);
+  for (const stream of ["messages", "sessions"] as const) {
+    const cursor = migrated.states[stream] as {
+      file_cursors: Record<string, { committed_offset_bytes: number }>;
+      file_mtimes: Record<string, number>;
+      local_jsonl_cursor_version: number;
+    };
+    assert.equal(cursor.local_jsonl_cursor_version, 1, `${stream} writes v1`);
+    assert.equal(Object.keys(cursor.file_cursors).length, 60, `${stream} cursorizes every current source`);
+    assert.equal(Object.keys(cursor.file_mtimes).length, 60, `${stream} prunes absent legacy paths`);
+    assert.equal(
+      cursor.file_cursors[source.top]?.committed_offset_bytes,
+      (await (await import("node:fs/promises")).stat(source.top)).size
+    );
+  }
+  const noOp = await run({
+    ...source,
+    state: { messages: migrated.states.messages, sessions: migrated.states.sessions },
+  });
+  assert.equal(noOp.records.length, 0, "the v1 checkpoint makes the next run a no-op");
+});
+
 test("M18: changed legacy mtime conservatively replays the current source once", async () => {
   const source = await makeSource();
   const replayed = await run({
@@ -634,7 +700,14 @@ test("tool-result mtime state skips unchanged attachments and prunes deleted pat
 
 test("M24: Claude mtime touch queues no transcript records while advancing its durable checkpoint", async () => {
   const source = await makeSource();
-  let persistedState: Record<string, unknown> = {};
+  const topMtime = (await (await import("node:fs/promises")).stat(source.top)).mtimeMs;
+  // Start the real runner at a pre-v1 checkpoint with one unchanged and one
+  // changed contributor. The first pass must stage rich STATE through the
+  // normal checkpoint barrier, not merely return it from the connector.
+  let persistedState: Record<string, unknown> = {
+    messages: { file_mtimes: { [source.top]: topMtime, [source.subagent]: 0 } },
+    sessions: { file_mtimes: { [source.top]: topMtime, [source.subagent]: 0 } },
+  };
   let statePuts = 0;
   const ingested: Array<{ records?: Array<{ stream?: string }> }> = [];
   const server = createServer(async (request, response) => {
@@ -689,6 +762,26 @@ test("M24: Claude mtime touch queues no transcript records while advancing its d
   try {
     const first = await runCollectorConnector(config);
     assert.ok(first.recordsQueued > 0);
+    assert.equal(
+      ingested.flatMap((batch) => batch.records ?? []).filter((record) => record.stream === "messages").length,
+      1,
+      "legacy migration queues only the genuinely changed transcript contributor"
+    );
+    assert.equal(
+      (persistedState.messages as { local_jsonl_cursor_version?: number }).local_jsonl_cursor_version,
+      1,
+      "first migration commits the child v1 cursor"
+    );
+    assert.equal(
+      (persistedState.sessions as { local_jsonl_cursor_version?: number }).local_jsonl_cursor_version,
+      1,
+      "first migration commits the session v1 cursor"
+    );
+    assert.ok(statePuts >= 1, "first migration crosses the durable checkpoint barrier");
+    ingested.length = 0;
+    const noOp = await runCollectorConnector(config);
+    assert.equal(noOp.recordsQueued, 0, "the checkpointed migration is a no-op on the next run");
+    assert.equal(ingested.length, 0, "the no-op queues no record batches");
     const beforeTouch = structuredClone(persistedState);
     await utimes(source.top, new Date(Date.now() + 30_000), new Date(Date.now() + 30_000));
     ingested.length = 0;

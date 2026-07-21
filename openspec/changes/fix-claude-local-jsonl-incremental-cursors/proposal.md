@@ -1,6 +1,6 @@
 ## Why
 
-Claude Code transcript collection treats any JSONL mtime change as a full-file replay. An mtime-only touch therefore creates avoidable transcript batches, while a changed-file-only session fold can omit unchanged contributors to the same session.
+Claude Code transcript collection treats any JSONL mtime change as a full-file replay. An mtime-only touch therefore creates avoidable transcript batches, while a changed-file-only session fold can omit unchanged contributors to the same session. The first deployed rich-cursor migration also treated legacy mtime compatibility as one all-files decision: one changed or newly discovered contributor disabled the baseline for every matching legacy source, causing an avoidable whole-inventory replay.
 
 ## What Changes
 
@@ -8,6 +8,7 @@ Claude Code transcript collection treats any JSONL mtime change as a full-file r
 - Use independent rich JSONL cursors for Claude sessions and child records.
 - Persist one aggregate snapshot per Claude session so a safe tail equals a clean full-source fold; conservatively rebuild all session aggregates after unsafe source changes.
 - Read and dual-write legacy `file_mtimes` state during the bounded compatibility period.
+- Classify bounded legacy migration per discovered source: scan every source to establish its physical cursor, suppress records only when a legacy mtime matches that scan's observed mtime, and collect mtime-mismatched/new sources normally.
 
 ## Capabilities
 

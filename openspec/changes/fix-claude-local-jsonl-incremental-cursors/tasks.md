@@ -16,3 +16,4 @@
 - [x] 3.3 Run focused/non-browser full package gates, typecheck, lint, strict OpenSpec, diff review, and touched-file lint delta.
 - [x] 3.4 Record verified evidence and residual limits in the required report, then commit one coherent closure change.
 - [x] 3.5 Fable closure: retain the decision-time prior-prefix hash state through tail parsing (no verify-then-seed reread), prove prior-cursor rewrite-plus-growth never clean-appends, and restore/prune current non-JSONL tool-result mtimes before sessions/messages STATE serialization.
+- [x] 3.6 Live migration closure: replace all-files legacy baselining with scan-proven per-source eligibility; reproduce the payload-free 11,378-entry / 58-changed forensic shape, prove only changed contributors emit, rich v1 STATE is checkpointed, and the following run is a no-op.

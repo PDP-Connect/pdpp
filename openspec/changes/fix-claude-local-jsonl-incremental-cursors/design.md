@@ -34,11 +34,17 @@ The scanner snapshots one open handle, reads only through that fixed size, then 
 
 Sessions seed their map from persisted `session_aggregates`; safe tails fold only new lines with each file's saved observations. Any unsafe file, missing aggregate snapshot, or removed tracked file discards the staged map and folds the current inventory from zero. Child rebuilds replay current rows once and rely on stable logical keys plus existing server no-op handling, not a per-record ledger.
 
+### Per-source legacy baseline
+
+Pre-v1 checkpoints have only mtime maps, which cannot safely manufacture byte offsets. Migration therefore scans every discovered source from zero and persists the returned physical cursor. A source is eligible to suppress its child records only when one bounded legacy map has the same mtime as the scan's observed mtime; a new, missing, malformed, or mismatched entry replays that current source once. This is deliberately per source, never an all-files switch: one changed file cannot turn matching contributors into a bulk replay. If the source changed between opening and the decision, the child pass rescans it with emission enabled rather than advancing a fabricated cursor.
+
+Sessions fold every current contributor before STATE. For a legacy migration, aggregates whose contributors all matched legacy mtimes are treated as the baseline; session ids observed in mismatched/new sources are emitted from the complete current fold. Existing v1 corruption and partial snapshots retain the conservative all-session rebuild policy.
+
 ## Risks / Trade-offs
 
 - [Changed metadata requires prefix hashing] → deliberate O(committed-prefix) I/O is the price of arbitrary-prefix mutation detection without a chunk index.
 - [Source changes during a scan] → reject the scan and withhold STATE; runner checkpoint ordering replays safely.
-- [Legacy state has no safe offset] → baseline matching-mtime migration builds rich state without records; changed-mtime migration makes one conservative replay.
+- [Legacy state has no safe offset] → per-source matching-mtime migration builds rich state without records; each changed/new source makes one conservative replay. A large legacy map is bounded as cursor state but is never a reason to replay matching current sources.
 
 ## Migration Plan
 
