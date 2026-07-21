@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rename, truncate, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, truncate, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +42,21 @@ async function makeSource(): Promise<{ claudeHome: string; projects: string; top
   await writeFile(top, `${transcriptLine("top-1", "2026-07-21T00:00:00Z", { padding: "x".repeat(70_000) })}\n`);
   await writeFile(subagent, `${transcriptLine("sub-1", "2026-07-21T00:01:00Z", { sessionId: "wrong-sidechain" })}\n`);
   return { claudeHome, projects, subagent, top };
+}
+
+async function makeAttachmentSource(): Promise<{
+  claudeHome: string;
+  projects: string;
+  subagent: string;
+  toolResult: string;
+  top: string;
+}> {
+  const source = await makeSource();
+  const toolResults = join(source.projects, "-tmp-incremental", SESSION_ID, "tool-results");
+  await mkdir(toolResults, { recursive: true });
+  const toolResult = join(toolResults, "result-1.txt");
+  await writeFile(toolResult, "tool result body\n");
+  return { ...source, toolResult };
 }
 
 async function run(input: {
@@ -584,6 +599,37 @@ test("M14: removed sources are pruned from rich and dual-written mtime state", a
     assert.equal(Object.keys(cursor.file_mtimes).length, 1);
   }
   assert.equal(second.records.find((record) => record.stream === "sessions")?.data.message_count, 1);
+});
+
+test("tool-result mtime state skips unchanged attachments and prunes deleted paths in both ownership modes", async () => {
+  for (const streams of [
+    ["sessions", "messages", "attachments"],
+    ["messages", "attachments"],
+  ]) {
+    const source = await makeAttachmentSource();
+    const first = await run({ ...source, streams });
+    const state = { messages: first.states.messages, sessions: first.states.sessions };
+    for (const stream of streams.includes("sessions") ? ["sessions", "messages"] : ["messages"]) {
+      const cursor = first.states[stream] as { file_mtimes: Record<string, number> };
+      assert.ok(cursor.file_mtimes[source.toolResult] !== undefined, `${stream} retains current tool-result mtime`);
+    }
+    const second = await run({ ...source, state, streams });
+    assert.equal(
+      second.records.filter((record) => record.stream === "attachments").length,
+      0,
+      `${streams.join("+")} unchanged attachment is skipped`
+    );
+    await rm(source.toolResult);
+    const third = await run({
+      ...source,
+      state: { messages: second.states.messages, sessions: second.states.sessions },
+      streams,
+    });
+    for (const stream of streams.includes("sessions") ? ["sessions", "messages"] : ["messages"]) {
+      const cursor = third.states[stream] as { file_mtimes: Record<string, number> };
+      assert.equal(cursor.file_mtimes[source.toolResult], undefined, `${stream} prunes deleted tool-result path`);
+    }
+  }
 });
 
 test("M24: Claude mtime touch queues no transcript records while advancing its durable checkpoint", async () => {

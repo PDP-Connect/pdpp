@@ -110,3 +110,23 @@ test("local JSONL cursor rejects a concurrent committed-prefix rewrite plus grow
   const retry = await scan(path);
   assert.deepEqual(retry.lines, ['{"id":"rewritten"}', '{"id":"grown"}']);
 });
+
+test("local JSONL cursor never clean-appends after a prior-prefix rewrite plus growth", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pdpp-local-jsonl-"));
+  const path = join(root, "events.jsonl");
+  await writeFile(path, '{"id":"one"}\n');
+  const first = await scan(path);
+  await writeFile(path, '{"id":"one"}\n{"id":"two"}\n');
+  await assert.rejects(
+    scanLocalJsonl({
+      path,
+      prior: first.result.cursor,
+      onLine: async () => {
+        await writeFile(path, '{"id":"rewritten"}\n{"id":"two"}\n{"id":"three"}\n');
+      },
+    }),
+    /committed prefix changed while scanning/
+  );
+  const retry = await scan(path);
+  assert.deepEqual(retry.lines, ['{"id":"rewritten"}', '{"id":"two"}', '{"id":"three"}']);
+});

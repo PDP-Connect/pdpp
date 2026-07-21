@@ -15,3 +15,4 @@
 - [x] 3.2 Kill the five required mutants (zero append offset, 64 KiB head-only hash, missing parser continuation, empty incremental aggregate seed, raw-EOF commit) and add aggregate-only telemetry.
 - [x] 3.3 Run focused/non-browser full package gates, typecheck, lint, strict OpenSpec, diff review, and touched-file lint delta.
 - [x] 3.4 Record verified evidence and residual limits in the required report, then commit one coherent closure change.
+- [x] 3.5 Fable closure: retain the decision-time prior-prefix hash state through tail parsing (no verify-then-seed reread), prove prior-cursor rewrite-plus-growth never clean-appends, and restore/prune current non-JSONL tool-result mtimes before sessions/messages STATE serialization.

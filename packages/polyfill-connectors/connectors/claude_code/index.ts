@@ -1648,6 +1648,15 @@ if (isMainModule(import.meta.url)) {
         const newSessionFileMtimes: Record<string, number> = {};
         let nextSessionCursors: Record<string, ClaudeSessionFileCursorV1> = {};
         const nextChildCursors: Record<string, ClaudeChildFileCursorV1> = {};
+        let stagedSessionCursor:
+          | {
+              file_cursors: Record<string, ClaudeSessionFileCursorV1>;
+              file_mtimes: Record<string, number>;
+              fetched_at: string;
+              local_jsonl_cursor_version: 1;
+              session_aggregates: Record<string, SessionAccumulator>;
+            }
+          | undefined;
 
         if (requested.has("sessions")) {
           const legacyBaseline =
@@ -1704,32 +1713,28 @@ if (isMainModule(import.meta.url)) {
             requested,
           });
           const sessionAggregates = Object.fromEntries(sessionAccumulators);
-          const cursor = {
+          stagedSessionCursor = {
             file_cursors: nextSessionCursors,
             file_mtimes: newSessionFileMtimes,
             fetched_at: nowIso(),
             local_jsonl_cursor_version: 1 as const,
             session_aggregates: sessionAggregates,
           };
-          telemetry.cursorStateBytes += Buffer.byteLength(JSON.stringify(cursor), "utf8");
-          await emit({
-            type: "STATE",
-            stream: "sessions",
-            cursor,
-          });
         }
 
         // Existing non-JSONL discovery remains responsible for memory notes and
         // tool-result attachments. Fresh JSONL mtimes make its old JSONL path a
         // no-op while retaining its established blob privacy policy.
         const scanLegacyNonJsonl = async (): Promise<void> => {
-          const jsonlMtimeGate = requested.has("sessions") ? newSessionFileMtimes : newMessageFileMtimes;
+          // Read the acknowledged dual-write map, but write only current
+          // discovery into the fresh map so deleted non-JSONL paths prune.
+          const nonJsonlMtimeGate = requested.has("sessions") ? sessionFileMtimes : messageFileMtimes;
           await scanProjectDirs({
             baseDir,
             buildOnly: requested.has("memory_notes"),
             emit,
             emitRecord,
-            fileMtimes: jsonlMtimeGate,
+            fileMtimes: nonJsonlMtimeGate,
             newMtimes: requested.has("sessions") ? newSessionFileMtimes : newMessageFileMtimes,
             memoryNoteMtimes,
             newMemoryNoteMtimes,
@@ -1740,6 +1745,24 @@ if (isMainModule(import.meta.url)) {
         };
         if (requested.has("sessions")) {
           await scanLegacyNonJsonl();
+          // The attachment walker owns current non-JSONL discovery. Preserve
+          // its mtime gate in both downgrade maps when both streams are in
+          // scope, while retaining JSONL ownership in the rich cursors.
+          if (requested.has("messages") || requested.has("attachments")) {
+            for (const [path, mtime] of Object.entries(newSessionFileMtimes)) {
+              if (!sourcePaths.has(path)) {
+                newMessageFileMtimes[path] = mtime;
+              }
+            }
+          }
+          if (stagedSessionCursor) {
+            telemetry.cursorStateBytes += Buffer.byteLength(JSON.stringify(stagedSessionCursor), "utf8");
+            await emit({
+              type: "STATE",
+              stream: "sessions",
+              cursor: stagedSessionCursor,
+            });
+          }
         }
 
         if (requested.has("messages") || requested.has("attachments")) {

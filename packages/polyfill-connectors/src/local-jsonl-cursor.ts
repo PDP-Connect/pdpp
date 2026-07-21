@@ -66,6 +66,11 @@ function sameOpenFile(left: { dev: number; ino: number }, right: { dev: number; 
 }
 
 async function hashRange(handle: FileHandle, bytes: number): Promise<string> {
+  return (await hashRangeState(handle, bytes)).digest("hex");
+}
+
+/** Read a prefix once and retain its hash state for a later continuation. */
+async function hashRangeState(handle: FileHandle, bytes: number): Promise<Hash> {
   const hash = createHash("sha256");
   let offset = 0;
   while (offset < bytes) {
@@ -77,20 +82,7 @@ async function hashRange(handle: FileHandle, bytes: number): Promise<string> {
     hash.update(buffer);
     offset += bytesRead;
   }
-  return hash.digest("hex");
-}
-
-async function updateHashRange(handle: FileHandle, hash: Hash, bytes: number): Promise<void> {
-  let offset = 0;
-  while (offset < bytes) {
-    const buffer = Buffer.allocUnsafe(Math.min(READ_CHUNK_BYTES, bytes - offset));
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
-    if (bytesRead !== buffer.length) {
-      throw new LocalJsonlUnstableSourceError("local JSONL source ended during a required prefix read");
-    }
-    hash.update(buffer);
-    offset += bytesRead;
-  }
+  return hash;
 }
 
 async function verifyStablePath(
@@ -158,15 +150,20 @@ export async function scanLocalJsonl({ onLine, path, prior }: ScanLocalJsonlArgs
     let decision: LocalJsonlDecision;
     let startOffset = 0;
     let prefixBytesHashed = 0;
+    let deliveredPrefix: Hash = createHash("sha256");
     if (!(prior && isLocalJsonlPhysicalCursorV1(prior)) || prior.committed_offset_bytes > prior.observed_size_bytes) {
       decision = { kind: "rebuild", reason: "invalid_cursor" };
     } else if (snapshot.size < prior.committed_offset_bytes) {
       decision = { kind: "rebuild", reason: "shrunk_before_offset" };
     } else {
-      const actualPrefix = await hashRange(handle, prior.committed_offset_bytes);
+      const actualPrefix = await hashRangeState(handle, prior.committed_offset_bytes);
       prefixBytesHashed += prior.committed_offset_bytes;
-      if (actualPrefix === prior.committed_prefix_sha256) {
+      if (actualPrefix.copy().digest("hex") === prior.committed_prefix_sha256) {
         startOffset = prior.committed_offset_bytes;
+        // Continue the decision-time hash. Its bytes are exactly those that
+        // were compared with the saved cursor; never seed this from a second
+        // disk read, which would reopen a rewrite-plus-growth race.
+        deliveredPrefix = actualPrefix;
         decision = { kind: "append", start_offset_bytes: startOffset };
       } else {
         decision = { kind: "rebuild", reason: "prefix_changed" };
@@ -177,9 +174,6 @@ export async function scanLocalJsonl({ onLine, path, prior }: ScanLocalJsonlArgs
     let committed = startOffset;
     let pending = Buffer.alloc(0);
     let linesDelivered = 0;
-    const deliveredPrefix = createHash("sha256");
-    await updateHashRange(handle, deliveredPrefix, startOffset);
-    prefixBytesHashed += startOffset;
     while (position < snapshot.size) {
       const buffer = Buffer.allocUnsafe(Math.min(READ_CHUNK_BYTES, snapshot.size - position));
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
