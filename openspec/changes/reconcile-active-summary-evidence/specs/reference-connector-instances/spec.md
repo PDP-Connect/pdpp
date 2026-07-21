@@ -130,11 +130,14 @@ No pass SHALL hold more than one connector-instance fence.
 
 ### Requirement: Manifest declaration transitions SHALL start a new terminal-evidence generation
 
-When a valid connector manifest fingerprint changes, reconciliation SHALL
-retain non-declared canonical and retained stream grains as dormant diagnostic
-data, but it SHALL clear terminal latest-attempt facts and advance their
-checkpoint to the terminal event high-water captured by that repair. A later
-terminal fold SHALL use that checkpoint as its replay boundary.
+When a production manifest registration changes the valid connector manifest,
+the same transaction SHALL advance every affected connection's durable manifest
+generation and dirty its summary evidence. Reconciliation SHALL retain
+non-declared canonical and retained stream grains as dormant diagnostic data,
+but it SHALL clear terminal latest-attempt facts and advance their checkpoint to
+the terminal event high-water captured by that repair. A later terminal fold
+SHALL use that checkpoint as its replay boundary. A manifest fingerprint is
+diagnostic only and SHALL NOT be the generation identity.
 
 #### Scenario: Re-added stream does not inherit historical terminal success
 

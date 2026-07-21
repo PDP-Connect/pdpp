@@ -9,6 +9,7 @@ import {
   initPostgresStorage,
   postgresQuery,
 } from "../server/postgres-storage.js";
+import { registerConnector } from "../server/auth.js";
 import {
   closeDb,
   getDb,
@@ -27,6 +28,7 @@ import {
 } from "../server/ref-control.ts";
 import { rebuildRetainedSize } from "../server/retained-size-read-model.js";
 import { recordCurrentGenerationUndeclaredWrite } from "../server/records.js";
+import { dedicatedPostgresTestUrl } from "./helpers/dedicated-postgres-test-url.js";
 
 const OWNER = "owner_local";
 const NOW = "2026-07-16T12:00:00.000Z";
@@ -42,16 +44,30 @@ const MANIFEST = {
   display_name: "Summary Evidence Oracle",
   capabilities: {
     public_listing: { listed: true, status: "test" },
-    refresh_policy: { maximum_staleness_seconds: 3153600000 },
+    refresh_policy: {
+      maximum_staleness_seconds: 3153600000,
+      recommended_mode: "manual",
+      rationale: "Dedicated evidence-oracle fixture has no automatic refresh.",
+    },
   },
   streams: [
-    { name: STREAM, primary_key: ["id"], coverage_strategy: "full_inventory" },
-    { name: EMPTY_STREAM, primary_key: ["id"], coverage_strategy: "full_inventory" },
+    {
+      name: STREAM,
+      primary_key: ["id"],
+      coverage_strategy: "full_inventory",
+      schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+    {
+      name: EMPTY_STREAM,
+      primary_key: ["id"],
+      coverage_strategy: "full_inventory",
+      schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
   ],
 };
 
 const MANIFEST_JSON = JSON.stringify(MANIFEST);
-const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
+const POSTGRES_URL = dedicatedPostgresTestUrl(process.env.PDPP_TEST_POSTGRES_URL);
 
 function seedConnectorSqlite(manifest = MANIFEST) {
   getDb()
@@ -649,7 +665,7 @@ test("warm list and scoped consumers converge after canonical state changes", ()
 );
 
 test(
-  "real disposable PostgreSQL summary evidence has the same missing-evidence contract",
+  "dedicated PostgreSQL manifest generations fence historical facts and undeclared-write provenance",
   { skip: !POSTGRES_URL },
   async () => {
     await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
@@ -730,19 +746,40 @@ test(
       assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
 
       const withoutMessages = { ...MANIFEST, streams: [MANIFEST.streams[1]] };
-      await postgresQuery("UPDATE connectors SET manifest = $1::jsonb WHERE connector_id = $2", [JSON.stringify(withoutMessages), CONNECTOR_ID]);
+      await registerConnector(withoutMessages, { backfillRetrievalIndexes: false });
       await listBypassCache();
       const dormant = await getConnectorSummaryEvidence(INSTANCE_ID);
       assert.equal(dormant.stream_latest_facts, null, "Postgres clears old terminal facts at the manifest boundary");
       assert.equal(dormant.stream_facts_event_seq, firstSeq);
+      assert.equal(dormant.manifest_generation, 1, "the production manifest write advances the durable generation");
 
-      await postgresQuery("UPDATE connectors SET manifest = $1::jsonb WHERE connector_id = $2", [MANIFEST_JSON, CONNECTOR_ID]);
+      await registerConnector(MANIFEST, { backfillRetrievalIndexes: false });
       await listBypassCache();
-      assert.equal((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts, null, "Postgres re-add withholds historical proof");
+      const readded = await getConnectorSummaryEvidence(INSTANCE_ID);
+      assert.equal(readded.stream_latest_facts, null, "Postgres re-add withholds historical proof");
+      assert.equal(readded.manifest_generation, 2, "unobserved remove-readd advances twice at the mutation boundary");
 
       await insertTerminal(firstSeq + 1);
       await listBypassCache();
       assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
+
+      await recordCurrentGenerationUndeclaredWrite(
+        { connector_id: CONNECTOR_ID, connector_instance_id: INSTANCE_ID },
+        { stream: UNEXPECTED_STREAM, provenance: "postgres_current_generation_rejected_write" },
+      );
+      const unexpected = summaryFor(await listBypassCache());
+      assert.equal(streamEntry(unexpected, UNEXPECTED_STREAM).declaration_state, "unexpected");
+
+      // A changed manifest with the same declared streams starts another
+      // durable generation. The old violation must remain historical even
+      // though its fingerprint-equivalent stream set is unchanged.
+      await registerConnector({ ...MANIFEST, version: "1.0.1" }, { backfillRetrievalIndexes: false });
+      const nextGeneration = summaryFor(await listBypassCache());
+      assert.notEqual(
+        nextGeneration.stream_records.find((entry) => entry.stream === UNEXPECTED_STREAM)?.declaration_state,
+        "unexpected",
+        "a violation from an older generation cannot resurrect after a manifest rewrite",
+      );
     } finally {
       await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
       await postgresQuery("DELETE FROM spine_events WHERE connector_instance_id = $1", [INSTANCE_ID]);

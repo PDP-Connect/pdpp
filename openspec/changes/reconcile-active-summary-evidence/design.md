@@ -100,7 +100,8 @@ no record key, value, content, or credential.
 ### One scope-safe reconciliation primitive
 
 One backend-parity primitive owns convergence. Batched discovery compares the
-requested canonical set, normalized record checkpoints, manifest fingerprints,
+requested canonical set, normalized record checkpoints, durable manifest
+generations (with fingerprints retained only as declaration diagnostics),
 retained-byte envelopes, terminal high-water, and observed evidence. It
 classifies each requested row as:
 
@@ -108,7 +109,7 @@ classifies each requested row as:
 - `dirty`: the row says it has not absorbed a change;
 - `record_checkpoint_mismatch`: the composite record checkpoint differs;
 - `identity_mismatch`: cached lifecycle/identity fields differ;
-- `manifest_mismatch`: its normalized declaration fingerprint differs;
+- `manifest_generation_mismatch`: its durable declaration generation differs;
 - `terminal_checkpoint_lag`: terminal facts are behind the pass high-water;
 - `retained_bytes_changed_or_unavailable`: the byte source changed or is not
   trustworthy; or
@@ -206,13 +207,15 @@ manifest is missing or malformed, canonical and readable retained stream names
 remain visible with `declaration_state = unavailable`; `unexpected` is never
 asserted without a successfully parsed manifest. Re-adding a dormant stream
 makes it declared with its old retained facts, but coverage/freshness remain
-unknown or stale until new current evidence commits. The manifest fingerprint
-is the declaration-generation boundary: a fingerprint transition clears the
-terminal fact map and advances its event-sequence checkpoint to the terminal
-high-water observed by that repair. A later fold therefore consumes only
-post-transition terminal events; it MUST NOT replay a pre-removal success
-into a re-added stream. This boundary is event-sequence based, never a clock
-or connector-specific branch.
+unknown or stale until new current evidence commits. The production
+manifest-registration transaction advances a connection-scoped durable
+generation for every changed manifest and dirties its summary evidence before
+any reader can observe it. A generation advance clears the terminal fact map
+and advances its event-sequence checkpoint to the terminal high-water observed
+by repair. A later fold therefore consumes only post-boundary terminal events;
+it MUST NOT replay a pre-removal success into a re-added stream. This boundary
+is durable and event-sequence based, never a clock, fingerprint-reuse test, or
+connector-specific branch.
 
 A declared stream absent from a completed stable canonical record snapshot is
 `declared + known_zero`. A missing retained-size row does not change that count;

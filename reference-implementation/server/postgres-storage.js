@@ -3125,16 +3125,35 @@ async function migratePostgresManifestWriteViolations(client) {
         AND column_name = 'manifest_fingerprint'`,
   );
   if (column.rowCount === 0) return;
-  await client.query(`ALTER TABLE manifest_write_violations ADD COLUMN IF NOT EXISTS manifest_generation BIGINT NOT NULL DEFAULT -1`);
-  await client.query(`WITH numbered AS (
-    SELECT ctid, -ROW_NUMBER() OVER (PARTITION BY connector_instance_id, stream ORDER BY observed_at, manifest_fingerprint) AS generation
-    FROM manifest_write_violations
-  )
-  UPDATE manifest_write_violations AS v
-     SET manifest_generation = numbered.generation
-    FROM numbered WHERE v.ctid = numbered.ctid`);
-  await client.query(`ALTER TABLE manifest_write_violations DROP CONSTRAINT IF EXISTS manifest_write_violations_pkey`);
-  await client.query(`ALTER TABLE manifest_write_violations ADD PRIMARY KEY(connector_instance_id, stream, manifest_generation)`);
+  await client.query('BEGIN');
+  try {
+    // A legacy NOT NULL `manifest_fingerprint` column cannot coexist with the
+    // generation-keyed writer: keeping it would make every current write fail
+    // even after adding the new primary-key column. Rebuild the small
+    // provenance table so its schema, not merely its primary key, expresses
+    // the durable-generation contract.
+    await client.query(`ALTER TABLE manifest_write_violations RENAME TO manifest_write_violations_legacy_generation`);
+    await client.query(`CREATE TABLE manifest_write_violations (
+      connector_instance_id TEXT NOT NULL,
+      stream TEXT NOT NULL,
+      manifest_generation BIGINT NOT NULL,
+      provenance TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      PRIMARY KEY(connector_instance_id, stream, manifest_generation)
+    )`);
+    await client.query(`INSERT INTO manifest_write_violations(
+      connector_instance_id, stream, manifest_generation, provenance, observed_at
+    )
+    SELECT connector_instance_id, stream,
+           -ROW_NUMBER() OVER (PARTITION BY connector_instance_id, stream ORDER BY observed_at, manifest_fingerprint),
+           provenance, observed_at
+      FROM manifest_write_violations_legacy_generation`);
+    await client.query(`DROP TABLE manifest_write_violations_legacy_generation`);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  }
 }
 
 async function migratePostgresDeviceExporterColumns(client) {

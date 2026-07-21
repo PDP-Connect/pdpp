@@ -326,17 +326,20 @@ facts from health and Collection Report projection. Non-local connections retain
 the current run-based algorithm.
 
 For `local_device`, the sole positive coverage proof is the connection-scoped
-committed `coverage_diagnostics` STATE. Its cursor contains the complete safe
+committed `coverage_diagnostics` STATE. Its cursor contains exactly the safe
 fixed-inventory snapshot: `{ fetched_at, stores: [{ store, stream, status }] }`.
-It requires a valid bounded-future cursor, non-null bounded-future server
-`updated_at`, exactly one sanitized entry for every known store, the exact
-authoritative store-to-stream mapping, and no malformed, dropped, extra,
-duplicate, or `unaccounted` entry. Retained `coverage_diagnostics` RECORDs are
-operator evidence only and MUST NOT be read as positive health authority.
-Stores fold into streams worst-wins. The STATE row's server `updated_at` is
-every local coverage entry's `evidence_as_of`; heartbeat and record emission
-timestamps cannot refresh coverage proof. Direct status, `state_stream`
-inheritance, self-coverage, and accepted policy remain explicit.
+The parser rejects missing, extra, private, future-version, conflicting, or
+duplicate fields and tuples; the snapshot must contain exactly one sanitized
+entry for every known store and the authoritative store-to-stream mapping, with
+no malformed, dropped, extra, or `unaccounted` entry. The state write commits
+the current durable manifest generation, and a proof is eligible only when its
+stored generation equals the connection's current generation. Retained
+`coverage_diagnostics` RECORDs are operator evidence only and MUST NOT be read
+as positive health authority. Stores fold into streams worst-wins. Server
+`updated_at` remains presentation `evidence_as_of`, not a proof-ordering
+boundary; heartbeat and record-emission timestamps cannot refresh coverage
+proof. Direct status, `state_stream` inheritance, self-coverage, and accepted
+policy remain explicit.
 
 Admit the proof only while the device is fresh, healthy, idle/drained, and its
 read is reliable: no unhealthy/stale heartbeat, open outbox work, failed state

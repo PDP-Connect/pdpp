@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { allowUnboundedReadAcknowledged, exec, getMany, getOne, referenceQueries, writeTransaction } from '../../lib/db.ts';
+import { getDb } from '../db.js';
 import { postgresQuery, withPostgresTransaction } from '../postgres-storage.js';
 import { withConnectorInstanceWrite } from '../connector-instance-write-coordinator.ts';
 
