@@ -27,6 +27,7 @@ export interface LocalDeviceProgress {
   readonly last_heartbeat_at: string | null;
   readonly last_heartbeat_status: string | null;
   readonly last_ingest_at: string | null;
+  readonly manifest_generation: number | null;
   /**
    * Connection-level rollup of the per-source outbox diagnostics the
    * device reports on its heartbeats (pending, retrying, stale leases,
@@ -61,6 +62,7 @@ interface HeartbeatRow {
   readonly sourceInstanceId: string;
   readonly sourceStatus: string;
   readonly updatedAt: string | null;
+  readonly manifestGeneration: number | null;
 }
 
 interface OutboxAxisAccumulator {
@@ -96,6 +98,7 @@ function toHeartbeatRow(storeRow: {
   sourceInstanceId: string;
   sourceStatus: string;
   updatedAt: string | null;
+  manifestGeneration: number | null;
 }): HeartbeatRow {
   return {
     connectorId: storeRow.connectorId,
@@ -112,6 +115,7 @@ function toHeartbeatRow(storeRow: {
     sourceInstanceId: storeRow.sourceInstanceId,
     sourceStatus: storeRow.sourceStatus,
     updatedAt: storeRow.updatedAt,
+    manifestGeneration: storeRow.manifestGeneration,
   };
 }
 
@@ -340,6 +344,7 @@ export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]):
   let lastIngestAt: string | null = null;
   let recordsPending = 0;
   let sawPending = false;
+  let manifestGeneration: number | null = null;
   for (const row of trusted) {
     if (row.lastHeartbeatAt !== null && (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt)) {
       lastHeartbeatAt = row.lastHeartbeatAt;
@@ -352,11 +357,15 @@ export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]):
       recordsPending += row.recordsPending;
       sawPending = true;
     }
+    if (row.manifestGeneration !== null && row.lastHeartbeatAt === lastHeartbeatAt) {
+      manifestGeneration = row.manifestGeneration;
+    }
   }
   return {
     last_heartbeat_at: lastHeartbeatAt,
     last_heartbeat_status: lastHeartbeatStatus,
     last_ingest_at: lastIngestAt,
+    manifest_generation: manifestGeneration,
     // Roll up the per-source outbox diagnostics across the same trusted
     // rows we already use for `records_pending`, so the connection summary
     // can show the pending / dead-letter / stale-lease breakdown a stalled

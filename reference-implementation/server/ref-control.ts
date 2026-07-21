@@ -565,6 +565,7 @@ export interface LocalDeviceProgress {
   readonly last_heartbeat_at: string | null;
   readonly last_heartbeat_status: string | null;
   readonly last_ingest_at: string | null;
+  readonly manifest_generation: number | null;
   /**
    * Connection-level rollup of the per-source outbox diagnostics the
    * device reports on its heartbeats (pending, retrying, stale leases,
@@ -3116,7 +3117,8 @@ export function deriveLocalCoverageAxis(input: {
   readonly hasCommittedSnapshot?: boolean;
   readonly state: unknown;
   readonly updatedAt: string | null;
-  readonly manifestGenerationBoundaryAt?: string | null;
+  readonly manifestGeneration?: number | null;
+  readonly stateManifestGeneration?: number | null;
   readonly nowIso?: string;
 }): LocalCoverageDiagnosticAxis {
   const { rows } = input;
@@ -3125,22 +3127,12 @@ export function deriveLocalCoverageAxis(input: {
       ? (input.state as Record<string, unknown>).fetched_at
       : null;
   const validCursor = typeof stateCursor === "string" && Number.isFinite(Date.parse(stateCursor));
-  const validUpdatedAt = typeof input.updatedAt === "string" && Number.isFinite(Date.parse(input.updatedAt));
-  const nowMs = Date.parse(input.nowIso ?? new Date().toISOString());
-  const maximumFutureProofMs = 5 * 60 * 1000;
-  const cursorMs = validCursor ? Date.parse(stateCursor) : Number.NaN;
-  const updatedAtMs = validUpdatedAt ? Date.parse(input.updatedAt) : Number.NaN;
-  const boundaryMs =
-    typeof input.manifestGenerationBoundaryAt === "string"
-      ? Date.parse(input.manifestGenerationBoundaryAt)
-      : Number.NaN;
+  const currentGeneration = input.manifestGeneration;
+  const proofGeneration = input.stateManifestGeneration;
   const reliable =
     validCursor &&
-    validUpdatedAt &&
-    Number.isFinite(nowMs) &&
-    cursorMs <= nowMs + maximumFutureProofMs &&
-    updatedAtMs <= nowMs + maximumFutureProofMs &&
-    (!Number.isFinite(boundaryMs) || updatedAtMs > boundaryMs) &&
+    Number.isInteger(currentGeneration) &&
+    currentGeneration === proofGeneration &&
     !input.malformed &&
     input.hasAuthoritativeInventory &&
     input.hasCommittedSnapshot === true &&
@@ -4109,14 +4101,15 @@ export function buildConnectorFreshness({
 function localDeviceFreshnessHeartbeatAt(
   localDeviceProgress: LocalDeviceProgress | null,
   outbox: { readonly axis: OutboxAxis },
-  manifestGenerationBoundaryAt: string | null | undefined = null
+  manifestGeneration: number | null | undefined = null
 ): string | null {
   if (!localDeviceProgress?.last_heartbeat_at) {
     return null;
   }
-  const boundaryMs = manifestGenerationBoundaryAt ? Date.parse(manifestGenerationBoundaryAt) : Number.NaN;
-  const heartbeatMs = Date.parse(localDeviceProgress.last_heartbeat_at);
-  if (Number.isFinite(boundaryMs) && (!Number.isFinite(heartbeatMs) || heartbeatMs <= boundaryMs)) {
+  if (
+    !Number.isInteger(manifestGeneration) ||
+    localDeviceProgress.manifest_generation !== manifestGeneration
+  ) {
     return null;
   }
   if (outbox.axis === "active") {
@@ -4652,7 +4645,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const freshnessHeartbeatAt = localDeviceFreshnessHeartbeatAt(
     localDeviceProgress,
     outbox,
-    evidence?.manifest_generation_boundary_at ?? null
+    evidence?.manifest_generation ?? null
   );
   const freshness = buildConnectorFreshness({
     lastRun: authoritativeLastRun,
@@ -5355,7 +5348,7 @@ type Row = Record<string, unknown>;
  * never re-derived from a live source here.
  */
 export interface ConnectorSummaryEvidenceRow {
-  readonly manifest_generation_boundary_at?: string | null;
+  readonly manifest_generation?: number;
   readonly total_records: number;
   /** Count of streams with at least one live canonical record — NOT the exhaustive declared+observed stream_records set size. */
   readonly stream_count: number;

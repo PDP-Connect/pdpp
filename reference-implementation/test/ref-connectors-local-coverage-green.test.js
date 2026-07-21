@@ -386,9 +386,10 @@ test('manifest-generation boundary withholds old local STATE until a no-op proof
   seedCoverage([{ store: 'projects', stream: 'sessions', status: 'collected' }]);
   getDb().prepare(
     `INSERT INTO connector_summary_evidence(
-       connector_instance_id, connector_id, display_name, manifest_generation_boundary_at
+       connector_instance_id, connector_id, display_name, manifest_generation
      ) VALUES (?, ?, '', ?)`
-  ).run(CONNECTOR_INSTANCE_ID, CONNECTOR_ID, '2026-06-03T11:58:32.000Z');
+  ).run(CONNECTOR_INSTANCE_ID, CONNECTOR_ID, 0);
+  getDb().prepare('UPDATE connector_instances SET manifest_generation = 1 WHERE connector_instance_id = ?').run(CONNECTOR_INSTANCE_ID);
 
   const target = { connector_id: CONNECTOR_ID, connector_instance_id: CONNECTOR_INSTANCE_ID };
   const before = await readCommittedLocalCoverageDiagnostics(target);
@@ -400,7 +401,7 @@ test('manifest-generation boundary withholds old local STATE until a no-op proof
     { coverage_diagnostics: before.state },
   );
   const after = await readCommittedLocalCoverageDiagnostics(target);
-  assert.ok(after.updatedAt > before.updatedAt, 'no-op successful STATE PUT advances durable proof time');
+  assert.equal(after.stateManifestGeneration, after.manifestGeneration, 'no-op successful STATE PUT commits the current durable generation');
   assert.equal(deriveLocalCoverageAxis(after).axis, 'complete');
 }));
 
@@ -744,7 +745,7 @@ test('missing fixed-inventory coverage store cannot publish complete coverage ro
   assert.notEqual(row.connection_health.state, 'healthy');
 }));
 
-test('future proof bounds use injected now for both cursor and server commit time', () => {
+test('coverage proof eligibility ignores wall-clock ordering when generations match', () => {
   const base = {
     rows: [{ store: 'projects', stream: 'sessions', status: 'collected' }],
     malformed: false,
@@ -755,10 +756,12 @@ test('future proof bounds use injected now for both cursor and server commit tim
     hasCommittedSnapshot: true,
     state: { fetched_at: '2026-06-03T12:05:01.000Z' },
     updatedAt: '2026-06-03T12:05:01.000Z',
+    manifestGeneration: 4,
+    stateManifestGeneration: 4,
     nowIso: '2026-06-03T12:00:00.000Z',
   };
-  assert.equal(deriveLocalCoverageAxis(base).reliable, false);
-  assert.equal(deriveLocalCoverageAxis({ ...base, state: { fetched_at: '2026-06-03T12:05:00.000Z' }, updatedAt: '2026-06-03T12:05:00.000Z' }).reliable, true);
+  assert.equal(deriveLocalCoverageAxis(base).reliable, true);
+  assert.equal(deriveLocalCoverageAxis({ ...base, manifestGeneration: 5 }).reliable, false);
 });
 
 test(

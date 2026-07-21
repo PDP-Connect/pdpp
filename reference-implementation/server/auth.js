@@ -1575,6 +1575,57 @@ const sqliteConnectorCatalogStore = {
     getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]),
 };
 
+/**
+ * The registry write is the manifest-generation boundary.  The manifest row,
+ * every affected connection's monotonic generation, and the disposable
+ * summary invalidation commit together.  Do not move this into summary
+ * repair: an unobserved remove/re-add must still advance twice.
+ */
+async function persistManifestAndAdvanceGenerations(connectorId, manifestJson) {
+  if (isPostgresStorageBackend()) {
+    return withPostgresTransaction(async (client) => {
+      const changed = await client.query(
+        `INSERT INTO connectors(connector_id, manifest)
+         VALUES($1, $2::jsonb)
+         ON CONFLICT (connector_id) DO UPDATE SET manifest = EXCLUDED.manifest
+           WHERE connectors.manifest IS DISTINCT FROM EXCLUDED.manifest
+         RETURNING connector_id`,
+        [connectorId, manifestJson],
+      );
+      if (changed.rowCount === 0) return false;
+      await client.query(
+        `UPDATE connector_instances
+            SET manifest_generation = manifest_generation + 1
+          WHERE connector_id = $1`,
+        [connectorId],
+      );
+      await client.query(
+        `UPDATE connector_summary_evidence
+            SET dirty = 1, state = 'stale'
+          WHERE connector_id = $1`,
+        [connectorId],
+      );
+      return true;
+    });
+  }
+  return transaction(() => {
+    const db = getDb();
+    const existing = db.prepare('SELECT manifest FROM connectors WHERE connector_id = ?').get(connectorId);
+    if (existing?.manifest === manifestJson) return false;
+    db.prepare(
+      `INSERT INTO connectors(connector_id, manifest) VALUES(?, ?)
+       ON CONFLICT(connector_id) DO UPDATE SET manifest = excluded.manifest`,
+    ).run(connectorId, manifestJson);
+    db.prepare(
+      'UPDATE connector_instances SET manifest_generation = manifest_generation + 1 WHERE connector_id = ?',
+    ).run(connectorId);
+    db.prepare(
+      "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_id = ?",
+    ).run(connectorId);
+    return true;
+  });
+}
+
 function getConnectorCatalogStore() {
   return isPostgresStorageBackend() ? postgresConnectorCatalogStore : sqliteConnectorCatalogStore;
 }
@@ -2454,10 +2505,7 @@ async function maybeRegisterConnectorPhaseForTest(point, context) {
 export async function registerConnector(manifest, options = {}) {
   validateConnectorManifest(manifest);
   const { connectorId, storedManifest } = normalizeConnectorManifestForStorage(manifest);
-  await getConnectorCatalogStore().upsert({
-    connectorId,
-    manifestJson: JSON.stringify(storedManifest),
-  });
+  await persistManifestAndAdvanceGenerations(connectorId, JSON.stringify(storedManifest));
   await maybeRegisterConnectorPhaseForTest('after-manifest-persisted', { connectorId, manifest: storedManifest });
 
   if (isPostgresStorageBackend()) {

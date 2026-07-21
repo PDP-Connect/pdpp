@@ -201,6 +201,10 @@ CREATE TABLE IF NOT EXISTS connector_instances (
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
   revoked_at            TEXT,
+  -- Monotonic per-connection identity of the registered manifest content.
+  -- This is intentionally an event counter, not a wall-clock value: a
+  -- remove/re-add ABA advances twice even when no reader observes the middle.
+  manifest_generation   INTEGER NOT NULL DEFAULT 0,
   UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key),
   FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT
 );
@@ -477,6 +481,7 @@ CREATE TABLE IF NOT EXISTS device_source_instances (
   last_heartbeat_status  TEXT,
   records_pending        INTEGER,
   outbox_diagnostics_json TEXT,
+  manifest_generation    INTEGER,
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,
   revoked_at          TEXT,
@@ -1029,6 +1034,7 @@ CREATE TABLE IF NOT EXISTS connector_state (
   stream        TEXT NOT NULL,
   state_json    TEXT NOT NULL,
   updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  manifest_generation INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(connector_instance_id, stream)
 );
 
@@ -1039,6 +1045,7 @@ CREATE TABLE IF NOT EXISTS grant_connector_state (
   stream        TEXT NOT NULL,
   state_json    TEXT NOT NULL,
   updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  manifest_generation INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(grant_id, connector_instance_id, stream)
 );
 
@@ -1422,10 +1429,9 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   state                         TEXT NOT NULL DEFAULT 'rebuilding',
   -- Sanitized last error (credentials redacted, bounded length).
   last_error                    TEXT,
-  -- The instant a manifest fingerprint transition began this connection's
-  -- current declaration generation. Old local STATE/heartbeat proof must
-  -- postdate it before it can be positive authority again.
-  manifest_generation_boundary_at TEXT
+  -- Durable connection-scoped declaration identity. This is the only
+  -- eligibility boundary for terminal, coverage, and heartbeat proof.
+  manifest_generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
@@ -1435,10 +1441,10 @@ CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
 CREATE TABLE IF NOT EXISTS manifest_write_violations (
   connector_instance_id TEXT NOT NULL,
   stream                TEXT NOT NULL,
-  manifest_fingerprint  TEXT NOT NULL,
+  manifest_generation   INTEGER NOT NULL,
   provenance            TEXT NOT NULL,
   observed_at           TEXT NOT NULL,
-  PRIMARY KEY(connector_instance_id, stream, manifest_fingerprint)
+  PRIMARY KEY(connector_instance_id, stream, manifest_generation)
 );
 `;
 
@@ -1605,7 +1611,30 @@ function ensureConnectorSummaryEvidenceColumns(raw) {
   addColumnIfMissing(raw, 'connector_summary_evidence', 'manifest_declaration_reason_code', 'TEXT');
   addColumnIfMissing(raw, 'connector_summary_evidence', 'retained_bytes_state', "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, 'connector_summary_evidence', 'retained_bytes_reason_code', 'TEXT');
-  addColumnIfMissing(raw, 'connector_summary_evidence', 'manifest_generation_boundary_at', 'TEXT');
+  addColumnIfMissing(raw, 'connector_summary_evidence', 'manifest_generation', 'INTEGER NOT NULL DEFAULT 0');
+}
+
+function migrateManifestWriteViolations(raw) {
+  if (!hasTableColumn(raw, 'manifest_write_violations', 'manifest_fingerprint')) return;
+  raw.transaction(() => {
+    raw.exec(`ALTER TABLE manifest_write_violations RENAME TO manifest_write_violations_legacy_generation`);
+    raw.exec(`CREATE TABLE manifest_write_violations (
+      connector_instance_id TEXT NOT NULL,
+      stream TEXT NOT NULL,
+      manifest_generation INTEGER NOT NULL,
+      provenance TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      PRIMARY KEY(connector_instance_id, stream, manifest_generation)
+    )`);
+    // Legacy fingerprint-only rows have no durable event identity. Preserve
+    // them as explicitly historical so they can never accuse generation 0.
+    raw.exec(`INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_generation, provenance, observed_at)
+      SELECT connector_instance_id, stream,
+             -ROW_NUMBER() OVER (PARTITION BY connector_instance_id, stream ORDER BY observed_at, manifest_fingerprint),
+             provenance, observed_at
+      FROM manifest_write_violations_legacy_generation`);
+    raw.exec(`DROP TABLE manifest_write_violations_legacy_generation`);
+  })();
 }
 
 function ensureBrowserSurfaceLeaseIndexes(raw) {
@@ -2681,6 +2710,8 @@ const LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
   'semantic_search_meta',
   'semantic_search_backfill_progress',
   'connector_detail_gaps',
+  'connector_summary_evidence',
+  'manifest_write_violations',
   'connector_attention_records',
   'connector_schedules',
   'controller_active_runs',
@@ -2882,6 +2913,10 @@ function uniqueColumnsForTable(table) {
       return ['stream'];
     case 'connector_detail_gaps':
       return ['grant_id', 'stream', 'parent_stream', 'record_key', 'detail_locator_json'];
+    case 'connector_summary_evidence':
+      return [];
+    case 'manifest_write_violations':
+      return ['stream', 'manifest_generation'];
     case 'semantic_search_meta':
       return ['stream'];
     case 'semantic_search_backfill_progress':
@@ -3758,6 +3793,10 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_heartbeat_status', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'records_pending', 'INTEGER'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'outbox_diagnostics_json', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'manifest_generation', 'INTEGER'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'connector_instances', 'manifest_generation', 'INTEGER NOT NULL DEFAULT 0'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'connector_state', 'manifest_generation', 'INTEGER NOT NULL DEFAULT 0'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'grant_connector_state', 'manifest_generation', 'INTEGER NOT NULL DEFAULT 0'));
   runWithSqliteBusyRetrySync(() => migrateDeviceIngestBatchOutcomes(raw));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_mode', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_subject_id', 'TEXT'));
@@ -3779,6 +3818,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
   runWithSqliteBusyRetrySync(() => ensureConnectorSummaryEvidenceColumns(raw));
+  runWithSqliteBusyRetrySync(() => migrateManifestWriteViolations(raw));
   runWithSqliteBusyRetrySync(() => ensureRecordResetGenerationColumn(raw));
   // Incremental add-source linkage: a later same-client ceremony records the
   // prior package it extends via `parent_package_id`. Pre-existing reference

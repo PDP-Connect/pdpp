@@ -125,7 +125,7 @@ export interface ConnectorSummaryEvidenceRow {
   readonly retained_bytes_evidence: EvidenceComponent<ComponentState>;
   readonly dirty: boolean;
   readonly computed_at: string | null;
-  readonly manifest_generation_boundary_at?: string | null;
+  readonly manifest_generation?: number;
   readonly source_event_seq: number | null;
   readonly state: string;
   readonly last_error: string | null;
@@ -270,6 +270,9 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
     existingEvidence.manifest_fingerprint == null ? null : String(existingEvidence.manifest_fingerprint);
   const currentFingerprint = manifest.ok ? manifest.fingerprint : null;
   if (storedFingerprint !== currentFingerprint) {
+    return "manifest_mismatch";
+  }
+  if (Number(existingEvidence.manifest_generation ?? 0) !== Number(instance.manifest_generation ?? 0)) {
     return "manifest_mismatch";
   }
   const storedTerminalSeq =
@@ -948,9 +951,9 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
       const unexpectedRows = manifest.ok
         ? (db
             .prepare(
-              "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = ? AND manifest_fingerprint = ?"
+              "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = ? AND manifest_generation = ?"
             )
-            .all(connectorInstanceId, manifest.fingerprint) as Row[])
+            .all(connectorInstanceId, Number(instance.manifest_generation ?? 0)) as Row[])
         : [];
       const unexpectedStreams = new Set(unexpectedRows.map((row) => String(row.stream)));
       const terminalHighWaterRow = db
@@ -1052,8 +1055,8 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
       );
       const unexpectedResult = manifest.ok
         ? await client.query(
-            "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = $1 AND manifest_fingerprint = $2",
-            [connectorInstanceId, manifest.fingerprint]
+            "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = $1 AND manifest_generation = $2",
+            [connectorInstanceId, Number(instance.manifest_generation ?? 0)]
           )
         : { rows: [] as Row[] };
       const unexpectedStreams = new Set((unexpectedResult.rows as Row[]).map((row) => String(row.stream)));
@@ -1197,6 +1200,7 @@ function buildRepairedRow(inputs: RepairInputs): Row {
     total_retained_bytes: retainedBytes?.total_bytes ?? 0,
     record_checkpoint_json: JSON.stringify(checkpoint),
     manifest_fingerprint: manifest.ok ? manifest.fingerprint : null,
+    manifest_generation: Number(instance.manifest_generation ?? 0),
     record_snapshot_state: "current",
     record_snapshot_reason_code: null,
     manifest_declaration_state: manifest.ok ? "current" : "unavailable",
@@ -1214,11 +1218,10 @@ function buildRepairedRow(inputs: RepairInputs): Row {
 function upsertSqliteEvidenceRow(db: Db, row: Row): void {
   const existing = db
     .prepare(
-      "SELECT manifest_fingerprint, manifest_generation_boundary_at, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
+      "SELECT manifest_generation, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
     )
     .get(row.connector_instance_id) as Row | undefined;
-  const manifestGenerationChanged =
-    existing !== undefined && (existing.manifest_fingerprint ?? null) !== (row.manifest_fingerprint ?? null);
+  const manifestGenerationChanged = existing !== undefined && Number(existing.manifest_generation ?? 0) !== Number(row.manifest_generation);
   const terminalFacts = terminalFactsForRepair(existing, row, manifestGenerationChanged);
   db.prepare(
     `INSERT INTO connector_summary_evidence(
@@ -1232,7 +1235,7 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        terminal_facts_state, terminal_facts_reason_code,
        stream_latest_facts_json, stream_facts_event_seq,
        dirty, computed_at, source_event_seq, state, last_error,
-       manifest_generation_boundary_at
+       manifest_generation
      )
      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?)
      ON CONFLICT(connector_instance_id) DO UPDATE SET
@@ -1263,7 +1266,7 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        computed_at = excluded.computed_at,
        state = 'fresh',
        last_error = NULL,
-       manifest_generation_boundary_at = excluded.manifest_generation_boundary_at`
+       manifest_generation = excluded.manifest_generation`
   ).run(
     row.connector_instance_id,
     row.connector_id,
@@ -1297,18 +1300,17 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
     row.computed_at,
     row.state,
     row.last_error,
-    manifestGenerationChanged ? row.computed_at : (existing?.manifest_generation_boundary_at ?? null)
+    row.manifest_generation
   );
 }
 
 async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
   const existingResult = await client.query(
-    "SELECT manifest_fingerprint, manifest_generation_boundary_at, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
+    "SELECT manifest_generation, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
     [row.connector_instance_id]
   );
   const existing = existingResult.rows[0] as Row | undefined;
-  const manifestGenerationChanged =
-    existing !== undefined && (existing.manifest_fingerprint ?? null) !== (row.manifest_fingerprint ?? null);
+  const manifestGenerationChanged = existing !== undefined && Number(existing.manifest_generation ?? 0) !== Number(row.manifest_generation);
   const terminalFacts = terminalFactsForRepair(existing, row, manifestGenerationChanged);
   await client.query(
     `INSERT INTO connector_summary_evidence(
@@ -1322,7 +1324,7 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        terminal_facts_state, terminal_facts_reason_code,
        stream_latest_facts_json, stream_facts_event_seq,
        dirty, computed_at, source_event_seq, state, last_error,
-       manifest_generation_boundary_at
+       manifest_generation
      )
      VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24, 0, $25, NULL, $26, $27, $28)
      ON CONFLICT (connector_instance_id) DO UPDATE SET
@@ -1353,7 +1355,7 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        computed_at = EXCLUDED.computed_at,
        state = 'fresh',
        last_error = NULL,
-       manifest_generation_boundary_at = EXCLUDED.manifest_generation_boundary_at`,
+       manifest_generation = EXCLUDED.manifest_generation`,
     [
       row.connector_instance_id,
       row.connector_id,
@@ -1382,7 +1384,7 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
       row.computed_at,
       row.state,
       row.last_error,
-      manifestGenerationChanged ? row.computed_at : (existing?.manifest_generation_boundary_at ?? null),
+      row.manifest_generation,
     ]
   );
 }

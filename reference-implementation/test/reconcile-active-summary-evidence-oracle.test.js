@@ -289,7 +289,7 @@ test("only explicit current-generation undeclared-write provenance becomes unexp
   }),
 );
 
-test("manifest re-add starts a new terminal-evidence generation instead of replaying dormant history", () =>
+test("unobserved manifest remove-readd advances twice and never replays terminal history", () =>
   withSqlite(async () => {
     seedConnectorSqlite();
     seedInstanceSqlite();
@@ -302,16 +302,15 @@ test("manifest re-add starts a new terminal-evidence generation instead of repla
     );
 
     const withoutMessages = { ...MANIFEST, streams: [MANIFEST.streams[1]] };
-    getDb().prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?").run(JSON.stringify(withoutMessages), CONNECTOR_ID);
-    await listBypassCache();
-    const dormant = await getConnectorSummaryEvidence(INSTANCE_ID);
-    assert.equal(dormant.terminal_facts.state, "current");
-    assert.equal(dormant.stream_facts_event_seq, 1);
-    assert.equal(dormant.stream_latest_facts, null, "the manifest-generation boundary clears old facts");
-
-    getDb().prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?").run(MANIFEST_JSON, CONNECTOR_ID);
+    getDb().transaction(() => {
+      getDb().prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?").run(JSON.stringify(withoutMessages), CONNECTOR_ID);
+      getDb().prepare("UPDATE connector_instances SET manifest_generation = manifest_generation + 1 WHERE connector_instance_id = ?").run(INSTANCE_ID);
+      getDb().prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?").run(MANIFEST_JSON, CONNECTOR_ID);
+      getDb().prepare("UPDATE connector_instances SET manifest_generation = manifest_generation + 1 WHERE connector_instance_id = ?").run(INSTANCE_ID);
+    })();
     const readded = summaryFor(await listBypassCache());
     const readdedEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
+    assert.equal(getDb().prepare("SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = ?").get(INSTANCE_ID).manifest_generation, 2);
     assert.equal(readdedEvidence.stream_latest_facts, null, "re-add must not restore pre-removal terminal evidence");
     assert.notEqual(readded.connection_health.state, "healthy", "without a post-boundary fact the re-added stream fails closed");
 

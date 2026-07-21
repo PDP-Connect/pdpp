@@ -2460,19 +2460,28 @@ export async function readCommittedLocalCoverageDiagnostics(storageTarget) {
     allowedStreams: new Set([LOCAL_COVERAGE_DIAGNOSTICS_STREAM]),
   });
   const state = stateProjection.state?.[LOCAL_COVERAGE_DIAGNOSTICS_STREAM] ?? null;
-  const generationBoundary = isPostgresStorageBackend()
+  const generation = isPostgresStorageBackend()
     ? (await postgresQuery(
-        'SELECT manifest_generation_boundary_at FROM connector_summary_evidence WHERE connector_instance_id = $1',
-        [connectorInstanceId],
-      )).rows[0]?.manifest_generation_boundary_at ?? null
-    : getDb()
-      .prepare('SELECT manifest_generation_boundary_at FROM connector_summary_evidence WHERE connector_instance_id = ?')
-      .get(connectorInstanceId)?.manifest_generation_boundary_at ?? null;
+        `SELECT ci.manifest_generation AS current_generation, cs.manifest_generation AS state_generation
+           FROM connector_instances ci
+           LEFT JOIN connector_state cs
+             ON cs.connector_instance_id = ci.connector_instance_id AND cs.stream = $2
+          WHERE ci.connector_instance_id = $1`,
+        [connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM],
+      )).rows[0] ?? null
+    : getDb().prepare(
+      `SELECT ci.manifest_generation AS current_generation, cs.manifest_generation AS state_generation
+         FROM connector_instances ci
+         LEFT JOIN connector_state cs
+           ON cs.connector_instance_id = ci.connector_instance_id AND cs.stream = ?
+        WHERE ci.connector_instance_id = ?`,
+      ).get(LOCAL_COVERAGE_DIAGNOSTICS_STREAM, connectorInstanceId) ?? null;
   return {
     ...parseCoverageDiagnosticsStateSnapshot(connectorId, state),
     state,
     updatedAt: stateProjection.updated_at ?? null,
-    manifestGenerationBoundaryAt: generationBoundary,
+    manifestGeneration: generation?.current_generation == null ? null : Number(generation.current_generation),
+    stateManifestGeneration: generation?.state_generation == null ? null : Number(generation.state_generation),
   };
 }
 
@@ -2485,28 +2494,51 @@ export async function recordCurrentGenerationUndeclaredWrite(storageTarget, evid
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const stream = typeof evidence?.stream === 'string' ? evidence.stream : '';
-  const manifestFingerprint = typeof evidence?.manifestFingerprint === 'string' ? evidence.manifestFingerprint : '';
   const provenance = typeof evidence?.provenance === 'string' ? evidence.provenance : 'runtime_rejected_write';
-  if (!connectorInstanceId || !stream || !manifestFingerprint) {
-    throw new Error('Current manifest violation evidence requires connection, stream, and manifest fingerprint');
+  if (!connectorInstanceId || !stream) {
+    throw new Error('Current manifest violation evidence requires connection and stream');
   }
   const observedAt = nowIso();
   if (isPostgresStorageBackend()) {
-    await postgresQuery(
-      `INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_fingerprint, provenance, observed_at)
+    await withPostgresTransaction(async (client) => {
+      const current = await client.query(
+        'SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = $1 FOR UPDATE',
+        [connectorInstanceId],
+      );
+      if (current.rowCount === 0) throw new Error('Current manifest violation evidence requires an existing connection');
+      const generation = Number(current.rows[0].manifest_generation ?? 0);
+      await client.query(
+      `INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_generation, provenance, observed_at)
        VALUES($1, $2, $3, $4, $5)
-       ON CONFLICT(connector_instance_id, stream, manifest_fingerprint) DO UPDATE
+       ON CONFLICT(connector_instance_id, stream, manifest_generation) DO UPDATE
          SET provenance = EXCLUDED.provenance, observed_at = EXCLUDED.observed_at`,
-      [connectorInstanceId, stream, manifestFingerprint, provenance, observedAt],
-    );
+      [connectorInstanceId, stream, generation, provenance, observedAt],
+      );
+      await client.query(
+        "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = $1",
+        [connectorInstanceId],
+      );
+    });
     return;
   }
-  getDb().prepare(
-    `INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_fingerprint, provenance, observed_at)
-     VALUES(?, ?, ?, ?, ?)
-     ON CONFLICT(connector_instance_id, stream, manifest_fingerprint) DO UPDATE
-       SET provenance = excluded.provenance, observed_at = excluded.observed_at`,
-  ).run(connectorInstanceId, stream, manifestFingerprint, provenance, observedAt);
+  await withConnectorInstanceWrite(connectorInstanceId, async () => {
+    writeTransaction(() => {
+      const current = getDb().prepare(
+        'SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = ?',
+      ).get(connectorInstanceId);
+      if (!current) throw new Error('Current manifest violation evidence requires an existing connection');
+      const generation = Number(current.manifest_generation ?? 0);
+      getDb().prepare(
+        `INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_generation, provenance, observed_at)
+         VALUES(?, ?, ?, ?, ?)
+         ON CONFLICT(connector_instance_id, stream, manifest_generation) DO UPDATE
+           SET provenance = excluded.provenance, observed_at = excluded.observed_at`,
+      ).run(connectorInstanceId, stream, generation, provenance, observedAt);
+      getDb().prepare(
+        "UPDATE connector_summary_evidence SET dirty = 1, state = 'stale' WHERE connector_instance_id = ?",
+      ).run(connectorInstanceId);
+    });
+  });
 }
 
 /**
