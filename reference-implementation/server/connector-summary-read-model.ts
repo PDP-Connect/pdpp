@@ -1459,9 +1459,20 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
   }
   // A manifest fingerprint transition intentionally clears the terminal map
   // while retaining the current event high-water as its generation boundary.
-  // It still needs one converged fold pass to turn that deliberately stale
-  // component into a current, empty post-boundary fact set. The same retry
-  // behavior is correct for other recoverable terminal-fold failures.
+  // It still needs a fold pass to attempt converging: a NEW post-boundary
+  // fact-carrying event (stamped with the connection's new current
+  // generation) DOES turn it current again — but with zero such events since
+  // the boundary, the pass converges to the SAME non-current verdict it
+  // started with (see `seedFoldState`'s `generationCurrentSeedByInstance`,
+  // which seeds `false` from exactly this row's own incoming
+  // `manifest_generation_changed`/`terminal_facts_historical` reason code, so
+  // silence is never misread as proof the source generation is still
+  // current). This is distinct from a genuinely checkpointed-EMPTY history
+  // (`stampZeroCheckpointForBootstrap`'s zero-terminal-events-ever case),
+  // which IS current — a connection that has never had any terminal history
+  // has nothing to be historical ABOUT. The same retry behavior (participate
+  // every pass until genuinely converged) is correct for other recoverable
+  // terminal-fold failures too.
   if (row.terminal_facts_state !== "current") {
     return true;
   }

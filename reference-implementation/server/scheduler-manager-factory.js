@@ -389,8 +389,10 @@ export function createReferenceSchedulerManager({
         //
         // Reconciles just this one connection (the same scoped, cheap repair
         // every other single-connection read uses) so the debt predicate
-        // reads a genuinely current evidence row, then reads its
-        // `terminal_facts` component directly.
+        // reads a genuinely current evidence row, then passes the WHOLE row
+        // through — the predicate itself derives the newest per-stream
+        // `evidence_as_of` from `stream_latest_facts`, never the
+        // observation-timestamp `terminal_facts.as_of`.
         //
         // Fail-CLOSED to `false` (no debt) on error: a false positive would
         // divert every failing tick to forward collection instead of
@@ -400,7 +402,7 @@ export function createReferenceSchedulerManager({
           const instanceId = connectorInstanceId || connectorId;
           await reconcileDirtyConnectorSummaryEvidence([instanceId]);
           const evidence = await getConnectorSummaryEvidence(instanceId);
-          return hasForwardEvidenceDebt(evidence?.terminal_facts ?? null, Date.now(), scheduleIntervalMs);
+          return hasForwardEvidenceDebt(evidence, Date.now(), scheduleIntervalMs);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err: message }, `[scheduler] forward-evidence-debt probe failed for ${connectorId}`);

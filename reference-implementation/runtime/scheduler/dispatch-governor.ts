@@ -731,7 +731,22 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       // implicit, unscoped dispatch, so eligible non-pressure recovery work
       // wins the tick over fresh forward-walk work, unless forward evidence
       // is already in debt.
-      if (resolveRecoveryFirstMode({ nonPressureRecoveryEligible, forwardEvidenceDebt })) {
+      const recoveryFirst = resolveRecoveryFirstMode({ nonPressureRecoveryEligible, forwardEvidenceDebt });
+      if (recoveryFirst) {
+        eligible = true;
+        recoveryOnly = true;
+      } else if (nonPressureRecoveryEligible && forwardEvidenceDebt && !eligible) {
+        // Debt selected forward collection over recovery-first, but forward
+        // is NOT otherwise eligible this tick (`eligible` here is still just
+        // `intervalElapsed && !cooldownDefers` — the failure-backoff/cooldown
+        // gate, computed above `recoveryOnly`'s block). Dispatching nothing
+        // would regress the documented recovery-cadence anti-deadlock (a
+        // failure-streak-inflated `effectiveIntervalMs` can run to 16h+,
+        // during which this branch would otherwise fire on every tick): the
+        // debt bound may only PREFER forward when forward is genuinely
+        // permitted; it must never become a backoff/cooldown bypass for
+        // forward work, and it must never halt recovery's own independent
+        // cadence. Fall back to recovery-only exactly as if no debt existed.
         eligible = true;
         recoveryOnly = true;
       }

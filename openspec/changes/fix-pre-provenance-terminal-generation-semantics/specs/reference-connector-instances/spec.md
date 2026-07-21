@@ -64,3 +64,24 @@ produce the same verdict as deleting and rebuilding that projection.
   facts)
 - **AND** it SHALL neither invalidate the existing current facts nor be
   required to refresh them.
+
+#### Scenario: A generation transition with no subsequent fact-carrying event stays historical, not current-empty
+
+- **GIVEN** a connection's manifest registration transitions its durable
+  generation and durably clears its terminal facts to historical
+  (`terminal_facts_historical` or `manifest_generation_changed`)
+- **WHEN** a fold pass observes the connection and finds zero attributable
+  terminal events stamped with the new current generation (no fact-carrying
+  run has occurred since the transition)
+- **THEN** the connection's terminal facts SHALL remain historical
+  (`stale`/`terminal_facts_historical`) — a converged pass with no new
+  qualifying events SHALL NOT reinterpret silence as proof the source
+  generation is still current, and SHALL NOT heal the row to a current, empty
+  fact map
+- **AND** only a terminal event committed after the transition and stamped
+  with the new current generation SHALL restore current evidence
+- **AND** this is distinct from a connection whose terminal history is
+  genuinely and durably checkpointed empty because no terminal event has ever
+  existed for it (never a generation transition): that connection's terminal
+  facts ARE current — a connection with no history has nothing to be
+  historical about.

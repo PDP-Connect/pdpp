@@ -544,23 +544,49 @@ export function resolveRecoveryFirstMode(inputs: RecoveryFirstWorkSelectionInput
 // `hasEligibleNonPressureRecoveryWork` can stay true indefinitely (the
 // backlog re-defers `temporary_unavailable` gaps with no drain guarantee).
 // This section is the connector-neutral, evidence-driven predicate that
-// bounds it: debt exists when the connection's own terminal-facts evidence
-// component (the same `EvidenceComponent<ComponentState>` shape
-// `connector-summary-evidence-engine.ts` already produces) is not `current`,
-// or its `as_of` is older than `FORWARD_EVIDENCE_MAX_AGE`.
+// bounds it: debt exists when the connection's terminal-facts component is
+// not `current`, OR its newest folded fact's OWN `evidence_as_of` (not the
+// projection's observation timestamp) is older than
+// `FORWARD_EVIDENCE_MAX_AGE`, OR its fact map is empty despite `current`
+// state.
+//
+// CORRECTNESS NOTE (fixes a P1 defect in the first version of this
+// predicate): `terminal_facts.as_of` (`connector-summary-read-model.ts`'s
+// `shapeTerminalFacts`/`shapeComponentEnvelope`) is `row.computed_at` — the
+// FOLD/REPAIR's own observation timestamp, refreshed on every reconcile pass
+// regardless of how old the underlying evidence actually is. Reading it here
+// made this predicate measure "how long since we last looked", not "how
+// stale is the evidence" — it could never fire once a connection's terminal
+// facts were healed to `current` (e.g. by Fix A), because every probe call
+// itself reconciles-then-reads, stamping a fresh `computed_at` immediately
+// before the read. The genuine per-stream evidence timestamp is
+// `stream_latest_facts[stream].evidence_as_of` (`StoredStreamFactEntry`,
+// stamped once at FOLD time from the terminal event's own `occurred_at` and
+// never refreshed by a later observation of the same fact) — this predicate
+// now reads the NEWEST such timestamp across every stream in the fact map.
 
 /**
- * The minimal terminal-facts evidence projection this predicate needs.
- * Shaped after `EvidenceComponent<ComponentState>` (`connector-summary-
- * evidence-engine.ts`) so a durable evidence row's `terminal_facts` field can
- * be passed straight through without a reshape. Fields are `unknown` rather
- * than nominally typed because `getConnectorSummaryEvidence`'s (`connector-
- * summary-read-model.ts`) inferred return type widens raw storage-row values
- * this way; `hasForwardEvidenceDebt` normalizes defensively below.
+ * One folded stream fact's provenance timestamp, as stored in
+ * `stream_latest_facts[stream]` (`StoredStreamFactEntry`). `unknown` rather
+ * than nominally typed for the same reason as `TerminalFactsEvidenceLike`
+ * below — durable evidence reads widen raw storage-row values this way.
  */
-export interface TerminalFactsEvidenceLike {
-  readonly as_of?: unknown;
-  readonly state?: unknown;
+export interface StreamFactEvidenceLike {
+  readonly evidence_as_of?: unknown;
+}
+
+/**
+ * The minimal terminal-facts evidence projection this predicate needs:
+ * the `terminal_facts` component's `state` (still the first gate — a
+ * non-`current` state, e.g. historical/stale/unobserved, is always debt
+ * regardless of any timestamp) plus the `stream_latest_facts` fact map whose
+ * per-stream `evidence_as_of` values this predicate ages against. Shaped so
+ * a durable evidence row (`getConnectorSummaryEvidence`) can be passed
+ * straight through without a reshape.
+ */
+export interface ForwardEvidenceLike {
+  readonly stream_latest_facts?: unknown;
+  readonly terminal_facts?: { readonly state?: unknown } | null;
 }
 
 /**
@@ -583,27 +609,57 @@ export function forwardEvidenceMaxAgeMs(scheduleIntervalMs: number): number {
 }
 
 /**
- * True when a connection's forward (fact-carrying) terminal evidence is aged
- * past `forwardEvidenceMaxAgeMs(scheduleIntervalMs)`, or missing/historical
- * entirely. Pure: the caller supplies the connection's terminal-facts
- * evidence component and `now`. A `null` evidence component (never observed)
- * counts as debt — absent evidence is not fresh evidence, mirroring
- * `partitionPressureEvidence`'s stance on missing timestamps.
+ * The newest `evidence_as_of` timestamp (epoch ms) across every stream in a
+ * folded fact map, or `null` when the map is empty/missing/malformed. A
+ * missing or unparseable per-stream timestamp does not itself disqualify the
+ * whole map — it is simply skipped, mirroring how a single bad field must
+ * not hide otherwise-genuine fresher evidence on a sibling stream.
+ */
+function newestFactEvidenceAsOfMs(streamLatestFacts: unknown): number | null {
+  if (!streamLatestFacts || typeof streamLatestFacts !== "object" || Array.isArray(streamLatestFacts)) {
+    return null;
+  }
+  let newest: number | null = null;
+  for (const entry of Object.values(streamLatestFacts as Record<string, unknown>)) {
+    const evidenceAsOf = (entry as StreamFactEvidenceLike | null | undefined)?.evidence_as_of;
+    const parsed = parseIso(typeof evidenceAsOf === "string" ? evidenceAsOf : null);
+    if (parsed !== null && (newest === null || parsed > newest)) {
+      newest = parsed;
+    }
+  }
+  return newest;
+}
+
+/**
+ * True when a connection's forward (fact-carrying) terminal evidence is
+ * missing, historical/stale, or aged past
+ * `forwardEvidenceMaxAgeMs(scheduleIntervalMs)`. Pure: the caller supplies
+ * the connection's durable evidence (terminal-facts state + fact map) and
+ * `now`.
+ *
+ *   - `terminal_facts.state !== "current"` (missing/stale/historical/failed)
+ *     is always debt, regardless of any timestamp.
+ *   - A `current` state with an EMPTY or missing fact map is also debt — a
+ *     genuinely never-collected connection has nothing to measure freshness
+ *     against, so absence is not fresh evidence (mirrors
+ *     `partitionPressureEvidence`'s stance on missing timestamps).
+ *   - Otherwise, debt is whether the NEWEST per-stream `evidence_as_of`
+ *     across the fact map is older than the bound.
  */
 export function hasForwardEvidenceDebt(
-  terminalFacts: TerminalFactsEvidenceLike | null | undefined,
+  evidence: ForwardEvidenceLike | null | undefined,
   nowMs: number,
   scheduleIntervalMs: number
 ): boolean {
-  if (!terminalFacts || terminalFacts.state !== "current") {
+  if (!evidence || evidence.terminal_facts?.state !== "current") {
     return true;
   }
-  const asOfMs = parseIso(typeof terminalFacts.as_of === "string" ? terminalFacts.as_of : null);
-  if (asOfMs === null) {
+  const newestMs = newestFactEvidenceAsOfMs(evidence.stream_latest_facts);
+  if (newestMs === null) {
     return true;
   }
   const now = normalizeEpochMs(nowMs);
-  return now - asOfMs > forwardEvidenceMaxAgeMs(scheduleIntervalMs);
+  return now - newestMs > forwardEvidenceMaxAgeMs(scheduleIntervalMs);
 }
 
 // ─── Fresh-pressure re-arm guard (task 1.5 / design.md D4) ───────────────────

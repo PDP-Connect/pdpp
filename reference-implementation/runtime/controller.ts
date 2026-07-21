@@ -2994,8 +2994,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // `hasForwardEvidenceDebt`, recovery-decision.ts). Reconciles just this one
   // connection (the same scoped, cheap repair every other single-connection
   // read in this module uses) so the debt predicate reads a genuinely
-  // current evidence row, then reads its `terminal_facts` component and the
-  // connection's own schedule interval directly.
+  // current evidence row, then passes the WHOLE row through alongside the
+  // connection's own schedule interval — the predicate itself derives the
+  // newest per-stream `evidence_as_of` from `stream_latest_facts`, never the
+  // observation-timestamp `terminal_facts.as_of`.
   //
   // Fail-CLOSED to `false` (no debt) on error: a false positive would divert
   // this run to forward collection instead of draining recovery, which is a
@@ -3007,7 +3009,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const scheduleIntervalMs = Math.max(1, schedule?.interval_seconds ?? 1) * 1000;
       await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
       const evidence = await getConnectorSummaryEvidence(connectorInstanceId);
-      return hasForwardEvidenceDebt(evidence?.terminal_facts ?? null, Date.now(), scheduleIntervalMs);
+      return hasForwardEvidenceDebt(evidence, Date.now(), scheduleIntervalMs);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn?.(`[controller] forward-evidence-debt probe failed for ${connectorId}: ${message}`);
