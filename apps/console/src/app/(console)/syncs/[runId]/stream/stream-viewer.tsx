@@ -85,7 +85,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   type FormEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
   useCallback,
   useEffect,
@@ -5227,33 +5226,22 @@ function ClipboardSheet({
 
 /**
  * Secondary actions (clipboard/paste/keyboard) live behind a single "more
- * actions" toggle instead of always-on icons. At steady state the corner
- * cluster is one accessible control (plus the always-visible status dot and
- * close button) — a much smaller footprint than 4 permanent 44px circles,
- * which UAT showed obscuring bottom-of-page remote content on mobile
- * (portrait/landscape). Explicit tap/click expands the same actions
- * transiently; the row collapses again on: choosing an action, an outside
- * pointerdown, Escape, or the toggle losing focus — so it never lingers
- * over content longer than the operator needs it open. This is a host-chrome
- * disclosure change only: it does not reserve or resize the remote viewport,
- * and does not touch remote-surface's own contain-fit geometry.
+ * actions" toggle instead of always-on icons — a smaller footprint than 4
+ * permanent 44px circles, which UAT showed obscuring bottom-of-page remote
+ * content on mobile. The row collapses on: choosing an action, an outside
+ * pointerdown, Escape, or the toggle losing focus.
  *
- * Escape is handled ONLY via the row's own React `onKeyDown` (see
- * `handleRowKeyDown` below), never via a `document`-level listener. Base UI's
- * `useDismiss` (packages/.../floating-ui-react/hooks/useDismiss.js) registers
- * its own Escape handler as a BUBBLE-phase `document.addEventListener` with
- * no `event.defaultPrevented` guard — it closes the dialog (and tears down
- * the live session) on ANY Escape keydown that reaches `document`,
- * regardless of what else observed it first. A `document`-level capture
- * listener here does not stop that: capture-then-bubble ordering is an
- * artifact of listener *registration timing*, not a structural guarantee,
- * and it still lets the event reach Base UI's bubble listener afterward
- * unless something calls `stopPropagation()`. Calling `stopPropagation()`
- * from the row's own bubble-phase `onKeyDown` is structural, not
- * timing-dependent: propagation up the DOM tree past the row (and therefore
- * to `document`) is halted regardless of registration order, because the
- * row is topologically between the keydown's target and `document` for any
- * key press that originates inside it.
+ * Escape must collapse the disclosure WITHOUT letting Base UI's own
+ * document-level dialog-dismiss listener see it (that listener has no
+ * `defaultPrevented` guard and would otherwise close/tear down the live
+ * session on the same keystroke). A listener scoped to the row itself is not
+ * sufficient — Escape can be dispatched while focus is elsewhere in the
+ * dialog (e.g. still on the toggle immediately after activation, or moved by
+ * the operator), so the handler must fire regardless of focus/target. A
+ * `window`-level CAPTURE listener, installed only while `expanded`, satisfies
+ * that: capture fires before the target and before any bubble-phase listener
+ * (including Base UI's), so `stopPropagation()` here reliably keeps the event
+ * from ever reaching `document`.
  */
 function useMoreActionsDisclosure() {
   const [expanded, setExpanded] = useState(false);
@@ -5275,30 +5263,26 @@ function useMoreActionsDisclosure() {
         collapse();
       }
     };
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      collapse();
+    };
+    window.addEventListener("keydown", handleWindowKeyDown, true);
     document.addEventListener("pointerdown", handlePointerDown, true);
     rowRef.current?.addEventListener("focusout", handleFocusOut);
     const row = rowRef.current;
     return () => {
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
       document.removeEventListener("pointerdown", handlePointerDown, true);
       row?.removeEventListener("focusout", handleFocusOut);
     };
   }, [expanded]);
 
-  const handleRowKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (event.key !== "Escape" || !expanded) {
-        return;
-      }
-      // Consume the key here, before it can bubble to Base UI's
-      // document-level Escape listener — see the block comment above.
-      event.preventDefault();
-      event.stopPropagation();
-      setExpanded(false);
-    },
-    [expanded]
-  );
-
-  return { expanded, handleRowKeyDown, rowRef, setExpanded };
+  return { expanded, rowRef, setExpanded };
 }
 
 function CornerControls({
@@ -5322,7 +5306,7 @@ function CornerControls({
   onPaste?: () => void;
   status: ConnectionStatus;
 }) {
-  const { expanded, handleRowKeyDown, rowRef, setExpanded } = useMoreActionsDisclosure();
+  const { expanded, rowRef, setExpanded } = useMoreActionsDisclosure();
   const hasSecondaryActions = Boolean(onClipboard || onCopy || onPaste || onKeyboard);
   const runAndCollapse = (action: () => void) => () => {
     action();
@@ -5332,11 +5316,7 @@ function CornerControls({
   return (
     <div className="pdpp-stream-corner-controls">
       {location ? <LocationLabel location={location} /> : null}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: onKeyDown here only catches Escape
-       * bubbling up from the real interactive children (buttons) — it consumes the key before it
-       * can reach Base UI's document-level dialog-dismiss listener (see useMoreActionsDisclosure's
-       * block comment). The div itself has no independent interactive semantic to expose. */}
-      <div className="pdpp-stream-control-row" onKeyDown={handleRowKeyDown} ref={rowRef}>
+      <div className="pdpp-stream-control-row" ref={rowRef}>
         <StatusDot status={status} />
         {hasSecondaryActions ? (
           <button

@@ -618,6 +618,104 @@ async function assertDocumentHorizontallyFits(page, phase) {
   return metrics;
 }
 
+async function documentOverflowState(page) {
+  return page.evaluate(() => {
+    const documentElement = document.documentElement;
+    return {
+      hasHorizontalOverflow: documentElement.scrollWidth > documentElement.clientWidth + 1,
+      hasVerticalOverflow: documentElement.scrollHeight > documentElement.clientHeight + 1,
+      htmlComputedOverflow: getComputedStyle(documentElement).overflow,
+    };
+  });
+}
+
+/**
+ * P2 closure: while the stream dialog is open at short landscape dimensions,
+ * `<html>` must be locked on both axes (the pre-existing Stage-1 orientation
+ * shell overflows its own box behind the dialog at these dimensions — the
+ * dialog covers it, but nothing stops it driving a real page scrollbar unless
+ * html itself is locked). After close, injects genuinely overflowing content
+ * and proves ordinary document scrolling still works — i.e. the lock did not
+ * leak past the dialog's own lifecycle.
+ */
+async function assertDocumentScrollLockedWhileStreamDialogOpen(page) {
+  const whileOpen = await documentOverflowState(page);
+  if (whileOpen.hasHorizontalOverflow || whileOpen.hasVerticalOverflow || whileOpen.htmlComputedOverflow !== "hidden") {
+    fail(`document overflow is not locked while the stream dialog is open: ${JSON.stringify(whileOpen)}`);
+  }
+}
+
+async function assertOrdinaryScrollRestoredAfterClose(page) {
+  const marker = "pdpp-smoke-overflow-probe";
+  await page.evaluate((markerId) => {
+    const probe = document.createElement("div");
+    probe.id = markerId;
+    probe.style.cssText = "position:absolute;top:0;left:0;width:1px;height:300vh;";
+    document.body.appendChild(probe);
+  }, marker);
+  const after = await documentOverflowState(page);
+  await page.evaluate((markerId) => document.getElementById(markerId)?.remove(), marker);
+  if (!after.hasVerticalOverflow || after.htmlComputedOverflow === "hidden") {
+    fail(`ordinary document scrolling was not restored after the stream dialog closed: ${JSON.stringify(after)}`);
+  }
+}
+
+const CORNER_TOGGLE_SELECTOR = ".pdpp-stream-control-row button[aria-expanded]";
+const CLOSE_BUTTON_SELECTOR = '.pdpp-stream-control-row button[aria-label*="End"][aria-label*="browser session"]';
+
+async function cornerControlsSnapshot(page) {
+  return page.evaluate(
+    ({ toggleSelector, closeSelector }) => ({
+      dialogPresent: Boolean(document.querySelector(".pdpp-stream-dialog")),
+      toggleExpanded: document.querySelector(toggleSelector)?.getAttribute("aria-expanded") ?? null,
+      closeButtonPresent: Boolean(document.querySelector(closeSelector)),
+    }),
+    { toggleSelector: CORNER_TOGGLE_SELECTOR, closeSelector: CLOSE_BUTTON_SELECTOR }
+  );
+}
+
+/**
+ * Behavioral oracle for the corner-controls disclosure (P1/P2 closure): steady
+ * state hides secondary actions but keeps status+close reachable; expanding
+ * and then pressing Escape must collapse the disclosure WITHOUT closing or
+ * tearing down the stream dialog; a second Escape (or explicit close) then
+ * closes normally. Escape is dispatched with focus moved OUTSIDE the row
+ * (onto the dialog popup itself) to prove the handler is not focus-scoped.
+ */
+async function assertCornerControlsDisclosure(page) {
+  const steady = await cornerControlsSnapshot(page);
+  if (steady.toggleExpanded !== "false") {
+    fail(`corner controls did not start collapsed: ${JSON.stringify(steady)}`);
+  }
+  if (!steady.closeButtonPresent) {
+    fail("close button is not present at steady state");
+  }
+
+  await page.locator(CORNER_TOGGLE_SELECTOR).click();
+  await waitFor(async () => (await cornerControlsSnapshot(page)).toggleExpanded === "true", "toggle did not expand");
+
+  // Move focus to the dialog popup itself, away from the row, before Escape
+  // — the disclosure must still intercept it.
+  await page.locator(".pdpp-stream-dialog").evaluate((node) => node.focus());
+
+  await page.keyboard.press("Escape");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const afterFirstEscape = await cornerControlsSnapshot(page);
+  if (!afterFirstEscape.dialogPresent) {
+    fail("stream dialog closed/tore down on the FIRST Escape while actions were expanded — the disclosure must consume that Escape, not the dialog");
+  }
+  if (afterFirstEscape.toggleExpanded !== "false") {
+    fail(`first Escape did not collapse the disclosure: ${JSON.stringify(afterFirstEscape)}`);
+  }
+
+  await page.keyboard.press("Escape");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const afterSecondEscape = await cornerControlsSnapshot(page);
+  if (afterSecondEscape.dialogPresent) {
+    fail("second Escape did not close the stream dialog through normal Base UI dismissal");
+  }
+}
+
 async function proxyKeyboardFocused(page) {
   return page.evaluate(() => {
     const textarea = document.querySelector('[data-pdpp-soft-keyboard="neko"]');
@@ -1115,7 +1213,14 @@ async function run() {
       await page.setViewportSize({ width: 844, height: 390 });
       await new Promise((resolve) => setTimeout(resolve, 800));
       await assertMobileViewportFits(page, "landscape");
+      await assertDocumentScrollLockedWhileStreamDialogOpen(page);
     }
+
+    // Ends by closing the stream dialog (its second Escape triggers normal
+    // Base UI dismissal) — run last, and immediately verify ordinary
+    // document scrolling comes back once the dialog's lifecycle ends.
+    await assertCornerControlsDisclosure(page);
+    await assertOrdinaryScrollRestoredAfterClose(page);
 
     process.stdout.write(
       `PASS manual-action stream smoke ${JSON.stringify({
