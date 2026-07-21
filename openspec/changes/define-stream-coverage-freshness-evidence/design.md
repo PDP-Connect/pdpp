@@ -316,3 +316,42 @@ and the recovery-governor change already reserves "checking" for active work.
 The main remaining implementation risk is field naming and migration scope. That
 should be resolved by auditing the current manifest schema and collection-report
 normalizer before code changes, not by adding connector-specific branches.
+
+## V2 Local-Device Health Authority
+
+The source of health authority is persisted `source_kind`, not heartbeat shape.
+Select it before hydrating or ranking run facts. `local_device` quarantines
+scheduler/controller runs, skips, failures, schedule state, and latest-attempt
+facts from health and Collection Report projection. Non-local connections retain
+the current run-based algorithm.
+
+For `local_device`, the sole positive coverage proof is the connection-scoped
+committed `coverage_diagnostics` STATE. It requires a valid `{ fetched_at }`
+cursor, non-null server `updated_at`, sanitized diagnostics for every known
+store, and no malformed, dropped, duplicate, or `unaccounted` row. Stores fold
+into streams worst-wins. The STATE row's server `updated_at` is every local
+coverage entry's `evidence_as_of`; heartbeat and record emission timestamps
+cannot refresh coverage proof. Direct status, `state_stream` inheritance,
+self-coverage, and accepted policy remain explicit.
+
+Admit the proof only while the device is fresh, healthy, idle/drained, and its
+read is reliable: no unhealthy/stale heartbeat, open outbox work, failed state
+read, local collector gap, pending detail gap, or terminal detail gap. Every
+missing, legacy, malformed, unreadable, or contradictory input fails closed.
+
+Every local child, protocol, nonzero-exit, and terminal-DONE failure—including
+zero-record failures—creates a durable gap/backlog barrier. Acknowledgement,
+scoped non-coverage success, and a corrective heartbeat cannot recover it.
+Only a later terminally successful full coverage STATE commit can. V2 adds no
+schema column, observation identity, receipt hash/count, generic scheduler
+behavior, connector-specific UI branch, audit taxonomy, or live-data migration.
+It is deliberately bounded to the fixed Codex/Claude Code inventory after one
+post-change complete run; legacy rows without coverage STATE remain unknown.
+
+Closure clarification: the proof reader compares the committed diagnostic store
+set exactly with the connector's shared fixed-inventory declaration. It rejects
+missing, extra, duplicate, malformed, or future-skewed cursor/commit evidence.
+Local authority also quarantines active scheduler runs, scheduler runtime, and
+rate evidence before every synthesis path. A delivered gap remains open until
+the coverage-state recovery transaction succeeds, and protocol output is a
+one-terminal-DONE state machine.

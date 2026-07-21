@@ -490,7 +490,9 @@ export function toSourceInstanceView(
   const actionability = projectSourceActionability(summary);
   const routeId = connectionId ?? connectorInstanceId ?? actionability.routeId;
   const revoked = isRevokedConnector(summary);
-  const isLocalDevicePush = Boolean(summary.local_device_progress);
+  // Modality is persisted server authority. A missing heartbeat must not
+  // resurrect remote Sync controls for a local-device connection.
+  const isLocalDevicePush = summary.source_kind === "local_device";
   const isRunning = summary.last_run != null && isActiveConnectorRunSummaryStatus(summary.last_run.status);
   const manualUploadHref = manualUploadHrefForSource(summary, options.manifests);
   const collectionFactsByStream = new Map(

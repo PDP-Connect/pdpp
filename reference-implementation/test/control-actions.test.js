@@ -625,6 +625,7 @@ rl.once('line', () => {
     process.exit(0);
   }, 300);
 });
+
   `, 'utf8');
 
   try {
@@ -651,6 +652,39 @@ rl.once('line', () => {
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('local-device connections reject run-now and every schedule mutation without creating scheduler state', async () => {
+  await withHarness(async ({ asUrl, spotifyManifest }) => {
+    const store = createSqliteConnectorInstanceStore();
+    await store.upsert({
+      connectorInstanceId: SPOTIFY_INSTANCE_ID,
+      ownerSubjectId: OWNER_SUBJECT_ID,
+      connectorId: SPOTIFY_CONNECTOR_KEY,
+      displayName: 'Local Spotify export',
+      sourceKind: 'local_device',
+      sourceBindingKey: 'local_spotify_export',
+      sourceBinding: { kind: 'local_device' },
+      createdAt: TEST_NOW,
+      updatedAt: TEST_NOW,
+    });
+
+    const path = `${asUrl}/_ref/connectors/${encodeURIComponent(spotifyManifest.connector_id)}/schedule`;
+    const mutations = [
+      [`${asUrl}/_ref/connectors/${encodeURIComponent(spotifyManifest.connector_id)}/run`, { method: 'POST' }],
+      [path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ interval_seconds: 900 }) }],
+      [`${path}/pause`, { method: 'POST' }],
+      [`${path}/resume`, { method: 'POST' }],
+      [path, { method: 'DELETE' }],
+    ];
+    for (const [url, options] of mutations) {
+      const { status, body } = await fetchJson(url, options);
+      assert.equal(status, 409, `${options.method} ${url} should reject local device control`);
+      assert.equal(body.error.code, 'local_device_control_unsupported');
+    }
+    assert.equal(getDb().prepare('SELECT COUNT(*) AS count FROM connector_schedules').get().count, 0);
+    assert.equal(getDb().prepare('SELECT COUNT(*) AS count FROM controller_active_runs').get().count, 0);
+  });
 });
 
 test('controller startup reconciles abandoned controller-managed runs after restart', async () => {

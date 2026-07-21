@@ -149,6 +149,32 @@ test("settled mode: blocked connection with a required unmeasured stream fails",
   ]);
 });
 
+test("machine audit keeps a real ChatGPT-shaped required coverage failure red", () => {
+  const result = auditStreamHealth([
+    settledConnection({
+      connector_id: "chatgpt",
+      display_name: "ChatGPT",
+      streams: ["messages", "shared_conversations"],
+      stream_records: [retainedStream("messages", 4), retainedStream("shared_conversations", 0)],
+      collection_report: [
+        coverageEntry(),
+        coverageEntry({
+          stream: "shared_conversations",
+          coverage_condition: "unknown",
+          forward_disposition: "unmeasured",
+          checkpoint: "unknown",
+          considered: "unknown",
+          covered: "unknown",
+        }),
+      ],
+    }),
+  ]);
+  assert.equal(result.status, "fail");
+  assert.deepEqual(result.failures[0].streams, [
+    { stream: "shared_conversations", class: "runtime_evidence_missing" },
+  ]);
+});
+
 test("settled mode: optional accepted absence does not fail", () => {
   const result = auditStreamHealth([
     settledConnection({

@@ -848,7 +848,7 @@ export class LocalDeviceOutbox {
         `SELECT COUNT(*) AS total FROM local_device_outbox
           WHERE source_instance_id = ?
             AND kind = 'gap'
-            AND status IN ('ready', 'leased')`
+            AND status IN ('ready', 'leased', 'succeeded')`
       )
       .get(input.sourceInstanceId);
     return isRecord(row) ? numberFrom(row.total) : 0;

@@ -170,6 +170,29 @@ test("toSourceInstanceView reads status from rendered_verdict when present", () 
   assert.equal(view.status.label, "Can't collect");
 });
 
+test("toSourceInstanceView derives local-device modality from persisted source_kind, not heartbeat presence", () => {
+  const localWithoutHeartbeat = toSourceInstanceView(
+    summary({
+      source_kind: "local_device",
+      local_device_progress: null,
+    })
+  );
+  const remoteWithHeartbeatShapedProgress = toSourceInstanceView(
+    summary({
+      source_kind: "account",
+      local_device_progress: {
+        last_heartbeat_at: "2026-06-03T11:59:00.000Z",
+        last_heartbeat_status: "healthy",
+        last_ingest_at: "2026-06-03T11:59:00.000Z",
+        records_pending: 0,
+        source_count: 1,
+      },
+    })
+  );
+  assert.equal(localWithoutHeartbeat.isLocalDevicePush, true);
+  assert.equal(remoteWithHeartbeatShapedProgress.isLocalDevicePush, false);
+});
+
 test("toSourceInstanceView treats pending last_run as running and keeps terminal or unknown statuses out", () => {
   const cases: [string, boolean][] = [
     ["pending", true],

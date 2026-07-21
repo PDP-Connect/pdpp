@@ -47,6 +47,9 @@ historical data that predates instrumentation.
 - Keep the live audit cookie-only: `PDPP_OWNER_TOKEN` is not supported against
   the cookie-gated `/_ref/connectors` summary route and is rejected before any
   HTTP request is attempted.
+- Split health authority by the persisted connection `source_kind`: a
+  `local_device` connection is proven only by its committed local coverage
+  STATE and local collector controls, never by server scheduler history.
 
 ## Capabilities
 

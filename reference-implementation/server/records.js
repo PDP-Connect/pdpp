@@ -2,6 +2,7 @@
  * PDPP Resource Server — record storage and grant-enforced query
  */
 import { getDb } from './db.js';
+import { expectedLocalCoverageStores } from '../../packages/polyfill-connectors/src/local-source-inventory.ts';
 
 // Optional post-commit hook for outbound client event subscriptions. The
 // hook is invoked after a `record_changes` row has been durably committed
@@ -2426,6 +2427,94 @@ export async function listLocalCoverageDiagnostics(storageTarget) {
   }
 
   return [...byStore.values()].sort((a, b) => a.store.localeCompare(b.store));
+}
+
+/**
+ * Read the local coverage proof without laundering malformed or duplicate
+ * diagnostic rows into a healthy projection. This is intentionally separate
+ * from the operator list above: that surface presents a concise inventory,
+ * while the health gate must retain every failure signal.
+ */
+export async function readCommittedLocalCoverageDiagnostics(storageTarget) {
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  if (!connectorInstanceId) {
+    return {
+      rows: [],
+      malformed: false,
+      duplicateStores: [],
+      missingStores: [],
+      unexpectedStores: [],
+      hasAuthoritativeInventory: false,
+      state: null,
+      updatedAt: null,
+    };
+  }
+  const rawRows = [];
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT record_json FROM records
+         WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE
+         ORDER BY record_key ASC`,
+      [connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM],
+    );
+    rawRows.push(...result.rows.map((row) => row.record_json));
+  } else {
+    rawRows.push(
+      ...getDb()
+        .prepare(
+          `SELECT record_json FROM records
+             WHERE connector_instance_id = ? AND stream = ? AND deleted = 0
+             ORDER BY record_key ASC`,
+        )
+        .all(connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM)
+        .map((row) => row.record_json),
+    );
+  }
+  const rows = [];
+  const stores = new Set();
+  const duplicateStores = [];
+  let malformed = false;
+  for (const raw of rawRows) {
+    let data;
+    try {
+      data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch {
+      malformed = true;
+      continue;
+    }
+    const row = projectCoverageRow(data);
+    if (!row) {
+      malformed = true;
+      continue;
+    }
+    if (stores.has(row.store)) {
+      duplicateStores.push(row.store);
+      continue;
+    }
+    stores.add(row.store);
+    rows.push(row);
+  }
+  const stateProjection = await getSyncState(storageTarget, {
+    grantId: null,
+    allowedStreams: new Set([LOCAL_COVERAGE_DIAGNOSTICS_STREAM]),
+  });
+  const state = stateProjection.state?.[LOCAL_COVERAGE_DIAGNOSTICS_STREAM] ?? null;
+  const expectedStores = expectedLocalCoverageStores(connectorId);
+  const hasAuthoritativeInventory = expectedStores !== null;
+  const observedStores = new Set(rows.map((row) => row.store));
+  const missingStores = expectedStores ? expectedStores.filter((store) => !observedStores.has(store)).sort() : [];
+  const unexpectedStores = expectedStores ? rows.map((row) => row.store).filter((store) => !expectedStores.includes(store)).sort() : [];
+  return {
+    rows: rows.sort((a, b) => a.store.localeCompare(b.store)),
+    malformed,
+    duplicateStores: duplicateStores.sort(),
+    missingStores,
+    unexpectedStores,
+    hasAuthoritativeInventory,
+    state,
+    updatedAt: stateProjection.updated_at ?? null,
+  };
 }
 
 /**

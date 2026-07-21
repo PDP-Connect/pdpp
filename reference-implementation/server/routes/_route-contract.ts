@@ -48,6 +48,17 @@ export type PdppErrorFn = (
 export interface ConnectorNamespace {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
+  readonly sourceKind?: string | null;
+}
+
+export function assertRemoteControlSupported(namespace: ConnectorNamespace): void {
+  if (namespace.sourceKind === "local_device") {
+    const error = new Error("Local-device connections are collected by their paired device.") as Error & {
+      code: string;
+    };
+    error.code = "local_device_control_unsupported";
+    throw error;
+  }
 }
 
 export interface ActiveBinding {

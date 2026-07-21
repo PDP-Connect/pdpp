@@ -260,3 +260,40 @@ measured
 **THEN** it SHALL contain only stream names, statuses, strategies, counts,
 timestamps, cursors, gap classes, and reason codes
 **AND** it SHALL NOT contain record bodies or provider credentials.
+
+### Requirement: Local coverage STATE and failure barriers SHALL be terminally committed
+
+A local collector SHALL emit `coverage_diagnostics` as a full known-store
+inventory only after full collection and SHALL publish its STATE only on a
+terminally successful DONE path after predecessor batches and prior failure gaps
+drain. Its cursor SHALL contain valid `{ fetched_at }`. Claude Code and Codex
+SHALL emit this proof for their fixed local inventories.
+
+Every child, protocol, nonzero-exit, and terminal-DONE failure, including a
+zero-record failure, SHALL create a durable local failure gap/backlog barrier.
+Acknowledgement SHALL NOT clear it. Only a later successful full coverage STATE
+commit may recover it; scoped non-coverage success and a healthy heartbeat SHALL
+NOT.
+
+#### Scenario: failed local collection cannot reuse old proof
+
+**WHEN** local collection has partial diagnostics and then fails with missing
+DONE, `DONE.failed`, protocol error, batch/state PUT failure, scan budget
+failure, or zero-record child failure
+**THEN** it SHALL not publish coverage proof
+**AND** projection SHALL remain blocked until later successful coverage STATE.
+
+#### Scenario: terminal DONE closes the collector protocol
+
+**WHEN** a local collector emits its first `DONE`
+**THEN** it SHALL be the only terminal DONE for that invocation
+**AND** every later protocol message SHALL fail the invocation without creating
+or committing a checkpoint.
+
+#### Scenario: acknowledged failure gap remains a barrier
+
+**WHEN** a local failure-gap upload succeeds before a later collection fails
+**THEN** the acknowledged gap SHALL remain open and the terminal heartbeat
+SHALL remain blocked
+**UNTIL** a later successful full `coverage_diagnostics` STATE commit recovers
+the gap.

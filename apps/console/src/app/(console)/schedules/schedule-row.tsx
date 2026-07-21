@@ -82,6 +82,10 @@ function automationModeLabel(mode: RefSchedule["automation_mode"]): string {
   return "manual only";
 }
 
+function remoteScheduleFor(summary: RefConnectorSummary): RefSchedule | null {
+  return summary.source_kind === "local_device" ? null : summary.schedule;
+}
+
 export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -158,7 +162,11 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     });
   }, [summary.connection_id, summary.connector_id, summary.connector_instance_id, router, showToast]);
 
-  const schedule = summary.schedule;
+  const localDevice = summary.source_kind === "local_device";
+  // A local-device source is not schedulable from the console. Treat any
+  // legacy row as non-actionable so controls cannot reappear during cleanup.
+  const schedule = remoteScheduleFor(summary);
+  const showScheduleSetup = !localDevice && schedule === null;
   const policy = summary.refresh_policy;
   const displayName = formatConnectorNameForDisplay({
     connectorId: summary.connector_id,
@@ -216,7 +224,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
                 running →
               </Link>
             )}
-            {schedule ? (
+            {schedule && (
               <>
                 {schedule.enabled ? (
                   <IcButton disabled={isPending} onClick={handlePause} size="sm" variant="ghost">
@@ -243,7 +251,8 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
                   Delete
                 </IcButton>
               </>
-            ) : (
+            )}
+            {showScheduleSetup && (
               <IcButton disabled={isPending} onClick={() => setEditState("editing")} size="sm" variant="ghost">
                 Set schedule
               </IcButton>

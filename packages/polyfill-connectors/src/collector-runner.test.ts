@@ -16,7 +16,7 @@ import {
   runCollectorConnector,
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
-import { LocalDeviceHttpError, type IngestBatchRequest, type LocalDeviceClient } from "./local-device-client.ts";
+import { type IngestBatchRequest, type LocalDeviceClient, LocalDeviceHttpError } from "./local-device-client.ts";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";
@@ -259,6 +259,55 @@ test("runCollectorConnector reports null completeness when no coverage diagnosti
     // as "complete".
     assert.equal(result.done?.status, "succeeded");
     assert.equal(result.completeness, null);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector rejects failed terminal DONE, preserves records, and leaves a durable recovery gap", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        await new Promise((r) => { let b = ""; process.stdin.on("data", (c) => { b += c; if (b.includes("\\n")) r(); }); });
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-1", data: { id: "m-1" }, emitted_at: new Date().toISOString() }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "STATE", stream: "messages", cursor: { fetched_at: new Date().toISOString() } }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "failed", records_emitted: 1 }) + "\\n");
+      `,
+    });
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-failed-done",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          sourceInstanceId: "src-failed-done",
+        }),
+      /terminal DONE reported failed/
+    );
+    assert.equal(
+      harness.stateOps.filter((op) => op.method === "PUT").length,
+      0,
+      "failed DONE must not checkpoint STATE"
+    );
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const items = outbox.list({ sourceInstanceId: "src-failed-done" });
+      assert.equal(items.filter((item) => item.kind === "record_batch").length, 1);
+      assert.equal(items.filter((item) => item.kind === "checkpoint").length, 0);
+      assert.equal(items.filter((item) => item.kind === "gap").length, 1);
+    } finally {
+      outbox.close();
+    }
   } finally {
     await harness.close();
   }
@@ -1579,6 +1628,50 @@ test("runCollectorConnector surfaces state-read failure as a blocked heartbeat a
     // dead-letter backlog — without leaking the raw state-read error text.
     const stateBlocked = heartbeatLastError(blockedHeartbeats.at(-1)?.last_error);
     assert.equal(stateBlocked?.kind, "state_read_failed");
+    assert.equal(
+      harness.heartbeats.at(-1)?.status,
+      "blocked",
+      "a definitive state-read block must be the final heartbeat"
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector accepts exactly one terminal DONE and checkpoints nothing after it", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((resolve) => process.stdin.on("data", (chunk) => {
+          buf += chunk;
+          if (buf.includes("\\n")) resolve();
+        }));
+        process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 0 }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "STATE", stream: "messages", cursor: "must-not-checkpoint" }) + "\\n");
+      `,
+    });
+    const queuePath = await tempQueuePath();
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-after-done",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          sourceInstanceId: "src-after-done",
+        }),
+      /emitted STATE after terminal DONE/
+    );
+    assert.equal(harness.stateOps.filter((operation) => operation.method === "PUT").length, 0);
   } finally {
     await harness.close();
   }
@@ -2552,8 +2645,8 @@ test("runCollectorConnector corrects the heartbeat off 'starting' to an outbox-d
     const last = harness.heartbeats.at(-1);
     assert.equal(
       last?.status,
-      "retrying",
-      `child-failure terminal heartbeat must reflect pending outbox work, not 'starting'; saw ${harness.heartbeats
+      "blocked",
+      `a delivered failure gap must stay blocking until committed coverage STATE recovery; saw ${harness.heartbeats
         .map((h) => h.status)
         .join(",")}`
     );
@@ -2569,15 +2662,13 @@ test("runCollectorConnector corrects the heartbeat off 'starting' to an outbox-d
   }
 });
 
-test("runCollectorConnector reports 'healthy' on the codex shape: prior backlog drains, then the child fails before streaming", async () => {
+test("runCollectorConnector leaves a failure gap when prior backlog drains but the child fails before streaming", async () => {
   // Faithful reproduction of the live codex collector: an earlier pass left
   // record batches in the durable outbox, this pass's pre-scan drain delivers
   // them successfully (the source is healthily delivering), and then the child
-  // fails before emitting any record of its own. The run throws, but because
-  // the outbox is genuinely drained the corrective terminal heartbeat must read
-  // "healthy" — not the "starting" status emitted before the scan. Healthy is
-  // tied to a concrete drain (zero pending, zero dead-letter), not to the
-  // process having booted.
+  // fails before emitting any record of its own. The prior backlog may drain,
+  // but this failed scan must create a durable gap: a quiet old outbox cannot
+  // recover an incomplete new inventory.
   const harness = await startCollectorHarness({ priorState: {} });
   try {
     const queuePath = await tempQueuePath();
@@ -2658,12 +2749,12 @@ test("runCollectorConnector reports 'healthy' on the codex shape: prior backlog 
     const last = harness.heartbeats.at(-1);
     assert.equal(
       last?.status,
-      "healthy",
-      `a drained outbox after a child failure must report healthy, not starting; saw ${harness.heartbeats
+      "blocked",
+      `a failed scan must stay blocked until committed coverage STATE recovery; saw ${harness.heartbeats
         .map((h) => h.status)
         .join(",")}`
     );
-    assert.equal(last?.records_pending, 0, "no outbox work remains after the pre-scan drain");
+    assert.equal(last?.records_pending, 1, "the failed scan's recovery gap remains pending after the pre-scan drain");
   } finally {
     await harness.close();
   }
@@ -4079,7 +4170,7 @@ test("runCollectorConnector does not let a dead-lettered gap row permanently ski
   }
 });
 
-test("runCollectorConnector marks acknowledged local gaps recovered after a clean run", async () => {
+test("runCollectorConnector recovers acknowledged local gaps only after a successful coverage STATE commit", async () => {
   const harness = await startCollectorHarness({ priorState: {} });
   try {
     const queuePath = await tempQueuePath();
@@ -4119,6 +4210,11 @@ test("runCollectorConnector marks acknowledged local gaps recovered after a clea
           cursor: "cursor-after-recovery",
         }) + "\\n");
         process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "coverage_diagnostics",
+          cursor: { fetched_at: new Date().toISOString() },
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
           type: "DONE",
           status: "succeeded",
           records_emitted: 0,
@@ -4133,7 +4229,7 @@ test("runCollectorConnector marks acknowledged local gaps recovered after a clea
         command: "node",
         connector_id: "fixture-recovered-gap",
         runtime_requirements: { bindings: {} },
-        streams: ["messages"],
+        streams: ["messages", "coverage_diagnostics"],
       },
       deviceId: "device-1",
       deviceToken: "device-token",
@@ -4143,7 +4239,11 @@ test("runCollectorConnector marks acknowledged local gaps recovered after a clea
     });
 
     assert.equal(result.skippedScanForBacklog, false);
-    assert.deepEqual(result.flushedState, { messages: "cursor-after-recovery" });
+    assert.equal(result.flushedState?.messages, "cursor-after-recovery");
+    assert.equal(
+      typeof (result.flushedState?.coverage_diagnostics as { fetched_at?: unknown } | undefined)?.fetched_at,
+      "string"
+    );
     assert.equal(harness.gapRecoveries.length, 1);
     assert.equal(harness.gapRecoveries[0]?.reason, "policy_budget");
     assert.equal(harness.gapRecoveries[0]?.recovered_run_id, "run-recovered-gap-2");
