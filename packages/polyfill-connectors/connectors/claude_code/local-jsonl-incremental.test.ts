@@ -350,13 +350,48 @@ test("M17 live legacy shape: 11,378 mtime entries baseline matching sources whil
   assert.equal(noOp.records.length, 0, "the v1 checkpoint makes the next run a no-op");
 });
 
-test("M18: changed legacy mtime conservatively replays the current source once", async () => {
+test("M18/B: stale messages evidence replays even when sessions evidence is current", async () => {
   const source = await makeSource();
+  const topMtime = (await (await import("node:fs/promises")).stat(source.top)).mtimeMs;
+  const subMtime = (await (await import("node:fs/promises")).stat(source.subagent)).mtimeMs;
   const replayed = await run({
     ...source,
-    state: { messages: { file_mtimes: { [source.top]: 0 } }, sessions: { file_mtimes: { [source.top]: 0 } } },
+    state: {
+      messages: { file_mtimes: { [source.top]: 0, [source.subagent]: 0 } },
+      sessions: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } },
+    },
   });
   assert.equal(replayed.records.filter((record) => record.stream === "messages").length, 2);
+});
+
+test("M17/A: sessions-only legacy evidence never baselines messages", async () => {
+  const source = await makeSource();
+  const topMtime = (await (await import("node:fs/promises")).stat(source.top)).mtimeMs;
+  const subMtime = (await (await import("node:fs/promises")).stat(source.subagent)).mtimeMs;
+  const migrated = await run({
+    ...source,
+    state: { sessions: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } } },
+  });
+  assert.equal(
+    migrated.records.filter((record) => record.stream === "messages").length,
+    2,
+    "a missing messages state replays its current sources"
+  );
+});
+
+test("M17/C: messages-only legacy evidence never baselines sessions", async () => {
+  const source = await makeSource();
+  const topMtime = (await (await import("node:fs/promises")).stat(source.top)).mtimeMs;
+  const subMtime = (await (await import("node:fs/promises")).stat(source.subagent)).mtimeMs;
+  const migrated = await run({
+    ...source,
+    state: { messages: { file_mtimes: { [source.top]: topMtime, [source.subagent]: subMtime } } },
+  });
+  assert.equal(
+    migrated.records.filter((record) => record.stream === "sessions").length,
+    1,
+    "a missing sessions state emits its complete current aggregate"
+  );
 });
 
 test("M16: restarting from the pre-STATE cursor replays a stable logical key", async () => {

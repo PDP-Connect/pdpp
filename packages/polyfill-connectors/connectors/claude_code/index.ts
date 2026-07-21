@@ -1561,27 +1561,24 @@ function streamFileMtimes(
 }
 
 /**
- * Read mtime-only transcript state from pre-v1 and mixed-version checkpoints.
- * A legacy mtime is only an eligibility hint: the scanner still reads the
- * source and returns a physical cursor before the migration can suppress its
- * records. Keeping every value for a path avoids treating one stale
- * per-stream map as authoritative when another legacy stream has the current
- * value.
+ * Read mtime-only transcript state for one stream's pre-v1 lineage. A legacy
+ * mtime is only an eligibility hint: the scanner still reads the source and
+ * returns a physical cursor before the migration can suppress its records.
+ * Messages and sessions deliberately call this separately: a current mtime in
+ * one stream is not proof that another stream was ever delivered.
  */
-function readLegacyJsonlMtimes(...values: unknown[]): Map<string, Set<number>> {
+function readLegacyJsonlMtimes(value: unknown): Map<string, Set<number>> {
   const mtimes = new Map<string, Set<number>>();
-  for (const value of values) {
-    if (!isRecord(value)) {
+  if (!isRecord(value)) {
+    return mtimes;
+  }
+  for (const [path, mtime] of Object.entries(value)) {
+    if (typeof mtime !== "number" || !Number.isFinite(mtime)) {
       continue;
     }
-    for (const [path, mtime] of Object.entries(value)) {
-      if (typeof mtime !== "number" || !Number.isFinite(mtime)) {
-        continue;
-      }
-      const known = mtimes.get(path) ?? new Set<number>();
-      known.add(mtime);
-      mtimes.set(path, known);
-    }
+    const known = mtimes.get(path) ?? new Set<number>();
+    known.add(mtime);
+    mtimes.set(path, known);
   }
   return mtimes;
 }
@@ -1656,9 +1653,10 @@ if (isMainModule(import.meta.url)) {
         const sessionsRaw = typedState.sessions;
         const messageUsesLegacyJsonlMtimes = messageRaw?.local_jsonl_cursor_version !== 1;
         const sessionsUsesLegacyJsonlMtimes = sessionsRaw?.local_jsonl_cursor_version !== 1;
-        const legacyJsonlMtimes = readLegacyJsonlMtimes(
-          typedState.file_mtimes,
-          messageUsesLegacyJsonlMtimes ? messageRaw?.file_mtimes : undefined,
+        const messageLegacyJsonlMtimes = readLegacyJsonlMtimes(
+          messageUsesLegacyJsonlMtimes ? (messageRaw?.file_mtimes ?? typedState.file_mtimes) : undefined
+        );
+        const sessionLegacyJsonlMtimes = readLegacyJsonlMtimes(
           sessionsUsesLegacyJsonlMtimes ? sessionsRaw?.file_mtimes : undefined
         );
         const priorChildCursors =
@@ -1725,7 +1723,7 @@ if (isMainModule(import.meta.url)) {
             rebuildAll ||= scanned.rebuilt;
             if (
               sessionsUsesLegacyJsonlMtimes &&
-              !matchesLegacyJsonlMtime(legacyJsonlMtimes, source.path, scanned.cursor.observed_mtime_ms)
+              !matchesLegacyJsonlMtime(sessionLegacyJsonlMtimes, source.path, scanned.cursor.observed_mtime_ms)
             ) {
               for (const sessionId of scanned.sessionIds) {
                 changedLegacySessionIds.add(sessionId);
@@ -1820,7 +1818,7 @@ if (isMainModule(import.meta.url)) {
 
         if (requested.has("messages") || requested.has("attachments")) {
           for (const source of sources) {
-            const candidateLegacyBaseline = messageUsesLegacyJsonlMtimes && legacyJsonlMtimes.has(source.path);
+            const candidateLegacyBaseline = messageUsesLegacyJsonlMtimes && messageLegacyJsonlMtimes.has(source.path);
             let cursor = await scanChildSource({
               cursor: priorChildCursors[source.path],
               emitRecord,
@@ -1835,7 +1833,7 @@ if (isMainModule(import.meta.url)) {
             // zero rather than being silently baselined.
             if (
               candidateLegacyBaseline &&
-              !matchesLegacyJsonlMtime(legacyJsonlMtimes, source.path, cursor.observed_mtime_ms)
+              !matchesLegacyJsonlMtime(messageLegacyJsonlMtimes, source.path, cursor.observed_mtime_ms)
             ) {
               cursor = await scanChildSource({
                 cursor: undefined,
