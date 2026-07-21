@@ -92,3 +92,21 @@ test("local JSONL cursor rejects an in-scan same-size mutation without returning
     /mutated while scanning/
   );
 });
+
+test("local JSONL cursor rejects a concurrent committed-prefix rewrite plus growth", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pdpp-local-jsonl-"));
+  const path = join(root, "events.jsonl");
+  await writeFile(path, '{"id":"one"}\n');
+  await assert.rejects(
+    scanLocalJsonl({
+      path,
+      onLine: async () => {
+        await writeFile(path, '{"id":"rewritten"}\n{"id":"grown"}\n');
+      },
+      prior: undefined,
+    }),
+    /committed prefix changed while scanning/
+  );
+  const retry = await scan(path);
+  assert.deepEqual(retry.lines, ['{"id":"rewritten"}', '{"id":"grown"}']);
+});

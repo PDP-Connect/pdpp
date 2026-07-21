@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, type Hash } from "node:crypto";
 import type { FileHandle } from "node:fs/promises";
 import { open, stat } from "node:fs/promises";
 
@@ -80,6 +80,19 @@ async function hashRange(handle: FileHandle, bytes: number): Promise<string> {
   return hash.digest("hex");
 }
 
+async function updateHashRange(handle: FileHandle, hash: Hash, bytes: number): Promise<void> {
+  let offset = 0;
+  while (offset < bytes) {
+    const buffer = Buffer.allocUnsafe(Math.min(READ_CHUNK_BYTES, bytes - offset));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    if (bytesRead !== buffer.length) {
+      throw new LocalJsonlUnstableSourceError("local JSONL source ended during a required prefix read");
+    }
+    hash.update(buffer);
+    offset += bytesRead;
+  }
+}
+
 async function verifyStablePath(
   path: string,
   handle: FileHandle,
@@ -95,6 +108,30 @@ async function verifyStablePath(
   if (afterHandle.size === snapshot.size && afterHandle.mtimeMs !== snapshot.mtimeMs) {
     throw new LocalJsonlUnstableSourceError("local JSONL source mutated while scanning");
   }
+}
+
+/**
+ * Prove that the exact LF-terminated bytes given to callbacks remain the
+ * current committed prefix. Growth is fine; a rewrite under that prefix is
+ * not. The second hash/check pair closes the check-then-hash window for the
+ * ordinary concurrent rewrite+append case without claiming a filesystem lock.
+ */
+async function proveCommittedPrefix(input: {
+  expectedSha256: string;
+  handle: FileHandle;
+  path: string;
+  snapshot: { dev: number; ino: number; size: number; mtimeMs: number };
+  bytes: number;
+}): Promise<number> {
+  await verifyStablePath(input.path, input.handle, input.snapshot);
+  const first = await hashRange(input.handle, input.bytes);
+  await verifyStablePath(input.path, input.handle, input.snapshot);
+  const second = await hashRange(input.handle, input.bytes);
+  await verifyStablePath(input.path, input.handle, input.snapshot);
+  if (first !== input.expectedSha256 || second !== input.expectedSha256) {
+    throw new LocalJsonlUnstableSourceError("local JSONL committed prefix changed while scanning");
+  }
+  return input.bytes * 2;
 }
 
 /**
@@ -140,6 +177,9 @@ export async function scanLocalJsonl({ onLine, path, prior }: ScanLocalJsonlArgs
     let committed = startOffset;
     let pending = Buffer.alloc(0);
     let linesDelivered = 0;
+    const deliveredPrefix = createHash("sha256");
+    await updateHashRange(handle, deliveredPrefix, startOffset);
+    prefixBytesHashed += startOffset;
     while (position < snapshot.size) {
       const buffer = Buffer.allocUnsafe(Math.min(READ_CHUNK_BYTES, snapshot.size - position));
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
@@ -150,6 +190,9 @@ export async function scanLocalJsonl({ onLine, path, prior }: ScanLocalJsonlArgs
       pending = pending.length === 0 ? buffer : Buffer.concat([pending, buffer]);
       let lineEnd = pending.indexOf(0x0a);
       while (lineEnd !== -1) {
+        // Hash the bytes before invoking the callback: this is the exact
+        // committed prefix the callback observed, including the LF boundary.
+        deliveredPrefix.update(pending.subarray(0, lineEnd + 1));
         await onLine(pending.subarray(0, lineEnd));
         linesDelivered++;
         committed += lineEnd + 1;
@@ -158,9 +201,14 @@ export async function scanLocalJsonl({ onLine, path, prior }: ScanLocalJsonlArgs
       }
     }
 
-    await verifyStablePath(path, handle, snapshot);
-    const committedPrefix = await hashRange(handle, committed);
-    prefixBytesHashed += committed;
+    const committedPrefix = deliveredPrefix.digest("hex");
+    prefixBytesHashed += await proveCommittedPrefix({
+      bytes: committed,
+      expectedSha256: committedPrefix,
+      handle,
+      path,
+      snapshot,
+    });
     const cursor = {
       committed_offset_bytes: committed,
       committed_prefix_sha256: committedPrefix,

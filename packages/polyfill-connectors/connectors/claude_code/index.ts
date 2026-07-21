@@ -33,7 +33,11 @@ import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { canonicalJson } from "../../src/local-device-envelope.ts";
-import { isLocalJsonlPhysicalCursorV1, scanLocalJsonl } from "../../src/local-jsonl-cursor.ts";
+import {
+  isLocalJsonlPhysicalCursorV1,
+  type LocalJsonlScanResult,
+  scanLocalJsonl,
+} from "../../src/local-jsonl-cursor.ts";
 import {
   buildCoverageDiagnosticsStateSnapshot,
   buildLocalSourceInventory,
@@ -1104,32 +1108,37 @@ function readChildFileCursors(value: unknown): Record<string, ClaudeChildFileCur
   return out;
 }
 
-function readSessionFileCursors(value: unknown): Record<string, ClaudeSessionFileCursorV1> {
+function readSessionFileCursors(value: unknown): {
+  cursors: Record<string, ClaudeSessionFileCursorV1>;
+  valid: boolean;
+} {
   if (!isRecord(value)) {
-    return {};
+    return { cursors: {}, valid: false };
   }
   const out: Record<string, ClaudeSessionFileCursorV1> = {};
   for (const [path, cursor] of Object.entries(value)) {
     const observation = isRecord(cursor) ? readJsonlObservations(cursor.observation) : undefined;
-    if (isRecord(cursor) && isLocalJsonlPhysicalCursorV1(cursor) && observation) {
-      out[path] = { ...cursor, observation };
+    if (!(isRecord(cursor) && isLocalJsonlPhysicalCursorV1(cursor) && observation)) {
+      return { cursors: {}, valid: false };
     }
+    out[path] = { ...cursor, observation };
   }
-  return out;
+  return { cursors: out, valid: true };
 }
 
-function readSessionAggregates(value: unknown): Record<string, SessionAccumulator> {
+function readSessionAggregates(value: unknown): { aggregates: Record<string, SessionAccumulator>; valid: boolean } {
   if (!isRecord(value)) {
-    return {};
+    return { aggregates: {}, valid: false };
   }
   const out: Record<string, SessionAccumulator> = {};
   for (const [id, aggregate] of Object.entries(value)) {
     const parsed = readSessionAccumulator(aggregate);
-    if (parsed && parsed.id === id) {
-      out[id] = parsed;
+    if (!(parsed && parsed.id === id)) {
+      return { aggregates: {}, valid: false };
     }
+    out[id] = parsed;
   }
-  return out;
+  return { aggregates: out, valid: true };
 }
 
 function cloneObservations(observation: JsonlObservations, forcedSessionId: string | null): JsonlObservations {
@@ -1146,6 +1155,70 @@ function parseJsonlLine(line: Buffer): JsonlObject | null {
   } catch {
     return null;
   }
+}
+
+interface LocalJsonlTelemetry {
+  appendFiles: number;
+  cursorStateBytes: number;
+  fastSkipFiles: number;
+  prefixBytesHashed: number;
+  rebuildFiles: number;
+  sessionRebuildAll: number;
+  tailBytesParsed: number;
+  transcriptRecordsEmitted: number;
+  verifiedNoopFiles: number;
+}
+
+function makeLocalJsonlTelemetry(): LocalJsonlTelemetry {
+  return {
+    appendFiles: 0,
+    cursorStateBytes: 0,
+    fastSkipFiles: 0,
+    prefixBytesHashed: 0,
+    rebuildFiles: 0,
+    sessionRebuildAll: 0,
+    tailBytesParsed: 0,
+    transcriptRecordsEmitted: 0,
+    verifiedNoopFiles: 0,
+  };
+}
+
+function observeLocalJsonlScan(telemetry: LocalJsonlTelemetry, result: LocalJsonlScanResult): void {
+  telemetry.prefixBytesHashed += result.prefix_bytes_hashed;
+  telemetry.tailBytesParsed += result.tail_bytes_parsed;
+  switch (result.decision.kind) {
+    case "append":
+      telemetry.appendFiles++;
+      break;
+    case "fast_skip":
+      telemetry.fastSkipFiles++;
+      break;
+    case "rebuild":
+      telemetry.rebuildFiles++;
+      break;
+    case "verified_noop":
+      telemetry.verifiedNoopFiles++;
+      break;
+    default:
+      break;
+  }
+}
+
+async function emitLocalJsonlTelemetry(emit: CollectContext["emit"], telemetry: LocalJsonlTelemetry): Promise<void> {
+  await emit({
+    type: "PROGRESS",
+    message:
+      "Claude Code local_jsonl " +
+      `fast_skip_files=${telemetry.fastSkipFiles} ` +
+      `verified_noop_files=${telemetry.verifiedNoopFiles} ` +
+      `append_files=${telemetry.appendFiles} ` +
+      `rebuild_files=${telemetry.rebuildFiles} ` +
+      `session_rebuild_all=${telemetry.sessionRebuildAll} ` +
+      `prefix_bytes_hashed=${telemetry.prefixBytesHashed} ` +
+      `tail_bytes_parsed=${telemetry.tailBytesParsed} ` +
+      `transcript_records_emitted=${telemetry.transcriptRecordsEmitted} ` +
+      `cursor_state_bytes=${telemetry.cursorStateBytes}`,
+  });
 }
 
 async function discoverClaudeJsonlSources(
@@ -1184,10 +1257,10 @@ async function discoverClaudeJsonlSources(
 
 async function scanSessionSource(input: {
   cursor: ClaudeSessionFileCursorV1 | undefined;
-  emit: CollectContext["emit"];
   projectDir: string;
   sessionAccumulators: Map<string, SessionAccumulator>;
   source: ClaudeJsonlSource;
+  telemetry: LocalJsonlTelemetry;
 }): Promise<{ cursor: ClaudeSessionFileCursorV1; rebuilt: boolean }> {
   const observation = input.cursor
     ? cloneObservations(input.cursor.observation, input.source.forcedSessionId)
@@ -1222,10 +1295,7 @@ async function scanSessionSource(input: {
       );
     },
   });
-  await input.emit({
-    type: "PROGRESS",
-    message: `Claude Code local_jsonl decision=${result.decision.kind} prefix_bytes_hashed=${result.prefix_bytes_hashed} tail_bytes_parsed=${result.tail_bytes_parsed}`,
-  });
+  observeLocalJsonlScan(input.telemetry, result);
   return {
     cursor: { ...result.cursor, observation },
     rebuilt: Boolean(input.cursor && result.decision.kind === "rebuild"),
@@ -1234,11 +1304,11 @@ async function scanSessionSource(input: {
 
 async function scanChildSource(input: {
   cursor: ClaudeChildFileCursorV1 | undefined;
-  emit: CollectContext["emit"];
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emitRecords: boolean;
   requested: Map<string, StreamScope>;
   source: ClaudeJsonlSource;
+  telemetry: LocalJsonlTelemetry;
 }): Promise<ClaudeChildFileCursorV1> {
   const observation = makeJsonlObservations(input.source.forcedSessionId);
   observation.sessionId = input.cursor?.current_session_id ?? observation.sessionId;
@@ -1253,16 +1323,19 @@ async function scanChildSource(input: {
       observeJsonlFields(obj, observation, input.source.forcedSessionId);
       await processJsonlLine({
         buildOnly: !input.emitRecords,
-        deps: { emitRecord: input.emitRecord, requested: input.requested },
+        deps: {
+          emitRecord: async (stream, data) => {
+            input.telemetry.transcriptRecordsEmitted++;
+            await input.emitRecord(stream, data);
+          },
+          requested: input.requested,
+        },
         obj,
         obs: observation,
       });
     },
   });
-  await input.emit({
-    type: "PROGRESS",
-    message: `Claude Code local_jsonl decision=${result.decision.kind} prefix_bytes_hashed=${result.prefix_bytes_hashed} tail_bytes_parsed=${result.tail_bytes_parsed}`,
-  });
+  observeLocalJsonlScan(input.telemetry, result);
   return { ...result.cursor, current_session_id: observation.sessionId };
 }
 
@@ -1548,21 +1621,31 @@ if (isMainModule(import.meta.url)) {
         const sessionsRaw = typedState.sessions;
         const priorChildCursors =
           messageRaw?.local_jsonl_cursor_version === 1 ? readChildFileCursors(messageRaw.file_cursors) : {};
-        const priorSessionCursors =
-          sessionsRaw?.local_jsonl_cursor_version === 1 ? readSessionFileCursors(sessionsRaw.file_cursors) : {};
-        const priorSessionAggregates =
-          sessionsRaw?.local_jsonl_cursor_version === 1 ? readSessionAggregates(sessionsRaw.session_aggregates) : {};
+        const decodedSessionCursors =
+          sessionsRaw?.local_jsonl_cursor_version === 1
+            ? readSessionFileCursors(sessionsRaw.file_cursors)
+            : { cursors: {}, valid: false };
+        const decodedSessionAggregates =
+          sessionsRaw?.local_jsonl_cursor_version === 1
+            ? readSessionAggregates(sessionsRaw.session_aggregates)
+            : { aggregates: {}, valid: false };
+        const priorSessionCursors = decodedSessionCursors.cursors;
+        const priorSessionAggregates = decodedSessionAggregates.aggregates;
         const sessionSnapshotIsValid =
           sessionsRaw?.local_jsonl_cursor_version === 1 &&
-          isRecord(sessionsRaw.session_aggregates) &&
-          Object.keys(priorSessionAggregates).length === Object.keys(sessionsRaw.session_aggregates).length;
+          decodedSessionCursors.valid &&
+          decodedSessionAggregates.valid;
         const sources = await discoverClaudeJsonlSources(baseDir, emit);
         if (sources === null) {
           return;
         }
         const sourcePaths = new Set(sources.map((source) => source.path));
-        const newMessageFileMtimes: Record<string, number> = { ...messageFileMtimes };
-        const newSessionFileMtimes: Record<string, number> = { ...sessionFileMtimes };
+        const telemetry = makeLocalJsonlTelemetry();
+        // Rich cursor state is authoritative. Rebuild these compatibility maps
+        // only from files discovered in this pass so removed/rotated paths do
+        // not become a retained per-file ledger.
+        const newMessageFileMtimes: Record<string, number> = {};
+        const newSessionFileMtimes: Record<string, number> = {};
         let nextSessionCursors: Record<string, ClaudeSessionFileCursorV1> = {};
         const nextChildCursors: Record<string, ClaudeChildFileCursorV1> = {};
 
@@ -1574,18 +1657,23 @@ if (isMainModule(import.meta.url)) {
                 sources.map(async (source) => (await stat(source.path)).mtimeMs === sessionFileMtimes[source.path])
               )
             ).every(Boolean);
+          const missingRichCursorForKnownFile = sources.some(
+            (source) => sessionFileMtimes[source.path] !== undefined && !priorSessionCursors[source.path]
+          );
           let rebuildAll =
-            !sessionSnapshotIsValid || Object.keys(priorSessionCursors).some((path) => !sourcePaths.has(path));
+            !sessionSnapshotIsValid ||
+            missingRichCursorForKnownFile ||
+            Object.keys(priorSessionCursors).some((path) => !sourcePaths.has(path));
           let sessionAccumulators = new Map<string, SessionAccumulator>(
             Object.entries(rebuildAll ? {} : priorSessionAggregates).map(([id, aggregate]) => [id, { ...aggregate }])
           );
           for (const source of sources) {
             const scanned = await scanSessionSource({
               cursor: rebuildAll ? undefined : priorSessionCursors[source.path],
-              emit,
               projectDir: source.projectDir,
               sessionAccumulators,
               source,
+              telemetry,
             });
             nextSessionCursors[source.path] = scanned.cursor;
             newSessionFileMtimes[source.path] = scanned.cursor.observed_mtime_ms;
@@ -1597,14 +1685,17 @@ if (isMainModule(import.meta.url)) {
             for (const source of sources) {
               const scanned = await scanSessionSource({
                 cursor: undefined,
-                emit,
                 projectDir: source.projectDir,
                 sessionAccumulators,
                 source,
+                telemetry,
               });
               nextSessionCursors[source.path] = scanned.cursor;
               newSessionFileMtimes[source.path] = scanned.cursor.observed_mtime_ms;
             }
+          }
+          if (rebuildAll) {
+            telemetry.sessionRebuildAll++;
           }
           await emitChangedSessions({
             emitRecord,
@@ -1613,16 +1704,18 @@ if (isMainModule(import.meta.url)) {
             requested,
           });
           const sessionAggregates = Object.fromEntries(sessionAccumulators);
+          const cursor = {
+            file_cursors: nextSessionCursors,
+            file_mtimes: newSessionFileMtimes,
+            fetched_at: nowIso(),
+            local_jsonl_cursor_version: 1 as const,
+            session_aggregates: sessionAggregates,
+          };
+          telemetry.cursorStateBytes += Buffer.byteLength(JSON.stringify(cursor), "utf8");
           await emit({
             type: "STATE",
             stream: "sessions",
-            cursor: {
-              file_cursors: nextSessionCursors,
-              file_mtimes: newSessionFileMtimes,
-              fetched_at: nowIso(),
-              local_jsonl_cursor_version: 1,
-              session_aggregates: sessionAggregates,
-            },
+            cursor,
           });
         }
 
@@ -1660,11 +1753,11 @@ if (isMainModule(import.meta.url)) {
           for (const source of sources) {
             const cursor = await scanChildSource({
               cursor: priorChildCursors[source.path],
-              emit,
               emitRecord,
               emitRecords: !legacyBaseline,
               requested,
               source,
+              telemetry,
             });
             nextChildCursors[source.path] = cursor;
             newMessageFileMtimes[source.path] = cursor.observed_mtime_ms;
@@ -1686,17 +1779,20 @@ if (isMainModule(import.meta.url)) {
         await emitCoverageDiagnosticsState({ emit, inventory, requested });
 
         if (requested.has("messages") || requested.has("attachments")) {
+          const cursor = {
+            file_cursors: nextChildCursors,
+            file_mtimes: newMessageFileMtimes,
+            fetched_at: nowIso(),
+            local_jsonl_cursor_version: 1 as const,
+          };
+          telemetry.cursorStateBytes += Buffer.byteLength(JSON.stringify(cursor), "utf8");
           await emit({
             type: "STATE",
             stream: "messages",
-            cursor: {
-              file_cursors: nextChildCursors,
-              file_mtimes: newMessageFileMtimes,
-              fetched_at: nowIso(),
-              local_jsonl_cursor_version: 1,
-            },
+            cursor,
           });
         }
+        await emitLocalJsonlTelemetry(emit, telemetry);
       };
       await collectProjectStreams();
     },
