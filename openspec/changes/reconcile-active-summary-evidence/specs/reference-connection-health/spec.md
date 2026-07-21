@@ -52,7 +52,7 @@ provider boundary was observed or completely collected.
 Connector source freshness, collection coverage, connector-summary projection
 reliability, and retained byte availability SHALL remain separate evidence
 axes. A non-current `record_snapshot`, non-current `terminal_facts`, non-current
-`manifest_declaration`, or current-manifest unexpected stream SHALL add a closed
+`manifest_declaration`, or explicit current-generation unexpected stream SHALL add a closed
 connector-neutral source code to the existing `ProjectionReliable` condition.
 For terminal facts, non-current includes `unobserved`, `stale`, and `failed`.
 That false condition SHALL take precedence over otherwise successful, complete,
@@ -87,13 +87,13 @@ restore the condition automatically without owner action.
 - **THEN** health SHALL use the repaired current evidence
 - **AND** it SHALL require no owner refresh, connector-specific patch, or sticky UI dismissal.
 
-#### Scenario: Unexpected stream degrades projection reliability, not authentication
+#### Scenario: Dormant history does not degrade projection reliability
 
 - **GIVEN** a valid current manifest omits a canonical or retained stream grain
 - **WHEN** connection health is synthesized
-- **THEN** the projection/declaration mismatch SHALL prevent a Healthy verdict
-- **AND** any action SHALL target a maintainer/system audience
-- **AND** SHALL NOT ask the owner to reconnect credentials or reauthenticate.
+- **THEN** the grain SHALL be dormant diagnostic/retention data and SHALL NOT prevent a Healthy verdict by itself
+- **AND** it SHALL be excluded from active totals, discovery, coverage, and serving
+- **AND** stale grants SHALL NOT read it.
 
 #### Scenario: Retained-byte-only failure does not change source health
 

@@ -182,7 +182,7 @@ declaration.
 
 Each stream record entry carries two independent fields:
 
-- `declaration_state`: `declared`, `unexpected`, or `unavailable`;
+- `declaration_state`: `declared`, `dormant`, `unexpected`, or `unavailable`;
 - `count_state`: `known`, `known_zero`, `unobserved`, `stale`, or `unknown`.
 
 The invariants are disjoint:
@@ -197,12 +197,16 @@ The invariants are disjoint:
 
 When a manifest is readable, the stream set is exhaustive over the union of
 manifest declarations, stable canonical live-record streams, and readable
-retained-size stream grains. A retained/history/blob-only stream can therefore
-be `unexpected + known_zero`; a canonical unexpected stream remains visible
-with its true count. When the manifest is missing or malformed, canonical and
-readable retained stream names remain visible with `declaration_state =
-unavailable`; `unexpected` is never asserted without a successfully parsed
-manifest.
+retained-size stream grains. A canonical or retained grain outside the current
+manifest is `dormant`: its physical count and retained facts remain visible on
+the diagnostic/retention surface, but it is excluded from active totals,
+coverage, discovery, and serving. `unexpected` is reserved for an explicit
+current-generation declaration violation, not historical persistence. When a
+manifest is missing or malformed, canonical and readable retained stream names
+remain visible with `declaration_state = unavailable`; `unexpected` is never
+asserted without a successfully parsed manifest. Re-adding a dormant stream
+makes it declared with its old retained facts, but coverage/freshness remain
+unknown or stale until new current evidence commits.
 
 A declared stream absent from a completed stable canonical record snapshot is
 `declared + known_zero`. A missing retained-size row does not change that count;
@@ -238,8 +242,9 @@ invalidation is required for correctness.
 ### Health boundary
 
 `record_snapshot` non-current, `terminal_facts` non-current,
-`manifest_declaration` non-current, or a current-manifest `unexpected` stream is
-added to the existing `ProjectionReliable` input. That condition has highest
+`manifest_declaration` non-current, or an explicit current-generation
+`unexpected` stream is added to the existing `ProjectionReliable` input.
+Dormant historical grains are not an unreliable input. That condition has highest
 precedence and forces `unknown`; it cannot be overwritten by a successful run,
 fresh source heartbeat, or complete coverage. A successfully checkpointed empty
 terminal history is `current`, not failed absence; a never-observed terminal
@@ -291,11 +296,13 @@ Rejected. Batched discovery identifies candidates; only K mismatches acquire a
 fence and rescan one connection. Current steady-state reads remain fixed-query
 and lock-free.
 
-### Treat absent stream as zero or hide unexpected streams
+### Treat absent stream as zero or hide retained history
 
 Rejected. Exact zero requires a completed canonical snapshot, while manifest or
-retained evidence may be unavailable. Hiding unexpected grains makes declaration
-drift look healthy.
+retained evidence may be unavailable. The accepted design preserves retained
+history as `dormant` diagnostic evidence while preventing stale grants and
+active discovery from serving it; it does not call historical retention a
+current declaration mismatch.
 
 ### Retain stale-while-revalidate value caching
 

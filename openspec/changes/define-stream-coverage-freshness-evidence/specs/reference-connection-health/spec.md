@@ -500,10 +500,12 @@ quarantined audit history and SHALL NOT participate in coverage, freshness, or
 verdict projection. Non-local connections retain existing run behavior.
 
 `local_device` coverage SHALL be proven only by connection-scoped committed
-`coverage_diagnostics` STATE with valid `{ fetched_at }`, non-null server
-`updated_at`, complete sanitized known-store diagnostics, and no malformed,
-dropped, duplicate, or `unaccounted` diagnostic. Same-stream stores SHALL fold
-worst-wins. The STATE server `updated_at` is each local stream's
+`coverage_diagnostics` STATE with valid `{ fetched_at, stores }`, non-null server
+`updated_at`, and an exact complete sanitized known-store/store-to-stream snapshot.
+Health SHALL source its rows only from that STATE, never retained diagnostics
+RECORDs; fetched-at-only legacy STATE is historical data but insufficient proof.
+Malformed, dropped, extra, duplicate, conflicting, or `unaccounted` entries
+shall fail closed. Same-stream stores SHALL fold worst-wins. The STATE server `updated_at` is each local stream's
 `evidence_as_of`; heartbeat and record emission time cannot refresh proof.
 
 The control plane SHALL also require a fresh healthy idle/drained heartbeat,

@@ -17,7 +17,10 @@ repair has completed.
 - Use an exact reset-safe record checkpoint and monotonic terminal-event fold so
   best-effort invalidation hooks are never the sole correctness mechanism.
 - Make retained stream observation state and manifest membership explicit,
-  including exact zero, unobserved, stale/unknown, and unexpected streams.
+  including exact zero, unobserved, stale/unknown, and dormant retained history.
+- Make the current valid manifest own the active stream namespace: dormant
+  history remains diagnostic but is excluded from active totals, coverage,
+  discovery, and serving.
 - Expose record snapshot, terminal fact, manifest declaration, and retained-byte
   reliability as independent typed evidence components.
 - Feed unavailable or contradictory summary evidence into the existing

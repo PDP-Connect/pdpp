@@ -40,7 +40,7 @@ export interface StreamSummary {
    * predating these fields, in which case rendering falls back to the legacy
    * `record_count === null` binary check.
    */
-  declaration_state?: "declared" | "unexpected" | "unavailable";
+  declaration_state?: "declared" | "dormant" | "unexpected" | "unavailable";
   last_updated: string | null;
   name: string;
   object: "stream";

@@ -69,7 +69,7 @@ function testOnlyRepairCandidateSqliteDelay(): void {
 
 export type ComponentState = "current" | "unobserved" | "stale" | "failed";
 export type ManifestState = "current" | "unavailable" | "failed";
-export type DeclarationState = "declared" | "unexpected" | "unavailable";
+export type DeclarationState = "declared" | "dormant" | "unexpected" | "unavailable";
 export type CountState = "known" | "known_zero" | "unobserved" | "stale" | "unknown";
 
 export type RepairCandidateReason =
@@ -1050,7 +1050,7 @@ function buildRepairedRow(inputs: RepairInputs): Row {
       ? "unavailable"
       : declaredStreams.has(stream)
         ? "declared"
-        : "unexpected";
+        : "dormant";
     const record_count = canonical ? Number(canonical.record_count || 0) : 0;
     const count_state: CountState = record_count > 0 ? "known" : "known_zero";
     return {
@@ -1065,7 +1065,10 @@ function buildRepairedRow(inputs: RepairInputs): Row {
   let totalRecords = 0;
   let streamCount = 0;
   let lastRecordUpdatedAt: string | null = null;
-  for (const [, row] of canonicalByStream) {
+  for (const [stream, row] of canonicalByStream) {
+    if (manifest.ok && !declaredStreams.has(stream)) {
+      continue;
+    }
     const count = Number(row.record_count || 0);
     totalRecords += count;
     if (count > 0) {

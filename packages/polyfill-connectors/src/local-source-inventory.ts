@@ -16,54 +16,83 @@ export interface KnownLocalStore {
   stream: string | null;
 }
 
+export interface LocalCoverageStoreDescriptor {
+  readonly store: string;
+  readonly stream: string | null;
+}
+
 /**
  * The fixed local inventories are an authority shared by emitters and the
  * server proof reader. Keep identifiers here, separate from connector-specific
  * path/reason metadata, so a partial durable diagnostic set is detectable.
  */
-export const LOCAL_COVERAGE_STORES_BY_CONNECTOR = {
+export const LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR = {
   claude_code: [
-    "projects",
-    "skills",
-    "commands",
-    "file_history",
-    "context_mode",
-    "cache",
-    "backups",
-    "config",
-    "debug",
-    "downloads",
-    "auth",
+    { store: "projects", stream: "sessions" },
+    { store: "skills", stream: "skills" },
+    { store: "commands", stream: "slash_commands" },
+    { store: "file_history", stream: "file_history" },
+    { store: "context_mode", stream: null },
+    { store: "cache", stream: "cache_inventory" },
+    { store: "backups", stream: "backup_inventory" },
+    { store: "config", stream: "config_inventory" },
+    { store: "debug", stream: "debug_artifacts" },
+    { store: "downloads", stream: "downloads" },
+    { store: "auth", stream: null },
   ],
   codex: [
-    "sessions",
-    "state_db",
-    "rules",
-    "prompts",
-    "skills",
-    "history",
-    "session_index",
-    "shell_snapshots",
-    "memories",
-    "context_mode",
-    "logs",
-    "config",
-    "cache",
-    "auth",
+    { store: "sessions", stream: "sessions" },
+    { store: "state_db", stream: "sessions" },
+    { store: "rules", stream: "rules" },
+    { store: "prompts", stream: "prompts" },
+    { store: "skills", stream: "skills" },
+    { store: "history", stream: "history" },
+    { store: "session_index", stream: "session_index" },
+    { store: "shell_snapshots", stream: "shell_snapshots" },
+    { store: "memories", stream: null },
+    { store: "context_mode", stream: null },
+    { store: "logs", stream: "logs" },
+    { store: "config", stream: "config_inventory" },
+    { store: "cache", stream: "cache_inventory" },
+    { store: "auth", stream: null },
   ],
 } as const;
 
-export type LocalCoverageConnector = keyof typeof LOCAL_COVERAGE_STORES_BY_CONNECTOR;
+/** Compatibility store-name view of the exact descriptor authority. */
+export const LOCAL_COVERAGE_STORES_BY_CONNECTOR = Object.fromEntries(
+  Object.entries(LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR).map(([connector, stores]) => [
+    connector,
+    stores.map((store) => store.store),
+  ])
+) as unknown as {
+  readonly [K in keyof typeof LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR]: readonly string[];
+};
+
+export type LocalCoverageConnector = keyof typeof LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR;
+
+function normalizeLocalCoverageConnector(connectorId: string): string {
+  if (connectorId === "claude-code" || connectorId.endsWith("/claude-code")) {
+    return "claude_code";
+  }
+  if (connectorId === "codex" || connectorId.endsWith("/codex")) {
+    return "codex";
+  }
+  return connectorId;
+}
 
 export function expectedLocalCoverageStores(connectorId: string): readonly string[] | null {
-  let normalized = connectorId;
-  if (connectorId === "claude-code" || connectorId.endsWith("/claude-code")) {
-    normalized = "claude_code";
-  } else if (connectorId === "codex" || connectorId.endsWith("/codex")) {
-    normalized = "codex";
-  }
+  const normalized = normalizeLocalCoverageConnector(connectorId);
   return normalized in LOCAL_COVERAGE_STORES_BY_CONNECTOR
     ? LOCAL_COVERAGE_STORES_BY_CONNECTOR[normalized as LocalCoverageConnector]
+    : null;
+}
+
+export function expectedLocalCoverageStoreDescriptors(
+  connectorId: string
+): readonly LocalCoverageStoreDescriptor[] | null {
+  const normalized = normalizeLocalCoverageConnector(connectorId);
+  return normalized in LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR
+    ? LOCAL_COVERAGE_STORE_DESCRIPTORS_BY_CONNECTOR[normalized as LocalCoverageConnector]
     : null;
 }
 
@@ -72,8 +101,11 @@ function assertExpectedLocalCoverageStores(tool: string, stores: readonly KnownL
   if (!expected) {
     return;
   }
-  const actual = stores.map((store) => store.store).sort();
-  const expectedSorted = [...expected].sort();
+  const actual = stores.map((store) => `${store.store}\u0000${store.stream ?? ""}`).sort();
+  const expectedDescriptors = expectedLocalCoverageStoreDescriptors(tool);
+  const expectedSorted = expectedDescriptors
+    ? expectedDescriptors.map((store) => `${store.store}\u0000${store.stream ?? ""}`).sort()
+    : [];
   if (
     actual.length !== expectedSorted.length ||
     actual.some((store, index) => store !== expectedSorted[index]) ||
@@ -101,6 +133,137 @@ export interface CoverageRecord extends RecordData {
   status: CoverageStatus;
   store: string;
   stream: string | null;
+}
+
+export interface SafeCoverageDiagnosticStore {
+  readonly status: CoverageStatus | "unaccounted";
+  readonly store: string;
+  readonly stream: string | null;
+}
+
+/**
+ * Construct the only durable positive local-coverage proof. It deliberately
+ * strips record ids and reason/path-derived metadata at the producer boundary.
+ */
+export function buildCoverageDiagnosticsStateSnapshot(
+  coverage: readonly CoverageRecord[]
+): readonly SafeCoverageDiagnosticStore[] {
+  return coverage.map(({ status, store, stream }) => ({ status, store, stream }));
+}
+
+export interface ParsedCoverageDiagnosticsStateSnapshot {
+  readonly duplicateStores: readonly string[];
+  readonly hasAuthoritativeInventory: boolean;
+  readonly hasCommittedSnapshot: boolean;
+  readonly malformed: boolean;
+  readonly missingStores: readonly string[];
+  readonly rows: readonly SafeCoverageDiagnosticStore[];
+  readonly unexpectedStores: readonly string[];
+}
+
+const SAFE_COVERAGE_DIAGNOSTIC_STATUSES = new Set<CoverageStatus | "unaccounted">([
+  "collected",
+  "inventory_only",
+  "excluded",
+  "deferred",
+  "missing",
+  "unsupported",
+  "unaccounted",
+]);
+
+function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
+  readonly status: CoverageStatus | "unaccounted";
+  readonly store: string;
+  readonly stream: unknown;
+} | null {
+  if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+    return null;
+  }
+  const entry = rawEntry as Record<string, unknown>;
+  const store = typeof entry.store === "string" && entry.store ? entry.store : null;
+  const status = entry.status;
+  if (!store || typeof status !== "string" || !SAFE_COVERAGE_DIAGNOSTIC_STATUSES.has(status as CoverageStatus)) {
+    return null;
+  }
+  return { store, stream: entry.stream, status: status as CoverageStatus | "unaccounted" };
+}
+
+/**
+ * Parse the committed coverage STATE at its trust boundary. A legacy
+ * fetched-at-only cursor is preserved as historical state but returns
+ * `hasCommittedSnapshot: false`, so callers fail closed without treating it
+ * as malformed current proof.
+ */
+export function parseCoverageDiagnosticsStateSnapshot(
+  connectorId: string,
+  state: unknown
+): ParsedCoverageDiagnosticsStateSnapshot {
+  const expected = expectedLocalCoverageStoreDescriptors(connectorId);
+  const hasAuthoritativeInventory = expected !== null;
+  const empty = {
+    duplicateStores: [] as string[],
+    hasAuthoritativeInventory,
+    hasCommittedSnapshot: false,
+    malformed: false,
+    missingStores: expected ? expected.map((entry) => entry.store).sort() : [],
+    rows: [] as SafeCoverageDiagnosticStore[],
+    unexpectedStores: [] as string[],
+  };
+  if (!(expected && state) || typeof state !== "object" || Array.isArray(state)) {
+    return { ...empty, malformed: state != null };
+  }
+
+  const stores = (state as Record<string, unknown>).stores;
+  if (!Array.isArray(stores)) {
+    return empty;
+  }
+
+  const expectedByStore = new Map(expected.map((entry) => [entry.store, entry]));
+  const rows: SafeCoverageDiagnosticStore[] = [];
+  const seenStores = new Set<string>();
+  const duplicateStores: string[] = [];
+  const unexpectedStores: string[] = [];
+  let malformed = stores.length === 0;
+
+  for (const rawEntry of stores) {
+    const entry = parseCoverageDiagnosticStateEntry(rawEntry);
+    if (!entry) {
+      malformed = true;
+      continue;
+    }
+    const { store, status } = entry;
+    if (seenStores.has(store)) {
+      duplicateStores.push(store);
+      continue;
+    }
+    seenStores.add(store);
+    const expectedEntry = expectedByStore.get(store);
+    if (!expectedEntry) {
+      unexpectedStores.push(store);
+      continue;
+    }
+    if (entry.stream !== expectedEntry.stream) {
+      malformed = true;
+      continue;
+    }
+    rows.push({ store, stream: expectedEntry.stream, status });
+  }
+
+  const missingStores = expected
+    .filter((entry) => !seenStores.has(entry.store))
+    .map((entry) => entry.store)
+    .sort();
+  const hasCommittedSnapshot =
+    !malformed && duplicateStores.length === 0 && unexpectedStores.length === 0 && missingStores.length === 0;
+  return {
+    duplicateStores: duplicateStores.sort(),
+    hasAuthoritativeInventory,
+    hasCommittedSnapshot,
+    malformed,
+    missingStores,
+    rows: rows.sort((left, right) => left.store.localeCompare(right.store)),
+    unexpectedStores: unexpectedStores.sort(),
+  };
 }
 
 export interface InventoryPlan {

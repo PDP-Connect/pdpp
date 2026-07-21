@@ -217,7 +217,7 @@ test("declared empty stream exposes known_zero only after a current canonical sn
   }),
 );
 
-test("canonical and retained-only streams stay visible as unexpected declaration evidence", () =>
+test("canonical and retained-only streams become dormant diagnostic evidence", () =>
   withSqlite(async () => {
     seedConnectorSqlite();
     seedInstanceSqlite();
@@ -227,11 +227,11 @@ test("canonical and retained-only streams stay visible as unexpected declaration
     await rebuildConnectorSummaryEvidence();
 
     const summary = summaryFor(await listBypassCache());
-    const unexpected = streamEntry(summary, UNEXPECTED_STREAM);
-    assert.equal(unexpected.declaration_state, "unexpected");
-    assert.equal(unexpected.record_count, 1, "canonical current count remains independent from retained bytes");
-    assert.equal(unexpected.retained_record_count, 2, "retained-only evidence remains separately visible");
-    assert.equal(summary.connection_health.state, "unknown");
+    const dormant = streamEntry(summary, UNEXPECTED_STREAM);
+    assert.equal(dormant.declaration_state, "dormant");
+    assert.equal(dormant.record_count, 1, "canonical current count remains diagnostic evidence");
+    assert.equal(dormant.retained_record_count, 2, "retained-only evidence remains separately visible");
+    assert.equal(summary.total_records, 0, "dormant canonical rows are excluded from active totals");
   }),
 );
 

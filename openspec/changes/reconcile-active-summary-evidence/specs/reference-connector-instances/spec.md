@@ -157,8 +157,8 @@ for `record_snapshot`, `terminal_facts`, `manifest_declaration`, and
 `retained_bytes`, each with a closed state, checkpoint/as-of where applicable,
 and a closed sanitized optional reason code.
 
-Each stream entry SHALL carry `declaration_state` (`declared`, `unexpected`, or
-`unavailable`) and `count_state` (`known`, `known_zero`, `unobserved`, `stale`,
+Each stream entry SHALL carry `declaration_state` (`declared`, `dormant`,
+`unexpected`, or `unavailable`) and `count_state` (`known`, `known_zero`, `unobserved`, `stale`,
 or `unknown`). The count invariants SHALL be:
 
 - `known`: integer count at least one at the current record checkpoint;
@@ -192,13 +192,14 @@ only.
 - **THEN** the entry SHALL be `unobserved` or `unknown` with a null count
 - **AND** SHALL NOT fabricate `record_count: 0`.
 
-#### Scenario: Unexpected canonical or retained grain remains visible
+#### Scenario: Retained canonical or history grain becomes dormant
 
 - **GIVEN** a valid current manifest omits a stream that exists in canonical live records or readable retained history/bytes
 - **WHEN** the connection summary is synthesized
-- **THEN** the stream SHALL remain visible as `unexpected`
-- **AND** current canonical count state and retained-byte state SHALL be reported separately
-- **AND** the condition SHALL be a maintainer declaration mismatch, not record corruption or owner reauthentication.
+- **THEN** the stream SHALL remain visible as `dormant` on a diagnostic/retention surface
+- **AND** current canonical count state and retained-byte state SHALL be reported separately but excluded from active totals, coverage, discovery, and serving
+- **AND** records, history, blobs, and retained facts SHALL remain preserved without automatic deletion
+- **AND** re-adding the stream SHALL require new collection evidence before it can be fresh or coverage-complete.
 
 #### Scenario: Manifest unavailability does not invent unexpected declaration
 

@@ -97,6 +97,16 @@ test("claude_code inventory streams emit safe metadata and exclude auth payloads
         record.stream === "coverage_diagnostics" && record.data.store === "auth" && record.data.status === "excluded"
     )
   );
+  const coverageState = result.messages.find(
+    (msg): msg is Extract<EmittedMessage, { type: "STATE" }> =>
+      msg.type === "STATE" && msg.stream === "coverage_diagnostics"
+  );
+  assert.equal(typeof (coverageState?.cursor as { fetched_at?: unknown } | undefined)?.fetched_at, "string");
+  const stores = (coverageState?.cursor as { stores?: unknown } | undefined)?.stores;
+  assert(Array.isArray(stores), "successful collection must emit the committed coverage snapshot");
+  assert.equal(stores.length, 11);
+  assert(!JSON.stringify(coverageState).includes("secret-token"));
+  assert(!JSON.stringify(coverageState).includes("reason"));
 });
 
 test("claude_code context_mode is diagnostics-only, not a requestable stream", async () => {

@@ -17,7 +17,10 @@ import { readCommittedLocalCoverageDiagnostics } from '../server/records.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
 import { getDefaultDeviceExporterStore } from '../server/stores/device-exporter-store.ts';
-import { expectedLocalCoverageStores } from '../../packages/polyfill-connectors/src/local-source-inventory.ts';
+import {
+  expectedLocalCoverageStoreDescriptors,
+  expectedLocalCoverageStores,
+} from '../../packages/polyfill-connectors/src/local-source-inventory.ts';
 import { auditStreamHealth } from '../../scripts/stream-health-audit/audit.mjs';
 
 // Mirrors the live 2026-06-03 evidence: a local collector source instance that
@@ -38,6 +41,7 @@ const NOW = '2026-06-03T12:00:00.000Z';
 // reads as `idle`, not `stalled` (the live evidence is freshly healthy).
 const HEARTBEAT_AT = '2026-06-03T11:59:00.000Z';
 const STALE_HISTORICAL_RUN_AT = '2026-05-22T14:31:18.319Z';
+const STATE_CONNECTOR_ID = CONNECTOR_ID;
 
 function withTmpDb(fn) {
   return async () => {
@@ -104,17 +108,17 @@ function seedRecord({ stream, key, data, emittedAt, version = 1 }) {
 // these on a successful full local run; they are the durable, honest signal of
 // what was and was not collected.
 function seedCoverage(rows, { includeExpected = true } = {}) {
-  const expected = expectedLocalCoverageStores(CONNECTOR_ID);
+  const expected = expectedLocalCoverageStoreDescriptors(CONNECTOR_ID);
   assert.ok(expected, 'the production local connector must declare a fixed inventory');
   const supplied = new Map(rows.map((row) => [row.store, row]));
   const completeRows = includeExpected
-    ? expected.map((store) => supplied.get(store) ?? {
+    ? expected.map(({ store, stream }) => ({
       store,
-      stream: store === 'projects' ? 'sessions' : null,
-      status: 'inventory_only',
-    })
+      stream,
+      status: supplied.get(store)?.status ?? 'inventory_only',
+    }))
     : rows;
-  const extras = includeExpected ? rows.filter((row) => !expected.includes(row.store)) : [];
+  const extras = includeExpected ? rows.filter((row) => !expected.some((entry) => entry.store === row.store)) : [];
   [...completeRows, ...extras].forEach((row, index) => {
     seedRecord({
       stream: 'coverage_diagnostics',
@@ -129,9 +133,12 @@ function seedCoverage(rows, { includeExpected = true } = {}) {
        VALUES (?, ?, 'coverage_diagnostics', ?, ?)`
     )
     .run(
-      CONNECTOR_ID,
+      STATE_CONNECTOR_ID,
       CONNECTOR_INSTANCE_ID,
-      JSON.stringify({ fetched_at: '2026-06-03T11:58:30.000Z' }),
+      JSON.stringify({
+        fetched_at: '2026-06-03T11:58:30.000Z',
+        stores: [...completeRows, ...extras].map(({ store, stream, status }) => ({ store, stream: stream ?? null, status })),
+      }),
       '2026-06-03T11:58:31.000Z'
     );
 }
@@ -348,7 +355,7 @@ test('SQLite coverage reader enforces the shared production inventory exactly', 
   seedCoverage([{ store: 'projects', stream: 'sessions', status: 'collected' }]);
 
   const proof = await readCommittedLocalCoverageDiagnostics({
-    connector_id: CONNECTOR_ID,
+    connector_id: STATE_CONNECTOR_ID,
     connector_instance_id: CONNECTOR_INSTANCE_ID,
   });
   assert.deepEqual(proof.missingStores, []);
@@ -356,6 +363,7 @@ test('SQLite coverage reader enforces the shared production inventory exactly', 
   assert.deepEqual(proof.duplicateStores, []);
   assert.equal(proof.malformed, false);
   assert.equal(proof.hasAuthoritativeInventory, true);
+  assert.equal(proof.hasCommittedSnapshot, true);
 
   seedRecord({
     stream: 'coverage_diagnostics',
@@ -367,7 +375,8 @@ test('SQLite coverage reader enforces the shared production inventory exactly', 
     connector_id: CONNECTOR_ID,
     connector_instance_id: CONNECTOR_INSTANCE_ID,
   });
-  assert.deepEqual(foreignProof.unexpectedStores, ['foreign']);
+  assert.deepEqual(foreignProof.unexpectedStores, []);
+  assert.equal(foreignProof.hasCommittedSnapshot, true, 'retained diagnostic RECORDs cannot alter committed proof');
 }));
 
 test('unsupported local inventory cannot turn an arbitrary singleton into complete report or audit pass', withTmpDb(async () => {
@@ -657,7 +666,7 @@ test(
     });
     getDb()
       .prepare(`UPDATE connector_state SET state_json = ? WHERE connector_id = ? AND connector_instance_id = ? AND stream = 'coverage_diagnostics'`)
-      .run(JSON.stringify({ fetched_at: 'not-a-timestamp' }), CONNECTOR_ID, CONNECTOR_INSTANCE_ID);
+      .run(JSON.stringify({ fetched_at: 'not-a-timestamp' }), STATE_CONNECTOR_ID, CONNECTOR_INSTANCE_ID);
     await seedHealthyDrainedHeartbeat();
     await rebuildRetainedSize();
 
@@ -668,9 +677,9 @@ test(
 );
 
 for (const [name, mutate] of [
-  ['null STATE', () => getDb().prepare(`UPDATE connector_state SET state_json = 'null' WHERE connector_id = ? AND connector_instance_id = ? AND stream = 'coverage_diagnostics'`).run(CONNECTOR_ID, CONNECTOR_INSTANCE_ID)],
-  ['malformed cursor', () => getDb().prepare(`UPDATE connector_state SET state_json = ? WHERE connector_id = ? AND connector_instance_id = ? AND stream = 'coverage_diagnostics'`).run(JSON.stringify({ fetched_at: 'not-a-date' }), CONNECTOR_ID, CONNECTOR_INSTANCE_ID)],
-  ['future cursor', () => getDb().prepare(`UPDATE connector_state SET state_json = ?, updated_at = ? WHERE connector_id = ? AND connector_instance_id = ? AND stream = 'coverage_diagnostics'`).run(JSON.stringify({ fetched_at: '2100-01-01T00:00:00.000Z' }), '2100-01-01T00:00:00.000Z', CONNECTOR_ID, CONNECTOR_INSTANCE_ID)],
+  ['null STATE', () => getDb().prepare(`UPDATE connector_state SET state_json = 'null' WHERE connector_id = ? AND connector_instance_id = ? AND stream = 'coverage_diagnostics'`).run(STATE_CONNECTOR_ID, CONNECTOR_INSTANCE_ID)],
+  ['malformed cursor', () => getDb().prepare(`UPDATE connector_state SET state_json = ? WHERE connector_id = ? AND connector_instance_id = ? AND stream = 'coverage_diagnostics'`).run(JSON.stringify({ fetched_at: 'not-a-date' }), STATE_CONNECTOR_ID, CONNECTOR_INSTANCE_ID)],
+  ['future cursor', () => getDb().prepare(`UPDATE connector_state SET state_json = ?, updated_at = ? WHERE connector_id = ? AND connector_instance_id = ? AND stream = 'coverage_diagnostics'`).run(JSON.stringify({ fetched_at: '2100-01-01T00:00:00.000Z' }), '2100-01-01T00:00:00.000Z', STATE_CONNECTOR_ID, CONNECTOR_INSTANCE_ID)],
 ]) {
   test(`local ${name} cannot publish complete coverage rows`, withTmpDb(async () => {
     seedConnector();
@@ -718,6 +727,7 @@ test('future proof bounds use injected now for both cursor and server commit tim
     missingStores: [],
     unexpectedStores: [],
     hasAuthoritativeInventory: true,
+    hasCommittedSnapshot: true,
     state: { fetched_at: '2026-06-03T12:05:01.000Z' },
     updatedAt: '2026-06-03T12:05:01.000Z',
     nowIso: '2026-06-03T12:00:00.000Z',
@@ -765,7 +775,7 @@ test(
 );
 
 test(
-  'local collector with malformed coverage status projects a coverage gap, not complete',
+  'local collector with malformed coverage status fails closed, never complete',
   withTmpDb(async () => {
     seedConnector();
     await seedInstance();
@@ -784,12 +794,10 @@ test(
     const row = await projectConnection();
     const health = row.connection_health;
 
-    assert.equal(health.axes.coverage, 'gaps');
+    assert.equal(health.axes.coverage, 'unknown');
     const coverageCondition = health.conditions.find((c) => c.type === 'SourceCoverageComplete');
     assert.ok(coverageCondition);
-    assert.equal(coverageCondition.status, 'false');
-    assert.equal(coverageCondition.reason, 'gaps');
-    assert.ok(coverageCondition.remediation);
+    assert.equal(coverageCondition.status, 'unknown');
   }),
 );
 

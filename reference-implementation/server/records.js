@@ -2,7 +2,7 @@
  * PDPP Resource Server — record storage and grant-enforced query
  */
 import { getDb } from './db.js';
-import { expectedLocalCoverageStores } from '../../packages/polyfill-connectors/src/local-source-inventory.ts';
+import { parseCoverageDiagnosticsStateSnapshot } from '../../packages/polyfill-connectors/src/local-source-inventory.ts';
 
 // Optional post-commit hook for outbound client event subscriptions. The
 // hook is invoked after a `record_changes` row has been durably committed
@@ -2446,72 +2446,18 @@ export async function readCommittedLocalCoverageDiagnostics(storageTarget) {
       missingStores: [],
       unexpectedStores: [],
       hasAuthoritativeInventory: false,
+      hasCommittedSnapshot: false,
       state: null,
       updatedAt: null,
     };
-  }
-  const rawRows = [];
-  if (isPostgresStorageBackend()) {
-    const result = await postgresQuery(
-      `SELECT record_json FROM records
-         WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE
-         ORDER BY record_key ASC`,
-      [connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM],
-    );
-    rawRows.push(...result.rows.map((row) => row.record_json));
-  } else {
-    rawRows.push(
-      ...getDb()
-        .prepare(
-          `SELECT record_json FROM records
-             WHERE connector_instance_id = ? AND stream = ? AND deleted = 0
-             ORDER BY record_key ASC`,
-        )
-        .all(connectorInstanceId, LOCAL_COVERAGE_DIAGNOSTICS_STREAM)
-        .map((row) => row.record_json),
-    );
-  }
-  const rows = [];
-  const stores = new Set();
-  const duplicateStores = [];
-  let malformed = false;
-  for (const raw of rawRows) {
-    let data;
-    try {
-      data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    } catch {
-      malformed = true;
-      continue;
-    }
-    const row = projectCoverageRow(data);
-    if (!row) {
-      malformed = true;
-      continue;
-    }
-    if (stores.has(row.store)) {
-      duplicateStores.push(row.store);
-      continue;
-    }
-    stores.add(row.store);
-    rows.push(row);
   }
   const stateProjection = await getSyncState(storageTarget, {
     grantId: null,
     allowedStreams: new Set([LOCAL_COVERAGE_DIAGNOSTICS_STREAM]),
   });
   const state = stateProjection.state?.[LOCAL_COVERAGE_DIAGNOSTICS_STREAM] ?? null;
-  const expectedStores = expectedLocalCoverageStores(connectorId);
-  const hasAuthoritativeInventory = expectedStores !== null;
-  const observedStores = new Set(rows.map((row) => row.store));
-  const missingStores = expectedStores ? expectedStores.filter((store) => !observedStores.has(store)).sort() : [];
-  const unexpectedStores = expectedStores ? rows.map((row) => row.store).filter((store) => !expectedStores.includes(store)).sort() : [];
   return {
-    rows: rows.sort((a, b) => a.store.localeCompare(b.store)),
-    malformed,
-    duplicateStores: duplicateStores.sort(),
-    missingStores,
-    unexpectedStores,
-    hasAuthoritativeInventory,
+    ...parseCoverageDiagnosticsStateSnapshot(connectorId, state),
     state,
     updatedAt: stateProjection.updated_at ?? null,
   };
@@ -2536,9 +2482,13 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     err.code = 'grant_stream_not_allowed';
     throw err;
   }
-
   // Find manifest stream for stream-specific query capability declarations.
   const mStream = manifest?.streams?.find(s => s.name === stream);
+  if (Array.isArray(manifest?.streams) && !mStream) {
+    const err = new Error(`Stream '${stream}' not found`);
+    err.code = 'not_found';
+    throw err;
+  }
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
   const resolvedSort = validateTopLevelQueryParams(requestParams, mStream);
@@ -3193,6 +3143,13 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     throw err;
   }
 
+  const mStream = manifest?.streams?.find(s => s.name === stream);
+  if (Array.isArray(manifest?.streams) && !mStream) {
+    const err = new Error(`Stream '${stream}' not found`);
+    err.code = 'not_found';
+    throw err;
+  }
+
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
 
@@ -3208,7 +3165,6 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
   }
 
   const rawData = JSON.parse(row.record_json);
-  const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
 
@@ -3296,6 +3252,9 @@ export async function getRecordFieldWindow(
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
 
   const mStream = manifest?.streams?.find(s => s.name === stream);
+  if (Array.isArray(manifest?.streams) && !mStream) {
+    throw fieldWindowError('not_found', 'Record not found', 404);
+  }
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
   const effective = buildEffectiveFilter(streamGrant, {}, requiredFields);
@@ -3947,6 +3906,9 @@ export async function listStreams(storageTarget, grant, manifest = null) {
   const result = [];
 
   for (const sg of grant.streams) {
+    if (Array.isArray(manifest?.streams) && !manifest.streams.some((stream) => stream.name === sg.name)) {
+      continue;
+    }
     const rows = iterate(referenceQueries.recordsListStreamVisibleCandidates, [connectorInstanceId, sg.name]);
     const effective = buildEffectiveFilter(sg, {});
     const manifestStream = manifest?.streams?.find((stream) => stream.name === sg.name);

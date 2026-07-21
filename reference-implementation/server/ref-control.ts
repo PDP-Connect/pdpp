@@ -318,7 +318,7 @@ export interface StreamRecordSummary {
    * unaffected; `projectConnectorSummaryForInstance` always populates it
    * when the observation barrier produced an evidence row.
    */
-  readonly declaration_state?: "declared" | "unexpected" | "unavailable";
+  readonly declaration_state?: "declared" | "dormant" | "unexpected" | "unavailable";
   readonly count_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
   readonly retained_record_count?: number | null;
 }
@@ -2984,13 +2984,34 @@ function seedLocalCoverageConditions(
 ): void {
   for (const row of rows) {
     const stream = typeof row.stream === "string" && row.stream ? row.stream : null;
-    if (!stream || conditions.has(stream)) {
+    if (!stream) {
       continue;
     }
     const condition = localCoverageConditionForStatus(row.status);
-    if (condition) {
+    if (!condition) {
+      continue;
+    }
+    const existing = conditions.get(stream);
+    if (!existing || localCoverageConditionSeverity(condition) > localCoverageConditionSeverity(existing)) {
       conditions.set(stream, condition);
     }
+  }
+}
+
+function localCoverageConditionSeverity(axis: CoverageAxis): number {
+  switch (axis) {
+    case "complete":
+      return 0;
+    case "inventory_only":
+    case "deferred":
+    case "unsupported":
+      return 1;
+    case "unavailable":
+      return 2;
+    case "gaps":
+      return 3;
+    default:
+      return 4;
   }
 }
 
@@ -3090,6 +3111,7 @@ export function deriveLocalCoverageAxis(input: {
   readonly missingStores: readonly string[];
   readonly unexpectedStores: readonly string[];
   readonly hasAuthoritativeInventory: boolean;
+  readonly hasCommittedSnapshot?: boolean;
   readonly state: unknown;
   readonly updatedAt: string | null;
   readonly nowIso?: string;
@@ -3113,6 +3135,7 @@ export function deriveLocalCoverageAxis(input: {
     updatedAtMs <= nowMs + maximumFutureProofMs &&
     !input.malformed &&
     input.hasAuthoritativeInventory &&
+    input.hasCommittedSnapshot === true &&
     input.duplicateStores.length === 0 &&
     input.missingStores.length === 0 &&
     input.unexpectedStores.length === 0;
@@ -5321,7 +5344,7 @@ export interface ConnectorSummaryEvidenceRow {
   readonly stream_count: number;
   readonly stream_records: readonly {
     readonly stream: string;
-    readonly declaration_state: "declared" | "unexpected" | "unavailable";
+    readonly declaration_state: "declared" | "dormant" | "unexpected" | "unavailable";
     readonly count_state: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
     readonly record_count: number | null;
     readonly retained_record_count: number | null;

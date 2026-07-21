@@ -1307,6 +1307,11 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
+  if (Array.isArray(manifest?.streams) && !manifestStream) {
+    const err = new Error(`Stream '${stream}' not found`);
+    err.code = 'not_found';
+    throw err;
+  }
   const fields = fieldsFor(streamGrant, requestParams.fields, requiredFieldsFor(manifestStream));
   const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
   effective.fields = fields;
@@ -1687,6 +1692,11 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
+  if (Array.isArray(manifest?.streams) && !manifestStream) {
+    const err = new Error(`Stream '${stream}' not found`);
+    err.code = 'not_found';
+    throw err;
+  }
   const fields = fieldsFor(streamGrant, null, requiredFieldsFor(manifestStream));
   const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
   effective.fields = fields;
@@ -1752,6 +1762,9 @@ export async function postgresGetRecordFieldWindow(
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
+  if (Array.isArray(manifest?.streams) && !manifestStream) {
+    throw fieldWindowError('not_found', 'Record not found', 404);
+  }
   const effective = buildEffectiveFilter(streamGrant, requiredFieldsFor(manifestStream));
 
   assertFieldVisibleToGrant(fieldPath, effective.fields);
@@ -1883,7 +1896,9 @@ export async function postgresListAllStreams(storageTarget) {
 export async function postgresListStreams(storageTarget, grant, manifest = null) {
   const rows = await postgresListAllStreams(storageTarget);
   const byName = new Map(rows.map((row) => [row.name, row]));
-  return (grant?.streams || []).map((streamGrant) => {
+  return (grant?.streams || []).filter((streamGrant) =>
+    !Array.isArray(manifest?.streams) || getManifestStream(manifest, streamGrant.name)
+  ).map((streamGrant) => {
     const manifestStream = getManifestStream(manifest, streamGrant.name);
     const stored = byName.get(streamGrant.name);
     return {
