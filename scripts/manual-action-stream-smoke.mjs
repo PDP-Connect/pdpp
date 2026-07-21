@@ -618,45 +618,91 @@ async function assertDocumentHorizontallyFits(page, phase) {
   return metrics;
 }
 
-async function documentOverflowState(page) {
-  return page.evaluate(() => {
-    const documentElement = document.documentElement;
-    return {
-      hasHorizontalOverflow: documentElement.scrollWidth > documentElement.clientWidth + 1,
-      hasVerticalOverflow: documentElement.scrollHeight > documentElement.clientHeight + 1,
-      htmlComputedOverflow: getComputedStyle(documentElement).overflow,
-    };
-  });
+const OVERFLOW_PROBE_ID = "pdpp-smoke-overflow-probe";
+const NON_SCROLLABLE_OVERFLOW_POLICIES = new Set(["hidden", "clip"]);
+
+/**
+ * Excess `scrollWidth`/`scrollHeight` is not the same claim as "the document
+ * cannot actually be scrolled" — `overflow: hidden` legitimately RETAINS the
+ * oversized scroll extent (scrollHeight stays > clientHeight) while making
+ * the box non-scrollable; a restored page could also pass an extent-only
+ * check with `overflow: clip` (also non-scrollable) instead of a real
+ * scrollable state.
+ *
+ * Directly assigning `scrollingElement.scrollTop` is NOT a valid oracle
+ * either — verified live: Chromium honours a programmatic `scrollTop`
+ * assignment on `document.scrollingElement` even when its computed overflow
+ * is `hidden` or `clip` (the CSSOM lets script move an element's scroll
+ * offset independent of whether user-initiated scroll is permitted). A real
+ * mouse-wheel event, routed through the browser's own scroll-eligibility
+ * check, is what actually respects the overflow policy — confirmed live:
+ * `overflow: hidden` left `scrollTop` at 0 after a wheel event over
+ * overflowing content; the same content with default overflow moved it to
+ * the full wheel delta.
+ */
+function readScrollerState() {
+  const scroller = document.scrollingElement || document.documentElement;
+  return { computedOverflowY: getComputedStyle(scroller).overflowY, scrollTop: scroller.scrollTop };
+}
+
+function setScrollerTop(scrollTop) {
+  const scroller = document.scrollingElement || document.documentElement;
+  scroller.scrollTop = scrollTop;
+}
+
+async function documentScrollability(page) {
+  const before = await page.evaluate(readScrollerState);
+  const viewport = page.viewportSize();
+  await page.mouse.move(Math.floor(viewport.width / 2), Math.floor(viewport.height / 2));
+  await page.mouse.wheel(0, 300);
+  await page.waitForTimeout(150);
+  const after = await page.evaluate(readScrollerState);
+  await page.evaluate(setScrollerTop, before.scrollTop);
+  return { computedOverflowY: after.computedOverflowY, scrollMoved: after.scrollTop !== before.scrollTop };
 }
 
 /**
  * P2 closure: while the stream dialog is open at short landscape dimensions,
- * `<html>` must be locked on both axes (the pre-existing Stage-1 orientation
- * shell overflows its own box behind the dialog at these dimensions — the
- * dialog covers it, but nothing stops it driving a real page scrollbar unless
- * html itself is locked). After close, injects genuinely overflowing content
- * and proves ordinary document scrolling still works — i.e. the lock did not
- * leak past the dialog's own lifecycle.
+ * the document's real scrolling element must be non-scrollable — both by
+ * computed overflow policy (`hidden`/`clip`, not merely "not visible") and by
+ * a real wheel-scroll attempt actually failing to move it. The pre-existing
+ * Stage-1 orientation shell overflows its own box behind the dialog at these
+ * dimensions (the dialog covers it, but nothing stops it driving a real page
+ * scrollbar unless the scrolling element itself is locked).
  */
 async function assertDocumentScrollLockedWhileStreamDialogOpen(page) {
-  const whileOpen = await documentOverflowState(page);
-  if (whileOpen.hasHorizontalOverflow || whileOpen.hasVerticalOverflow || whileOpen.htmlComputedOverflow !== "hidden") {
-    fail(`document overflow is not locked while the stream dialog is open: ${JSON.stringify(whileOpen)}`);
+  const state = await documentScrollability(page);
+  if (!NON_SCROLLABLE_OVERFLOW_POLICIES.has(state.computedOverflowY) || state.scrollMoved) {
+    fail(`document is scrollable while the stream dialog is open: ${JSON.stringify(state)}`);
   }
 }
 
+/**
+ * After close, injects a genuinely overflowing probe element and proves the
+ * document is REALLY scrollable again: computed overflow policy is no longer
+ * hidden/clip, AND a real wheel-scroll attempt actually moves it (not just
+ * that the extent grew — the exact overflow-vs-scrollability gap the extent-
+ * only oracle above could not distinguish). Always removes the probe and
+ * resets scroll position, even on failure.
+ */
 async function assertOrdinaryScrollRestoredAfterClose(page) {
-  const marker = "pdpp-smoke-overflow-probe";
   await page.evaluate((markerId) => {
     const probe = document.createElement("div");
     probe.id = markerId;
     probe.style.cssText = "position:absolute;top:0;left:0;width:1px;height:300vh;";
     document.body.appendChild(probe);
-  }, marker);
-  const after = await documentOverflowState(page);
-  await page.evaluate((markerId) => document.getElementById(markerId)?.remove(), marker);
-  if (!after.hasVerticalOverflow || after.htmlComputedOverflow === "hidden") {
-    fail(`ordinary document scrolling was not restored after the stream dialog closed: ${JSON.stringify(after)}`);
+  }, OVERFLOW_PROBE_ID);
+  try {
+    const state = await documentScrollability(page);
+    if (NON_SCROLLABLE_OVERFLOW_POLICIES.has(state.computedOverflowY) || !state.scrollMoved) {
+      fail(`ordinary document scrolling was not restored after the stream dialog closed: ${JSON.stringify(state)}`);
+    }
+  } finally {
+    await page.evaluate((markerId) => {
+      document.getElementById(markerId)?.remove();
+      const scroller = document.scrollingElement || document.documentElement;
+      scroller.scrollTop = 0;
+    }, OVERFLOW_PROBE_ID);
   }
 }
 
@@ -1214,13 +1260,19 @@ async function run() {
       await new Promise((resolve) => setTimeout(resolve, 800));
       await assertMobileViewportFits(page, "landscape");
       await assertDocumentScrollLockedWhileStreamDialogOpen(page);
-    }
 
-    // Ends by closing the stream dialog (its second Escape triggers normal
-    // Base UI dismissal) — run last, and immediately verify ordinary
-    // document scrolling comes back once the dialog's lifecycle ends.
-    await assertCornerControlsDisclosure(page);
-    await assertOrdinaryScrollRestoredAfterClose(page);
+      // The corner-controls disclosure toggle only renders on mobile-like
+      // sessions (remote-surface's decideClipboardPolicy gates
+      // showKeyboardButton/showMobileCopyButton/showMobilePasteButton on
+      // capabilities.mobileLike — on a real desktop viewport hasSecondaryActions
+      // is always false and no toggle exists to expand). Asserting it in the
+      // default desktop run would deterministically fail on a passing build.
+      // Ends by closing the stream dialog (its second Escape triggers normal
+      // Base UI dismissal) — run last, and immediately verify ordinary
+      // document scrolling comes back once the dialog's lifecycle ends.
+      await assertCornerControlsDisclosure(page);
+      await assertOrdinaryScrollRestoredAfterClose(page);
+    }
 
     process.stdout.write(
       `PASS manual-action stream smoke ${JSON.stringify({
