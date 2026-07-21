@@ -1317,12 +1317,14 @@ function seedFoldState(participants: readonly Row[]): {
   checkpointByInstance: Map<string, number | null>;
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>;
   generationByInstance: Map<string, number>;
+  generationCurrentSeedByInstance: Map<string, boolean>;
   sinceSeq: number;
 } {
   const factsByInstance = new Map<string, Record<string, StoredStreamFactEntry>>();
   const checkpointByInstance = new Map<string, number | null>();
   const casBaselineByInstance = new Map<string, FoldCasBaseline>();
   const generationByInstance = new Map<string, number>();
+  const generationCurrentSeedByInstance = new Map<string, boolean>();
   let sinceSeq = Number.POSITIVE_INFINITY;
   for (const row of participants) {
     const instanceId = String(row.connector_instance_id);
@@ -1341,9 +1343,37 @@ function seedFoldState(participants: readonly Row[]): {
       eventSeq: row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq),
       foldVersion: row.stream_facts_fold_version == null ? null : Number(row.stream_facts_fold_version),
     });
+    // The pass's default verdict for an instance no qualifying event touches
+    // THIS round (e.g. a generation-transition boundary whose checkpoint
+    // already sits at this round's high-water mark, so the drain genuinely
+    // reads zero events for it): inherit the row's OWN incoming generation
+    // verdict, never a blind `true`. A row already refused as historical for
+    // a GENERATION reason (`terminal_facts_historical` — no attributable
+    // event ever matched; or `manifest_generation_changed` — a fresh
+    // transition just cleared it) must stay non-current when nothing new is
+    // found — "no new events" is silence, not proof the source generation is
+    // still current.
+    //
+    // Deliberately NARROW: this must NOT catch every non-`current` state.
+    // `terminal_fold_incomplete` (a still-in-progress BUDGETED replay of a
+    // generation-CURRENT row) is an orthogonal reason — seeding `false` for
+    // it would make `writeParticipantStreamFacts` floor the checkpoint at
+    // its stale baseline every resumption round (`sourceGenerationCurrent ?
+    // writeSeq : checkpointByInstance.get(...)`), which never advances and
+    // starves the bounded-resume contract's own convergence. Only the two
+    // generation-refusal reason codes seed `false`; every other reason
+    // (`terminal_fold_incomplete`, `terminal_fold_failed`,
+    // `terminal_fold_contention`, `unobserved`, or simply `current`) seeds
+    // `true` — the neutral "assume still current, let a real refused event
+    // this round override it" default this predicate always had.
+    generationCurrentSeedByInstance.set(
+      instanceId,
+      row.terminal_facts_reason_code !== REASON_CODES.TERMINAL_FACTS_HISTORICAL &&
+        row.terminal_facts_reason_code !== "manifest_generation_changed"
+    );
     sinceSeq = Math.min(sinceSeq, checkpoint ?? 0);
   }
-  return { casBaselineByInstance, checkpointByInstance, factsByInstance, generationByInstance, sinceSeq };
+  return { casBaselineByInstance, checkpointByInstance, factsByInstance, generationByInstance, generationCurrentSeedByInstance, sinceSeq };
 }
 
 export interface FoldStreamFactsResult {
@@ -1617,7 +1647,8 @@ async function foldConnectorSummaryStreamFactsOnce(
     const casRejectedInstanceIds = await stampZeroCheckpointForBootstrap(foldStore, participants);
     return { casRejectedInstanceIds, folded: 0, participants: participants.length, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
-  const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, sinceSeq } = seedFoldState(participants);
+  const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, generationCurrentSeedByInstance, sinceSeq } =
+    seedFoldState(participants);
   // Test-only: see `testOnlyFoldPauseHook` — a no-op unless a test installs
   // a hook. Held here, immediately after the baseline (checkpointByInstance)
   // is captured and before this pass's own terminal-event read/CAS write —
@@ -1627,7 +1658,7 @@ async function foldConnectorSummaryStreamFactsOnce(
   // interleave, instead of one pass completing before the next starts.
   await testOnlyFoldPauseHook("after_seed_before_read");
   const counters = { folded: 0, refused: 0 };
-  const generationCurrentByInstance = new Map<string, boolean>();
+  const generationCurrentByInstance = new Map<string, boolean>(generationCurrentSeedByInstance);
   const drain = await drainTerminalEventBatches({
     foldStore,
     factsByInstance,
@@ -1676,6 +1707,13 @@ async function foldConnectorSummaryStreamFactsOnce(
   const replayConverged = !budgetExhausted;
   const casRejectedInstanceIds: string[] = [];
   for (const [instanceId, facts] of factsByInstance) {
+    // Every participant is seeded above (`generationCurrentSeedByInstance`)
+    // from its OWN incoming `terminal_facts_state`, so this is never an
+    // absent-key default — a row that entered the pass already non-current
+    // (e.g. a fresh generation-transition boundary with zero qualifying
+    // events this round) reads `false` here exactly like a row a real
+    // refused event flipped to `false`, rather than silently healing to
+    // `true` on pure silence.
     const sourceGenerationCurrent = generationCurrentByInstance.get(instanceId) !== false;
     const terminalFactsCurrent = replayConverged && sourceGenerationCurrent;
     const accepted = await writeParticipantStreamFacts(

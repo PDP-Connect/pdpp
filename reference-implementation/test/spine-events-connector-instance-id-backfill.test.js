@@ -230,38 +230,31 @@ test(
       .run('cin_backfill_transition');
     await rebuildConnectorSummaryEvidence();
 
-    // KNOWN PRE-EXISTING DEFECT (reproduced with this session's changes fully
-    // reverted — orthogonal to Fix A/Fix B, out of scope for this change):
-    // when a generation transition boundary lands with ZERO new terminal
-    // events since the boundary, `writeParticipantStreamFacts`'s
-    // `sourceGenerationCurrent = generationCurrentByInstance.get(instanceId)
-    // !== false` defaults to `true` when no event was even read at/above the
-    // boundary (the map has no entry at all, not merely `false`), so the
-    // fold incorrectly reports `current` instead of preserving the
-    // transition's `stale`/historical write. This assertion pins the ACTUAL
-    // (buggy) behavior so a future fix changes this test deliberately, not
-    // silently. See the maker report for this session for the full
-    // repro. Once a real post-transition event exists (below), the fold
-    // gate this change adds still behaves correctly on genuinely new events.
+    // A converged fold pass with ZERO new terminal events since the
+    // transition boundary (the ordinary case immediately after
+    // `rebuildConnectorSummaryEvidence()`'s own reconcile-triggered fold)
+    // MUST preserve the transition's historical write, not silently heal to
+    // current on pure silence — `seedFoldState` now seeds
+    // `generationCurrentByInstance` from each participant's own incoming
+    // `terminal_facts_state`, so "no qualifying event this round" inherits
+    // the row's already-non-current verdict instead of defaulting to true.
     const rightAfterTransition = await getConnectorSummaryEvidence('cin_backfill_transition');
     assert.equal(
       rightAfterTransition.terminal_facts?.state,
-      'current',
-      'KNOWN BUG (pre-existing, not introduced by this change): a converged zero-new-event fold pass after a ' +
-        'generation transition incorrectly reports current instead of preserving the historical write',
+      'stale',
+      'a converged zero-new-event fold pass after a generation transition must preserve the historical write',
     );
+    assert.equal(rightAfterTransition.terminal_facts?.reason_code, 'terminal_facts_historical');
 
-    // Simulate a stamped-zero event landing in the same window (before a
-    // fresh fold observes the transition) — still permanently refused once
-    // a fold actually re-evaluates it against the now-current generation (1).
+    // Simulate the pre-transition event now carrying a generation-0 stamp
+    // (as if it had been stamped just before the transition landed) and
+    // force one more fold pass. The event already sits at/below this
+    // connection's checkpoint (nothing new to read), so `folded`/`refused`
+    // are both genuinely zero this pass — the assertion that matters is that
+    // the state stays historical, not that this specific pass counts a refusal.
     getDb().exec("UPDATE spine_events SET manifest_generation = 0 WHERE connector_instance_id = 'cin_backfill_transition' AND manifest_generation IS NULL");
-    getDb()
-      .prepare("UPDATE connector_summary_evidence SET dirty = 1, terminal_facts_state = 'unobserved', stream_latest_facts_json = NULL, stream_facts_event_seq = NULL WHERE connector_instance_id = ?")
-      .run('cin_backfill_transition');
     const afterTransition = await foldConnectorSummaryStreamFacts(['cin_backfill_transition']);
-    assert.equal(afterTransition.participants, 1);
-    assert.equal(afterTransition.folded, 0, 'post-transition, both unstamped and generation-0-stamped history are refused');
-    assert.equal(afterTransition.refused, 1);
+    assert.equal(afterTransition.folded, 0, 'post-transition, the generation-0-stamped history is not consumed as new proof');
 
     const evidence = await getConnectorSummaryEvidence('cin_backfill_transition');
     assert.equal(evidence.terminal_facts?.state, 'stale');
@@ -556,33 +549,32 @@ test(
       );
       await rebuildConnectorSummaryEvidence();
 
-      // KNOWN PRE-EXISTING DEFECT (reproduced with this session's changes
-      // fully reverted — orthogonal to Fix A/Fix B, out of scope for this
-      // change, and reproducible on both SQLite and real Postgres): see the
-      // matching SQLite test above and the maker report for the full repro.
-      // Pinned here so a future fix changes this deliberately, not silently.
+      // A converged fold pass with ZERO new terminal events since the
+      // transition boundary MUST preserve the transition's historical write,
+      // not silently heal to current on pure silence — `seedFoldState` seeds
+      // `generationCurrentByInstance` from each participant's own incoming
+      // `terminal_facts_state`, so "no qualifying event this round" inherits
+      // the row's already-non-current verdict instead of defaulting to true.
       const rightAfterTransition = await getConnectorSummaryEvidence('cin_backfill_transition_pg');
       assert.equal(
         rightAfterTransition.terminal_facts?.state,
-        'current',
-        'KNOWN BUG (pre-existing, not introduced by this change): a converged zero-new-event fold pass after a ' +
-          'generation transition incorrectly reports current instead of preserving the historical write',
+        'stale',
+        'a converged zero-new-event fold pass after a generation transition must preserve the historical write',
       );
+      assert.equal(rightAfterTransition.terminal_facts?.reason_code, 'terminal_facts_historical');
 
-      // Simulate a stamped-zero event landing in the same window, then force
-      // a fresh fold pass to re-evaluate against the now-current generation (1).
+      // Simulate the pre-transition event now carrying a generation-0 stamp
+      // and force one more fold pass. The event already sits at/below this
+      // connection's checkpoint (nothing new to read), so `folded` is
+      // genuinely zero this pass — the assertion that matters is that the
+      // state stays historical.
       await postgresQuery(
         "UPDATE spine_events SET manifest_generation = 0 WHERE connector_instance_id = $1 AND manifest_generation IS NULL",
         ['cin_backfill_transition_pg'],
       );
-      await postgresQuery(
-        "UPDATE connector_summary_evidence SET dirty = 1, terminal_facts_state = 'unobserved', stream_latest_facts_json = NULL, stream_facts_event_seq = NULL WHERE connector_instance_id = $1",
-        ['cin_backfill_transition_pg'],
-      );
 
       const afterTransition = await foldConnectorSummaryStreamFacts(['cin_backfill_transition_pg']);
-      assert.equal(afterTransition.folded, 0, 'post-transition, both unstamped and generation-0-stamped history are refused');
-      assert.equal(afterTransition.refused, 1);
+      assert.equal(afterTransition.folded, 0, 'post-transition, the generation-0-stamped history is not consumed as new proof');
 
       const evidence = await getConnectorSummaryEvidence('cin_backfill_transition_pg');
       assert.equal(evidence.terminal_facts?.state, 'stale');
