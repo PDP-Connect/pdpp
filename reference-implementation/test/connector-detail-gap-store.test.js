@@ -14,6 +14,7 @@ import {
   initPostgresStorage,
   postgresQuery,
 } from '../server/postgres-storage.js';
+import { DEFAULT_QUARANTINE_POLICY } from '../runtime/recovery-quarantine.ts';
 import {
   createPostgresConnectorDetailGapStore,
   createSqliteConnectorDetailGapStore,
@@ -749,6 +750,80 @@ test('fair-progress: a backlog within one page is unaffected by the aging-bucket
     page.map((gap) => gap.gap_id).sort(),
     gaps.map((gap) => gap.gap_id).sort(),
     'a backlog smaller than the page limit still returns every eligible row',
+  );
+}));
+
+test('fair-progress: a row past the quarantine threshold is not starved forever behind a large backlog (attempt-count rank clamp)', withTempDb(async () => {
+  // The raw ORDER BY `attempt_count - age_bonus` (age bonus capped at
+  // PENDING_GAP_MAX_AGE_BUCKETS=8) gives a row past the quarantine threshold
+  // a rank of `attempt_count-8` forever — worse than a CONTINUOUSLY-arriving
+  // fresh row, which never accumulates enough age to reach its own floor
+  // before the next, even-fresher arrival outranks it. Such a row can never
+  // reach `maybeQuarantineGap` (only evaluated on selection+re-defer), so it
+  // is stuck pending permanently. This proves the store-level fix: clamping
+  // the attempt_count term at the quarantine threshold caps the poison row's
+  // worst-case rank at `threshold - maxAgeBonus`, matching a row that is
+  // exactly AT the threshold — which the existing (untouched)
+  // "ages older eligible work ahead of fresh arrivals" behavior already
+  // guarantees eventually wins selection.
+  const store = createSqliteConnectorDetailGapStore();
+  const connectorId = 'gmail';
+  const grantId = 'grant_1';
+  const stream = 'attachments';
+  const baseIso = '2026-07-01T00:00:00.000Z';
+  const threshold = DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts;
+
+  // Seed the poison row already WAY past the quarantine threshold (as if it
+  // had been served many times before this fix existed), aged well past the
+  // rotation window so its age-bonus term is already fully saturated —
+  // i.e. its rank is at its best-case floor and can get no better.
+  let poison = await store.upsertPendingGap({
+    connectorId, grantId, stream, recordKey: 'poison', detailLocator: { id: 'poison' },
+    reason: 'temporary_unavailable', now: baseIso,
+  });
+  for (let i = 0; i < threshold + 20; i++) {
+    await store.markGapStatus(poison.gap_id, 'in_progress', { runId: `seed_${i}`, now: baseIso });
+    poison = await store.upsertPendingGap({
+      connectorId, grantId, stream, recordKey: 'poison', detailLocator: { id: 'poison' },
+      reason: 'temporary_unavailable', lastRunId: `seed_${i}`, now: baseIso,
+    });
+  }
+  assert.ok(
+    poison.attempt_count > threshold,
+    'poison row attempt_count must exceed the quarantine threshold going into the assertion',
+  );
+  // Fully saturate the age bonus (past the rotation-window cap; matches the
+  // store's PENDING_GAP_MAX_AGE_BUCKETS = 8) before any fresh row has had a
+  // chance to age at all.
+  const maxAgeBuckets = 8;
+  const selectionIso = isoAfter(baseIso, maxAgeBuckets + 1);
+
+  // One never-yet-attempted row created JUST before the selection instant —
+  // it has NOT had time to accumulate any age bonus of its own, so its rank
+  // is exactly its raw attempt_count (0). Selection is capped at 1 result,
+  // isolating a direct two-row rank comparison: with the clamp, the poison
+  // row's floor rank (threshold - maxAgeBonus) still loses the tie-break
+  // ordering purely on `attempt_count` vs the fresh row's 0 — UNLESS the
+  // fresh row itself is old enough to also be judged solely on identical
+  // floor rank, in which case last_attempt_at ordering (poison is older)
+  // favors poison. Without the clamp, poison's rank is
+  // (threshold+20)-maxAgeBonus, categorically worse than the fresh row's 0
+  // rank regardless of any tie-break, so it is NEVER selected while the
+  // fresh row remains pending.
+  const fresh = await store.upsertPendingGap({
+    connectorId, grantId, stream, recordKey: 'fresh', detailLocator: { id: 'fresh' },
+    reason: 'temporary_unavailable', now: selectionIso,
+  });
+
+  const page = await store.listPendingGaps({
+    connectorId, grantId, streams: [stream], limit: 1, now: selectionIso,
+  });
+
+  assert.deepEqual(
+    page.map((gap) => gap.gap_id),
+    [poison.gap_id],
+    'a row past the quarantine threshold, once fully aged, must rank at or ahead of a genuinely fresh arrival ' +
+      `(fresh gap ${fresh.gap_id} must not permanently outrank it) — otherwise it is starved forever and can never reach quarantine`,
   );
 }));
 
@@ -1806,6 +1881,9 @@ if (!POSTGRES_URL) {
   test('fair-progress: a multi-page backlog eventually serves every eligible row across successive runs (Postgres) (skipped: PDPP_TEST_POSTGRES_URL unset)', {
     skip: true,
   }, () => {});
+  test('fair-progress: a row past the quarantine threshold is not starved forever behind a large backlog (Postgres) (skipped: PDPP_TEST_POSTGRES_URL unset)', {
+    skip: true,
+  }, () => {});
 } else {
   test('countGapsByStatusForConnector returns an exact reason-scoped recovered count (Postgres)', async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
@@ -1944,6 +2022,66 @@ if (!POSTGRES_URL) {
         neverServed,
         [],
         `Postgres: every eligible row must eventually be served across successive runs; starved: ${neverServed.length}/${allIds.length}`,
+      );
+    } finally {
+      try {
+        await postgresQuery('DELETE FROM connector_detail_gaps WHERE connector_id = $1', [connectorId]);
+      } catch {}
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('fair-progress: a row past the quarantine threshold is not starved forever behind a large backlog (Postgres)', async () => {
+    // Backend-parity twin of the SQLite attempt-count rank clamp test above:
+    // the store's `pendingGapOrderBySql` has separate SQLite (`MIN`) and
+    // Postgres (`LEAST`) branches for the same clamp, and only this branch
+    // runs against the live backend.
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `gmail_pg_clamp_${suffix}`;
+    const grantId = `grant_pg_clamp_${suffix}`;
+    const stream = 'attachments';
+    const baseIso = '2026-07-01T00:00:00.000Z';
+    const threshold = DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts;
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      const store = createPostgresConnectorDetailGapStore();
+
+      let poison = await store.upsertPendingGap({
+        connectorId, grantId, stream, recordKey: 'poison', detailLocator: { id: 'poison' },
+        reason: 'temporary_unavailable', now: baseIso,
+      });
+      for (let i = 0; i < threshold + 20; i++) {
+        await store.markGapStatus(poison.gap_id, 'in_progress', { runId: `seed_${i}`, now: baseIso });
+        poison = await store.upsertPendingGap({
+          connectorId, grantId, stream, recordKey: 'poison', detailLocator: { id: 'poison' },
+          reason: 'temporary_unavailable', lastRunId: `seed_${i}`, now: baseIso,
+        });
+      }
+      assert.ok(
+        poison.attempt_count > threshold,
+        'Postgres: poison row attempt_count must exceed the quarantine threshold going into the assertion',
+      );
+      const maxAgeBuckets = 8;
+      const selectionIso = isoAfter(baseIso, maxAgeBuckets + 1);
+
+      const fresh = await store.upsertPendingGap({
+        connectorId, grantId, stream, recordKey: 'fresh', detailLocator: { id: 'fresh' },
+        reason: 'temporary_unavailable', now: selectionIso,
+      });
+
+      const page = await store.listPendingGaps({
+        connectorId, grantId, streams: [stream], limit: 1, now: selectionIso,
+      });
+
+      assert.deepEqual(
+        page.map((gap) => gap.gap_id),
+        [poison.gap_id],
+        'Postgres: a row past the quarantine threshold, once fully aged, must rank at or ahead of a genuinely fresh arrival ' +
+          `(fresh gap ${fresh.gap_id} must not permanently outrank it)`,
       );
     } finally {
       try {

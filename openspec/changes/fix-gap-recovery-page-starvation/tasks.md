@@ -75,3 +75,40 @@
       touching the live `pdpp-postgres-1`), Gmail suite, typecheck, lint,
       `openspec validate --strict`, diff review.
 - [x] Amend commit `d66f38302`; update maker report.
+
+## 6. Revision (live-instance follow-on: quarantine-threshold selection deadlock, 2026-07-21)
+
+- [x] Diagnose: 256 Gmail attachment gaps pinned at `attempt_count=107` (past
+      the quarantine threshold of 8), 6+ days untouched, while the rest of the
+      backlog kept cycling — a row whose `attempt_count` is unbounded above
+      the threshold sinks to a permanently-worse rank than the age bonus
+      (capped at 8 buckets) can ever offset, so it is never selected again and
+      never reaches `maybeQuarantineGap`.
+- [x] Fix: clamp the `attempt_count` term in `pendingGapOrderBySql` (both
+      SQLite and Postgres) at `DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts`
+      (`reference-implementation/server/stores/connector-detail-gap-store.js`).
+- [x] Add a mutation-resistant regression proving a row past the quarantine
+      threshold, once fully aged, ranks at or ahead of a genuinely fresh
+      arrival (fails without the clamp, passes with it).
+      (`reference-implementation/test/connector-detail-gap-store.test.js`)
+- [x] Re-run focused SQLite suite (`connector-detail-gap-store.test.js`,
+      `recovery-quarantine.test.js`, `recovery-decision.test.js`), typecheck,
+      `openspec validate --strict`, diff review.
+
+## 7. Revision (independent gate review near-miss: Postgres clamp had zero coverage, 2026-07-21)
+
+An independent adversarial review found the section-6 regression test only
+exercised `createSqliteConnectorDetailGapStore`, while the live incident
+instance runs Postgres. `pendingGapOrderBySql` has separate SQLite (`MIN`)
+and Postgres (`LEAST`) clamp branches; only the SQLite branch was proven.
+
+- [x] Add the Postgres twin of the attempt-count rank-clamp regression test,
+      using the existing `PDPP_TEST_POSTGRES_URL`-gated pattern, run against
+      a dedicated throwaway Postgres container (never the live database).
+      (`reference-implementation/test/connector-detail-gap-store.test.js`)
+- [x] Verify the Postgres-only mutation (revert `LEAST(attempt_count, 8)` →
+      `attempt_count`, keep the SQLite `MIN` clamp intact): the Postgres twin
+      fails while the SQLite test stays green — proving the two branches are
+      independently covered, not accidentally coupled.
+- [x] Re-run both tests against the fix restored (both green), typecheck,
+      `openspec validate --strict`.

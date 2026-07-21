@@ -59,3 +59,29 @@ selected ahead of an unserved, equally-eligible row on a later selection.
   `last_attempt_at` — both backends SHALL treat an empty string the same as
   NULL (via `NULLIF`) rather than one backend aging from a different anchor
   than the other.
+
+#### Scenario: A row past the quarantine no-progress threshold is not starved forever behind a growing backlog
+
+- **WHEN** a pending row's `attempt_count` exceeds the quarantine policy's
+  `maxNoProgressAttempts` threshold
+- **AND** a backlog of other eligible rows keeps arriving and being served
+  ahead of it
+- **THEN** the row's selection rank SHALL NOT keep growing worse without
+  bound as its `attempt_count` climbs past the threshold
+- **AND** the row SHALL eventually be selected again once it has aged past
+  the rotation window, exactly as a row whose `attempt_count` equals the
+  threshold would
+- **AND** this SHALL hold so the row can reach quarantine evaluation
+  (`maybeQuarantineGap`) rather than remaining pending indefinitely with no
+  further attempts and no terminal classification.
+
+#### Scenario: The attempt-count rank clamp is proven independently on both storage backends
+
+- **WHEN** the attempt-count rank clamp is verified
+- **THEN** a regression SHALL exist for BOTH the SQLite and the Postgres
+  `pendingGapOrderBySql` branches, run against a real backend instance (a
+  dedicated throwaway database for Postgres, never a live/production
+  database)
+- **AND** each backend's regression SHALL independently fail when only that
+  backend's clamp is reverted, proving the two branches are not accidentally
+  coupled and that fixing one does not stand in as proof for the other.

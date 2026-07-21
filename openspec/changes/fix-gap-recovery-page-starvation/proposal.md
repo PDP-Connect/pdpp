@@ -106,6 +106,40 @@ served gap that fails again. This revision:
   symmetric with Postgres via `NULLIF(last_attempt_at, '')` (a latent,
   currently-unreachable engine divergence the gate flagged as a nit).
 
+### Revision (live-instance follow-on, 2026-07-21)
+
+Live post-deploy evidence on `cin_12407c1afb78d56848fe0b20` (Gmail attachments)
+found a second, subtler starvation mode the aging-bucket fix did not close:
+256 rows pinned at `attempt_count = 107` (the quarantine no-progress threshold,
+`DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts`, is 8), untouched for 6+
+days, while 2,619 other rows kept cycling through selection every run and
+7,361 more had already recovered.
+
+Root cause: the aging-bucket rank is `attempt_count - age_bonus`, with
+`age_bonus` capped at `PENDING_GAP_MAX_AGE_BUCKETS` (8). A row's own
+`attempt_count` has NO ceiling, so a row repeatedly re-attempted past the
+quarantine threshold accumulates a rank that gets strictly worse forever —
+permanently sinking it behind any backlog with rows at a lower attempt count,
+including a steady stream of fresh zero-attempt arrivals that themselves keep
+aging into a better rank than the poison row can ever reach. Once starved this
+way, the row is never selected again, so it can never reach
+`maybeQuarantineGap` (`runtime/recovery-quarantine.ts`) either — that check
+only runs when a served row is selected and re-defers. The row is stuck
+`pending` forever: neither recovered nor quarantined, and invisible to the
+"poison item does not block the backlog" guarantee this same change's sibling
+requirement (`add-connector-neutral-recovery-governor`) already promises,
+because it never gets far enough to be evaluated.
+
+Fix: clamp the `attempt_count` term in `pendingGapOrderBySql` (both SQLite and
+Postgres) at `DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts`, the same
+threshold quarantine uses. A row past that threshold can never rank worse than
+a row exactly at the threshold — which the existing (unchanged) age-bonus
+mechanism already guarantees eventually wins selection over a continuously
+arriving fresh backlog. This only ever raises (never lowers) the effective
+rank of a row already past its no-progress budget; ordering for every row
+under the threshold is unaffected. See
+`reference-implementation/server/stores/connector-detail-gap-store.js`.
+
 ## Capabilities
 
 Modified:

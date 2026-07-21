@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from '../../lib/db.ts';
+import { DEFAULT_QUARANTINE_POLICY } from '../../runtime/recovery-quarantine.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../owner-auth.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
 import { makeDefaultAccountConnectorInstanceId } from './connector-instance-store.js';
@@ -17,6 +18,22 @@ const MAX_OBJECT_KEYS = 40;
 const MAX_DEPTH = 5;
 const PENDING_GAP_ROTATION_WINDOW_SECONDS = 15 * 60;
 const PENDING_GAP_MAX_AGE_BUCKETS = 8;
+// A row's own `attempt_count` term in the selection rank is clamped at the
+// quarantine no-progress threshold. The age bonus is capped at
+// `PENDING_GAP_MAX_AGE_BUCKETS`, so without this clamp a row served past the
+// threshold keeps climbing `attempt_count` on every re-defer and its rank
+// gets strictly worse forever — permanently sinking it behind the rest of
+// the backlog. Once starved that way it is never selected again, so it can
+// never reach `maybeQuarantineGap` (runtime/recovery-quarantine.ts) either,
+// which only evaluates a row when it IS selected and re-defers. Clamping the
+// attempt_count term at the SAME threshold quarantine uses means a row can
+// never rank worse than a fresh threshold-attempt row: once it ages back to
+// the front (the same mechanism that already rescues old rows from a
+// fresh-arrival flood), it is selected once more and either recovers or
+// crosses the quarantine threshold and terminalizes. This only ever raises
+// (never lowers) the effective rank of a row already past its no-progress
+// budget — ordering for every row under the threshold is unaffected.
+const PENDING_GAP_ATTEMPT_RANK_CLAMP = DEFAULT_QUARANTINE_POLICY.maxNoProgressAttempts;
 const SAFE_ROUTE_TEMPLATE_KEY_PATTERN = /^(endpoint_route|route_template)$/i;
 const SAFE_ROUTE_TEMPLATE_PATTERN = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/[A-Za-z0-9._~!$&'()*+,;=:@/%{}-]+$/;
 
@@ -286,7 +303,7 @@ function pendingGapOrderBySql(isPostgres) {
   if (isPostgres) {
     return `
         (
-          attempt_count - LEAST(
+          LEAST(attempt_count, ${PENDING_GAP_ATTEMPT_RANK_CLAMP}) - LEAST(
             ${PENDING_GAP_MAX_AGE_BUCKETS},
             COALESCE(
               FLOOR(EXTRACT(EPOCH FROM ($4::timestamptz - COALESCE(NULLIF(last_attempt_at, ''), created_at)::timestamptz)) / ${PENDING_GAP_ROTATION_WINDOW_SECONDS}),
@@ -300,7 +317,7 @@ function pendingGapOrderBySql(isPostgres) {
   }
   return `
         (
-          attempt_count - MIN(
+          MIN(attempt_count, ${PENDING_GAP_ATTEMPT_RANK_CLAMP}) - MIN(
             ${PENDING_GAP_MAX_AGE_BUCKETS},
             COALESCE(
               CAST((unixepoch(?) - unixepoch(COALESCE(NULLIF(last_attempt_at, ''), created_at))) / ${PENDING_GAP_ROTATION_WINDOW_SECONDS} AS INTEGER),
