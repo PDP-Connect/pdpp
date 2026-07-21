@@ -40,6 +40,7 @@ import {
   parseSearchHybridParams,
   SearchHybridRequestError,
 } from '../operations/rs-search-hybrid/index.ts';
+import { ManifestReadAuthorityError } from '../server/manifest-read-authority.ts';
 
 const ownerActor = { kind: 'owner', subject_id: 'subj_owner' };
 const clientActor = {
@@ -541,9 +542,7 @@ test('a manifest read-authority rejection stops hybrid before semantic dispatch'
   let semanticCalls = 0;
   const deps = makeDeps({
     runLexical: () => {
-      const error = new Error('Stream is not declared by the current manifest');
-      error.code = 'stream_not_declared';
-      throw error;
+      throw new ManifestReadAuthorityError('time_entries');
     },
     runSemantic: () => {
       semanticCalls += 1;

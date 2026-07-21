@@ -116,7 +116,7 @@ test('hybrid forwards connection_id from whichever source emitted first', async 
   assert.deepEqual(byConn.cin_B.retrieval_sources, ['semantic']);
 });
 
-test('hybrid has no third storage path: dormant-grant empty results are exactly the lexical and semantic delegate results', async () => {
+test('hybrid invokes each retrieval source once and merges only their delegate results', async () => {
   let lexicalCalls = 0;
   let semanticCalls = 0;
   const out = await executeSearchHybrid(

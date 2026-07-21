@@ -2545,6 +2545,7 @@ export async function recordCurrentGenerationUndeclaredWrite(storageTarget, evid
  * Query records for a stream under grant enforcement
  */
 export async function queryRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   if (isPostgresStorageBackend()) {
     return postgresQueryRecords(storageTarget, stream, grant, requestParams, manifest);
   }
@@ -2561,7 +2562,6 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     throw err;
   }
   // Find manifest stream for stream-specific query capability declarations.
-  assertManifestReadAuthority(manifest, stream);
   const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
@@ -3041,6 +3041,7 @@ export function listRowsForAggregation(connectorInstanceId, stream) {
  * in-process instead of adding aggregate indexes; it is a semantic floor.
  */
 export async function aggregateRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
 
@@ -3051,7 +3052,6 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
     throw err;
   }
 
-  assertManifestReadAuthority(manifest, stream);
   const manifestStream = manifest?.streams?.find((entry) => entry.name === stream);
 
   const aggregateRequest = normalizeAggregateRequest(requestParams, streamGrant, manifestStream);
@@ -3198,6 +3198,7 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
  * Get a single record by key, under grant enforcement
  */
 export async function getRecord(storageTarget, stream, recordId, grant, manifest = null, requestParams = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   if (isPostgresStorageBackend()) {
     return postgresGetRecord(storageTarget, stream, recordId, grant, manifest, requestParams);
   }
@@ -3213,7 +3214,6 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     throw err;
   }
 
-  assertManifestReadAuthority(manifest, stream);
   const mStream = manifest?.streams?.find(s => s.name === stream);
 
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
@@ -3291,6 +3291,12 @@ export async function getRecordFieldWindow(
   manifest = null,
   requestParams = {},
 ) {
+  try {
+    assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
+  } catch (error) {
+    if (error?.code === 'stream_not_declared') throw fieldWindowError(error.code, error.message, error.statusCode);
+    throw error;
+  }
   if (isPostgresStorageBackend()) {
     return postgresGetRecordFieldWindow(
       storageTarget,
@@ -3317,12 +3323,6 @@ export async function getRecordFieldWindow(
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
 
-  try {
-    assertManifestReadAuthority(manifest, stream);
-  } catch (error) {
-    if (error?.code === "stream_not_declared") throw fieldWindowError(error.code, error.message, error.statusCode);
-    throw error;
-  }
   const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
@@ -4113,6 +4113,7 @@ function ensureBindingsOrThrow(bindings, { connectorId, missingMessage }) {
  *   binding's count ran last) is removed.
  */
 export async function queryRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest, opts = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId, missingMessage: 'No active connection is available under this grant.' });
 
   const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
@@ -4298,6 +4299,7 @@ export async function queryRecordsAcrossBindings(bindings, stream, grant, reques
  * to a normal `not_found` when no binding holds the identifier.
  */
 export async function getRecordAcrossBindings(bindings, stream, recordId, grant, manifest, requestParams = {}, opts = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
 
   const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
@@ -4371,6 +4373,7 @@ export async function getRecordFieldWindowAcrossBindings(
   requestParams = {},
   opts = {},
 ) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, {
     connectorId: bindings?.[0]?.connectorId,
     missingMessage: 'No active connection is available under this grant.',
@@ -4449,6 +4452,7 @@ export async function getRecordFieldWindowAcrossBindings(
  * disjoint connection partitions.
  */
 export async function aggregateRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest, opts = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
 
   const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
@@ -4666,6 +4670,7 @@ function compareMergedBuckets(left, right, isScalarGroup) {
  * that do not need per-stream constraint accuracy).
  */
 export async function listStreamsAcrossBindings(defaultBindings, grant, manifest, opts = {}) {
+  assertGrantedManifestReadAuthority(manifest, grant, null);
   ensureBindingsOrThrow(defaultBindings, { connectorId: defaultBindings?.[0]?.connectorId });
 
   const resolveBindingsForStream = typeof opts.resolveBindingsForStream === 'function'
@@ -4761,6 +4766,7 @@ export async function listStreamsAcrossBindings(defaultBindings, grant, manifest
  * if they want to follow up with a `connection_id` filter.
  */
 export async function getStreamDetailAcrossBindings(bindings, streamName, grant, manifest, opts = {}) {
+  assertManifestReadAuthority(manifest, streamName, { actor: 'internal' });
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
 
   let recordCount = 0;

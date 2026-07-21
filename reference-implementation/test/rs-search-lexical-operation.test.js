@@ -31,6 +31,7 @@ import {
   parseSearchLexicalParams,
   SearchLexicalRequestError,
 } from '../operations/rs-search-lexical/index.ts';
+import { buildSearchPlanForGrant } from '../server/search.js';
 
 const ownerActor = { kind: 'owner', subject_id: 'subj_owner' };
 const clientGrant = {
@@ -555,11 +556,7 @@ test('recall meta coexists with structured warnings in the same meta object', as
 test('a stale grant for a dormant stream rejects before lexical storage/index dependencies', async () => {
   const deps = makeDeps({
     resolveClientManifest: () => ({ streams: [{ name: 'pay_statements' }] }),
-    buildSearchPlanForGrant: () => {
-      const error = new Error('Stream is not declared');
-      error.code = 'stream_not_declared';
-      throw error;
-    },
+    buildSearchPlanForGrant,
     buildSnapshot: () => assert.fail('dormant stream must not reach lexical storage/index snapshot'),
     persistSnapshot: () => assert.fail('dormant stream must not persist a snapshot'),
   });

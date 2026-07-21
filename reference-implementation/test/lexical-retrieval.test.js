@@ -721,6 +721,41 @@ test('client-token streams[] not in grant returns grant_stream_not_allowed', asy
   });
 });
 
+test('a persisted client grant for a removed stream closes every retrieval route before its adapter', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const approved = await approveClientGrant(asUrl, {
+      client_id: 'longview',
+      connector_id: REDDITISH_MANIFEST_A.connector_id,
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'stale grant authority regression',
+      access_mode: 'continuous',
+      streams: [{ name: 'posts', fields: ['id', 'title'] }],
+    });
+    const currentManifest = {
+      ...REDDITISH_MANIFEST_A,
+      streams: REDDITISH_MANIFEST_A.streams.filter((stream) => stream.name !== 'posts'),
+    };
+    const updated = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentManifest),
+    });
+    assert.equal(updated.status, 201, 'remove the granted stream from the current manifest');
+
+    for (const path of [
+      '/v1/search?q=old&streams=posts',
+      '/v1/search/semantic?q=old&streams=posts',
+      '/v1/search/hybrid?q=old&streams=posts',
+    ]) {
+      const { status, body } = await fetchJson(`${rsUrl}${path}`, {
+        headers: { Authorization: `Bearer ${approved.token}` },
+      });
+      assert.equal(status, 403, path);
+      assert.equal(body.error.code, 'grant_invalid', path);
+    }
+  });
+});
+
 // ─── 9.6 (owner half) — owner streams[] soft filter ─────────────────────────
 
 test('owner-token streams[] unknown anywhere returns empty list (no error)', async () => {

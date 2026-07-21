@@ -47,7 +47,10 @@ import {
   SearchSemanticRequestError,
 } from '../operations/rs-search-semantic/index.ts';
 import { getConnectorManifest } from './auth.js';
-import { assertGrantedManifestReadAuthority } from './manifest-read-authority.ts';
+import {
+  assertGrantedManifestReadAuthority,
+  assertOwnerSearchFilterAuthority,
+} from './manifest-read-authority.ts';
 import { getDb } from './db.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { sqliteCountIndexableTextValues } from './search-index-counts.ts';
@@ -2009,8 +2012,9 @@ function buildCandidateRecordKeys({ connectorId, connectorInstanceId, streamName
 }
 
 export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null, connectorInstanceId = null }) {
-  if (!manifest?.streams || !grant?.streams) return [];
-  assertGrantedManifestReadAuthority(manifest, grant, streamsFilter);
+  assertGrantedManifestReadAuthority(manifest, grant, null);
+  assertOwnerSearchFilterAuthority(manifest, streamsFilter);
+  if (!grant?.streams) return [];
   const plan = [];
   for (const mStream of manifest.streams) {
     const declared = mStream?.query?.search?.semantic_fields;

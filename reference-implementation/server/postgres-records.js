@@ -1307,10 +1307,10 @@ export async function postgresDeleteRecord(storageTarget, stream, recordId) {
 }
 
 export async function postgresQueryRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
-  assertManifestReadAuthority(manifest, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, requestParams.fields, requiredFieldsFor(manifestStream));
   const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
@@ -1688,10 +1688,10 @@ function attachRequestWarningsToResponse(response, warnings) {
 }
 
 export async function postgresGetRecord(storageTarget, stream, recordId, grant, manifest = null, requestParams = {}) {
+  assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
-  assertManifestReadAuthority(manifest, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, null, requiredFieldsFor(manifestStream));
   const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
@@ -1751,20 +1751,20 @@ export async function postgresGetRecordFieldWindow(
   manifest = null,
   requestParams = {},
 ) {
-  assertFieldPath(fieldPath);
-  const selector = normalizeWindowSelector(requestParams);
-
-  const connectorId = resolveStorageConnectorId(storageTarget);
-  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
-  const streamGrant = getStreamGrant(grant, stream);
   try {
-    assertManifestReadAuthority(manifest, stream);
+    assertManifestReadAuthority(manifest, stream, { actor: 'internal' });
   } catch (error) {
     if (error?.code === 'stream_not_declared') {
       throw fieldWindowError(error.code, error.message, error.statusCode);
     }
     throw error;
   }
+  assertFieldPath(fieldPath);
+  const selector = normalizeWindowSelector(requestParams);
+
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const effective = buildEffectiveFilter(streamGrant, requiredFieldsFor(manifestStream));
 

@@ -8,6 +8,7 @@
  * - Implements RFC 7662-style introspection with PDPP extensions
  */
 import { randomBytes } from 'crypto';
+import { assertManifestReadAuthority } from './manifest-read-authority.ts';
 import {
   BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
   BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
@@ -864,8 +865,11 @@ function resolveGrantSelection(selection = {}, manifest = {}) {
   }
 
   return streams.map((streamRequest) => {
-    const manifestStream = manifest.streams.find((stream) => stream.name === streamRequest.name);
-    if (!manifestStream) {
+    let manifestStream;
+    try {
+      assertManifestReadAuthority(manifest, streamRequest.name, { actor: 'client' });
+      manifestStream = manifest.streams.find((stream) => stream.name === streamRequest.name);
+    } catch {
       throw bindingError('invalid_request', `Unknown stream: ${streamRequest.name}`);
     }
 
@@ -1051,8 +1055,11 @@ export function requireGrantContractAgainstManifest(grant = {}, manifest = {}) {
       throw bindingError('grant_invalid', 'grant.streams entries must include a non-empty name');
     }
 
-    const manifestStream = manifest.streams?.find((stream) => stream.name === streamGrant.name);
-    if (!manifestStream) {
+    let manifestStream;
+    try {
+      assertManifestReadAuthority(manifest, streamGrant.name, { actor: 'client' });
+      manifestStream = manifest.streams?.find((stream) => stream.name === streamGrant.name);
+    } catch {
       throw bindingError('grant_invalid', `Unknown stream in persisted grant: ${streamGrant.name}`);
     }
 

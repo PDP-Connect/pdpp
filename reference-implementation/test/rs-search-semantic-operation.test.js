@@ -41,6 +41,7 @@ import {
   parseSearchSemanticParams,
   SearchSemanticRequestError,
 } from '../operations/rs-search-semantic/index.ts';
+import { buildSemanticSearchPlanForGrant } from '../server/search-semantic.js';
 
 const ownerActor = { kind: 'owner', subject_id: 'subj_owner' };
 const clientGrant = {
@@ -582,11 +583,7 @@ test('disclosure data block carries query_shape:search_semantic plus record_coun
 test('a stale grant for a dormant stream rejects before semantic storage/index dependencies', async () => {
   const deps = makeDeps({
     resolveClientManifest: () => ({ streams: [{ name: 'pay_statements' }] }),
-    buildSearchPlanForGrant: () => {
-      const error = new Error('Stream is not declared');
-      error.code = 'stream_not_declared';
-      throw error;
-    },
+    buildSearchPlanForGrant: buildSemanticSearchPlanForGrant,
     buildSnapshot: () => assert.fail('dormant stream must not reach semantic storage/index snapshot'),
     persistSnapshot: () => assert.fail('dormant stream must not persist a snapshot'),
   });
