@@ -174,7 +174,7 @@ test('bounded first pass: maxEvents:1 processes AT MOST one event (never the who
       'an incomplete pass must NEVER be readable as current, even though it made real progress',
     );
     assert.equal(row.terminal_facts_reason_code, 'terminal_fold_incomplete');
-    assert.equal(Number(row.stream_facts_fold_version), 3, 'the version field already reflects the current fold logic from the FIRST partial write');
+    assert.equal(Number(row.stream_facts_fold_version), 4, 'the version field already reflects the current fold logic from the FIRST partial write');
 
     const facts = JSON.parse(row.stream_latest_facts_json);
     assert.equal(Object.keys(facts).length, 1, 'exactly the ONE event actually processed is folded — maxEvents:1 is a real ceiling, not merely an early-exit hint');
@@ -227,7 +227,7 @@ test('bounded upgrade replay from a pre-existing (pre-versioning) row: maxEvents
     const row = evidenceRow('cin_a');
     assert.equal(row.terminal_facts_state, 'stale', 'the partial upgrade replay must not be trusted');
     assert.equal(row.terminal_facts_reason_code, 'terminal_fold_incomplete');
-    assert.equal(Number(row.stream_facts_fold_version), 3, 'the version field already reflects the current fold logic from the FIRST partial write');
+    assert.equal(Number(row.stream_facts_fold_version), 4, 'the version field already reflects the current fold logic from the FIRST partial write');
 
     const facts = JSON.parse(row.stream_latest_facts_json);
     assert.equal(Object.keys(facts).length, 1, 'only the ONE stream the replay actually re-derived this round is present');
@@ -262,7 +262,7 @@ test('exact replacement: a converged pass with genuinely zero facts clears strea
     const row = evidenceRow('cin_a');
     assert.equal(row.stream_latest_facts_json, null, 'the stale leftover fact map is genuinely cleared, not COALESCEd back in');
     assert.equal(row.terminal_facts_state, 'current');
-    assert.equal(Number(row.stream_facts_fold_version), 3);
+    assert.equal(Number(row.stream_facts_fold_version), 4);
   });
 });
 

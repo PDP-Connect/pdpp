@@ -22,6 +22,7 @@ import { filterFreshPressureRows, resolveRecoveryFirstMode } from "../recovery-d
 import { type BackoffDecision, computeNextRunWithBackoff } from "../scheduler-backoff.ts";
 import type {
   ConnectorSchedule,
+  GetForwardEvidenceDebtHandler,
   GetLastSuccessfulRunAtHandler,
   GetNonPressureRecoverableCountHandler,
   GetSourcePressureGapsHandler,
@@ -51,6 +52,7 @@ export interface DispatchGovernorRuntimeState {
 }
 
 export interface DispatchGovernorDeps {
+  getForwardEvidenceDebt: GetForwardEvidenceDebtHandler;
   getLastSuccessfulRunAt: GetLastSuccessfulRunAtHandler;
   getNonPressureRecoverableCount: GetNonPressureRecoverableCountHandler;
   getSourcePressureGaps: GetSourcePressureGapsHandler;
@@ -437,6 +439,7 @@ export interface DispatchGovernor {
 
 export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGovernor {
   const {
+    getForwardEvidenceDebt,
     getLastSuccessfulRunAt,
     getNonPressureRecoverableCount,
     getSourcePressureGaps,
@@ -498,6 +501,31 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] non-pressure recovery probe failed for ${connectorId}: ${message}`);
       return 0;
+    }
+  }
+
+  // Read whether this connection currently has forward-evidence debt (its
+  // terminal facts are not current, or are older than
+  // `forwardEvidenceMaxAgeMs`) — the bound on recovery-first selection
+  // (`resolveRecoveryFirstMode`'s `forwardEvidenceDebt` input; design:
+  // recovery-first SHALL NOT starve forward evidence).
+  //
+  // Fail-CLOSED to `false` (no debt) on probe error, mirroring the
+  // non-pressure recovery probe's stance: a false positive here would divert
+  // a tick to forward collection on every failure of this probe, which is a
+  // strictly worse failure mode than occasionally missing one debt-bounded
+  // forward run. The next clean tick re-evaluates.
+  async function probeForwardEvidenceDebt(
+    connectorId: string,
+    connectorInstanceId: string,
+    scheduleIntervalMs: number
+  ): Promise<boolean> {
+    try {
+      return Boolean(await getForwardEvidenceDebt(connectorId, connectorInstanceId, scheduleIntervalMs));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] forward-evidence-debt probe failed for ${connectorId}: ${message}`);
+      return false;
     }
   }
 
@@ -689,10 +717,21 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     let recoveryOnly = false;
     if (recoveryCadenceElapsed) {
       const nonPressureRecoverable = await probeNonPressureRecoverableCount(connectorId, key);
+      const nonPressureRecoveryEligible = nonPressureRecoverable > 0;
+      // Forward-evidence-debt bound (fix-pre-provenance-terminal-generation-
+      // semantics): only probed when recovery would otherwise win the tick —
+      // an unbounded recovery-first default could starve forward evidence
+      // indefinitely (live: Gmail's last fact-carrying forward run was 5+
+      // days and ~640 runs ago). Debt diverts THIS tick to forward
+      // collection; recovery-first resumes once fresh evidence lands.
+      const forwardEvidenceDebt = nonPressureRecoveryEligible
+        ? await probeForwardEvidenceDebt(connectorId, key, scheduleIntervalMs)
+        : false;
       // Shared policy (recovery-decision.ts): a scheduled tick is always an
       // implicit, unscoped dispatch, so eligible non-pressure recovery work
-      // wins the tick over fresh forward-walk work.
-      if (resolveRecoveryFirstMode({ nonPressureRecoveryEligible: nonPressureRecoverable > 0 })) {
+      // wins the tick over fresh forward-walk work, unless forward evidence
+      // is already in debt.
+      if (resolveRecoveryFirstMode({ nonPressureRecoveryEligible, forwardEvidenceDebt })) {
         eligible = true;
         recoveryOnly = true;
       }

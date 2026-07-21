@@ -484,6 +484,17 @@ export function hasEligibleNonPressureRecovery(backlog: WorkDomainBacklog | unde
 // channel backfill) has expressed forward work intent by construction; that
 // intent must never be silently reinterpreted as recovery-only.
 export interface RecoveryFirstWorkSelectionInputs {
+  /**
+   * True when the connection's forward (fact-carrying) terminal evidence is
+   * missing, historical, or older than `FORWARD_EVIDENCE_MAX_AGE` — i.e. an
+   * implicit recovery-first choice right now would extend an already-aged
+   * forward-evidence gap rather than merely deferring a fresh one. Bounds the
+   * ELSE-unbounded recovery-first priority below (design: recovery-first
+   * SHALL NOT starve forward evidence). Ignored when the caller made an
+   * explicit `requestedRecoveryOnly` choice or scoped the run — those always
+   * win regardless of debt.
+   */
+  readonly forwardEvidenceDebt?: boolean | undefined;
   /** True when eligible non-pressure recovery work exists for this connection right now. */
   readonly nonPressureRecoveryEligible: boolean;
   /** The caller's own explicit `recoveryOnly` choice, when one was made (`undefined` = no explicit choice). */
@@ -504,9 +515,16 @@ export interface RecoveryFirstWorkSelectionInputs {
  *     recovery-only.
  *   - Otherwise (an implicit, unscoped run with no explicit choice), eligible
  *     non-pressure recovery work wins the default: `recoveryOnly =
- *     nonPressureRecoveryEligible`. This applies regardless of `force`, which
- *     only bypasses the provider-pressure cooldown gate elsewhere and carries
- *     no work-mode meaning.
+ *     nonPressureRecoveryEligible && !forwardEvidenceDebt`. This applies
+ *     regardless of `force`, which only bypasses the provider-pressure
+ *     cooldown gate elsewhere and carries no work-mode meaning.
+ *
+ * `forwardEvidenceDebt` bounds the implicit default only: when the
+ * connection's forward evidence has aged past `FORWARD_EVIDENCE_MAX_AGE` (or
+ * is missing/historical), an otherwise-eligible recovery-only default steps
+ * aside for one forward run so evidence keeps advancing, then recovery-first
+ * resumes once fresh evidence lands. It has no effect when an explicit choice
+ * or scoped intent already resolved the mode above.
  */
 export function resolveRecoveryFirstMode(inputs: RecoveryFirstWorkSelectionInputs): boolean {
   if (inputs.requestedRecoveryOnly !== undefined) {
@@ -515,7 +533,77 @@ export function resolveRecoveryFirstMode(inputs: RecoveryFirstWorkSelectionInput
   if (inputs.scopedToResources) {
     return false;
   }
-  return inputs.nonPressureRecoveryEligible;
+  return inputs.nonPressureRecoveryEligible && !inputs.forwardEvidenceDebt;
+}
+
+// ─── Forward-evidence-debt bound (fix-pre-provenance-terminal-generation-semantics) ──
+//
+// `resolveRecoveryFirstMode`'s implicit-unscoped branch had no forward bound:
+// live evidence showed Gmail's last fact-carrying forward run was 5+ days and
+// ~640 runs ago, with recovery-only winning every tick since, because
+// `hasEligibleNonPressureRecoveryWork` can stay true indefinitely (the
+// backlog re-defers `temporary_unavailable` gaps with no drain guarantee).
+// This section is the connector-neutral, evidence-driven predicate that
+// bounds it: debt exists when the connection's own terminal-facts evidence
+// component (the same `EvidenceComponent<ComponentState>` shape
+// `connector-summary-evidence-engine.ts` already produces) is not `current`,
+// or its `as_of` is older than `FORWARD_EVIDENCE_MAX_AGE`.
+
+/**
+ * The minimal terminal-facts evidence projection this predicate needs.
+ * Shaped after `EvidenceComponent<ComponentState>` (`connector-summary-
+ * evidence-engine.ts`) so a durable evidence row's `terminal_facts` field can
+ * be passed straight through without a reshape. Fields are `unknown` rather
+ * than nominally typed because `getConnectorSummaryEvidence`'s (`connector-
+ * summary-read-model.ts`) inferred return type widens raw storage-row values
+ * this way; `hasForwardEvidenceDebt` normalizes defensively below.
+ */
+export interface TerminalFactsEvidenceLike {
+  readonly as_of?: unknown;
+  readonly state?: unknown;
+}
+
+/**
+ * Default forward-evidence-debt age bound: `max(4 * scheduleIntervalMs, 1h)`.
+ * Grounded in the connector's own already-normalized schedule interval
+ * (`scheduleIntervalMs`, threaded through the scheduler dispatch seam) rather
+ * than an independent governor — four missed ordinary cadences is comfortably
+ * outside normal cadence jitter/backoff, so the bound never fires under
+ * healthy operation, while the 1-hour floor keeps very short intervals from
+ * producing a bound so tight it fires on ordinary recovery-first ticks. No
+ * existing normative contract defines a numeric schedule-interval multiplier
+ * for evidence staleness, so this is a new, explicit, documented policy
+ * constant scoped to this one predicate.
+ */
+export const DEFAULT_FORWARD_EVIDENCE_MAX_AGE_FLOOR_MS = 60 * 60 * 1000;
+
+export function forwardEvidenceMaxAgeMs(scheduleIntervalMs: number): number {
+  const interval = normalizeNonNegativeInteger(scheduleIntervalMs, 0);
+  return Math.max(4 * interval, DEFAULT_FORWARD_EVIDENCE_MAX_AGE_FLOOR_MS);
+}
+
+/**
+ * True when a connection's forward (fact-carrying) terminal evidence is aged
+ * past `forwardEvidenceMaxAgeMs(scheduleIntervalMs)`, or missing/historical
+ * entirely. Pure: the caller supplies the connection's terminal-facts
+ * evidence component and `now`. A `null` evidence component (never observed)
+ * counts as debt — absent evidence is not fresh evidence, mirroring
+ * `partitionPressureEvidence`'s stance on missing timestamps.
+ */
+export function hasForwardEvidenceDebt(
+  terminalFacts: TerminalFactsEvidenceLike | null | undefined,
+  nowMs: number,
+  scheduleIntervalMs: number
+): boolean {
+  if (!terminalFacts || terminalFacts.state !== "current") {
+    return true;
+  }
+  const asOfMs = parseIso(typeof terminalFacts.as_of === "string" ? terminalFacts.as_of : null);
+  if (asOfMs === null) {
+    return true;
+  }
+  const now = normalizeEpochMs(nowMs);
+  return now - asOfMs > forwardEvidenceMaxAgeMs(scheduleIntervalMs);
 }
 
 // ─── Fresh-pressure re-arm guard (task 1.5 / design.md D4) ───────────────────

@@ -256,10 +256,12 @@ import {
 } from './ref-control.ts';
 import { unresolvedOwnerActionEvidenceFromSummary } from './owner-action-gate.js';
 import {
+  getConnectorSummaryEvidence,
   markConnectorSummaryEvidenceDirty,
   reconcileDirtyConnectorSummaryEvidence,
   runBoundedSummaryEvidenceSweep,
 } from './connector-summary-read-model.ts';
+import { hasForwardEvidenceDebt } from '../runtime/recovery-decision.ts';
 import { isHealthRelevant as isAttentionHealthRelevant } from '../runtime/attention.ts';
 import { getDefaultConnectorAttentionStore } from './stores/connector-attention-store.ts';
 import {
@@ -6244,6 +6246,33 @@ function createReferenceSchedulerManager({
           const message = err instanceof Error ? err.message : String(err);
           logger.error({ err: message }, `[scheduler] non-pressure recovery probe failed for ${connectorId}`);
           return 0;
+        }
+      },
+      getForwardEvidenceDebt: async (connectorId, connectorInstanceId, scheduleIntervalMs) => {
+        // Forward-evidence-debt bound for recovery-first selection
+        // (fix-pre-provenance-terminal-generation-semantics): bounds the
+        // otherwise-unbounded recovery-first priority so an existing
+        // non-pressure recovery backlog can never starve forward (fact-
+        // carrying) collection indefinitely.
+        //
+        // Reconciles just this one connection (the same scoped, cheap repair
+        // every other single-connection read uses) so the debt predicate
+        // reads a genuinely current evidence row, then reads its
+        // `terminal_facts` component directly.
+        //
+        // Fail-CLOSED to `false` (no debt) on error: a false positive would
+        // divert every failing tick to forward collection instead of
+        // draining recovery, which is a strictly worse failure mode than
+        // occasionally missing one debt-bounded forward run.
+        try {
+          const instanceId = connectorInstanceId || connectorId;
+          await reconcileDirtyConnectorSummaryEvidence([instanceId]);
+          const evidence = await getConnectorSummaryEvidence(instanceId);
+          return hasForwardEvidenceDebt(evidence?.terminal_facts ?? null, Date.now(), scheduleIntervalMs);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error({ err: message }, `[scheduler] forward-evidence-debt probe failed for ${connectorId}`);
+          return false;
         }
       },
       onInteraction: async (interaction) => {

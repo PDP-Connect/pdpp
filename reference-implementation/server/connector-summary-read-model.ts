@@ -786,7 +786,16 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
 // contract. A v2 current map may have folded events created before that
 // provenance existed, so it is never a valid baseline after this upgrade:
 // `seedFoldState` replays it from an empty map on the first observation.
-const STREAM_FACTS_FOLD_LOGIC_VERSION = 3;
+//
+// Version 4 refines the v3 generation-match predicate: an unstamped
+// (pre-provenance) terminal event is now accepted as current-generation
+// evidence while the connection's durable generation has never advanced past
+// 0 (see `foldTerminalEventFacts`). A v3 current map may have refused such
+// events outright (treating every NULL stamp as historical regardless of the
+// connection's generation), so it is never a valid baseline after this
+// upgrade either: `seedFoldState` replays it from an empty map on the first
+// observation, exactly like the v2->v3 upgrade.
+const STREAM_FACTS_FOLD_LOGIC_VERSION = 4;
 // A route may retry a replay once after a concurrent writer wins its CAS.
 // This is deliberately small: each retry rereads the durable baseline, and
 // persistent contention fails closed in memory rather than spinning or
@@ -1186,9 +1195,24 @@ function foldTerminalEventFacts(
     return;
   }
   const eventGeneration = row.manifest_generation;
-  if (eventGeneration == null || Number(eventGeneration) !== generationByInstance.get(instanceId)) {
-    // A missing stamp is legacy/unattributed; an unequal one belongs to a
-    // prior manifest generation. Both are historical, never current proof.
+  const currentGeneration = generationByInstance.get(instanceId);
+  // A NULL stamp means the event predates generation provenance
+  // (`stamp_terminal_manifest_generation`, introduced alongside this gate).
+  // It is safe to treat as generation 0 evidence ONLY while the connection's
+  // durable generation has never advanced past 0 — generation 0 is by
+  // construction the only generation such a connection has ever had, so an
+  // unstamped event cannot belong to any other generation. The moment the
+  // connection's generation advances to >= 1, its NULL rows become
+  // permanently ambiguous (they could predate or postdate any earlier
+  // untracked manifest change) and must stay historical forever, exactly
+  // like a genuinely mismatched non-NULL stamp.
+  const eventGenerationMatches =
+    eventGeneration == null ? currentGeneration === 0 : Number(eventGeneration) === currentGeneration;
+  if (!eventGenerationMatches) {
+    // A missing stamp on a never-advanced connection is handled above; this
+    // is either a missing stamp on an already-advanced connection, or an
+    // unequal stamp belonging to a prior manifest generation. Both are
+    // historical, never current proof.
     generationCurrentByInstance.set(instanceId, false);
     counters.refused += 1;
     return;

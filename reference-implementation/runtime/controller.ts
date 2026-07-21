@@ -36,6 +36,10 @@ import {
   initiateOwnerDeviceAuthorization,
 } from "../server/auth.js";
 import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.js";
+import {
+  getConnectorSummaryEvidence,
+  reconcileDirtyConnectorSummaryEvidence,
+} from "../server/connector-summary-read-model.ts";
 import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.js";
 import { getSyncState } from "../server/records.js";
 import type { BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
@@ -66,6 +70,7 @@ import { runConnector } from "./index.js";
 import {
   classifyRecoveryGap,
   filterFreshPressureRows,
+  hasForwardEvidenceDebt,
   type RecoveryAdmissionDenialReason,
   resolveRecoveryAdmission,
   resolveRecoveryFirstMode,
@@ -2984,6 +2989,32 @@ export function createController(opts: ControllerOptions = {}): Controller {
     });
   }
 
+  // Forward-evidence-debt probe for `resolveEffectiveRecoveryOnly` (mirrors
+  // the scheduler dispatch governor's own probe of the same predicate —
+  // `hasForwardEvidenceDebt`, recovery-decision.ts). Reconciles just this one
+  // connection (the same scoped, cheap repair every other single-connection
+  // read in this module uses) so the debt predicate reads a genuinely
+  // current evidence row, then reads its `terminal_facts` component and the
+  // connection's own schedule interval directly.
+  //
+  // Fail-CLOSED to `false` (no debt) on error: a false positive would divert
+  // this run to forward collection instead of draining recovery, which is a
+  // strictly worse failure mode than occasionally missing one debt-bounded
+  // forward run — the next tick/run re-evaluates.
+  async function probeForwardEvidenceDebt(connectorId: string, connectorInstanceId: string): Promise<boolean> {
+    try {
+      const schedule = await getScheduleRecord(connectorInstanceId);
+      const scheduleIntervalMs = Math.max(1, schedule?.interval_seconds ?? 1) * 1000;
+      await reconcileDirtyConnectorSummaryEvidence([connectorInstanceId]);
+      const evidence = await getConnectorSummaryEvidence(connectorInstanceId);
+      return hasForwardEvidenceDebt(evidence?.terminal_facts ?? null, Date.now(), scheduleIntervalMs);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] forward-evidence-debt probe failed for ${connectorId}: ${message}`);
+      return false;
+    }
+  }
+
   // Recovery-first work selection for `runNow` (shared policy:
   // recovery-decision.ts `resolveRecoveryFirstMode`, also consumed by the
   // scheduler dispatch governor). An IMPLICIT, UNSCOPED manual run — no
@@ -3015,7 +3046,16 @@ export function createController(opts: ControllerOptions = {}): Controller {
       options.recoveryOnly === undefined && !scopedToResources
         ? await hasEligibleNonPressureRecoveryWork(connectorId, connectorInstanceId)
         : false;
+    // Forward-evidence-debt bound (fix-pre-provenance-terminal-generation-
+    // semantics): only probed when recovery would otherwise win, mirroring
+    // the scheduler dispatch governor's same short-circuit. An unbounded
+    // recovery-first default here could starve forward evidence on manual
+    // runs exactly as it could on scheduled ticks.
+    const forwardEvidenceDebt = nonPressureRecoveryEligible
+      ? await probeForwardEvidenceDebt(connectorId, connectorInstanceId)
+      : false;
     return resolveRecoveryFirstMode({
+      forwardEvidenceDebt,
       nonPressureRecoveryEligible,
       requestedRecoveryOnly: options.recoveryOnly,
       scopedToResources,
