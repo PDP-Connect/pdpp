@@ -28,6 +28,33 @@ const STREAM_VIEWER_FILE = `${HERE}stream-viewer.tsx`;
  * keeps every control at the same 44px (2.75rem) accessible touch-target
  * size the surface already used elsewhere — no accessibility regression
  * traded for the footprint reduction.
+ *
+ * REVISION (independent review `streaming-presentation-polish-review-luna-
+ * 0720.md`, P1): the first version handled Escape via a `document`-level
+ * CAPTURE-phase `keydown` listener that only called `setExpanded(false)`,
+ * with no `preventDefault`/`stopPropagation`. Base UI's own dialog dismissal
+ * (`useDismiss.js`) registers a BUBBLE-phase `document.addEventListener`
+ * with no `event.defaultPrevented` guard — it unconditionally closes the
+ * dialog (tearing down the live session) on ANY Escape keydown that reaches
+ * `document`. Capture firing before bubble is a timing artifact of
+ * registration order, not a structural guarantee, and did nothing to stop
+ * the event from continuing on to Base UI's listener afterward. So the
+ * original fix collapsed the row AND closed the dialog on the same Escape
+ * press — reviewer-verified live, confirmed by source inspection of
+ * useDismiss.js's `closeOnEscapeKeyDown`.
+ *
+ * Fixed by moving Escape handling onto the row's own React `onKeyDown`
+ * (bubble phase, starting at the row — which is topologically BETWEEN any
+ * keydown origin inside it and `document`) and calling
+ * `event.stopPropagation()` there. This halts native propagation up the DOM
+ * tree structurally — it can never reach `document` — independent of any
+ * listener's registration order, and does not rely on
+ * `stopImmediatePropagation` (which only stops OTHER listeners on the exact
+ * same node/phase, not propagation to ancestors). Live-verified against the
+ * real dev server with a real Base UI dialog and a real n.eko session
+ * (Docker `pdpp-neko:local`, isolated instance): expand actions → Escape →
+ * dialog still open, actions collapsed → Escape again → dialog closes
+ * normally. See the accompanying report for the full transcript.
  */
 
 const USE_MORE_ACTIONS_DISCLOSURE_RE = /function useMoreActionsDisclosure\(\)/;
@@ -41,11 +68,25 @@ const SECONDARY_KEYBOARD_GATED_RE = /\{expanded && onKeyboard \?/;
 const RUN_AND_COLLAPSE_RE =
   /const runAndCollapse = \(action: \(\) => void\) => \(\) => \{\s*action\(\);\s*setExpanded\(false\);\s*\};/;
 const OUTSIDE_POINTERDOWN_COLLAPSE_RE = /document\.addEventListener\("pointerdown", handlePointerDown, true\)/;
-const ESCAPE_COLLAPSE_RE = /if \(event\.key === "Escape"\) \{\s*collapse\(\);\s*\}/;
 const FOCUSOUT_COLLAPSE_RE = /rowRef\.current\?\.addEventListener\("focusout", handleFocusOut\)/;
 const CLOSE_BUTTON_ALWAYS_VISIBLE_RE =
   /aria-label=\{`End \$\{connectorName\} browser session`\}[\s\S]{0,40}className="pdpp-stream-control-button"/;
 const STATUS_DOT_ALWAYS_VISIBLE_RE = /<StatusDot status=\{status\} \/>/;
+
+// P1 fix: Escape is handled ONLY via the row's own onKeyDown, never via a
+// document-level listener. handleRowKeyDown must guard on `expanded`, call
+// both preventDefault and stopPropagation, and be wired to the row element.
+const HANDLE_ROW_KEY_DOWN_FN_RE =
+  /const handleRowKeyDown = useCallback\(\s*\(event: ReactKeyboardEvent<HTMLDivElement>\) => \{\s*if \(event\.key !== "Escape" \|\| !expanded\) \{\s*return;\s*\}/;
+const ROW_KEYDOWN_STOPS_PROPAGATION_RE =
+  /event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*setExpanded\(false\);/;
+const ROW_ONKEYDOWN_WIRED_RE = /className="pdpp-stream-control-row" onKeyDown=\{handleRowKeyDown\} ref=\{rowRef\}/;
+// A DOCUMENT-level (or window-level) keydown/Escape listener anywhere in
+// this disclosure's effect is exactly the reviewer-flagged anti-pattern
+// (capture-phase ordering that still lets the event reach Base UI's bubble
+// listener) — this must never reappear.
+const DOCUMENT_LEVEL_KEYDOWN_LISTENER_RE = /document\.addEventListener\("keydown"/;
+const STOP_IMMEDIATE_PROPAGATION_RE = /stopImmediatePropagation/;
 
 test("CornerControls collapses clipboard/paste/keyboard behind a single accessible disclosure toggle", async () => {
   const src = await readFile(STREAM_VIEWER_FILE, "utf8");
@@ -82,18 +123,57 @@ test("CornerControls collapses clipboard/paste/keyboard behind a single accessib
   );
 });
 
-test("the disclosure collapses on outside pointerdown, Escape, and focus loss — never lingers over remote content", async () => {
+test("the disclosure collapses on outside pointerdown and focus loss — never lingers over remote content", async () => {
   const src = await readFile(STREAM_VIEWER_FILE, "utf8");
   assert.match(
     src,
     OUTSIDE_POINTERDOWN_COLLAPSE_RE,
     "a document-level pointerdown listener must collapse the disclosure when the operator taps outside it"
   );
-  assert.match(src, ESCAPE_COLLAPSE_RE, "Escape must collapse the open disclosure");
   assert.match(
     src,
     FOCUSOUT_COLLAPSE_RE,
     "the row losing focus (e.g. keyboard user tabbing away) must collapse the disclosure"
+  );
+});
+
+test("P1: Escape is consumed on the row's own onKeyDown (preventDefault + stopPropagation), never via a document-level listener", async () => {
+  const src = await readFile(STREAM_VIEWER_FILE, "utf8");
+
+  assert.match(
+    src,
+    HANDLE_ROW_KEY_DOWN_FN_RE,
+    "handleRowKeyDown must exist and early-return unless the key is Escape AND the disclosure is expanded"
+  );
+  assert.match(
+    src,
+    ROW_KEYDOWN_STOPS_PROPAGATION_RE,
+    "handleRowKeyDown must call preventDefault() and stopPropagation() before collapsing — without stopPropagation, " +
+      "the event still reaches Base UI's bubble-phase document Escape listener and closes/tears down the session " +
+      "(the exact P1 regression this test guards)"
+  );
+  assert.match(
+    src,
+    ROW_ONKEYDOWN_WIRED_RE,
+    "the control row's div must wire onKeyDown={handleRowKeyDown} — a handler that exists but isn't attached to " +
+      "the row never fires"
+  );
+
+  // Anti-pattern guards: the ORIGINAL bug's shape (document-level keydown
+  // listener) and a tempting-but-wrong alternative fix (stopImmediatePropagation,
+  // which only blocks OTHER listeners on the same node/phase — it does NOT stop
+  // propagation to document, so Base UI's listener still fires) must never
+  // reappear in this disclosure's implementation.
+  assert.ok(
+    !DOCUMENT_LEVEL_KEYDOWN_LISTENER_RE.test(src),
+    'a document-level "keydown" listener must not exist anywhere in this file — Escape must be handled exclusively ' +
+      "via the row's own onKeyDown (capture-then-bubble registration-order tricks are fragile and were the P1 bug)"
+  );
+  assert.ok(
+    !STOP_IMMEDIATE_PROPAGATION_RE.test(src),
+    "stopImmediatePropagation must not be used as the fix — it only prevents OTHER listeners on the SAME node/phase " +
+      "from firing, it does not stop propagation to document, so it would not actually prevent Base UI's dialog " +
+      "dismissal from firing"
   );
 });
 
