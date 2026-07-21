@@ -1,18 +1,18 @@
 {
   "dependencies": {
     "@streamparser/json": "^0.0.22",
-    "better-sqlite3": "^12.9.0",
+    "better-sqlite3": "^13.0.1",
     "dotenv": "^17.4.2",
-    "imapflow": "^1.3.2",
-    "linkedom": "^0.18.12",
-    "ofx-js": "^0.2.0",
-    "p-queue": "^9.2.0",
+    "imapflow": "^1.4.8",
+    "linkedom": "^0.18.13",
+    "ofx-js": "^1.1.1",
+    "p-queue": "^9.3.2",
     "p-retry": "^8.0.0",
-    "patchright": "^1.59.4",
+    "patchright": "^1.61.1",
     "pdf-parse": "^2.4.5",
-    "playwright": "^1.59.1",
-    "ws": "^8.20.0",
-    "zod": "^4.3.6"
+    "playwright": "^1.61.1",
+    "ws": "^8.21.1",
+    "zod": "^4.4.3"
   },
   "name": "@pdpp/polyfill-connectors",
   "bin": {
@@ -37,9 +37,9 @@
   "private": true,
   "description": "Polyfill connectors for non-PDPP platforms (YNAB, Gmail, Amazon, ChatGPT, USAA).",
   "devDependencies": {
-    "@biomejs/biome": "2.4.12",
+    "@biomejs/biome": "2.5.5",
     "@types/ws": "^8.18.1",
-    "ultracite": "7.6.0"
+    "ultracite": "7.9.4"
   },
   "license": "Apache-2.0"
 }
