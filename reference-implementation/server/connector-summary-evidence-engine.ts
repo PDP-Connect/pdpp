@@ -139,6 +139,7 @@ const REASON_CODES = {
   MANIFEST_UNAVAILABLE: "manifest_unavailable",
   MANIFEST_INVALID: "manifest_invalid",
   RETAINED_BYTES_UNAVAILABLE: "retained_bytes_unavailable",
+  MANIFEST_GENERATION_CHANGED: "manifest_generation_changed",
 } as const;
 
 function nowIso(): string {
@@ -919,13 +920,28 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
         .prepare("SELECT stream, record_count FROM retained_size_stream WHERE connector_instance_id = ?")
         .all(connectorInstanceId) as Row[];
       const retainedByStream = new Map(retainedStreamRows.map((row) => [String(row.stream), Number(row.record_count || 0)]));
+      const terminalHighWaterRow = db
+        .prepare(
+          `SELECT MAX(event_seq) AS max_seq FROM spine_events
+            WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
+        )
+        .get() as Row | undefined;
 
       // Test-only: see `testOnlyRepairCandidateSqliteDelay` — no-op in
       // production. Held here, between the read phase above and the write
       // phase below, still inside BEGIN IMMEDIATE.
       testOnlyRepairCandidateSqliteDelay();
 
-      const built = buildRepairedRow({ instance, manifest, checkpoint, canonicalByStream, retainedByteRow, retainedByStream });
+      const built = buildRepairedRow({
+        instance,
+        manifest,
+        checkpoint,
+        canonicalByStream,
+        retainedByteRow,
+        retainedByStream,
+        terminalFactsGenerationBoundary:
+          terminalHighWaterRow?.max_seq == null ? 0 : Number(terminalHighWaterRow.max_seq),
+      });
       upsertSqliteEvidenceRow(db, built);
       return { row: built, failed: false, persisted: true };
     });
@@ -993,8 +1009,21 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
       const retainedByStream = new Map(
         (retainedStreamResult.rows as Row[]).map((row) => [String(row.stream), Number(row.record_count || 0)]),
       );
+      const terminalHighWaterResult = await client.query(
+        `SELECT MAX(event_seq) AS max_seq FROM spine_events
+          WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
+      );
+      const terminalHighWater = (terminalHighWaterResult.rows[0] as Row | undefined)?.max_seq;
 
-      const built = buildRepairedRow({ instance, manifest, checkpoint, canonicalByStream, retainedByteRow, retainedByStream });
+      const built = buildRepairedRow({
+        instance,
+        manifest,
+        checkpoint,
+        canonicalByStream,
+        retainedByteRow,
+        retainedByStream,
+        terminalFactsGenerationBoundary: terminalHighWater == null ? 0 : Number(terminalHighWater),
+      });
       await upsertPostgresEvidenceRow(client, built);
       return { row: built, failed: false, persisted: true };
     });
@@ -1021,6 +1050,13 @@ interface RepairInputs {
   readonly canonicalByStream: ReadonlyMap<string, Row>;
   readonly retainedByteRow: Row | undefined;
   readonly retainedByStream: ReadonlyMap<string, number>;
+  /**
+   * Terminal-event high-water captured while the fingerprinted manifest is
+   * repaired. This is an in-memory generation boundary, never persisted as a
+   * timestamp: when declaration changes, all prior terminal facts must stay
+   * historical until a post-boundary collection terminal event arrives.
+   */
+  readonly terminalFactsGenerationBoundary: number;
 }
 
 /**
@@ -1118,13 +1154,16 @@ function buildRepairedRow(inputs: RepairInputs): Row {
     dirty: 0,
     state: "fresh",
     last_error: null,
+    terminal_facts_generation_boundary: inputs.terminalFactsGenerationBoundary,
   };
 }
 
 function upsertSqliteEvidenceRow(db: Db, row: Row): void {
   const existing = db
-    .prepare("SELECT stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?")
+    .prepare("SELECT manifest_fingerprint, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?")
     .get(row.connector_instance_id) as Row | undefined;
+  const manifestGenerationChanged =
+    existing !== undefined && (existing.manifest_fingerprint ?? null) !== (row.manifest_fingerprint ?? null);
   db.prepare(
     `INSERT INTO connector_summary_evidence(
        connector_instance_id, connector_id, display_name, status, source_kind,
@@ -1159,6 +1198,10 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        manifest_declaration_reason_code = excluded.manifest_declaration_reason_code,
        retained_bytes_state = excluded.retained_bytes_state,
        retained_bytes_reason_code = excluded.retained_bytes_reason_code,
+       terminal_facts_state = excluded.terminal_facts_state,
+       terminal_facts_reason_code = excluded.terminal_facts_reason_code,
+       stream_latest_facts_json = excluded.stream_latest_facts_json,
+       stream_facts_event_seq = excluded.stream_facts_event_seq,
        dirty = 0,
        computed_at = excluded.computed_at,
        state = 'fresh',
@@ -1184,14 +1227,17 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
     row.manifest_declaration_reason_code,
     row.retained_bytes_state,
     row.retained_bytes_reason_code,
-    // A new row has never been folded (unobserved); an existing row keeps
-    // its terminal-facts component exactly as the fold left it — the
-    // record-snapshot repair above must never touch it (design.md:
-    // "components are independent").
-    existing ? existing.terminal_facts_state : "unobserved",
-    existing ? existing.terminal_facts_reason_code : null,
-    existing ? existing.stream_latest_facts_json : null,
-    existing ? existing.stream_facts_event_seq : null,
+    // Record repairs preserve the independently-owned terminal component.
+    // A fingerprint transition is the sole exception: it starts a new
+    // declaration generation, so old terminal facts cannot be reattached to
+    // a re-added stream. Advancing to the captured event high-water makes the
+    // next fold consume only post-generation terminal evidence.
+    manifestGenerationChanged ? "stale" : existing ? existing.terminal_facts_state : "unobserved",
+    manifestGenerationChanged
+      ? REASON_CODES.MANIFEST_GENERATION_CHANGED
+      : existing ? existing.terminal_facts_reason_code : null,
+    manifestGenerationChanged ? null : existing ? existing.stream_latest_facts_json : null,
+    manifestGenerationChanged ? row.terminal_facts_generation_boundary : existing ? existing.stream_facts_event_seq : null,
     row.computed_at,
     row.state,
     row.last_error,
@@ -1200,10 +1246,12 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
 
 async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
   const existingResult = await client.query(
-    "SELECT stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
+    "SELECT manifest_fingerprint, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
     [row.connector_instance_id],
   );
   const existing = existingResult.rows[0] as Row | undefined;
+  const manifestGenerationChanged =
+    existing !== undefined && (existing.manifest_fingerprint ?? null) !== (row.manifest_fingerprint ?? null);
   await client.query(
     `INSERT INTO connector_summary_evidence(
        connector_instance_id, connector_id, display_name, status, source_kind,
@@ -1238,6 +1286,10 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        manifest_declaration_reason_code = EXCLUDED.manifest_declaration_reason_code,
        retained_bytes_state = EXCLUDED.retained_bytes_state,
        retained_bytes_reason_code = EXCLUDED.retained_bytes_reason_code,
+       terminal_facts_state = EXCLUDED.terminal_facts_state,
+       terminal_facts_reason_code = EXCLUDED.terminal_facts_reason_code,
+       stream_latest_facts_json = EXCLUDED.stream_latest_facts_json,
+       stream_facts_event_seq = EXCLUDED.stream_facts_event_seq,
        dirty = 0,
        computed_at = EXCLUDED.computed_at,
        state = 'fresh',
@@ -1263,10 +1315,12 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
       row.manifest_declaration_reason_code,
       row.retained_bytes_state,
       row.retained_bytes_reason_code,
-      existing ? existing.terminal_facts_state : "unobserved",
-      existing ? existing.terminal_facts_reason_code : null,
-      existing ? existing.stream_latest_facts_json : null,
-      existing ? existing.stream_facts_event_seq : null,
+      manifestGenerationChanged ? "stale" : existing ? existing.terminal_facts_state : "unobserved",
+      manifestGenerationChanged
+        ? REASON_CODES.MANIFEST_GENERATION_CHANGED
+        : existing ? existing.terminal_facts_reason_code : null,
+      manifestGenerationChanged ? null : existing ? existing.stream_latest_facts_json : null,
+      manifestGenerationChanged ? row.terminal_facts_generation_boundary : existing ? existing.stream_facts_event_seq : null,
       row.computed_at,
       row.state,
       row.last_error,

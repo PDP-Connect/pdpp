@@ -578,3 +578,18 @@ test('disclosure data block carries query_shape:search_semantic plus record_coun
     connector_count: 2,
   });
 });
+
+test('a stale grant for a dormant stream returns empty without invoking semantic storage/index dependencies', async () => {
+  const deps = makeDeps({
+    resolveClientManifest: () => ({ streams: [{ name: 'pay_statements' }] }),
+    buildSearchPlanForGrant: () => [],
+    buildSnapshot: () => assert.fail('dormant stream must not reach semantic storage/index snapshot'),
+    persistSnapshot: () => assert.fail('dormant stream must not persist a snapshot'),
+  });
+  const out = await executeSearchSemantic(
+    { actor: clientActor, query: { q: 'old', streams: 'time_entries' } },
+    deps,
+  );
+  assert.deepEqual(out.envelope.data, []);
+  assert.equal(out.disclosureData.connector_count, 0);
+});

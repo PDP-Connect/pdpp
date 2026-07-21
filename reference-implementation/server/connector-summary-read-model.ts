@@ -1368,6 +1368,14 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
   if (rowIsFoldLogicVersionAhead(row)) {
     return false;
   }
+  // A manifest fingerprint transition intentionally clears the terminal map
+  // while retaining the current event high-water as its generation boundary.
+  // It still needs one converged fold pass to turn that deliberately stale
+  // component into a current, empty post-boundary fact set. The same retry
+  // behavior is correct for other recoverable terminal-fold failures.
+  if (row.terminal_facts_state !== "current") {
+    return true;
+  }
   if (rowIsFoldLogicVersionBehind(row)) {
     return true;
   }

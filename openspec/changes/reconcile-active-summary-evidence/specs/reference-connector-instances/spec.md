@@ -128,6 +128,22 @@ No pass SHALL hold more than one connector-instance fence.
 - **THEN** both backends SHALL produce the same classification, normalized checkpoint, component states, evidence values, and repair outcome
 - **AND** lock/read/write failure SHALL be explicit rather than silently skipped.
 
+### Requirement: Manifest declaration transitions SHALL start a new terminal-evidence generation
+
+When a valid connector manifest fingerprint changes, reconciliation SHALL
+retain non-declared canonical and retained stream grains as dormant diagnostic
+data, but it SHALL clear terminal latest-attempt facts and advance their
+checkpoint to the terminal event high-water captured by that repair. A later
+terminal fold SHALL use that checkpoint as its replay boundary.
+
+#### Scenario: Re-added stream does not inherit historical terminal success
+
+- **GIVEN** a stream was declared and has a terminal coverage/freshness fact
+- **WHEN** it is absent from a valid manifest and later declared again
+- **THEN** the re-added stream SHALL remain stale or unknown until a terminal
+  event committed after the re-add generation boundary supplies new evidence
+- **AND** SQLite and real disposable Postgres SHALL produce the same result.
+
 ### Requirement: Terminal summary folds SHALL be snapshot-bounded and non-regressing
 
 A terminal fold SHALL capture a terminal sequence high-water `S`, fold only

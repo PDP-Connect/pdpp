@@ -140,6 +140,34 @@ function seedHealthyRetainedSnapshotSqlite({ streamCount = 1 } = {}) {
   seedRetainedStreamSqlite({ stream: STREAM, recordCount: streamCount, dirty: 0 });
 }
 
+function seedTerminalCollectionFactSqlite({ eventSeq, stream = STREAM, eventId = `evt_${eventSeq}` }) {
+  getDb()
+    .prepare(
+      `INSERT INTO spine_events(
+         event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+         actor_type, actor_id, object_type, object_id, status, run_id, data_json, version
+       ) VALUES (?, ?, 'run.completed', ?, ?, 'test', ?, 'runtime', 'test-connector', 'run', ?, 'succeeded', ?, ?, '1')`,
+    )
+    .run(
+      eventId,
+      eventSeq,
+      NOW,
+      NOW,
+      `trace_${eventSeq}`,
+      `run_${eventSeq}`,
+      `run_${eventSeq}`,
+      JSON.stringify({
+        connector_instance_id: INSTANCE_ID,
+        connection_id: INSTANCE_ID,
+        collection_facts: {
+          reference_only: true,
+          schema_version: 1,
+          streams: [{ stream, collected: 1, checkpoint: "committed" }],
+        },
+      }),
+    );
+}
+
 async function withSqlite(fn) {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-summary-evidence-oracle-"));
   invalidateConnectorSummariesCache();
@@ -232,6 +260,42 @@ test("canonical and retained-only streams become dormant diagnostic evidence", (
     assert.equal(dormant.record_count, 1, "canonical current count remains diagnostic evidence");
     assert.equal(dormant.retained_record_count, 2, "retained-only evidence remains separately visible");
     assert.equal(summary.total_records, 0, "dormant canonical rows are excluded from active totals");
+  }),
+);
+
+test("manifest re-add starts a new terminal-evidence generation instead of replaying dormant history", () =>
+  withSqlite(async () => {
+    seedConnectorSqlite();
+    seedInstanceSqlite();
+    seedTerminalCollectionFactSqlite({ eventSeq: 1 });
+    await listBypassCache();
+    assert.match(
+      JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
+      /messages/,
+      "the original declared generation has terminal evidence",
+    );
+
+    const withoutMessages = { ...MANIFEST, streams: [MANIFEST.streams[1]] };
+    getDb().prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?").run(JSON.stringify(withoutMessages), CONNECTOR_ID);
+    await listBypassCache();
+    const dormant = await getConnectorSummaryEvidence(INSTANCE_ID);
+    assert.equal(dormant.terminal_facts.state, "current");
+    assert.equal(dormant.stream_facts_event_seq, 1);
+    assert.equal(dormant.stream_latest_facts, null, "the manifest-generation boundary clears old facts");
+
+    getDb().prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?").run(MANIFEST_JSON, CONNECTOR_ID);
+    const readded = summaryFor(await listBypassCache());
+    const readdedEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
+    assert.equal(readdedEvidence.stream_latest_facts, null, "re-add must not restore pre-removal terminal evidence");
+    assert.notEqual(readded.connection_health.state, "healthy", "without a post-boundary fact the re-added stream fails closed");
+
+    seedTerminalCollectionFactSqlite({ eventSeq: 2 });
+    await listBypassCache();
+    assert.match(
+      JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
+      /messages/,
+      "only a later collection terminal event repopulates the new generation",
+    );
   }),
 );
 
@@ -608,8 +672,55 @@ test(
           },
         ],
       );
+
+      const sequenceResult = await postgresQuery("SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq FROM spine_events");
+      const firstSeq = Number(sequenceResult.rows[0].next_seq);
+      const insertTerminal = async (eventSeq) => {
+        await postgresQuery(
+          `INSERT INTO spine_events(
+             event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+             actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, data_json, version
+           ) VALUES($1, $2, 'run.completed', $3, $3, 'test', $4, 'runtime', 'test-connector', 'run', $5, 'succeeded', $5, $6, $7::jsonb, '1')`,
+          [
+            `evt_readd_pg_${eventSeq}`,
+            eventSeq,
+            NOW,
+            `trace_readd_pg_${eventSeq}`,
+            `run_readd_pg_${eventSeq}`,
+            INSTANCE_ID,
+            JSON.stringify({
+              connector_instance_id: INSTANCE_ID,
+              connection_id: INSTANCE_ID,
+              collection_facts: {
+                reference_only: true,
+                schema_version: 1,
+                streams: [{ stream: STREAM, collected: 1, checkpoint: "committed" }],
+              },
+            }),
+          ],
+        );
+      };
+      await insertTerminal(firstSeq);
+      await listBypassCache();
+      assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
+
+      const withoutMessages = { ...MANIFEST, streams: [MANIFEST.streams[1]] };
+      await postgresQuery("UPDATE connectors SET manifest = $1::jsonb WHERE connector_id = $2", [JSON.stringify(withoutMessages), CONNECTOR_ID]);
+      await listBypassCache();
+      const dormant = await getConnectorSummaryEvidence(INSTANCE_ID);
+      assert.equal(dormant.stream_latest_facts, null, "Postgres clears old terminal facts at the manifest boundary");
+      assert.equal(dormant.stream_facts_event_seq, firstSeq);
+
+      await postgresQuery("UPDATE connectors SET manifest = $1::jsonb WHERE connector_id = $2", [MANIFEST_JSON, CONNECTOR_ID]);
+      await listBypassCache();
+      assert.equal((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts, null, "Postgres re-add withholds historical proof");
+
+      await insertTerminal(firstSeq + 1);
+      await listBypassCache();
+      assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
     } finally {
       await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM spine_events WHERE connector_instance_id = $1", [INSTANCE_ID]);
       await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [INSTANCE_ID]);
       await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [CONNECTOR_ID]);
       await closePostgresStorage();

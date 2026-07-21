@@ -1060,14 +1060,27 @@ export async function executeSearchSemantic(
     snapshotId = decoded.snap;
     offset = decoded.off;
   } else {
-    snapshot = await dependencies.buildSnapshot({
-      q: params.q,
-      perConnectorPlans,
-      isOwner,
-      pageLimit: params.limit,
-    });
-    snapshotId = snapshot.snapshot_id;
-    await dependencies.persistSnapshot(snapshot);
+    // The manifest plan is the serving authority. When it contains no
+    // eligible stream (including a stale grant for dormant history), return
+    // an empty result without touching vector/index storage or snapshots.
+    if (perConnectorPlans.length === 0) {
+      snapshot = {
+        snapshot_id: "",
+        query: params.q,
+        backend_hash: dependencies.getCurrentBackendIdentity(),
+        results: [],
+      };
+      snapshotId = "";
+    } else {
+      snapshot = await dependencies.buildSnapshot({
+        q: params.q,
+        perConnectorPlans,
+        isOwner,
+        pageLimit: params.limit,
+      });
+      snapshotId = snapshot.snapshot_id;
+      await dependencies.persistSnapshot(snapshot);
+    }
     offset = 0;
   }
 

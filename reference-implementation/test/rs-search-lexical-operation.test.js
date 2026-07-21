@@ -551,3 +551,18 @@ test('recall meta coexists with structured warnings in the same meta object', as
   assert.ok(Array.isArray(out.envelope.meta.warnings));
   assert.equal(out.envelope.meta.warnings[0].code, 'deprecated_alias_used');
 });
+
+test('a stale grant for a dormant stream returns empty without invoking lexical storage/index dependencies', async () => {
+  const deps = makeDeps({
+    resolveClientManifest: () => ({ streams: [{ name: 'pay_statements' }] }),
+    buildSearchPlanForGrant: () => [],
+    buildSnapshot: () => assert.fail('dormant stream must not reach lexical storage/index snapshot'),
+    persistSnapshot: () => assert.fail('dormant stream must not persist a snapshot'),
+  });
+  const out = await executeSearchLexical(
+    { actor: clientActor, query: { q: 'old', streams: 'time_entries' } },
+    deps,
+  );
+  assert.deepEqual(out.envelope.data, []);
+  assert.equal(out.disclosureData.connector_count, 0);
+});

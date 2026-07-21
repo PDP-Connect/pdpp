@@ -313,6 +313,115 @@ test("runCollectorConnector rejects failed terminal DONE, preserves records, and
   }
 });
 
+test("runCollectorConnector rejects a zero-exit child without DONE and never checkpoints its partial STATE", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); }));
+        process.stdout.write(JSON.stringify({ type: "RECORD", stream: "messages", key: "m-1", data: { id: "m-1" }, emitted_at: new Date().toISOString() }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "STATE", stream: "messages", cursor: "unsafe-without-done" }) + "\\n");
+      `,
+    });
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-missing-done",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          sourceInstanceId: "src-missing-done",
+        }),
+      /exited without terminal DONE/
+    );
+    assert.equal(harness.stateOps.filter((operation) => operation.method === "PUT").length, 0);
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      assert.equal(
+        outbox.list({ sourceInstanceId: "src-missing-done" }).filter((item) => item.kind === "checkpoint").length,
+        0
+      );
+      assert.equal(
+        outbox.list({ sourceInstanceId: "src-missing-done" }).filter((item) => item.kind === "gap").length,
+        1
+      );
+    } finally {
+      outbox.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("checkpoint PUT failure keeps the committed-run cursor durable and a later clean runner recovers it", async () => {
+  const queuePath = await tempQueuePath();
+  const fixture = await writeFixtureConnector({
+    script: `
+      let buf = "";
+      await new Promise((r) => process.stdin.on("data", (c) => { buf += c; if (buf.includes("\\n")) r(); }));
+      process.stdout.write(JSON.stringify({ type: "STATE", stream: "messages", cursor: "cursor-after-put-failure" }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "DONE", status: "succeeded", records_emitted: 0 }) + "\\n");
+    `,
+  });
+  const failedHarness = await startCollectorHarness({ priorState: {}, stateWriteStatus: 503 });
+  try {
+    const failed = await runCollectorConnector({
+      baseUrl: failedHarness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-checkpoint-put-failure",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { retryBackoffMs: 0 },
+      queuePath,
+      sourceInstanceId: "src-checkpoint-put-failure",
+    });
+    assert.equal(failed.statePutFailed, true);
+    assert.equal(failed.flushedState, null);
+    assert.ok(failedHarness.stateOps.filter((operation) => operation.method === "PUT").length >= 1);
+  } finally {
+    await failedHarness.close();
+  }
+
+  const recoveredHarness = await startCollectorHarness({ priorState: {} });
+  try {
+    const recovered = await runCollectorConnector({
+      baseUrl: recoveredHarness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-checkpoint-put-failure",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { retryBackoffMs: 0 },
+      queuePath,
+      sourceInstanceId: "src-checkpoint-put-failure",
+    });
+    assert.equal(recovered.statePutFailed, false);
+    const puts = recoveredHarness.stateOps.filter((operation) => operation.method === "PUT");
+    assert.ok(puts.length >= 1, "the later runner must commit the durable predecessor checkpoint");
+    assert.deepEqual(puts[0]?.body, { state: { messages: "cursor-after-put-failure" } });
+  } finally {
+    await recoveredHarness.close();
+  }
+});
+
 const ONE_RECORD_CONNECTOR_SCRIPT = `
   await new Promise((r) => {
     let buf = "";
@@ -1686,6 +1795,8 @@ interface CollectorHarnessOptions {
   priorState?: Record<string, unknown> | null;
   /** When set, the GET state endpoint returns this status instead of 200. */
   stateReadStatus?: number;
+  /** When set, a checkpoint STATE PUT returns this status without persisting. */
+  stateWriteStatus?: number;
 }
 
 function heartbeatLastError(input: unknown): {
@@ -1763,6 +1874,11 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
         return;
       }
       // PUT
+      if (options.stateWriteStatus && options.stateWriteStatus >= 400) {
+        res.writeHead(options.stateWriteStatus, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "synthetic_state_write_failure" } }));
+        return;
+      }
       if (parsed && typeof parsed === "object" && "state" in parsed) {
         const next = (parsed as { state: Record<string, unknown> }).state;
         persistedState = { ...persistedState, ...next };

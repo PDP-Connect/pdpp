@@ -116,6 +116,27 @@ test('hybrid forwards connection_id from whichever source emitted first', async 
   assert.deepEqual(byConn.cin_B.retrieval_sources, ['semantic']);
 });
 
+test('hybrid has no third storage path: dormant-grant empty results are exactly the lexical and semantic delegate results', async () => {
+  let lexicalCalls = 0;
+  let semanticCalls = 0;
+  const out = await executeSearchHybrid(
+    { actor: { kind: 'client', subject_id: 'subj', grant: { streams: [{ name: 'dormant' }] } }, query: { q: 'old', streams: 'dormant' } },
+    {
+      runLexical: () => {
+        lexicalCalls += 1;
+        return { envelope: { data: [] } };
+      },
+      runSemantic: () => {
+        semanticCalls += 1;
+        return { envelope: { data: [] } };
+      },
+    },
+  );
+  assert.equal(lexicalCalls, 1);
+  assert.equal(semanticCalls, 1);
+  assert.deepEqual(out.envelope.data, []);
+});
+
 test('hybrid aggregates binding-aware source_skipped_not_applicable warnings from sub-sources', async () => {
   const deps = {
     runLexical: () => ({ envelope: {

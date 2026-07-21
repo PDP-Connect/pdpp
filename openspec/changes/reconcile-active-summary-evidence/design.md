@@ -206,7 +206,13 @@ manifest is missing or malformed, canonical and readable retained stream names
 remain visible with `declaration_state = unavailable`; `unexpected` is never
 asserted without a successfully parsed manifest. Re-adding a dormant stream
 makes it declared with its old retained facts, but coverage/freshness remain
-unknown or stale until new current evidence commits.
+unknown or stale until new current evidence commits. The manifest fingerprint
+is the declaration-generation boundary: a fingerprint transition clears the
+terminal fact map and advances its event-sequence checkpoint to the terminal
+high-water observed by that repair. A later fold therefore consumes only
+post-transition terminal events; it MUST NOT replay a pre-removal success
+into a re-added stream. This boundary is event-sequence based, never a clock
+or connector-specific branch.
 
 A declared stream absent from a completed stable canonical record snapshot is
 `declared + known_zero`. A missing retained-size row does not change that count;
