@@ -92,3 +92,19 @@ test('skip facts outrank checkpoint strategy proof', () => {
     'retryable_gap',
   );
 });
+
+// Defensive normalization: the type contract is `considered: number | null`,
+// but a caller that bypasses `readRuntimeCollectionFact`'s re-validation
+// (this test constructs the fact directly, unchecked by TypeScript) could
+// hand an `undefined` denominator. `undefined !== null` would otherwise read
+// as a KNOWN denominator, and `0 < undefined` is `false`, so a zero-collected
+// fact would wrongly read `complete` instead of `unknown`.
+test('an undefined (not null) considered denominator still reads unknown, never fabricates complete', () => {
+  assert.equal(
+    deriveStreamCoverageCondition(fact({ collected: 0, considered: undefined, checkpoint: 'not_staged' }), {
+      coverage_strategy: 'checkpoint_window',
+      freshness_strategy: 'scheduled_window',
+    }),
+    'unknown',
+  );
+});

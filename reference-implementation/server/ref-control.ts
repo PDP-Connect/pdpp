@@ -2583,8 +2583,21 @@ interface EffectiveStreamFact {
  * Resolve each stream's effective fact: the classifying run's own facts,
  * overlaid onto the durable latest-attempt store. The classifying run wins
  * for streams it attempted (it is the newest terminal run, so its fact is
- * the newest attempt even when the fold has not caught up); the store fills
- * streams it did not attempt. Stored run-local pending-gap counts are
+ * the newest attempt even when the fold has not caught up) UNLESS doing so
+ * would erase durable proof with an attempt that proves nothing — the same
+ * monotonic durable-proof floor `mergeEventStreamFacts`
+ * (`connector-summary-read-model.ts`) already enforces at the store layer:
+ * once a stream's STORED fact proves durable coverage
+ * (`checkpointProvesStreamCoverage`), a classifying attempt whose OWN fact
+ * does not also prove durable coverage keeps the existing (stronger) stored
+ * fact and its provenance instead of shadowing it. A classifying fact that
+ * itself proves durable coverage (a genuine `committed`/`disabled`
+ * re-measurement) still replaces the stored fact normally — forward
+ * progress is unaffected. A stream with no durably-proven stored fact is
+ * unaffected by the floor: the classifying run's attempt — resolved or not
+ * — still wins, so a never-proven stream keeps surfacing its newest
+ * (possibly unresolved) attempt. The store fills streams the classifying
+ * run did not attempt at all. Stored run-local pending-gap counts are
  * dropped — the durable gap store is the current retry contract, and a stale
  * stored count must not fabricate a retryable gap.
  *
@@ -2613,9 +2626,26 @@ function resolveEffectiveStreamFacts(input: {
     }
   }
   for (const [stream, record] of input.latestStreamFacts ?? []) {
-    if (factByStream.has(stream) || record.fact.stream !== stream) {
+    if (record.fact.stream !== stream) {
       continue;
     }
+    const classifying = factByStream.get(stream);
+    if (
+      classifying &&
+      (!checkpointProvesStreamCoverage(record.fact.checkpoint) ||
+        checkpointProvesStreamCoverage(classifying.fact.checkpoint))
+    ) {
+      // A classifying attempt exists for this stream and either the stored
+      // fact does not prove durable coverage (nothing durable to protect),
+      // or the classifying fact proves durable coverage too (forward
+      // progress) — the classifying run's own newest attempt wins as usual.
+      continue;
+    }
+    // No classifying attempt shadows this stream, OR the stored fact proves
+    // durable coverage while the classifying run's own attempt for this
+    // stream does not: keep the stronger, already-proven stored fact and its
+    // provenance — do not let a newer, weaker attempt regress it (mirrors
+    // `mergeEventStreamFacts`'s monotonicity guard).
     factByStream.set(stream, {
       fact: { ...record.fact, pending_detail_gaps: 0 },
       runId: record.runId,

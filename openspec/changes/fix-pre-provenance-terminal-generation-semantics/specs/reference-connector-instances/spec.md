@@ -85,3 +85,63 @@ produce the same verdict as deleting and rebuilding that projection.
   existed for it (never a generation transition): that connection's terminal
   facts ARE current — a connection with no history has nothing to be
   historical about.
+
+## ADDED Requirements
+
+### Requirement: The Collection Report's read-side overlay SHALL NOT let an unproven classifying attempt shadow durably-proven stored evidence
+
+The control-plane Collection Report projection overlays a classifying run's own
+per-stream facts onto the durable latest-attempt evidence store, and the
+classifying run's own attempt normally wins for any stream it attempted (it is
+the newest terminal run). This SHALL be bounded by the same monotonic
+durable-proof floor the terminal-facts fold already enforces at the store
+layer: once a stream's STORED fact proves durable coverage (its own
+`checkpoint` is `committed` or `disabled`), a classifying run's own attempt for
+that SAME stream that does not also prove durable coverage SHALL NOT shadow
+the stored fact — the projection SHALL keep the stored fact and its own
+provenance (`evidence_as_of`, `run_id`) instead. A classifying attempt that
+itself proves durable coverage (a genuine `committed`/`disabled`
+re-measurement) SHALL still replace the stored fact normally; forward progress
+is unaffected. A stream with no durably-proven stored fact SHALL be unaffected
+by this floor: the classifying run's newest attempt for that stream — resolved
+or not — SHALL still win, so a never-proven stream keeps surfacing its newest
+attempt rather than being frozen by the floor. This mirrors, at the read layer,
+the store-layer fold's monotonicity guard (`mergeEventStreamFacts`) and reuses
+the SAME durable-proof boundary (`checkpoint` is `committed` or `disabled`),
+not a new or inconsistent predicate.
+
+#### Scenario: A failed classifying run cannot un-prove a stream the store already proved
+
+- **GIVEN** a connection's durable latest-attempt store holds a `committed`
+  checkpoint for a stream (durable proof of coverage)
+- **AND** the connection's most recent terminal run (the classifying run) is a
+  `run.failed` whose own fact for that same stream carries a non-proving
+  checkpoint (for example `not_staged`)
+- **WHEN** the Collection Report is projected
+- **THEN** that stream's entry SHALL report the stored `committed` checkpoint
+  and coverage condition, with the stored fact's own `evidence_as_of` and
+  `run_id`
+- **AND** the entry SHALL NOT report `unknown` coverage or `unmeasured`
+  forward disposition solely because the classifying run did not itself prove
+  the stream.
+
+#### Scenario: A newer proving classifying attempt still replaces stored proof
+
+- **GIVEN** a connection's durable latest-attempt store holds a `committed`
+  checkpoint for a stream
+- **WHEN** a newer classifying run's own fact for that same stream also proves
+  durable coverage (`committed` or `disabled`)
+- **THEN** the Collection Report entry SHALL reflect the classifying run's
+  newer fact and provenance
+- **AND** the read-side floor SHALL NOT block this forward progress.
+
+#### Scenario: A never-proven stream is not frozen by the floor
+
+- **GIVEN** a connection's durable latest-attempt store holds no fact for a
+  stream that proves durable coverage (its stored checkpoint, if any, is not
+  `committed` or `disabled`)
+- **WHEN** a classifying run's own fact for that stream is also unresolved
+- **THEN** the Collection Report entry SHALL reflect the classifying run's
+  newest attempt and provenance, honestly `unknown`
+- **AND** the floor SHALL NOT fabricate durable proof for a stream that has
+  never been durably proven.

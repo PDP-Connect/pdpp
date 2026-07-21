@@ -19,6 +19,24 @@ strictly more conservative than necessary: a connection that has never
 advanced past generation 0 has no other generation its unstamped history
 could belong to.
 
+Post-deploy live verification (2026-07-21) surfaced a second, distinct,
+pre-existing defect that produces the identical symptom
+(`runtime_evidence_missing`) once Fix A/B above are live: the Collection
+Report's read-side overlay in `ref-control.ts`
+(`resolveEffectiveStreamFacts`) lets a classifying run's own per-stream fact
+shadow the durable latest-attempt store even when the classifying run's fact
+does not itself prove durable coverage and the stored fact already does. Both
+ChatGPT connections' most recent terminal run is a `run.failed` whose own
+facts read `not_staged` for all six streams (the run failed before
+attempting them); the durable store, healed by Fix A, already holds
+`committed` checkpoints for all six from the last succeeded run. The
+classifying run's `not_staged` facts shadow the stored `committed` facts, so
+the served report reads `unknown`/`unmeasured` even though the store itself
+reads `complete`. This is the exact "connection-health `runtime_evidence_missing`
+defect class" the fold's own monotonicity guard
+(`mergeEventStreamFacts`) already defends against at the store layer — the
+guard is simply missing at this second, read-side site.
+
 Live verified impact (2026-07-21, read-only, `pdpp` Postgres): 10 of 14
 active connections showing `terminal_facts_reason_code =
 terminal_facts_historical` have `manifest_generation = 0` (never advanced)
@@ -82,14 +100,37 @@ change able to self-heal it.
    existing one. Any bounded bound closes the underlying defect; this value
    is chosen to be comfortably wider than ordinary cadence jitter/backoff so
    it never fires under normal operation, while still being finite.
+5. **Read-side monotonic durable-proof floor for the Collection Report
+   overlay (Fix C).** `resolveEffectiveStreamFacts`
+   (`reference-implementation/server/ref-control.ts`) gains the same
+   monotonicity guard the store-layer fold (`mergeEventStreamFacts`) already
+   enforces: a classifying run's own per-stream fact may shadow the durable
+   latest-attempt store's fact for that stream **unless** the stored fact
+   proves durable coverage (`checkpoint` is `committed` or `disabled`) and
+   the classifying run's own fact for that same stream does not — in that
+   case the stored fact and its own provenance (`evidence_as_of`, `run_id`)
+   are kept instead of being shadowed. A classifying fact that itself proves
+   durable coverage still replaces the stored fact normally (forward
+   progress unaffected); a stream with no durably-proven stored fact is
+   unaffected by the floor (a never-proven stream keeps surfacing its
+   newest, possibly unresolved, classifying attempt). This reuses the
+   existing `checkpointProvesStreamCoverage` boundary already defined in
+   `ref-control.ts` rather than inventing a new or divergent predicate — the
+   same boundary `mergeEventStreamFacts`'s guard and
+   `connector-coverage-policy.ts`'s `checkpointProvesCoverage` already use.
+   Read-side only; no data, schedule, or store-layer change.
 
 ## Impact
 
 - Affected specs: `reference-connector-instances` (MODIFIED: manifest
-  generation transition requirement), `reference-implementation-runtime`
-  (ADDED: recovery-first forward-evidence-debt bound).
+  generation transition requirement; ADDED: Collection Report read-side
+  monotonic durable-proof floor), `reference-implementation-runtime` (ADDED:
+  recovery-first forward-evidence-debt bound).
 - Affected code: `reference-implementation/server/connector-summary-read-model.ts`
-  (fold gate + fold-logic version), `reference-implementation/runtime/recovery-decision.ts`
+  (fold gate + fold-logic version), `reference-implementation/server/ref-control.ts`
+  (`resolveEffectiveStreamFacts` read-side floor), `reference-implementation/server/connector-coverage-policy.ts`
+  (defensive `considered` denominator normalization — incidental, latent, unreachable via the typed
+  read path), `reference-implementation/runtime/recovery-decision.ts`
   (shared policy + debt predicate + `FORWARD_EVIDENCE_MAX_AGE`),
   `reference-implementation/runtime/scheduler/dispatch-governor.ts` and
   `reference-implementation/runtime/controller.ts` (consume the new input),
@@ -97,7 +138,11 @@ change able to self-heal it.
   and `server/index.js`.
 - No spine_events backfill, no manual runs, no owner action, no data
   migration. Repair is the deploy itself: the existing reconcile-before-read
-  barrier replays every version-behind row on its next observation.
+  barrier replays every version-behind row on its next observation; the
+  read-side floor takes effect on the very next `/_ref/connectors` read with
+  no fold replay needed (it does not change stored data or the fold-logic
+  version).
 - Rollback is a plain revert: an older binary sees `stream_facts_fold_version
   = 4` rows as fold-logic-version-AHEAD and serves them read-only without
-  re-folding or overwriting — no corruption, no flapping.
+  re-folding or overwriting — no corruption, no flapping. The read-side floor
+  reverts with the same commit revert; no data was mutated by it either way.

@@ -32,6 +32,36 @@
       (`resolveEffectiveRecoveryOnly` in `controller.ts`), reading the same
       evidence the scheduler probe reads.
 
+## 2A. Read-side Fix C — Collection Report monotonic durable-proof floor
+
+- [x] 2A.1 Add the monotonic durable-proof floor to `resolveEffectiveStreamFacts`
+      (`ref-control.ts`): a classifying run's own fact for a stream may
+      shadow the durable latest-attempt store's fact for that stream unless
+      the stored fact proves durable coverage
+      (`checkpointProvesStreamCoverage`) and the classifying fact does not —
+      in that case keep the stored fact and its own provenance
+      (`evidence_as_of`, `run_id`). Reuse the existing
+      `checkpointProvesStreamCoverage` boundary; do not invent a new
+      predicate.
+- [x] 2A.2 Update the misleading doc comment above
+      `resolveEffectiveStreamFacts` ("The classifying run wins for streams
+      it attempted") to describe the floor.
+- [x] 2A.3 Confirm a newer classifying fact that itself proves durable
+      coverage still replaces the stored fact (forward progress unaffected),
+      and a stream with no durably-proven stored fact is unaffected by the
+      floor (never-proven streams keep surfacing their newest attempt).
+
+## 2B. Incidental P3 — undefined `considered` denominator normalization
+
+- [x] 2B.1 `deriveGapFreeStreamCoverageCondition`
+      (`connector-coverage-policy.ts`) treats `considered: undefined` as a
+      known denominator (`undefined !== null`), which can read a
+      zero-collected fact as `complete`. Unreachable via the typed read path
+      (`readRuntimeCollectionFact` always normalizes to `number | null`) but
+      worth a one-line defensive `?? null` normalization at the top of the
+      function, with a direct unit test that bypasses the type contract to
+      exercise it.
+
 ## 3. Tests
 
 - [ ] 3.1 Flip the two pinned "keeps pre-generation terminal facts
@@ -58,6 +88,24 @@
       lands.
 - [ ] 3.5 Run both-backend parity lanes for 3.1/3.2 against the dedicated
       Postgres test database.
+- [x] 3.6 `test/collection-report-projection.test.js`: add the four
+      discriminating cases for the read-side floor — (a) the exact
+      failed-preprogress ChatGPT shape (classifying `not_staged` shadowing a
+      stored `committed` fact -> `complete`, stored provenance kept); (b)
+      forward progress (a newer classifying fact that itself proves durable
+      coverage still replaces the stored fact); (c) never-proven stream (an
+      unresolved classifying attempt still replaces an unresolved stored
+      fact — the floor is not a green-wash); (d) proof-predicate parity (a
+      stored `disabled` checkpoint proves durable coverage exactly like
+      `committed` at this third site, mirroring the store-layer fold guard
+      and `checkpointProvesCoverage`). Update the two pre-existing tests
+      that pinned the pre-fix shadowing behavior
+      ("an attempted-but-unresolved classifying fact ..." and "a
+      non-recovery-only classifying run still fully replaces the stored
+      fact ...") to assert the corrected floor behavior instead.
+- [x] 3.7 `test/connector-coverage-policy.test.js`: add a direct case for
+      2B.1 — an `undefined` (not `null`) `considered` denominator still
+      reads `unknown`, never `complete`.
 
 ## 4. Verification
 

@@ -1089,7 +1089,10 @@ function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } 
  * imported so this read-model module keeps zero dependency on the coverage-
  * derivation module (a raw-facts store must not need to know how coverage is
  * derived); the two are kept in lockstep by
- * `stream-facts-checkpoint-proof-parity.test.js`.
+ * `test/connector-summary-stream-facts.test.js`'s "monotonic guard" cases
+ * (this predicate's `committed`/`disabled` behavior at the store layer) and
+ * `test/connector-coverage-policy.test.js` (the same boundary's behavior at
+ * the coverage-derivation layer).
  */
 function factCheckpointProvesDurableCoverage(fact: Row): boolean {
   const checkpoint = fact.checkpoint;

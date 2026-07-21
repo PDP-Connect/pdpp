@@ -1041,12 +1041,14 @@ test('carry-forward: never-measured omitted required stream still blocks Healthy
   );
 });
 
-test('carry-forward: an attempted-but-unresolved classifying fact blocks carry (conservative — stays unknown)', () => {
+test('carry-forward: an attempted-but-unresolved classifying fact cannot shadow durable stored proof (monotonic floor)', () => {
   // The classifying block DID attempt `messages` but left it unresolved
-  // (not_staged, no skip, no denominator). An older block proved it
-  // complete, but the classifying run's own unresolved attempt must win —
-  // carrying stale proof over an honest "we tried and can't yet prove it"
-  // would be dishonest.
+  // (not_staged, no skip, no denominator). An older block proved it complete
+  // via a committed checkpoint. The classifying run's own attempt does not
+  // itself prove durable coverage, so it must not erase the stored proof —
+  // the same monotonic durable-proof floor `mergeEventStreamFacts` enforces
+  // at the store layer (`ref-control.ts:2612-2622`'s live failed-preprogress
+  // ChatGPT shape: `not_staged` classifying vs. `committed` stored).
   const entries = buildCollectionReport({
     collectionFacts: {
       streams: [fact({ stream: 'messages', collected: 10, considered: null, checkpoint: 'not_staged' })],
@@ -1061,9 +1063,9 @@ test('carry-forward: an attempted-but-unresolved classifying fact blocks carry (
     refresh: null,
   });
   const entry = entryFor(entries, 'messages');
-  assert.equal(entry.coverage_condition, 'unknown', 'the classifying run own unresolved attempt is not overridden');
-  assert.equal(entry.checkpoint, 'not_staged');
-  assert.equal(entry.evidence_as_of, '2026-06-01T00:00:00.000Z', 'proof age is the CLASSIFYING run\'s own time, not the older block');
+  assert.equal(entry.coverage_condition, 'complete', 'the durably-proven stored fact is kept, not shadowed');
+  assert.equal(entry.checkpoint, 'committed');
+  assert.equal(entry.evidence_as_of, '2026-05-01T00:00:00.000Z', "proof age is the STORED fact's own timestamp, restored with it");
 });
 
 test('carry-forward: manifest-deferred stream stays accepted policy regardless of carry evidence', () => {
@@ -1262,7 +1264,11 @@ test('current gap-drain progress reads live from pendingDetailGaps, independent 
   assert.equal(afterEntry.considered, 212, 'considered denominator is unchanged — it never came from the recovery-only run');
 });
 
-test('a non-recovery-only classifying run still fully replaces the stored fact (existing behavior unchanged)', () => {
+test('a non-recovery-only classifying run cannot shadow durable stored proof it does not itself match (monotonic floor)', () => {
+  // A genuinely failed/unresolved full-scope attempt (checkpoint not_staged,
+  // no considered denominator) must not erase durably-committed stored
+  // proof — the read-side mirror of `mergeEventStreamFacts`'s store-layer
+  // monotonicity guard. The stored fact and its own provenance are restored.
   const entries = buildCollectionReport({
     collectionFacts: {
       streams: [fact({ stream: 'order_items', collected: 0, considered: null, checkpoint: 'not_staged' })],
@@ -1279,11 +1285,61 @@ test('a non-recovery-only classifying run still fully replaces the stored fact (
     refresh: null,
   });
   const entry = entryFor(entries, 'order_items');
-  assert.equal(
-    entry.coverage_condition,
-    'unknown',
-    'a genuinely failed/unresolved full-scope attempt must still replace stale proof (unchanged prior behavior)'
-  );
+  assert.equal(entry.coverage_condition, 'complete', 'the durably-proven stored fact is kept, not shadowed');
+  assert.equal(entry.checkpoint, 'committed');
+  assert.equal(entry.evidence_as_of, '2026-07-10T00:00:00.000Z', "provenance is the STORED fact's own, restored with it");
+  assert.equal(entry.considered, 212);
+});
+
+test('forward progress: a newer classifying fact that itself proves durable coverage still replaces an older stored proof', () => {
+  // The floor is a floor, not a freeze: a classifying run whose OWN fact
+  // also proves durable coverage (a genuine committed re-measurement) still
+  // wins normally, advancing evidence_as_of/considered to the newer values.
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'order_items', collected: 300, considered: 300, checkpoint: 'committed' })],
+    },
+    collectionFactsAsOf: '2026-07-20T00:00:00.000Z',
+    collectionFactsRunId: 'run_full_scope_succeeded',
+    latestStreamFacts: storedFacts(
+      [fact({ stream: 'order_items', collected: 212, considered: 212, checkpoint: 'committed' })],
+      { asOf: '2026-07-10T00:00:00.000Z', runId: 'run_old' }
+    ),
+    manifestStreams: [{ name: 'order_items', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'order_items');
+  assert.equal(entry.coverage_condition, 'complete');
+  assert.equal(entry.considered, 300, 'the newer classifying fact wins — forward progress is not blocked by the floor');
+  assert.equal(entry.evidence_as_of, '2026-07-20T00:00:00.000Z', "provenance advances to the newer classifying run's own timestamp");
+});
+
+test('never-proven stream: an unresolved classifying attempt still replaces an unresolved stored fact (no floor without prior proof)', () => {
+  // The floor only protects a stored fact that ITSELF proves durable
+  // coverage. A stream with no durably-proven stored fact is unaffected:
+  // the classifying run's newest attempt — resolved or not — still wins, so
+  // an honestly-never-proven stream keeps surfacing its newest attempt
+  // rather than freezing on the first (also-unresolved) thing ever stored.
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'order_items', collected: 5, considered: null, checkpoint: 'not_staged' })],
+    },
+    collectionFactsAsOf: '2026-07-20T00:00:00.000Z',
+    collectionFactsRunId: 'run_full_scope_failed_again',
+    latestStreamFacts: storedFacts(
+      [fact({ stream: 'order_items', collected: 0, considered: null, checkpoint: 'not_staged' })],
+      { asOf: '2026-07-10T00:00:00.000Z', runId: 'run_old' }
+    ),
+    manifestStreams: [{ name: 'order_items', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'order_items');
+  assert.equal(entry.coverage_condition, 'unknown', 'never-proven stream stays honestly unknown — the floor is not a green-wash');
+  assert.equal(entry.evidence_as_of, '2026-07-20T00:00:00.000Z', 'the classifying run\'s newest attempt still wins provenance');
 });
 
 // Amazon-shaped acceptance test reproducing run_1784155457650: a recovery-only
@@ -1322,4 +1378,38 @@ test('acceptance: Amazon-shaped recovery-only run (15 gaps recovered, pending dr
   assert.equal(orderItems.considered, 212);
   assert.equal(orderItems.evidence_as_of, priorEvidenceAsOf, 'order_items provenance is also not restamped');
   assert.equal(orderItems.pending_detail_gaps, 0, 'the drain to zero is still reflected via the live gap-store input');
+});
+
+// Proof-predicate parity: `resolveEffectiveStreamFacts`'s monotonic
+// durable-proof floor uses the SAME `checkpoint === 'committed' ||
+// checkpoint === 'disabled'` boundary as the store-layer fold's
+// `mergeEventStreamFacts` guard (`connector-summary-read-model.ts`) and the
+// coverage derivation's `checkpointProvesCoverage`
+// (`connector-coverage-policy.ts`). All three are mirrored, not imported
+// (each module stays dependency-free of the others), so this black-box test
+// pins that `disabled` proves durable coverage exactly like `committed` at
+// this third site — `test/connector-summary-stream-facts.test.js`'s
+// "monotonic guard: a legitimate skipped/accepted-absence fact with a
+// proving checkpoint still counts as durable proof (not blocked)" pins the
+// same `disabled`-proves-coverage boundary at the store layer.
+test('proof-predicate parity: a stored `disabled` checkpoint proves durable coverage exactly like `committed`, shadowing an unresolved classifying attempt', () => {
+  const entries = buildCollectionReport({
+    collectionFacts: {
+      streams: [fact({ stream: 'order_items', collected: 0, considered: null, checkpoint: 'not_staged' })],
+    },
+    collectionFactsAsOf: '2026-07-15T22:45:32.686Z',
+    collectionFactsRunId: 'run_full_scope_failed',
+    latestStreamFacts: storedFacts(
+      [fact({ stream: 'order_items', collected: 0, considered: null, checkpoint: 'disabled' })],
+      { asOf: '2026-07-10T00:00:00.000Z', runId: 'run_old' }
+    ),
+    manifestStreams: [{ name: 'order_items', coverage_strategy: 'checkpoint_window', freshness_strategy: 'scheduled_window' }],
+    freshness: 'fresh',
+    attentionOpen: false,
+    refresh: null,
+  });
+  const entry = entryFor(entries, 'order_items');
+  assert.equal(entry.coverage_condition, 'complete', 'a `disabled` stored checkpoint proves durable coverage, same as `committed`');
+  assert.equal(entry.checkpoint, 'disabled');
+  assert.equal(entry.evidence_as_of, '2026-07-10T00:00:00.000Z');
 });
