@@ -63,7 +63,7 @@ test("claude_code emits coverage diagnostics for a missing source home before fa
   );
 });
 
-test("claude_code inventory streams emit safe metadata and exclude auth payloads", async () => {
+test("claude_code inventory streams emit safe metadata, one STATE per stream, and exclude auth payloads", async () => {
   const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-inventory-"));
   await mkdir(join(claudeHome, "file-history"), { recursive: true });
   await mkdir(join(claudeHome, "cache"), { recursive: true });
@@ -71,12 +71,13 @@ test("claude_code inventory streams emit safe metadata and exclude auth payloads
   await writeFile(join(claudeHome, "cache", "raw-cache.json"), "cache payload");
   await writeFile(join(claudeHome, "auth.json"), '{"token":"secret-token"}');
 
+  const start = {
+    scope: { streams: [{ name: "file_history" }, { name: "cache_inventory" }, { name: "coverage_diagnostics" }] },
+    type: "START" as const,
+  };
   const result = await runConnectorProcess({
     env: { CLAUDE_CODE_HOME: claudeHome },
-    start: {
-      scope: { streams: [{ name: "file_history" }, { name: "cache_inventory" }, { name: "coverage_diagnostics" }] },
-      type: "START",
-    },
+    start,
   });
 
   assert.equal(result.exitCode, 0);
@@ -110,6 +111,39 @@ test("claude_code inventory streams emit safe metadata and exclude auth payloads
   assert.equal(stores.length, 11);
   assert(!JSON.stringify(coverageState).includes("secret-token"));
   assert(!JSON.stringify(coverageState).includes("reason"));
+
+  const states = result.messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "STATE" }> => msg.type === "STATE"
+  );
+  assert.equal(
+    new Set(states.map((state) => state.stream)).size,
+    states.length,
+    "each inventory stream writes at most one STATE per collection pass"
+  );
+  const firstFileHistoryState = states.find((state) => state.stream === "file_history");
+  assert.equal(firstFileHistoryState !== undefined, true);
+  assert.equal(
+    Object.keys((firstFileHistoryState?.cursor as { fingerprints?: Record<string, string> }).fingerprints ?? {}).length,
+    2,
+    "the file-history root and entry share one cursor"
+  );
+
+  const state = Object.fromEntries(states.map((message) => [message.stream, message.cursor]));
+  const second = await runConnectorProcess({
+    env: { CLAUDE_CODE_HOME: claudeHome },
+    start: { ...start, state },
+  });
+  assert.equal(second.exitCode, 0);
+  assert.equal(
+    second.messages.filter((message) => message.type === "RECORD" && message.stream === "file_history").length,
+    0,
+    "unchanged file_history emits no records on the second run"
+  );
+  assert.equal(
+    second.messages.filter((message) => message.type === "STATE" && message.stream === "file_history").length,
+    1,
+    "file_history still writes exactly one carry-forward STATE"
+  );
 });
 
 test("claude_code context_mode is diagnostics-only, not a requestable stream", async () => {

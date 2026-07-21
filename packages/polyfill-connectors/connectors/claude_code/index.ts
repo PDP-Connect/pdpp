@@ -1470,7 +1470,10 @@ async function emitLocalInventoryStreams(input: {
   state: ClaudeCodeState;
 }): Promise<void> {
   for (const [stream, records] of input.inventory.recordsByStream) {
-    if (!input.requested.has(stream)) {
+    // file_history has both the store-root inventory record and its directory
+    // entries. They must share one fingerprint cursor and one STATE write;
+    // separate gated passes would prune one half of the other pass's cursor.
+    if (stream === "file_history" || !input.requested.has(stream)) {
       continue;
     }
     await emitGatedInventoryStream({
@@ -1482,7 +1485,7 @@ async function emitLocalInventoryStreams(input: {
     });
   }
   if (input.requested.has("file_history")) {
-    const records = await listDirectoryInventory({
+    const entries = await listDirectoryInventory({
       tool: "claude_code",
       sourceHome: input.claudeHome,
       relativeRoot: "file-history",
@@ -1494,7 +1497,7 @@ async function emitLocalInventoryStreams(input: {
       emit: input.emit,
       emitRecord: input.emitRecord,
       priorState: input.state.file_history,
-      records,
+      records: [...(input.inventory.recordsByStream.get("file_history") ?? []), ...entries],
       stream: "file_history",
     });
   }
