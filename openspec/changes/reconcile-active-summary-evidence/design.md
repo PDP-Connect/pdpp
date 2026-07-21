@@ -227,6 +227,12 @@ must equal deleting and rebuilding the disposable projection. A binary that
 sees a fold version ahead of its own continues to fail closed in memory and
 never overwrites that newer-owned row.
 
+A replay CAS loss is an authority event, not a successful fold. The reader
+replays from the new durable baseline a bounded number of times. If competing
+writes keep winning, that observation returns typed non-current terminal
+evidence in memory rather than trusting the retained map; it does not durably
+mutate a potentially future-version row.
+
 A declared stream absent from a completed stable canonical record snapshot is
 `declared + known_zero`. A missing retained-size row does not change that count;
 it affects retained byte evidence only. Known zero never proves provider

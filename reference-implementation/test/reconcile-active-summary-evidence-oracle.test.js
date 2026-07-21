@@ -19,6 +19,8 @@ import {
   initDb,
 } from "../server/db.js";
 import {
+  __testOnlySetFoldPauseHook,
+  __testOnlyUpdateStreamFactsCasWrite,
   getConnectorSummaryEvidence,
   rebuildConnectorSummaryEvidence,
 } from "../server/connector-summary-read-model.ts";
@@ -463,6 +465,140 @@ test("SQLite warm v2 terminal projection is invalidated before a route can trust
     assert.equal(recovered?.terminal_facts.state, "current");
     assert.equal(recovered?.terminal_facts.reason_code, null);
     assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
+  }),
+);
+
+test("SQLite route retries a lost v3 replay before trusting a mixed-version v2 terminal map", () =>
+  withSqlite(async () => {
+    seedConnectorSqlite();
+    seedInstanceSqlite();
+    seedTerminalCollectionFactSqlite({ eventSeq: 1, eventId: "evt_mixed_v2_messages" });
+    await getConnectorSummaryForRoute(INSTANCE_ID);
+    const oldFacts = (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts;
+    getDb().prepare("UPDATE connector_summary_evidence SET stream_facts_fold_version = 2 WHERE connector_instance_id = ?").run(INSTANCE_ID);
+    getDb().prepare("UPDATE spine_events SET manifest_generation = NULL WHERE event_id = ?").run("evt_mixed_v2_messages");
+
+    let signalPaused;
+    const paused = new Promise((resolve) => { signalPaused = resolve; });
+    let releaseReplay;
+    const release = new Promise((resolve) => { releaseReplay = resolve; });
+    __testOnlySetFoldPauseHook(async (point) => {
+      if (point === "after_seed_before_read") {
+        signalPaused();
+        await release;
+      }
+    });
+    try {
+      const routePromise = getConnectorSummaryForRoute(INSTANCE_ID);
+      await paused;
+      seedTerminalCollectionFactSqlite({ eventSeq: 2, stream: EMPTY_STREAM, eventId: "evt_mixed_v2_empty" });
+      const v2WriteAccepted = await __testOnlyUpdateStreamFactsCasWrite({
+        connectorInstanceId: INSTANCE_ID,
+        factsJson: JSON.stringify({
+          ...oldFacts,
+          [EMPTY_STREAM]: {
+            evidence_as_of: NOW,
+            event_seq: 2,
+            fact: { stream: EMPTY_STREAM, collected: 1, checkpoint: "committed" },
+            run_id: "run_2",
+          },
+        }),
+        eventSeq: 2,
+        baselineEventSeq: 1,
+        baselineFoldVersion: 2,
+        foldVersion: 2,
+      });
+      assert.equal(v2WriteAccepted, true, "premise: the realistic v2 delta wins before v3 owns the row");
+      __testOnlySetFoldPauseHook(null);
+      releaseReplay();
+      const firstRoute = await routePromise;
+      const firstEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
+      assert.equal(firstRoute?.terminal_facts.state, "current");
+      assert.equal(Number(getDb().prepare("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = ?").get(INSTANCE_ID).stream_facts_fold_version), 3);
+      assert.deepEqual(Object.keys(firstEvidence.stream_latest_facts ?? {}).sort(), [EMPTY_STREAM]);
+
+      const firstProjection = {
+        facts: firstEvidence.stream_latest_facts,
+        reason: firstRoute?.terminal_facts.reason_code,
+        state: firstRoute?.terminal_facts.state,
+      };
+      getDb().prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?").run(INSTANCE_ID);
+      const rebuiltRoute = await getConnectorSummaryForRoute(INSTANCE_ID);
+      assert.deepEqual(
+        {
+          facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
+          reason: rebuiltRoute?.terminal_facts.reason_code,
+          state: rebuiltRoute?.terminal_facts.state,
+        },
+        firstProjection,
+        "the first route result equals delete/rebuild after the mixed-version race",
+      );
+      const laterV2WriteAccepted = await __testOnlyUpdateStreamFactsCasWrite({
+        connectorInstanceId: INSTANCE_ID,
+        factsJson: JSON.stringify(oldFacts),
+        eventSeq: 2,
+        baselineEventSeq: 2,
+        baselineFoldVersion: 2,
+        foldVersion: 2,
+      });
+      assert.equal(laterV2WriteAccepted, false, "v2 cannot overwrite the converged v3 row");
+    } finally {
+      __testOnlySetFoldPauseHook(null);
+    }
+  }),
+);
+
+test("SQLite route fails terminal facts closed when bounded v3 replay contention does not converge", () =>
+  withSqlite(async () => {
+    seedConnectorSqlite();
+    seedInstanceSqlite();
+    seedTerminalCollectionFactSqlite({ eventSeq: 1, eventId: "evt_contention_v2_messages" });
+    await getConnectorSummaryForRoute(INSTANCE_ID);
+    const oldFacts = (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts;
+    getDb().prepare("UPDATE connector_summary_evidence SET stream_facts_fold_version = 2 WHERE connector_instance_id = ?").run(INSTANCE_ID);
+    getDb().prepare("UPDATE spine_events SET manifest_generation = NULL WHERE event_id = ?").run("evt_contention_v2_messages");
+    seedTerminalCollectionFactSqlite({ eventSeq: 2, stream: EMPTY_STREAM, eventId: "evt_contention_v3_empty" });
+
+    let v2Wins = 0;
+    __testOnlySetFoldPauseHook(async (point) => {
+      if (point !== "before_cas_write") return;
+      if (v2Wins === 1) {
+        seedTerminalCollectionFactSqlite({ eventSeq: 3, stream: EMPTY_STREAM, eventId: "evt_contention_v2_empty_2" });
+      }
+      const eventSeq = v2Wins === 0 ? 2 : 3;
+      const baselineEventSeq = eventSeq - 1;
+      const accepted = await __testOnlyUpdateStreamFactsCasWrite({
+        connectorInstanceId: INSTANCE_ID,
+        factsJson: JSON.stringify({
+          ...oldFacts,
+          [EMPTY_STREAM]: {
+            evidence_as_of: NOW,
+            event_seq: eventSeq,
+            fact: { stream: EMPTY_STREAM, collected: eventSeq - 1, checkpoint: "committed" },
+            run_id: `run_${eventSeq}`,
+          },
+        }),
+        eventSeq,
+        baselineEventSeq,
+        baselineFoldVersion: 2,
+        foldVersion: 2,
+      });
+      assert.equal(accepted, true, `v2 contender ${v2Wins} must win before the corresponding v3 CAS`);
+      v2Wins += 1;
+    });
+    try {
+      const route = await getConnectorSummaryForRoute(INSTANCE_ID);
+      assert.equal(v2Wins, 2, "the route made exactly its bounded two replay attempts");
+      assert.equal(route?.terminal_facts.state, "stale");
+      assert.equal(route?.terminal_facts.reason_code, "terminal_fold_contention");
+      assert.match(
+        JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts),
+        /messages/,
+        "the raw durable v2 row may still contain history, but the same route cannot trust it",
+      );
+    } finally {
+      __testOnlySetFoldPauseHook(null);
+    }
   }),
 );
 
@@ -1082,6 +1218,130 @@ test(
       assert.equal(recovered?.terminal_facts.state, "current");
       assert.equal(recovered?.terminal_facts.reason_code, null);
       assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
+    } finally {
+      await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM spine_events WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [CONNECTOR_ID]);
+      await closePostgresStorage();
+    }
+  },
+);
+
+test(
+  "dedicated PostgreSQL route retries a lost v3 replay before trusting a mixed-version v2 terminal map",
+  { skip: !POSTGRES_URL },
+  async () => {
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM spine_events WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [CONNECTOR_ID]);
+      await postgresQuery("INSERT INTO connectors(connector_id, manifest, created_at) VALUES($1, $2::jsonb, $3)", [CONNECTOR_ID, MANIFEST_JSON, NOW]);
+      await postgresQuery(
+        `INSERT INTO connector_instances(
+           connector_instance_id, owner_subject_id, connector_id, display_name, status,
+           source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+         ) VALUES($1, $2, $3, $4, 'active', 'account', $1, '{}'::jsonb, $5, $5, NULL)`,
+        [INSTANCE_ID, OWNER, CONNECTOR_ID, "Summary evidence oracle", NOW],
+      );
+      const nextSequence = await postgresQuery("SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq FROM spine_events");
+      const firstSeq = Number(nextSequence.rows[0].next_seq);
+      const insertTerminal = async ({ eventId, eventSeq, stream, collected }) => {
+        await postgresQuery(
+          `INSERT INTO spine_events(
+             event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+             actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, data_json, version
+           ) VALUES($1, $2, 'run.completed', $3, $3, 'test', $4, 'runtime', 'test-connector', 'run', $5, 'succeeded', $5, $6, $7::jsonb, '1')`,
+          [
+            eventId,
+            eventSeq,
+            NOW,
+            `trace_${eventId}`,
+            `run_${eventId}`,
+            INSTANCE_ID,
+            JSON.stringify({
+              connector_instance_id: INSTANCE_ID,
+              connection_id: INSTANCE_ID,
+              collection_facts: { reference_only: true, schema_version: 1, streams: [{ stream, collected, checkpoint: "committed" }] },
+            }),
+          ],
+        );
+      };
+      await insertTerminal({ eventId: "evt_mixed_v2_messages_pg", eventSeq: firstSeq, stream: STREAM, collected: 1 });
+      await getConnectorSummaryForRoute(INSTANCE_ID);
+      const oldFacts = (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts;
+      await postgresQuery("UPDATE connector_summary_evidence SET stream_facts_fold_version = 2 WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("UPDATE spine_events SET manifest_generation = NULL WHERE event_id = $1", ["evt_mixed_v2_messages_pg"]);
+
+      let signalPaused;
+      const paused = new Promise((resolve) => { signalPaused = resolve; });
+      let releaseReplay;
+      const release = new Promise((resolve) => { releaseReplay = resolve; });
+      __testOnlySetFoldPauseHook(async (point) => {
+        if (point === "after_seed_before_read") {
+          signalPaused();
+          await release;
+        }
+      });
+      try {
+        const routePromise = getConnectorSummaryForRoute(INSTANCE_ID);
+        await paused;
+        await insertTerminal({ eventId: "evt_mixed_v2_empty_pg", eventSeq: firstSeq + 1, stream: EMPTY_STREAM, collected: 1 });
+        const v2WriteAccepted = await __testOnlyUpdateStreamFactsCasWrite({
+          connectorInstanceId: INSTANCE_ID,
+          factsJson: JSON.stringify({
+            ...oldFacts,
+            [EMPTY_STREAM]: {
+              evidence_as_of: NOW,
+              event_seq: firstSeq + 1,
+              fact: { stream: EMPTY_STREAM, collected: 1, checkpoint: "committed" },
+              run_id: "run_evt_mixed_v2_empty_pg",
+            },
+          }),
+          eventSeq: firstSeq + 1,
+          baselineEventSeq: firstSeq,
+          baselineFoldVersion: 2,
+          foldVersion: 2,
+        });
+        assert.equal(v2WriteAccepted, true, "premise: the realistic v2 delta wins before v3 owns the PostgreSQL row");
+        __testOnlySetFoldPauseHook(null);
+        releaseReplay();
+        const firstRoute = await routePromise;
+        const firstEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
+        assert.equal(firstRoute?.terminal_facts.state, "current");
+        assert.equal(Number((await postgresQuery("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID])).rows[0].stream_facts_fold_version), 3);
+        assert.deepEqual(Object.keys(firstEvidence.stream_latest_facts ?? {}).sort(), [EMPTY_STREAM]);
+
+        const firstProjection = {
+          facts: firstEvidence.stream_latest_facts,
+          reason: firstRoute?.terminal_facts.reason_code,
+          state: firstRoute?.terminal_facts.state,
+        };
+        await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
+        const rebuiltRoute = await getConnectorSummaryForRoute(INSTANCE_ID);
+        assert.deepEqual(
+          {
+            facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
+            reason: rebuiltRoute?.terminal_facts.reason_code,
+            state: rebuiltRoute?.terminal_facts.state,
+          },
+          firstProjection,
+          "the first PostgreSQL route result equals delete/rebuild after the mixed-version race",
+        );
+        const laterV2WriteAccepted = await __testOnlyUpdateStreamFactsCasWrite({
+          connectorInstanceId: INSTANCE_ID,
+          factsJson: JSON.stringify(oldFacts),
+          eventSeq: firstSeq + 1,
+          baselineEventSeq: firstSeq + 1,
+          baselineFoldVersion: 2,
+          foldVersion: 2,
+        });
+        assert.equal(laterV2WriteAccepted, false, "v2 cannot overwrite the converged v3 PostgreSQL row");
+      } finally {
+        __testOnlySetFoldPauseHook(null);
+      }
     } finally {
       await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
       await postgresQuery("DELETE FROM spine_events WHERE connector_instance_id = $1", [INSTANCE_ID]);

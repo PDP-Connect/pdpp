@@ -389,7 +389,7 @@ test('genuine overlap: Pass A is paused mid-flight (after baseline capture) whil
     // real race: Pass A's high-water mark is stale relative to what's now
     // durably stored, exactly the scenario the CAS predicate exists to
     // catch on the write below.
-    assert.equal(passAOutcome.folded, 1, "pass A's own maxSeq snapshot was captured before the pause point — genuinely before seq2 existed — so its own real read is bounded to seq1 despite resuming after pass B committed");
+    assert.equal(passAOutcome.folded, 0, "after its stale first CAS loses, pass A retries from pass B's durable v3 baseline and has no remaining work");
 
     // The decisive assertion: Pass A's own CAS write, attempted AFTER Pass
     // B already committed a newer checkpoint, must have been rejected by

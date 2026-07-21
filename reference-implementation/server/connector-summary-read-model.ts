@@ -61,6 +61,9 @@ function sanitizeProjectionError(err: unknown): string {
  */
 const REASON_CODES = {
   TERMINAL_FOLD_FAILED: "terminal_fold_failed",
+  // A bounded replay lost its CAS race on every attempt. The route receives
+  // an in-memory stale overlay instead of trusting the competing durable map.
+  TERMINAL_FOLD_CONTENTION: "terminal_fold_contention",
   DISCOVERY_FAILED: "summary_discovery_failed",
   /**
    * A fold pass wrote this row's terminal facts before its own drain
@@ -781,6 +784,11 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
 // provenance existed, so it is never a valid baseline after this upgrade:
 // `seedFoldState` replays it from an empty map on the first observation.
 const STREAM_FACTS_FOLD_LOGIC_VERSION = 3;
+// A route may retry a replay once after a concurrent writer wins its CAS.
+// This is deliberately small: each retry rereads the durable baseline, and
+// persistent contention fails closed in memory rather than spinning or
+// trusting a version-behind map.
+const STREAM_FACTS_CAS_REPLAY_ATTEMPTS = 2;
 
 /**
  * Test-only deterministic pause point inside `foldConnectorSummaryStreamFacts`,
@@ -1312,6 +1320,8 @@ function seedFoldState(participants: readonly Row[]): {
 }
 
 export interface FoldStreamFactsResult {
+  /** Participant ids whose CAS write still lost after the bounded replay attempts. */
+  readonly casRejectedInstanceIds: readonly string[];
   readonly folded: number;
   readonly participants: number;
   readonly refused: number;
@@ -1424,10 +1434,12 @@ function rowNeedsFoldParticipation(row: Row, maxSeq: number | null): boolean {
 async function stampZeroCheckpointForBootstrap(
   foldStore: ReturnType<typeof createStreamFactsFoldStore>,
   participants: readonly Row[]
-): Promise<void> {
+): Promise<readonly string[]> {
+  const casRejectedInstanceIds: string[] = [];
   for (const row of participants) {
-    await foldStore.updateStreamFacts({
-      connectorInstanceId: String(row.connector_instance_id),
+    const connectorInstanceId = String(row.connector_instance_id);
+    const accepted = await foldStore.updateStreamFacts({
+      connectorInstanceId,
       factsJson: null,
       eventSeq: 0,
       baselineEventSeq: row.stream_facts_event_seq == null ? null : Number(row.stream_facts_event_seq),
@@ -1436,7 +1448,11 @@ async function stampZeroCheckpointForBootstrap(
       terminalFactsState: "current",
       terminalFactsReasonCode: null,
     });
+    if (!accepted) {
+      casRejectedInstanceIds.push(connectorInstanceId);
+    }
   }
+  return casRejectedInstanceIds;
 }
 
 /**
@@ -1545,20 +1561,34 @@ export async function foldConnectorSummaryStreamFacts(
   connectorInstanceIds: readonly string[] | null = null,
   options: { readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
 ): Promise<FoldStreamFactsResult> {
+  let result: FoldStreamFactsResult | null = null;
+  for (let attempt = 0; attempt < STREAM_FACTS_CAS_REPLAY_ATTEMPTS; attempt += 1) {
+    result = await foldConnectorSummaryStreamFactsOnce(connectorInstanceIds, options);
+    if (result.casRejectedInstanceIds.length === 0) {
+      return result;
+    }
+  }
+  return result as FoldStreamFactsResult;
+}
+
+async function foldConnectorSummaryStreamFactsOnce(
+  connectorInstanceIds: readonly string[] | null,
+  options: { readonly maxDurationMs?: number; readonly maxEvents?: number }
+): Promise<FoldStreamFactsResult> {
   const store = createConnectorSummaryStore();
   const foldStore = createStreamFactsFoldStore();
   const rows = (await store.listEvidence(connectorInstanceIds === null ? {} : { connectorInstanceIds })) as Row[];
   if (rows.length === 0) {
-    return { folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return { casRejectedInstanceIds: [], folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
   const maxSeq = await foldStore.readMaxTerminalEventSeq(connectorInstanceIds);
   const participants = rows.filter((row) => rowNeedsFoldParticipation(row, maxSeq));
   if (participants.length === 0) {
-    return { folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return { casRejectedInstanceIds: [], folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
   if (maxSeq == null) {
-    await stampZeroCheckpointForBootstrap(foldStore, participants);
-    return { folded: 0, participants: participants.length, refused: 0, incomplete: false, resumeAfterSeq: null };
+    const casRejectedInstanceIds = await stampZeroCheckpointForBootstrap(foldStore, participants);
+    return { casRejectedInstanceIds, folded: 0, participants: participants.length, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
   const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, sinceSeq } = seedFoldState(participants);
   // Test-only: see `testOnlyFoldPauseHook` — a no-op unless a test installs
@@ -1617,10 +1647,11 @@ export async function foldConnectorSummaryStreamFacts(
   // is what actually drives correct multi-round resumption — no reason-keyed
   // state machine is needed on top of it.
   const replayConverged = !budgetExhausted;
+  const casRejectedInstanceIds: string[] = [];
   for (const [instanceId, facts] of factsByInstance) {
     const sourceGenerationCurrent = generationCurrentByInstance.get(instanceId) !== false;
     const terminalFactsCurrent = replayConverged && sourceGenerationCurrent;
-    await writeParticipantStreamFacts(
+    const accepted = await writeParticipantStreamFacts(
       foldStore,
       instanceId,
       facts,
@@ -1630,8 +1661,12 @@ export async function foldConnectorSummaryStreamFacts(
       checkpointByInstance,
       casBaselineByInstance
     );
+    if (!accepted) {
+      casRejectedInstanceIds.push(instanceId);
+    }
   }
   return {
+    casRejectedInstanceIds,
     folded: counters.folded,
     participants: participants.length,
     refused: counters.refused,
@@ -1679,11 +1714,11 @@ async function writeParticipantStreamFacts(
   replayConverged: boolean,
   checkpointByInstance: Map<string, number | null>,
   casBaselineByInstance: Map<string, FoldCasBaseline>
-): Promise<void> {
+): Promise<boolean> {
   const effectiveCheckpoint = checkpointByInstance.get(instanceId) ?? null;
   const participantEventSeq = effectiveCheckpoint == null ? writeSeq : Math.max(writeSeq, effectiveCheckpoint);
   const casBaseline = casBaselineByInstance.get(instanceId) ?? { eventSeq: null, foldVersion: null };
-  await foldStore.updateStreamFacts({
+  return foldStore.updateStreamFacts({
     connectorInstanceId: instanceId,
     factsJson: Object.keys(facts).length > 0 ? JSON.stringify(facts) : null,
     eventSeq: participantEventSeq,
@@ -1735,6 +1770,25 @@ async function foldStreamFactsBestEffort(
 }> {
   try {
     const result = await foldConnectorSummaryStreamFacts(connectorInstanceIds, options);
+    if (result.casRejectedInstanceIds.length > 0) {
+      // Do not durably mark this row: the final competing writer may own a
+      // future fold version, which this binary must leave byte-for-byte
+      // untouched. The central route loader merges this typed overlay over
+      // the immediate read, so a still-v2 current row cannot leak through
+      // while the next observation retries from its new durable baseline.
+      const existingById = await readExistingRowsForFailureOverlay(result.casRejectedInstanceIds);
+      return {
+        ok: false,
+        failedRows: buildComponentFailedRows(
+          result.casRejectedInstanceIds,
+          existingById,
+          { terminal_facts_state: "stale", terminal_facts_reason_code: REASON_CODES.TERMINAL_FOLD_CONTENTION },
+          null
+        ),
+        incomplete: false,
+        resumeAfterSeq: null,
+      };
+    }
     return { ok: true, failedRows: new Map(), incomplete: result.incomplete, resumeAfterSeq: result.resumeAfterSeq };
   } catch (err) {
     // A fold failure is specifically a terminal-facts failure: nothing this
