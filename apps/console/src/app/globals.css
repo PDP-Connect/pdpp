@@ -244,6 +244,43 @@ html > body[data-scroll-locked] {
   --removed-body-scroll-bar-size: 0 !important;
 }
 
+/*
+ * LIVE UAT regression: mobile landscape (844x390) showed a real document-level
+ * scrollbar (both axes) while the stream dialog was open. Root cause: the
+ * content that overflows is the Stage-1 orientation shell (`<main
+ * class="min-h-dvh">`) — it stays mounted in the document behind the
+ * dialog's fixed/inset:0 overlay (React doesn't unmount it while the dialog
+ * is open) and, at short landscape heights, is taller than the viewport by
+ * design (see stream-orientation-shell-landscape.test.ts). That overflow is
+ * invisible (the dialog fully covers it) but still drives
+ * <html>.scrollHeight past the viewport, so the browser paints scrollbars
+ * for content nobody can see or reach — reproduced live: `scrollHeight: 411`
+ * vs `clientHeight: 390`.
+ *
+ * Fix: lock <html>'s overflow directly off `.pdpp-stream-dialog`'s own
+ * PRESENCE in the DOM — a marker this surface owns, not an inference from
+ * Base UI's current inline-style spelling on <body> (a prior version of this
+ * fix used `html:has(body[style*="overflow: hidden"])`; that couples every
+ * page's scroll behavior to an implementation detail of Base UI's dialog
+ * scroll-lock, and silently mis-fires if Base UI changes how it spells that
+ * style, or if any OTHER dialog on the console locks body scroll the same
+ * way). `.pdpp-stream-dialog` is the class this route's own IcDialogPopup
+ * renders (stream-viewer.tsx) — confirmed live via Base UI's actual mount
+ * lifecycle (Playwright, real dev server): the element is absent from the
+ * DOM before open (count 0), present exactly while open (count 1, `data-open`
+ * set), and fully removed again after a real close completes (count 0, not
+ * merely hidden or animated-out) — so presence alone is a safe, non-fragile
+ * proxy for "the stream dialog is open" with no separate open/closed state
+ * to track. This still needs a global rule because <html> itself has no way
+ * to select "a specific descendant exists anywhere in the subtree" other
+ * than `:has()`, but the SELECTOR CONDITION is now this dialog's own DOM
+ * presence — it does not react to any other dialog's lock, and does not
+ * depend on Base UI's internal style-string format.
+ */
+html:has(.pdpp-stream-dialog) {
+  overflow: hidden;
+}
+
 .pdpp-stream-frame {
   --pdpp-stream-video-matte: oklch(0.08 0.005 260);
   inline-size: 100%;

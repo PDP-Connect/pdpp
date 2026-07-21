@@ -5224,6 +5224,67 @@ function ClipboardSheet({
 
 // ─── Corner controls + status dot ─────────────────────────────────────────────
 
+/**
+ * Secondary actions (clipboard/paste/keyboard) live behind a single "more
+ * actions" toggle instead of always-on icons — a smaller footprint than 4
+ * permanent 44px circles, which UAT showed obscuring bottom-of-page remote
+ * content on mobile. The row collapses on: choosing an action, an outside
+ * pointerdown, Escape, or the toggle losing focus.
+ *
+ * Escape must collapse the disclosure WITHOUT letting Base UI's own
+ * document-level dialog-dismiss listener see it (that listener has no
+ * `defaultPrevented` guard and would otherwise close/tear down the live
+ * session on the same keystroke). A listener scoped to the row itself is not
+ * sufficient — Escape can be dispatched while focus is elsewhere in the
+ * dialog (e.g. still on the toggle immediately after activation, or moved by
+ * the operator), so the handler must fire regardless of focus/target. A
+ * `window`-level CAPTURE listener, installed only while `expanded`, satisfies
+ * that: capture fires before the target and before any bubble-phase listener
+ * (including Base UI's), so `stopPropagation()` here reliably keeps the event
+ * from ever reaching `document`.
+ */
+function useMoreActionsDisclosure() {
+  const [expanded, setExpanded] = useState(false);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!expanded) {
+      return;
+    }
+    const collapse = () => setExpanded(false);
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node && rowRef.current?.contains(event.target))) {
+        collapse();
+      }
+    };
+    const handleFocusOut = (event: FocusEvent) => {
+      const next = event.relatedTarget;
+      if (!(next instanceof Node && rowRef.current?.contains(next))) {
+        collapse();
+      }
+    };
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      collapse();
+    };
+    window.addEventListener("keydown", handleWindowKeyDown, true);
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    rowRef.current?.addEventListener("focusout", handleFocusOut);
+    const row = rowRef.current;
+    return () => {
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      row?.removeEventListener("focusout", handleFocusOut);
+    };
+  }, [expanded]);
+
+  return { expanded, rowRef, setExpanded };
+}
+
 function CornerControls({
   connectorName,
   keyboardAffordanceVisible,
@@ -5245,17 +5306,41 @@ function CornerControls({
   onPaste?: () => void;
   status: ConnectionStatus;
 }) {
+  const { expanded, rowRef, setExpanded } = useMoreActionsDisclosure();
+  const hasSecondaryActions = Boolean(onClipboard || onCopy || onPaste || onKeyboard);
+  const runAndCollapse = (action: () => void) => () => {
+    action();
+    setExpanded(false);
+  };
+
   return (
     <div className="pdpp-stream-corner-controls">
       {location ? <LocationLabel location={location} /> : null}
-      <div className="pdpp-stream-control-row">
+      <div className="pdpp-stream-control-row" ref={rowRef}>
         <StatusDot status={status} />
-        {onClipboard ? (
+        {hasSecondaryActions ? (
+          <button
+            aria-expanded={expanded}
+            aria-label={expanded ? `Hide ${connectorName} browser actions` : `More ${connectorName} browser actions`}
+            className="pdpp-stream-control-button"
+            data-pdpp-stream-ui
+            onClick={() => setExpanded((prev) => !prev)}
+            type="button"
+          >
+            <svg aria-hidden fill="none" height="16" viewBox="0 0 16 16" width="16">
+              <title>More actions</title>
+              <circle cx="3.25" cy="8" fill="currentColor" r="1.15" />
+              <circle cx="8" cy="8" fill="currentColor" r="1.15" />
+              <circle cx="12.75" cy="8" fill="currentColor" r="1.15" />
+            </svg>
+          </button>
+        ) : null}
+        {expanded && onClipboard ? (
           <button
             aria-label={`Open clipboard for ${connectorName} browser`}
             className="pdpp-stream-control-button"
             data-pdpp-stream-ui
-            onClick={onClipboard}
+            onClick={runAndCollapse(onClipboard)}
             type="button"
           >
             <svg
@@ -5274,12 +5359,12 @@ function CornerControls({
             </svg>
           </button>
         ) : null}
-        {onCopy ? (
+        {expanded && onCopy ? (
           <button
             aria-label={`Copy selected text from ${connectorName} browser`}
             className="pdpp-stream-control-button"
             data-pdpp-stream-ui
-            onClick={onCopy}
+            onClick={runAndCollapse(onCopy)}
             type="button"
           >
             <svg
@@ -5298,12 +5383,12 @@ function CornerControls({
             </svg>
           </button>
         ) : null}
-        {onPaste ? (
+        {expanded && onPaste ? (
           <button
             aria-label={`Open paste controls for ${connectorName} browser`}
             className="pdpp-stream-control-button"
             data-pdpp-stream-ui
-            onClick={onPaste}
+            onClick={runAndCollapse(onPaste)}
             type="button"
           >
             <svg
@@ -5322,7 +5407,7 @@ function CornerControls({
             </svg>
           </button>
         ) : null}
-        {onKeyboard ? (
+        {expanded && onKeyboard ? (
           <button
             aria-label={
               keyboardAffordanceVisible
@@ -5335,7 +5420,7 @@ function CornerControls({
                 : "pdpp-stream-control-button"
             }
             data-pdpp-stream-ui
-            onClick={onKeyboard}
+            onClick={runAndCollapse(onKeyboard)}
             type="button"
           >
             {keyboardAffordanceVisible ? (
