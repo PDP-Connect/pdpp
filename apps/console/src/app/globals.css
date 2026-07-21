@@ -244,6 +244,33 @@ html > body[data-scroll-locked] {
   --removed-body-scroll-bar-size: 0 !important;
 }
 
+/*
+ * LIVE UAT regression: mobile landscape (844x390) showed a real document-level
+ * scrollbar (both axes) while the stream dialog was open. Root cause: base-ui's
+ * Dialog scroll-lock sets `overflow: hidden` as an inline style on <body> only
+ * (confirmed live — `document.body.getAttribute("style")` === "overflow:
+ * hidden;"), never on <html>. In standards mode the browser's scrolling
+ * element is <html>, not <body> (`document.scrollingElement ===
+ * document.documentElement`), so body-only locking does not stop the page
+ * from scrolling. The content that overflows is the Stage-1 orientation shell
+ * (`<main class="min-h-dvh">`) — it stays mounted in the document behind the
+ * dialog's fixed/inset:0 overlay (React doesn't unmount it while the dialog is
+ * open) and, at short landscape heights, is taller than the viewport by
+ * design (see stream-orientation-shell-landscape.test.ts). That overflow is
+ * invisible (the dialog fully covers it) but still drives <html>.scrollHeight
+ * past the viewport, so the browser paints scrollbars for content nobody can
+ * see or reach — reproduced live: `scrollHeight: 411` vs `clientHeight: 390`.
+ *
+ * Fix: mirror body's scroll-lock onto <html> via `:has()`, scoped to exactly
+ * when base-ui has actually locked scroll (not unconditional — normal pages
+ * outside a dialog must keep scrolling). This is a host-layout-boundary fix,
+ * not a per-viewport patch: it holds for ANY dialog on this surface and any
+ * viewport size, not just the two UAT dimensions.
+ */
+html:has(body[style*="overflow: hidden"]) {
+  overflow: hidden;
+}
+
 .pdpp-stream-frame {
   --pdpp-stream-video-matte: oklch(0.08 0.005 260);
   inline-size: 100%;
