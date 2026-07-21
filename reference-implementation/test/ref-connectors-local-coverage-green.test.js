@@ -405,6 +405,42 @@ test('manifest-generation boundary withholds old local STATE until a no-op proof
   assert.equal(deriveLocalCoverageAxis(after).axis, 'complete');
 }));
 
+test('SQLite persisted private coverage STATE is malformed, cannot project complete, and never reaches summary or audit output', withTmpDb(async () => {
+  const privacySentinel = '/private/local-coverage-sentinel';
+  seedConnector();
+  await seedInstance();
+  seedCoverage([{ store: 'projects', stream: 'sessions', status: 'collected' }]);
+  getDb()
+    .prepare(`UPDATE connector_state SET state_json = ? WHERE connector_id = ? AND connector_instance_id = ? AND stream = 'coverage_diagnostics'`)
+    .run(
+      JSON.stringify({
+        fetched_at: '2026-06-03T11:58:30.000Z',
+        stores: expectedLocalCoverageStoreDescriptors(CONNECTOR_ID).map(({ store, stream }) => ({
+          store,
+          stream,
+          status: 'inventory_only',
+          secret_path: privacySentinel,
+        })),
+      }),
+      STATE_CONNECTOR_ID,
+      CONNECTOR_INSTANCE_ID,
+    );
+  await seedHealthyDrainedHeartbeat();
+  await rebuildRetainedSize();
+
+  const proof = await readCommittedLocalCoverageDiagnostics({
+    connector_id: STATE_CONNECTOR_ID,
+    connector_instance_id: CONNECTOR_INSTANCE_ID,
+  });
+  const summary = await projectConnection();
+  const audit = auditStreamHealth([summary]);
+
+  assert.equal(proof.malformed, true);
+  assert.equal(proof.hasCommittedSnapshot, false);
+  assert.equal(summary.connection_health.axes.coverage, 'unknown');
+  assert.equal(JSON.stringify({ summary, audit }).includes(privacySentinel), false);
+}));
+
 test('unsupported local inventory cannot turn an arbitrary singleton into complete report or audit pass', withTmpDb(async () => {
   const connectorId = 'unsupported-local-proof-gate';
   const instanceId = 'cin_unsupported_local_proof';

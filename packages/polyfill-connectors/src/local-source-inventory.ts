@@ -171,6 +171,18 @@ const SAFE_COVERAGE_DIAGNOSTIC_STATUSES = new Set<CoverageStatus | "unaccounted"
   "unaccounted",
 ]);
 
+const COVERAGE_DIAGNOSTICS_STATE_KEYS = ["fetched_at", "stores"] as const;
+const COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS = ["status", "store", "stream"] as const;
+
+function hasExactKeys(value: Record<string, unknown>, expectedKeys: readonly string[]): boolean {
+  const keys = Object.keys(value).sort();
+  return keys.length === expectedKeys.length && keys.every((key, index) => key === expectedKeys[index]);
+}
+
+function isValidCoverageDiagnosticsFetchedAt(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
+}
+
 function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
   readonly status: CoverageStatus | "unaccounted";
   readonly store: string;
@@ -180,19 +192,26 @@ function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
     return null;
   }
   const entry = rawEntry as Record<string, unknown>;
+  if (!hasExactKeys(entry, COVERAGE_DIAGNOSTICS_STATE_ENTRY_KEYS)) {
+    return null;
+  }
   const store = typeof entry.store === "string" && entry.store ? entry.store : null;
   const status = entry.status;
-  if (!store || typeof status !== "string" || !SAFE_COVERAGE_DIAGNOSTIC_STATUSES.has(status as CoverageStatus)) {
+  if (
+    !store ||
+    (typeof entry.stream !== "string" && entry.stream !== null) ||
+    typeof status !== "string" ||
+    !SAFE_COVERAGE_DIAGNOSTIC_STATUSES.has(status as CoverageStatus)
+  ) {
     return null;
   }
   return { store, stream: entry.stream, status: status as CoverageStatus | "unaccounted" };
 }
 
 /**
- * Parse the committed coverage STATE at its trust boundary. A legacy
- * fetched-at-only cursor is preserved as historical state but returns
- * `hasCommittedSnapshot: false`, so callers fail closed without treating it
- * as malformed current proof.
+ * Parse the committed coverage STATE at its trust boundary. Only the current
+ * `{ fetched_at, stores }` schema and its exact safe store triples are proof;
+ * legacy, private, and future-shaped state fails closed as malformed.
  */
 export function parseCoverageDiagnosticsStateSnapshot(
   connectorId: string,
@@ -213,10 +232,17 @@ export function parseCoverageDiagnosticsStateSnapshot(
     return { ...empty, malformed: state != null };
   }
 
-  const stores = (state as Record<string, unknown>).stores;
-  if (!Array.isArray(stores)) {
-    return empty;
+  const rawState = state as Record<string, unknown>;
+  if (
+    !(
+      hasExactKeys(rawState, COVERAGE_DIAGNOSTICS_STATE_KEYS) &&
+      isValidCoverageDiagnosticsFetchedAt(rawState.fetched_at) &&
+      Array.isArray(rawState.stores)
+    )
+  ) {
+    return { ...empty, malformed: true };
   }
+  const stores = rawState.stores;
 
   const expectedByStore = new Map(expected.map((entry) => [entry.store, entry]));
   const rows: SafeCoverageDiagnosticStore[] = [];
