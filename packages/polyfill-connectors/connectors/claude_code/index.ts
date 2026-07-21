@@ -15,9 +15,10 @@
  *   skills          — user-authored skills under ~/.claude/skills/<skill>/SKILL.md
  *   slash_commands  — user-authored slash commands under ~/.claude/commands/*.md
  *
- * Incremental via file-modified time. Session aggregation and child record
- * emission keep separate JSONL cursors so missing session summaries can be
- * backfilled without re-emitting unchanged messages and attachments.
+ * Incremental via independent local-JSONL cursors. Each cursor commits an LF
+ * byte boundary plus a full committed-prefix SHA-256; session aggregation and
+ * child record emission stay separate so summaries can backfill without
+ * re-emitting unchanged messages and attachments.
  *
  * Honors CLAUDE_CODE_PROJECTS_DIR override; defaults to ~/.claude/projects.
  * Skills/commands live under ~/.claude (overridable via CLAUDE_CODE_HOME).
@@ -31,6 +32,8 @@ import { createInterface as createFileReader } from "node:readline";
 import { readBoundedFilePreview } from "../../src/bounded-file-preview.ts";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { canonicalJson } from "../../src/local-device-envelope.ts";
+import { isLocalJsonlPhysicalCursorV1, scanLocalJsonl } from "../../src/local-jsonl-cursor.ts";
 import {
   buildCoverageDiagnosticsStateSnapshot,
   buildLocalSourceInventory,
@@ -59,7 +62,16 @@ import {
   widenSessionTimeRange,
 } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
-import type { ClaudeCodeState, JsonlObject, SessionAccumulator } from "./types.ts";
+import type {
+  ClaudeChildFileCursorV1,
+  ClaudeCodeState,
+  ClaudeSessionFileCursorV1,
+  JsonlObject,
+  JsonlObservations,
+  SessionAccumulator,
+} from "./types.ts";
+
+export type { JsonlObservations } from "./types.ts";
 
 const nowIso = (): string => new Date().toISOString();
 const MD_FILE_RE = /\.md$/i;
@@ -167,18 +179,6 @@ async function* iterJsonlLines(path: string): AsyncGenerator<JsonlObject> {
  *  tracks the current line unless a forced id is supplied for subagent files.
  *  Metadata is first-non-null within the file; timestamps widen to cover the
  *  full observed file span. */
-export interface JsonlObservations {
-  cwd: string | null;
-  entrypoint: string | null;
-  firstTimestamp: string | null;
-  gitBranch: string | null;
-  lastTimestamp: string | null;
-  messageCount: number;
-  sessionId: string | null;
-  userType: string | null;
-  version: string | null;
-}
-
 export function makeJsonlObservations(forcedSessionId: string | null): JsonlObservations {
   return {
     sessionId: forcedSessionId || null,
@@ -827,6 +827,8 @@ export interface ScanProjectDirsArgs {
   newMtimes: Record<string, number>;
   requested: Map<string, StreamScope>;
   sessionAccumulators: Map<string, SessionAccumulator>;
+  /** Use the established memory/tool-result walkers without re-reading JSONL. */
+  skipJsonl?: boolean;
 }
 
 interface ProcessJsonlFileArgs {
@@ -901,16 +903,18 @@ async function processSessionDir(
   const sessionId = sessEnt.name;
   const sessionDir = join(projectPath, sessionId);
 
-  // subagents/*.jsonl → parse as messages belonging to this session.
-  const subagentsDir = join(sessionDir, "subagents");
-  const subFiles = await readSubagentFiles(subagentsDir);
-  for (const f of subFiles) {
-    await processJsonlFile({
-      args,
-      forcedSessionId: sessionId,
-      path: join(subagentsDir, f),
-      projectDir,
-    });
+  if (!args.skipJsonl) {
+    // subagents/*.jsonl → parse as messages belonging to this session.
+    const subagentsDir = join(sessionDir, "subagents");
+    const subFiles = await readSubagentFiles(subagentsDir);
+    for (const f of subFiles) {
+      await processJsonlFile({
+        args,
+        forcedSessionId: sessionId,
+        path: join(subagentsDir, f),
+        projectDir,
+      });
+    }
   }
 
   // tool-results/*.txt → attachments with event_type=tool_result_file.
@@ -944,7 +948,9 @@ async function scanProjectDir(projectDir: string, args: ScanProjectDirsArgs): Pr
       newMtimes: args.newMemoryNoteMtimes ?? {},
     });
   }
-  await processTopLevelJsonl(entries, projectPath, projectDir, args);
+  if (!args.skipJsonl) {
+    await processTopLevelJsonl(entries, projectPath, projectDir, args);
+  }
 
   const sessionDirs = entries.filter((e) => e.isDirectory() && SESSION_DIR_PREFIX_RE.test(e.name));
   for (const sessEnt of sessionDirs) {
@@ -983,6 +989,296 @@ export async function scanProjectDirs(args: ScanProjectDirsArgs): Promise<void> 
   });
   for (const projectDir of projectDirs) {
     await scanProjectDir(projectDir, args);
+  }
+}
+
+// ─── Rich local-JSONL collection ────────────────────────────────────────
+
+interface ClaudeJsonlSource {
+  forcedSessionId: string | null;
+  path: string;
+  projectDir: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readStringOrNull(value: unknown): string | null | undefined {
+  return value === null || typeof value === "string" ? value : undefined;
+}
+
+function readJsonlObservations(value: unknown): JsonlObservations | undefined {
+  if (!isRecord(value)) {
+    return;
+  }
+  const sessionId = readStringOrNull(value.sessionId);
+  const firstTimestamp = readStringOrNull(value.firstTimestamp);
+  const lastTimestamp = readStringOrNull(value.lastTimestamp);
+  const cwd = readStringOrNull(value.cwd);
+  const gitBranch = readStringOrNull(value.gitBranch);
+  const userType = readStringOrNull(value.userType);
+  const entrypoint = readStringOrNull(value.entrypoint);
+  const version = readStringOrNull(value.version);
+  if (
+    sessionId === undefined ||
+    firstTimestamp === undefined ||
+    lastTimestamp === undefined ||
+    cwd === undefined ||
+    gitBranch === undefined ||
+    userType === undefined ||
+    entrypoint === undefined ||
+    version === undefined ||
+    typeof value.messageCount !== "number" ||
+    !Number.isSafeInteger(value.messageCount) ||
+    value.messageCount < 0
+  ) {
+    return;
+  }
+  return {
+    cwd,
+    entrypoint,
+    firstTimestamp,
+    gitBranch,
+    lastTimestamp,
+    messageCount: value.messageCount,
+    sessionId,
+    userType,
+    version,
+  };
+}
+
+function readSessionAccumulator(value: unknown): SessionAccumulator | undefined {
+  if (!isRecord(value)) {
+    return;
+  }
+  const textFields = [
+    "cwd",
+    "entrypoint",
+    "git_branch",
+    "id",
+    "last_event_at",
+    "project_path",
+    "started_at",
+    "user_type",
+    "version",
+  ];
+  if (
+    textFields.some((field) => readStringOrNull(value[field]) === undefined) ||
+    typeof value.id !== "string" ||
+    typeof value.project_path !== "string" ||
+    typeof value.message_count !== "number" ||
+    !Number.isSafeInteger(value.message_count) ||
+    value.message_count < 0
+  ) {
+    return;
+  }
+  return {
+    cwd: value.cwd as string | null,
+    entrypoint: value.entrypoint as string | null,
+    git_branch: value.git_branch as string | null,
+    id: value.id,
+    last_event_at: value.last_event_at as string | null,
+    message_count: value.message_count,
+    project_path: value.project_path,
+    started_at: value.started_at as string | null,
+    user_type: value.user_type as string | null,
+    version: value.version as string | null,
+  };
+}
+
+function readChildFileCursors(value: unknown): Record<string, ClaudeChildFileCursorV1> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const out: Record<string, ClaudeChildFileCursorV1> = {};
+  for (const [path, cursor] of Object.entries(value)) {
+    if (
+      isRecord(cursor) &&
+      isLocalJsonlPhysicalCursorV1(cursor) &&
+      readStringOrNull(cursor.current_session_id) !== undefined
+    ) {
+      out[path] = { ...cursor, current_session_id: cursor.current_session_id as string | null };
+    }
+  }
+  return out;
+}
+
+function readSessionFileCursors(value: unknown): Record<string, ClaudeSessionFileCursorV1> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const out: Record<string, ClaudeSessionFileCursorV1> = {};
+  for (const [path, cursor] of Object.entries(value)) {
+    const observation = isRecord(cursor) ? readJsonlObservations(cursor.observation) : undefined;
+    if (isRecord(cursor) && isLocalJsonlPhysicalCursorV1(cursor) && observation) {
+      out[path] = { ...cursor, observation };
+    }
+  }
+  return out;
+}
+
+function readSessionAggregates(value: unknown): Record<string, SessionAccumulator> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const out: Record<string, SessionAccumulator> = {};
+  for (const [id, aggregate] of Object.entries(value)) {
+    const parsed = readSessionAccumulator(aggregate);
+    if (parsed && parsed.id === id) {
+      out[id] = parsed;
+    }
+  }
+  return out;
+}
+
+function cloneObservations(observation: JsonlObservations, forcedSessionId: string | null): JsonlObservations {
+  return { ...observation, sessionId: forcedSessionId ?? observation.sessionId };
+}
+
+function parseJsonlLine(line: Buffer): JsonlObject | null {
+  const text = line.toString("utf8");
+  if (!text.trim()) {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as JsonlObject;
+  } catch {
+    return null;
+  }
+}
+
+async function discoverClaudeJsonlSources(
+  baseDir: string,
+  emit: CollectContext["emit"]
+): Promise<ClaudeJsonlSource[] | null> {
+  const projectDirs = await listProjectDirs(baseDir, emit);
+  if (projectDirs === null) {
+    return null;
+  }
+  const sources: ClaudeJsonlSource[] = [];
+  for (const projectDir of projectDirs) {
+    const projectPath = join(baseDir, projectDir);
+    let entries: Dirent[];
+    try {
+      entries = await readdir(projectPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries
+      .filter((item) => item.isFile() && item.name.endsWith(".jsonl"))
+      .sort((a, b) => a.name.localeCompare(b.name))) {
+      sources.push({ forcedSessionId: null, path: join(projectPath, entry.name), projectDir });
+    }
+    for (const entry of entries
+      .filter((item) => item.isDirectory() && SESSION_DIR_PREFIX_RE.test(item.name))
+      .sort((a, b) => a.name.localeCompare(b.name))) {
+      const subagentsDir = join(projectPath, entry.name, "subagents");
+      for (const relPath of await readSubagentFiles(subagentsDir)) {
+        sources.push({ forcedSessionId: entry.name, path: join(subagentsDir, relPath), projectDir });
+      }
+    }
+  }
+  return sources;
+}
+
+async function scanSessionSource(input: {
+  cursor: ClaudeSessionFileCursorV1 | undefined;
+  emit: CollectContext["emit"];
+  projectDir: string;
+  sessionAccumulators: Map<string, SessionAccumulator>;
+  source: ClaudeJsonlSource;
+}): Promise<{ cursor: ClaudeSessionFileCursorV1; rebuilt: boolean }> {
+  const observation = input.cursor
+    ? cloneObservations(input.cursor.observation, input.source.forcedSessionId)
+    : makeJsonlObservations(input.source.forcedSessionId);
+  const result = await scanLocalJsonl({
+    path: input.source.path,
+    prior: input.cursor,
+    onLine: async (line) => {
+      const obj = parseJsonlLine(line);
+      if (!obj) {
+        return;
+      }
+      const before = observation.messageCount;
+      observeJsonlFields(obj, observation, input.source.forcedSessionId);
+      await processJsonlLine({
+        buildOnly: true,
+        deps: {
+          emitRecord: async () => {
+            // Build-only mode never calls this callback.
+          },
+          requested: new Map(),
+        },
+        obj,
+        obs: observation,
+      });
+      updateSessionAccumulatorFromCurrentLine(
+        input.sessionAccumulators,
+        input.projectDir,
+        observation,
+        obj,
+        observation.messageCount - before
+      );
+    },
+  });
+  await input.emit({
+    type: "PROGRESS",
+    message: `Claude Code local_jsonl decision=${result.decision.kind} prefix_bytes_hashed=${result.prefix_bytes_hashed} tail_bytes_parsed=${result.tail_bytes_parsed}`,
+  });
+  return {
+    cursor: { ...result.cursor, observation },
+    rebuilt: Boolean(input.cursor && result.decision.kind === "rebuild"),
+  };
+}
+
+async function scanChildSource(input: {
+  cursor: ClaudeChildFileCursorV1 | undefined;
+  emit: CollectContext["emit"];
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  emitRecords: boolean;
+  requested: Map<string, StreamScope>;
+  source: ClaudeJsonlSource;
+}): Promise<ClaudeChildFileCursorV1> {
+  const observation = makeJsonlObservations(input.source.forcedSessionId);
+  observation.sessionId = input.cursor?.current_session_id ?? observation.sessionId;
+  const result = await scanLocalJsonl({
+    path: input.source.path,
+    prior: input.cursor,
+    onLine: async (line) => {
+      const obj = parseJsonlLine(line);
+      if (!obj) {
+        return;
+      }
+      observeJsonlFields(obj, observation, input.source.forcedSessionId);
+      await processJsonlLine({
+        buildOnly: !input.emitRecords,
+        deps: { emitRecord: input.emitRecord, requested: input.requested },
+        obj,
+        obs: observation,
+      });
+    },
+  });
+  await input.emit({
+    type: "PROGRESS",
+    message: `Claude Code local_jsonl decision=${result.decision.kind} prefix_bytes_hashed=${result.prefix_bytes_hashed} tail_bytes_parsed=${result.tail_bytes_parsed}`,
+  });
+  return { ...result.cursor, current_session_id: observation.sessionId };
+}
+
+async function emitChangedSessions(input: {
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  next: Map<string, SessionAccumulator>;
+  prior: Record<string, SessionAccumulator>;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  if (!input.requested.has("sessions")) {
+    return;
+  }
+  for (const [id, aggregate] of input.next) {
+    if (!input.prior[id] || canonicalJson(input.prior[id]) !== canonicalJson(aggregate)) {
+      await input.emitRecord("sessions", { ...aggregate });
+    }
   }
 }
 
@@ -1231,87 +1527,178 @@ if (isMainModule(import.meta.url)) {
         newSlashCommandMtimes,
       });
 
-      // ---- sessions / messages / attachments ----
-      const needsProjects =
-        requested.has("sessions") ||
-        requested.has("messages") ||
-        requested.has("attachments") ||
-        requested.has("memory_notes");
-      if (!needsProjects) {
+      // The parent-first state machine intentionally keeps the temporal
+      // ordering visible here: session records/state, non-JSONL attachments,
+      // child records/state, then coverage state. Extracting those transitions
+      // would hide the checkpoint barrier behind a shallow orchestration API.
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: ordering is the contract.
+      const collectProjectStreams = async (): Promise<void> => {
+        // ---- sessions / messages / attachments ----
+        const needsProjects =
+          requested.has("sessions") ||
+          requested.has("messages") ||
+          requested.has("attachments") ||
+          requested.has("memory_notes");
+        if (!needsProjects) {
+          await emitCoverageDiagnosticsState({ emit, inventory, requested });
+          return;
+        }
+
+        const messageRaw = typedState.messages;
+        const sessionsRaw = typedState.sessions;
+        const priorChildCursors =
+          messageRaw?.local_jsonl_cursor_version === 1 ? readChildFileCursors(messageRaw.file_cursors) : {};
+        const priorSessionCursors =
+          sessionsRaw?.local_jsonl_cursor_version === 1 ? readSessionFileCursors(sessionsRaw.file_cursors) : {};
+        const priorSessionAggregates =
+          sessionsRaw?.local_jsonl_cursor_version === 1 ? readSessionAggregates(sessionsRaw.session_aggregates) : {};
+        const sessionSnapshotIsValid =
+          sessionsRaw?.local_jsonl_cursor_version === 1 &&
+          isRecord(sessionsRaw.session_aggregates) &&
+          Object.keys(priorSessionAggregates).length === Object.keys(sessionsRaw.session_aggregates).length;
+        const sources = await discoverClaudeJsonlSources(baseDir, emit);
+        if (sources === null) {
+          return;
+        }
+        const sourcePaths = new Set(sources.map((source) => source.path));
+        const newMessageFileMtimes: Record<string, number> = { ...messageFileMtimes };
+        const newSessionFileMtimes: Record<string, number> = { ...sessionFileMtimes };
+        let nextSessionCursors: Record<string, ClaudeSessionFileCursorV1> = {};
+        const nextChildCursors: Record<string, ClaudeChildFileCursorV1> = {};
+
+        if (requested.has("sessions")) {
+          const legacyBaseline =
+            sessionsRaw?.local_jsonl_cursor_version !== 1 &&
+            (
+              await Promise.all(
+                sources.map(async (source) => (await stat(source.path)).mtimeMs === sessionFileMtimes[source.path])
+              )
+            ).every(Boolean);
+          let rebuildAll =
+            !sessionSnapshotIsValid || Object.keys(priorSessionCursors).some((path) => !sourcePaths.has(path));
+          let sessionAccumulators = new Map<string, SessionAccumulator>(
+            Object.entries(rebuildAll ? {} : priorSessionAggregates).map(([id, aggregate]) => [id, { ...aggregate }])
+          );
+          for (const source of sources) {
+            const scanned = await scanSessionSource({
+              cursor: rebuildAll ? undefined : priorSessionCursors[source.path],
+              emit,
+              projectDir: source.projectDir,
+              sessionAccumulators,
+              source,
+            });
+            nextSessionCursors[source.path] = scanned.cursor;
+            newSessionFileMtimes[source.path] = scanned.cursor.observed_mtime_ms;
+            rebuildAll ||= scanned.rebuilt;
+          }
+          if (rebuildAll && sessionSnapshotIsValid) {
+            sessionAccumulators = new Map();
+            nextSessionCursors = {};
+            for (const source of sources) {
+              const scanned = await scanSessionSource({
+                cursor: undefined,
+                emit,
+                projectDir: source.projectDir,
+                sessionAccumulators,
+                source,
+              });
+              nextSessionCursors[source.path] = scanned.cursor;
+              newSessionFileMtimes[source.path] = scanned.cursor.observed_mtime_ms;
+            }
+          }
+          await emitChangedSessions({
+            emitRecord,
+            next: sessionAccumulators,
+            prior: legacyBaseline ? Object.fromEntries(sessionAccumulators) : priorSessionAggregates,
+            requested,
+          });
+          const sessionAggregates = Object.fromEntries(sessionAccumulators);
+          await emit({
+            type: "STATE",
+            stream: "sessions",
+            cursor: {
+              file_cursors: nextSessionCursors,
+              file_mtimes: newSessionFileMtimes,
+              fetched_at: nowIso(),
+              local_jsonl_cursor_version: 1,
+              session_aggregates: sessionAggregates,
+            },
+          });
+        }
+
+        // Existing non-JSONL discovery remains responsible for memory notes and
+        // tool-result attachments. Fresh JSONL mtimes make its old JSONL path a
+        // no-op while retaining its established blob privacy policy.
+        const scanLegacyNonJsonl = async (): Promise<void> => {
+          const jsonlMtimeGate = requested.has("sessions") ? newSessionFileMtimes : newMessageFileMtimes;
+          await scanProjectDirs({
+            baseDir,
+            buildOnly: requested.has("memory_notes"),
+            emit,
+            emitRecord,
+            fileMtimes: jsonlMtimeGate,
+            newMtimes: requested.has("sessions") ? newSessionFileMtimes : newMessageFileMtimes,
+            memoryNoteMtimes,
+            newMemoryNoteMtimes,
+            requested,
+            sessionAccumulators: new Map(),
+            skipJsonl: true,
+          });
+        };
+        if (requested.has("sessions")) {
+          await scanLegacyNonJsonl();
+        }
+
+        if (requested.has("messages") || requested.has("attachments")) {
+          const legacyBaseline =
+            messageRaw?.local_jsonl_cursor_version !== 1 &&
+            (
+              await Promise.all(
+                sources.map(async (source) => (await stat(source.path)).mtimeMs === messageFileMtimes[source.path])
+              )
+            ).every(Boolean);
+          for (const source of sources) {
+            const cursor = await scanChildSource({
+              cursor: priorChildCursors[source.path],
+              emit,
+              emitRecord,
+              emitRecords: !legacyBaseline,
+              requested,
+              source,
+            });
+            nextChildCursors[source.path] = cursor;
+            newMessageFileMtimes[source.path] = cursor.observed_mtime_ms;
+          }
+        }
+
+        if (!requested.has("sessions")) {
+          await scanLegacyNonJsonl();
+        }
+        if (requested.has("memory_notes")) {
+          await emit({
+            type: "STATE",
+            stream: "memory_notes",
+            cursor: { file_mtimes: newMemoryNoteMtimes, fetched_at: nowIso() },
+          });
+        }
+        // Coverage STATE is emitted only after every requested collection pass
+        // has completed successfully; a later failure cannot commit this proof.
         await emitCoverageDiagnosticsState({ emit, inventory, requested });
-        return;
-      }
 
-      const newMessageFileMtimes: Record<string, number> = { ...messageFileMtimes };
-      const newSessionFileMtimes: Record<string, number> = { ...sessionFileMtimes };
-      const sessionAccumulators = new Map<string, SessionAccumulator>();
-
-      // Parent-first emit (Tranche C 2026-04-23): sessions must emit
-      // before messages/attachments, but sessions are aggregates built
-      // from scanning all jsonl lines. Two-pass approach:
-      //   Pass 1 — scan to build sessionAccumulators. `buildOnly=true`
-      //            suppresses per-line message/attachment emits; the
-      //            scope filter still controls whether it's worth
-      //            scanning (if sessions is the only stream requested,
-      //            only Pass 1 runs).
-      //   Emit sessions.
-      //   Pass 2 — scan again to emit messages/attachments, now that
-      //            consumers have seen all parent session records.
-      await scanProjectDirs({
-        baseDir,
-        buildOnly: true,
-        emit,
-        emitRecord,
-        fileMtimes: sessionFileMtimes,
-        newMtimes: newSessionFileMtimes,
-        memoryNoteMtimes,
-        newMemoryNoteMtimes,
-        requested,
-        sessionAccumulators,
-      });
-
-      await emitSessionsFromAccumulators({ emitRecord, requested, sessionAccumulators });
-      if (requested.has("sessions")) {
-        await emit({
-          type: "STATE",
-          stream: "sessions",
-          cursor: { file_mtimes: newSessionFileMtimes, fetched_at: nowIso() },
-        });
-      }
-
-      if (requested.has("memory_notes")) {
-        await emit({
-          type: "STATE",
-          stream: "memory_notes",
-          cursor: { file_mtimes: newMemoryNoteMtimes, fetched_at: nowIso() },
-        });
-      }
-
-      if (requested.has("messages") || requested.has("attachments")) {
-        // Pass 2: emit messages + attachments. Accumulators already
-        // built, so skip the accumulator-update side effects this time.
-        await scanProjectDirs({
-          baseDir,
-          buildOnly: false,
-          emit,
-          emitRecord,
-          fileMtimes: messageFileMtimes,
-          newMtimes: newMessageFileMtimes,
-          requested,
-          sessionAccumulators,
-        });
-      }
-      // Coverage STATE is emitted only after every requested collection pass
-      // has completed successfully; a later failure cannot commit this proof.
-      await emitCoverageDiagnosticsState({ emit, inventory, requested });
-
-      if (requested.has("messages") || requested.has("attachments")) {
-        await emit({
-          type: "STATE",
-          stream: "messages",
-          cursor: { file_mtimes: newMessageFileMtimes, fetched_at: nowIso() },
-        });
-      }
+        if (requested.has("messages") || requested.has("attachments")) {
+          await emit({
+            type: "STATE",
+            stream: "messages",
+            cursor: {
+              file_cursors: nextChildCursors,
+              file_mtimes: newMessageFileMtimes,
+              fetched_at: nowIso(),
+              local_jsonl_cursor_version: 1,
+            },
+          });
+        }
+      };
+      await collectProjectStreams();
     },
   });
 }

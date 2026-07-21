@@ -2,6 +2,8 @@
 // pure parsers in parsers.ts can import them without pulling in the
 // runtime entry point.
 
+import type { LocalJsonlPhysicalCursorV1 } from "../../src/local-jsonl-cursor.ts";
+
 export interface JsonlObject {
   agentId?: string | null;
   attachment?: {
@@ -43,11 +45,47 @@ export interface SessionAccumulator {
   version: string | null;
 }
 
+/** Parser continuation at a physical JSONL cursor boundary. */
+export interface JsonlObservations {
+  cwd: string | null;
+  entrypoint: string | null;
+  firstTimestamp: string | null;
+  gitBranch: string | null;
+  lastTimestamp: string | null;
+  messageCount: number;
+  sessionId: string | null;
+  userType: string | null;
+  version: string | null;
+}
+
+export interface ClaudeChildFileCursorV1 extends LocalJsonlPhysicalCursorV1 {
+  current_session_id: string | null;
+}
+
+export interface ClaudeSessionFileCursorV1 extends LocalJsonlPhysicalCursorV1 {
+  observation: JsonlObservations;
+}
+
+export interface ClaudeMessagesCursorV1 {
+  fetched_at: string;
+  file_cursors: Record<string, ClaudeChildFileCursorV1>;
+  file_mtimes: Record<string, number>;
+  local_jsonl_cursor_version: 1;
+}
+
+export interface ClaudeSessionsCursorV1 {
+  fetched_at: string;
+  file_cursors: Record<string, ClaudeSessionFileCursorV1>;
+  file_mtimes: Record<string, number>;
+  local_jsonl_cursor_version: 1;
+  session_aggregates: Record<string, SessionAccumulator>;
+}
+
 export interface ClaudeCodeState {
   file_mtimes?: Record<string, number>;
   memory_notes?: { file_mtimes?: Record<string, number> };
-  messages?: { file_mtimes?: Record<string, number> };
-  sessions?: { file_mtimes?: Record<string, number> };
+  messages?: Partial<ClaudeMessagesCursorV1>;
+  sessions?: Partial<ClaudeSessionsCursorV1>;
   skills?: { file_mtimes?: Record<string, number> };
   slash_commands?: { file_mtimes?: Record<string, number> };
   // Inventory streams (backup_inventory, cache_inventory, config_inventory,
