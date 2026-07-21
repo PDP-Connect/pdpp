@@ -146,7 +146,8 @@ function createConnectorSummaryStore() {
                   manifest_declaration_state, manifest_declaration_reason_code,
                   retained_bytes_state, retained_bytes_reason_code,
                   stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
-                  dirty, computed_at, source_event_seq, state, last_error
+                  dirty, computed_at, source_event_seq, state, last_error,
+                  manifest_generation_boundary_at
              FROM connector_summary_evidence
              ${where}
              ORDER BY connector_instance_id ASC`,
@@ -252,7 +253,8 @@ function createConnectorSummaryStore() {
                     manifest_declaration_state, manifest_declaration_reason_code,
                     retained_bytes_state, retained_bytes_reason_code,
                     stream_latest_facts_json, stream_facts_event_seq, stream_facts_fold_version,
-                    dirty, computed_at, source_event_seq, state, last_error`;
+                    dirty, computed_at, source_event_seq, state, last_error,
+                    manifest_generation_boundary_at`;
       if (connectorInstanceId) {
         return db
           .prepare(
@@ -479,6 +481,7 @@ export function shapeEvidenceRow(row: Row) {
     retained_bytes_evidence: shapeComponentEnvelope(row, retainedBytesState, row.retained_bytes_reason_code),
     dirty: Number(row.dirty || 0) !== 0,
     computed_at: row.computed_at || null,
+    manifest_generation_boundary_at: row.manifest_generation_boundary_at || null,
     source_event_seq: row.source_event_seq == null ? null : Number(row.source_event_seq),
     state: row.state || "unknown",
     last_error: row.last_error || null,
@@ -569,9 +572,7 @@ async function readExistingRowsForFailureOverlay(
   }
   try {
     const store = createConnectorSummaryStore();
-    const rows = (await store.listEvidence(
-      connectorInstanceIds === null ? {} : { connectorInstanceIds }
-    )) as Row[];
+    const rows = (await store.listEvidence(connectorInstanceIds === null ? {} : { connectorInstanceIds })) as Row[];
     for (const row of rows) {
       byId.set(String(row.connector_instance_id), row);
     }
@@ -1514,9 +1515,7 @@ export async function foldConnectorSummaryStreamFacts(
 ): Promise<FoldStreamFactsResult> {
   const store = createConnectorSummaryStore();
   const foldStore = createStreamFactsFoldStore();
-  const rows = (await store.listEvidence(
-    connectorInstanceIds === null ? {} : { connectorInstanceIds }
-  )) as Row[];
+  const rows = (await store.listEvidence(connectorInstanceIds === null ? {} : { connectorInstanceIds })) as Row[];
   if (rows.length === 0) {
     return { folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
@@ -1823,9 +1822,7 @@ async function observeConnectorSummaryEvidence(
   }
   const foldOutcome = await foldStreamFactsBestEffort(connectorInstanceIds, foldBudget);
   const failedRows =
-    foldOutcome.failedRows.size === 0
-      ? result.failedRows
-      : new Map([...result.failedRows, ...foldOutcome.failedRows]);
+    foldOutcome.failedRows.size === 0 ? result.failedRows : new Map([...result.failedRows, ...foldOutcome.failedRows]);
   return {
     reconciled: result.repaired,
     skipped: result.skipped,

@@ -125,6 +125,7 @@ export interface ConnectorSummaryEvidenceRow {
   readonly retained_bytes_evidence: EvidenceComponent<ComponentState>;
   readonly dirty: boolean;
   readonly computed_at: string | null;
+  readonly manifest_generation_boundary_at?: string | null;
   readonly source_event_seq: number | null;
   readonly state: string;
   readonly last_error: string | null;
@@ -250,7 +251,10 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   ) {
     return "identity_mismatch";
   }
-  const storedCheckpoint = parseJsonColumn<RecordSourceCheckpoint | null>(existingEvidence.record_checkpoint_json, null);
+  const storedCheckpoint = parseJsonColumn<RecordSourceCheckpoint | null>(
+    existingEvidence.record_checkpoint_json,
+    null
+  );
   if (!storedCheckpoint || !recordSourceCheckpointsEqual(storedCheckpoint, currentCheckpoint)) {
     return "record_checkpoint_mismatch";
   }
@@ -262,13 +266,18 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
   if (Number(existingEvidence.total_records || 0) !== input.canonicalTotalRecords) {
     return "record_checkpoint_mismatch";
   }
-  const storedFingerprint = existingEvidence.manifest_fingerprint == null ? null : String(existingEvidence.manifest_fingerprint);
+  const storedFingerprint =
+    existingEvidence.manifest_fingerprint == null ? null : String(existingEvidence.manifest_fingerprint);
   const currentFingerprint = manifest.ok ? manifest.fingerprint : null;
   if (storedFingerprint !== currentFingerprint) {
     return "manifest_mismatch";
   }
-  const storedTerminalSeq = existingEvidence.stream_facts_event_seq == null ? null : Number(existingEvidence.stream_facts_event_seq);
-  if (input.maxTerminalEventSeq != null && (storedTerminalSeq == null || storedTerminalSeq < input.maxTerminalEventSeq)) {
+  const storedTerminalSeq =
+    existingEvidence.stream_facts_event_seq == null ? null : Number(existingEvidence.stream_facts_event_seq);
+  if (
+    input.maxTerminalEventSeq != null &&
+    (storedTerminalSeq == null || storedTerminalSeq < input.maxTerminalEventSeq)
+  ) {
     return "terminal_checkpoint_lag";
   }
   if (retainedBytesNeedsRepair(existingEvidence, retainedByteRow)) {
@@ -342,7 +351,8 @@ function retainedBytesNeedsRepair(existingEvidence: Row, retainedByteRow: Row | 
   }
   return (
     Number(storedRetainedBytes.record_json_bytes || 0) !== Number(retainedByteRow!.current_record_json_bytes || 0) ||
-    Number(storedRetainedBytes.record_changes_json_bytes || 0) !== Number(retainedByteRow!.record_history_json_bytes || 0) ||
+    Number(storedRetainedBytes.record_changes_json_bytes || 0) !==
+      Number(retainedByteRow!.record_history_json_bytes || 0) ||
     Number(storedRetainedBytes.blob_bytes || 0) !== Number(retainedByteRow!.blob_bytes || 0) ||
     Number(storedRetainedBytes.total_bytes || 0) !== sourceTotalBytes
   );
@@ -413,7 +423,9 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   // must not pay for every OTHER connection's rows, and must never even
   // read (let alone repair) a sibling connection's evidence row.
   const evidenceRows: Row[] = scoped
-    ? db.prepare(`SELECT * FROM connector_summary_evidence WHERE connector_instance_id IN (${placeholders})`).all(...connectorInstanceIds!)
+    ? db
+        .prepare(`SELECT * FROM connector_summary_evidence WHERE connector_instance_id IN (${placeholders})`)
+        .all(...connectorInstanceIds!)
     : db.prepare("SELECT * FROM connector_summary_evidence").all();
   const evidenceByInstance = new Map(evidenceRows.map((row) => [String(row.connector_instance_id), row]));
   const connectorRows: Row[] = db.prepare("SELECT connector_id, manifest FROM connectors").all();
@@ -428,7 +440,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
     ? db
         .prepare(
           `SELECT connector_instance_id, stream, CAST(max_version AS TEXT) AS max_version FROM version_counter
-            WHERE connector_instance_id IN (${placeholders})`,
+            WHERE connector_instance_id IN (${placeholders})`
         )
         .all(...connectorInstanceIds!)
     : db
@@ -451,19 +463,21 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
         .prepare(
           `SELECT connector_instance_id, COUNT(*) AS total_records FROM records
             WHERE deleted = 0 AND connector_instance_id IN (${placeholders})
-            GROUP BY connector_instance_id`,
+            GROUP BY connector_instance_id`
         )
         .all(...connectorInstanceIds!)
     : db
-        .prepare("SELECT connector_instance_id, COUNT(*) AS total_records FROM records WHERE deleted = 0 GROUP BY connector_instance_id")
+        .prepare(
+          "SELECT connector_instance_id, COUNT(*) AS total_records FROM records WHERE deleted = 0 GROUP BY connector_instance_id"
+        )
         .all();
   const canonicalTotalRecordsByInstance = new Map(
-    canonicalCountRows.map((row) => [String(row.connector_instance_id), Number(row.total_records || 0)]),
+    canonicalCountRows.map((row) => [String(row.connector_instance_id), Number(row.total_records || 0)])
   );
   const maxTerminalSeqRow = db
     .prepare(
       `SELECT MAX(event_seq) AS max_seq FROM spine_events
-        WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
+        WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
     )
     .get() as Row | undefined;
   return {
@@ -517,11 +531,11 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
       ])
     : await postgresQuery("SELECT * FROM connector_summary_evidence");
   const evidenceByInstance = new Map(
-    (evidenceResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row]),
+    (evidenceResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row])
   );
   const connectorResult = await postgresQuery("SELECT connector_id, manifest::text AS manifest FROM connectors");
   const manifestByConnector = new Map(
-    (connectorResult.rows as Row[]).map((row) => [String(row.connector_id), String(row.manifest)]),
+    (connectorResult.rows as Row[]).map((row) => [String(row.connector_id), String(row.manifest)])
   );
   const retainedByteResult = scoped
     ? await postgresQuery("SELECT * FROM retained_size_connection WHERE connector_instance_id = ANY($1::text[])", [
@@ -529,15 +543,15 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
       ])
     : await postgresQuery("SELECT * FROM retained_size_connection");
   const retainedByteByInstance = new Map(
-    (retainedByteResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row]),
+    (retainedByteResult.rows as Row[]).map((row) => [String(row.connector_instance_id), row])
   );
   const versionCounterResult = scoped
     ? await postgresQuery(
         "SELECT connector_instance_id, stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = ANY($1::text[])",
-        [connectorInstanceIds],
+        [connectorInstanceIds]
       )
     : await postgresQuery(
-        "SELECT connector_instance_id, stream, max_version::text AS max_version FROM version_counter",
+        "SELECT connector_instance_id, stream, max_version::text AS max_version FROM version_counter"
       );
   const versionCountersByInstance = new Map<string, Row[]>();
   for (const row of versionCounterResult.rows as Row[]) {
@@ -555,17 +569,20 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
         `SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records
           WHERE deleted = FALSE AND connector_instance_id = ANY($1::text[])
           GROUP BY connector_instance_id`,
-        [connectorInstanceIds],
+        [connectorInstanceIds]
       )
     : await postgresQuery(
-        "SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records WHERE deleted = FALSE GROUP BY connector_instance_id",
+        "SELECT connector_instance_id, COUNT(*)::int AS total_records FROM records WHERE deleted = FALSE GROUP BY connector_instance_id"
       );
   const canonicalTotalRecordsByInstance = new Map(
-    (canonicalCountResult.rows as Row[]).map((row) => [String(row.connector_instance_id), Number(row.total_records || 0)]),
+    (canonicalCountResult.rows as Row[]).map((row) => [
+      String(row.connector_instance_id),
+      Number(row.total_records || 0),
+    ])
   );
   const maxTerminalSeqResult = await postgresQuery(
     `SELECT MAX(event_seq) AS max_seq FROM spine_events
-      WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
+      WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
   );
   const maxSeq = (maxTerminalSeqResult.rows[0] as Row | undefined)?.max_seq;
   return {
@@ -586,7 +603,7 @@ async function readPostgresDiscoveryContext(connectorInstanceIds: readonly strin
  * write.
  */
 async function discoverCandidates(
-  connectorInstanceIds: readonly string[] | null,
+  connectorInstanceIds: readonly string[] | null
 ): Promise<{ instanceRows: readonly Row[]; candidates: ReadonlyMap<string, RepairCandidateReason> }> {
   const ctx = isPostgresStorageBackend()
     ? await readPostgresDiscoveryContext(connectorInstanceIds)
@@ -723,7 +740,9 @@ async function persistFailedEvidence(connectorInstanceId: string, failedRow: Row
 function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row): void {
   const db: Db = getDb();
   const existing = db
-    .prepare("SELECT terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?")
+    .prepare(
+      "SELECT terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
+    )
     .get(connectorInstanceId) as Row | undefined;
   const preserveTerminal = existing && existing.terminal_facts_state === "current";
   const terminalState = preserveTerminal ? existing!.terminal_facts_state : failedRow.terminal_facts_state;
@@ -742,7 +761,7 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
               dirty = 1,
               state = 'failed',
               last_error = ?
-        WHERE connector_instance_id = ?`,
+        WHERE connector_instance_id = ?`
     )
     .run(
       failedRow.record_snapshot_state,
@@ -754,7 +773,7 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
       terminalState,
       terminalReason,
       failedRow.last_error,
-      connectorInstanceId,
+      connectorInstanceId
     );
   if (updateResult.changes > 0) {
     return;
@@ -782,7 +801,7 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
        terminal_facts_reason_code = excluded.terminal_facts_reason_code,
        dirty = 1,
        state = 'failed',
-       last_error = excluded.last_error`,
+       last_error = excluded.last_error`
   ).run(
     connectorInstanceId,
     failedRow.record_snapshot_state,
@@ -793,14 +812,14 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
     failedRow.retained_bytes_reason_code,
     failedRow.terminal_facts_state,
     failedRow.terminal_facts_reason_code,
-    failedRow.last_error,
+    failedRow.last_error
   );
 }
 
 async function persistFailedEvidencePostgres(connectorInstanceId: string, failedRow: Row): Promise<void> {
   const existingResult = await postgresQuery(
     "SELECT terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
-    [connectorInstanceId],
+    [connectorInstanceId]
   );
   const existing = existingResult.rows[0] as Row | undefined;
   const preserveTerminal = existing && existing.terminal_facts_state === "current";
@@ -831,7 +850,7 @@ async function persistFailedEvidencePostgres(connectorInstanceId: string, failed
       terminalState,
       terminalReason,
       failedRow.last_error,
-    ],
+    ]
   );
   if ((updateResult.rowCount ?? 0) > 0) {
     return;
@@ -869,7 +888,7 @@ async function persistFailedEvidencePostgres(connectorInstanceId: string, failed
       failedRow.terminal_facts_state,
       failedRow.terminal_facts_reason_code,
       failedRow.last_error,
-    ],
+    ]
   );
 }
 
@@ -896,10 +915,14 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
         .get(instance.connector_id) as Row | undefined;
       const manifest = parseManifestDeclaration(manifestRow?.manifest);
       const generationRow = db
-        .prepare("SELECT CAST(record_reset_generation AS TEXT) AS reset_generation FROM connector_instances WHERE connector_instance_id = ?")
+        .prepare(
+          "SELECT CAST(record_reset_generation AS TEXT) AS reset_generation FROM connector_instances WHERE connector_instance_id = ?"
+        )
         .get(connectorInstanceId) as Row | undefined;
       const streamRows = db
-        .prepare("SELECT stream, CAST(max_version AS TEXT) AS max_version FROM version_counter WHERE connector_instance_id = ?")
+        .prepare(
+          "SELECT stream, CAST(max_version AS TEXT) AS max_version FROM version_counter WHERE connector_instance_id = ?"
+        )
         .all(connectorInstanceId) as Row[];
       const checkpoint = normalizeRecordSourceCheckpoint({
         resetGeneration: String(generationRow?.reset_generation ?? "0"),
@@ -909,7 +932,7 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
         .prepare(
           `SELECT stream, COUNT(*) AS record_count, MAX(emitted_at) AS last_updated
              FROM records WHERE connector_instance_id = ? AND deleted = 0
-            GROUP BY stream`,
+            GROUP BY stream`
         )
         .all(connectorInstanceId) as Row[];
       const canonicalByStream = new Map(canonicalRows.map((row) => [String(row.stream), row]));
@@ -919,11 +942,21 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
       const retainedStreamRows = db
         .prepare("SELECT stream, record_count FROM retained_size_stream WHERE connector_instance_id = ?")
         .all(connectorInstanceId) as Row[];
-      const retainedByStream = new Map(retainedStreamRows.map((row) => [String(row.stream), Number(row.record_count || 0)]));
+      const retainedByStream = new Map(
+        retainedStreamRows.map((row) => [String(row.stream), Number(row.record_count || 0)])
+      );
+      const unexpectedRows = manifest.ok
+        ? (db
+            .prepare(
+              "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = ? AND manifest_fingerprint = ?"
+            )
+            .all(connectorInstanceId, manifest.fingerprint) as Row[])
+        : [];
+      const unexpectedStreams = new Set(unexpectedRows.map((row) => String(row.stream)));
       const terminalHighWaterRow = db
         .prepare(
           `SELECT MAX(event_seq) AS max_seq FROM spine_events
-            WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
+            WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
         )
         .get() as Row | undefined;
 
@@ -939,6 +972,7 @@ function repairCandidateSqlite(connectorInstanceId: string): RepairedEvidence {
         canonicalByStream,
         retainedByteRow,
         retainedByStream,
+        unexpectedStreams,
         terminalFactsGenerationBoundary:
           terminalHighWaterRow?.max_seq == null ? 0 : Number(terminalHighWaterRow.max_seq),
       });
@@ -972,46 +1006,60 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
       ]);
       const instance = instanceResult.rows[0] as Row | undefined;
       if (!instance) {
-        await client.query("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [connectorInstanceId]);
+        await client.query("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [
+          connectorInstanceId,
+        ]);
         return { row: { connector_instance_id: connectorInstanceId, __deleted: true }, failed: false, persisted: true };
       }
-      const manifestResult = await client.query("SELECT manifest::text AS manifest FROM connectors WHERE connector_id = $1", [
-        instance.connector_id,
-      ]);
+      const manifestResult = await client.query(
+        "SELECT manifest::text AS manifest FROM connectors WHERE connector_id = $1",
+        [instance.connector_id]
+      );
       const manifest = parseManifestDeclaration((manifestResult.rows[0] as Row | undefined)?.manifest);
       const generationResult = await client.query(
         "SELECT record_reset_generation::text AS reset_generation FROM connector_instances WHERE connector_instance_id = $1",
-        [connectorInstanceId],
+        [connectorInstanceId]
       );
       const streamsResult = await client.query(
         "SELECT stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = $1",
-        [connectorInstanceId],
+        [connectorInstanceId]
       );
       const checkpoint = normalizeRecordSourceCheckpoint({
         resetGeneration: String((generationResult.rows[0] as Row | undefined)?.reset_generation ?? "0"),
-        streams: (streamsResult.rows as Row[]).map((row) => ({ stream: String(row.stream), maxVersion: String(row.max_version) })),
+        streams: (streamsResult.rows as Row[]).map((row) => ({
+          stream: String(row.stream),
+          maxVersion: String(row.max_version),
+        })),
       });
       const canonicalResult = await client.query(
         `SELECT stream, COUNT(*)::int AS record_count, MAX(emitted_at) AS last_updated
            FROM records WHERE connector_instance_id = $1 AND deleted = FALSE
           GROUP BY stream`,
-        [connectorInstanceId],
+        [connectorInstanceId]
       );
       const canonicalByStream = new Map((canonicalResult.rows as Row[]).map((row) => [String(row.stream), row]));
-      const retainedByteResult = await client.query("SELECT * FROM retained_size_connection WHERE connector_instance_id = $1", [
-        connectorInstanceId,
-      ]);
+      const retainedByteResult = await client.query(
+        "SELECT * FROM retained_size_connection WHERE connector_instance_id = $1",
+        [connectorInstanceId]
+      );
       const retainedByteRow = retainedByteResult.rows[0] as Row | undefined;
       const retainedStreamResult = await client.query(
         "SELECT stream, record_count FROM retained_size_stream WHERE connector_instance_id = $1",
-        [connectorInstanceId],
+        [connectorInstanceId]
       );
       const retainedByStream = new Map(
-        (retainedStreamResult.rows as Row[]).map((row) => [String(row.stream), Number(row.record_count || 0)]),
+        (retainedStreamResult.rows as Row[]).map((row) => [String(row.stream), Number(row.record_count || 0)])
       );
+      const unexpectedResult = manifest.ok
+        ? await client.query(
+            "SELECT stream FROM manifest_write_violations WHERE connector_instance_id = $1 AND manifest_fingerprint = $2",
+            [connectorInstanceId, manifest.fingerprint]
+          )
+        : { rows: [] as Row[] };
+      const unexpectedStreams = new Set((unexpectedResult.rows as Row[]).map((row) => String(row.stream)));
       const terminalHighWaterResult = await client.query(
         `SELECT MAX(event_seq) AS max_seq FROM spine_events
-          WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`,
+          WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')`
       );
       const terminalHighWater = (terminalHighWaterResult.rows[0] as Row | undefined)?.max_seq;
 
@@ -1022,6 +1070,7 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
         canonicalByStream,
         retainedByteRow,
         retainedByStream,
+        unexpectedStreams,
         terminalFactsGenerationBoundary: terminalHighWater == null ? 0 : Number(terminalHighWater),
       });
       await upsertPostgresEvidenceRow(client, built);
@@ -1050,6 +1099,7 @@ interface RepairInputs {
   readonly canonicalByStream: ReadonlyMap<string, Row>;
   readonly retainedByteRow: Row | undefined;
   readonly retainedByStream: ReadonlyMap<string, number>;
+  readonly unexpectedStreams: ReadonlySet<string>;
   /**
    * Terminal-event high-water captured while the fingerprinted manifest is
    * repaired. This is an in-memory generation boundary, never persisted as a
@@ -1069,14 +1119,15 @@ interface RepairInputs {
  * are independent").
  */
 function buildRepairedRow(inputs: RepairInputs): Row {
-  const { instance, manifest, checkpoint, canonicalByStream, retainedByteRow, retainedByStream } = inputs;
+  const { instance, manifest, checkpoint, canonicalByStream, retainedByteRow, retainedByStream, unexpectedStreams } =
+    inputs;
   const as_of = nowIso();
 
   const declaredStreams = new Set(manifest.ok ? manifest.streams : []);
   const canonicalStreams = new Set(canonicalByStream.keys());
   const retainedStreams = new Set(retainedByStream.keys());
   const unionStreams = manifest.ok
-    ? new Set([...declaredStreams, ...canonicalStreams, ...retainedStreams])
+    ? new Set([...declaredStreams, ...canonicalStreams, ...retainedStreams, ...unexpectedStreams])
     : new Set([...canonicalStreams, ...retainedStreams]);
 
   const streamRecords: StreamEvidence[] = [...unionStreams].sort().map((stream) => {
@@ -1086,7 +1137,9 @@ function buildRepairedRow(inputs: RepairInputs): Row {
       ? "unavailable"
       : declaredStreams.has(stream)
         ? "declared"
-        : "dormant";
+        : unexpectedStreams.has(stream)
+          ? "unexpected"
+          : "dormant";
     const record_count = canonical ? Number(canonical.record_count || 0) : 0;
     const count_state: CountState = record_count > 0 ? "known" : "known_zero";
     return {
@@ -1160,10 +1213,13 @@ function buildRepairedRow(inputs: RepairInputs): Row {
 
 function upsertSqliteEvidenceRow(db: Db, row: Row): void {
   const existing = db
-    .prepare("SELECT manifest_fingerprint, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?")
+    .prepare(
+      "SELECT manifest_fingerprint, manifest_generation_boundary_at, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
+    )
     .get(row.connector_instance_id) as Row | undefined;
   const manifestGenerationChanged =
     existing !== undefined && (existing.manifest_fingerprint ?? null) !== (row.manifest_fingerprint ?? null);
+  const terminalFacts = terminalFactsForRepair(existing, row, manifestGenerationChanged);
   db.prepare(
     `INSERT INTO connector_summary_evidence(
        connector_instance_id, connector_id, display_name, status, source_kind,
@@ -1175,9 +1231,10 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        retained_bytes_state, retained_bytes_reason_code,
        terminal_facts_state, terminal_facts_reason_code,
        stream_latest_facts_json, stream_facts_event_seq,
-       dirty, computed_at, source_event_seq, state, last_error
+       dirty, computed_at, source_event_seq, state, last_error,
+       manifest_generation_boundary_at
      )
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?)
      ON CONFLICT(connector_instance_id) DO UPDATE SET
        connector_id = excluded.connector_id,
        display_name = excluded.display_name,
@@ -1205,7 +1262,8 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
        dirty = 0,
        computed_at = excluded.computed_at,
        state = 'fresh',
-       last_error = NULL`,
+       last_error = NULL,
+       manifest_generation_boundary_at = excluded.manifest_generation_boundary_at`
   ).run(
     row.connector_instance_id,
     row.connector_id,
@@ -1232,26 +1290,26 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
     // declaration generation, so old terminal facts cannot be reattached to
     // a re-added stream. Advancing to the captured event high-water makes the
     // next fold consume only post-generation terminal evidence.
-    manifestGenerationChanged ? "stale" : existing ? existing.terminal_facts_state : "unobserved",
-    manifestGenerationChanged
-      ? REASON_CODES.MANIFEST_GENERATION_CHANGED
-      : existing ? existing.terminal_facts_reason_code : null,
-    manifestGenerationChanged ? null : existing ? existing.stream_latest_facts_json : null,
-    manifestGenerationChanged ? row.terminal_facts_generation_boundary : existing ? existing.stream_facts_event_seq : null,
+    terminalFacts.state,
+    terminalFacts.reasonCode,
+    terminalFacts.latestFactsJson,
+    terminalFacts.eventSeq,
     row.computed_at,
     row.state,
     row.last_error,
+    manifestGenerationChanged ? row.computed_at : (existing?.manifest_generation_boundary_at ?? null)
   );
 }
 
 async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
   const existingResult = await client.query(
-    "SELECT manifest_fingerprint, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
-    [row.connector_instance_id],
+    "SELECT manifest_fingerprint, manifest_generation_boundary_at, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = $1",
+    [row.connector_instance_id]
   );
   const existing = existingResult.rows[0] as Row | undefined;
   const manifestGenerationChanged =
     existing !== undefined && (existing.manifest_fingerprint ?? null) !== (row.manifest_fingerprint ?? null);
+  const terminalFacts = terminalFactsForRepair(existing, row, manifestGenerationChanged);
   await client.query(
     `INSERT INTO connector_summary_evidence(
        connector_instance_id, connector_id, display_name, status, source_kind,
@@ -1263,9 +1321,10 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        retained_bytes_state, retained_bytes_reason_code,
        terminal_facts_state, terminal_facts_reason_code,
        stream_latest_facts_json, stream_facts_event_seq,
-       dirty, computed_at, source_event_seq, state, last_error
+       dirty, computed_at, source_event_seq, state, last_error,
+       manifest_generation_boundary_at
      )
-     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24, 0, $25, NULL, $26, $27)
+     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24, 0, $25, NULL, $26, $27, $28)
      ON CONFLICT (connector_instance_id) DO UPDATE SET
        connector_id = EXCLUDED.connector_id,
        display_name = EXCLUDED.display_name,
@@ -1293,7 +1352,8 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
        dirty = 0,
        computed_at = EXCLUDED.computed_at,
        state = 'fresh',
-       last_error = NULL`,
+       last_error = NULL,
+       manifest_generation_boundary_at = EXCLUDED.manifest_generation_boundary_at`,
     [
       row.connector_instance_id,
       row.connector_id,
@@ -1315,17 +1375,36 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
       row.manifest_declaration_reason_code,
       row.retained_bytes_state,
       row.retained_bytes_reason_code,
-      manifestGenerationChanged ? "stale" : existing ? existing.terminal_facts_state : "unobserved",
-      manifestGenerationChanged
-        ? REASON_CODES.MANIFEST_GENERATION_CHANGED
-        : existing ? existing.terminal_facts_reason_code : null,
-      manifestGenerationChanged ? null : existing ? existing.stream_latest_facts_json : null,
-      manifestGenerationChanged ? row.terminal_facts_generation_boundary : existing ? existing.stream_facts_event_seq : null,
+      terminalFacts.state,
+      terminalFacts.reasonCode,
+      terminalFacts.latestFactsJson,
+      terminalFacts.eventSeq,
       row.computed_at,
       row.state,
       row.last_error,
-    ],
+      manifestGenerationChanged ? row.computed_at : (existing?.manifest_generation_boundary_at ?? null),
+    ]
   );
+}
+
+function terminalFactsForRepair(existing: Row | undefined, row: Row, manifestGenerationChanged: boolean) {
+  if (manifestGenerationChanged) {
+    return {
+      state: "stale",
+      reasonCode: REASON_CODES.MANIFEST_GENERATION_CHANGED,
+      latestFactsJson: null,
+      eventSeq: row.terminal_facts_generation_boundary,
+    };
+  }
+  if (existing) {
+    return {
+      state: existing.terminal_facts_state,
+      reasonCode: existing.terminal_facts_reason_code,
+      latestFactsJson: existing.stream_latest_facts_json,
+      eventSeq: existing.stream_facts_event_seq,
+    };
+  }
+  return { state: "unobserved", reasonCode: null, latestFactsJson: null, eventSeq: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1393,7 +1472,7 @@ export interface ReconcileResult {
  */
 export async function reconcileConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
-  options: { readonly maxCandidates?: number; readonly maxDurationMs?: number } = {},
+  options: { readonly maxCandidates?: number; readonly maxDurationMs?: number } = {}
 ): Promise<ReconcileResult> {
   const { instanceRows, candidates } = await discoverCandidates(connectorInstanceIds);
 
@@ -1455,11 +1534,11 @@ export async function readInstanceIdPage(afterId: string | null, limit: number):
     const result = afterId
       ? await postgresQuery(
           "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id > $1 ORDER BY connector_instance_id ASC LIMIT $2",
-          [afterId, limit],
+          [afterId, limit]
         )
       : await postgresQuery(
           "SELECT connector_instance_id FROM connector_instances ORDER BY connector_instance_id ASC LIMIT $1",
-          [limit],
+          [limit]
         );
     return (result.rows as Row[]).map((row) => String(row.connector_instance_id));
   }
@@ -1468,7 +1547,7 @@ export async function readInstanceIdPage(afterId: string | null, limit: number):
     afterId
       ? db
           .prepare(
-            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id > ? ORDER BY connector_instance_id ASC LIMIT ?",
+            "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id > ? ORDER BY connector_instance_id ASC LIMIT ?"
           )
           .all(afterId, limit)
       : db
@@ -1507,7 +1586,7 @@ export async function pruneOrphanedEvidenceComplete(liveInstanceRows: readonly R
       liveIds.size > 0
         ? await postgresQuery(
             "DELETE FROM connector_summary_evidence WHERE connector_instance_id <> ALL($1::text[]) RETURNING connector_instance_id",
-            [[...liveIds]],
+            [[...liveIds]]
           )
         : await postgresQuery("DELETE FROM connector_summary_evidence RETURNING connector_instance_id");
     return result.rows.length;
@@ -1541,7 +1620,7 @@ export async function pruneOrphanedEvidenceComplete(liveInstanceRows: readonly R
  */
 async function pruneOrphanedEvidenceScoped(
   requestedIds: readonly string[],
-  liveInstanceRows: readonly Row[],
+  liveInstanceRows: readonly Row[]
 ): Promise<number> {
   const liveIds = new Set(liveInstanceRows.map((row) => String(row.connector_instance_id)));
   const missingIds = requestedIds.filter((id) => !liveIds.has(id));
@@ -1576,7 +1655,7 @@ async function batchFilterConnectorInstancesMissing(candidateIds: readonly strin
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
       "SELECT connector_instance_id FROM connector_instances WHERE connector_instance_id = ANY($1::text[])",
-      [candidateIds],
+      [candidateIds]
     );
     const present = new Set((result.rows as Row[]).map((row) => String(row.connector_instance_id)));
     return candidateIds.filter((id) => !present.has(id));

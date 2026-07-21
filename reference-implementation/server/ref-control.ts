@@ -2909,7 +2909,9 @@ export function projectCollectionReport(input: {
 }): CollectionReportEntry[] {
   // Select source authority before run precedence: local-device scheduler facts
   // are audit history, never coverage evidence.
-  const classifyingRun = input.localDeviceBacked ? null : coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
+  const classifyingRun = input.localDeviceBacked
+    ? null
+    : coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
   return buildCollectionReport({
     collectionFacts: classifyingRun?.collection_facts ?? null,
     collectionFactsAsOf: classifyingRun?.last_at ?? null,
@@ -3114,6 +3116,7 @@ export function deriveLocalCoverageAxis(input: {
   readonly hasCommittedSnapshot?: boolean;
   readonly state: unknown;
   readonly updatedAt: string | null;
+  readonly manifestGenerationBoundaryAt?: string | null;
   readonly nowIso?: string;
 }): LocalCoverageDiagnosticAxis {
   const { rows } = input;
@@ -3127,12 +3130,17 @@ export function deriveLocalCoverageAxis(input: {
   const maximumFutureProofMs = 5 * 60 * 1000;
   const cursorMs = validCursor ? Date.parse(stateCursor) : Number.NaN;
   const updatedAtMs = validUpdatedAt ? Date.parse(input.updatedAt) : Number.NaN;
+  const boundaryMs =
+    typeof input.manifestGenerationBoundaryAt === "string"
+      ? Date.parse(input.manifestGenerationBoundaryAt)
+      : Number.NaN;
   const reliable =
     validCursor &&
     validUpdatedAt &&
     Number.isFinite(nowMs) &&
     cursorMs <= nowMs + maximumFutureProofMs &&
     updatedAtMs <= nowMs + maximumFutureProofMs &&
+    (!Number.isFinite(boundaryMs) || updatedAtMs > boundaryMs) &&
     !input.malformed &&
     input.hasAuthoritativeInventory &&
     input.hasCommittedSnapshot === true &&
@@ -3821,7 +3829,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   /** Typed, provider-originated proof for at most one connection-scoped repair. */
   readonly browserSurfaceRepair?: BrowserSurfaceRepairContext | null;
   /**
-    * Connection/runtime capability proving that a session-required failure can
+   * Connection/runtime capability proving that a session-required failure can
    * be repaired through an owner browser session. This is deliberately
    * independent of `remoteSurface`: an idle managed runtime has no active
    * lease, but it still has the same browser-session repair path.
@@ -4100,9 +4108,15 @@ export function buildConnectorFreshness({
 
 function localDeviceFreshnessHeartbeatAt(
   localDeviceProgress: LocalDeviceProgress | null,
-  outbox: { readonly axis: OutboxAxis }
+  outbox: { readonly axis: OutboxAxis },
+  manifestGenerationBoundaryAt: string | null | undefined = null
 ): string | null {
   if (!localDeviceProgress?.last_heartbeat_at) {
+    return null;
+  }
+  const boundaryMs = manifestGenerationBoundaryAt ? Date.parse(manifestGenerationBoundaryAt) : Number.NaN;
+  const heartbeatMs = Date.parse(localDeviceProgress.last_heartbeat_at);
+  if (Number.isFinite(boundaryMs) && (!Number.isFinite(heartbeatMs) || heartbeatMs <= boundaryMs)) {
     return null;
   }
   if (outbox.axis === "active") {
@@ -4635,7 +4649,11 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // proves current collection; an active outbox proves the collector is checking
   // in and draining. Stalled/unknown outboxes remain load-bearing and do not get
   // greened by heartbeat freshness.
-  const freshnessHeartbeatAt = localDeviceFreshnessHeartbeatAt(localDeviceProgress, outbox);
+  const freshnessHeartbeatAt = localDeviceFreshnessHeartbeatAt(
+    localDeviceProgress,
+    outbox,
+    evidence?.manifest_generation_boundary_at ?? null
+  );
   const freshness = buildConnectorFreshness({
     lastRun: authoritativeLastRun,
     lastSuccessfulRun: authoritativeLastSuccessfulRun,
@@ -5186,9 +5204,7 @@ async function projectConnectorSummaryForInstance(
  * observe anything," and it must not be silently indistinguishable from
  * "there is honestly nothing to observe yet." Design.md task 5.4.
  */
-async function readSummaryEvidenceRowsOrFailure(
-  connectorInstanceIds: readonly string[] | null = null
-): Promise<{
+async function readSummaryEvidenceRowsOrFailure(connectorInstanceIds: readonly string[] | null = null): Promise<{
   readonly failed: boolean;
   readonly rows: readonly Row[];
 }> {
@@ -5339,6 +5355,7 @@ type Row = Record<string, unknown>;
  * never re-derived from a live source here.
  */
 export interface ConnectorSummaryEvidenceRow {
+  readonly manifest_generation_boundary_at?: string | null;
   readonly total_records: number;
   /** Count of streams with at least one live canonical record — NOT the exhaustive declared+observed stream_records set size. */
   readonly stream_count: number;

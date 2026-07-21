@@ -3,6 +3,10 @@
  */
 import { getDb } from './db.js';
 import { parseCoverageDiagnosticsStateSnapshot } from '../../packages/polyfill-connectors/src/local-source-inventory.ts';
+import {
+  assertGrantedManifestReadAuthority,
+  assertManifestReadAuthority,
+} from './manifest-read-authority.ts';
 
 // Optional post-commit hook for outbound client event subscriptions. The
 // hook is invoked after a `record_changes` row has been durably committed
@@ -2456,11 +2460,53 @@ export async function readCommittedLocalCoverageDiagnostics(storageTarget) {
     allowedStreams: new Set([LOCAL_COVERAGE_DIAGNOSTICS_STREAM]),
   });
   const state = stateProjection.state?.[LOCAL_COVERAGE_DIAGNOSTICS_STREAM] ?? null;
+  const generationBoundary = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        'SELECT manifest_generation_boundary_at FROM connector_summary_evidence WHERE connector_instance_id = $1',
+        [connectorInstanceId],
+      )).rows[0]?.manifest_generation_boundary_at ?? null
+    : getDb()
+      .prepare('SELECT manifest_generation_boundary_at FROM connector_summary_evidence WHERE connector_instance_id = ?')
+      .get(connectorInstanceId)?.manifest_generation_boundary_at ?? null;
   return {
     ...parseCoverageDiagnosticsStateSnapshot(connectorId, state),
     state,
     updatedAt: stateProjection.updated_at ?? null,
+    manifestGenerationBoundaryAt: generationBoundary,
   };
+}
+
+/**
+ * Persist explicit provenance for a rejected internal write against the
+ * current manifest generation. It never writes a record: retained history is
+ * diagnostic/dormant unless this independent signal says otherwise.
+ */
+export async function recordCurrentGenerationUndeclaredWrite(storageTarget, evidence) {
+  const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  const stream = typeof evidence?.stream === 'string' ? evidence.stream : '';
+  const manifestFingerprint = typeof evidence?.manifestFingerprint === 'string' ? evidence.manifestFingerprint : '';
+  const provenance = typeof evidence?.provenance === 'string' ? evidence.provenance : 'runtime_rejected_write';
+  if (!connectorInstanceId || !stream || !manifestFingerprint) {
+    throw new Error('Current manifest violation evidence requires connection, stream, and manifest fingerprint');
+  }
+  const observedAt = nowIso();
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      `INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_fingerprint, provenance, observed_at)
+       VALUES($1, $2, $3, $4, $5)
+       ON CONFLICT(connector_instance_id, stream, manifest_fingerprint) DO UPDATE
+         SET provenance = EXCLUDED.provenance, observed_at = EXCLUDED.observed_at`,
+      [connectorInstanceId, stream, manifestFingerprint, provenance, observedAt],
+    );
+    return;
+  }
+  getDb().prepare(
+    `INSERT INTO manifest_write_violations(connector_instance_id, stream, manifest_fingerprint, provenance, observed_at)
+     VALUES(?, ?, ?, ?, ?)
+     ON CONFLICT(connector_instance_id, stream, manifest_fingerprint) DO UPDATE
+       SET provenance = excluded.provenance, observed_at = excluded.observed_at`,
+  ).run(connectorInstanceId, stream, manifestFingerprint, provenance, observedAt);
 }
 
 /**
@@ -2483,12 +2529,8 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     throw err;
   }
   // Find manifest stream for stream-specific query capability declarations.
+  assertManifestReadAuthority(manifest, stream);
   const mStream = manifest?.streams?.find(s => s.name === stream);
-  if (Array.isArray(manifest?.streams) && !mStream) {
-    const err = new Error(`Stream '${stream}' not found`);
-    err.code = 'not_found';
-    throw err;
-  }
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
   const resolvedSort = validateTopLevelQueryParams(requestParams, mStream);
@@ -2977,12 +3019,8 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
     throw err;
   }
 
+  assertManifestReadAuthority(manifest, stream);
   const manifestStream = manifest?.streams?.find((entry) => entry.name === stream);
-  if (!manifestStream) {
-    const err = new Error(`Stream '${stream}' not found`);
-    err.code = 'not_found';
-    throw err;
-  }
 
   const aggregateRequest = normalizeAggregateRequest(requestParams, streamGrant, manifestStream);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
@@ -3143,12 +3181,8 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     throw err;
   }
 
+  assertManifestReadAuthority(manifest, stream);
   const mStream = manifest?.streams?.find(s => s.name === stream);
-  if (Array.isArray(manifest?.streams) && !mStream) {
-    const err = new Error(`Stream '${stream}' not found`);
-    err.code = 'not_found';
-    throw err;
-  }
 
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
@@ -3251,10 +3285,13 @@ export async function getRecordFieldWindow(
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
 
-  const mStream = manifest?.streams?.find(s => s.name === stream);
-  if (Array.isArray(manifest?.streams) && !mStream) {
-    throw fieldWindowError('not_found', 'Record not found', 404);
+  try {
+    assertManifestReadAuthority(manifest, stream);
+  } catch (error) {
+    if (error?.code === "stream_not_declared") throw fieldWindowError(error.code, error.message, error.statusCode);
+    throw error;
   }
+  const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
   const effective = buildEffectiveFilter(streamGrant, {}, requiredFields);
@@ -3897,6 +3934,9 @@ export async function teardownConnectionSearchProjection({ connectorId, connecto
  * List streams available under a grant, with record counts
  */
 export async function listStreams(storageTarget, grant, manifest = null) {
+  // Authority is checked before either backend enumerates physical history.
+  // A stale grant is a closed rejection, never an empty filtered list.
+  assertGrantedManifestReadAuthority(manifest, grant, null);
   if (isPostgresStorageBackend()) {
     return postgresListStreams(storageTarget, grant, manifest);
   }
@@ -3906,9 +3946,6 @@ export async function listStreams(storageTarget, grant, manifest = null) {
   const result = [];
 
   for (const sg of grant.streams) {
-    if (Array.isArray(manifest?.streams) && !manifest.streams.some((stream) => stream.name === sg.name)) {
-      continue;
-    }
     const rows = iterate(referenceQueries.recordsListStreamVisibleCandidates, [connectorInstanceId, sg.name]);
     const effective = buildEffectiveFilter(sg, {});
     const manifestStream = manifest?.streams?.find((stream) => stream.name === sg.name);

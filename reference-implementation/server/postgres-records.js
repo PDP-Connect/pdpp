@@ -11,6 +11,10 @@
 import { createHash } from 'node:crypto';
 
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
+import {
+  assertGrantedManifestReadAuthority,
+  assertManifestReadAuthority,
+} from './manifest-read-authority.ts';
 import { advancePostgresDeviceIngestPrefix } from './stores/device-exporter-store.ts';
 import {
   assertRecordIdentity,
@@ -1306,12 +1310,8 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
+  assertManifestReadAuthority(manifest, stream);
   const manifestStream = getManifestStream(manifest, stream);
-  if (Array.isArray(manifest?.streams) && !manifestStream) {
-    const err = new Error(`Stream '${stream}' not found`);
-    err.code = 'not_found';
-    throw err;
-  }
   const fields = fieldsFor(streamGrant, requestParams.fields, requiredFieldsFor(manifestStream));
   const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
   effective.fields = fields;
@@ -1691,12 +1691,8 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
+  assertManifestReadAuthority(manifest, stream);
   const manifestStream = getManifestStream(manifest, stream);
-  if (Array.isArray(manifest?.streams) && !manifestStream) {
-    const err = new Error(`Stream '${stream}' not found`);
-    err.code = 'not_found';
-    throw err;
-  }
   const fields = fieldsFor(streamGrant, null, requiredFieldsFor(manifestStream));
   const effective = buildEffectiveFilter(streamGrant, {}, requiredFieldsFor(manifestStream));
   effective.fields = fields;
@@ -1761,10 +1757,15 @@ export async function postgresGetRecordFieldWindow(
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
-  const manifestStream = getManifestStream(manifest, stream);
-  if (Array.isArray(manifest?.streams) && !manifestStream) {
-    throw fieldWindowError('not_found', 'Record not found', 404);
+  try {
+    assertManifestReadAuthority(manifest, stream);
+  } catch (error) {
+    if (error?.code === 'stream_not_declared') {
+      throw fieldWindowError(error.code, error.message, error.statusCode);
+    }
+    throw error;
   }
+  const manifestStream = getManifestStream(manifest, stream);
   const effective = buildEffectiveFilter(streamGrant, requiredFieldsFor(manifestStream));
 
   assertFieldVisibleToGrant(fieldPath, effective.fields);
@@ -1894,11 +1895,10 @@ export async function postgresListAllStreams(storageTarget) {
 }
 
 export async function postgresListStreams(storageTarget, grant, manifest = null) {
+  assertGrantedManifestReadAuthority(manifest, grant, null);
   const rows = await postgresListAllStreams(storageTarget);
   const byName = new Map(rows.map((row) => [row.name, row]));
-  return (grant?.streams || []).filter((streamGrant) =>
-    !Array.isArray(manifest?.streams) || getManifestStream(manifest, streamGrant.name)
-  ).map((streamGrant) => {
+  return (grant?.streams || []).map((streamGrant) => {
     const manifestStream = getManifestStream(manifest, streamGrant.name);
     const stored = byName.get(streamGrant.name);
     return {

@@ -552,17 +552,19 @@ test('recall meta coexists with structured warnings in the same meta object', as
   assert.equal(out.envelope.meta.warnings[0].code, 'deprecated_alias_used');
 });
 
-test('a stale grant for a dormant stream returns empty without invoking lexical storage/index dependencies', async () => {
+test('a stale grant for a dormant stream rejects before lexical storage/index dependencies', async () => {
   const deps = makeDeps({
     resolveClientManifest: () => ({ streams: [{ name: 'pay_statements' }] }),
-    buildSearchPlanForGrant: () => [],
+    buildSearchPlanForGrant: () => {
+      const error = new Error('Stream is not declared');
+      error.code = 'stream_not_declared';
+      throw error;
+    },
     buildSnapshot: () => assert.fail('dormant stream must not reach lexical storage/index snapshot'),
     persistSnapshot: () => assert.fail('dormant stream must not persist a snapshot'),
   });
-  const out = await executeSearchLexical(
-    { actor: clientActor, query: { q: 'old', streams: 'time_entries' } },
-    deps,
+  await assert.rejects(
+    () => executeSearchLexical({ actor: clientActor, query: { q: 'old', streams: 'time_entries' } }, deps),
+    (error) => error.code === 'stream_not_declared',
   );
-  assert.deepEqual(out.envelope.data, []);
-  assert.equal(out.disclosureData.connector_count, 0);
 });

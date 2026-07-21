@@ -26,6 +26,7 @@ import {
   listConnectorSummaries,
 } from "../server/ref-control.ts";
 import { rebuildRetainedSize } from "../server/retained-size-read-model.js";
+import { recordCurrentGenerationUndeclaredWrite } from "../server/records.js";
 
 const OWNER = "owner_local";
 const NOW = "2026-07-16T12:00:00.000Z";
@@ -260,6 +261,31 @@ test("canonical and retained-only streams become dormant diagnostic evidence", (
     assert.equal(dormant.record_count, 1, "canonical current count remains diagnostic evidence");
     assert.equal(dormant.retained_record_count, 2, "retained-only evidence remains separately visible");
     assert.equal(summary.total_records, 0, "dormant canonical rows are excluded from active totals");
+  }),
+);
+
+test("only explicit current-generation undeclared-write provenance becomes unexpected", () =>
+  withSqlite(async () => {
+    seedConnectorSqlite();
+    seedInstanceSqlite();
+    seedCanonicalRecordSqlite({ stream: UNEXPECTED_STREAM, recordKey: "historical-only" });
+    await listBypassCache();
+    assert.equal(
+      streamEntry(summaryFor(await listBypassCache()), UNEXPECTED_STREAM).declaration_state,
+      "dormant",
+      "retained/canonical history alone is never an undeclared-write accusation",
+    );
+
+    const fingerprint = getDb()
+      .prepare("SELECT manifest_fingerprint FROM connector_summary_evidence WHERE connector_instance_id = ?")
+      .get(INSTANCE_ID).manifest_fingerprint;
+    await recordCurrentGenerationUndeclaredWrite(
+      { connector_id: CONNECTOR_ID, connector_instance_id: INSTANCE_ID },
+      { stream: UNEXPECTED_STREAM, manifestFingerprint: fingerprint, provenance: "test_rejected_current_write" },
+    );
+    const summary = summaryFor(await listBypassCache());
+    assert.equal(streamEntry(summary, UNEXPECTED_STREAM).declaration_state, "unexpected");
+    assert.equal(summary.connection_health.state, "unknown", "unexpected evidence fails ProjectionReliable closed");
   }),
 );
 

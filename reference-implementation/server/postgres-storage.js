@@ -1494,10 +1494,20 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         computed_at               TEXT,
         source_event_seq          BIGINT,
         state                     TEXT NOT NULL DEFAULT 'rebuilding',
-        last_error                TEXT
+        last_error                TEXT,
+        manifest_generation_boundary_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_pg_connector_summary_evidence_connector
         ON connector_summary_evidence(connector_id);
+
+      CREATE TABLE IF NOT EXISTS manifest_write_violations (
+        connector_instance_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        manifest_fingerprint TEXT NOT NULL,
+        provenance TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY(connector_instance_id, stream, manifest_fingerprint)
+      );
 
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS last_record_updated_at TEXT;
@@ -1553,6 +1563,8 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         ADD COLUMN IF NOT EXISTS retained_bytes_state TEXT NOT NULL DEFAULT 'unobserved';
       ALTER TABLE connector_summary_evidence
         ADD COLUMN IF NOT EXISTS retained_bytes_reason_code TEXT;
+      ALTER TABLE connector_summary_evidence
+        ADD COLUMN IF NOT EXISTS manifest_generation_boundary_at TEXT;
       -- Terminal-run events are the fold source for per-stream evidence; the
       -- partial index keeps the fold's max-seq and delta reads off the full
       -- spine.

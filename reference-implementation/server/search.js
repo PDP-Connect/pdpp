@@ -34,6 +34,7 @@ import {
   SearchLexicalRequestError,
 } from '../operations/rs-search-lexical/index.ts';
 import { getConnectorManifest } from './auth.js';
+import { assertGrantedManifestReadAuthority } from './manifest-read-authority.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import {
   compileRequestFilters,
@@ -1300,6 +1301,7 @@ function buildSearchPlanEntryForGrant({ manifestStream, grantStreams, streamsFil
 
 export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null, connectorInstanceId = null }) {
   if (!manifest?.streams || !grant?.streams) return [];
+  assertGrantedManifestReadAuthority(manifest, grant, streamsFilter);
   const resolvedConnectorInstanceId = connectorId
     ? resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId || manifest?.storage_binding?.connector_instance_id || manifest?.connector_instance_id)
     : null;

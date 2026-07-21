@@ -263,14 +263,15 @@ timestamps, cursors, gap classes, and reason codes
 
 ### Requirement: Local coverage STATE and failure barriers SHALL be terminally committed
 
-A local collector SHALL emit `coverage_diagnostics` RECORDs as a full
-known-store inventory only after full collection and SHALL publish its STATE
-only on a terminally successful DONE path after predecessor batches and prior
+A local collector MAY emit diagnostic `coverage_diagnostics` RECORDs before a
+later failure, but SHALL publish its full snapshot-bearing STATE only on a
+terminally successful DONE path after predecessor batches and prior
 failure gaps drain. Its cursor SHALL contain valid `{ fetched_at, stores }`,
 where `stores` is derived from the complete fixed inventory and contains only
 safe `{ store, stream, status }` triples. Claude Code and Codex SHALL emit this
-proof for their fixed local inventories. RECORDs emitted before a failure SHALL
-NOT constitute committed coverage proof.
+proof for their fixed local inventories. RECORD diagnostics, including those
+emitted before a later failure, SHALL NOT constitute committed coverage proof;
+only the terminal-success STATE is positive local-health authority.
 
 Every child, protocol, nonzero-exit, and terminal-DONE failure, including a
 zero-record failure, SHALL create a durable local failure gap/backlog barrier.

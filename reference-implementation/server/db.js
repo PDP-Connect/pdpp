@@ -1421,10 +1421,25 @@ CREATE TABLE IF NOT EXISTS connector_summary_evidence (
   -- Honesty envelope: 'fresh' | 'stale' | 'rebuilding' | 'failed' | 'unknown'.
   state                         TEXT NOT NULL DEFAULT 'rebuilding',
   -- Sanitized last error (credentials redacted, bounded length).
-  last_error                    TEXT
+  last_error                    TEXT,
+  -- The instant a manifest fingerprint transition began this connection's
+  -- current declaration generation. Old local STATE/heartbeat proof must
+  -- postdate it before it can be positive authority again.
+  manifest_generation_boundary_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_connector_summary_evidence_connector
   ON connector_summary_evidence(connector_id);
+
+-- Explicit provenance for a rejected write against this exact manifest
+-- generation. Retained rows never imply this state by themselves.
+CREATE TABLE IF NOT EXISTS manifest_write_violations (
+  connector_instance_id TEXT NOT NULL,
+  stream                TEXT NOT NULL,
+  manifest_fingerprint  TEXT NOT NULL,
+  provenance            TEXT NOT NULL,
+  observed_at           TEXT NOT NULL,
+  PRIMARY KEY(connector_instance_id, stream, manifest_fingerprint)
+);
 `;
 
 /**
@@ -1590,6 +1605,7 @@ function ensureConnectorSummaryEvidenceColumns(raw) {
   addColumnIfMissing(raw, 'connector_summary_evidence', 'manifest_declaration_reason_code', 'TEXT');
   addColumnIfMissing(raw, 'connector_summary_evidence', 'retained_bytes_state', "TEXT NOT NULL DEFAULT 'unobserved'");
   addColumnIfMissing(raw, 'connector_summary_evidence', 'retained_bytes_reason_code', 'TEXT');
+  addColumnIfMissing(raw, 'connector_summary_evidence', 'manifest_generation_boundary_at', 'TEXT');
 }
 
 function ensureBrowserSurfaceLeaseIndexes(raw) {

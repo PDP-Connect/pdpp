@@ -579,17 +579,19 @@ test('disclosure data block carries query_shape:search_semantic plus record_coun
   });
 });
 
-test('a stale grant for a dormant stream returns empty without invoking semantic storage/index dependencies', async () => {
+test('a stale grant for a dormant stream rejects before semantic storage/index dependencies', async () => {
   const deps = makeDeps({
     resolveClientManifest: () => ({ streams: [{ name: 'pay_statements' }] }),
-    buildSearchPlanForGrant: () => [],
+    buildSearchPlanForGrant: () => {
+      const error = new Error('Stream is not declared');
+      error.code = 'stream_not_declared';
+      throw error;
+    },
     buildSnapshot: () => assert.fail('dormant stream must not reach semantic storage/index snapshot'),
     persistSnapshot: () => assert.fail('dormant stream must not persist a snapshot'),
   });
-  const out = await executeSearchSemantic(
-    { actor: clientActor, query: { q: 'old', streams: 'time_entries' } },
-    deps,
+  await assert.rejects(
+    () => executeSearchSemantic({ actor: clientActor, query: { q: 'old', streams: 'time_entries' } }, deps),
+    (error) => error.code === 'stream_not_declared',
   );
-  assert.deepEqual(out.envelope.data, []);
-  assert.equal(out.disclosureData.connector_count, 0);
 });

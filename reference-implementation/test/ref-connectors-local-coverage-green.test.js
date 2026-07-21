@@ -15,6 +15,7 @@ import {
 import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { readCommittedLocalCoverageDiagnostics } from '../server/records.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { getDefaultConnectorStateStore } from '../server/stores/connector-state-store.ts';
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
 import { getDefaultDeviceExporterStore } from '../server/stores/device-exporter-store.ts';
 import {
@@ -377,6 +378,30 @@ test('SQLite coverage reader enforces the shared production inventory exactly', 
   });
   assert.deepEqual(foreignProof.unexpectedStores, []);
   assert.equal(foreignProof.hasCommittedSnapshot, true, 'retained diagnostic RECORDs cannot alter committed proof');
+}));
+
+test('manifest-generation boundary withholds old local STATE until a no-op proof commit advances it', withTmpDb(async () => {
+  seedConnector();
+  await seedInstance();
+  seedCoverage([{ store: 'projects', stream: 'sessions', status: 'collected' }]);
+  getDb().prepare(
+    `INSERT INTO connector_summary_evidence(
+       connector_instance_id, connector_id, display_name, manifest_generation_boundary_at
+     ) VALUES (?, ?, '', ?)`
+  ).run(CONNECTOR_INSTANCE_ID, CONNECTOR_ID, '2026-06-03T11:58:32.000Z');
+
+  const target = { connector_id: CONNECTOR_ID, connector_instance_id: CONNECTOR_INSTANCE_ID };
+  const before = await readCommittedLocalCoverageDiagnostics(target);
+  assert.equal(deriveLocalCoverageAxis(before).axis, 'unknown', 'pre-boundary STATE is stale after manifest re-add');
+
+  const stateStore = getDefaultConnectorStateStore();
+  await stateStore.putState(
+    { connectorId: CONNECTOR_ID, connectorInstanceId: CONNECTOR_INSTANCE_ID },
+    { coverage_diagnostics: before.state },
+  );
+  const after = await readCommittedLocalCoverageDiagnostics(target);
+  assert.ok(after.updatedAt > before.updatedAt, 'no-op successful STATE PUT advances durable proof time');
+  assert.equal(deriveLocalCoverageAxis(after).axis, 'complete');
 }));
 
 test('unsupported local inventory cannot turn an arbitrary singleton into complete report or audit pass', withTmpDb(async () => {

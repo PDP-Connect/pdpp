@@ -536,3 +536,23 @@ test('filter[...] bound to exactly one streams[] is forwarded into both sub-requ
     assert.deepEqual(call.filter, { source_created_at: { gte: 'x' } });
   }
 });
+
+test('a manifest read-authority rejection stops hybrid before semantic dispatch', async () => {
+  let semanticCalls = 0;
+  const deps = makeDeps({
+    runLexical: () => {
+      const error = new Error('Stream is not declared by the current manifest');
+      error.code = 'stream_not_declared';
+      throw error;
+    },
+    runSemantic: () => {
+      semanticCalls += 1;
+      assert.fail('semantic vector/delegate path must not run after stale-grant rejection');
+    },
+  });
+  await assert.rejects(
+    () => executeSearchHybrid({ actor: clientActor, query: { q: 'old', streams: 'time_entries' } }, deps),
+    (error) => error.code === 'stream_not_declared',
+  );
+  assert.equal(semanticCalls, 0);
+});

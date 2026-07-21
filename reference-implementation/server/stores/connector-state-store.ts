@@ -63,8 +63,17 @@ function normalizeAllowedStreams(allowed: Iterable<string> | null | undefined): 
   return new Set(allowed);
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
+let lastProofWriteMs = 0;
+
+/**
+ * A successful no-op collection is still a new proof. Keep its persisted
+ * timestamp strictly monotonic so a same-millisecond PUT cannot be mistaken
+ * for pre-generation evidence after remove/re-add.
+ */
+function nextProofWriteIso(): string {
+  const nowMs = Date.now();
+  lastProofWriteMs = Math.max(nowMs, lastProofWriteMs + 1);
+  return new Date(lastProofWriteMs).toISOString();
 }
 
 function requireConnectorInstanceId(scope: ConnectorStateScope): string {
@@ -121,7 +130,7 @@ export function createSqliteConnectorStateStore(): ConnectorStateStore {
     const { connectorId } = scope;
     const connectorInstanceId = requireConnectorInstanceId(scope);
     const grantId = scope.grantId ?? null;
-    const now = nowIso();
+    const now = nextProofWriteIso();
 
     for (const [stream, cursor] of Object.entries(stateByStream)) {
       if (grantId) {
@@ -206,7 +215,7 @@ export function createPostgresConnectorStateStore(): ConnectorStateStore {
       const { connectorId } = scope;
       const connectorInstanceId = requireConnectorInstanceId(scope);
       const grantId = scope.grantId ?? null;
-      const now = nowIso();
+      const now = nextProofWriteIso();
       for (const [stream, cursor] of Object.entries(stateByStream)) {
         if (grantId) {
           await postgresQuery(
