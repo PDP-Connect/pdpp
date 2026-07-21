@@ -654,6 +654,7 @@ export class CollectorStateReadError extends Error {
  * durable outbox, drains acknowledged work against the device-exporter
  * ingest endpoint, and heartbeats start/healthy.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: ordered durable-run lifecycle; splitting it would hide checkpoint and heartbeat ordering.
 export async function runCollectorConnector(config: CollectorRunConfig): Promise<CollectorRunResult> {
   throwIfAborted(config.abortSignal);
   const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
@@ -676,6 +677,13 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
   // own honest "blocked") keeps its deliberate status instead of being
   // overwritten by an outbox-derived one.
   let startingHeartbeatSent = false;
+  // A failed state read emits the definitive terminal heartbeat for this pass.
+  // Never replace it with a generic corrective status in the outer catch.
+  let definitiveBlockedHeartbeatSent = false;
+  // Distinguishes a failure while only draining/heartbeating old backlog from
+  // a failure after a new local scan began. Only the latter invalidates the
+  // scan's coverage proof with a new child-failure barrier.
+  let scanStarted = false;
   try {
     const initialSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
     await client.heartbeat({
@@ -726,6 +734,9 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       client,
       config,
       recordsPending: pendingOutboxWorkCount(postDrainSummary),
+      onBlocked: () => {
+        definitiveBlockedHeartbeatSent = true;
+      },
     });
 
     await client.heartbeat({
@@ -740,6 +751,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     });
     startingHeartbeatSent = true;
 
+    scanStarted = true;
     const streamResult = await streamConnectorIntoOutbox({
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
       batchSize: config.batchSize ?? 100,
@@ -779,7 +791,13 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     await recoverResolvedLocalCollectorGaps({
       client,
       config,
-      deferRecoveredGapCleanup: streamResult.scanBudgetExceeded,
+      // A local failure barrier is recovered only by a complete successful
+      // coverage STATE commit. A scoped success or corrective heartbeat is
+      // deliberately insufficient.
+      deferRecoveredGapCleanup:
+        streamResult.scanBudgetExceeded ||
+        done?.status !== "succeeded" ||
+        !Object.hasOwn(checkpointResult.flushedState ?? {}, COVERAGE_DIAGNOSTICS_STREAM),
       outbox,
     });
 
@@ -818,7 +836,9 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
         }),
         records_pending: recordsPending,
         source_instance_id: config.sourceInstanceId,
-        status: streamResult.scanBudgetExceeded ? "retrying" : heartbeatStatusForSummary(finalSummary, policy),
+        status: streamResult.scanBudgetExceeded
+          ? "retrying"
+          : heartbeatStatusForSummary(finalSummary, policy, countOpenBacklogGaps(outbox, config.sourceInstanceId)),
       });
     }
 
@@ -849,7 +869,19 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     // durable outbox so the last heartbeat is honest. Skipped when "starting"
     // was never sent, preserving the honest "blocked" the state-read block
     // emits on its own.
-    if (startingHeartbeatSent) {
+    if (startingHeartbeatSent && !definitiveBlockedHeartbeatSent) {
+      if (scanStarted) {
+        ensureCollectorGapRow({
+          clock: () => new Date(),
+          connectorId: config.connector.connector_id,
+          details: "collector run failed before a committed coverage checkpoint",
+          outbox,
+          reason: "connector_child_failure",
+          retryable: true,
+          ...(config.runId ? { runId: config.runId } : {}),
+          sourceInstanceId: config.sourceInstanceId,
+        });
+      }
       await emitCorrectiveHeartbeatFromOutbox({ client, config, outbox, policy });
     }
     throw error;
@@ -882,7 +914,11 @@ async function emitCorrectiveHeartbeatFromOutbox(input: {
     }),
     records_pending: pendingOutboxWorkCount(summary),
     source_instance_id: input.config.sourceInstanceId,
-    status: heartbeatStatusForSummary(summary, input.policy),
+    status: heartbeatStatusForSummary(
+      summary,
+      input.policy,
+      countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId)
+    ),
   });
 }
 
@@ -944,7 +980,11 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     }),
     records_pending: recordsPendingAfterGap,
     source_instance_id: input.config.sourceInstanceId,
-    status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
+    status: heartbeatStatusForSummary(
+      summaryAfterGap,
+      input.policy,
+      countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId)
+    ),
   });
   return {
     // No connector spawned on a backlog skip, so no coverage was observed.
@@ -970,6 +1010,7 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
 async function readPriorStateOrBlock(input: {
   client: Pick<LocalDeviceClient, "getSourceInstanceState" | "heartbeat">;
   config: CollectorRunConfig;
+  onBlocked?: () => void;
   recordsPending: number;
 }): Promise<Readonly<Record<string, unknown>>> {
   try {
@@ -990,6 +1031,7 @@ async function readPriorStateOrBlock(input: {
       source_instance_id: input.config.sourceInstanceId,
       status: "blocked",
     });
+    input.onBlocked?.();
     throw new CollectorStateReadError(
       `failed to read prior state for ${input.config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`,
       error
@@ -1117,6 +1159,7 @@ export function summarizeCollectorCompleteness(
  *   after the record drain succeeds, so a mid-stream crash cannot
  *   advance the destination checkpoint past acknowledged work.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: protocol transitions share one ordered durable-batch state machine.
 async function streamConnectorIntoOutbox(
   input: StreamConnectorIntoOutboxInput
 ): Promise<StreamConnectorIntoOutboxResult> {
@@ -1201,6 +1244,9 @@ async function streamConnectorIntoOutbox(
   };
 
   const handleMessage = (message: EmittedMessage): void => {
+    if (done !== null) {
+      throw new Error(`${input.config.connector.connector_id} emitted ${message.type} after terminal DONE`);
+    }
     if (message.type === "RECORD") {
       recordCoverageIfPresent(message);
       pendingRecords.push(message);
@@ -1328,6 +1374,24 @@ async function streamConnectorIntoOutbox(
     stderr,
   });
 
+  // A zero exit only proves that the process stopped cleanly. It does not
+  // prove that the requested inventory completed. Do not let a pre-DONE STATE
+  // become a server checkpoint unless the connector explicitly terminally
+  // succeeded; failed or missing DONE keeps the prior proof invalidated by a
+  // durable recovery gap.
+  // `done` is assigned by the nested protocol callback; TypeScript's local
+  // flow analysis cannot observe that closure write, so retain its declared
+  // protocol union at this boundary.
+  const terminalDone = done as Extract<EmittedMessage, { type: "DONE" }> | null;
+  if (!scanBudgetExceeded && terminalDone?.status !== "succeeded") {
+    flushPendingBatch();
+    const details = terminalDone
+      ? `terminal DONE reported ${terminalDone.status}`
+      : "connector exited without terminal DONE";
+    recordConnectorChildFailureGap({ details, enqueuedBatches, input });
+    throw new Error(`${input.config.connector.connector_id} ${details}`);
+  }
+
   flushPendingBatch();
 
   return {
@@ -1439,20 +1503,14 @@ function maybeRecordScanBudgetGap(input: {
 
 /**
  * Persist a `connector_child_failure` gap row when the connector child
- * crashes after the runner already flushed at least one durable record
- * batch for this source instance. Skipping the gap when no records
- * were flushed avoids inventing a known-incomplete-unit when there is
- * no partial progress to attribute — the throw and surrounding
- * heartbeat are already the honest signal.
+ * crashes. Even a zero-record crash invalidates the prior coverage proof:
+ * a full local inventory was attempted but did not terminally commit.
  */
 function recordConnectorChildFailureGap(input: {
   details: string;
   enqueuedBatches: number;
   input: StreamConnectorIntoOutboxInput;
 }): void {
-  if (input.enqueuedBatches === 0) {
-    return;
-  }
   ensureCollectorGapRow({
     clock: () => new Date(),
     connectorId: input.input.config.connector.connector_id,
@@ -2292,9 +2350,10 @@ export function deriveLocalCollectorLifecycleState(input: LocalCollectorLifecycl
 
 function heartbeatStatusForSummary(
   summary: LocalDeviceOutboxSummary,
-  policy?: Pick<CollectorOutboxPolicy, "maxQueueDepth">
+  policy?: Pick<CollectorOutboxPolicy, "maxQueueDepth">,
+  backlogOpen = 0
 ): "blocked" | "healthy" | "retrying" {
-  if (summary.deadLetter > 0) {
+  if (summary.deadLetter > 0 || backlogOpen > 0) {
     return "blocked";
   }
   const pending = pendingOutboxWorkCount(summary);

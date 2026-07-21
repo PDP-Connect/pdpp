@@ -115,7 +115,7 @@ import { getSqliteStoreCacheIdentity } from "./db.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { mapPendingPressureGaps } from "./pending-pressure-gap-map.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
-import { listLocalCoverageDiagnostics } from "./records.js";
+import { readCommittedLocalCoverageDiagnostics } from "./records.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -2672,6 +2672,7 @@ export function buildCollectionReport(input: {
       buildCollectionReportEntry({
         stream,
         ...entryIndexes,
+        localCoverage: input.localCoverage ?? null,
         freshness: input.freshness,
         attentionOpen: input.attentionOpen,
         refresh: input.refresh,
@@ -2755,6 +2756,7 @@ function buildCollectionReportEntry(input: {
   readonly pendingGapReadHitLimit: boolean;
   readonly manifestByStream: ReadonlyMap<string, ManifestStream>;
   readonly localCoverageConditionByStream: ReadonlyMap<string, CoverageAxis>;
+  readonly localCoverage?: LocalCoverageDiagnosticAxis | null;
   readonly freshness: FreshnessAxis;
   readonly attentionOpen: boolean;
   readonly refresh: ConnectionRefreshEvidence | null;
@@ -2780,7 +2782,9 @@ function buildCollectionReportEntry(input: {
     skipped: effectiveFact.skipped,
     coverage_condition: coverageCondition,
     coverage_strategy: readCoverageEvidenceStrategy(manifestStream),
-    evidence_as_of: effective?.evidenceAsOf ?? null,
+    evidence_as_of:
+      effective?.evidenceAsOf ??
+      (input.localCoverageConditionByStream.has(input.stream) ? (input.localCoverage?.evidenceAsOf ?? null) : null),
     forward_disposition: forwardDisposition,
     freshness_strategy: readFreshnessEvidenceStrategy(manifestStream),
     required: isRequiredStream(manifestStream),
@@ -2903,12 +2907,14 @@ export function projectCollectionReport(input: {
   readonly refreshPolicy: unknown;
   readonly schedule?: { readonly enabled: boolean } | null;
 }): CollectionReportEntry[] {
-  const classifyingRun = coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
+  // Select source authority before run precedence: local-device scheduler facts
+  // are audit history, never coverage evidence.
+  const classifyingRun = input.localDeviceBacked ? null : coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun ?? null);
   return buildCollectionReport({
     collectionFacts: classifyingRun?.collection_facts ?? null,
     collectionFactsAsOf: classifyingRun?.last_at ?? null,
     collectionFactsRunId: classifyingRun?.run_id ?? null,
-    latestStreamFacts: input.latestStreamFacts ?? null,
+    latestStreamFacts: input.localDeviceBacked ? null : (input.latestStreamFacts ?? null),
     localCoverage: input.localDeviceBacked === true ? (input.localCoverage ?? null) : null,
     manifestStreams: input.manifestStreams,
     pendingDetailGaps: input.pendingDetailGaps ?? [],
@@ -2962,6 +2968,9 @@ function localCoverageConditionsByStream(
   manifestByStream: ReadonlyMap<string, ManifestStream>
 ): ReadonlyMap<string, CoverageAxis> {
   const conditions = new Map<string, CoverageAxis>();
+  if (localCoverage?.reliable !== true || localCoverage.axis !== "complete") {
+    return conditions;
+  }
   const rows = localCoverage?.rows ?? [];
   seedLocalCoverageConditions(conditions, rows);
   addCoverageDiagnosticsCondition(conditions, rows, manifestByStream);
@@ -3043,6 +3052,8 @@ interface LocalCoverageDiagnosticAxis {
   readonly rows?: readonly LocalCoverageDiagnosticRow[];
   /** Stores the collector discovered but could not account for. */
   readonly unaccountedStores: readonly string[];
+  readonly evidenceAsOf: string | null;
+  readonly reliable: boolean;
 }
 
 const LOCAL_COVERAGE_ACCOUNTED_STATUSES = new Set([
@@ -3072,9 +3083,44 @@ const LOCAL_COVERAGE_ACCOUNTED_STATUSES = new Set([
  * load-bearing honesty guarantee: the spec forbids treating declared-stream
  * success (or a quiet outbox) as complete local collection.
  */
-function deriveLocalCoverageAxis(rows: readonly LocalCoverageDiagnosticRow[]): LocalCoverageDiagnosticAxis {
+export function deriveLocalCoverageAxis(input: {
+  readonly rows: readonly LocalCoverageDiagnosticRow[];
+  readonly malformed: boolean;
+  readonly duplicateStores: readonly string[];
+  readonly missingStores: readonly string[];
+  readonly unexpectedStores: readonly string[];
+  readonly hasAuthoritativeInventory: boolean;
+  readonly state: unknown;
+  readonly updatedAt: string | null;
+  readonly nowIso?: string;
+}): LocalCoverageDiagnosticAxis {
+  const { rows } = input;
+  const stateCursor =
+    input.state && typeof input.state === "object" && !Array.isArray(input.state)
+      ? (input.state as Record<string, unknown>).fetched_at
+      : null;
+  const validCursor = typeof stateCursor === "string" && Number.isFinite(Date.parse(stateCursor));
+  const validUpdatedAt = typeof input.updatedAt === "string" && Number.isFinite(Date.parse(input.updatedAt));
+  const nowMs = Date.parse(input.nowIso ?? new Date().toISOString());
+  const maximumFutureProofMs = 5 * 60 * 1000;
+  const cursorMs = validCursor ? Date.parse(stateCursor) : Number.NaN;
+  const updatedAtMs = validUpdatedAt ? Date.parse(input.updatedAt) : Number.NaN;
+  const reliable =
+    validCursor &&
+    validUpdatedAt &&
+    Number.isFinite(nowMs) &&
+    cursorMs <= nowMs + maximumFutureProofMs &&
+    updatedAtMs <= nowMs + maximumFutureProofMs &&
+    !input.malformed &&
+    input.hasAuthoritativeInventory &&
+    input.duplicateStores.length === 0 &&
+    input.missingStores.length === 0 &&
+    input.unexpectedStores.length === 0;
+  if (!reliable) {
+    return { axis: "unknown", rows, unaccountedStores: [], evidenceAsOf: null, reliable: false };
+  }
   if (rows.length === 0) {
-    return { axis: "unknown", rows, unaccountedStores: [] };
+    return { axis: "unknown", rows, unaccountedStores: [], evidenceAsOf: input.updatedAt, reliable: true };
   }
   const unaccountedStores: string[] = [];
   for (const row of rows) {
@@ -3086,9 +3132,15 @@ function deriveLocalCoverageAxis(rows: readonly LocalCoverageDiagnosticRow[]): L
     }
   }
   if (unaccountedStores.length > 0) {
-    return { axis: "gaps", rows, unaccountedStores: unaccountedStores.sort() };
+    return {
+      axis: "gaps",
+      rows,
+      unaccountedStores: unaccountedStores.sort(),
+      evidenceAsOf: input.updatedAt,
+      reliable: true,
+    };
   }
-  return { axis: "complete", rows, unaccountedStores: [] };
+  return { axis: "complete", rows, unaccountedStores: [], evidenceAsOf: input.updatedAt, reliable: true };
 }
 
 /**
@@ -3105,15 +3157,16 @@ function deriveLocalCoverageAxis(rows: readonly LocalCoverageDiagnosticRow[]): L
  */
 async function getConnectorLocalCoverageAxis(
   connectorId: string,
-  connectorInstanceId: string | null | undefined
+  connectorInstanceId: string | null | undefined,
+  nowIso?: string
 ): Promise<LocalCoverageDiagnosticAxis | null> {
   const storageTarget: { connector_id: string; connector_instance_id?: string } = { connector_id: connectorId };
   if (connectorInstanceId) {
     storageTarget.connector_instance_id = connectorInstanceId;
   }
   try {
-    const rows = (await listLocalCoverageDiagnostics(storageTarget)) as readonly LocalCoverageDiagnosticRow[];
-    return deriveLocalCoverageAxis(rows);
+    const proof = await readCommittedLocalCoverageDiagnostics(storageTarget);
+    return deriveLocalCoverageAxis(nowIso ? { ...proof, nowIso } : proof);
   } catch {
     return null;
   }
@@ -3847,15 +3900,25 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly unreliableSources?: readonly string[];
   readonly schedule: unknown;
 }): ConnectionHealthSnapshot {
-  const schedule = asScheduleRecord(input.schedule);
+  // Persisted source kind decides authority before health derives any scheduler
+  // fact. A local device may have historical/foreign server runs, but they are
+  // never evidence for its current device-side collection proof.
+  const localDeviceBacked = input.localDeviceBacked === true;
+  const authoritativeLastRun = localDeviceBacked ? null : input.lastRun;
+  const authoritativeLastSuccessfulRun = localDeviceBacked ? null : input.lastSuccessfulRun;
+  const authoritativeActiveRun = localDeviceBacked ? null : input.activeRun;
+  const authoritativeCollectionRate = localDeviceBacked ? null : input.collectionRate;
+  const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : input.ephemeralBrowserRuntime;
+  const authoritativeRemoteSurface = localDeviceBacked ? null : input.remoteSurface;
+  const schedule = localDeviceBacked ? null : asScheduleRecord(input.schedule);
   const scheduleEvidence = projectConnectionHealthScheduleEvidence(
     schedule,
-    input.lastRun,
-    input.activeRun?.run_id ?? null
+    authoritativeLastRun,
+    authoritativeActiveRun?.run_id ?? null
   );
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
-  const latestRunForHealth = healthClassifyingRun(input.lastRun);
-  const coverageRunForHealth = coverageClassifyingRun(input.lastRun, input.lastSuccessfulRun);
+  const latestRunForHealth = healthClassifyingRun(authoritativeLastRun);
+  const coverageRunForHealth = coverageClassifyingRun(authoritativeLastRun, authoritativeLastSuccessfulRun);
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
@@ -3910,21 +3973,21 @@ export function projectConnectorSummaryConnectionHealth(input: {
     attention,
     backoff: scheduleEvidence.backoffEvidence.backoff,
     browserSurfaceRepair: input.browserSurfaceRepair ?? null,
-    collectionRate: input.collectionRate ?? null,
+    collectionRate: authoritativeCollectionRate ?? null,
     coverage,
     credential: input.credential ?? null,
     browserSessionRepairCapable: input.browserSessionRepairCapable === true,
     detailGapBacklog,
-    ephemeralBrowserRuntime: input.ephemeralBrowserRuntime,
+    ephemeralBrowserRuntime: authoritativeEphemeralBrowserRuntime,
     freshness: { axis: freshnessAxis },
     localDeviceCollection,
     outbox,
     projection: { unreliableSources: input.unreliableSources ?? [] },
     refresh: buildRefreshEvidence(input.refreshPolicy),
-    remoteSurface: input.remoteSurface ?? null,
+    remoteSurface: authoritativeRemoteSurface ?? null,
     run: {
       hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(latestRunForHealth),
-      lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleEvidence.lastSuccessfulAt,
+      lastSuccessAt: authoritativeLastSuccessfulRun?.last_at ?? scheduleEvidence.lastSuccessfulAt,
       latestStatus: mapRunStatus(latestRunForHealth?.status) ?? scheduleEvidence.backoffEvidence.schedulerFailureStatus,
       reasonCode:
         // §10-C: a credential/auth signal buried in a known-gap takes priority
@@ -4533,8 +4596,14 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     schedule,
   } = input;
   const localDeviceBacked = instance.sourceKind === "local_device";
+  const authoritativeActiveRun = localDeviceBacked ? null : activeRun;
+  const authoritativeCollectionRate = localDeviceBacked ? null : collectionRate;
+  const authoritativeEphemeralBrowserRuntime = localDeviceBacked ? null : ephemeralBrowserRuntime;
+  const authoritativeLastRun = localDeviceBacked ? null : lastRun;
+  const authoritativeLastSuccessfulRun = localDeviceBacked ? null : lastSuccessfulRun;
+  const authoritativeLatestStreamFacts = localDeviceBacked ? null : latestStreamFacts;
   const healthRemoteSurface = connectionHealthRemoteSurface({
-    runtime: ephemeralBrowserRuntime,
+    runtime: authoritativeEphemeralBrowserRuntime,
     remoteSurface,
   });
   const browserSessionRepairCapable = connectionHasBrowserSessionRepairCapability(instance, manifest);
@@ -4545,8 +4614,8 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // greened by heartbeat freshness.
   const freshnessHeartbeatAt = localDeviceFreshnessHeartbeatAt(localDeviceProgress, outbox);
   const freshness = buildConnectorFreshness({
-    lastRun,
-    lastSuccessfulRun,
+    lastRun: authoritativeLastRun,
+    lastSuccessfulRun: authoritativeLastSuccessfulRun,
     live,
     refreshPolicy,
     lastHeartbeatAt: freshnessHeartbeatAt,
@@ -4554,12 +4623,12 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   const healthInput: Parameters<typeof projectConnectorSummaryConnectionHealth>[0] = {
     attentionRecords: attention.records,
     browserSessionRepairCapable,
-    collectionRate,
+    collectionRate: authoritativeCollectionRate,
     credential,
     freshness,
-    lastRun,
-    lastSuccessfulRun,
-    activeRun,
+    lastRun: authoritativeLastRun,
+    lastSuccessfulRun: authoritativeLastSuccessfulRun,
+    activeRun: authoritativeActiveRun,
     localCoverage,
     localDeviceBacked,
     manifestStreams: manifest.streams ?? [],
@@ -4571,7 +4640,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     pendingDetailGapsUnreliable: detailGaps.unreliable,
     nowIso,
     refreshPolicy,
-    ephemeralBrowserRuntime,
+    ephemeralBrowserRuntime: authoritativeEphemeralBrowserRuntime,
     remoteSurface: healthRemoteSurface.evidence,
     unreliableSources: combineUnreliableSources(
       detailGaps.unreliable,
@@ -4580,14 +4649,14 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
       healthRemoteSurface.unreliable,
       evidenceUnreliableSources(evidence, evidenceReadFailed)
     ),
-    schedule,
+    schedule: localDeviceBacked ? null : schedule,
   };
   const initialConnectionHealth = projectConnectorSummaryConnectionHealth(healthInput);
   const connectorDisplayName = manifest.display_name || connectorId;
   const collectionReport = projectCollectionReport({
-    lastRun,
-    lastSuccessfulRun,
-    latestStreamFacts,
+    lastRun: authoritativeLastRun,
+    lastSuccessfulRun: authoritativeLastSuccessfulRun,
+    latestStreamFacts: authoritativeLatestStreamFacts,
     connectionHealth: initialConnectionHealth,
     localCoverage,
     localDeviceBacked,
@@ -4596,7 +4665,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     pendingDetailGapsReadLimit: detailGaps.readLimit,
     terminalDetailGapsByStream: detailGaps.terminalByStream,
     refreshPolicy,
-    schedule: normalizeScheduleEvidence(schedule),
+    schedule: localDeviceBacked ? null : normalizeScheduleEvidence(schedule),
   });
   // `refineConnectionHealthWithCollectionReport` owns both report-derived
   // overrides: the required-unknown coverage refusal and the proof-age
@@ -4621,7 +4690,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     refreshPolicy,
     retainedRecords: live.totalRecords,
     runtimeOk,
-    schedule,
+    schedule: localDeviceBacked ? null : schedule,
   });
   // Owner review, 2026-07-09: reuse `coverageClassifyingRun` — the SAME
   // classifying run health/coverage already resolved to — so an
@@ -4633,7 +4702,7 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // `as_of` is `null` — never fabricated from projection read time (design
   // gate #4).
   const causalEvidence = ownerStateCausalEvidenceFrom(
-    classifiedRunForOwnerState(lastRun, lastSuccessfulRun),
+    classifiedRunForOwnerState(authoritativeLastRun, authoritativeLastSuccessfulRun),
     freshness.captured_at ?? null
   );
   const ownerStateEvidence: OwnerStateEvidence = activeRun
@@ -4641,14 +4710,14 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
         as_of: activeRun.started_at,
         lifecycle: { status: instance.status ?? "active" },
         progress: { active: true },
-        schedule_mode: scheduleModeFrom(scheduleApiShape(schedule)),
+        schedule_mode: scheduleModeFrom(scheduleApiShape(localDeviceBacked ? null : schedule)),
         source: "active_progress",
       }
     : {
         as_of: causalEvidence.as_of,
         lifecycle: { status: instance.status ?? "active" },
         progress: { active: false },
-        schedule_mode: scheduleModeFrom(scheduleApiShape(schedule)),
+        schedule_mode: scheduleModeFrom(scheduleApiShape(localDeviceBacked ? null : schedule)),
         source: causalEvidence.source,
       };
   const ownerState = deriveOwnerState(renderedVerdict, connectionHealth, ownerStateEvidence);
@@ -4753,9 +4822,9 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     total_retained_bytes: totalRetainedBytes,
     freshness,
     refresh_policy: refreshPolicy,
-    schedule,
-    last_run: lastRun,
-    last_successful_run: lastSuccessfulRun,
+    schedule: localDeviceBacked ? null : schedule,
+    last_run: authoritativeLastRun,
+    last_successful_run: authoritativeLastSuccessfulRun,
   };
 }
 
@@ -4945,11 +5014,13 @@ async function projectConnectorSummaryForInstance(
   }
   const browserSurfaceProfileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
   const activeVisibleConnectionCount = options.activeVisibleConnectionCount ?? 0;
-  const hydrateRunSummaries = shouldHydrateRunSummariesForInstance(
-    deps.includeRunSummaries,
-    instance,
-    activeVisibleConnectionCount
-  );
+  // Persisted source kind is the authority boundary, not a hint applied after
+  // fetching scheduler history. Local-device connections never hydrate server
+  // runs or schedules into the projection, even if stale rows still exist.
+  const localDeviceBacked = instance.sourceKind === "local_device";
+  const hydrateRunSummaries =
+    !localDeviceBacked &&
+    shouldHydrateRunSummariesForInstance(deps.includeRunSummaries, instance, activeVisibleConnectionCount);
   const live = await getConnectorRecordProjection(
     recordStorageConnectorIdForConnection(instance),
     connectorInstanceId,
@@ -4965,6 +5036,7 @@ async function projectConnectorSummaryForInstance(
   // run/session evidence + binding-first console routing.
   const staticSecretCapable = staticSecretCredentialCaptureFromManifest(manifest) !== null;
   const staticSecretBound = connectionIsStaticSecretBound(instance, staticSecretCapable);
+  const nowIso = new Date().toISOString();
   const [
     schedule,
     lastRun,
@@ -4977,7 +5049,7 @@ async function projectConnectorSummaryForInstance(
     acquisitionCoverage,
     credentialMetadata,
   ] = await Promise.all([
-    getScheduleFrom(controller, connectorId, { connectorInstanceId }),
+    localDeviceBacked ? Promise.resolve(null) : getScheduleFrom(controller, connectorId, { connectorInstanceId }),
     hydrateRunSummaries
       ? getLatestRunSummaryForConnection({
           activeVisibleConnectionCount,
@@ -5006,7 +5078,7 @@ async function projectConnectorSummaryForInstance(
       profileKey: browserSurfaceProfileKey,
       store: sharedBrowserSurfaceReader,
     }),
-    getConnectorLocalCoverageAxis(connectorId, connectorInstanceId),
+    localDeviceBacked ? getConnectorLocalCoverageAxis(connectorId, connectorInstanceId, nowIso) : Promise.resolve(null),
     getAcquisitionCoverageSummary(connectorInstanceId),
     staticSecretBound
       ? getConnectorCredentialStore()
@@ -5025,32 +5097,34 @@ async function projectConnectorSummaryForInstance(
   // because `staticSecretBound` is false — so `credential` stays `null` (evidence
   // omitted), unchanged, and no `credential_required` is fabricated for them.
   const credential = deriveCredentialEvidence(staticSecretBound, credentialMetadata);
-  const activeRun = activeRunsByInstanceId.get(connectorInstanceId) ?? null;
-  const nowIso = new Date().toISOString();
-  const ephemeralBrowserRuntime = await projectConnectorHealthSummaryRuntime({
-    activeRun,
-    connectionId: connectorInstanceId,
-    connectorId,
-    controller,
-    instance,
-    inventory: deps.runtimeInventory,
-    lastSuccessfulRun,
-    now: nowIso,
-    profileKey: browserSurfaceProfileKey,
-    reader: sharedBrowserSurfaceReader,
-    remoteSurface: remoteSurface.evidence,
-    browserSessionBound: connectionIsBrowserSessionBound(instance),
-  });
+  const activeRun = localDeviceBacked ? null : (activeRunsByInstanceId.get(connectorInstanceId) ?? null);
+  const ephemeralBrowserRuntime = localDeviceBacked
+    ? null
+    : await projectConnectorHealthSummaryRuntime({
+        activeRun,
+        connectionId: connectorInstanceId,
+        connectorId,
+        controller,
+        instance,
+        inventory: deps.runtimeInventory,
+        lastSuccessfulRun,
+        now: nowIso,
+        profileKey: browserSurfaceProfileKey,
+        reader: sharedBrowserSurfaceReader,
+        remoteSurface: remoteSurface.evidence,
+        browserSessionBound: connectionIsBrowserSessionBound(instance),
+      });
   const refreshPolicy = extractRefreshPolicy(manifest);
   // Adaptive rate controller snapshot: read from the latest run's terminal
   // event (fast path) or its most recent rate-change progress event (in-
   // progress run). `null` when no controller has fired for this connection.
-  const collectionRate = lastRun?.run_id
-    ? await readLatestCollectionRateForRun(
-        lastRun.run_id,
-        lastRun.status === "pending" ? null : await readRunTerminalEventData(lastRun.run_id)
-      )
-    : null;
+  const collectionRate =
+    !localDeviceBacked && lastRun?.run_id
+      ? await readLatestCollectionRateForRun(
+          lastRun.run_id,
+          lastRun.status === "pending" ? null : await readRunTerminalEventData(lastRun.run_id)
+        )
+      : null;
   return synthesizeConnectorSummary({
     acquisitionCoverage,
     activeRun,

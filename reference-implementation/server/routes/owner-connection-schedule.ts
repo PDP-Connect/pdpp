@@ -65,6 +65,7 @@ import type {
   TraceContext,
   WireConnection,
 } from "./_route-contract.ts";
+import { assertRemoteControlSupported } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -304,6 +305,7 @@ function buildScheduleHandler(
       }
       connectionId = namespace.connectorInstanceId;
       connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
+      assertRemoteControlSupported(namespace);
 
       if (operation === "delete_schedule") {
         const deleted = await ctx.deleteSchedule(namespace.connectorId, {

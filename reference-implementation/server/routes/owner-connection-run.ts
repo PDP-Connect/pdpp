@@ -58,6 +58,7 @@ import type {
   TraceContext,
   WireConnection,
 } from "./_route-contract.ts";
+import { assertRemoteControlSupported } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -361,6 +362,7 @@ function buildRunHandler(
       }
       connectionId = namespace.connectorInstanceId;
       connectorKey = ctx.canonicalConnectorKey(namespace.connectorId) ?? namespace.connectorId;
+      assertRemoteControlSupported(namespace);
 
       const resources = readRunResources(req);
       const started = await ctx.runNow(namespace.connectorId, {

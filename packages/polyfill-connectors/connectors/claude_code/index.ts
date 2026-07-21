@@ -1044,6 +1044,15 @@ async function emitCoverageDiagnostics(input: {
   }
 }
 
+async function emitCoverageDiagnosticsState(input: {
+  emit: CollectContext["emit"];
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  if (input.requested.has("coverage_diagnostics")) {
+    await input.emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: nowIso() } });
+  }
+}
+
 /** Emit one inventory stream's records under a fingerprint gate that excludes
  *  incidental `mtime_epoch`/`size_bytes`, then write a per-stream STATE cursor
  *  carrying the fingerprints forward. Inventory enumeration is a full scan, so
@@ -1223,6 +1232,7 @@ if (isMainModule(import.meta.url)) {
         requested.has("attachments") ||
         requested.has("memory_notes");
       if (!needsProjects) {
+        await emitCoverageDiagnosticsState({ emit, requested });
         return;
       }
 
@@ -1285,6 +1295,9 @@ if (isMainModule(import.meta.url)) {
           sessionAccumulators,
         });
       }
+      // Coverage STATE is emitted only after every requested collection pass
+      // has completed successfully; a later failure cannot commit this proof.
+      await emitCoverageDiagnosticsState({ emit, requested });
 
       if (requested.has("messages") || requested.has("attachments")) {
         await emit({

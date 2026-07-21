@@ -16,6 +16,73 @@ export interface KnownLocalStore {
   stream: string | null;
 }
 
+/**
+ * The fixed local inventories are an authority shared by emitters and the
+ * server proof reader. Keep identifiers here, separate from connector-specific
+ * path/reason metadata, so a partial durable diagnostic set is detectable.
+ */
+export const LOCAL_COVERAGE_STORES_BY_CONNECTOR = {
+  claude_code: [
+    "projects",
+    "skills",
+    "commands",
+    "file_history",
+    "context_mode",
+    "cache",
+    "backups",
+    "config",
+    "debug",
+    "downloads",
+    "auth",
+  ],
+  codex: [
+    "sessions",
+    "state_db",
+    "rules",
+    "prompts",
+    "skills",
+    "history",
+    "session_index",
+    "shell_snapshots",
+    "memories",
+    "context_mode",
+    "logs",
+    "config",
+    "cache",
+    "auth",
+  ],
+} as const;
+
+export type LocalCoverageConnector = keyof typeof LOCAL_COVERAGE_STORES_BY_CONNECTOR;
+
+export function expectedLocalCoverageStores(connectorId: string): readonly string[] | null {
+  let normalized = connectorId;
+  if (connectorId === "claude-code" || connectorId.endsWith("/claude-code")) {
+    normalized = "claude_code";
+  } else if (connectorId === "codex" || connectorId.endsWith("/codex")) {
+    normalized = "codex";
+  }
+  return normalized in LOCAL_COVERAGE_STORES_BY_CONNECTOR
+    ? LOCAL_COVERAGE_STORES_BY_CONNECTOR[normalized as LocalCoverageConnector]
+    : null;
+}
+
+function assertExpectedLocalCoverageStores(tool: string, stores: readonly KnownLocalStore[]): void {
+  const expected = expectedLocalCoverageStores(tool);
+  if (!expected) {
+    return;
+  }
+  const actual = stores.map((store) => store.store).sort();
+  const expectedSorted = [...expected].sort();
+  if (
+    actual.length !== expectedSorted.length ||
+    actual.some((store, index) => store !== expectedSorted[index]) ||
+    new Set(actual).size !== actual.length
+  ) {
+    throw new Error(`${tool} local coverage declaration diverges from its authoritative expected-store set`);
+  }
+}
+
 export interface InventoryRecord extends RecordData {
   classification: "inventory_only" | "defer";
   id: string;
@@ -98,6 +165,7 @@ export async function buildLocalSourceInventory(
   sourceHome: string,
   stores: readonly KnownLocalStore[]
 ): Promise<InventoryPlan> {
+  assertExpectedLocalCoverageStores(tool, stores);
   const recordsByStream = new Map<string, InventoryRecord[]>();
   const coverage: CoverageRecord[] = [];
 

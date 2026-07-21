@@ -1576,11 +1576,8 @@ function emitStateCursors({
   // Inventory streams (history, session_index, logs, shell_snapshots,
   // config_inventory, cache_inventory) own their STATE inside the fingerprint
   // gate (emitLocalInventoryStreams) and must NOT get a bare clobbering STATE
-  // here. coverage_diagnostics is not gated, so it keeps its point-in-time
-  // STATE.
-  if (requested.has("coverage_diagnostics")) {
-    emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: nowIso() } });
-  }
+  // here. coverage_diagnostics is emitted after all collection output drains,
+  // immediately before terminal success, so it cannot certify a partial scan.
 }
 
 function readPriorSessionsSourceMtimeMs(startMsg: StartMessage): number | null {
@@ -1895,6 +1892,11 @@ async function main(): Promise<void> {
 
   emitStateCursors({ requested, newFileCursors, newMtimes, nowIso, sessionsSourceMtimeMs, threadFingerprints });
   await waitForEmitDrain();
+
+  if (requested.has("coverage_diagnostics")) {
+    emit({ type: "STATE", stream: "coverage_diagnostics", cursor: { fetched_at: nowIso() } });
+    await waitForEmitDrain();
+  }
 
   emit({ type: "DONE", status: "succeeded", records_emitted: total });
   flushAndExit(0);

@@ -490,3 +490,60 @@ debt.
 `deferred`, `inventory_only`, `unavailable`, or `unsupported`
 **THEN** the inventory check SHALL exit non-zero
 **AND** the failure SHALL name the connector and stream.
+
+### Requirement: Local-device health authority SHALL be source-kind scoped and fail closed
+
+The control plane SHALL select Collection Report and health authority from
+persisted connection `source_kind` before run precedence. For `local_device`,
+scheduler/controller run facts, schedules, and latest-attempt hydration are
+quarantined audit history and SHALL NOT participate in coverage, freshness, or
+verdict projection. Non-local connections retain existing run behavior.
+
+`local_device` coverage SHALL be proven only by connection-scoped committed
+`coverage_diagnostics` STATE with valid `{ fetched_at }`, non-null server
+`updated_at`, complete sanitized known-store diagnostics, and no malformed,
+dropped, duplicate, or `unaccounted` diagnostic. Same-stream stores SHALL fold
+worst-wins. The STATE server `updated_at` is each local stream's
+`evidence_as_of`; heartbeat and record emission time cannot refresh proof.
+
+The control plane SHALL also require a fresh healthy idle/drained heartbeat,
+reliable state read, no pending/leased/retrying/stale-lease/dead-letter/
+open-backlog outbox work, and no local collector, pending-detail, or
+terminal-detail gap. Missing, legacy, malformed, unreadable, unreliable, or
+contradictory evidence SHALL fail closed to unmeasured or gaps.
+
+#### Scenario: newer scheduler facts cannot suppress local proof
+
+**WHEN** a `local_device` connection has valid committed local coverage STATE
+and a newer scheduler run fact
+**THEN** its Collection Report SHALL project from local evidence
+**AND** the same non-local fixture SHALL project from its scheduler fact.
+
+#### Scenario: incomplete local proof cannot green
+
+**WHEN** local coverage STATE is absent, malformed, unreadable, lacks server
+`updated_at`, has invalid cursor, empty/duplicate/dropped/unaccounted rows,
+unresolved gap, unhealthy/stale/starting heartbeat, or open outbox work
+**THEN** the connection SHALL NOT render Healthy.
+
+#### Scenario: fixed inventory and future proof are rejected
+
+**WHEN** a local coverage proof omits or adds a store outside the connector's
+shared fixed inventory, or its cursor or server `updated_at` is more than the
+allowed bounded future skew ahead of trusted server time
+**THEN** its local coverage evidence SHALL be unmeasured
+**AND** it SHALL NOT seed complete Collection Report rows or pass machine audit.
+
+### Requirement: Local-device control admission SHALL be rejected
+
+Run-now and every schedule create, update, pause, resume, and delete mutation
+SHALL reject a persisted `local_device` connection regardless of heartbeat
+presence with a typed unsupported-local-device response. Console modality SHALL
+derive from `source_kind`, not heartbeat presence, and SHALL not render remote
+Sync or schedule controls for a local-device connection.
+
+#### Scenario: no-heartbeat local control rejection
+
+**WHEN** a persisted `local_device` connection has no heartbeat
+**AND** run-now or a schedule mutation is requested
+**THEN** it SHALL receive the typed local-device rejection.

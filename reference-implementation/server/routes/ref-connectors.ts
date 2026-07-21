@@ -32,6 +32,7 @@ import {
   type RefConnectorsRuntimeStatus,
 } from "../../operations/ref-connectors-list/index.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
+import { assertRemoteControlSupported } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -693,6 +694,7 @@ async function executeRunNow(
     ownerSubjectId: string | null;
   }
 ): Promise<void> {
+  assertRemoteControlSupported(namespace);
   const resources = readRunResources(req);
   const started = await ctx.runNow(namespace.connectorId, {
     connectorInstanceId: namespace.connectorInstanceId,
@@ -808,6 +810,7 @@ export function mountRefConnectorScheduleUpsert(app: AppLike, ctx: MountRefConne
         const connectorId = decodeURIComponent(req.params.connectorId as string);
         await ctx.resolveRegisteredConnectorManifest(connectorId);
         const namespace = await resolveRefConnectorNamespace(ctx, req, connectorId);
+        assertRemoteControlSupported(namespace);
         const result = await ctx.upsertSchedule(namespace.connectorId, req.body || {}, {
           connectorInstanceId: namespace.connectorInstanceId,
         });
@@ -841,6 +844,7 @@ export function mountRefConnectionScheduleUpsert(app: AppLike, ctx: MountRefConn
       try {
         const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId as string);
         const namespace = await resolveRefConnectionNamespace(ctx, req, connectorInstanceId);
+        assertRemoteControlSupported(namespace);
         await ctx.resolveRegisteredConnectorManifest(namespace.connectorId);
         const result = await ctx.upsertSchedule(namespace.connectorId, req.body || {}, {
           connectorInstanceId: namespace.connectorInstanceId,
@@ -871,6 +875,7 @@ async function executeScheduleToggle(
   enabled: boolean,
   reason: string
 ): Promise<void> {
+  assertRemoteControlSupported(namespace);
   const schedule = await ctx.setScheduleEnabled(namespace.connectorId, enabled, {
     connectorInstanceId: namespace.connectorInstanceId,
   });
@@ -981,6 +986,7 @@ async function executeScheduleDelete(
   namespace: ConnectorNamespace,
   notFoundMessage: string
 ): Promise<void> {
+  assertRemoteControlSupported(namespace);
   const deleted = await ctx.deleteSchedule(namespace.connectorId, {
     connectorInstanceId: namespace.connectorInstanceId,
   });
