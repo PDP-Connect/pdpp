@@ -180,7 +180,7 @@ export default async function ReferencePage() {
               }
               body="One command starts a full node on your laptop. First boot prints your dashboard URL and a generated owner password - nothing to configure."
               code={`docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \\
-  ghcr.io/vana-com/pdpp/railway-core:main
+  ghcr.io/pdp-connect/pdpp/railway-core:main
 docker logs -f pdpp`}
               eyebrow="Your machine, one command"
               footer="Open http://localhost:3000 and sign in with the printed password. Your data persists in the pdpp_data volume across restarts and upgrades."
@@ -217,7 +217,7 @@ docker compose up -d`}
               <CodeBlock
                 code={`APP="pdpp-core-$(openssl rand -hex 3)"
 OWNER_PASSWORD="$(openssl rand -base64 24)"
-fly launch --image ghcr.io/vana-com/pdpp/railway-core:main \\
+fly launch --image ghcr.io/pdp-connect/pdpp/railway-core:main \\
   --name "$APP" --internal-port 3000 --db \\
   --secret "PDPP_OWNER_PASSWORD=$OWNER_PASSWORD" \\
   --env "PDPP_REFERENCE_ORIGIN=https://$APP.fly.dev" \\

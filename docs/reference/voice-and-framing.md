@@ -121,7 +121,7 @@ When writing about a specific connector, say what runtime it uses (API client, b
 
 The reference implementation is **forkable**. There is no PDPP-the-company offering a multi-tenant hosted PDPP backend.
 
-- The Docker images at `ghcr.io/vana-com/pdpp/*` are the reference, published for inspection and self-hosting.
+- The Docker images at `ghcr.io/pdp-connect/pdpp/*` are the reference, published for inspection and self-hosting.
 - `pdpp.dev` (and any other instance the project runs publicly) is a *public reference deployment* for inspection. It is not a product an end user signs up for, and copy should not invite that interpretation.
 - The operator console (the clean owner routes at `/`, `/sources`, `/syncs`, `/audit`, …) is for someone running their own instance. Address that operator directly.
 

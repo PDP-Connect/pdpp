@@ -19,7 +19,7 @@ import {
 
 test('TEMPLATE_IMAGES maps the app service to the documented GHCR path', () => {
   const byService = Object.fromEntries(TEMPLATE_IMAGES.map((i) => [i.service, i]));
-  assert.equal(byService.core.image, 'vana-com/pdpp/railway-core');
+  assert.equal(byService.core.image, 'pdp-connect/pdpp/railway-core');
   assert.equal(byService.core.stage, 'railway-core');
 });
 
@@ -32,7 +32,7 @@ test('classifyTokenStatus: 200 public, 401 private, 403 absent, else unknown', (
 
 test('classifyProbeResult: public image with readable tags is ok', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/railway-core',
+    image: 'pdp-connect/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -46,7 +46,7 @@ test('classifyProbeResult: public image with readable tags is ok', () => {
 
 test('classifyProbeResult: private image (401) is blocked with the owner-flip reason', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/railway-core',
+    image: 'pdp-connect/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 401,
@@ -59,7 +59,7 @@ test('classifyProbeResult: private image (401) is blocked with the owner-flip re
 
 test('classifyProbeResult: absent path (403) is blocked and names the cause', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/nope',
+    image: 'pdp-connect/pdpp/nope',
     service: 'console',
     stage: 'console',
     tokenStatus: 403,
@@ -71,7 +71,7 @@ test('classifyProbeResult: absent path (403) is blocked and names the cause', ()
 
 test('classifyProbeResult: token granted but tags/list fails is not ok', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/railway-core',
+    image: 'pdp-connect/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -83,7 +83,7 @@ test('classifyProbeResult: token granted but tags/list fails is not ok', () => {
 
 test('classifyProbeResult: --tag pin must be present even when public', () => {
   const missing = classifyProbeResult({
-    image: 'vana-com/pdpp/railway-core',
+    image: 'pdp-connect/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -95,7 +95,7 @@ test('classifyProbeResult: --tag pin must be present even when public', () => {
   assert.match(missing.reason, /0\.1\.0-beta\.7/);
 
   const present = classifyProbeResult({
-    image: 'vana-com/pdpp/railway-core',
+    image: 'pdp-connect/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -108,7 +108,7 @@ test('classifyProbeResult: --tag pin must be present even when public', () => {
 
 test('classifyProbeResult: --tag pin can pass by direct manifest when tags/list lags', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/railway-core',
+    image: 'pdp-connect/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,
@@ -123,7 +123,7 @@ test('classifyProbeResult: --tag pin can pass by direct manifest when tags/list 
 
 test('classifyProbeResult: --tag pin fails when neither tags/list nor manifest exposes it', () => {
   const result = classifyProbeResult({
-    image: 'vana-com/pdpp/railway-core',
+    image: 'pdp-connect/pdpp/railway-core',
     service: 'console',
     stage: 'console',
     tokenStatus: 200,

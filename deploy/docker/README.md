@@ -15,7 +15,7 @@ Authorization Server and Resource Server on loopback inside the container.
 
 ```sh
 docker run -d --name pdpp -p 3000:3000 -v pdpp_data:/var/lib/pdpp \
-  ghcr.io/vana-com/pdpp/railway-core:main
+  ghcr.io/pdp-connect/pdpp/railway-core:main
 docker logs -f pdpp
 ```
 
@@ -95,7 +95,7 @@ image is browser-free. If you run these connectors inside the reference
 container rather than via the local collector, add this to `.env`:
 
 ```sh
-PDPP_REFERENCE_IMAGE=ghcr.io/vana-com/pdpp/reference-browser:main
+PDPP_REFERENCE_IMAGE=ghcr.io/pdp-connect/pdpp/reference-browser:main
 ```
 
 That image includes Patchright and a bundled Chromium so the connector can
@@ -125,7 +125,7 @@ runtime diagnostics surface (`GET /_ref/deployment`).
 Upgrade by pulling and recreating; volumes persist:
 
 ```sh
-docker pull ghcr.io/vana-com/pdpp/railway-core:main && docker rm -f pdpp && <your docker run>
+docker pull ghcr.io/pdp-connect/pdpp/railway-core:main && docker rm -f pdpp && <your docker run>
 # or, compose:
 docker compose pull && docker compose up -d
 ```

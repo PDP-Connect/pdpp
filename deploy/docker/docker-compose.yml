@@ -16,7 +16,7 @@
 # services) — do not start here if you only want to run a node.
 services:
   reference:
-    image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/vana-com/pdpp/reference:main}
+    image: ${PDPP_REFERENCE_IMAGE:-ghcr.io/pdp-connect/pdpp/reference:main}
     restart: unless-stopped
     environment:
       # The single public origin this node advertises in its OAuth metadata.
@@ -67,7 +67,7 @@ services:
   # Operator console: the only service published to the host. It proxies the
   # full protocol surface, so one origin (port 3000 by default) fronts the node.
   web:
-    image: ${PDPP_WEB_IMAGE:-ghcr.io/vana-com/pdpp/web:main}
+    image: ${PDPP_WEB_IMAGE:-ghcr.io/pdp-connect/pdpp/web:main}
     restart: unless-stopped
     environment:
       PDPP_REFERENCE_MODE: composed
