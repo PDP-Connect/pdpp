@@ -1588,6 +1588,20 @@ const sqliteConnectorCatalogStore = {
  * summary invalidation commit together.  Do not move this into summary
  * repair: an unobserved remove/re-add must still advance twice.
  */
+function canonicalManifestJson(rawManifest) {
+  const value = JSON.parse(rawManifest);
+  return JSON.stringify(value, (_key, candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return candidate;
+    }
+    const sorted = {};
+    for (const key of Object.keys(candidate).sort()) {
+      sorted[key] = candidate[key];
+    }
+    return sorted;
+  });
+}
+
 async function persistManifestAndAdvanceGenerations(connectorId, manifestJson) {
   if (isPostgresStorageBackend()) {
     return withPostgresTransaction(async (client) => {
@@ -1618,7 +1632,7 @@ async function persistManifestAndAdvanceGenerations(connectorId, manifestJson) {
   return transaction(() => {
     const db = getDb();
     const existing = db.prepare('SELECT manifest FROM connectors WHERE connector_id = ?').get(connectorId);
-    if (existing?.manifest === manifestJson) return false;
+    if (existing?.manifest && canonicalManifestJson(existing.manifest) === canonicalManifestJson(manifestJson)) return false;
     db.prepare(
       `INSERT INTO connectors(connector_id, manifest) VALUES(?, ?)
        ON CONFLICT(connector_id) DO UPDATE SET manifest = excluded.manifest`,

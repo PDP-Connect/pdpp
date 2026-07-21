@@ -40,12 +40,12 @@ export interface HeartbeatRow {
   readonly lastHeartbeatAt: string | null;
   readonly lastHeartbeatStatus: string | null;
   readonly lastIngestAt: string | null;
+  readonly manifestGeneration: number | null;
   readonly outboxDiagnostics: OutboxDiagnosticCounts | null;
   readonly recordsPending: number | null;
   readonly sourceInstanceId: string;
   readonly sourceStatus: string;
   readonly updatedAt: string | null;
-  readonly manifestGeneration: number | null;
 }
 
 /**

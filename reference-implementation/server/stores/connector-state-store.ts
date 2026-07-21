@@ -20,7 +20,12 @@
 
 import { allowUnboundedReadAcknowledged, referenceQueries, writeTransaction } from "../../lib/db.ts";
 import { getDb } from "../db.js";
-import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../postgres-storage.js";
+import {
+  getStorageBackendKind,
+  isPostgresStorageBackend,
+  postgresQuery,
+  withPostgresTransaction,
+} from "../postgres-storage.js";
 
 export interface ConnectorStateScope {
   readonly connectorId: string;
@@ -49,10 +54,17 @@ export interface ConnectorStateStore {
 }
 
 interface SyncStateRow {
+  readonly manifest_generation?: number;
   readonly state_json: string;
   readonly stream: string;
   readonly updated_at: string;
-  readonly manifest_generation?: number;
+}
+
+interface PostgresTransactionClient {
+  query(
+    sql: string,
+    params: readonly unknown[]
+  ): Promise<{ readonly rows: readonly { readonly manifest_generation?: number }[] }>;
 }
 
 function normalizeAllowedStreams(allowed: Iterable<string> | null | undefined): Set<string> | null {
@@ -129,23 +141,27 @@ export function createSqliteConnectorStateStore(): ConnectorStateStore {
       // connection write always captures its durable current generation.
       const generation = Number(current?.manifest_generation ?? 0);
       for (const [stream, cursor] of Object.entries(stateByStream)) {
-      if (grantId) {
-          getDb().prepare(
-            `INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
+        if (grantId) {
+          getDb()
+            .prepare(
+              `INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
              VALUES(?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(grant_id, connector_instance_id, stream) DO UPDATE SET
                connector_id = excluded.connector_id, state_json = excluded.state_json,
-               updated_at = excluded.updated_at, manifest_generation = excluded.manifest_generation`,
-          ).run(grantId, connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now, generation);
-        continue;
-      }
-        getDb().prepare(
-          `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
+               updated_at = excluded.updated_at, manifest_generation = excluded.manifest_generation`
+            )
+            .run(grantId, connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now, generation);
+          continue;
+        }
+        getDb()
+          .prepare(
+            `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
            VALUES(?, ?, ?, ?, ?, ?)
            ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
              connector_id = excluded.connector_id, state_json = excluded.state_json,
-             updated_at = excluded.updated_at, manifest_generation = excluded.manifest_generation`,
-        ).run(connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now, generation);
+             updated_at = excluded.updated_at, manifest_generation = excluded.manifest_generation`
+          )
+          .run(connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now, generation);
       }
     });
 
@@ -212,34 +228,34 @@ export function createPostgresConnectorStateStore(): ConnectorStateStore {
       const connectorInstanceId = requireConnectorInstanceId(scope);
       const grantId = scope.grantId ?? null;
       const now = new Date().toISOString();
-      await withPostgresTransaction(async (client: any) => {
+      await withPostgresTransaction(async (client: PostgresTransactionClient) => {
         const current = await client.query(
           "SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = $1 FOR SHARE",
-          [connectorInstanceId],
+          [connectorInstanceId]
         );
         const generation = Number(current.rows[0]?.manifest_generation ?? 0);
         for (const [stream, cursor] of Object.entries(stateByStream)) {
-        if (grantId) {
+          if (grantId) {
             await client.query(
-            `INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
+              `INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
              VALUES($1, $2, $3, $4, $5::jsonb, $6, $7)
              ON CONFLICT (grant_id, connector_instance_id, stream) DO UPDATE
                SET connector_id = EXCLUDED.connector_id,
                    state_json = EXCLUDED.state_json,
                    updated_at = EXCLUDED.updated_at, manifest_generation = EXCLUDED.manifest_generation`,
-            [grantId, connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now, generation]
-          );
-          continue;
-        }
+              [grantId, connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now, generation]
+            );
+            continue;
+          }
           await client.query(
-          `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
+            `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at, manifest_generation)
            VALUES($1, $2, $3, $4::jsonb, $5, $6)
            ON CONFLICT (connector_instance_id, stream) DO UPDATE
              SET connector_id = EXCLUDED.connector_id,
                  state_json = EXCLUDED.state_json,
                  updated_at = EXCLUDED.updated_at, manifest_generation = EXCLUDED.manifest_generation`,
-          [connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now, generation]
-        );
+            [connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now, generation]
+          );
         }
       });
       return getState({ connectorId, connectorInstanceId, grantId });

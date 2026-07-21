@@ -210,12 +210,14 @@ makes it declared with its old retained facts, but coverage/freshness remain
 unknown or stale until new current evidence commits. The production
 manifest-registration transaction advances a connection-scoped durable
 generation for every changed manifest and dirties its summary evidence before
-any reader can observe it. A generation advance clears the terminal fact map
-and advances its event-sequence checkpoint to the terminal high-water observed
-by repair. A later fold therefore consumes only post-boundary terminal events;
-it MUST NOT replay a pre-removal success into a re-added stream. This boundary
-is durable and event-sequence based, never a clock, fingerprint-reuse test, or
-connector-specific branch.
+any reader can observe it. Every attributable terminal spine event is stamped
+with that connection's current generation in the terminal append transaction;
+the event append and manifest mutation serialize on the same connection row.
+A rebuilt summary accepts only facts stamped with its current generation, so a
+deleted projection cannot replay a pre-removal success into a re-added stream.
+Legacy or unattributed terminal events are historical, never current proof.
+This boundary is durable and generation based, never a clock, fingerprint-reuse
+test, or connector-specific branch.
 
 A declared stream absent from a completed stable canonical record snapshot is
 `declared + known_zero`. A missing retained-size row does not change that count;

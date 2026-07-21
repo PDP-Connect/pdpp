@@ -3927,6 +3927,37 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   // Spec: openspec/changes/reconcile-active-summary-evidence/specs/
   //       reference-connector-instances/spec.md
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'spine_events', 'connector_instance_id', 'TEXT'));
+  // Terminal provenance is source-bound, not projection-bound. This trigger
+  // shares SQLite's single-writer ordering with registry mutation. It accepts
+  // the normalized column or the event payload identity, so every normal
+  // terminal append reaches the same source boundary. Pre-column rows are
+  // deliberately not backfilled with a generation and remain historical.
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'spine_events', 'manifest_generation', 'INTEGER'));
+  raw.exec(`
+    DROP TRIGGER IF EXISTS stamp_terminal_manifest_generation;
+    CREATE TRIGGER stamp_terminal_manifest_generation
+    AFTER INSERT ON spine_events
+    WHEN NEW.manifest_generation IS NULL
+      AND NEW.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
+    BEGIN
+      UPDATE spine_events
+         SET connector_instance_id = COALESCE(
+               NULLIF(NEW.connector_instance_id, ''),
+               NULLIF(json_extract(NEW.data_json, '$.connector_instance_id'), ''),
+               NULLIF(json_extract(NEW.data_json, '$.connection_id'), '')
+             ),
+             manifest_generation = (
+           SELECT manifest_generation
+             FROM connector_instances
+            WHERE connector_instance_id = COALESCE(
+              NULLIF(NEW.connector_instance_id, ''),
+              NULLIF(json_extract(NEW.data_json, '$.connector_instance_id'), ''),
+              NULLIF(json_extract(NEW.data_json, '$.connection_id'), '')
+            )
+         )
+       WHERE event_id = NEW.event_id;
+    END;
+  `);
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_terminal_instance_seq
       ON spine_events(connector_instance_id, event_seq)

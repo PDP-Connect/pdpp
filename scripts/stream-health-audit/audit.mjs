@@ -36,8 +36,8 @@
 //     failures on settled connections, regardless of pill label;
 //   - active bounded work is reported as inconclusive, but it does not
 //     suppress masked failures;
-//   - declared-stream count absence fails only when the retained-size
-//     projection is reliable, otherwise it stays inconclusive.
+//   - declared-stream count absence fails only when the canonical
+//     record-snapshot evidence is current, otherwise it stays inconclusive.
 
 const ACTIVE_PILL_LABELS = new Set(["Checking", "Syncing"]);
 
@@ -110,9 +110,8 @@ function hasActiveBoundedWork(connection) {
   );
 }
 
-function projectionIsReliable(connection) {
-  const conditions = Array.isArray(connection?.connection_health?.conditions) ? connection.connection_health.conditions : [];
-  return conditions.some((condition) => condition?.type === "ProjectionReliable" && condition?.status === "true");
+function recordSnapshotIsCurrent(connection) {
+  return connection?.record_snapshot?.state === "current";
 }
 
 function declaredStreamNames(connection) {
@@ -180,8 +179,8 @@ function connectionId(connection) {
  *     denominator, or skip fact resolved the stream. (Suggests investigating
  *     the connector's coverage-evidence emission — but the oracle only
  *     asserts the missing runtime evidence.)
- *   - "declared_stream_count_unavailable": the retained-size projection is
- *     unreliable, so the audit cannot prove an exact zero.
+ *   - "declared_stream_count_unavailable": canonical record-snapshot
+ *     evidence is not current, so the audit cannot prove an exact zero.
  *   - "accepted_absence_on_required": the entry is required AND carries an
  *     accepted-absence coverage condition — the contradictory-manifest
  *     combination the projection refuses to paint green.
@@ -211,7 +210,8 @@ function streamCoverageClass(entry) {
  * that either (a) rests at unknown/unmeasured coverage, or (b) carries an
  * accepted-absence coverage condition (accepted absence is only a resolved
  * posture for non-required streams). Active bounded work and unreliable
- * retained-size evidence make the audit inconclusive rather than passing.
+ * non-current canonical record-snapshot evidence makes the audit
+ * inconclusive rather than passing.
  * Active bounded work is still reported as inconclusive, but it does not
  * hide masked failures.
  *
@@ -261,7 +261,7 @@ export function auditStreamHealth(connections) {
     }
 
     const activeBoundedWork = hasActiveBoundedWork(connection);
-    const projectionReliable = projectionIsReliable(connection);
+    const recordSnapshotCurrent = recordSnapshotIsCurrent(connection);
     const declaredStreams = declaredStreamNames(connection);
     const declaredStreamSet = new Set(declaredStreams);
     const reportOnlyStreams = reportStreamNames(report).filter((stream) => !declaredStreamSet.has(stream));
@@ -271,7 +271,7 @@ export function auditStreamHealth(connections) {
     for (const stream of auditedStreams) {
       const reportEntry = report.find((entry) => entry?.stream === stream);
       if (!reportEntry) {
-        if (!projectionReliable) {
+        if (!recordSnapshotCurrent) {
           pushUnsettled(stream, "declared_stream_count_unavailable");
         } else {
           pushMasked(stream, "runtime_evidence_missing");
@@ -290,7 +290,7 @@ export function auditStreamHealth(connections) {
       if (record) {
         continue;
       }
-      if (!projectionReliable) {
+      if (!recordSnapshotCurrent) {
         pushUnsettled(stream, "declared_stream_count_unavailable");
         continue;
       }

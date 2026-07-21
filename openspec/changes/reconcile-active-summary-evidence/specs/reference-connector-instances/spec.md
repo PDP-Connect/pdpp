@@ -134,10 +134,12 @@ When a production manifest registration changes the valid connector manifest,
 the same transaction SHALL advance every affected connection's durable manifest
 generation and dirty its summary evidence. Reconciliation SHALL retain
 non-declared canonical and retained stream grains as dormant diagnostic data,
-but it SHALL clear terminal latest-attempt facts and advance their checkpoint to
-the terminal event high-water captured by that repair. A later terminal fold
-SHALL use that checkpoint as its replay boundary. A manifest fingerprint is
-diagnostic only and SHALL NOT be the generation identity.
+but it SHALL clear terminal latest-attempt facts. Every attributable terminal
+event SHALL durably carry the generation current at its append transaction; a
+rebuild SHALL consume only terminal facts whose stamped generation equals the
+connection's current generation. Legacy or unattributed terminal events SHALL
+remain historical. A manifest fingerprint is diagnostic only and SHALL NOT be
+the generation identity.
 
 #### Scenario: Re-added stream does not inherit historical terminal success
 

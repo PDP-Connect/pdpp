@@ -1594,6 +1594,37 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       -- reference-connector-instances/spec.md
       ALTER TABLE spine_events
         ADD COLUMN IF NOT EXISTS connector_instance_id TEXT;
+      -- Registry mutation takes an update lock on this same connection row;
+      -- the trigger's share lock gives terminal append and mutation one
+      -- authoritative serialization order. Legacy rows remain NULL.
+      ALTER TABLE spine_events
+        ADD COLUMN IF NOT EXISTS manifest_generation BIGINT;
+      CREATE OR REPLACE FUNCTION stamp_terminal_manifest_generation()
+      RETURNS trigger AS $$
+      DECLARE terminal_instance_id TEXT;
+      BEGIN
+        IF NEW.manifest_generation IS NULL
+          AND NEW.event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')
+        THEN
+          terminal_instance_id := COALESCE(
+            NULLIF(NEW.connector_instance_id, ''),
+            NULLIF(NEW.data_json->>'connector_instance_id', ''),
+            NULLIF(NEW.data_json->>'connection_id', '')
+          );
+          NEW.connector_instance_id := terminal_instance_id;
+          SELECT manifest_generation
+            INTO NEW.manifest_generation
+            FROM connector_instances
+           WHERE connector_instance_id = terminal_instance_id
+           FOR SHARE;
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+      DROP TRIGGER IF EXISTS stamp_terminal_manifest_generation ON spine_events;
+      CREATE TRIGGER stamp_terminal_manifest_generation
+        BEFORE INSERT ON spine_events
+        FOR EACH ROW EXECUTE FUNCTION stamp_terminal_manifest_generation();
       CREATE INDEX IF NOT EXISTS idx_pg_spine_events_terminal_instance_seq
         ON spine_events(connector_instance_id, event_seq)
         WHERE event_type IN ('run.completed', 'run.failed', 'run.browser_surface_failed', 'run.cancelled')

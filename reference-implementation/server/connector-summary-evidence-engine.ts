@@ -25,15 +25,15 @@
  * Spec: openspec/changes/reconcile-active-summary-evidence/design.md
  */
 
-import { getDb } from "./db.js";
 import { writeTransaction } from "../lib/db.ts";
+import { withConnectorInstanceWrite } from "./connector-instance-write-coordinator.ts";
+import { getDb } from "./db.js";
 import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "./postgres-storage.js";
 import {
   normalizeRecordSourceCheckpoint,
-  recordSourceCheckpointsEqual,
   type RecordSourceCheckpoint,
+  recordSourceCheckpointsEqual,
 } from "./record-source-checkpoint.ts";
-import { withConnectorInstanceWrite } from "./connector-instance-write-coordinator.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: the db.js/pg boundary is untyped.
 type Db = any;
@@ -82,37 +82,31 @@ export type RepairCandidateReason =
   | "retained_bytes_changed_or_unavailable";
 
 export interface StreamEvidence {
-  readonly stream: string;
-  readonly declaration_state: DeclarationState;
   readonly count_state: CountState;
+  readonly declaration_state: DeclarationState;
   readonly record_count: number | null;
   readonly retained_record_count: number | null;
+  readonly stream: string;
 }
 
 export interface EvidenceComponent<S extends string> {
-  readonly state: S;
   readonly as_of: string | null;
   readonly reason_code: string | null;
+  readonly state: S;
 }
 
 export interface ConnectorSummaryEvidenceRow {
-  readonly connector_instance_id: string;
+  readonly computed_at: string | null;
   readonly connector_id: string;
+  readonly connector_instance_id: string;
+  readonly dirty: boolean;
   readonly display_name: string;
-  readonly status: string | null;
-  readonly source_kind: string | null;
-  readonly revoked_at: string | null;
-  readonly total_records: number;
-  readonly stream_count: number;
+  readonly last_error: string | null;
   readonly last_record_updated_at: string | null;
-  readonly stream_records: readonly StreamEvidence[];
-  readonly stream_latest_facts: unknown;
-  readonly stream_facts_event_seq: number | null;
-  readonly retained_bytes: Row | null;
-  readonly total_retained_bytes: number;
-  readonly record_snapshot: EvidenceComponent<ComponentState>;
-  readonly terminal_facts: EvidenceComponent<ComponentState>;
   readonly manifest_declaration: EvidenceComponent<ManifestState>;
+  readonly manifest_generation?: number;
+  readonly record_snapshot: EvidenceComponent<ComponentState>;
+  readonly retained_bytes: Row | null;
   /**
    * The retained-bytes evidence component (design.md "Orthogonal projection
    * evidence"): `current | unobserved | stale | failed`, independent of the
@@ -123,12 +117,18 @@ export interface ConnectorSummaryEvidenceRow {
    * does not by itself degrade connection health).
    */
   readonly retained_bytes_evidence: EvidenceComponent<ComponentState>;
-  readonly dirty: boolean;
-  readonly computed_at: string | null;
-  readonly manifest_generation?: number;
+  readonly revoked_at: string | null;
   readonly source_event_seq: number | null;
+  readonly source_kind: string | null;
   readonly state: string;
-  readonly last_error: string | null;
+  readonly status: string | null;
+  readonly stream_count: number;
+  readonly stream_facts_event_seq: number | null;
+  readonly stream_latest_facts: unknown;
+  readonly stream_records: readonly StreamEvidence[];
+  readonly terminal_facts: EvidenceComponent<ComponentState>;
+  readonly total_records: number;
+  readonly total_retained_bytes: number;
 }
 
 const REASON_CODES = {
@@ -171,9 +171,9 @@ function parseJsonColumn<T>(value: unknown, fallback: T): T {
 // ---------------------------------------------------------------------------
 
 interface ManifestDeclaration {
+  readonly fingerprint: string | null;
   readonly ok: boolean;
   readonly streams: readonly string[];
-  readonly fingerprint: string | null;
 }
 
 /**
@@ -218,13 +218,13 @@ function parseManifestDeclaration(raw: unknown): ManifestDeclaration {
 // ---------------------------------------------------------------------------
 
 interface DiscoveryInput {
-  readonly instance: Row;
-  readonly existingEvidence: Row | null;
-  readonly manifest: ManifestDeclaration;
-  readonly currentCheckpoint: RecordSourceCheckpoint;
-  readonly retainedByteRow: Row | null;
-  readonly maxTerminalEventSeq: number | null;
   readonly canonicalTotalRecords: number;
+  readonly currentCheckpoint: RecordSourceCheckpoint;
+  readonly existingEvidence: Row | null;
+  readonly instance: Row;
+  readonly manifest: ManifestDeclaration;
+  readonly maxTerminalEventSeq: number | null;
+  readonly retainedByteRow: Row | null;
 }
 
 /**
@@ -255,7 +255,7 @@ function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null 
     existingEvidence.record_checkpoint_json,
     null
   );
-  if (!storedCheckpoint || !recordSourceCheckpointsEqual(storedCheckpoint, currentCheckpoint)) {
+  if (!(storedCheckpoint && recordSourceCheckpointsEqual(storedCheckpoint, currentCheckpoint))) {
     return "record_checkpoint_mismatch";
   }
   // Supplementary to the composite checkpoint: a canonical total-record
@@ -646,7 +646,6 @@ async function discoverCandidates(
 // ---------------------------------------------------------------------------
 
 interface RepairedEvidence {
-  readonly row: Row;
   readonly failed: boolean;
   /**
    * Whether a `failed: true` row's durable write actually landed. `true`
@@ -657,6 +656,7 @@ interface RepairedEvidence {
    * durable storage to reflect it (closes Sol P1.1).
    */
   readonly persisted: boolean;
+  readonly row: Row;
 }
 
 /**
@@ -1096,13 +1096,12 @@ async function repairCandidatePostgres(connectorInstanceId: string): Promise<Rep
 }
 
 interface RepairInputs {
+  readonly canonicalByStream: ReadonlyMap<string, Row>;
+  readonly checkpoint: RecordSourceCheckpoint;
   readonly instance: Row;
   readonly manifest: ManifestDeclaration;
-  readonly checkpoint: RecordSourceCheckpoint;
-  readonly canonicalByStream: ReadonlyMap<string, Row>;
-  readonly retainedByteRow: Row | undefined;
   readonly retainedByStream: ReadonlyMap<string, number>;
-  readonly unexpectedStreams: ReadonlySet<string>;
+  readonly retainedByteRow: Row | undefined;
   /**
    * Terminal-event high-water captured while the fingerprinted manifest is
    * repaired. This is an in-memory generation boundary, never persisted as a
@@ -1110,6 +1109,7 @@ interface RepairInputs {
    * historical until a post-boundary collection terminal event arrives.
    */
   readonly terminalFactsGenerationBoundary: number;
+  readonly unexpectedStreams: ReadonlySet<string>;
 }
 
 /**
@@ -1136,13 +1136,13 @@ function buildRepairedRow(inputs: RepairInputs): Row {
   const streamRecords: StreamEvidence[] = [...unionStreams].sort().map((stream) => {
     const canonical = canonicalByStream.get(stream);
     const retainedCount = retainedByStream.has(stream) ? retainedByStream.get(stream)! : null;
-    const declaration_state: DeclarationState = !manifest.ok
-      ? "unavailable"
-      : declaredStreams.has(stream)
+    const declaration_state: DeclarationState = manifest.ok
+      ? declaredStreams.has(stream)
         ? "declared"
         : unexpectedStreams.has(stream)
           ? "unexpected"
-          : "dormant";
+          : "dormant"
+      : "unavailable";
     const record_count = canonical ? Number(canonical.record_count || 0) : 0;
     const count_state: CountState = record_count > 0 ? "known" : "known_zero";
     return {
@@ -1221,7 +1221,8 @@ function upsertSqliteEvidenceRow(db: Db, row: Row): void {
       "SELECT manifest_generation, stream_latest_facts_json, stream_facts_event_seq, terminal_facts_state, terminal_facts_reason_code FROM connector_summary_evidence WHERE connector_instance_id = ?"
     )
     .get(row.connector_instance_id) as Row | undefined;
-  const manifestGenerationChanged = existing !== undefined && Number(existing.manifest_generation ?? 0) !== Number(row.manifest_generation);
+  const manifestGenerationChanged =
+    existing !== undefined && Number(existing.manifest_generation ?? 0) !== Number(row.manifest_generation);
   const terminalFacts = terminalFactsForRepair(existing, row, manifestGenerationChanged);
   db.prepare(
     `INSERT INTO connector_summary_evidence(
@@ -1310,7 +1311,8 @@ async function upsertPostgresEvidenceRow(client: Db, row: Row): Promise<void> {
     [row.connector_instance_id]
   );
   const existing = existingResult.rows[0] as Row | undefined;
-  const manifestGenerationChanged = existing !== undefined && Number(existing.manifest_generation ?? 0) !== Number(row.manifest_generation);
+  const manifestGenerationChanged =
+    existing !== undefined && Number(existing.manifest_generation ?? 0) !== Number(row.manifest_generation);
   const terminalFacts = terminalFactsForRepair(existing, row, manifestGenerationChanged);
   await client.query(
     `INSERT INTO connector_summary_evidence(
@@ -1415,17 +1417,7 @@ function terminalFactsForRepair(existing: Row | undefined, row: Row, manifestGen
 
 export interface ReconcileResult {
   readonly discovered: number;
-  readonly repaired: number;
   readonly failed: number;
-  /**
-   * Count of classified candidates a bounded pass (see `options.maxCandidates`)
-   * declined to repair this call, because the bound was reached. `0` for an
-   * unbounded pass (every consumer except startup acceleration) — observation-
-   * time repair on the next read remains the correctness gate regardless
-   * (design.md "Startup is acceleration, not authority"), so a skipped
-   * candidate is never lost, only deferred.
-   */
-  readonly skipped: number;
   /**
    * Failed rows whose durable failure-marker write ALSO failed this call —
    * `repairCandidate`'s in-memory `row`, keyed by connector_instance_id, for
@@ -1438,6 +1430,16 @@ export interface ReconcileResult {
    * persisted (the overwhelmingly common case) or where nothing failed.
    */
   readonly failedRows: ReadonlyMap<string, Row>;
+  readonly repaired: number;
+  /**
+   * Count of classified candidates a bounded pass (see `options.maxCandidates`)
+   * declined to repair this call, because the bound was reached. `0` for an
+   * unbounded pass (every consumer except startup acceleration) — observation-
+   * time repair on the next read remains the correctness gate regardless
+   * (design.md "Startup is acceleration, not authority"), so a skipped
+   * candidate is never lost, only deferred.
+   */
+  readonly skipped: number;
 }
 
 /**

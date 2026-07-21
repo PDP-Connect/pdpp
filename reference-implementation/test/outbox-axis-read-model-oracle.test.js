@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   projectConnectorOutboxAxisFromHeartbeats,
   projectLocalDeviceProgress,
-} from '../server/outbox-axis-read-model.ts';
+} from '../server/connector-outbox-axis.ts';
 
 const NOW = '2026-05-19T12:00:00.000Z';
 const FRESH = '2026-05-19T11:55:00.000Z';

@@ -9,7 +9,10 @@ import {
   initPostgresStorage,
   postgresQuery,
 } from "../server/postgres-storage.js";
-import { registerConnector } from "../server/auth.js";
+import {
+  __setRegisterConnectorPhaseHookForTest,
+  registerConnector,
+} from "../server/auth.js";
 import {
   closeDb,
   getDb,
@@ -162,8 +165,8 @@ function seedTerminalCollectionFactSqlite({ eventSeq, stream = STREAM, eventId =
     .prepare(
       `INSERT INTO spine_events(
          event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
-         actor_type, actor_id, object_type, object_id, status, run_id, data_json, version
-       ) VALUES (?, ?, 'run.completed', ?, ?, 'test', ?, 'runtime', 'test-connector', 'run', ?, 'succeeded', ?, ?, '1')`,
+         actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, data_json, version
+       ) VALUES (?, ?, 'run.completed', ?, ?, 'test', ?, 'runtime', 'test-connector', 'run', ?, 'succeeded', ?, ?, ?, '1')`,
     )
     .run(
       eventId,
@@ -173,6 +176,7 @@ function seedTerminalCollectionFactSqlite({ eventSeq, stream = STREAM, eventId =
       `trace_${eventSeq}`,
       `run_${eventSeq}`,
       `run_${eventSeq}`,
+      INSTANCE_ID,
       JSON.stringify({
         connector_instance_id: INSTANCE_ID,
         connection_id: INSTANCE_ID,
@@ -187,10 +191,11 @@ function seedTerminalCollectionFactSqlite({ eventSeq, stream = STREAM, eventId =
 
 async function withSqlite(fn) {
   const dir = mkdtempSync(join(tmpdir(), "pdpp-summary-evidence-oracle-"));
+  const databasePath = join(dir, "pdpp.sqlite");
   invalidateConnectorSummariesCache();
-  initDb(join(dir, "pdpp.sqlite"));
+  initDb(databasePath);
   try {
-    return await fn();
+    return await fn({ databasePath });
   } finally {
     invalidateConnectorSummariesCache();
     closeDb();
@@ -318,12 +323,8 @@ test("unobserved manifest remove-readd advances twice and never replays terminal
     );
 
     const withoutMessages = { ...MANIFEST, streams: [MANIFEST.streams[1]] };
-    getDb().transaction(() => {
-      getDb().prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?").run(JSON.stringify(withoutMessages), CONNECTOR_ID);
-      getDb().prepare("UPDATE connector_instances SET manifest_generation = manifest_generation + 1 WHERE connector_instance_id = ?").run(INSTANCE_ID);
-      getDb().prepare("UPDATE connectors SET manifest = ? WHERE connector_id = ?").run(MANIFEST_JSON, CONNECTOR_ID);
-      getDb().prepare("UPDATE connector_instances SET manifest_generation = manifest_generation + 1 WHERE connector_instance_id = ?").run(INSTANCE_ID);
-    })();
+    await registerConnector(withoutMessages, { backfillRetrievalIndexes: false });
+    await registerConnector(MANIFEST, { backfillRetrievalIndexes: false });
     const readded = summaryFor(await listBypassCache());
     const readdedEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
     assert.equal(getDb().prepare("SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = ?").get(INSTANCE_ID).manifest_generation, 2);
@@ -337,6 +338,94 @@ test("unobserved manifest remove-readd advances twice and never replays terminal
       /messages/,
       "only a later collection terminal event repopulates the new generation",
     );
+  }),
+);
+
+test("SQLite rebuild refuses pre-generation terminal facts and accepts a post-mutation terminal", () =>
+  withSqlite(async ({ databasePath }) => {
+    seedConnectorSqlite();
+    seedInstanceSqlite();
+    seedTerminalCollectionFactSqlite({ eventSeq: 1, eventId: "evt_generation_zero" });
+    await listBypassCache();
+
+    await registerConnector({ ...MANIFEST, streams: [MANIFEST.streams[1]] }, { backfillRetrievalIndexes: false });
+    await registerConnector(MANIFEST, { backfillRetrievalIndexes: false });
+    assert.equal(getDb().prepare("SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = ?").get(INSTANCE_ID).manifest_generation, 2);
+
+    await registerConnector(
+      {
+        streams: MANIFEST.streams,
+        display_name: MANIFEST.display_name,
+        capabilities: MANIFEST.capabilities,
+        version: MANIFEST.version,
+        connector_id: MANIFEST.connector_id,
+        protocol_version: MANIFEST.protocol_version,
+      },
+      { backfillRetrievalIndexes: false },
+    );
+    assert.equal(getDb().prepare("SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = ?").get(INSTANCE_ID).manifest_generation, 2, "semantic key reorder is a no-op");
+
+    // Simulate a pre-column database: its terminal row has a source identity
+    // but no durable generation. Boot migration recreates the trigger, but
+    // deliberately never invents provenance for the old event.
+    getDb().exec("DROP TRIGGER stamp_terminal_manifest_generation");
+    seedTerminalCollectionFactSqlite({ eventSeq: 2, eventId: "evt_legacy_unstamped" });
+    assert.equal(
+      getDb().prepare("SELECT manifest_generation FROM spine_events WHERE event_id = ?").get("evt_legacy_unstamped").manifest_generation,
+      null,
+      "legacy terminal rows retain absent provenance",
+    );
+
+    getDb().prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?").run(INSTANCE_ID);
+    closeDb();
+    initDb(databasePath);
+    invalidateConnectorSummariesCache();
+
+    const rebuilt = summaryFor(await listBypassCache());
+    assert.equal((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts, null);
+    assert.notEqual(rebuilt.connection_health.state, "healthy");
+    assert.equal(rebuilt.terminal_facts.state, "stale", "legacy generationless facts remain historical, not current");
+
+    seedTerminalCollectionFactSqlite({ eventSeq: 3, eventId: "evt_generation_two" });
+    await listBypassCache();
+    assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
+  }),
+);
+
+test("SQLite event after an unobserved mutation is current while pre-mutation history stays historical", () =>
+  withSqlite(async () => {
+    seedConnectorSqlite();
+    seedInstanceSqlite();
+    // No evidence row exists yet: this is the disposable-projector case in
+    // its strongest form, before the first repair has ever run.
+    seedTerminalCollectionFactSqlite({ eventSeq: 1, eventId: "evt_before_unobserved_mutation" });
+    await registerConnector({ ...MANIFEST, streams: [MANIFEST.streams[1]] }, { backfillRetrievalIndexes: false });
+    __setRegisterConnectorPhaseHookForTest(async (point) => {
+      if (point === "after-manifest-persisted") {
+        seedTerminalCollectionFactSqlite({ eventSeq: 2, eventId: "evt_after_unobserved_mutation" });
+      }
+    });
+    try {
+      await registerConnector(MANIFEST, { backfillRetrievalIndexes: false });
+    } finally {
+      __setRegisterConnectorPhaseHookForTest(null);
+    }
+
+    assert.equal(
+      getDb().prepare("SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = ?").get(INSTANCE_ID).manifest_generation,
+      2,
+    );
+    assert.equal(
+      getDb().prepare("SELECT manifest_generation FROM spine_events WHERE event_id = ?").get("evt_before_unobserved_mutation").manifest_generation,
+      0,
+    );
+    assert.equal(
+      getDb().prepare("SELECT manifest_generation FROM spine_events WHERE event_id = ?").get("evt_after_unobserved_mutation").manifest_generation,
+      2,
+    );
+    const summary = summaryFor(await listBypassCache());
+    assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
+    assert.equal(summary.terminal_facts.event_seq, 2, "only the post-mutation event is current evidence");
   }),
 );
 
@@ -759,6 +848,13 @@ test(
       assert.equal(readded.stream_latest_facts, null, "Postgres re-add withholds historical proof");
       assert.equal(readded.manifest_generation, 2, "unobserved remove-readd advances twice at the mutation boundary");
 
+      await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await closePostgresStorage();
+      await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+      const rebuilt = summaryFor(await listBypassCache());
+      assert.equal((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts, null, "projection rebuild cannot replay generation-zero terminal facts");
+      assert.notEqual(rebuilt.connection_health.state, "healthy");
+
       await insertTerminal(firstSeq + 1);
       await listBypassCache();
       assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
@@ -770,10 +866,21 @@ test(
       const unexpected = summaryFor(await listBypassCache());
       assert.equal(streamEntry(unexpected, UNEXPECTED_STREAM).declaration_state, "unexpected");
 
-      // A changed manifest with the same declared streams starts another
-      // durable generation. The old violation must remain historical even
-      // though its fingerprint-equivalent stream set is unchanged.
+      const reordered = {
+        streams: MANIFEST.streams,
+        display_name: MANIFEST.display_name,
+        capabilities: MANIFEST.capabilities,
+        version: MANIFEST.version,
+        connector_id: MANIFEST.connector_id,
+        protocol_version: MANIFEST.protocol_version,
+      };
+      await registerConnector(reordered, { backfillRetrievalIndexes: false });
+      assert.equal(Number((await postgresQuery("SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = $1", [INSTANCE_ID])).rows[0].manifest_generation), 2, "semantic key reorder is a no-op");
+
+      // A real semantic change starts another durable generation. The old
+      // violation must remain historical even though streams are unchanged.
       await registerConnector({ ...MANIFEST, version: "1.0.1" }, { backfillRetrievalIndexes: false });
+      assert.equal(Number((await postgresQuery("SELECT manifest_generation FROM connector_instances WHERE connector_instance_id = $1", [INSTANCE_ID])).rows[0].manifest_generation), 3);
       const nextGeneration = summaryFor(await listBypassCache());
       assert.notEqual(
         nextGeneration.stream_records.find((entry) => entry.stream === UNEXPECTED_STREAM)?.declaration_state,

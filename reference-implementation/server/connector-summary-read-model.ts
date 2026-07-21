@@ -82,6 +82,9 @@ const REASON_CODES = {
    * replay, or overwrite it; this reason fails the row closed instead.
    */
   FOLD_LOGIC_VERSION_INCOMPATIBLE_FUTURE: "fold_logic_version_incompatible_future",
+  // A source-attributed terminal event without a matching durable generation
+  // is historical, never an empty/current fold result.
+  TERMINAL_FACTS_HISTORICAL: "terminal_facts_historical",
 } as const;
 
 function parseEvidenceJson(value: unknown, fallback: unknown): unknown {
@@ -861,7 +864,7 @@ function createStreamFactsFoldStore() {
       }) {
         const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentPostgres(scope, 4);
         const result = await postgresQuery(
-          `SELECT event_seq, occurred_at, run_id, data_json::text AS data_json
+          `SELECT event_seq, occurred_at, run_id, manifest_generation, data_json::text AS data_json
              FROM spine_events
             WHERE event_type IN (${TERMINAL_TYPES_SQL})
               AND event_seq > $1 AND event_seq <= $2${scopeSql}
@@ -940,7 +943,7 @@ function createStreamFactsFoldStore() {
       const { sql: scopeSql, params: scopeParams } = buildTerminalScopeFragmentSqlite(scope);
       return getDb()
         .prepare(
-          `SELECT event_seq, occurred_at, run_id, data_json
+          `SELECT event_seq, occurred_at, run_id, manifest_generation, data_json
              FROM spine_events
             WHERE event_type IN (${TERMINAL_TYPES_SQL})
               AND event_seq > ? AND event_seq <= ?${scopeSql}
@@ -1146,6 +1149,8 @@ function mergeEventStreamFacts(
 function foldTerminalEventFacts(
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>,
   checkpointByInstance: Map<string, number | null>,
+  generationByInstance: ReadonlyMap<string, number>,
+  generationCurrentByInstance: Map<string, boolean>,
   row: Row,
   counters: { folded: number; refused: number }
 ): void {
@@ -1165,6 +1170,15 @@ function foldTerminalEventFacts(
     // Not a tracked evidence row (deleted or foreign connection).
     return;
   }
+  const eventGeneration = row.manifest_generation;
+  if (eventGeneration == null || Number(eventGeneration) !== generationByInstance.get(instanceId)) {
+    // A missing stamp is legacy/unattributed; an unequal one belongs to a
+    // prior manifest generation. Both are historical, never current proof.
+    generationCurrentByInstance.set(instanceId, false);
+    counters.refused += 1;
+    return;
+  }
+  generationCurrentByInstance.set(instanceId, true);
   const eventSeq = Number(row.event_seq);
   const checkpoint = checkpointByInstance.get(instanceId);
   if (!Number.isFinite(eventSeq) || (checkpoint != null && eventSeq <= checkpoint)) {
@@ -1263,14 +1277,17 @@ function seedFoldState(participants: readonly Row[]): {
   casBaselineByInstance: Map<string, FoldCasBaseline>;
   checkpointByInstance: Map<string, number | null>;
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>;
+  generationByInstance: Map<string, number>;
   sinceSeq: number;
 } {
   const factsByInstance = new Map<string, Record<string, StoredStreamFactEntry>>();
   const checkpointByInstance = new Map<string, number | null>();
   const casBaselineByInstance = new Map<string, FoldCasBaseline>();
+  const generationByInstance = new Map<string, number>();
   let sinceSeq = Number.POSITIVE_INFINITY;
   for (const row of participants) {
     const instanceId = String(row.connector_instance_id);
+    generationByInstance.set(instanceId, Number(row.manifest_generation ?? 0));
     const versionBehind = rowIsFoldLogicVersionBehind(row);
     const parsed = versionBehind ? null : parseEvidenceJson(row.stream_latest_facts_json, null);
     factsByInstance.set(
@@ -1287,7 +1304,7 @@ function seedFoldState(participants: readonly Row[]): {
     });
     sinceSeq = Math.min(sinceSeq, checkpoint ?? 0);
   }
-  return { casBaselineByInstance, checkpointByInstance, factsByInstance, sinceSeq };
+  return { casBaselineByInstance, checkpointByInstance, factsByInstance, generationByInstance, sinceSeq };
 }
 
 export interface FoldStreamFactsResult {
@@ -1462,6 +1479,8 @@ async function drainTerminalEventBatches({
   foldStore,
   factsByInstance,
   checkpointByInstance,
+  generationByInstance,
+  generationCurrentByInstance,
   counters,
   connectorInstanceIds,
   maxSeq,
@@ -1472,6 +1491,8 @@ async function drainTerminalEventBatches({
   foldStore: ReturnType<typeof createStreamFactsFoldStore>;
   factsByInstance: Map<string, Record<string, StoredStreamFactEntry>>;
   checkpointByInstance: Map<string, number | null>;
+  generationByInstance: ReadonlyMap<string, number>;
+  generationCurrentByInstance: Map<string, boolean>;
   counters: { folded: number; refused: number };
   connectorInstanceIds: readonly string[] | null;
   maxSeq: number;
@@ -1497,7 +1518,14 @@ async function drainTerminalEventBatches({
       scope: connectorInstanceIds,
     });
     for (const row of batch) {
-      foldTerminalEventFacts(factsByInstance, checkpointByInstance, row, counters);
+      foldTerminalEventFacts(
+        factsByInstance,
+        checkpointByInstance,
+        generationByInstance,
+        generationCurrentByInstance,
+        row,
+        counters
+      );
     }
     eventsProcessed += batch.length;
     if (batch.length > 0) {
@@ -1528,7 +1556,7 @@ export async function foldConnectorSummaryStreamFacts(
     await stampZeroCheckpointForBootstrap(foldStore, participants);
     return { folded: 0, participants: participants.length, refused: 0, incomplete: false, resumeAfterSeq: null };
   }
-  const { factsByInstance, checkpointByInstance, casBaselineByInstance, sinceSeq } = seedFoldState(participants);
+  const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, sinceSeq } = seedFoldState(participants);
   // Test-only: see `testOnlyFoldPauseHook` — a no-op unless a test installs
   // a hook. Held here, immediately after the baseline (checkpointByInstance)
   // is captured and before this pass's own terminal-event read/CAS write —
@@ -1538,10 +1566,13 @@ export async function foldConnectorSummaryStreamFacts(
   // interleave, instead of one pass completing before the next starts.
   await testOnlyFoldPauseHook("after_seed_before_read");
   const counters = { folded: 0, refused: 0 };
+  const generationCurrentByInstance = new Map<string, boolean>();
   const drain = await drainTerminalEventBatches({
     foldStore,
     factsByInstance,
     checkpointByInstance,
+    generationByInstance,
+    generationCurrentByInstance,
     counters,
     connectorInstanceIds,
     maxSeq,
@@ -1583,12 +1614,15 @@ export async function foldConnectorSummaryStreamFacts(
   // state machine is needed on top of it.
   const replayConverged = !budgetExhausted;
   for (const [instanceId, facts] of factsByInstance) {
+    const sourceGenerationCurrent = generationCurrentByInstance.get(instanceId) !== false;
+    const terminalFactsCurrent = replayConverged && sourceGenerationCurrent;
     await writeParticipantStreamFacts(
       foldStore,
       instanceId,
       facts,
-      writeSeq,
-      replayConverged,
+      sourceGenerationCurrent ? writeSeq : checkpointByInstance.get(instanceId) ?? 0,
+      terminalFactsCurrent ? null : sourceGenerationCurrent ? REASON_CODES.TERMINAL_FOLD_INCOMPLETE : REASON_CODES.TERMINAL_FACTS_HISTORICAL,
+      terminalFactsCurrent,
       checkpointByInstance,
       casBaselineByInstance
     );
@@ -1637,6 +1671,7 @@ async function writeParticipantStreamFacts(
   instanceId: string,
   facts: Record<string, StoredStreamFactEntry>,
   writeSeq: number,
+  terminalFactsReasonCode: string | null,
   replayConverged: boolean,
   checkpointByInstance: Map<string, number | null>,
   casBaselineByInstance: Map<string, FoldCasBaseline>
@@ -1652,7 +1687,7 @@ async function writeParticipantStreamFacts(
     baselineFoldVersion: casBaseline.foldVersion,
     foldVersion: STREAM_FACTS_FOLD_LOGIC_VERSION,
     terminalFactsState: replayConverged ? "current" : "stale",
-    terminalFactsReasonCode: replayConverged ? null : REASON_CODES.TERMINAL_FOLD_INCOMPLETE,
+    terminalFactsReasonCode,
   });
 }
 
