@@ -392,6 +392,80 @@ test("SQLite rebuild refuses pre-generation terminal facts and accepts a post-mu
   }),
 );
 
+test("SQLite warm v2 terminal projection is invalidated before a route can trust generationless history", () =>
+  withSqlite(async ({ databasePath }) => {
+    seedConnectorSqlite();
+    seedInstanceSqlite();
+    seedTerminalCollectionFactSqlite({ eventSeq: 1, eventId: "evt_v2_warm_upgrade" });
+
+    // This is the pre-upgrade projection: its source event was stamped while
+    // the current binary is running, then its durable row is made to look
+    // exactly like the version-2 binary's already-current terminal map.
+    await getConnectorSummaryForRoute(INSTANCE_ID);
+    assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
+    getDb()
+      .prepare("UPDATE connector_summary_evidence SET stream_facts_fold_version = 2 WHERE connector_instance_id = ?")
+      .run(INSTANCE_ID);
+    getDb()
+      .prepare("UPDATE spine_events SET manifest_generation = NULL WHERE event_id = ?")
+      .run("evt_v2_warm_upgrade");
+
+    // Model the additive provenance migration: the source row is legacy but
+    // the disposable v2 projection survives deployment. The first real route
+    // read after restart must replay and reject it, not inherit the old map.
+    closeDb();
+    initDb(databasePath);
+    invalidateConnectorSummariesCache();
+    const warmRead = await getConnectorSummaryForRoute(INSTANCE_ID);
+    const warmEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
+    assert.equal(warmRead?.terminal_facts.state, "stale");
+    assert.equal(warmRead?.terminal_facts.reason_code, "terminal_facts_historical");
+    assert.equal(warmEvidence.stream_latest_facts, null);
+    assert.equal(Number(getDb().prepare("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = ?").get(INSTANCE_ID).stream_facts_fold_version), 3);
+
+    const historicalProjection = {
+      facts: warmEvidence.stream_latest_facts,
+      reason: warmRead?.terminal_facts.reason_code,
+      state: warmRead?.terminal_facts.state,
+    };
+    closeDb();
+    initDb(databasePath);
+    invalidateConnectorSummariesCache();
+    const repeatedRestart = await getConnectorSummaryForRoute(INSTANCE_ID);
+    assert.deepEqual(
+      {
+        facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
+        reason: repeatedRestart?.terminal_facts.reason_code,
+        state: repeatedRestart?.terminal_facts.state,
+      },
+      historicalProjection,
+      "the upgraded stale projection is stable across repeated restarts",
+    );
+
+    // Deleting the projector cannot change the source-derived verdict.
+    getDb().prepare("DELETE FROM connector_summary_evidence WHERE connector_instance_id = ?").run(INSTANCE_ID);
+    closeDb();
+    initDb(databasePath);
+    invalidateConnectorSummariesCache();
+    const rebuilt = await getConnectorSummaryForRoute(INSTANCE_ID);
+    assert.deepEqual(
+      {
+        facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
+        reason: rebuilt?.terminal_facts.reason_code,
+        state: rebuilt?.terminal_facts.state,
+      },
+      historicalProjection,
+      "first warm-upgrade read and delete/rebuild have identical terminal evidence",
+    );
+
+    seedTerminalCollectionFactSqlite({ eventSeq: 2, eventId: "evt_v3_current_generation" });
+    const recovered = await getConnectorSummaryForRoute(INSTANCE_ID);
+    assert.equal(recovered?.terminal_facts.state, "current");
+    assert.equal(recovered?.terminal_facts.reason_code, null);
+    assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
+  }),
+);
+
 test("SQLite event after an unobserved mutation is current while pre-mutation history stays historical", () =>
   withSqlite(async () => {
     seedConnectorSqlite();
@@ -887,6 +961,127 @@ test(
         "unexpected",
         "a violation from an older generation cannot resurrect after a manifest rewrite",
       );
+    } finally {
+      await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM spine_events WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [CONNECTOR_ID]);
+      await closePostgresStorage();
+    }
+  },
+);
+
+test(
+  "dedicated PostgreSQL warm v2 terminal projection is invalidated before a route can trust generationless history",
+  { skip: !POSTGRES_URL },
+  async () => {
+    await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+    try {
+      await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM spine_events WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM connector_instances WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("DELETE FROM connectors WHERE connector_id = $1", [CONNECTOR_ID]);
+      await postgresQuery("INSERT INTO connectors(connector_id, manifest, created_at) VALUES($1, $2::jsonb, $3)", [CONNECTOR_ID, MANIFEST_JSON, NOW]);
+      await postgresQuery(
+        `INSERT INTO connector_instances(
+           connector_instance_id, owner_subject_id, connector_id, display_name, status,
+           source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+         ) VALUES($1, $2, $3, $4, 'active', 'account', $1, '{}'::jsonb, $5, $5, NULL)`,
+        [INSTANCE_ID, OWNER, CONNECTOR_ID, "Summary evidence oracle", NOW],
+      );
+      const nextSequence = await postgresQuery("SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq FROM spine_events");
+      const eventSeq = Number(nextSequence.rows[0].next_seq);
+      await postgresQuery(
+        `INSERT INTO spine_events(
+           event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, data_json, version
+         ) VALUES($1, $2, 'run.completed', $3, $3, 'test', $4, 'runtime', 'test-connector', 'run', $5, 'succeeded', $5, $6, $7::jsonb, '1')`,
+        [
+          "evt_v2_warm_upgrade_pg",
+          eventSeq,
+          NOW,
+          "trace_v2_warm_upgrade_pg",
+          "run_v2_warm_upgrade_pg",
+          INSTANCE_ID,
+          JSON.stringify({
+            connector_instance_id: INSTANCE_ID,
+            connection_id: INSTANCE_ID,
+            collection_facts: { reference_only: true, schema_version: 1, streams: [{ stream: STREAM, collected: 1, checkpoint: "committed" }] },
+          }),
+        ],
+      );
+      await getConnectorSummaryForRoute(INSTANCE_ID);
+      assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
+      await postgresQuery("UPDATE connector_summary_evidence SET stream_facts_fold_version = 2 WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await postgresQuery("UPDATE spine_events SET manifest_generation = NULL WHERE event_id = $1", ["evt_v2_warm_upgrade_pg"]);
+
+      await closePostgresStorage();
+      await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+      invalidateConnectorSummariesCache();
+      const warmRead = await getConnectorSummaryForRoute(INSTANCE_ID);
+      const warmEvidence = await getConnectorSummaryEvidence(INSTANCE_ID);
+      assert.equal(warmRead?.terminal_facts.state, "stale");
+      assert.equal(warmRead?.terminal_facts.reason_code, "terminal_facts_historical");
+      assert.equal(warmEvidence.stream_latest_facts, null);
+      assert.equal(Number((await postgresQuery("SELECT stream_facts_fold_version FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID])).rows[0].stream_facts_fold_version), 3);
+
+      const historicalProjection = {
+        facts: warmEvidence.stream_latest_facts,
+        reason: warmRead?.terminal_facts.reason_code,
+        state: warmRead?.terminal_facts.state,
+      };
+      await closePostgresStorage();
+      await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+      invalidateConnectorSummariesCache();
+      const repeatedRestart = await getConnectorSummaryForRoute(INSTANCE_ID);
+      assert.deepEqual(
+        {
+          facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
+          reason: repeatedRestart?.terminal_facts.reason_code,
+          state: repeatedRestart?.terminal_facts.state,
+        },
+        historicalProjection,
+        "the upgraded stale projection is stable across repeated restarts on PostgreSQL",
+      );
+
+      await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
+      await closePostgresStorage();
+      await initPostgresStorage({ backend: "postgres", databaseUrl: POSTGRES_URL });
+      invalidateConnectorSummariesCache();
+      const rebuilt = await getConnectorSummaryForRoute(INSTANCE_ID);
+      assert.deepEqual(
+        {
+          facts: (await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts,
+          reason: rebuilt?.terminal_facts.reason_code,
+          state: rebuilt?.terminal_facts.state,
+        },
+        historicalProjection,
+        "first warm-upgrade read and delete/rebuild have identical terminal evidence on PostgreSQL",
+      );
+
+      await postgresQuery(
+        `INSERT INTO spine_events(
+           event_id, event_seq, event_type, occurred_at, recorded_at, scenario_id, trace_id,
+           actor_type, actor_id, object_type, object_id, status, run_id, connector_instance_id, data_json, version
+         ) VALUES($1, $2, 'run.completed', $3, $3, 'test', $4, 'runtime', 'test-connector', 'run', $5, 'succeeded', $5, $6, $7::jsonb, '1')`,
+        [
+          "evt_v3_current_generation_pg",
+          eventSeq + 1,
+          NOW,
+          "trace_v3_current_generation_pg",
+          "run_v3_current_generation_pg",
+          INSTANCE_ID,
+          JSON.stringify({
+            connector_instance_id: INSTANCE_ID,
+            connection_id: INSTANCE_ID,
+            collection_facts: { reference_only: true, schema_version: 1, streams: [{ stream: STREAM, collected: 2, checkpoint: "committed" }] },
+          }),
+        ],
+      );
+      const recovered = await getConnectorSummaryForRoute(INSTANCE_ID);
+      assert.equal(recovered?.terminal_facts.state, "current");
+      assert.equal(recovered?.terminal_facts.reason_code, null);
+      assert.match(JSON.stringify((await getConnectorSummaryEvidence(INSTANCE_ID)).stream_latest_facts), /messages/);
     } finally {
       await postgresQuery("DELETE FROM connector_summary_evidence WHERE connector_instance_id = $1", [INSTANCE_ID]);
       await postgresQuery("DELETE FROM spine_events WHERE connector_instance_id = $1", [INSTANCE_ID]);

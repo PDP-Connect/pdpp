@@ -139,7 +139,10 @@ event SHALL durably carry the generation current at its append transaction; a
 rebuild SHALL consume only terminal facts whose stamped generation equals the
 connection's current generation. Legacy or unattributed terminal events SHALL
 remain historical. A manifest fingerprint is diagnostic only and SHALL NOT be
-the generation identity.
+the generation identity. A fold-contract upgrade that first requires source
+generation provenance SHALL invalidate every older terminal map before it is
+trusted: its first read SHALL replay from source, and a retained projection
+SHALL produce the same verdict as deleting and rebuilding that projection.
 
 #### Scenario: Re-added stream does not inherit historical terminal success
 

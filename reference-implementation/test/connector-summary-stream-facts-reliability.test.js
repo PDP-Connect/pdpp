@@ -171,7 +171,7 @@ test('bounded first pass: maxEvents:1 processes AT MOST one event (never the who
       'an incomplete pass must NEVER be readable as current, even though it made real progress',
     );
     assert.equal(row.terminal_facts_reason_code, 'terminal_fold_incomplete');
-    assert.ok(Number(row.stream_facts_fold_version) >= 2, 'the version field already reflects the current fold logic from the FIRST partial write');
+    assert.equal(Number(row.stream_facts_fold_version), 3, 'the version field already reflects the current fold logic from the FIRST partial write');
 
     const facts = JSON.parse(row.stream_latest_facts_json);
     assert.equal(Object.keys(facts).length, 1, 'exactly the ONE event actually processed is folded — maxEvents:1 is a real ceiling, not merely an early-exit hint');
@@ -224,7 +224,7 @@ test('bounded upgrade replay from a pre-existing (pre-versioning) row: maxEvents
     const row = evidenceRow('cin_a');
     assert.equal(row.terminal_facts_state, 'stale', 'the partial upgrade replay must not be trusted');
     assert.equal(row.terminal_facts_reason_code, 'terminal_fold_incomplete');
-    assert.ok(Number(row.stream_facts_fold_version) >= 2, 'the version field already reflects the current fold logic from the FIRST partial write');
+    assert.equal(Number(row.stream_facts_fold_version), 3, 'the version field already reflects the current fold logic from the FIRST partial write');
 
     const facts = JSON.parse(row.stream_latest_facts_json);
     assert.equal(Object.keys(facts).length, 1, 'only the ONE stream the replay actually re-derived this round is present');
@@ -259,7 +259,7 @@ test('exact replacement: a converged pass with genuinely zero facts clears strea
     const row = evidenceRow('cin_a');
     assert.equal(row.stream_latest_facts_json, null, 'the stale leftover fact map is genuinely cleared, not COALESCEd back in');
     assert.equal(row.terminal_facts_state, 'current');
-    assert.ok(Number(row.stream_facts_fold_version) >= 2);
+    assert.equal(Number(row.stream_facts_fold_version), 3);
   });
 });
 
@@ -364,7 +364,7 @@ test('future-version row: this binary fails it closed at READ time only — the 
     });
 
     // Simulate a row already folded by a NEWER binary: version 99 (this
-    // binary's own STREAM_FACTS_FOLD_LOGIC_VERSION is 2), genuinely
+    // binary's own STREAM_FACTS_FOLD_LOGIC_VERSION is 3), genuinely
     // current, with real facts.
     const FUTURE_FACTS = {
       messages: { fact: { stream: 'messages', collected: 42, checkpoint: 'committed' }, run_id: 'future_run', event_seq: 1, evidence_as_of: null },
@@ -382,7 +382,7 @@ test('future-version row: this binary fails it closed at READ time only — the 
     assert.equal(Number(beforeRow.stream_facts_fold_version), 99, 'premise: the row is genuinely future-version');
     assert.equal(beforeRow.terminal_facts_state, 'current', 'premise: the newer binary left it genuinely current');
 
-    // This (older, version-2) binary runs an ordinary fold pass over this
+    // This (older, version-3) binary runs an ordinary fold pass over this
     // scope. It must NOT fold, replay, or durably mutate this row in any
     // way — not even to mark it unreliable.
     const result = await foldConnectorSummaryStreamFacts(['cin_a']);
@@ -443,7 +443,7 @@ test("future-version row: a rollback-then-forward-return sequence never durably 
       )
       .run(JSON.stringify(FUTURE_FACTS), 'cin_a');
 
-    // ROLLBACK: an older (version-2) binary is now serving traffic and
+    // ROLLBACK: an older (version-3) binary is now serving traffic and
     // runs several ordinary fold passes over this scope while "rolled
     // back" — none of them may touch the row.
     for (let i = 0; i < 3; i += 1) {

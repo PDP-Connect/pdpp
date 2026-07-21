@@ -776,7 +776,11 @@ const STREAM_FACTS_FOLD_BATCH = 2000;
  * change to `mergeEventStreamFacts`'s merge semantics could change the
  * output for existing already-folded event history.
  */
-const STREAM_FACTS_FOLD_LOGIC_VERSION = 2;
+// Version 3 makes source manifest-generation provenance part of the fold
+// contract. A v2 current map may have folded events created before that
+// provenance existed, so it is never a valid baseline after this upgrade:
+// `seedFoldState` replays it from an empty map on the first observation.
+const STREAM_FACTS_FOLD_LOGIC_VERSION = 3;
 
 /**
  * Test-only deterministic pause point inside `foldConnectorSummaryStreamFacts`,

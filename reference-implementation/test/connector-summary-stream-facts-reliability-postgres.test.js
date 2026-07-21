@@ -121,7 +121,7 @@ test(
       assert.equal(Number(row.stream_facts_event_seq), seq1);
       assert.equal(row.terminal_facts_state, 'stale', 'an incomplete pass must never read current on real PostgreSQL');
       assert.equal(row.terminal_facts_reason_code, 'terminal_fold_incomplete');
-      assert.ok(Number(row.stream_facts_fold_version) >= 2, 'the version is already stamped current from the first partial write');
+      assert.equal(Number(row.stream_facts_fold_version), 3, 'the version is already stamped current from the first partial write');
       const facts = row.stream_latest_facts_json;
       assert.equal(Object.keys(facts).length, 1, 'exactly the one event actually processed is present');
 

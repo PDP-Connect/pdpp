@@ -219,6 +219,14 @@ Legacy or unattributed terminal events are historical, never current proof.
 This boundary is durable and generation based, never a clock, fingerprint-reuse
 test, or connector-specific branch.
 
+Source-generation filtering is fold contract version 3. A version-2 terminal
+map can have accepted source rows that predate durable generation provenance,
+so version 3 treats that map and checkpoint as an invalid replay baseline. The
+first v3 observation replays from source; its source-derived historical verdict
+must equal deleting and rebuilding the disposable projection. A binary that
+sees a fold version ahead of its own continues to fail closed in memory and
+never overwrites that newer-owned row.
+
 A declared stream absent from a completed stable canonical record snapshot is
 `declared + known_zero`. A missing retained-size row does not change that count;
 it affects retained byte evidence only. Known zero never proves provider
