@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Focused tests for the inventory-record churn gate. An `inventory_only`
 // record exists to answer the local-agent-collector completeness contract
 // ("this store exists, here is its path/type/classification/reason"). The

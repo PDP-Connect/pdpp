@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Saved-view tabs (R5) honesty + correctness pins. The design contract
  * (08-saved-views-design.md): user-authored named queries, NOT guessed presets;

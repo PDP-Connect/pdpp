@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Hosted-exposure hardening — end-to-end (security audit S-1 + S-2, lane A1).
  *

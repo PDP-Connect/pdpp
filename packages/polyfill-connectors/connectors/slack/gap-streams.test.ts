@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Direct-call tests for the four gap streams (stars/user_groups/reminders/
 // dm_read_states) that collect via slack-api.ts rather than the slackdump
 // archive. Calls the exported stream runners in-process (not via the

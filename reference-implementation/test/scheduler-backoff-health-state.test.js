@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing coverage for two branches of `runtime/scheduler-backoff.ts`
  * that the existing `scheduler-backoff.test.js` leaves unpinned:

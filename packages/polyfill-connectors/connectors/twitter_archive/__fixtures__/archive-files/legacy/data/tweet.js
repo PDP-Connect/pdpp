@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 window.YTD.tweet.part0 = [
   {
     "id_str" : "9999",

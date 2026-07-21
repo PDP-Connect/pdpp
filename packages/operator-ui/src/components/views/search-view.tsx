@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Shared dashboard Jump view. Renders the spine artifact lookup surface:
  * artifact buckets for traces, grants, and runs returned by

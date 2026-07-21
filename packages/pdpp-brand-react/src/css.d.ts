@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Ambient declaration so tsc accepts the per-component CSS side-effect imports
 // (e.g. `import "./components.css"`). The Next bundler handles the real import;
 // tsc only needs a type for the module specifier. Mirrors

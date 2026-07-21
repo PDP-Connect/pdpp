@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Route-level integration test for the operator `_ref/event-subscriptions`
  * routes. Stands up a real server with owner auth enabled and asserts that

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Bounded error type for the trusted owner-agent onboarding flow.
 //
 // Carries a stable machine code and a process exit code so callers can map

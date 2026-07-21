@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export const PDPP_CLI_PACKAGE_NAME = '@pdpp/cli';
 export const PDPP_CLI_BIN_NAME = 'pdpp';
 // Single release channel: the published package rides npm's default `latest`

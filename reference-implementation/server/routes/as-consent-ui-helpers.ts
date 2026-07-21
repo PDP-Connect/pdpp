@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure rendering and normalization helpers for the AS consent/authorize UI.
 //
 // Extracted from `server/index.js` per the OpenSpec change

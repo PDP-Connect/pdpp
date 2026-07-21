@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { executeRefSpineEventsPage } from "pdpp-reference-implementation/operations/ref-spine-events-page";
 import { createSandboxRefSpineEventsPageInput } from "../../../_demo/operations-fixtures.ts";
 import { jsonResponse, notFound } from "../../../v1/_helpers.ts";

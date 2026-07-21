@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import assert from "node:assert/strict";
 import { afterEach, before, test } from "node:test";
 import { buildPacingStateFields, readPersistedPacingInterval } from "../../src/connector-http-governor.ts";

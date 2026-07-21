@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ExistingSourceSetupLink } from "../../components/source-setup-catalog.tsx";
 import type { ConnectorCatalogEntry } from "../../lib/connection-catalog.ts";
 

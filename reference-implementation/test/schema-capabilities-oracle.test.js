@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for the schema read-model capability builders
 // (server/schema-capabilities.js) that the MCP `schema` tool advertises.
 // buildExpandCapabilities and buildStreamDiscoveryCapabilities are pure

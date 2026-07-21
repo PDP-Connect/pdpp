@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Runs the shared lexical-retrieval conformance suite against the REAL Postgres
  * lexical search path, the search-side analogue of

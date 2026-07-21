@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { LONGVIEW_CLIENT_NAME, LONGVIEW_DESCRIPTION } from "@/lib/longview-world.ts";
 
 export function LongviewWordmark({ compact = false, inverse = false }: { compact?: boolean; inverse?: boolean }) {

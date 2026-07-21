@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Classify active OpenSpec changes by task-completion ratio.
 //
 // Output groups every non-archived change under one of:

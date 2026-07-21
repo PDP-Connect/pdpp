@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pins the AS purpose_code syntax contract (spec-core.md:428): a purpose_code
 // MUST be a syntactically valid absolute URI; the AS rejects malformed/non-URI
 // codes, but MUST NOT reject a code merely for being unrecognized (registry

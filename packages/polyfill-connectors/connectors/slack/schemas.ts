@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Zod schemas for Slack stream records (13 manifest-declared streams,
  * 349k observed records).

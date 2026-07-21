@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 const DEFAULT_BASE_URL = "https://dataportability.googleapis.com/v1";
 const TRAILING_SLASHES = /\/+$/;
 

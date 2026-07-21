@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Deployment diagnostics — unit coverage for the reference operator
  * /deployment surface.

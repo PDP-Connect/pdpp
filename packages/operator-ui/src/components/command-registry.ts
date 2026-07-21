@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Command registry — the single source of truth for the unified command
  * palette's commands, shared by the console (`apps/console`) and the public

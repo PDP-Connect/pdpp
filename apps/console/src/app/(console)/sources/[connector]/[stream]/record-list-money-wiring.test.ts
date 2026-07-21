@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Record-list money-wiring pin — proves the stream LIST page renders a declared
  * currency field with minor-unit formatting (chase `amount` 3000 -> `$30.00`) on

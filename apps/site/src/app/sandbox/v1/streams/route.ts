@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { executeStreamsList } from "pdpp-reference-implementation/operations/rs-streams-list";
 import { createSandboxStreamsListDependencies } from "../../_demo/operations-fixtures.ts";
 import { jsonResponse, readListParams } from "../_helpers.ts";

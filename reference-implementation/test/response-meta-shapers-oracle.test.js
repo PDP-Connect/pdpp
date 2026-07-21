@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for the query_records/read response-envelope shapers in
 // server/record-query-helpers.ts: mergeMetaCount, mergeMetaWindow,
 // attachRequestWarningsToResponse, and decorateRecordWithConnectionIdentity.

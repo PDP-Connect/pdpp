@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for three UNTESTED OAuth `/authorize` parameter validators in
  * `server/routes/as-consent-ui-helpers.ts`. These shape and validate the query

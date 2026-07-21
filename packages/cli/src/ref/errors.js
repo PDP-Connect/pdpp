@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export class PdppCliError extends Error {
   constructor(message, exitCode = 1, details = null) {
     super(message);

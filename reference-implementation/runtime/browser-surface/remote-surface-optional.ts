@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Optional-dependency guard for @opendatalabs/remote-surface.
 //
 // The remote-surface package was extracted to its own repo

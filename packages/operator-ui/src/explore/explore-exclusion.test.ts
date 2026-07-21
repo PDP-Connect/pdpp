@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Slice 2 — source/stream EXCLUSION through the assembler (design.md §4 item #9).
  *

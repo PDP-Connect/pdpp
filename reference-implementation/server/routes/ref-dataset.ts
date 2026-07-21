@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the reference-only `/_ref/dataset/*` and
 // `/_ref/records/version-stats` routes.
 //

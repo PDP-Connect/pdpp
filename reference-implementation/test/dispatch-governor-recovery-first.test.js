@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Recovery-first governor fix.
 //
 // Live evidence: Gmail cin_12407c1afb78d56848fe0b20 has 10,264 non-pressure

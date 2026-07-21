@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { getConnectorManifest, listRegisteredConnectorIds } from './auth.js';
 import { lexicalIndexBackfillForManifest } from './search.js';
 import {

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Per-stream one-line summary heuristics for the cross-stream timeline
  * and search views. Keeping this table explicit (rather than deriving it

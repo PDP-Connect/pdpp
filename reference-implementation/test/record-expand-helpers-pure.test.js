@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-helper unit coverage for the storage-agnostic record helpers in
 // server/record-expand-helpers.js that back the record read/write paths.
 //

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Operation-level behavior tests for the additive owner-access reference
  * contracts (OpenSpec change redesign-owner-console-product-experience,

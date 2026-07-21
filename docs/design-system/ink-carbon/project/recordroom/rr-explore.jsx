@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* RECORDROOM — Explore: the reading room. One record viewer for the whole
    product. Owner-grade query power (typed operators, machine-parity query
    line), instance-true facets, full fields always, relationships, images.

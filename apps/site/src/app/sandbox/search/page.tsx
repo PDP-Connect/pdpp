@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { type SearchData, SearchView } from "@pdpp/operator-ui/components/views/search-view";
 import { redirect } from "next/navigation";

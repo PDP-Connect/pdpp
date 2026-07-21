@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Reconstruct the `GET /v1/streams/<stream>/records/<id>` URL that
  * `rs-client.ts#getRecord` issues. Kept in a stand-alone module (no

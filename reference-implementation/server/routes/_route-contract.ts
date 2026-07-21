@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Shared route-adapter <-> host contract types for the `server/routes/*.ts`
 // family adapters.
 //

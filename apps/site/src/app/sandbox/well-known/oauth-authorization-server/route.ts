@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { executeAsAuthorizationServerMetadata } from "pdpp-reference-implementation/operations/as-authorization-server-metadata";
 import { createSandboxAsAuthorizationServerMetadataDependencies } from "../../_demo/operations-fixtures.ts";
 import { jsonResponse, sandboxIssuerFromRequest } from "../../v1/_helpers.ts";

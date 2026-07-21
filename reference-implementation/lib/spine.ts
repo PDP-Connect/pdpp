@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { randomBytes } from "node:crypto";
 import { getDb } from "../server/db.js";
 import { isPostgresStorageBackend } from "../server/postgres-storage.js";

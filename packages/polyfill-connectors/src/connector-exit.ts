@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 const STDOUT_DRAIN_TIMEOUT_MS = 3000;
 const RUNTIME_ACK_TIMEOUT_MS = 30 * 60 * 1000;
 

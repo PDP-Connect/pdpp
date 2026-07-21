@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * pdppSafeText — Zod brand for human-readable text fields in connector records.
  *

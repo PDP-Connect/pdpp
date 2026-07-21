@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Reproduce-the-bug + reachability test for the Upcoming (future) projection.
  *

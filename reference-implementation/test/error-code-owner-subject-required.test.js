@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing coverage for the `owner_subject_required` typed-error code
  * (server/routes/ref-error-status.ts: `owner_subject_required: 400`) and the

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { DeviceExporter, DeviceSourceInstance } from "../lib/ref-client.ts";
 
 export type FreshnessState = "fresh" | "stale" | "never";

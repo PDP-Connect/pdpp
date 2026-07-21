@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // GrantsList — the owner's dashboard of active grants.
 
 const GRANTS = [

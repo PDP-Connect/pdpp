@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Scoped fold vs. unrelated TERMINAL EVENT volume (Sol third-verdict P1.2 /
  * minimum-closure item 2): "Scope terminal high-water/event work to

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests pinning the RUNTIME record-filter evaluators in
 // server/record-filters.js. These functions decide whether an already-loaded
 // record row satisfies the compiled query filters + grant constraints; they run

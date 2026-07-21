@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Real auth.js Postgres-adapter path proof for the registered-client,
  * CIMD-document, and connector-catalog row operations.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for the Slack `canvases` stream's `considered` declaration
  * (OpenSpec `define-connector-progress-evidence-contract`, task 4.2).

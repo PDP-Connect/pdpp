@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the OAuth/PKCE crypto primitives in
 // server/oauth-substrate/primitives.ts. No test imports this module by name; all
 // six exports were unpinned.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Shared safe emit/parse helpers for the PDPP connector JSONL protocol.
  *

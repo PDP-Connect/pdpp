@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Hosted MCP grant-package lifecycle — package/group/member row operations,
  * package-token issuance, owner/MCP package views, and package cascade

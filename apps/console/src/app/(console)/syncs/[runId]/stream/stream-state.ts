@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { RunHandleStatus, TimelineEnvelope } from "../../../lib/ref-client.ts";
 
 export type NoAssistanceEndedStatus = "failed" | "cancelled" | "abandoned" | "deferred";

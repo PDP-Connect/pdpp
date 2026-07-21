@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for two UNTESTED pure presentational helpers in
  * `server/hosted-ui.js`:

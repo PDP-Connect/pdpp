@@ -1,3 +1,8 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /* Recordroom — Sources (the loading dock). Master-detail layout for the
  * redesigned console. Ported from docs/design-system/ink-carbon/project/recordroom/
  * sources.css and rebound to the real records surface. Token-driven only:

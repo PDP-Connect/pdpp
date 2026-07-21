@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export function resolveFormat(flags, defaultWhenTty = 'json', defaultWhenPipe = 'json') {
   return flags.format || (process.stdout.isTTY ? defaultWhenTty : defaultWhenPipe);
 }

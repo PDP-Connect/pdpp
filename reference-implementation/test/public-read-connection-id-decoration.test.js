@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression: record-bearing public-read responses (records list, records
  * detail, changes_since list, aggregate) SHALL carry the canonical

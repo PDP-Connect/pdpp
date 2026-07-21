@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Single source of truth for the
  * `(connection_id, connector_instance_id)` canonical / deprecated-alias

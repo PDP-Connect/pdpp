@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the search pagination cursor codecs in
 // operations/rs-search-lexical/index.ts and operations/rs-search-semantic/index.ts.
 // None are imported by name. These encode/decode the {snap, off} search cursor

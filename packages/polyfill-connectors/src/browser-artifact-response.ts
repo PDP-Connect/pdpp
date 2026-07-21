@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { CDPSession, Page, Response } from "playwright";
 
 const FILENAME_PLAIN_RE = /filename="?([^";]+)"?/iu;

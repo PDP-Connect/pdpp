@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Console-side projection of the shared "how do I add a connection of type X?"
  * setup planner.

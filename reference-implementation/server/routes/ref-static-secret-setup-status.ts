@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Reference-only owner-session connection SETUP-STATUS read.
 //
 // A static-secret connection is born as an invisible `draft` connector instance

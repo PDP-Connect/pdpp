@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure manifest accepted-coverage policy pickers shared by the connection-health
 // coverage projection in `ref-control.ts`. A manifest stream may declare that an
 // absence is *accepted* (unsupported / unavailable / deferred / inventory_only)

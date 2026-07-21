@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // SLVP-ideal §4.3 — L2 server probe: getNonPressureRecoverableCount handler
 //
 // Validates the index.js handler that feeds `getNonPressureRecoverableCount`

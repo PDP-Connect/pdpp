@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { notFound } from "next/navigation";
 import { source } from "@/lib/docs-source.ts";
 import { getLLMText } from "@/lib/get-llm-text.ts";

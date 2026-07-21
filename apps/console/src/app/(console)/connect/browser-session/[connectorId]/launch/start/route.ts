@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { NextResponse } from "next/server";
 import { isBrowserBoundConnector } from "../../../../../lib/connection-modality.ts";
 import { requireDashboardAccess } from "../../../../../lib/dashboard-access.ts";

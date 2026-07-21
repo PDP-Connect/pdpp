@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* IIFE-WRAPPED */
 ;(() => {
 /* PDPP Explorer — views part 1: Table, Timeline, Conversation, Reader */

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Shared, backend-agnostic storage helpers used by BOTH the SQLite record store
 // (records.js) and the Postgres record store (postgres-records.js). These were
 // previously duplicated, and the copies had silently diverged (different

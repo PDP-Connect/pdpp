@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration tests for the Chase connector's `collect()` emit path —
  * the per-stream helpers exported from index.ts (emitAccountsStream,

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit test for the AS cold-start discovery-index operation in
 // operations/as-discovery-index/index.ts. No test imports this module by name.
 // It builds the wire envelope returned at the AS root (GET /) — a stable

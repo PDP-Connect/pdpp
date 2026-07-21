@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure logic for the UNIFIED Explore query input (Slice 2, design.md §4).
  *

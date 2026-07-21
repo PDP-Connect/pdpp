@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression: the owner-facing `/_ref/{traces,grants,runs}` list endpoints
  * must canonicalize the `connector_id` query filter before pushing it down

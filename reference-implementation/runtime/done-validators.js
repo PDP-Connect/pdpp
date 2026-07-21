@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // DONE-message validators for the connector runtime.
 //
 // When a connector emits its terminal DONE envelope, the runtime cross-checks

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * OAuth substrate primitives — commodity OAuth 2.0 / PKCE crypto.
  *

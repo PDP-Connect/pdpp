@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Phase-6 slice 1 acceptance instrument (remote-surface spec
  * docs/architecture/planes.md §6 VIEWPORT/GEOMETRY):

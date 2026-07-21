@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression guard: the site reference page must not contain a hardcoded
  * `localhost` URL as a JSX prop value.

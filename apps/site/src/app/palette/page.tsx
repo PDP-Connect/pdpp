@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 "use client";
 
 // Warm tone sampler — shows each candidate in the actual context it would be used:

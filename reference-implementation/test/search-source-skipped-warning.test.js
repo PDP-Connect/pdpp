@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * `source_skipped_not_applicable` warning — task 3.6 of
  * `canonicalize-public-read-contract`.

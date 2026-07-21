@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Stream-health machine audit — CLI entry.
 //
 // Fails when a required stream lacks a resolved coverage posture beneath a

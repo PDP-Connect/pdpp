@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the device-exporter diagnostic SANITIZERS in
 // server/routes/ref-device-exporter-sanitize.ts. The device-exporter route
 // integration suites exercise these through HTTP; neither pure function was

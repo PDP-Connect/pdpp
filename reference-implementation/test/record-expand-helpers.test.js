@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the storage-agnostic record helpers
 // (server/record-expand-helpers.js) — the pure, non-grant functions only.
 //

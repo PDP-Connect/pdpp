@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit tests for the pure `normalizeAggregateRequest`
  * validator in `server/record-aggregation.js`. It takes the request params +

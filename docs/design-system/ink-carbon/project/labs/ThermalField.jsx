@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // The two additional hero moments — the overture and the manifesto
 
 // ThermalField — an atmospheric opening. The thermal gradient as page-sized presence.

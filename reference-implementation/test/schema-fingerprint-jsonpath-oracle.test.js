@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for four untested helpers in server/record-filters.js:
 //   - getFieldSchema: safe lookup of a top-level property schema;
 //   - nonNullSchemaTypes: the null-stripping type extractor that drives filter

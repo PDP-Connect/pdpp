@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the DCR client-delete operation in
 // operations/as-dcr-delete/index.ts. No test imports it by name. It maps the
 // deleteRegisteredClient store call into a 204 success or a typed failure whose

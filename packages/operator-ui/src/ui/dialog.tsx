@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { type ComponentProps, forwardRef } from "react";
 

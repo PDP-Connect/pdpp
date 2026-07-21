@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { buttonVariants } from "@pdpp/brand-react";
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-display";

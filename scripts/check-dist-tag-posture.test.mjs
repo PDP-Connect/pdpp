@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Hermetic guard for the dist-tag posture check (scripts/check-dist-tag-posture.mjs).
 //
 // The live `release:dist-tag-check` script queries the npm registry, so it is

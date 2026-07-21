@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Compile AJV validators from route manifests and expose a thin helper for
 // request validation inside the Express server (W2) and later Fastify (W6).
 //

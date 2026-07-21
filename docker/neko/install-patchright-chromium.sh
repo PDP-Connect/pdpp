@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright The PDP-Connect Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Install Patchright's bundled Chromium without invoking `npx patchright
 # install`, whose out-of-process extractor (extract-zip/yauzl) hangs after the
 # download completes in some sandboxed/overlayfs build environments: the zip

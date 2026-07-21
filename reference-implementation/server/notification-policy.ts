@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export const NOTIFICATION_TIERS = Object.freeze({
   ACTION_REQUIRED: "action_required",
   INFORMATIONAL: "informational",

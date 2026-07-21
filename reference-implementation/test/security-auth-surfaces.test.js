@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression tests for the harden-reference-auth-surfaces change.
 //
 // Pins four invariants:

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the owner-only single-run cancellation primitive
 // `controller.cancelRun(runId)` added by
 // openspec/changes/add-owner-run-cancellation-control.

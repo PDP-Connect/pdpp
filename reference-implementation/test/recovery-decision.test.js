@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure recovery-decision helper coverage (OpenSpec
 // `add-connector-neutral-recovery-governor`, tasks 1.2–1.5).
 //

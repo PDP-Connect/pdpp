@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the RFC 8414 authorization-server-metadata operation
 // in operations/as-authorization-server-metadata/index.ts. No test imports this
 // module by name. It projects deployment inputs into the AS metadata builder input;

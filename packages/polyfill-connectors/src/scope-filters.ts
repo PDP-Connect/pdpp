@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Scope filtering helpers — shared across connectors so every connector
  * honors START.scope.streams[].resources and .time_range consistently.

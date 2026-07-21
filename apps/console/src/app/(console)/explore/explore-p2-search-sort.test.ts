@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * P2 acceptance tests: search lens honest framing + Most-relevant/Most-recent
  * sort toggle + lexical Load-more.

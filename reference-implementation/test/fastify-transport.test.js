@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * W6 transport-layer tests — assert that the reference server is running on
  * native Fastify and that every `@pdpp/reference-contract` route manifest is

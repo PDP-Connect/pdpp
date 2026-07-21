@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration tests for the Claude Code connector's `collect()` emit path —
  * specifically the per-JSONL-line dispatcher (`processJsonlLine`) and the

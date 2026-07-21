@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pins the shared storage helpers (storage-utils.ts) that replace the previously
 // duplicated copies in records.js (SQLite) and postgres-records.js (Postgres).
 // The unified resolvers are a superset of both old copies: they accept string,

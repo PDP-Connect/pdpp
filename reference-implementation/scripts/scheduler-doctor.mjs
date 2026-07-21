@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Read-only scheduler-loop probe for operators and agents.
 //
 // Hits the running reference server's `/_ref/schedules` listing and cross-

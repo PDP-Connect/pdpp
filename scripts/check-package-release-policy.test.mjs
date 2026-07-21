@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Guards for the PDPP package-release-policy checks.
 //
 // Covers the two pieces of logic that protect operators now that the release

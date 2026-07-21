@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * PDPP Uber Connector (v0.1.0) — SCAFFOLDED 2026-04-19 overnight.
  *

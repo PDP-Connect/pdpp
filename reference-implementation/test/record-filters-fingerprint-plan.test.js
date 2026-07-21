@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit tests for the remaining uncovered pure helpers in
  * `server/record-filters.js` that the earlier predicate suite did not touch:

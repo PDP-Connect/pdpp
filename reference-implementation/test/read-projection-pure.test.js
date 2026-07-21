@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for operations/read-projection.ts — the shared read-side
 // field-projection helpers. No test imports this module by name. These implement
 // the `fields` query-param contract used across read operations: parse the field

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Catalog completeness for the reference operator console — and the
  * catalog-vs-connection lifecycle boundary.

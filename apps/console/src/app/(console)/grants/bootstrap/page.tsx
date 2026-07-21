@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { permanentRedirect } from "next/navigation";
 
 // Owner-token issuance moved to /deployment/tokens to align with how

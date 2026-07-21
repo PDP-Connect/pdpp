@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Manual stdio protocol-hygiene smoke. Boots pdpp-mcp-server with a temp cache, sends
 // an MCP initialize + tools/list, asserts stdout contains only newline-delimited JSON.
 //

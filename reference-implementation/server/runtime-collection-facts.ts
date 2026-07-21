@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the runtime-stamped `collection_facts` and `collection_rate`
 // blocks that ride on a run's terminal event / progress events. Each takes an
 // opaque payload (parsed JSON of unknown shape) and defensively re-validates it

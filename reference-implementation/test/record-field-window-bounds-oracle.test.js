@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for clampWindowBounds and sqliteFieldJsonPath
 // (server/record-field-window.js) — both previously had ZERO test references.
 //

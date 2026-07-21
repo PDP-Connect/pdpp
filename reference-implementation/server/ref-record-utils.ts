@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure helpers used by the /_ref operator surface (ref-control.ts) for
 // timestamp selection, query matching, and cursor encoding. None of
 // these functions touch I/O or state; they're here in a separate

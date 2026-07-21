@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Hero — the cross-quadrant layout from apps/web. Copper left rule on content column.
 
 const Hero = () => (

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the process-local remote-telemetry sink registry in
 // server/streaming/remote-telemetry-registry.ts. No test imports this module by
 // name. It is a module-level singleton (the `sinks` Map is shared), so each test

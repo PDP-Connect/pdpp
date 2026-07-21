@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Ingest-failure shaping for the connector runtime.
 //
 // When a RECORD batch is ingested to the RS over the owner token, the HTTP

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 const webOriginPort = process.env.PDPP_WEB_PORT || "3000";
 
 process.env.PDPP_REFERENCE_MODE ||= "composed";

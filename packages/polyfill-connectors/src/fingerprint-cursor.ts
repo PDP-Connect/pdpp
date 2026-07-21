@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Per-record fingerprint cursor for polyfill connectors.
 //
 // Several connectors (Slack, Gmail, Codex, YNAB) emit records from sources

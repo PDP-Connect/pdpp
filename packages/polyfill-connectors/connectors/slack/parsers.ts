@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the Slack connector. Kept free of slackdump / sqlite /
 // Node I/O so they can be unit-tested in isolation (see parsers.test.ts).
 // The subprocess runtime, sqlite reads, and clock-dependent helpers live

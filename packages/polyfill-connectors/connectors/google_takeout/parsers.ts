@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the Google Takeout connector. Kept free of runtime I/O
 // orchestration so they can be unit-tested in isolation (see parsers.test.ts).
 // File-existence checks and the emit loop live in index.ts.

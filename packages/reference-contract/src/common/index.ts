@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Common schemas reused by public and reference-only route manifests.
 //
 // Each exported schema is a plain JSON-Schema (Draft-07 compatible) object

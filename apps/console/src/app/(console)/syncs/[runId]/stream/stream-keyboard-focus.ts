@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export const MOBILE_KEYBOARD_GESTURE_EXPIRY_MS = 1500;
 // Keep a confirmed rect only across the same short trusted-touch window. This
 // covers the common warm follow-up tap without turning a past remote focus

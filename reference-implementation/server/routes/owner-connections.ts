@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the bearer-authed owner-agent control surface routes
 // `GET /v1/owner/connections` and `PATCH /v1/owner/connections/:connectionId`
 // (rename).

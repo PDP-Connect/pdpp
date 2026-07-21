@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Schedule-projection tests for the cross-run source-pressure cooldown
 // (`add-schedule-source-pressure-cooldown`).
 //

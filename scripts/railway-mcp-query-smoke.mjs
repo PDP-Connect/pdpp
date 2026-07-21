@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Deterministic record-seed + scripted external MCP query for the Railway Core
 // deploy gate (openspec/changes/add-railway-core-deploy-target task 3.2,
 // deploy/railway/README.md "First-live-test gate" steps 5 and 6).

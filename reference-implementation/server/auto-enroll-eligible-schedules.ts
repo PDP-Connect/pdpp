@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Reference-server boot pass that enrolls a default enabled schedule for
  * every first-party connector whose manifest is automatic, background-safe,

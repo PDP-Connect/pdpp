@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the record read-model field-projection helpers in
  * `operations/read-projection.ts`.

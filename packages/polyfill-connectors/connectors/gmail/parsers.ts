@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the Gmail connector. Kept free of IMAP / Node I/O so
 // they can be unit-tested in isolation (see parsers.test.ts). The IMAP
 // client, its side effects, and clock-dependent helpers live in index.ts.

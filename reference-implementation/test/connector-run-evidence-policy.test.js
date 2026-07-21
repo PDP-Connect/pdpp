@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit tests for the pure refresh-policy / run-evidence
  * projection helpers in `server/connector-run-evidence.ts`. No test imports

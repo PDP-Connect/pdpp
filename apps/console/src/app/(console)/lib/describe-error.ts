@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Turn an authorization-server / reference-server error response body into a
  * single human-readable line suitable for an operator-facing banner.

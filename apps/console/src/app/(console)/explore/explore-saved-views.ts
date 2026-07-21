@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Saved views — pure, framework-free logic for the Explore saved-view tabs (R5).
  *

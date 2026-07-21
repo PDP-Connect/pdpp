@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // @pdpp/reference-contract
 //
 // Single source of truth for PDPP reference-implementation route manifests,

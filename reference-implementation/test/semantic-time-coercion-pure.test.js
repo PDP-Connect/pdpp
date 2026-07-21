@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the epoch-aware semantic-time coercion in
 // server/record-ingest-semantic-time.ts. No test imports this module by name.
 // coerceSemanticTimeValue + SEMANTIC_TIME_EPOCH_MS_THRESHOLD are standalone pure

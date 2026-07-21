@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { execFileSync } from "node:child_process";
 import { chmod, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";

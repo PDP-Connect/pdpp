@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Owner-exposure posture — the single source of truth for "is this reference
  * deployment internet-facing, and therefore must owner auth be mandatory?"

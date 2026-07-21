@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Resumable bounded sweep: genuinely bounds discovery + fold + repair
  * TOGETHER, not just a repair-loop count/time cap

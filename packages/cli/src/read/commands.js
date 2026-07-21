@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { ConnectError, normalizeProviderUrl, readStoredCredential } from '../connect/flow.js';
 import { parseArgs, requirePositional } from '../ref/args.js';
 import { PdppHttpError, PdppUsageError } from '../ref/errors.js';

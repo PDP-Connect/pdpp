@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the H-E-B connector. Kept free of Playwright / Node I/O
 // so they can be unit-tested in isolation (mirrors connectors/amazon/parsers.ts).
 //

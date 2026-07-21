@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /** A non-secret provider proof is the only route to the existing repair. */
 export interface ProviderInvalidationProof {
   readonly connection_id: string;

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure display logic for the record-detail field/value table. Kept apart from
  * the JSX component so it can be unit-tested in the console's `node --test`

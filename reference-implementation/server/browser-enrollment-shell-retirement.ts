@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Browser-enrollment-shell TTL retirement sweep.
 //
 // Every browser-enrollment shell is created with an `enrollment_expires_at`

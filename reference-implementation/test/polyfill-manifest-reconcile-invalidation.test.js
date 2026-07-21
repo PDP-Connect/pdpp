@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Polyfill manifest reconciliation must invalidate prior-shape records on
  * the narrow seed/reference-fixture → polyfill transition, and MUST preserve

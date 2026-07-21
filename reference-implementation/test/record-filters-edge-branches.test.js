@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit coverage for the pure error-path and edge-case
  * branches of `server/record-filters.js`.

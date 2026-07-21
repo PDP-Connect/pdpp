@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright The PDP-Connect Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 set -eu
 
 DISPLAY_NAME="${NEKO_DESKTOP_DISPLAY:-${DISPLAY:-:99.0}}"

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Orchestration-level proof of claude_code's parent-first two-pass emit
  * structure. Runs the real `scanProjectDirs` against a synthetic

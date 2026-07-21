@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the reference-revision header helpers
 // (server/reference-revision.ts) — the DETERMINISTIC surface only.
 //

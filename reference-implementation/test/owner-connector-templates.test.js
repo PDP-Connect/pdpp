@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration suite for the bearer-authed owner-agent connector-template
  * listing `GET /v1/owner/connector-templates`.

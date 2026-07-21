@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for assertRecordIdentity (server/record-expand-helpers.js),
 // the shared write-path identity guard that keeps the SQLite and Postgres record
 // stores from diverging: each manifest-declared primary-key field present in the

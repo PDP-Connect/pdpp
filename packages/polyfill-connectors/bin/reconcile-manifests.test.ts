@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Fleet-coverage test for the manifest-vs-schema-vs-emit reconciler.
  * Iterates every connector that ships a `schemas.ts` and asserts the

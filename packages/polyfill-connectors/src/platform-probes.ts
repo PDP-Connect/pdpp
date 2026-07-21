@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { BrowserContext, Page } from "playwright";
 
 /** Minimal structural type that detectCloudflareChallenge requires from a page. */

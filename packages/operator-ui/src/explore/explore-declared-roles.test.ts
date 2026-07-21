@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Console-side manifest→role seam (Slice 4 vocab, design.md §5.2/§5.3).
  *

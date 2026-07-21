@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Over-time chart pure logic — re-export of the shared, React-free module in
  * @pdpp/operator-ui so the canvas, the presentational component, AND the

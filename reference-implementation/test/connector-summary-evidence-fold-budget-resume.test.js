@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Budgeted, resumable per-connection fold (Sol fourth-verdict P1.2 /
  * minimum-closure item 2): "Make fold work itself budgeted and resumable.

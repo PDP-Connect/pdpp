@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit test for the RFC 9126 Pushed Authorization Request create
 // operation in operations/as-par-create/index.ts. No test imports it by name. It
 // projects the grant-initiation result into the PAR response envelope (request_uri,

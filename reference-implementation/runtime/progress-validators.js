@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // PROGRESS-message sub-validators for the connector runtime.
 //
 // A PROGRESS envelope may carry an optional provider-budget circuit-transition

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the bearer-authed owner-agent run-now control routes:
 //
 //   POST /v1/owner/connections/:connectionId/run

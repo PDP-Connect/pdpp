@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export interface SiteNavLink {
   readonly text: string;
   readonly link: string;

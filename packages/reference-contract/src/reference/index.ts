@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Reference-only /_ref route manifests.
 //
 // These are reference-designated operator/control surfaces. They belong in

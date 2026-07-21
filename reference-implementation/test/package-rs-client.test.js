@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Focused unit tests for the hosted-MCP PackageRsClient fan-out adapter.
 //
 // These tests stub `fetch` and verify the per-route behavior of

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Runtime-level tests for the run-lifecycle lease invariant: a connector child
 // and its descendants form one process group that the runtime reaps as a unit.
 //

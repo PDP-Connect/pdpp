@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Live-origin runner for the stream-health machine audit.
 //
 // Fetches connector summaries from a running reference instance and feeds

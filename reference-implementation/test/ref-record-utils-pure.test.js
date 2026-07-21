@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for server/ref-record-utils.ts — the timestamp/query/
 // cursor helpers behind the /_ref operator surface. The module's own header says
 // it exists "specifically so ... these utilities can be tested in isolation," yet

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression tests for B1, B2, B3 backend findings in the rs.explore.timeline
  * merged-timeline endpoint.

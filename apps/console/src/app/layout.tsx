@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { LAUNCH_COLORS, launchFoucGuardCss } from "@pdpp/brand/launch-colors";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";

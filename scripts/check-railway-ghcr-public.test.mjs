@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Offline unit tests for the pure core of check-railway-ghcr-public.mjs.
 //
 // These run with zero network (node --test), exactly like the other railway:*

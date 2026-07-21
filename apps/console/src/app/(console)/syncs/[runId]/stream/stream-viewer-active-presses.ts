@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { RemoteSurfaceInputPayload } from "@opendatalabs/remote-surface/protocol";
 
 type RemotePointerIntent = Extract<RemoteSurfaceInputPayload, { type: "pointer" }>;

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright The PDP-Connect Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Consolidated no-human verification for add-run-interaction-streaming-companion.
 #
 # The streaming-companion change has a long tail of tasks (12.8, 13.5, 14.7,

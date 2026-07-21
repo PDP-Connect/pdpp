@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Read-adapter authority is deliberately tested with no initialized storage.
  * A typed rejection proves the manifest gate ran before any SQLite/Postgres

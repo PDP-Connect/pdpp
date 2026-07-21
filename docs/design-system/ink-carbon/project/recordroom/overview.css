@@ -1,3 +1,8 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /* RECORDROOM — "Standing" home. Strong hierarchy, one warm moment. */
 
 .rr-stand { display: flex; flex-direction: column; gap: 34px; max-width: 1080px; }

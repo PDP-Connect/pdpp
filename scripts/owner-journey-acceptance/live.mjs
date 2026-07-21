@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Optional live-origin probe for the owner-journey acceptance harness.
 //
 // When the owner supplies a live origin (and owner auth), the harness fetches

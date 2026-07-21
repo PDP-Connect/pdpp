@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the RFC 8628 device-authorization INIT operation in
 // operations/as-device-authorization-init/index.ts. No test imports it by name.
 // It initiates the device flow: client_id validation, trace_context redaction from

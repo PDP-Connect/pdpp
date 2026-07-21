@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Browser-surface lease-management subsystem for the controller.
 //
 // Extracted from controller.ts: all ~29 functions that manage the lifecycle of

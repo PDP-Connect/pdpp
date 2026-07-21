@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Zod schemas for Chase stream records. Used for shape-check-before-emit
  * per docs/reference/connector-authoring-guide.md §3: records that fail the schema

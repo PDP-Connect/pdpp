@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing coverage for the branches of
  * `runtime/run-automation-policy.ts` that the existing suite leaves open:

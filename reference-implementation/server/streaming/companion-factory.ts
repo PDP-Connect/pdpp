@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { PresentationScreenStateStore } from "../stores/presentation-screen-state-store.ts";
 import { createCdpCompanion } from "./cdp-adapter.js";
 import { createNekoCompanion } from "./neko-adapter.js";

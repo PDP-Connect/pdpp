@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export interface RunBudgetOptions {
   /** Max provider requests this run may make. Default: no cap. */
   maxRequests?: number;

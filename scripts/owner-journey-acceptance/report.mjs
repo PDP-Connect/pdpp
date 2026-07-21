@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Report rendering for the owner-journey acceptance harness.
 //
 // Pure: given the local (and optional live) results plus a timestamp, return the

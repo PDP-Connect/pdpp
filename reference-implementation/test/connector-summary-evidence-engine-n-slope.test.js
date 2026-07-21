@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * N-slope: fixed-query discovery, K-only repair
  * (openspec/changes/reconcile-active-summary-evidence/design.md

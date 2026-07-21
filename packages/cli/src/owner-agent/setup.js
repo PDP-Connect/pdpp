@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Owner-agent connection setup planning for the `pdpp owner-agent setup` and
 // `pdpp owner-agent connectors` subcommands.
 //

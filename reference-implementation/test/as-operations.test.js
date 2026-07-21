@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Behavior tests for AS operation modules introduced by
  * openspec/changes/complete-reference-operation-refactor.

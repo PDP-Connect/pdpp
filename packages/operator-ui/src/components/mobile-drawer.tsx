@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 "use client";
 
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";

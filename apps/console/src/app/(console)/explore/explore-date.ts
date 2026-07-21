@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure date-filter logic for the Explore canvas — the ONE honest statement of the
  * active time window (THE-LENS Gate 1, date-controls cell).

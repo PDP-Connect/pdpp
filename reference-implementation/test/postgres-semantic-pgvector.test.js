@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Acceptance for `migrate-postgres-semantic-index-to-pgvector`.
  *

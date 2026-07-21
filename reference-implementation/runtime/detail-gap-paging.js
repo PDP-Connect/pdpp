@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Detail-gap page reader for the connector runtime.
 //
 // When a connector emits DETAIL_GAPS_PAGE_REQUEST, the runtime serves a

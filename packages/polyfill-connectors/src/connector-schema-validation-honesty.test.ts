@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Build-time guardrail: a connector whose manifest declares streams must either
  * wire emit-time record validation (`validateRecord`) or sit on the explicit

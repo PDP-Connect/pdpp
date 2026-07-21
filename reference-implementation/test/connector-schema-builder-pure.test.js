@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the pure exports of server/connector-schema-builder.js.
 // No test imports this module by name. The async DB-coupled functions
 // (buildConnectorSchemaItem, getConnectorFreshnessEvidence, getVisibleStreamFreshness)

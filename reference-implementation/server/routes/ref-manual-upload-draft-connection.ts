@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Reference-only owner-session manual/upload DRAFT-connection creation.
 //
 // File-import connectors declare setup.modality="manual_or_upload" and an

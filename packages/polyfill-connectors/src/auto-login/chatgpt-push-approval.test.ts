@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Behavior tests for the ChatGPT push-approval auto-resume fix.
  *

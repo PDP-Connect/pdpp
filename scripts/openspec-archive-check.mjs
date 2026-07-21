@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Flag OpenSpec changes that are archive-due but still sitting active.
 //
 // The OpenSpec process is worth keeping for ratifying design/contract

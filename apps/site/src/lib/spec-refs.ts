@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 const BASE = "https://pdpp.dev";
 
 export interface SpecRef {

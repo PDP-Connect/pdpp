@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Content-derived fingerprint for PDF-statement streams (chase/statements,
 // usaa/statements).
 //

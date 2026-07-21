@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Parsed shapes for the H-E-B connector. Extracted from index.ts so
 // parsers.ts and tests can import them without pulling in the Playwright-
 // flavored runtime entry. Mirrors connectors/amazon/types.ts.

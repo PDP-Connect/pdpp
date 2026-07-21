@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { Metadata } from "next";
 import Link from "next/link";
 import type React from "react";

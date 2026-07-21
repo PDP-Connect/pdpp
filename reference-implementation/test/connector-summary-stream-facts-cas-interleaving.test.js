@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Genuine two-fold CAS-loser oracle for the terminal-facts fold's
  * compare-and-set write (openspec/changes/reconcile-active-summary-evidence

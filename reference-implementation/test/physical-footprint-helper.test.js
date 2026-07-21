@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Physical-footprint helper — read-only on-disk database size for the
  * operator deployment-diagnostics surface.

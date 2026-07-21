@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // COMPACTION_POLICIES is the single source of truth for the "registered
 // compaction policy" signal — the same registry the maintenance tool resolves.
 // `findPolicy` resolves the short, registry-URL, and local-device id forms.

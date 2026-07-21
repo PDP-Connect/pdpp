@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Anonymous GHCR public-image probe for the Railway pushbutton publish gate.
 //
 // The selected first-button shape points the Railway app service at a public,

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the schema-shape PREDICATES + blob_ref validator in
 // server/connector-manifest-validation.ts. The module's one existing test
 // (manifest-sensitivity.test.js) covers only sensitivity; these 8 pure functions

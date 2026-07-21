@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Sol P2.3: nullable stream counts are not honest end-to-end after a
  * persisted failure.

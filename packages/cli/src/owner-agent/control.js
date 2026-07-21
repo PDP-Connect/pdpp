@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Non-secret owner-agent control discovery for the `pdpp owner-agent control`
 // subcommand.
 //

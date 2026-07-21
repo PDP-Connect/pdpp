@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Reference-only owner-session static-secret DRAFT-connection creation.
 //
 // This is the owner-trusted surface that creates the FIRST connection for a

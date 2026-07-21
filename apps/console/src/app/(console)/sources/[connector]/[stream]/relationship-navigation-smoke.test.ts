@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Relationship-navigation smoke — proves both directions resolve to the correct,
  * percent-encoded hrefs against the REAL bundled Chase manifest, and pins the two

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure derivation of a connection's device-side outbox axis and local-device
 // progress from already-fetched source-instance heartbeat rows. Extracted from
 // `ref-control.ts` so the god-file no longer carries the heartbeat-rollup

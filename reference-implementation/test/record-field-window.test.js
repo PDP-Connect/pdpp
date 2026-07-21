@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the bounded record-field window substrate
 // (server/record-field-window.js) — the backend-agnostic pure helpers only.
 //

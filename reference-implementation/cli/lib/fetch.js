@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { PdppCliError, PdppHttpError } from './errors.js';
 
 export async function fetchJson(url, opts = {}) {

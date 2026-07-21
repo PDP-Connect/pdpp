@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /** A grouped `COUNT(*) AS n` row from an index-count query. */
 interface CountRow {
   n?: number | string | null;

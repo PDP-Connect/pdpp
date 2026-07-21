@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Runtime DOM regression coverage for the hosted MCP consent picker.
 //
 // Every other picker test asserts the rendered HTML/markup or the server-side

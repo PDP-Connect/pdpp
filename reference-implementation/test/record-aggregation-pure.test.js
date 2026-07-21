@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for server/record-aggregation.js. No test imports this
 // module by name (aggregate-time-buckets.test.js drives the same contract through
 // the HTTP surface). This file pins the exported pure calendar/zone helpers and

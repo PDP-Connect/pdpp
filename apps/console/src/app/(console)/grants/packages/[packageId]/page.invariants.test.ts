@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Source-regex invariants for the grant-package detail page and its
  * server-action revoke flow.

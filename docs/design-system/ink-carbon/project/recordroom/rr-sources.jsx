@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* RECORDROOM — Sources: the loading dock. Per-instance operational truth:
    identity, config, auth, stream manifests, health. Records are never
    viewed here — every record path hands off to Explore, the one reader. */

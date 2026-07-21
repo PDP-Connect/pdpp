@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for validateCanonicalSort and
 // rejectListOnlyParamsForChangesFeed (server/record-query-helpers.ts), two
 // untested query_records validators. validateCanonicalSort enforces the

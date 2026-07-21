@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * RecordIdentity — the ONE shared, markup-neutral record-identity cell.
  *

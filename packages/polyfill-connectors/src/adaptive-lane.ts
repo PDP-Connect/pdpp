@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { AsyncLocalStorage } from "node:async_hooks";
 import PQueue from "p-queue";
 

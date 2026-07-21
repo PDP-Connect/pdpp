@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the RFC 7662 introspection operation in
 // operations/as-introspect/index.ts. No test imports it by name. It validates
 // token presence and REDACTS the AS-internal `grant_storage_binding` field from

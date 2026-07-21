@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Sample N representative records per stream for a connector and
  * write them to a JSON file. Used to feed schema-authoring agents

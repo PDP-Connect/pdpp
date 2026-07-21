@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { RecordData, ValidateRecord } from "../connector-runtime.ts";
 import { runConnector } from "../connector-runtime.ts";
 

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Owner-journey acceptance harness orchestrator.
 //
 // Binds the pure scanner core (scan.mjs) to the declarative surface manifest

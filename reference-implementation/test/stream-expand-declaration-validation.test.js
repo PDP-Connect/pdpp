@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the UNTESTED manifest-validation shaper
  * `validateStreamExpandDeclarations` (`server/connector-manifest-validation.ts`)

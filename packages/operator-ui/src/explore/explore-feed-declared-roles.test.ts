@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression: manifest-authored x_pdpp_role roles reach the RECENT MERGED-TIMELINE
  * FEED, so a chatgpt/codex `messages` row renders a typed MESSAGE card (title = the

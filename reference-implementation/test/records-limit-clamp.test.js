@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Records-list page-limit contract: an over-max `limit` is clamped to the
  * spec-core §8 maximum (100) and the reduction is surfaced via a structured

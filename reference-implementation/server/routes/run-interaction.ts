@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the reference-only run-interaction control surface and
 // developer stream playground.
 //

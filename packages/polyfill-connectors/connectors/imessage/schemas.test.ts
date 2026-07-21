@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Schema tests for the iMessage connector. The record-building logic is inline
  * in index.ts (a SQLite row → record literal), so these tests assert the schema

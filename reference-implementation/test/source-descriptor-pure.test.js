@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the source-descriptor decision tables in
 // server/source-descriptor.js. These functions translate grant/manifest/query
 // shapes into the canonical {kind,id} source descriptor and read-scope binding

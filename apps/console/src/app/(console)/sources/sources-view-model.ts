@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Sources view model — pure projection of the live connector summaries into
  * the serializable shape the Recordroom "loading dock" presentation consumes.

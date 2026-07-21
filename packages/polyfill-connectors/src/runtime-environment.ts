@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Runtime-environment detection helpers used by the connector runtime
  * to make container-aware routing decisions.

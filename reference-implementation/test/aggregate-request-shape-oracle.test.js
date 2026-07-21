@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for the grant-independent request-shape validation of
 // normalizeAggregateRequest (server/record-aggregation.js), the MCP aggregate
 // read-model contract. These branches all reject (or accept the bare count

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing coverage for `runtime/scheduler-readiness.ts`, which had no
  * test importing it. `defaultReadinessChecker` gates whether the scheduler may

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for the streaming companion CDP mapping. The wire shape sent
  * by the viewer is translated to a deterministic CDP command list. These

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Family-2 split for the USAA `credit_card_billing` stream: the per-cycle
  * volatile financial fields move to the append-keyed

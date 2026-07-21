@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Direct Slack Web API calls for the four streams slackdump's archive mode
  * cannot produce: `stars`, `user_groups`, `reminders`, `dm_read_states`.

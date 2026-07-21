@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure machine audit: a required stream without a resolved coverage posture
 // SHALL never hide beneath a Healthy connection verdict, and settled/live
 // acceptance SHALL inspect every settled connection rather than only Healthy

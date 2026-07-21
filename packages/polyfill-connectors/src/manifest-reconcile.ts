@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Manifest-vs-schema-vs-emit reconciliation for first-party connectors.
  *

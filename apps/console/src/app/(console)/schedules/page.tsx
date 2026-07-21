@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import { SchedulesView } from "@pdpp/operator-ui/components/views/schedules-view";
 import { RecordroomShellWithPalette } from "@/app/(console)/components/recordroom-shell-with-palette.tsx";

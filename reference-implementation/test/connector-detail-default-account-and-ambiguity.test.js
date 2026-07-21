@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * End-to-end proof that the default-account/no-explicit-instance ingest
  * journey and the zero/multi connection-ambiguity contract

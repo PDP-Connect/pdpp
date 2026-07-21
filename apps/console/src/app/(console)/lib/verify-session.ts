@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Dashboard Data Access Layer (DAL): authoritative owner-session check.
  *

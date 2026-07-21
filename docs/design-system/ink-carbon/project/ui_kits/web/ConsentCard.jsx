@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // ConsentCard — the user-facing grant-approval surface. Human-temperature.
 
 const DEFAULT_SCOPES = [

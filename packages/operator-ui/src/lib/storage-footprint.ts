@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure render-model for the deployment-diagnostics database footprint.
 //
 // The `/_ref/deployment` `database` block carries a read-only physical

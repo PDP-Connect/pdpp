@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 
 import { listSpineEventsPage, type SpineEventRecord } from "../../lib/spine.ts";

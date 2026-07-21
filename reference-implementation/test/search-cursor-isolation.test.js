@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pin the semantic search cursor id-form and the mutual isolation between the
 // lexical and semantic cursor codecs.
 //

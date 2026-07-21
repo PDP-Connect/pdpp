@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Family-2 split for the USAA `accounts` stream: point-in-time balances move
  * to the append-keyed `account_stats` observation stream so a balance tick no

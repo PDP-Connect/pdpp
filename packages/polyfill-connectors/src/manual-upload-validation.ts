@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { validateGoogleMapsTimelineArtifact } from "../connectors/google_maps/validation.ts";
 import { validateWhatsAppChatExportArtifact } from "../connectors/whatsapp/validation.ts";
 

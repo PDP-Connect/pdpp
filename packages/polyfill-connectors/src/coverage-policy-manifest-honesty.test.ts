@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Build-time guardrail: any connector manifest stream that declares
  * `coverage_policy` must use a recognized enum value, and a stream

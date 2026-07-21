@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure formatting helpers that turn the reference's projected
  * `connection_health` snapshot plus auxiliary evidence (last run, last

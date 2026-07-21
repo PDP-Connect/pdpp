@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Steady-state `considered` + `covered` declaration on USAA's fingerprint-
  * suppressed full-sync `accounts` ENTITY stream (OpenSpec

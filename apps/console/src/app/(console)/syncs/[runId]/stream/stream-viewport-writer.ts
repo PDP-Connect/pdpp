@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { type ViewportPayload, viewportPayloadsAreEquivalent } from "@opendatalabs/remote-surface/client";
 
 export interface ViewportLastPostState {

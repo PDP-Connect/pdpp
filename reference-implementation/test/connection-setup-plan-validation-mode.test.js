@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // The setup planner advertises a per-connector credential `validationMode`
 // (`synchronous` | `first_sync`) projected from the reference-only probe
 // registry. Console, owner-agent intent, and CLI all read this single field; no

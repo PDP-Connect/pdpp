@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 "use server";
 
 import type { ExploreBucketRequest } from "@pdpp/operator-ui/components/views/records-explorer-view";

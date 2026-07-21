@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Opt-in clean-shell command-freshness probe.
 //
 // The default freshness check (scan.mjs) grounds "is this command published?"

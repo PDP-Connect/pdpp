@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Thin, boring URL / body builders used by the CLI, dashboard, tests, and
 // future agent-facing tooling.
 //

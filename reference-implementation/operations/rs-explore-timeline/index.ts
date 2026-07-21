@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Canonical `rs.explore.timeline` operation — Phase 3 merged cross-source timeline.
  *

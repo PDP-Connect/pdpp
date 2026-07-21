@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for server/routes/ref-run-status.ts — the owner-only run-handle
  * status route `GET /_ref/runs/:runId` added by

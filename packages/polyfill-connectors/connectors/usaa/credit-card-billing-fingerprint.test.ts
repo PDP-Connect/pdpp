@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Per-card fingerprint behavior for the USAA `credit_card_billing` ENTITY
  * stream.

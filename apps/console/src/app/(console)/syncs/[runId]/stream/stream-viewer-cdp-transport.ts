@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { CdpCommandParams, CdpCommandTransport } from "@opendatalabs/remote-surface/backends/cdp";
 
 type SendPdppCdpInput = (payload: Record<string, unknown>) => Promise<void>;

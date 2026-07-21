@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Static guard tests for the narrowed `/search` page (console
  * app). Mirrors the web app's guards from `narrow-search-to-spine-jump`.

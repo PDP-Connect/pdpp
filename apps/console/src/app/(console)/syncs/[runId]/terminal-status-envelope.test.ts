@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Coverage for the whole-handle terminal/active decision on the run detail
  * page. Runtime terminal events still flow through the timeline envelope, but

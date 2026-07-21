@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing coverage for the `import_file_required` typed-error code
  * (server/routes/ref-manual-upload-draft-connection.ts).

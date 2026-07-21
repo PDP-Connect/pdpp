@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* PDPP Explorer — query model
  *
  * A query is { chips: Chip[], text: string }. Chips compose with AND.

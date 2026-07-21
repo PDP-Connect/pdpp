@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { listConnectorSummaries, type RefConnectorSummary } from "../lib/ref-client.ts";
 
 export async function resolveConnectionForRecordsRoute(routeId: string): Promise<RefConnectorSummary | null> {

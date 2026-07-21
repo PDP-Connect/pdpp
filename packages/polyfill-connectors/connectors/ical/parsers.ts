@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the iCal connector. Kept free of Node I/O and fetch so
 // they can be unit-tested in isolation (see parsers.test.ts). The file
 // walker and subscription fetcher live in index.ts.

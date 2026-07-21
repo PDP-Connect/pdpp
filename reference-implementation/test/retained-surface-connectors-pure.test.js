@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the reference-side retention adapter
 // (runtime/browser-surface/retained-surface-connectors.ts). The adapter maps the
 // reference's connector id forms (URLs, aliases) to the bare connector runtime

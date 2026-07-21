@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Focused tests for the per-record fingerprint cursor primitive. These pin
 // the four scenarios the connector-author no-op confidence report (2026-05-26)
 // names as the load-bearing contract:

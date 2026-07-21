@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * biome-ignore-all lint/performance/useTopLevelRegex: These invariant tests use
  * local regex assertions to keep the source-contract checks readable.

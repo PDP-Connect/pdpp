@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit test for buildEventPayload in
 // operations/as-client-event-subscriptions/index.ts. No test imports it by name.
 // This builds the CloudEvents 1.0 envelope delivered to a client's webhook for a

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Public facade for the browser-surface run-coordinator subsystem.
 // Consumers import from this module; the internal structure is an
 // implementation detail of the browser-surface/ directory.

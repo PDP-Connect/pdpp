@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // TheSpecimen — the type system shown as a specimen page, in the way a foundry would.
 
 const TheSpecimen = () => (

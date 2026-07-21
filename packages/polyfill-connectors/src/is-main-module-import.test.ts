@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Behavioral proof of the isMainModule guard: importing a connector's
  * index.ts in a fresh child process must NOT fire the runtime bootstrap

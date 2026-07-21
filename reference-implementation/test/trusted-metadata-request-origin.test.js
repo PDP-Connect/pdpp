@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the UNTESTED trust-gate projection
  * `isTrustedMetadataRequestOrigin` (`server/metadata.ts`). It decides whether a

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The ONE mapping from the server bucket-aggregate response
  * (`ExploreRecordBucketsResponse`, `GET /_ref/explore/records/buckets`) to the

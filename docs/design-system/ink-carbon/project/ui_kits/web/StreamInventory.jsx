@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // StreamInventory — a list of declared streams with their shapes and access mode.
 
 const STREAMS = [

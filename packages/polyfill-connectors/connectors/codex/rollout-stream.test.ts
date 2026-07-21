@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Memory-bound + append-safety tests for the Codex rollout streaming reader
  * (`iterJsonlLinesFromOffset`).

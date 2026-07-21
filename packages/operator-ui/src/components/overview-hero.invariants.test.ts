@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Grep guard: overview-hero must not contain URL-shaped connector IDs or
  * legacy display logic. connector_id is always a canonical key post-migration.

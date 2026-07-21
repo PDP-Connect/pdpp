@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* PDPP Explorer — Discoverables (Immich / Apple Photos / Spotify Wrapped / Strava)
  *
  * These render at the top of the feed when no filters are active, and

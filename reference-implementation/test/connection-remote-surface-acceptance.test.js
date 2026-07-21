@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Milestone acceptance test for `complete-ri-operator-console-reliability`
  * task 7.6: a browser/API connector acceptance path proving structured

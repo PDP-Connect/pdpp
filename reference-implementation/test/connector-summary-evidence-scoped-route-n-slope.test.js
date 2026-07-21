@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Scoped ROUTE-level N-slope: the real mounted-route call chain, including
  * fold + synthesis, not just discovery

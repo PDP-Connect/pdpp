@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The one server-owned synthesized verdict every owner surface renders verbatim.
  *

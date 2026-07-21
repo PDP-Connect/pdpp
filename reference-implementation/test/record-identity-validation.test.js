@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pins the shared write-path record-identity guard used by both the SQLite and
 // Postgres record stores. Before this guard, identity validation only checked
 // `data.id`, so streams with a non-`id` primary key or a compound primary key

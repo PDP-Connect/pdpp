@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Conformance gate over the existing manifest/listing contract — no new
  * manifest field. Proves the production-ready roster

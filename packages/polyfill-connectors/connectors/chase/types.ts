@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Parsed shapes for the Chase connector. Extracted from index.ts so
 // parsers.ts and tests can import them without pulling in the Playwright-
 // flavored runtime entry.

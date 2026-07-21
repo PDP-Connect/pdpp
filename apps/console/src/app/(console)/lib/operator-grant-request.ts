@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Server-only helpers for a dashboard-managed client registration + PAR
  * staging workspace. Uses only the real public registration and PAR routes.

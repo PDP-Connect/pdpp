@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Route-contract validation adapter for the reference HTTP transport.
 //
 // Spec: openspec/changes/wire-route-contract-validation/specs/

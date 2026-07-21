@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * `GET /v1/schema?view=compact` token-efficiency + projection conformance.
  *

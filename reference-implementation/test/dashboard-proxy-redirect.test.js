@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pins the proxy-layer owner-console auth gate in apps/console/src/proxy.ts.
 //
 // Before this gate existed, hitting the owner console without an owner session

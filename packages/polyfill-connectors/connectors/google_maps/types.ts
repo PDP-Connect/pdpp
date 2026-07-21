@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export type GoogleMapsSourceFormat = "legacy_records" | "semantic_segments" | "timeline_objects";
 export type GoogleMapsPointKind =
   | "raw_location"

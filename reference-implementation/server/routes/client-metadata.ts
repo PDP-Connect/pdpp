@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the CIMD (Client ID Metadata Document) service route.
 //
 // Serves operator-created CIMD documents at

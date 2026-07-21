@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Table-driven coverage for the shared SSRF guard's address-allow policy,
  * bounded/ordered fallback, and single-settlement connection-completion

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* PDPP Explorer — Feed with type-aware cards
  *
  * The card kind is dispatched from the stream's schema signals — same

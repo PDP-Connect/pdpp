@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Closed-pipe write error classifier shared by the connector runtime and the
 // CLI entrypoint guard. See:
 //   openspec/changes/harden-reference-runtime-reliability/design.md

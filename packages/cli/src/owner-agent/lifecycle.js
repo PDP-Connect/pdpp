@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Introspection and RFC 7592 client-delete revocation for owner-agent
 // credentials. These preserve the existing reference behavior so a revoked
 // owner-agent credential stops working and an active one can be confirmed

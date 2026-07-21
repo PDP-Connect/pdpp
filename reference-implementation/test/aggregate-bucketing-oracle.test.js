@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for the aggregate time-bucketing math
 // (server/record-aggregation.js) that underpins the MCP `aggregate` read-model
 // contract. bucketStartForGranularity and resolveAggregateTimeZone are pure but

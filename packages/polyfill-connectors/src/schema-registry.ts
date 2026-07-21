@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Shared helper for connector `schemas.ts` files. Wraps a stream→zod
  * registry into a `ValidateRecord` closure with consistent diagnostics.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure terminal/active decision logic for the run detail surface.
 //
 // Extracted from `page.tsx` so the envelope-driven decision can be unit-tested

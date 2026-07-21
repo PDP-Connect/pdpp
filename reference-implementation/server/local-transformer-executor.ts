@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface, type Interface } from "node:readline";

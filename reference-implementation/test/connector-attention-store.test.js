@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Acceptance tests for the durable structured-attention store and its
  * wiring into the reference operator-console connector projections.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * OpenSpec task 2.2 (openspec/changes/reconcile-active-summary-evidence
  * design.md "Acceptance Strategy"): production-entry-point proof that the

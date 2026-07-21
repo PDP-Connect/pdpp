@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Scrub rules specific to Reddit fixtures. Applied AFTER the shared
  * defaults in src/scrub-defaults.ts. Order within this file matters —

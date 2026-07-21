@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Diagnostic sanitization helpers for device-exporter routes.
 //
 // Extracted from `server/index.js` per the OpenSpec change

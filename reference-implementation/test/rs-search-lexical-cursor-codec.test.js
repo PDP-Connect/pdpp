@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pin the lexical search cursor id-form: the opaque handle a client pages
 // forward with. `encodeSearchLexicalCursor`/`decodeSearchLexicalCursor` are a
 // base64url(JSON) codec over `{ snap, off }`. The operation test USES the

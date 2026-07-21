@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Runtime-failure classification for the connector runtime.
 //
 // Maps a thrown Error to the stable `failure_reason` string carried on the

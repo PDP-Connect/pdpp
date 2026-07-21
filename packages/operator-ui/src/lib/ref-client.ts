@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Type declarations for the reference-designated `_ref` read surfaces on the
  * PDPP authorization server.

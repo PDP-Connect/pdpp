@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression coverage for records pagination with nullable cursor_field
  * schemas (e.g. `type: ["string", "null"]` with `format: date-time`, or

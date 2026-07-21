@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for connector-cursor-reset.mjs - the owner-gated cursor-reset tool
  * that turns the next incremental run into a full source resync by blanking

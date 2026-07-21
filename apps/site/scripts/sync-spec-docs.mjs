@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Single-source the normative spec docs.
 //
 // The repository root holds the normative `spec-*.md` files (source of truth).

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Typed-error status/type tables for the reference resource server.
 //
 // Pure, dependency-free lookup tables extracted from `server/index.js` under

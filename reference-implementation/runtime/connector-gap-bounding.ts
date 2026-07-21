@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Connector-output bounding and gap/collection projection POLICY.
 //
 // Owns the cluster of functions and constants that govern how connector-authored

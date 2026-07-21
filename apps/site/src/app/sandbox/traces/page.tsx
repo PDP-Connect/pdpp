@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
 import { sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";

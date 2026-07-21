@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Grant fan-in SHALL NOT bind to a phantom default-account connection.
  *

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { type SearchData, SearchView } from "@pdpp/operator-ui/components/views/search-view";
 import Link from "next/link";

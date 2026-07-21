@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * ntfy adapter — fire-and-forget push notifications to the self-hosted
  * ntfy topic configured in .env.local.

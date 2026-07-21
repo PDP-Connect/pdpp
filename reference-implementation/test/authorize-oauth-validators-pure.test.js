@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the OAuth /authorize parameter validators in
 // server/routes/as-consent-ui-helpers.ts. These 5 pure functions had ZERO by-name
 // coverage (the module's existing tests cover the hosted-MCP picker rendering).

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The viewer owns session hooks, while the console owns an injected adapter.
  * Keep that split explicit on the readiness-error path as well as teardown.

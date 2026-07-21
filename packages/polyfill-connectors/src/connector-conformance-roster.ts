@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Hand-maintained roster of production-ready connectors — every connector
  * this repo lists as owner-selectable (`capabilities.public_listing.listed

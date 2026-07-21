@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Bounded startup repair work (openspec/changes/reconcile-active-summary-evidence
  * design.md "Startup is acceleration, not authority"; the reconcile-

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for the field-window typed-error vocabulary and the
 // fail-closed field-scope gate (server/record-field-window.js).
 //

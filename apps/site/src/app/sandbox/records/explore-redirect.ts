@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { explorerPeekParam } from "@pdpp/operator-ui/components/views/explorer-utils";
 import { sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
 

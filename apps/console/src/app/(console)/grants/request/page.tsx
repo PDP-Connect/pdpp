@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { buttonVariants, IcButton, IcInput, IcSelect, IcTimestamp } from "@pdpp/brand-react";
 import { MetaPill, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";

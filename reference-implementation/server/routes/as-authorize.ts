@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the AS OAuth authorize route family.
 //
 // Behaviour-preserving extraction from `server/index.js` per the OpenSpec

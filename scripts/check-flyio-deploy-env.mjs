@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Deterministic preflight check for the Fly.io Core deploy target env contract.
 //
 // The selected Fly path is one public Core app plus Fly Postgres. The Core app

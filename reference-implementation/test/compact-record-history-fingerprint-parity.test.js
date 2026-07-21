@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Parity test: compact-record-history.mjs:recordFingerprint
  * vs packages/polyfill-connectors/src/fingerprint-cursor.ts:recordFingerprint

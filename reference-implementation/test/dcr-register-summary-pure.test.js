@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for summarizeDcrRegisterRequest in
 // operations/as-dcr-register/index.ts. No test imports it by name. This pure
 // function projects a Dynamic Client Registration request body into the audit

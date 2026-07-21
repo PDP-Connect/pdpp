@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing coverage for the branches of `server/freshness.ts`
  * (`deriveReferenceFreshness`) the existing freshness.test.js leaves open:

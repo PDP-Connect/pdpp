@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { normalizePrimaryKey } from "./record-expand-helpers.js";
 import { coerceComparableValue, type FieldSchema, getFieldSchema } from "./schema-coercion.ts";
 

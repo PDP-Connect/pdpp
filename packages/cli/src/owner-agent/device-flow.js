@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // RFC 8628 device-authorization handling for the trusted owner-agent flow.
 //
 // The owner approves in a browser; the CLI prints only the verification URL,

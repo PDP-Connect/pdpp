@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { RUN_LIFECYCLE_VOCABULARY, type StatusTone, type StatusVocabulary } from "./status-vocabularies.ts";

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Site header — nav with logo, docs/spec/palette links, GitHub CTA
 const SiteHeader = ({ active = 'home', onNav }) => (
   <header style={{

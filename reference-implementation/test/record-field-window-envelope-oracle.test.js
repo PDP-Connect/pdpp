@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-math oracle for buildWindowEnvelope (server/record-field-window.js).
 //
 // buildWindowEnvelope computes the paging math that EVERY read_record_field /

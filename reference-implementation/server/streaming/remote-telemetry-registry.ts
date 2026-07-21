@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Process-local registry of remote-page telemetry sinks, keyed by runId.
  *

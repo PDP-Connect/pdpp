@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export type ExploreRange = "today" | "7d" | "30d" | "all";
 
 const RANGE_DAYS: Record<Exclude<ExploreRange, "all">, number> = { today: 0, "7d": 6, "30d": 29 };

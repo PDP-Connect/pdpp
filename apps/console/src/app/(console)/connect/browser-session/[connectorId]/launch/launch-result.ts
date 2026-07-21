@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export interface BrowserSessionRunStartResult {
   readonly browser_surface?: {
     readonly browser_surface_status?: string | null;

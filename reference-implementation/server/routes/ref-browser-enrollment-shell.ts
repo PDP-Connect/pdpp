@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Reference-only owner-session browser-enrollment-shell creation and abandonment.
 //
 // A browser-enrollment shell is the pre-credential connection record created

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /** biome-ignore-all lint/suspicious/useAwait: DashboardDataSource methods return Promise<...>; sandbox is sync but the seam stays async-shaped. */
 /**
  * Sandbox-bound implementation of the dashboard `DashboardDataSource` seam.

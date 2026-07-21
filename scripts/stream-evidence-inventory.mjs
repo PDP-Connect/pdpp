@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Generated stream-evidence inventory (task 9.2).
 //
 // Walks packages/polyfill-connectors/manifests/*.json and

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Maximum char count for any preview field across PDPP connectors. Fields
  * MAY use a smaller max; they MUST NOT exceed this.

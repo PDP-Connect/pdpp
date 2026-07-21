@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for coerceSemanticTimeValue
 // (server/record-ingest-semantic-time.ts), the epoch-aware timestamp coercion
 // that stamps a record's semantic_time at ingest. It is pure but untested by

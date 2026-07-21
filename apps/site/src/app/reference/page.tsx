@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { ConnectAgentCard } from "@pdpp/operator-ui/components/connect-agent-card";
 import type { Metadata } from "next";
 import { headers } from "next/headers";

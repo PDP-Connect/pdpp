@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure pending-state logic for the Explore canvas loading states — no React, no
  * Next, no client imports. The function-only core of the in-page navigation

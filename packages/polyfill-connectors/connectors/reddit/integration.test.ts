@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration tests for the Reddit connector's `collect()` layer — the
  * per-stream emit + pagination + cursor orchestration.

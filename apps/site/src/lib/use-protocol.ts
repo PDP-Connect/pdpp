@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * useProtocol — React hook that drives the reference page from a MockPDPPServer
  *

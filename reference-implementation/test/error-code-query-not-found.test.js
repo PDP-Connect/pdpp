@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing coverage for the public `query_not_found` typed-error code
  * (server/routes/ref-error-status.ts: `query_not_found: 404`).

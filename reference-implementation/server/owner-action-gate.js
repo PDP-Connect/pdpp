@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 const AUTOMATION_BLOCKING_OWNER_ACTION_KINDS = new Set(["add_info", "reauth"]);
 const AUTOMATION_BLOCKING_OWNER_ACTION_URGENCIES = new Set(["now", "overdue"]);
 

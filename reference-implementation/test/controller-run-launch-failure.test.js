@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for the run-now launch-failure honesty fixes added by
  * openspec/changes/surface-run-handle-resolvability:

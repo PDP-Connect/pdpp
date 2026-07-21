@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { stripLeadingDocumentTitle } from "@/lib/openspec/parse.ts";

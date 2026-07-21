@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Shared helpers for the owner-connection route-family adapters.
 //
 // All five functions in this file are behavior-identical copies extracted

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression test for the records-dashboard hot-path optimization that hoists
  * the three GLOBAL browser-surface table reads (`listNonTerminalLeases` +

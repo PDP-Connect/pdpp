@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit tests for the two remaining uncovered field-window
  * exports in `server/record-field-window.js`:

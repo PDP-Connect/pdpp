@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Proves the scheduler-doctor probe script surfaces an honest runtime
 // verdict from a /_ref/schedules listing. The script is the AI-friendly
 // equivalent of "did the scheduler loop pick up my Docker schedule?" —

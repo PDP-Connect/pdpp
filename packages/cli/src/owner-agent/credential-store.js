@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Local credential target for the trusted owner-agent profile.
 //
 // Owner-agent credentials are owner-level local automation. They are written to

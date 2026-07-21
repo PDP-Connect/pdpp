@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { Metadata } from "next";
 import { SandboxOverviewContent } from "./overview-content.tsx";
 

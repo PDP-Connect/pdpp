@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for statement-content-fingerprint.ts — the shared content-gated
  * exclusion rule for chase/statements and usaa/statements.

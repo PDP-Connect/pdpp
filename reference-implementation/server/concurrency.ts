@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Bounded parallel map. Preserves input order in the output, runs at most
  * `limit` workers at a time, and exposes an in-flight counter via the optional

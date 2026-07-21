@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Non-component helpers for the shared run-row grammar. These live in a sibling
  * module (not run-row.tsx) so that run-row.tsx exports *only* the RunRow

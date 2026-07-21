@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the blob-upload validation in
 // operations/rs-blobs-upload/index.ts. No test imports it by name. It validates the
 // connector_id/stream/record_key params + Content-Type, gates on the stream being

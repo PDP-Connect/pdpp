@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the blob-read access control in
 // operations/rs-blobs-read/index.ts. No test imports it by name. A blob is only
 // readable if a record VISIBLE to the actor's connector references it via

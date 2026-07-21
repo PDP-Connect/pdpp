@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { createHash } from "node:crypto";
 
 const GENERATION_HASH_PATTERN = /^[a-f0-9]{64}$/;

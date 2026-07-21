@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for owner-provided Google Maps Timeline export files. Runtime
 // file discovery and emit orchestration live in index.ts.
 

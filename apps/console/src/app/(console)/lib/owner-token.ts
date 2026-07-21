@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Server-only dashboard helpers for:
  * - internal AS/RS fetch targets
