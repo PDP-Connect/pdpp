@@ -22,7 +22,16 @@
       "!node_modules",
       "!fixtures",
       "!dist",
-      "!**/*.test.*"
+      "!**/*.test.*",
+      // Ultracite 7.9.4 adds a broad `**` include in its preset. These force
+      // ignores preserve this repository's existing TypeScript-only migration
+      // boundary even after configs merge.
+      "!!**/*.js",
+      "!!**/*.jsx",
+      "!!**/*.mjs",
+      "!!**/*.cjs",
+      "!!**/*.css",
+      "!!**/*.html"
     ]
   },
   "overrides": [
