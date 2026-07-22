@@ -12,7 +12,7 @@ import {
   type RefConnectorSummary,
   RefNotFoundError,
 } from "../../../lib/ref-client.ts";
-import { formatTotalRecordsLabel } from "../../../sources/sources-view-model.ts";
+import { formatTotalRecordsLabel } from "../../../lib/total-records.ts";
 import { ManualUploadForm } from "./manual-upload-form.tsx";
 
 export const dynamic = "force-dynamic";

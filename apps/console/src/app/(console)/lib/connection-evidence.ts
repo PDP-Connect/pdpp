@@ -18,7 +18,7 @@
  * without a browser harness.
  */
 
-import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "../sources/sources-view-model.ts";
+import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "./total-records.ts";
 import type {
   DeviceSourceInstance,
   RefCollectionRateSnapshot,

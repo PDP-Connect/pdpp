@@ -14,7 +14,7 @@ import {
   sourceSetupSecondaryAction,
   sourceSetupStatus,
 } from "../lib/source-setup-presentation.ts";
-import { formatTotalRecordsLabel } from "../sources/sources-view-model.ts";
+import { formatTotalRecordsLabel } from "../lib/total-records.ts";
 
 export interface ExistingSourceSetupLink {
   connectionId: string;

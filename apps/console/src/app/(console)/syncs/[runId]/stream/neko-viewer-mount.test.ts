@@ -27,6 +27,7 @@ test("NekoClientApi.start rejection reaches the console inline-error boundary an
     adapter: {
       unmount(): Promise<void> {
         adapterUnmounts += 1;
+        return Promise.resolve();
       },
     },
     container: {} as HTMLElement,

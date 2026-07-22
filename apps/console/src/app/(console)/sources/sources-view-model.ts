@@ -35,6 +35,7 @@ import {
 import { formatStreamCollectionFacts, indexCollectionReportByStream } from "../lib/collection-report.ts";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
 import type { FormattedNextAction } from "../lib/next-action.ts";
+import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "../lib/total-records.ts";
 import type {
   RefConnectorRunSummary,
   RefConnectorRuntimeStatus,
@@ -230,9 +231,7 @@ function formatInterval(seconds: number): string {
  * this field) is treated as authoritative, preserving the exact prior
  * always-numeric rendering for every existing caller.
  */
-export function isTotalRecordsAuthoritative(totalRecordsState?: RefCountState): boolean {
-  return totalRecordsState === undefined || totalRecordsState === "known" || totalRecordsState === "known_zero";
-}
+// Shared by all count renderers via ../lib/total-records.ts.
 
 /**
  * Centralized state-aware label for a `total_records` count value, shared
@@ -248,19 +247,6 @@ export function isTotalRecordsAuthoritative(totalRecordsState?: RefCountState): 
  *   - `"known"`/`"known_zero"`/omitted: the exact prior always-numeric
  *     rendering.
  */
-export function formatTotalRecordsLabel(
-  totalRecords: number,
-  totalRecordsState: RefCountState | undefined,
-  unit: string
-): string {
-  if (totalRecordsState === "stale") {
-    return `${totalRecords.toLocaleString()} ${unit} (unverified)`;
-  }
-  if (totalRecordsState === "unobserved" || totalRecordsState === "unknown") {
-    return `${unit} unavailable`;
-  }
-  return `${totalRecords.toLocaleString()} ${unit}`;
-}
 
 /**
  * Connector detail-page header count. A failed/never-observed record

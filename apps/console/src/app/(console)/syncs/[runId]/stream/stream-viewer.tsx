@@ -4268,8 +4268,8 @@ function NekoSurface({
       const screen = polledStatus.screen;
       if (!screen) {
         logDebug("neko.status.poll", {
-          page: status.page,
-          pageCdpAvailable: status.pageCdpAvailable,
+          page: polledStatus.page,
+          pageCdpAvailable: polledStatus.pageCdpAvailable,
           requestId,
           result: "missing-screen",
           viewport,
@@ -4279,16 +4279,16 @@ function NekoSurface({
 
       latestPolledScreen = screen;
       const fitsScreen = screenFitsViewport(screen, viewport);
-      const fitsPage = pageFitsViewport(status, viewport);
+      const fitsPage = pageFitsViewport(polledStatus, viewport);
       const fits = fitsScreen && fitsPage;
       logDebug("neko.status.poll", {
         fits,
         fitsPage,
         fitsScreen,
-        page: status.page,
-        pageCdpAvailable: status.pageCdpAvailable,
-        pageMetricsMismatch: status.pageMetricsMismatch,
-        pageMetricsMismatchAfterReapply: status.pageMetricsMismatchAfterReapply,
+        page: polledStatus.page,
+        pageCdpAvailable: polledStatus.pageCdpAvailable,
+        pageMetricsMismatch: polledStatus.pageMetricsMismatch,
+        pageMetricsMismatchAfterReapply: polledStatus.pageMetricsMismatchAfterReapply,
         requestId,
         result: fits ? "done" : "retry",
         screen,

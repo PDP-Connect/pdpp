@@ -9,7 +9,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import type { RefConnectorSummary, RefSchedule } from "../lib/ref-client.ts";
-import { formatTotalRecordsLabel } from "../sources/sources-view-model.ts";
+import { formatTotalRecordsLabel } from "../lib/total-records.ts";
 import { deleteScheduleAction, pauseScheduleAction, resumeScheduleAction, upsertScheduleAction } from "./actions.ts";
 
 interface ScheduleRowProps {
