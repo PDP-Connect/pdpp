@@ -233,7 +233,7 @@ async function authedFetch(path: string, params?: Record<string, string | number
       headers: { Authorization: `Bearer ${token}` },
     });
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
+    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, { cause: err });
   }
   if (!res.ok) {
     const body = await res.text();
@@ -584,7 +584,7 @@ export async function searchRecordsLexical(
       headers: { Authorization: `Bearer ${token}` },
     });
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
+    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, { cause: err });
   }
   if (!res.ok) {
     const body = await res.text();
@@ -643,7 +643,7 @@ export async function searchRecordsSemantic(
       headers: { Authorization: `Bearer ${token}` },
     });
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
+    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, { cause: err });
   }
   if (!res.ok) {
     const body = await res.text();
@@ -729,7 +729,7 @@ export async function searchRecordsHybrid(
       headers: { Authorization: `Bearer ${token}` },
     });
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
+    throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, { cause: err });
   }
   if (!res.ok) {
     const body = await res.text();

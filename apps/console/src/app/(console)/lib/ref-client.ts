@@ -1203,7 +1203,7 @@ export async function refFetch(
       })
     );
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, { cause: err });
   }
   if (res.status === 404) {
     throw new RefNotFoundError(`not found: ${path}`);
@@ -1233,8 +1233,8 @@ export { RefNotFoundError, RefRequestError };
 // run.
 export class StaticSecretValidationError extends Error {
   readonly code = "static_secret_credential_rejected";
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "StaticSecretValidationError";
   }
 }
@@ -1914,7 +1914,7 @@ export async function captureStaticSecretCredential(input: {
     // becomes a typed error so the action keeps the owner on the form. The
     // message is the provider-named, owner-causal reason from the route.
     if (err instanceof RefRequestError && err.status === 400 && isCredentialRejectionBody(err.bodyText)) {
-      throw new StaticSecretValidationError(err.message);
+      throw new StaticSecretValidationError(err.message, { cause: err });
     }
     throw err;
   }
@@ -2132,7 +2132,7 @@ async function postManualUploadFile(
   try {
     res = await fetch(url.toString(), init);
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, { cause: err });
   }
   if (!res.ok) {
     const body = await res.text();
@@ -2563,8 +2563,8 @@ export interface GrantPackageRevokeResult {
 export class GrantPackageRevokePartialFailureError extends Error {
   readonly result: GrantPackageRevokeResult;
 
-  constructor(result: GrantPackageRevokeResult) {
-    super(formatGrantPackageRevokePartialFailure(result));
+  constructor(result: GrantPackageRevokeResult, options?: ErrorOptions) {
+    super(formatGrantPackageRevokePartialFailure(result), options);
     this.name = "GrantPackageRevokePartialFailureError";
     this.result = result;
   }
@@ -2672,7 +2672,7 @@ export async function revokeGrantPackage(packageId: string): Promise<GrantPackag
     if (err instanceof RefRequestError) {
       const result = parseGrantPackageRevokeResult(err.bodyText);
       if (result) {
-        throw new GrantPackageRevokePartialFailureError(result);
+        throw new GrantPackageRevokePartialFailureError(result, { cause: err });
       }
     }
     throw err;

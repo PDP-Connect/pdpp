@@ -57,7 +57,7 @@ export async function mintStreamSessionAction(input: MintStreamSessionInput): Pr
     });
   } catch (err) {
     if (err instanceof StreamingCompanionUnavailableError) {
-      throw new Error(`${STREAMING_UNAVAILABLE_TAG}${err.message}`);
+      throw new Error(`${STREAMING_UNAVAILABLE_TAG}${err.message}`, { cause: err });
     }
     throw err;
   }

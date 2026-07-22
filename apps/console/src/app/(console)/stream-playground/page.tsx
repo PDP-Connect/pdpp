@@ -90,7 +90,7 @@ async function getPlaygroundSession(
       })
     );
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${asUrl}`, err);
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${asUrl}`, { cause: err });
   }
   if (!response.ok) {
     const body = await response.text().catch(() => "");

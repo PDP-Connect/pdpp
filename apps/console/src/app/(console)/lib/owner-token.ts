@@ -174,10 +174,9 @@ export async function readDashboardOwnerSession() {
 export class ReferenceServerUnreachableError extends Error {
   readonly cause: unknown;
 
-  constructor(message: string, cause: unknown) {
-    super(message);
+  constructor(message: string, options: ErrorOptions) {
+    super(message, options);
     this.name = "ReferenceServerUnreachableError";
-    this.cause = cause;
   }
 }
 
@@ -245,7 +244,7 @@ async function mintOwnerToken(): Promise<string> {
       })
     );
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${asUrl}`, err);
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${asUrl}`, { cause: err });
   }
   if (!deviceRes.ok) {
     const body = await deviceRes.text();
