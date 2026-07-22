@@ -5,6 +5,13 @@
 
 @import "@pdpp/brand/app.css";
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "@demodesk/neko/dist/neko.css";
+@import "@pdpp/brand/docs.css";
+
 /*
  * The site renders components from @pdpp/operator-ui. Tailwind v4's automatic
  * source detection only scans this app's own tree, so any utility used *only*
@@ -13,12 +20,6 @@
  * Path resolves relative to this CSS file.
  */
 @source "../../../../packages/operator-ui/src/**/*.{ts,tsx}";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
-@import "fumadocs-ui/css/neutral.css";
-@import "fumadocs-ui/css/preset.css";
-@import "@demodesk/neko/dist/neko.css";
-@import "@pdpp/brand/docs.css";
 
 @custom-variant dark (
   &:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *)
