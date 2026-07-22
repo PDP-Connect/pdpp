@@ -12,6 +12,8 @@ updates:
           - patch
       github-actions-security:
         applies-to: security-updates
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: /
@@ -25,8 +27,10 @@ updates:
           - patch
       npm-security:
         applies-to: security-updates
-    # Major bumps are excluded from the group above, so each lands in its own
-    # PR that can be reviewed and tested in isolation.
+        patterns:
+          - "*"
+    # Major bumps are excluded from the version group above, so each lands in
+    # its own PR that can be reviewed and tested in isolation.
 
   - package-ecosystem: docker
     directories:
@@ -44,3 +48,5 @@ updates:
           - patch
       docker-security:
         applies-to: security-updates
+        patterns:
+          - "*"
