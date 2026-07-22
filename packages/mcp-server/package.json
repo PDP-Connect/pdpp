@@ -25,7 +25,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@pdpp/cli": ">=0.18.11 <1.0.0",
     "@pdpp/read-core": ">=0.18.11 <1.0.0",
-    "zod": "^3.25.76"
+    "zod": "^4.4.3"
   },
   "keywords": [
     "pdpp",
