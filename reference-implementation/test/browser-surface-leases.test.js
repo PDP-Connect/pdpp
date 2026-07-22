@@ -260,10 +260,47 @@ test("concurrent final-slot acquisition cannot exceed cap", async () => {
   assert.equal(leases.listSurfaces().length, 1);
 });
 
+test("retained browser surface survives routine reap but remains explicitly invalidatable", async () => {
+  const ctx = manager({
+    config: { surfaceMode: "dynamic", staticProfileKey: undefined, surfaceCap: 1 },
+    initialSurfaces: [
+      {
+        surface_id: "chatgpt-retained",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://chatgpt-retained:9222",
+        stream_base_url: "http://chatgpt-retained:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+        retained: true,
+      },
+    ],
+  });
+  const { manager: leases } = ctx;
+  const allocator = new FakeBrowserSurfaceAllocator();
+
+  ctx.advance(10 * 60 * 1000);
+  const idleCleanup = await leases.cleanupIdleSurfaces(allocator);
+  assert.deepEqual(idleCleanup.stopped, []);
+  assert.equal(leases.getSurface("chatgpt-retained")?.health, "ready");
+
+  const queued = leases.acquire({ connectorId: "gmail", runId: "run_gmail", profileKey: "gmail" });
+  assert.equal(queued.lease.status, "waiting_for_browser_surface");
+  assert.equal(queued.lease.wait_reason, "capacity_full");
+  assert.equal(leases.planCapacityPressureReclaim(queued.lease.lease_id), undefined);
+  assert.equal(leases.getSurface("chatgpt-retained")?.retained, true);
+
+  const invalidated = leases.invalidateSurface("chatgpt-retained", { reason: "surface_unhealthy" });
+  assert.equal(invalidated.surface?.surface_id, "chatgpt-retained");
+  assert.equal(leases.getSurface("chatgpt-retained"), undefined);
+});
+
 // The three tests below replace a single 0.3.0-era "priority then FIFO
 // determines release pump ordering" test that asserted release-time
 // promotion across three *different* `accountKey`s on one static surface.
-// Under 0.3.1's account-isolation contract that scenario is not just
+// Under 1.5.1's account-isolation contract that scenario is not just
 // outdated, it is impossible to express honestly through the public API:
 // `#findPendingDuplicate` collapses same-(connector,profile,account,subject)
 // pending acquires into one lease (proven below), and a released surface's
@@ -280,7 +317,7 @@ test("concurrent final-slot acquisition cannot exceed cap", async () => {
 // account-isolation gap replaced its own now-obsolete FIFO test the same
 // way — priority/FIFO is proven in dynamic mode via the capacity-pressure
 // reclaim path, and two new tests pin account isolation directly). Verified
-// against the installed `@opendatalabs/remote-surface@0.3.1` package before
+// against the installed `@opendatalabs/remote-surface@1.5.1` package before
 // porting.
 test("capacity-full request queues and reclaim-driven pump promotes by priority then FIFO", async () => {
   // surfaceCap 1, dynamic mode: `first` occupies the only slot. Releasing it
