@@ -46,10 +46,10 @@ export function dayLabel(day: string, nowMs: number = Date.now()): string {
   if (Number.isNaN(ms)) {
     return "Undated";
   }
-  const todayKey = new Date(nowMs).toISOString().slice(0, 10);
+  const currentDayKey = new Date(nowMs).toISOString().slice(0, 10);
   const yesterdayKey = new Date(nowMs - MS_PER_DAY).toISOString().slice(0, 10);
   const tomorrowKey = new Date(nowMs + MS_PER_DAY).toISOString().slice(0, 10);
-  if (day === todayKey) {
+  if (day === currentDayKey) {
     return "Today";
   }
   if (day === yesterdayKey) {

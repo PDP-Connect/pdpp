@@ -18,9 +18,9 @@ const OWNER_AGENT_SKILL_FRONTMATTER = /name: pdpp-owner-agent/;
 const TROUBLESHOOTING_HEADING = /# Troubleshooting/;
 const TEXT_MARKDOWN = /^text\/markdown/;
 
-function callSkillsRoute(path: string[], headers?: HeadersInit): Promise<Response> {
-  return GET(new Request(`http://0.0.0.0:3000/.well-known/skills/${path.join("/")}`, { headers }), {
-    params: Promise.resolve({ path }),
+function callSkillsRoute(skillPath: string[], headers?: HeadersInit): Promise<Response> {
+  return GET(new Request(`http://0.0.0.0:3000/.well-known/skills/${skillPath.join("/")}`, { headers }), {
+    params: Promise.resolve({ path: skillPath }),
   });
 }
 

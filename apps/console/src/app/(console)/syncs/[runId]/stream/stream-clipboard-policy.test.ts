@@ -28,7 +28,7 @@ function capabilities(overrides: Partial<ClipboardCapabilityInput> = {}): Clipbo
 }
 
 test("classifies mobile Safari as sheet-first with manual read fallback", () => {
-  const capabilities = assessClipboardCapabilities({
+  const clipboardCapabilities = assessClipboardCapabilities({
     browserFamily: classifyClipboardBrowser(
       "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1"
     ),
@@ -43,14 +43,14 @@ test("classifies mobile Safari as sheet-first with manual read fallback", () => 
     writeTextAvailable: true,
   });
   const decision = decideClipboardPolicy({
-    capabilities,
+    capabilities: clipboardCapabilities,
     directionPolicy: "bidirectional-text",
     hasStreamSession: true,
     helperMode: "balanced",
   });
-  assert.equal(capabilities.browserFamily, "safari");
-  assert.equal(capabilities.mobileLike, true);
-  assert.equal(capabilities.needsManualReadFallback, true);
+  assert.equal(clipboardCapabilities.browserFamily, "safari");
+  assert.equal(clipboardCapabilities.mobileLike, true);
+  assert.equal(clipboardCapabilities.needsManualReadFallback, true);
   assert.equal(decision.surface, "mobile-sheet");
   assert.equal(decision.showClipboardSheet, true);
   assert.equal(decision.showDesktopCopyButton, false);

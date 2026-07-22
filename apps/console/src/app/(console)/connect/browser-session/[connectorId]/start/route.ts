@@ -82,8 +82,8 @@ function readOptionalDisplayNameField(formData: FormData): string | null {
   return trimmed;
 }
 
-export async function POST(request: Request, { params }: { params: Promise<RouteParams> }): Promise<NextResponse> {
-  const { connectorId: rawConnectorId } = await params;
+export async function POST(request: Request, { params: routeParams }: { params: Promise<RouteParams> }): Promise<NextResponse> {
+  const { connectorId: rawConnectorId } = await routeParams;
   const connectorId = decodeURIComponent(rawConnectorId);
 
   await requireDashboardAccess(pagePath(connectorId));
@@ -113,11 +113,11 @@ export async function POST(request: Request, { params }: { params: Promise<Route
 
   try {
     if (existingConnectionId) {
-      const params = new URLSearchParams({
+      const redirectParams = new URLSearchParams({
         connection_id: existingConnectionId,
         draft: "0",
       });
-      return redirectTo(request, `${pagePath(connectorId)}/launch?${params.toString()}`);
+      return redirectTo(request, `${pagePath(connectorId)}/launch?${redirectParams.toString()}`);
     }
 
     let displayName: string | null = null;
@@ -136,11 +136,11 @@ export async function POST(request: Request, { params }: { params: Promise<Route
     }
 
     const shell = await createBrowserEnrollmentShell(connectorId, { displayName });
-    const params = new URLSearchParams({
+    const redirectParams = new URLSearchParams({
       connection_id: shell.connection_id,
       draft: "1",
     });
-    return redirectTo(request, `${pagePath(connectorId)}/launch?${params.toString()}`);
+    return redirectTo(request, `${pagePath(connectorId)}/launch?${redirectParams.toString()}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to start browser session";
     return redirectTo(request, errorPath(connectorId, message));
