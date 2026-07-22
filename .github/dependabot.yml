@@ -7,26 +7,26 @@ updates:
     groups:
       github-actions:
         applies-to: version-updates
-        patterns:
-          - "*"
+        update-types:
+          - minor
+          - patch
       github-actions-security:
         applies-to: security-updates
-        patterns:
-          - "*"
 
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
     groups:
-      npm:
+      npm-minor-patch:
         applies-to: version-updates
-        patterns:
-          - "*"
+        update-types:
+          - minor
+          - patch
       npm-security:
         applies-to: security-updates
-        patterns:
-          - "*"
+    # Major bumps are excluded from the group above, so each lands in its own
+    # PR that can be reviewed and tested in isolation.
 
   - package-ecosystem: docker
     directories:
@@ -37,11 +37,10 @@ updates:
     schedule:
       interval: weekly
     groups:
-      docker:
+      docker-minor-patch:
         applies-to: version-updates
-        patterns:
-          - "*"
+        update-types:
+          - minor
+          - patch
       docker-security:
         applies-to: security-updates
-        patterns:
-          - "*"
