@@ -400,12 +400,13 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
     };
   }
   const scoped = connectorInstanceIds != null;
+  const scopedIds = connectorInstanceIds ?? [];
   // REVIEWED-DYNAMIC: IN-list cardinality is bounded by the caller's own
   // requested scope (a route resolves at most one connection today; a
   // future bulk caller would still bind the same count of `?` placeholders
   // it requests), and every value is a bound parameter — never
   // string-interpolated into the SQL text.
-  const placeholders = scoped ? sqlitePlaceholders(connectorInstanceIds!) : "";
+  const placeholders = scoped ? sqlitePlaceholders(scopedIds) : "";
   // Unscoped discovery reads the COMPLETE canonical connector_instances set
   // — every subject, not just REFERENCE_OWNER_SUBJECT_ID. A prior
   // owner_subject_id filter here created a genuine cross-subject
@@ -421,7 +422,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   const instanceRows = scoped
     ? db
         .prepare(`SELECT * FROM connector_instances WHERE connector_instance_id IN (${placeholders})`)
-        .all(...connectorInstanceIds!)
+        .all(...scopedIds)
     : db.prepare("SELECT * FROM connector_instances ORDER BY connector_instance_id ASC").all();
   // Evidence/retained-bytes/version-counter/canonical-count reads are scoped
   // to the SAME requested id set (one batched query each, not a complete
@@ -431,7 +432,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   const evidenceRows: Row[] = scoped
     ? db
         .prepare(`SELECT * FROM connector_summary_evidence WHERE connector_instance_id IN (${placeholders})`)
-        .all(...connectorInstanceIds!)
+        .all(...scopedIds)
     : db.prepare("SELECT * FROM connector_summary_evidence").all();
   const evidenceByInstance = new Map(evidenceRows.map((row) => [String(row.connector_instance_id), row]));
   const connectorRows: Row[] = db.prepare("SELECT connector_id, manifest FROM connectors").all();
@@ -439,7 +440,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
   const retainedByteRows: Row[] = scoped
     ? db
         .prepare(`SELECT * FROM retained_size_connection WHERE connector_instance_id IN (${placeholders})`)
-        .all(...connectorInstanceIds!)
+        .all(...scopedIds)
     : db.prepare("SELECT * FROM retained_size_connection").all();
   const retainedByteByInstance = new Map(retainedByteRows.map((row) => [String(row.connector_instance_id), row]));
   const versionCounterRows: Row[] = scoped
@@ -448,7 +449,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
           `SELECT connector_instance_id, stream, CAST(max_version AS TEXT) AS max_version FROM version_counter
             WHERE connector_instance_id IN (${placeholders})`
         )
-        .all(...connectorInstanceIds!)
+        .all(...scopedIds)
     : db
         .prepare("SELECT connector_instance_id, stream, CAST(max_version AS TEXT) AS max_version FROM version_counter")
         .all();
@@ -471,7 +472,7 @@ function readSqliteDiscoveryContext(connectorInstanceIds: readonly string[] | nu
             WHERE deleted = 0 AND connector_instance_id IN (${placeholders})
             GROUP BY connector_instance_id`
         )
-        .all(...connectorInstanceIds!)
+        .all(...scopedIds)
     : db
         .prepare(
           "SELECT connector_instance_id, COUNT(*) AS total_records FROM records WHERE deleted = 0 GROUP BY connector_instance_id"
@@ -1138,7 +1139,7 @@ function buildRepairedRow(inputs: RepairInputs): Row {
 
   const streamRecords: StreamEvidence[] = [...unionStreams].sort().map((stream) => {
     const canonical = canonicalByStream.get(stream);
-    const retainedCount = retainedByStream.has(stream) ? retainedByStream.get(stream)! : null;
+    const retainedCount = retainedByStream.get(stream) ?? null;
     let declaration_state: DeclarationState;
     if (!manifest.ok) {
       declaration_state = "unavailable";
@@ -1490,7 +1491,7 @@ export async function reconcileConnectorSummaryEvidence(
   const countBounded = typeof options.maxCandidates === "number" && options.maxCandidates >= 0;
   const timeBounded = typeof options.maxDurationMs === "number" && options.maxDurationMs >= 0;
   const countLimited = countBounded ? candidateEntries.slice(0, options.maxCandidates) : candidateEntries;
-  const deadline = timeBounded ? Date.now() + options.maxDurationMs! : null;
+  const deadline = timeBounded ? Date.now() + (options.maxDurationMs ?? 0) : null;
 
   let repaired = 0;
   let failed = 0;
