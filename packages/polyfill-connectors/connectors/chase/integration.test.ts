@@ -58,7 +58,10 @@ import {
   CHASE_QFX_ACTIVITY_SELECT_SELECTORS,
   CHASE_QFX_FILE_TYPE_SELECT_SELECTOR,
   CHASE_QFX_FILE_TYPE_SELECT_SELECTORS,
+  chaseLocatorProbesForLabel,
+  chaseNoAccountsDiagnosticMessage,
   chaseTimeRangeField,
+  classifyChaseAccountsSurface,
   type EmitDeps,
   emitAccountsStream,
   emitCurrentActivityForAccount,
@@ -103,6 +106,48 @@ function htmlMatchesAnySelector(html: string, selectors: readonly string[]): boo
   const { document } = parseHTML(html);
   return selectors.some((selector) => document.querySelector(selector));
 }
+
+test("income-capture interstitial is classified only from the observed authenticated checkpoint", () => {
+  const html = readFileSync(join(FIXTURE_DIR, "dashboard-income-capture-interstitial.html"), "utf8");
+  const { document } = parseHTML(html);
+  const diagnostics = {
+    body_preview: document.body.textContent.replace(/\s+/gu, " ").trim(),
+    title: document.title,
+    url: "https://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture",
+  };
+
+  assert.equal(classifyChaseAccountsSurface(diagnostics), "income_capture_interstitial");
+  assert.match(
+    chaseNoAccountsDiagnosticMessage(classifyChaseAccountsSurface(diagnostics)),
+    /captured action selector/i
+  );
+  assert.equal(
+    classifyChaseAccountsSurface({
+      ...diagnostics,
+      url: "https://secure.chase.com/web/auth/dashboard#/dashboard/overview",
+    }),
+    "unknown",
+    "the income text alone must not classify the accounts overview"
+  );
+  assert.equal(
+    classifyChaseAccountsSurface({ ...diagnostics, body_preview: "Update Income" }),
+    "unknown",
+    "the route alone must not invent an interstitial classification"
+  );
+});
+
+test("income-capture checkpoint probes only observed structure and never guesses an action", () => {
+  const probes = chaseLocatorProbesForLabel("dashboard-income-capture-interstitial");
+  assert.deepEqual(
+    probes.map((probe) => probe.id),
+    ["dashboard-account-selector", "income-capture-heading", "income-capture-description"]
+  );
+  assert.deepEqual(
+    probes.filter((probe) => probe.kind === "role" && probe.role === "button"),
+    [],
+    "no button selector is evidence-backed for this interstitial"
+  );
+});
 
 test("QFX dropdown selectors support both observed Chase id families", () => {
   const oldFixture = `
