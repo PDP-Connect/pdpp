@@ -1744,7 +1744,7 @@ async function ensureArchiveOnDisk(deps: EnsureArchiveDeps): Promise<void> {
     }
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    throw new Error(`slackdump failed: ${m}`);
+    throw new Error(`slackdump failed: ${m}`, { cause: e });
   }
   if (!existsSync(sqlitePath)) {
     throw new Error(`slackdump output not found at ${sqlitePath}`);

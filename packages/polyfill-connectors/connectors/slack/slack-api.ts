@@ -178,8 +178,8 @@ function parseSlackApiResponse<T extends { error?: string; ok: boolean }>(raw: S
   let parsed: T;
   try {
     parsed = JSON.parse(raw.body) as T;
-  } catch {
-    throw new Error(`slack_api_invalid_json: ${raw.body.slice(0, 200)}`);
+  } catch (caughtError) {
+    throw new Error(`slack_api_invalid_json: ${raw.body.slice(0, 200)}`, { cause: caughtError });
   }
   if (!parsed.ok) {
     if (parsed.error === "invalid_auth" || parsed.error === "not_authed" || parsed.error === "token_revoked") {

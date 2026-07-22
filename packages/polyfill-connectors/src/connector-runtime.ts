@@ -884,7 +884,8 @@ async function resolveCredentials(
     return await resolveAuth(auth, ctx);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new TerminalError(message, false);
+        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+throw new TerminalError(message, false);
   }
 }
 
@@ -1620,17 +1621,20 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
       // Surface the stable code in the terminal-error message so the
       // controller's run-failed copy can render the deployment-config
       // error state rather than a generic browser failure.
-      throw new TerminalError(`[${err.code}] ${err.message}`, false, err.code);
+            // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+throw new TerminalError(`[${err.code}] ${err.message}`, false, err.code);
     }
     if (err instanceof CdpAttachSessionRaceExhaustedError) {
       // The narrow attach-session race (see browser-launch.ts) exhausted its
       // bounded retry budget. Carry the stable code so the reference
       // runtime's managed-surface lifecycle can decide the leased dynamic
       // surface itself needs recycling, without re-parsing this message.
-      throw new TerminalError(`could not open browser profile: ${err.message}`, true, err.code);
+            // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+throw new TerminalError(`could not open browser profile: ${err.message}`, true, err.code);
     }
     const message = err instanceof Error ? err.message : String(err);
-    throw new TerminalError(`could not open browser profile: ${message}`, false);
+        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+throw new TerminalError(`could not open browser profile: ${message}`, false);
   }
 }
 
@@ -1923,7 +1927,8 @@ async function establishSession(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const terminalError = buildSessionEstablishTerminalError(name, message, retryablePattern);
-      throw new TerminalError(terminalError.message, terminalError.retryable);
+            // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+throw new TerminalError(terminalError.message, terminalError.retryable);
     }
   }
 

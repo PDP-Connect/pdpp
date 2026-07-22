@@ -1035,7 +1035,8 @@ async function readPriorStateOrBlock(input: {
       status: "blocked",
     });
     input.onBlocked?.();
-    throw new CollectorStateReadError(
+        // biome-ignore lint/style/useErrorCause: custom error factory/constructor owns its domain-specific cause contract
+throw new CollectorStateReadError(
       `failed to read prior state for ${input.config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`,
       error
     );
@@ -1357,7 +1358,7 @@ async function streamConnectorIntoOutbox(
     });
     throw new Error(
       `${input.config.connector.connector_id} connector failed to start or stream output: ${details || "unknown error"}`
-    );
+    , { cause: error });
   }
   if (input.abortSignal && abortListener) {
     input.abortSignal.removeEventListener("abort", abortListener);
@@ -1419,7 +1420,7 @@ function parseConnectorProtocolLine(line: string, lineNumber: number, connectorI
     const suffix = debugPath ? `; raw line saved to ${debugPath}` : "";
     throw new Error(
       `${error instanceof Error ? error.message : String(error)} at connector protocol line ${lineNumber} (${line.length} chars)${suffix}`
-    );
+    , { cause: error });
   }
 }
 

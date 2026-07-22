@@ -203,8 +203,8 @@ function validateRedirectUri(uri: string): string {
   let parsed: URL;
   try {
     parsed = new URL(uri);
-  } catch {
-    throw Object.assign(new Error(`Invalid redirect_uri: ${uri}`), { code: "invalid_redirect_uri" });
+  } catch (caughtError) {
+    throw Object.assign(new Error(`Invalid redirect_uri: ${uri}`, { cause: caughtError }), { code: "invalid_redirect_uri" });
   }
   if (parsed.protocol !== "https:" && !isLoopbackRedirect(parsed)) {
     throw Object.assign(new Error("redirect_uris must use https, or http loopback for local MCP clients"), {
@@ -253,8 +253,8 @@ function parseCreateCimdDocumentInput(body: unknown): CreateRefCimdDocumentInput
   if (logoUri) {
     try {
       new URL(logoUri);
-    } catch {
-      throw Object.assign(new Error("logo_uri must be a valid URL"), { code: "invalid_client_metadata" });
+    } catch (caughtError) {
+      throw Object.assign(new Error("logo_uri must be a valid URL", { cause: caughtError }), { code: "invalid_client_metadata" });
     }
   }
   return {

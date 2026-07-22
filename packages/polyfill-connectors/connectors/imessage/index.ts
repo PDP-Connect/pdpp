@@ -147,7 +147,7 @@ runConnector({
       latestApple = await emitMessageRows({ emitRecord, progress, rows, since });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`imessage_db_query_failed: ${msg}`);
+      throw new Error(`imessage_db_query_failed: ${msg}`, { cause: err });
     }
 
     await emit({

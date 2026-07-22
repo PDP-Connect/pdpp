@@ -1008,7 +1008,7 @@ export async function chatGptBackendFetchInBrowser({
     };
   } catch (err) {
     if (controller.signal.aborted) {
-      throw new Error(`chatgpt_backend_fetch_timeout after ${timeoutMs}ms`);
+      throw new Error(`chatgpt_backend_fetch_timeout after ${timeoutMs}ms`, { cause: err });
     }
     throw err;
   } finally {
@@ -1484,7 +1484,7 @@ export function createChatGptApi({
           return result;
         } catch (err) {
           const m = err instanceof Error ? err.message : String(err);
-          throw new Error(`apiFetch network error on ${method} ${path}: ${m}`);
+          throw new Error(`apiFetch network error on ${method} ${path}: ${m}`, { cause: err });
         }
       },
       shouldAbort: (result) => result.status === 401 || result.status === 403,

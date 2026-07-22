@@ -319,7 +319,7 @@ async function collectConnectorMessages(
       `${profile.connectorId} connector failed to start or stream output: ${
         error instanceof Error ? error.message : String(error)
       }`
-    );
+    , { cause: error });
   }
   if (exitCode !== 0) {
     throw new Error(

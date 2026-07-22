@@ -178,9 +178,9 @@ function rowToRecord(
   let parsed: AttentionRecord;
   try {
     parsed = JSON.parse(json) as AttentionRecord;
-  } catch {
+  } catch (caughtError) {
     const attentionId = "attention_id" in row ? row.attention_id : "";
-    throw new Error(`connector attention store: malformed record_json for ${attentionId}`);
+    throw new Error(`connector attention store: malformed record_json for ${attentionId}`, { cause: caughtError });
   }
   // The persisted record_json is authoritative for the AttentionRecord
   // shape; the column projections are duplicated for indexed predicates

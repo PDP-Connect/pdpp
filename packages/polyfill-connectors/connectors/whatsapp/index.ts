@@ -343,8 +343,8 @@ function openWhatsAppCursors(state: Record<string, unknown>): WhatsAppCursors {
 async function discoverImportFilesOrThrow(importDir: string): Promise<string[]> {
   try {
     return await discoverExportFiles(importDir);
-  } catch {
-    throw new Error(`import_dir_not_found: ${importDir} (set WHATSAPP_EXPORT_DIR or create the directory)`);
+  } catch (caughtError) {
+    throw new Error(`import_dir_not_found: ${importDir} (set WHATSAPP_EXPORT_DIR or create the directory)`, { cause: caughtError });
   }
 }
 

@@ -113,7 +113,8 @@ function parseAuthorizationDetails(value: unknown): unknown {
   } catch {
     const err = new Error("authorization_details must be valid JSON when form encoded");
     (err as { code?: string }).code = "invalid_request";
-    throw err;
+        // biome-ignore lint/style/useErrorCause: intentional direct rethrow preserves original error identity
+throw err;
   }
 }
 

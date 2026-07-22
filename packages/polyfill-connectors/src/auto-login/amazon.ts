@@ -182,7 +182,7 @@ async function fillOrHandleChallenge({
     if (await requestManualLoginForChallenge({ ...(capture ? { capture } : {}), page, reason, sendInteraction })) {
       return "recovered";
     }
-    throw new Error("amazon_login_unexpected_ui");
+    throw new Error("amazon_login_unexpected_ui", { cause: error });
   }
 }
 

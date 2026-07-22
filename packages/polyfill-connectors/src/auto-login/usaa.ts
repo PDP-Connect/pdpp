@@ -235,7 +235,7 @@ export async function ensureUsaaSession({
       if (await requestManualLoginRecovery({ context, page, sendInteraction })) {
         return true;
       }
-      throw new Error(`USAA login page navigation failed (${reason}); manual action did not establish a session`);
+      throw new Error(`USAA login page navigation failed (${reason}); manual action did not establish a session`, { cause: err });
     }
     throw err;
   }
@@ -260,7 +260,7 @@ export async function ensureUsaaSession({
   await page.click("#next-button");
   try {
     await page.waitForSelector('input[name="password"]', { timeout: 25_000 });
-  } catch {
+  } catch (caughtError) {
     const body = await page
       .locator("body")
       .innerText()
@@ -287,7 +287,7 @@ export async function ensureUsaaSession({
     if (await requestManualLoginRecovery({ context, page, sendInteraction }, manualLoginMessage)) {
       return true;
     }
-    throw new Error(`USAA login stalled after Next click (${diagnostic}); manual action did not establish a session`);
+    throw new Error(`USAA login stalled after Next click (${diagnostic}); manual action did not establish a session`, { cause: caughtError });
   }
   await page.fill('input[name="password"]', password);
   await page.waitForTimeout(500);

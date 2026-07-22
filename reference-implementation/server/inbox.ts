@@ -90,7 +90,8 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
     const err: ErrorWithCode = new Error("data_json must be valid JSON");
     err.code = "invalid_request";
     err.param = "data_json";
-    throw err;
+        // biome-ignore lint/style/useErrorCause: intentional direct rethrow preserves original error identity
+throw err;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     const err: ErrorWithCode = new Error("data_json must decode to an object");

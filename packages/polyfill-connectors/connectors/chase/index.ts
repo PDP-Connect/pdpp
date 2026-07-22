@@ -351,7 +351,7 @@ async function clickActivityControl(page: Page): Promise<void> {
           errMessage(selectorErr),
           ERROR_MESSAGE_SLICE
         )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
-      );
+      , { cause: semanticErr });
     }
   }
 }
@@ -391,7 +391,7 @@ async function clickFileTypeControl(page: Page): Promise<void> {
           errMessage(selectorErr),
           ERROR_MESSAGE_SLICE
         )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
-      );
+      , { cause: semanticErr });
     }
   }
 }
