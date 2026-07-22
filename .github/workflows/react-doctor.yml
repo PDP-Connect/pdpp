@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run React Doctor (changed PR files)
-        uses: millionco/react-doctor@938008119a288f2fb47c66a69cd9279a21f31784 # v2.2.7
+        uses: millionco/react-doctor@01820bb4fd4d0a4aebcd8df2b2a143a098649cb2 # v2.2.8
         with:
           fail-on: warning
           annotations: true
