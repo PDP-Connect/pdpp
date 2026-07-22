@@ -32,6 +32,7 @@ export function DensityToggle({ className }: { className?: string }) {
       aria-label={`${CURRENT_LABEL[density]}. ${NEXT_LABEL[density]}.`}
       className={className}
       data-testid="density-toggle"
+      // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
       onClick={() => setDensity(nextDensity)}
       size="icon-sm"
       title={`${CURRENT_LABEL[density]}. ${NEXT_LABEL[density]}.`}

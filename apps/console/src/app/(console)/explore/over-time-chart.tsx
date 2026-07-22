@@ -203,6 +203,7 @@ export function OverTimeChart({ series, since, until, descriptorKind, onSelectRa
       <div
         aria-label={`${chartCaption(descriptorKind, granularity)}${brushable ? ", brush to filter" : ""}`}
         className={["rr-x-chart__band", brushable ? "is-brushable" : ""].filter(Boolean).join(" ")}
+        // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
         onPointerLeave={() => {
           setHovered(null);
         }}
@@ -218,8 +219,11 @@ export function OverTimeChart({ series, since, until, descriptorKind, onSelectRa
             inDrag={dragLo !== null && dragHi !== null && i >= dragLo && i <= dragHi}
             key={bucket.key}
             maxCount={maxCount}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onClick={() => onBarClick(i)}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onPointerDown={() => onPointerDown(i)}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onPointerEnter={() => onPointerEnterBar(i)}
             selected={selectedIndices.has(i)}
           />

@@ -63,6 +63,7 @@ export function StreamInventory({ connectorName, connectorVersion, streams }: St
               <button
                 aria-expanded={!!expanded[name]}
                 className="flex w-full items-center justify-between gap-2 py-2.5 text-left"
+                // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                 onClick={() => toggleExpand(name)}
                 type="button"
               >

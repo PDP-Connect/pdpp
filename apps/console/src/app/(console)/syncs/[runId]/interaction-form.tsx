@@ -65,6 +65,7 @@ export function RunInteractionForm({ runId, interactionId, kind, message, fields
       aria-label={`Answer interaction ${interactionId}`}
       autoComplete="off"
       className="mt-3 flex flex-col gap-3"
+      // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
       onSubmit={handleSubmit}
     >
       <p className="pdpp-caption text-muted-foreground">{message}</p>
@@ -104,6 +105,7 @@ export function RunInteractionForm({ runId, interactionId, kind, message, fields
         <IcButton disabled={isPending} size="sm" type="submit">
           {isPending ? "Submitting…" : submitLabel}
         </IcButton>
+        {/** biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional */}
         <IcButton disabled={isPending} onClick={handleCancel} size="sm" type="button" variant="ghost">
           Cancel interaction
         </IcButton>

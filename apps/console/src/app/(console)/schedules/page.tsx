@@ -36,6 +36,7 @@ export default async function SchedulesPage() {
       <SchedulesPoller enabled={hasActiveRun} />
       <SchedulesView
         description="Set automatic refresh cadences for your connectors. High-friction connectors (banks, browser-based) should be kept manual or low-frequency."
+        // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
         renderRow={(summary) => (
           <ScheduleRow
             key={summary.connection_id ?? summary.connector_instance_id ?? summary.connector_id}

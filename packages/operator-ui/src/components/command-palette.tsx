@@ -189,6 +189,7 @@ export function CommandPalette({
   return (
     <Dialog
       modal
+      // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
       onOpenChange={(next: boolean) => {
         if (!next) {
           palette.close();
@@ -208,7 +209,9 @@ export function CommandPalette({
             aria-label="Search commands"
             className="h-10 py-2 font-mono"
             data-testid="command-palette-input"
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onChange={(e) => setQuery(e.target.value)}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onKeyDown={onInputKeyDown}
             placeholder="Search commands, or type to search records…"
             ref={inputRef}
@@ -220,6 +223,7 @@ export function CommandPalette({
             actionRows={actionRows}
             highlight={highlight}
             navRows={navRows}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onActivate={activate}
             onHighlight={setHighlight}
             rows={rows}
@@ -262,6 +266,7 @@ function PaletteList({
         <PaletteGroup
           heading="Navigate"
           highlight={highlight}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           indexOf={indexOf}
           onActivate={onActivate}
           onHighlight={onHighlight}
@@ -272,6 +277,7 @@ function PaletteList({
         <PaletteGroup
           heading="Quick action"
           highlight={highlight}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           indexOf={indexOf}
           onActivate={onActivate}
           onHighlight={onHighlight}
@@ -282,6 +288,7 @@ function PaletteList({
         <PaletteGroup
           heading="Search"
           highlight={highlight}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           indexOf={indexOf}
           onActivate={onActivate}
           onHighlight={onHighlight}
@@ -326,7 +333,9 @@ function PaletteGroup({
                 )}
                 data-active={active ? "true" : undefined}
                 data-testid={row.kind === "search" ? "command-palette-search-row" : `command-${row.command.id}`}
+                // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                 onClick={() => onActivate(row)}
+                // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                 onMouseMove={() => onHighlight(index)}
                 type="button"
               >

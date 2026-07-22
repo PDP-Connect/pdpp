@@ -115,6 +115,7 @@ function DeleteForm({ connectionId }: { connectionId: string }) {
             className="w-full max-w-md font-mono"
             id="confirm-delete-input"
             name="confirm_delete"
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onChange={(e) => setTyped(e.target.value)}
             placeholder={connectionId}
             value={typed}

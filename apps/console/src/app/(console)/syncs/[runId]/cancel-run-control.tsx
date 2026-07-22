@@ -67,9 +67,11 @@ export function CancelRunControl({ runId }: { runId: string }) {
         <div className="flex flex-wrap items-center gap-2">
           <p className="pdpp-caption text-foreground">Cancel this run? This stops only the current run.</p>
           <div className="flex flex-wrap gap-2">
+            {/** biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional */}
             <IcButton disabled={isPending} onClick={handleConfirm} size="sm" type="button" variant="destructive">
               {isPending ? "Cancelling…" : "Yes, cancel run"}
             </IcButton>
+            {/** biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional */}
             <IcButton disabled={isPending} onClick={() => setConfirming(false)} size="sm" type="button" variant="ghost">
               Keep running
             </IcButton>
@@ -78,6 +80,7 @@ export function CancelRunControl({ runId }: { runId: string }) {
       ) : (
         <IcButton
           disabled={isPending}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onClick={() => {
             setResult(null);
             setConfirming(true);

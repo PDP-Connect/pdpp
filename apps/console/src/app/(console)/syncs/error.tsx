@@ -28,6 +28,7 @@ export default function RunsError({ error, reset }: { error: Error & { digest?: 
         is a read failure, not a change. Try again, or check your reference deployment status.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
+        {/** biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional */}
         <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={() => reset()} type="button">
           Try again
         </button>

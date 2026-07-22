@@ -153,6 +153,7 @@ export function BrowserSessionLaunchPanel({
 
       {state.error ? (
         <div className="flex flex-wrap gap-2">
+          {/** biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional */}
           <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={start} type="button">
             Try again
           </button>

@@ -1577,6 +1577,7 @@ export function StreamSurface({
         interactionKind={interactionKind}
         interactionMessage={interactionMessage}
         interactionRequiresResponse={interactionRequiresResponse}
+        // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
         onClose={() => {
           setOpen(false);
           // Clear the minted session so the next "Open browser" click mints
@@ -1707,6 +1708,7 @@ function StreamOverlay({
       // streamed page). We achieve that by stopping pointer events on the
       // backdrop while still allowing the explicit close button + Esc.
       modal
+      // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
       onOpenChange={(next: boolean) => {
         if (!next) {
           onClose();
@@ -3404,9 +3406,12 @@ function StreamStage({
         <ClipboardSheet
           capabilities={clipboardCapabilities}
           connectorName={connectorName}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           getSurface={() => nekoSurfaceAdapterRef.current}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           getViewerSession={() => getMountedNekoViewerSession(nekoViewerRef.current, nekoSurfaceAdapterRef.current)}
           logDebug={logDebug}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onClearRemoteClipboard={() => setRemoteClipboard(null)}
           onOpenChange={setClipboardSheetOpen}
           open={clipboardSheetOpen}
@@ -4500,6 +4505,7 @@ function NekoSurface({
         aria-label="Connector browser stream"
         className="pdpp-stream-frame relative overflow-hidden"
         data-pdpp-stream-loading={showLoadingOverlay || undefined}
+        // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
         ref={(node) => {
           containerRef.current = node;
           surfaceRef(node);
@@ -4516,6 +4522,7 @@ function NekoSurface({
               <p className="mt-2">{streamError}</p>
               <button
                 className="mt-4 rounded-md border border-border bg-background px-3 py-1.5 font-medium text-foreground text-xs hover:bg-muted"
+                // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                 onClick={() => {
                   setError(null);
                   setMediaReady(false);
@@ -4741,6 +4748,7 @@ function BrowserSurface({
           autoCapitalize="off"
           autoCorrect="off"
           inputMode="text"
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onChange={() => {
             /* controlled at "" so the soft keyboard sees a fresh empty field
                every keystroke and never accumulates a value or autofills */
@@ -5148,6 +5156,7 @@ function ClipboardSheet({
             </div>
             <IcButton
               aria-label="Close clipboard"
+              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
               onClick={() => onOpenChange(false)}
               size="sm"
               type="button"
@@ -5165,6 +5174,7 @@ function ClipboardSheet({
               <div className="flex flex-wrap gap-2">
                 <IcButton
                   disabled={!(canPasteLocalToRemote && policy.canReadLocalClipboard)}
+                  // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                   onClick={pasteFromDevice}
                   size="sm"
                   type="button"
@@ -5172,11 +5182,13 @@ function ClipboardSheet({
                 >
                   Paste from device
                 </IcButton>
+                {/** biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional */}
                 <IcButton disabled={!canSendLocalText} onClick={sendToBrowser} size="sm" type="button">
                   Send to browser
                 </IcButton>
                 {remoteInputSensitive ? (
                   <IcButton
+                    // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                     onClick={() => setRevealLocalText((shown) => !shown)}
                     size="sm"
                     type="button"
@@ -5192,10 +5204,12 @@ function ClipboardSheet({
                 autoCorrect="off"
                 className="pdpp-stream-clipboard-textarea min-h-24 resize-y rounded-lg border border-border/80 bg-muted/30 p-3 text-foreground text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                 data-masked={localInputMasked ? "true" : "false"}
+                // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                 onChange={(event) => {
                   setLocalText(event.target.value);
                   setPasteState(event.target.value.length > 0 ? "ready" : "idle");
                 }}
+                // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                 onPaste={(event) => {
                   const text = event.clipboardData.getData("text");
                   logDebug(
@@ -5221,6 +5235,7 @@ function ClipboardSheet({
               <div className="flex flex-wrap gap-2">
                 <IcButton
                   disabled={!canRequestRemoteCopy}
+                  // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                   onClick={requestBrowserCopy}
                   size="sm"
                   type="button"
@@ -5230,6 +5245,7 @@ function ClipboardSheet({
                 </IcButton>
                 <IcButton
                   disabled={!(remoteClipboard && policy.canWriteLocalClipboard)}
+                  // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                   onClick={copyToDevice}
                   size="sm"
                   type="button"
@@ -5362,6 +5378,7 @@ function CornerControls({
             aria-label={expanded ? `Hide ${connectorName} browser actions` : `More ${connectorName} browser actions`}
             className="pdpp-stream-control-button"
             data-pdpp-stream-ui
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onClick={() => setExpanded((prev) => !prev)}
             type="button"
           >
@@ -5691,6 +5708,7 @@ function StreamInteractionDock({
         <IcButton
           aria-expanded="false"
           className="pdpp-stream-toast-bubble"
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onClick={() => setCollapsed(false)}
           size="sm"
           type="button"
@@ -5708,6 +5726,7 @@ function StreamInteractionDock({
         aria-label="Complete this connector step"
         autoComplete="off"
         className="pdpp-stream-toast-bubble flex w-full flex-col gap-2 text-left"
+        // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
         onSubmit={handleSubmit}
       >
         <div className="flex items-start justify-between gap-3">
@@ -5716,6 +5735,7 @@ function StreamInteractionDock({
             aria-expanded="true"
             aria-label="Hide connector step instructions"
             className="shrink-0"
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onClick={() => setCollapsed(true)}
             size="sm"
             type="button"
@@ -5728,6 +5748,7 @@ function StreamInteractionDock({
           <IcInput
             autoComplete="one-time-code"
             inputMode="numeric"
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onChange={(event) => setCode(event.currentTarget.value)}
             pattern="\\d{6}"
             placeholder="6-digit code"
@@ -5750,7 +5771,8 @@ function StreamInteractionDock({
             {submitLabel}
           </IcButton>
           {interactionKind === "otp" ? (
-            <IcButton disabled={isPending} onClick={() => submitInteraction()} size="sm" type="button" variant="ghost">
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
+<IcButton disabled={isPending} onClick={() => submitInteraction()} size="sm" type="button" variant="ghost">
               I entered it in the browser
             </IcButton>
           ) : null}

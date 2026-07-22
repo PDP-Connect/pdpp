@@ -133,6 +133,7 @@ export function SourcesView({
             <InstanceListItem
               instance={instance}
               key={instance.id}
+              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
               onSelect={() => setSelectedId(instance.id)}
               selected={selected?.id === instance.id}
             />
@@ -157,6 +158,7 @@ export function SourcesView({
                 <InstanceListItem
                   instance={instance}
                   key={instance.id}
+                  // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                   onSelect={() => setSelectedId(instance.id)}
                   selected={selected?.id === instance.id}
                 />
@@ -211,6 +213,7 @@ function DuplicateSourceGroupList({
         <InstanceListItem
           instance={instance}
           key={instance.id}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onSelect={() => onSelect(instance.id)}
           selected={selectedId === instance.id}
         />
@@ -547,7 +550,8 @@ function PassportActions({
         </Link>
 
         {interactive && revokeAction && instance.connectionId && !instance.revoked ? (
-          <IcButton onClick={() => setConfirmingRevoke((v) => !v)} size="sm" type="button" variant="destructive">
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
+<IcButton onClick={() => setConfirmingRevoke((v) => !v)} size="sm" type="button" variant="destructive">
             Revoke
           </IcButton>
         ) : null}
@@ -555,6 +559,7 @@ function PassportActions({
         {interactive && reactivateAction && instance.connectionId && instance.revoked ? (
           <IcButton
             data-testid="sources-reactivate-btn"
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onClick={() => setConfirmingReactivate((v) => !v)}
             size="sm"
             type="button"
@@ -568,6 +573,7 @@ function PassportActions({
       {confirmingRevoke && revokeAction && instance.connectionId ? (
         <RevokeCeremony
           connectionId={instance.connectionId}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onCancel={() => setConfirmingRevoke(false)}
           revokeAction={revokeAction}
         />
@@ -577,6 +583,7 @@ function PassportActions({
         <ReactivateCeremony
           connectionId={instance.connectionId}
           instance={instance}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onCancel={() => setConfirmingReactivate(false)}
           reactivateAction={reactivateAction}
         />

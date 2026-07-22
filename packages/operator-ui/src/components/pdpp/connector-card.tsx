@@ -83,6 +83,7 @@ export function ConnectorCard({ connectorId, displayName, version, streams, prof
               <button
                 aria-expanded={!!expanded[s.name]}
                 className="flex w-full items-center justify-between gap-2 py-2.5 text-left"
+                // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                 onClick={() => toggleExpand(s.name)}
                 type="button"
               >

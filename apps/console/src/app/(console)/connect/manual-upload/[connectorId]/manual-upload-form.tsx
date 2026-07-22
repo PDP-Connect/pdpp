@@ -664,7 +664,8 @@ export function ManualUploadForm({
   }
 
   return (
-    <form className="grid max-w-2xl gap-4 rounded-md border border-border/80 bg-muted/20 p-4" onSubmit={handleSubmit}>
+    // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
+<form className="grid max-w-2xl gap-4 rounded-md border border-border/80 bg-muted/20 p-4" onSubmit={handleSubmit}>
       <input name="connector_id" type="hidden" value={setup.connector_id} />
       {targetConnectionId ? <input name="connection_id" type="hidden" value={targetConnectionId} /> : null}
       {targetConnectionId ? (

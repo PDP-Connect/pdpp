@@ -793,6 +793,7 @@ export function WebPushSettings({
               <button
                 className={buttonVariants({ size: "sm", variant: "default" })}
                 disabled={busy}
+                // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                 onClick={enable}
                 type="button"
               >
@@ -803,6 +804,7 @@ export function WebPushSettings({
               aria-controls="web-push-setup"
               aria-expanded={showSetup}
               className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted/40"
+              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
               onClick={() => setShowSetup((open) => !open)}
               type="button"
             >
@@ -819,9 +821,13 @@ export function WebPushSettings({
             diagnostics={diagnostics}
             endpoint={endpoint}
             lastSubscription={lastSubscription}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onDisable={disable}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onEnable={enable}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onTest={sendTest}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onToggleDetails={async () => {
               const next = !showDetails;
               setShowDetails(next);

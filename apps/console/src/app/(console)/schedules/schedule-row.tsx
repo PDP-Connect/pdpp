@@ -240,6 +240,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
                 )}
                 <IcButton
                   disabled={isPending}
+                  // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
                   onClick={() => {
                     setEvery(formatIntervalForInput(schedule.interval_seconds));
                     setJitter(schedule.jitter_seconds ? formatIntervalForInput(schedule.jitter_seconds) : "");
@@ -256,7 +257,8 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
               </>
             )}
             {showScheduleSetup && (
-              <IcButton disabled={isPending} onClick={() => setEditState("editing")} size="sm" variant="ghost">
+              // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
+<IcButton disabled={isPending} onClick={() => setEditState("editing")} size="sm" variant="ghost">
                 Set schedule
               </IcButton>
             )}
@@ -327,6 +329,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
             every={every}
             isPending={isPending}
             jitter={jitter}
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onCancel={() => setEditState("idle")}
             onEveryChange={setEvery}
             onJitterChange={setJitter}
@@ -412,6 +415,7 @@ function ScheduleEditor({
           </span>
           <input
             className="pdpp-caption w-24 rounded border border-border bg-background px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onChange={(e) => onEveryChange(e.target.value)}
             placeholder="e.g. 30m"
             type="text"
@@ -422,6 +426,7 @@ function ScheduleEditor({
           <span className="pdpp-eyebrow text-muted-foreground">Jitter (optional)</span>
           <input
             className="pdpp-caption w-20 rounded border border-border bg-background px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+            // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
             onChange={(e) => onJitterChange(e.target.value)}
             placeholder="e.g. 5m"
             type="text"

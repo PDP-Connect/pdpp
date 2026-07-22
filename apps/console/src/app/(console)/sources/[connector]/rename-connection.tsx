@@ -88,6 +88,7 @@ export function RenameConnection({ connectionId, currentLabel, typeName }: Props
   if (!editing) {
     return (
       <div className="flex flex-col items-end gap-1">
+        {/** biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional */}
         <IcButton onClick={() => setEditing(true)} size="sm" variant="ghost">
           Rename
         </IcButton>
@@ -100,6 +101,7 @@ export function RenameConnection({ connectionId, currentLabel, typeName }: Props
     <div className="flex flex-col items-end gap-1">
       <form
         className="flex items-center gap-2"
+        // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
         onSubmit={(e) => {
           e.preventDefault();
           submit();
@@ -110,7 +112,9 @@ export function RenameConnection({ connectionId, currentLabel, typeName }: Props
           className="w-56"
           disabled={isPending}
           maxLength={200}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onChange={(e) => setValue(e.target.value)}
+          // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               cancel();
