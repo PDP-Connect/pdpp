@@ -237,6 +237,11 @@ function Stepper({
   onNavigate: (id: SectionId) => void;
   phase: ProtocolPhase;
 }) {
+  const handleNavigationClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => onNavigate(event.currentTarget.value as SectionId),
+    [onNavigate]
+  );
+
   return (
     <nav
       aria-label="Protocol sections"
@@ -255,12 +260,13 @@ function Stepper({
           <button
             className="flex items-center gap-2 rounded-md px-2 py-1 text-right transition-colors"
             key={id}
-            onClick={() => onNavigate(id)}
+            onClick={handleNavigationClick}
             style={{
               backgroundColor: isActive ? "var(--foreground)" : "transparent",
               color: isActive ? "var(--background)" : inactiveColor,
             }}
             type="button"
+            value={id}
           >
             <span className="font-medium text-xs">{label}</span>
           </button>
@@ -296,13 +302,10 @@ function GrantStatusRow({ phase }: { phase: ProtocolPhase }) {
 
 function DetailPanel({ spec, label, children }: { spec: string; label?: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const toggleOpen = useCallback(() => setOpen((currentOpen) => !currentOpen), []);
   return (
     <div className="mt-6 w-full" style={{ maxWidth: "52ch" }}>
-      <button
-        className="mb-2 flex items-center gap-1 text-muted-foreground text-xs"
-        onClick={() => setOpen((v) => !v)}
-        type="button"
-      >
+      <button className="mb-2 flex items-center gap-1 text-muted-foreground text-xs" onClick={toggleOpen} type="button">
         <span
           className="inline-block text-xs"
           style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 150ms" }}
@@ -1238,6 +1241,11 @@ function StickyHeader({
 }) {
   const showGrant = PROTOCOL_INDICATOR_SECTIONS.includes(activeSection);
   const { dotColor, grantLabel } = resolveGrantIndicator(phase);
+  const handleNavigationClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => navigateTo(event.currentTarget.value as SectionId),
+    [navigateTo]
+  );
+
   return (
     <header
       className="sticky top-0 z-40 flex h-12 items-center gap-2 px-4 md:gap-3 md:px-6"
@@ -1257,12 +1265,13 @@ function StickyHeader({
           <button
             className="shrink-0 rounded px-2 py-1.5 text-xs transition-colors"
             key={id}
-            onClick={() => navigateTo(id)}
+            onClick={handleNavigationClick}
             style={{
               backgroundColor: activeSection === id ? "var(--foreground)" : "transparent",
               color: activeSection === id ? "var(--background)" : "var(--muted-foreground)",
             }}
             type="button"
+            value={id}
           >
             {label}
           </button>
@@ -1298,6 +1307,11 @@ function AccessModeSelector({
   accessMode: AccessMode;
   setAccessMode: (mode: AccessMode) => void;
 }) {
+  const handleAccessModeChange = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => setAccessMode(event.currentTarget.value as AccessMode),
+    [setAccessMode]
+  );
+
   return (
     <div className="flex items-center gap-2">
       <span className="text-muted-foreground text-xs">Access mode:</span>
@@ -1305,12 +1319,13 @@ function AccessModeSelector({
         <button
           className="rounded px-2 py-1 font-mono text-xs transition-colors"
           key={mode}
-          onClick={() => setAccessMode(mode)}
+          onClick={handleAccessModeChange}
           style={{
             backgroundColor: accessMode === mode ? "var(--foreground)" : "var(--muted)",
             color: accessMode === mode ? "var(--background)" : "var(--muted-foreground)",
           }}
           type="button"
+          value={mode}
         >
           {mode}
         </button>
@@ -1384,6 +1399,14 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
 
   const navigateTo = useCallback((id: SectionId) => {
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+  const handleAddPayStatement = useCallback(() => protocol.addNewPayStatements(1), [protocol.addNewPayStatements]);
+  const handleSelfExport = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => protocol.selfExport(event.currentTarget.value),
+    [protocol.selfExport]
+  );
+  const handleMultiConnectorSelection = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    setMultiIdx(Number(event.currentTarget.value));
   }, []);
 
   // Keyboard navigation — only when no interactive element is focused
@@ -2116,7 +2139,7 @@ Authorization: Bearer <client_token>
               {/* Add pay statement button */}
               <button
                 className="self-start rounded-md px-3 py-1.5 text-xs transition-colors"
-                onClick={() => protocol.addNewPayStatements(1)}
+                onClick={handleAddPayStatement}
                 style={{ backgroundColor: "var(--muted)", color: "var(--muted-foreground)" }}
                 type="button"
               >
@@ -2242,9 +2265,10 @@ Authorization: Bearer <owner_token>
                   <button
                     className="flex items-center justify-between py-2 text-left"
                     key={s.name}
-                    onClick={() => protocol.selfExport(s.name)}
+                    onClick={handleSelfExport}
                     style={{ borderBottom: "1px solid var(--border)" }}
                     type="button"
+                    value={s.name}
                   >
                     <span className="font-medium text-foreground text-xs">{s.name}</span>
                     <span className="font-mono text-muted-foreground text-xs">
@@ -2297,12 +2321,13 @@ Authorization: Bearer <owner_token>
                 <button
                   className="rounded px-2 py-1 text-xs transition-colors"
                   key={c.connectorId}
-                  onClick={() => setMultiIdx(i)}
+                  onClick={handleMultiConnectorSelection}
                   style={{
                     backgroundColor: i === multiIdx ? "var(--foreground)" : "var(--muted)",
                     color: i === multiIdx ? "var(--background)" : "var(--muted-foreground)",
                   }}
                   type="button"
+                  value={i}
                 >
                   {c.displayName}
                 </button>

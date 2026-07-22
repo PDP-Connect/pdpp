@@ -8,11 +8,19 @@
  * the same cadence model with owner-write controls.
  */
 
-import { ScheduleReadRow, SchedulesView } from "@pdpp/operator-ui/components/views/schedules-view";
+import {
+  ScheduleReadRow,
+  SchedulesView,
+  type SchedulesViewProps,
+} from "@pdpp/operator-ui/components/views/schedules-view";
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { sandboxDashboardDataSource } from "../_demo/data-source.ts";
 
 export const dynamic = "force-static";
+
+function renderScheduleRow(summary: Parameters<SchedulesViewProps["renderRow"]>[0]) {
+  return <ScheduleReadRow key={summary.connector_id} summary={summary} />;
+}
 
 export default async function SandboxSchedulesPage() {
   const ds = sandboxDashboardDataSource;
@@ -28,7 +36,7 @@ export default async function SandboxSchedulesPage() {
             defaults.
           </div>
         }
-        renderRow={(summary) => <ScheduleReadRow key={summary.connector_id} summary={summary} />}
+        renderRow={renderScheduleRow}
         summaries={summaries}
         unscheduledDescription="These connectors have no automatic schedule in the reference dataset."
       />

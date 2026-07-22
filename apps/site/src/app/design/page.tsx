@@ -49,6 +49,26 @@ function noopRevoke(): void {
   // Intentionally empty; see comment above.
 }
 
+function renderConsentSpecimen(data: ConsentCardProps) {
+  return <ConsentCard key={JSON.stringify(data.requester)} {...data} />;
+}
+
+function renderGrantInspectorSpecimen(data: GrantInspectorProps) {
+  return <GrantInspector key={data.grantId} {...data} onRevoke={noopRevoke} />;
+}
+
+function renderStreamInventorySpecimen(data: StreamInventoryProps) {
+  return <StreamInventory key={data.connectorName} {...data} />;
+}
+
+function renderConnectorSpecimen(data: ConnectorCardProps) {
+  return <ConnectorCard key={data.connectorId} {...data} />;
+}
+
+function renderSpecCitationSpecimen(data: { citations: SpecCitationProps[] }) {
+  return <SpecCitationGroup key={data.citations.map((citation) => citation.section).join(",")} {...data} />;
+}
+
 // ─── Nav ──────────────────────────────────────────────────────────────────────
 
 const NAV_SECTIONS = [
@@ -92,9 +112,9 @@ export default function DesignSystemPage() {
     return () => observer.disconnect();
   }, []);
 
-  const scrollTo = (id: string) => {
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
+  const handleSectionClick = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    document.getElementById(event.currentTarget.value)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: "var(--background)", color: "var(--foreground)" }}>
@@ -115,7 +135,7 @@ export default function DesignSystemPage() {
       </header>
 
       {/* ── Mobile nav ── */}
-      <MobileNav active={active} scrollTo={scrollTo} />
+      <MobileNav active={active} onSectionClick={handleSectionClick} />
 
       <Hero
         actions={
@@ -160,7 +180,7 @@ export default function DesignSystemPage() {
                 <button
                   className="cursor-pointer rounded-md px-2 py-0.5 text-left transition-colors"
                   key={id}
-                  onClick={() => scrollTo(id)}
+                  onClick={handleSectionClick}
                   style={{
                     backgroundColor: active === id ? "var(--muted)" : "transparent",
                     color: active === id ? "var(--foreground)" : "var(--muted-foreground)",
@@ -168,6 +188,7 @@ export default function DesignSystemPage() {
                     fontWeight: active === id ? 500 : 400,
                   }}
                   type="button"
+                  value={id}
                 >
                   {label}
                 </button>
@@ -206,7 +227,13 @@ export default function DesignSystemPage() {
 }
 
 // Mobile nav — shown below md
-function MobileNav({ active, scrollTo }: { active: string; scrollTo: (id: string) => void }) {
+function MobileNav({
+  active,
+  onSectionClick,
+}: {
+  active: string;
+  onSectionClick: React.MouseEventHandler<HTMLButtonElement>;
+}) {
   return (
     <div
       className="sticky top-12 z-30 flex w-full items-center gap-0 overflow-x-auto px-2 md:hidden"
@@ -221,13 +248,14 @@ function MobileNav({ active, scrollTo }: { active: string; scrollTo: (id: string
         <button
           className="shrink-0 px-3.5 py-3 font-medium text-sm transition-colors"
           key={id}
-          onClick={() => scrollTo(id)}
+          onClick={onSectionClick}
           style={{
             borderBottom: active === id ? "2px solid var(--foreground)" : "2px solid transparent",
             color: active === id ? "var(--foreground)" : "var(--muted-foreground)",
             marginBottom: "-1px",
           }}
           type="button"
+          value={id}
         >
           {label}
         </button>
@@ -1451,13 +1479,15 @@ function DurationDemo() {
     { cssVar: "--duration-slow", ms: 500, name: "slow" },
   ];
 
-  const play = (name: string, ms: number) => {
+  const play = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    const name = event.currentTarget.value;
+    const ms = Number(event.currentTarget.dataset.duration);
     setPlaying(null);
     requestAnimationFrame(() => {
       setPlaying(name);
       setTimeout(() => setPlaying((p) => (p === name ? null : p)), ms + 100);
     });
-  };
+  }, []);
 
   return (
     <div style={{ borderTop: "1px solid var(--border)" }}>
@@ -1482,7 +1512,7 @@ function DurationDemo() {
               }}
             />
           </div>
-          <Button className="w-14 shrink-0" onClick={() => play(name, ms)} size="xs" variant="outline">
+          <Button className="w-14 shrink-0" data-duration={ms} onClick={play} size="xs" value={name} variant="outline">
             Play
           </Button>
         </div>
@@ -1500,10 +1530,11 @@ function EasingDemo() {
     { cssVar: "--ease-spring", desc: "Overshoot — feedback", name: "spring" },
   ];
 
-  const play = (name: string) => {
+  const play = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    const name = event.currentTarget.value;
     setActive(null);
     requestAnimationFrame(() => requestAnimationFrame(() => setActive(name)));
-  };
+  }, []);
 
   return (
     <div style={{ borderTop: "1px solid var(--border)" }}>
@@ -1525,7 +1556,7 @@ function EasingDemo() {
               }}
             />
           </div>
-          <Button className="w-14 shrink-0" onClick={() => play(name)} size="xs" variant="outline">
+          <Button className="w-14 shrink-0" onClick={play} size="xs" value={name} variant="outline">
             Play
           </Button>
         </div>
@@ -1538,10 +1569,10 @@ function StaggerDemo() {
   const [phase, setPhase] = useState<"resting" | "reset" | "playing">("resting");
   const items = ["purpose_binding", "field_projection", "stream_isolation", "temporal_gating", "single_use_expiry"];
 
-  const play = () => {
+  const play = React.useCallback(() => {
     setPhase("reset");
     requestAnimationFrame(() => requestAnimationFrame(() => setPhase("playing")));
-  };
+  }, []);
 
   const visible = phase === "resting" || phase === "playing";
 
@@ -1963,10 +1994,7 @@ function ComponentsSection() {
             The highest-stakes surface in the protocol. A client app is asking the person to share specific streams from
             their personal server. Both human and protocol signals must be present and legible simultaneously.
           </p>
-          <SpecimenSwitcher
-            render={(data) => <ConsentCard key={JSON.stringify(data.requester)} {...data} />}
-            specimens={CONSENT_SPECIMENS}
-          />
+          <SpecimenSwitcher render={renderConsentSpecimen} specimens={CONSENT_SPECIMENS} />
         </div>
 
         {/* Grant Inspector */}
@@ -1976,10 +2004,7 @@ function ComponentsSection() {
             The receipt of a consent decision. Shows what was authorized, by whom, and the grant's current lifecycle
             state. Protocol surface, all content is server-authoritative.
           </p>
-          <SpecimenSwitcher
-            render={(data) => <GrantInspector key={data.grantId} {...data} onRevoke={noopRevoke} />}
-            specimens={GRANT_SPECIMENS}
-          />
+          <SpecimenSwitcher render={renderGrantInspectorSpecimen} specimens={GRANT_SPECIMENS} />
         </div>
 
         {/* Stream Inventory */}
@@ -1989,10 +2014,7 @@ function ComponentsSection() {
             What data your personal server holds. Manifest-derived, showing each connector's streams with record counts
             and sync status. The foundation users see before any consent decision.
           </p>
-          <SpecimenSwitcher
-            render={(data) => <StreamInventory key={data.connectorName} {...data} />}
-            specimens={INVENTORY_SPECIMENS}
-          />
+          <SpecimenSwitcher render={renderStreamInventorySpecimen} specimens={INVENTORY_SPECIMENS} />
         </div>
 
         {/* Connector Card */}
@@ -2002,10 +2024,7 @@ function ComponentsSection() {
             A connector's identity and capabilities from its manifest. Shows what streams are available, what selection
             parameters each supports, and any defined profiles.
           </p>
-          <SpecimenSwitcher
-            render={(data) => <ConnectorCard key={data.connectorId} {...data} />}
-            specimens={CONNECTOR_SPECIMENS}
-          />
+          <SpecimenSwitcher render={renderConnectorSpecimen} specimens={CONNECTOR_SPECIMENS} />
         </div>
 
         {/* Spec Citation */}
@@ -2015,10 +2034,7 @@ function ComponentsSection() {
             Inline protocol references using the education layer color. Links back to spec sections. Used in grant
             inspectors, log panels, and annotation surfaces.
           </p>
-          <SpecimenSwitcher
-            render={(data) => <SpecCitationGroup key={data.citations.map((c) => c.section).join(",")} {...data} />}
-            specimens={CITATION_SPECIMENS}
-          />
+          <SpecimenSwitcher render={renderSpecCitationSpecimen} specimens={CITATION_SPECIMENS} />
         </div>
       </div>
     </SectionWrap>
@@ -3636,6 +3652,9 @@ function SpecimenSwitcher<T>({
   render: (data: T) => React.ReactNode;
 }) {
   const [active, setActive] = React.useState(0);
+  const handleSpecimenSelection = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    setActive(Number(event.currentTarget.value));
+  }, []);
   // The active index is always driven by clicks on rendered buttons, so
   // `current` is guaranteed to exist at runtime. We narrow through an
   // explicit guard so `noUncheckedIndexedAccess` is satisfied without `!`.
@@ -3650,12 +3669,13 @@ function SpecimenSwitcher<T>({
           <button
             className="rounded px-2 py-1 text-xs transition-colors"
             key={s.label}
-            onClick={() => setActive(i)}
+            onClick={handleSpecimenSelection}
             style={{
               backgroundColor: i === active ? "var(--foreground)" : "var(--muted)",
               color: i === active ? "var(--background)" : "var(--muted-foreground)",
             }}
             type="button"
+            value={i}
           >
             {s.label}
           </button>

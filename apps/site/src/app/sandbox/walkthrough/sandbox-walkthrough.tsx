@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Link from "next/link";
-import { useMemo, useReducer } from "react";
+import { useCallback, useMemo, useReducer } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { cn } from "@/lib/utils.ts";
 import {
@@ -125,8 +125,9 @@ function nextActions(state: SandboxState): readonly ButtonSpec[] {
 export function SandboxWalkthrough() {
   const [state, dispatch] = useReducer(reduce, INITIAL_STATE);
   const transcript = useMemo(() => buildTranscript(state), [state]);
-  const actions = nextActions(state);
+  const actions = useMemo(() => nextActions(state), [state]);
   const currentIndex = phaseIndex(state.phase);
+  const handleReset = useCallback(() => dispatch({ type: "reset" }), [dispatch]);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
@@ -134,7 +135,7 @@ export function SandboxWalkthrough() {
         actions={actions}
         currentIndex={currentIndex}
         dispatch={dispatch}
-        onReset={() => dispatch({ type: "reset" })}
+        onReset={handleReset}
         state={state}
       />
       <TranscriptPane state={state} transcript={transcript} />
@@ -423,11 +424,21 @@ function RecordsCard({ state }: { state: SandboxState }) {
 }
 
 function ActionRow({ actions, dispatch }: { actions: readonly ButtonSpec[]; dispatch: React.Dispatch<SandboxAction> }) {
+  const handleAction = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      const action = actions.find(({ label }) => label === event.currentTarget.value);
+      if (action) {
+        dispatch(action.action);
+      }
+    },
+    [actions, dispatch]
+  );
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
         {actions.map((action) => (
-          <Button key={action.label} onClick={() => dispatch(action.action)} size="sm" variant={action.variant}>
+          <Button key={action.label} onClick={handleAction} size="sm" value={action.label} variant={action.variant}>
             {action.label}
           </Button>
         ))}
