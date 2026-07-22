@@ -328,7 +328,7 @@ async function resolveConnectionReactivateNamespace(
   }
 }
 
-async function resolveConnectorReactivateNamespace(
+function resolveConnectorReactivateNamespace(
   ctx: MountOwnerConnectionReactivateContext,
   ownerSubjectId: string,
   target: ReactivateTarget,
@@ -339,7 +339,7 @@ async function resolveConnectorReactivateNamespace(
   return resolveRevokedConnectorNamespace(ctx, ownerSubjectId, target.connectorKey);
 }
 
-async function resolveReactivateNamespace(
+function resolveReactivateNamespace(
   ctx: MountOwnerConnectionReactivateContext,
   req: RouteRequest,
   res: RouteResponse,

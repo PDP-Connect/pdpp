@@ -1736,7 +1736,7 @@ async function foldConnectorSummaryStreamFactsOnce(
  * predicate alone already guarantees the row participates again next pass
  * and RESUMES (never restarts) from this exact partial progress.
  */
-async function writeParticipantStreamFacts(
+function writeParticipantStreamFacts(
   foldStore: ReturnType<typeof createStreamFactsFoldStore>,
   instanceId: string,
   facts: Record<string, StoredStreamFactEntry>,
@@ -2024,7 +2024,7 @@ export async function rebuildConnectorSummaryEvidence() {
  *
  * Spec: openspec/changes/reconcile-active-summary-evidence/design.md
  */
-export async function reconcileDirtyConnectorSummaryEvidence(
+export function reconcileDirtyConnectorSummaryEvidence(
   connectorInstanceIds: readonly string[] | null = null,
   options: { readonly maxCandidates?: number; readonly maxDurationMs?: number; readonly maxEvents?: number } = {}
 ) {

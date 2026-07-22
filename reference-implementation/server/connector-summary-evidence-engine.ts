@@ -670,22 +670,23 @@ interface RepairedEvidence {
  * returns row-shaped `stale`/`failed` evidence with a closed sanitized
  * reason code — never a fabricated clean row.
  */
-async function repairCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
-  try {
-    return await withConnectorInstanceWrite(connectorInstanceId, async () => {
-      if (isPostgresStorageBackend()) {
-        return repairCandidatePostgres(connectorInstanceId);
-      }
-      return repairCandidateSqlite(connectorInstanceId);
-    });
-  } catch (err) {
+function repairCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
+  return withConnectorInstanceWrite(connectorInstanceId, () => {
+    if (isPostgresStorageBackend()) {
+      return repairCandidatePostgres(connectorInstanceId);
+    }
+    return repairCandidateSqlite(connectorInstanceId);
+  }).catch((err) => {
     const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.LOCK_UNAVAILABLE, err);
     // The lock itself could not be acquired, so nothing about this
     // connection's canonical facts was even re-read this attempt — total
     // failure, every component fails closed (see `buildFailedRow`).
-    const persisted = await persistFailedEvidence(connectorInstanceId, failedRow);
-    return { row: failedRow, failed: true, persisted };
-  }
+    return persistFailedEvidence(connectorInstanceId, failedRow).then((persisted) => ({
+      row: failedRow,
+      failed: true,
+      persisted,
+    }));
+  });
 }
 
 function buildFailedRow(connectorInstanceId: string, reasonCode: string, err: unknown): Row {

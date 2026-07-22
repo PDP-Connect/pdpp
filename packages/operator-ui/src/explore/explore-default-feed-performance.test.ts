@@ -75,15 +75,15 @@ test("empty-query Explore keeps first-paint endpoint call bounded", async () => 
 
   const dataSource = {
     kind: "live",
-    aggregateRecordsByTime: async () => {
+    aggregateRecordsByTime: () => {
       throw new Error("aggregateRecordsByTime not stubbed");
     },
-    listExploreRecordBuckets: async () => {
+    listExploreRecordBuckets: () => {
       throw new Error("listExploreRecordBuckets not stubbed");
     },
-    listConnectorSummaries: async () => ({ object: "list", data: summaries, has_more: false }),
-    listConnectorManifests: async () => summaries.map((_, i) => manifest(i)),
-    listExploreTimeline: async (opts): Promise<ExploreTimelinePage> => {
+    listConnectorSummaries: () => ({ object: "list", data: summaries, has_more: false }),
+    listConnectorManifests: () => summaries.map((_, i) => manifest(i)),
+    listExploreTimeline: (opts): ExploreTimelinePage => {
       timelineCalls.push({ limit: opts?.limit, cursor: opts?.cursor });
       // Return a handful of records from two different connectors/streams so the
       // assembler has real entries to process.
@@ -115,25 +115,25 @@ test("empty-query Explore keeps first-paint endpoint call bounded", async () => 
         new_since_snapshot: 0,
       };
     },
-    getStreamMetadata: async (connectorId: string, stream: string): Promise<StreamMetadata> => {
+    getStreamMetadata: (connectorId: string, stream: string): StreamMetadata => {
       metadataCalls.push({ connectorId, stream });
       return { name: stream, object: "stream_metadata", field_capabilities: {} };
     },
-    queryRecords: async (connectorId: string, stream: string): Promise<RecordsPage> => {
+    queryRecords: (connectorId: string, stream: string): RecordsPage => {
       queryCalls.push({ connectorId, stream });
       return { data: [], has_more: false, object: "list" };
     },
-    getConnectorOverview: async () => {
+    getConnectorOverview: () => {
       throw new Error("not used");
     },
-    getDatasetSummary: async () => {
+    getDatasetSummary: () => {
       throw new Error("not used");
     },
-    getDeploymentDiagnostics: async () => {
+    getDeploymentDiagnostics: () => {
       throw new Error("not used");
     },
-    getGrantTimeline: async () => null,
-    getRecord: async () => {
+    getGrantTimeline: () => null,
+    getRecord: () => {
       throw new Error("not used");
     },
     getRunTimeline: async () => null,

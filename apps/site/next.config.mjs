@@ -50,7 +50,7 @@ const nextConfig = {
   },
   outputFileTracingRoot: path.join(__dirname, "../.."),
   reactStrictMode: true,
-  async redirects() {
+  redirects() {
     return [
       {
         destination: "/docs/spec-core",
@@ -134,7 +134,7 @@ const nextConfig = {
       // owner-console surface.
     ];
   },
-  async rewrites() {
+  rewrites() {
     return [
       {
         destination: "/llms.mdx/docs",

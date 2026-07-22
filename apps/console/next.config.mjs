@@ -42,7 +42,7 @@ const nextConfig = {
   },
   outputFileTracingRoot: path.join(__dirname, "../.."),
   reactStrictMode: true,
-  async redirects() {
+  redirects() {
     return [
       {
         destination: "/brand/pdpp-favicon.svg",
@@ -51,7 +51,7 @@ const nextConfig = {
       },
     ];
   },
-  async rewrites() {
+  rewrites() {
     return [
       {
         destination: "/well-known/oauth-authorization-server",

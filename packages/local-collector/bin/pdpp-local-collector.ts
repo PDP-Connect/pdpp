@@ -468,7 +468,7 @@ async function main(): Promise<void> {
 
 type CollectorRunResult = Awaited<ReturnType<typeof runCollectorConnector>>;
 
-async function runCollectorOnce(options: CliOptions): Promise<CollectorRunResult> {
+function runCollectorOnce(options: CliOptions): Promise<CollectorRunResult> {
   if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
     throw new CollectorUsageError(
       "run requires --device-id <id>, --device-token <token>, and --connection-id/--source-instance-id <id>"

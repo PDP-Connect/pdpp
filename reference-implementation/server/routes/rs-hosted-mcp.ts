@@ -315,7 +315,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     };
   }
 
-  async function buildHostedMcpServerOptions(
+  function buildHostedMcpServerOptions(
     req: RouteRequest,
     res: RouteResponse,
     resource: string,

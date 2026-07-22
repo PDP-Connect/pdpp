@@ -153,7 +153,7 @@ async function readPostgresCheckpoint(connectorInstanceId: string): Promise<Reco
  * columns as decimal text so the composite never loses precision through
  * JS `Number`.
  */
-export async function readRecordSourceCheckpoint(connectorInstanceId: string): Promise<RecordSourceCheckpoint> {
+export function readRecordSourceCheckpoint(connectorInstanceId: string): Promise<RecordSourceCheckpoint> {
   if (isPostgresStorageBackend()) {
     return readPostgresCheckpoint(connectorInstanceId);
   }

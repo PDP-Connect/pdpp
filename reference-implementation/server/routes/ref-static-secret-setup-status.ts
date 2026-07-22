@@ -405,7 +405,7 @@ async function resolveSetupStatusInstance(
   return { instance, namespace, store };
 }
 
-async function readCredentialMetadata(
+function readCredentialMetadata(
   setupKind: ConnectionSetupKind,
   credentialStore: ConnectorInstanceCredentialStore,
   connectorInstanceId: string
