@@ -197,7 +197,9 @@ test("accounts: a disappeared account is pruned so its re-appearance re-emits", 
   const cursor3 = openAccountsCursor(state2);
   await emitAccountsStream(run3.deps, bothAgain, RUN1_AT, cursor3);
   assert.equal(run3.emitted.length, 1, "re-appeared account re-emits exactly once; A1 still suppressed");
-  assert.equal((run3.emitted[0]?.data as { id?: string }).id, "A2", "the re-emit is the re-appeared account");
+  const reemitted = run3.emitted[0];
+  assert.ok(reemitted);
+  assert.equal((reemitted.data as { id?: string }).id, "A2", "the re-emit is the re-appeared account");
 });
 
 test("accounts: STATE carries a fingerprints map that excludes fetched_at", async () => {

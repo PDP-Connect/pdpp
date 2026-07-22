@@ -45,8 +45,9 @@ test("deny returns to initial state but keeps refusal evidence", () => {
 
   const transcript = buildTranscript(denied);
   const denial = transcript.find((entry) => entry.id === "denied");
-  assert.equal(denial?.available, true);
-  assert.equal((denial?.body as { error?: string }).error, "owner_denied");
+  assert.ok(denial);
+  assert.equal(denial.available, true);
+  assert.equal((denial.body as { error?: string }).error, "owner_denied");
 });
 
 test("reset returns to initial regardless of phase", () => {

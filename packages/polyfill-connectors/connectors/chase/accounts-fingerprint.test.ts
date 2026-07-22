@@ -135,7 +135,9 @@ test("accounts: a removed account is pruned so a re-add re-emits", async () => {
     cursor3
   );
   assert.equal(run3.emitted.length, 1, "re-added account re-emits after prune");
-  assert.equal((run3.emitted[0]?.data as { id: string }).id, "A2");
+  const reemitted = run3.emitted[0];
+  assert.ok(reemitted);
+  assert.equal((reemitted.data as { id: string }).id, "A2");
 });
 
 test("accounts: STATE carries a fingerprints map keyed by account id", async () => {

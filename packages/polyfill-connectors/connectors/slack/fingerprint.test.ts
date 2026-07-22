@@ -191,7 +191,9 @@ test("channel_memberships: a newly-added membership DOES emit", async () => {
     fetched_at: "2026-05-27T12:00:00.000Z",
   });
   assert.equal(run2.emitted.length, 1, "only the newly-added membership re-emits");
-  assert.equal((run2.emitted[0]?.data as { id: string }).id, "C1:U2");
+  const emittedMembership = run2.emitted[0];
+  assert.ok(emittedMembership);
+  assert.equal((emittedMembership.data as { id: string }).id, "C1:U2");
 });
 
 test("channel_memberships: a removed membership is pruned from carry-forward", async () => {
@@ -227,7 +229,9 @@ test("users: no excludes — every field participates in the fingerprint", async
   await emitWithFingerprint(run2.deps, "users", userA);
   await emitWithFingerprint(run2.deps, "users", { ...userB, updated: 3000 });
   assert.equal(run2.emitted.length, 1, "only the changed user re-emits");
-  assert.equal((run2.emitted[0]?.data as { id: string }).id, "U2");
+  const emittedUser = run2.emitted[0];
+  assert.ok(emittedUser);
+  assert.equal((emittedUser.data as { id: string }).id, "U2");
 });
 
 test("skipped records still appear in the cursor — STATE carry-forward intact", async () => {

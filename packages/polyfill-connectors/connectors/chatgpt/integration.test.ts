@@ -376,7 +376,7 @@ test("createChatGptApi.fetchBatch posts capped conversation batch requests", asy
 
   const api = createChatGptApi({ capture: null, page: fakePage as Page });
   assert.ok(api.fetchBatch, "production ChatGPT API exposes fetchBatch");
-  const { fetchBatch } = api;
+  const fetchBatch = api.fetchBatch;
   const results = await fetchBatch(["c1", "c2"]);
 
   assert.equal(results.length, 2);
@@ -2899,22 +2899,20 @@ test("runMessagesAndConversationsWithDetail: a cap trip over a large tail writes
     Array.from({ length: 10 }, (_, i) => `convo-${26 + i}`)
   );
 
-  const [backlog] = backlogGaps;
-  assert.equal(backlog?.record_key, "__chatgpt_conversation_backlog__");
+  const backlog = backlogGaps[0];
+  assert.ok(backlog);
+  assert.equal(backlog.record_key, "__chatgpt_conversation_backlog__");
   // Watermark is a content-derived update_time ISO (NOT an offset). It equals the
   // NEWEST update_time of the un-materialized backlog (convo-36 — the first folded
   // conversation right after 25 hydrated + 10-chunk = 35 accounted). Recovery
   // re-lists `<= watermark`, an inclusive, stranding-proof boundary.
-  const watermark = (backlog?.detail_locator as { before_update_time?: unknown }).before_update_time;
+  const detailLocator = backlog.detail_locator as { before_update_time?: unknown; remaining?: unknown };
+  const watermark = detailLocator.before_update_time;
   assert.equal(typeof watermark, "string", "the backlog gap carries an update_time watermark, not an offset");
   assert.equal(watermark, new Date((1_700_100_000 - 35) * 1000).toISOString());
-  assert.equal(
-    (backlog?.detail_locator as { remaining?: unknown }).remaining,
-    190,
-    "the backlog gap records how many older conversations remain"
-  );
+  assert.equal(detailLocator.remaining, 190, "the backlog gap records how many older conversations remain");
   // list_cursor mirror is set for protocol honesty.
-  assert.deepEqual(backlog?.list_cursor, { before_update_time: watermark });
+  assert.deepEqual(backlog.list_cursor, { before_update_time: watermark });
 
   // coverage.gapKeys still enumerates only the per-key chunk; the backlog key is
   // tracked separately so forward coverage can require it.
@@ -3617,7 +3615,7 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
       update_time: 1_700_000_000 + index,
     })
   );
-  const [, , , , , , , , , , , , , , , , , , , , , , , , , , , , , pressureItem] = listItems;
+  const pressureItem = listItems[29];
   assert.ok(pressureItem, "fixture must include the 30th list item");
 
   const fetches: string[] = [];

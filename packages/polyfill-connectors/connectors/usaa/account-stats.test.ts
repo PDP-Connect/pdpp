@@ -113,7 +113,9 @@ test("account_stats: a balance-only change does not re-emit the entity but does 
   const stats2 = run2.emitted.filter((e) => e.stream === "account_stats");
   assert.equal(entity2.length, 0, "a balance-only move does NOT re-version the entity record");
   assert.equal(stats2.length, 1, "the new balance is captured on account_stats");
-  assert.equal((stats2[0]?.data as { balance_cents?: number }).balance_cents, 95_000);
+  const emittedStats = stats2[0];
+  assert.ok(emittedStats);
+  assert.equal((emittedStats.data as { balance_cents?: number }).balance_cents, 95_000);
 });
 
 test("account_stats: a real identity/status change re-emits the entity exactly once", async () => {
@@ -131,7 +133,9 @@ test("account_stats: a real identity/status change re-emits the entity exactly o
   await emitAccountsStream(run2.deps, renamed, RUN2_AT, cursor2, STATS_OPTS(DAY2));
   const entity2 = run2.emitted.filter((e) => e.stream === "accounts");
   assert.equal(entity2.length, 1, "an identity change re-emits the entity exactly once");
-  assert.equal((entity2[0]?.data as { name?: string }).name, "USAA PERFORMANCE CHECKING");
+  const emittedAccount = entity2[0];
+  assert.ok(emittedAccount);
+  assert.equal((emittedAccount.data as { name?: string }).name, "USAA PERFORMANCE CHECKING");
 });
 
 test("account_stats: same-day re-pull is the same key; a later day is a distinct key", () => {

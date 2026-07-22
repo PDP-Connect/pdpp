@@ -240,7 +240,9 @@ test("two-pass invariant: a real change to one thread re-emits only that thread 
   await emitChangedThreads([baseT1, changedT2], cursor2, run2.emitRecord);
   cursor2.pruneStale();
   assert.equal(run2.emitted.length, 1, "only the changed thread re-emits");
-  assert.equal((run2.emitted[0]?.data as { id: string }).id, "T2");
+  const emitted = run2.emitted[0];
+  assert.ok(emitted);
+  assert.equal((emitted.data as { id: string }).id, "T2");
 });
 
 test("two-pass invariant: thread present in pass 1 but absent in pass 2 is pruned from STATE", async () => {
