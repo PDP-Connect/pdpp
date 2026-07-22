@@ -88,6 +88,8 @@ export async function resolveOwnerAuthForStreamHealth({ base, env = process.env,
   return { error: null, header: {}, mode: "none", supported: false };
 }
 
+const TRAILING_SLASHES_RE = /\/+$/;
+
 function asArrayList(raw) {
   if (Array.isArray(raw)) {
     return raw;
@@ -112,7 +114,7 @@ function asArrayList(raw) {
  *   inconclusive: Array }>}
  */
 export async function runLiveStreamHealthAudit({ origin, env = process.env, fetchImpl = fetch }) {
-  const base = origin.replace(/\/+$/, "");
+  const base = origin.replace(TRAILING_SLASHES_RE, "");
   const {
     header,
     mode,

@@ -6,6 +6,7 @@ import test from "node:test";
 import nextConfig from "./next.config.mjs";
 
 const redirects = await nextConfig.redirects();
+const TRAILING_SLASH_RE = /\/$/;
 
 function matchRule(rule, pathname) {
   const { source, destination } = rule;
@@ -17,7 +18,7 @@ function matchRule(rule, pathname) {
     }
     if (pathname.startsWith(`${prefix}/`)) {
       const rest = pathname.slice(prefix.length + 1);
-      return destination.replace(":rest*", rest).replace(/\/$/, "") || "/";
+      return destination.replace(":rest*", rest).replace(TRAILING_SLASH_RE, "") || "/";
     }
     return null;
   }

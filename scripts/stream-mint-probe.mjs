@@ -54,6 +54,7 @@ console.log(`[stream-mint-probe] running ${TEST_FILES.length} test files`);
 console.log(`[stream-mint-probe] fixture -> ${FIXTURE_PATH}\n`);
 
 let exitCode = 0;
+const RESULTS_LOG_LINE_RE = /^\[ntfy\]|\bINFO\b|\bDEBUG\b/;
 const results = [];
 
 for (const file of TEST_FILES) {
@@ -103,7 +104,7 @@ for (const file of TEST_FILES) {
     // Trim verbose pino log lines from output before persisting
     output: output
       .split("\n")
-      .filter((l) => !l.match(/^\[ntfy\]|\bINFO\b|\bDEBUG\b/))
+      .filter((l) => !l.match(RESULTS_LOG_LINE_RE))
       .join("\n")
       .trim(),
     passed,
@@ -111,7 +112,7 @@ for (const file of TEST_FILES) {
     status,
   };
   results.push(record);
-  appendFileSync(FIXTURE_PATH, JSON.stringify(record) + "\n", "utf8");
+  appendFileSync(FIXTURE_PATH, `${JSON.stringify(record)}\n`, "utf8");
 }
 
 const total = results.reduce((s, r) => s + r.passed + r.failed, 0);

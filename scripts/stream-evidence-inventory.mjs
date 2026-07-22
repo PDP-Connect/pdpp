@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const OUTPUT_PATH = join(REPO_ROOT, "docs", "reference", "stream-evidence-inventory.md");
+const JSON_EXTENSION_RE = /\.json$/;
 
 const MANIFEST_DIRS = [
   { label: "polyfill", path: join(REPO_ROOT, "packages", "polyfill-connectors", "manifests") },
@@ -52,7 +53,7 @@ export function readManifests() {
       const manifestPath = join(dir.path, filename);
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
       manifests.push({
-        connectorId: manifest.connector_key ?? manifest.connector_id ?? filename.replace(/\.json$/, ""),
+        connectorId: manifest.connector_key ?? manifest.connector_id ?? filename.replace(JSON_EXTENSION_RE, ""),
         manifest,
         manifestSet: dir.label,
       });

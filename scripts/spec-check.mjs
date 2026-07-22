@@ -9,6 +9,17 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 const SITE_DOCS = join(REPO_ROOT, "apps/site/content/docs");
+const SPEC_FILE_RE = /^spec-.*\.md$/;
+const TITLE_RE = /^#\s+/;
+const STATUS_LINE_RE = /^Status:\s*/;
+const DATE_LINE_RE = /^Date:\s*/;
+const FRONTMATTER_DELIMITER_RE = /^---\s*$/;
+const CALLOUT_START_RE = /^<Callout\b/;
+const CALLOUT_END_RE = /^<\/Callout>\s*$/;
+const ROOT_STATUS_RE = /^Status:\s*(.+)$/m;
+const ROOT_DATE_RE = /^Date:\s*(.+)$/m;
+const CALLOUT_STATUS_RE = /^\s*Status:\s*(.+)$/m;
+const CALLOUT_DATE_RE = /^\s*Date:\s*(.+)$/m;
 
 // The site's spec-*.md pages are GENERATED from the root spec-*.md (single
 // source) and are gitignored, so they may be absent on a fresh checkout. Run
@@ -31,7 +42,7 @@ const REFERENCE_ONLY_ROOT_SPECS = new Set(["spec-reference-implementation-exampl
 
 function specFiles(dir) {
   return readdirSync(dir)
-    .filter((name) => /^spec-.*\.md$/.test(name))
+    .filter((name) => SPEC_FILE_RE.test(name))
     .sort();
 }
 
@@ -49,18 +60,18 @@ function stripFrontmatter(text) {
 
 function stripTitleAndRootStatus(text) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
-  if (/^#\s+/.test(lines[0] ?? "")) {
+  if (TITLE_RE.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
-  if (/^Status:\s*/.test(lines[0] ?? "")) {
+  if (STATUS_LINE_RE.test(lines[0] ?? "")) {
     lines.shift();
   }
-  if (/^Date:\s*/.test(lines[0] ?? "")) {
+  if (DATE_LINE_RE.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
-  if (/^---\s*$/.test(lines[0] ?? "")) {
+  if (FRONTMATTER_DELIMITER_RE.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
@@ -71,21 +82,21 @@ function stripLeadingSiteCallout(text) {
   const withoutFrontmatter = stripFrontmatter(text);
   const lines = withoutFrontmatter.split("\n");
   stripLeadingBlank(lines);
-  if (!/^<Callout\b/.test(lines[0] ?? "")) {
+  if (!CALLOUT_START_RE.test(lines[0] ?? "")) {
     return lines.join("\n");
   }
   while (lines.length > 0) {
     const line = lines.shift();
-    if (/^<\/Callout>\s*$/.test(line ?? "")) {
+    if (CALLOUT_END_RE.test(line ?? "")) {
       break;
     }
   }
   stripLeadingBlank(lines);
-  if (/^#\s+/.test(lines[0] ?? "")) {
+  if (TITLE_RE.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
-  if (/^---\s*$/.test(lines[0] ?? "")) {
+  if (FRONTMATTER_DELIMITER_RE.test(lines[0] ?? "")) {
     lines.shift();
   }
   stripLeadingBlank(lines);
@@ -109,22 +120,22 @@ function normalizeBody(text) {
 }
 
 function rootMetadata(text) {
-  const status = text.match(/^Status:\s*(.+)$/m)?.[1]?.trim() ?? null;
-  const date = text.match(/^Date:\s*(.+)$/m)?.[1]?.trim() ?? null;
+  const status = text.match(ROOT_STATUS_RE)?.[1]?.trim() ?? null;
+  const date = text.match(ROOT_DATE_RE)?.[1]?.trim() ?? null;
   return { date, status };
 }
 
 function leadingCallout(text) {
   const lines = stripFrontmatter(text).split("\n");
   stripLeadingBlank(lines);
-  if (!/^<Callout\b/.test(lines[0] ?? "")) {
+  if (!CALLOUT_START_RE.test(lines[0] ?? "")) {
     return null;
   }
   const out = [];
   while (lines.length > 0) {
     const line = lines.shift() ?? "";
     out.push(line);
-    if (/^<\/Callout>\s*$/.test(line)) {
+    if (CALLOUT_END_RE.test(line)) {
       break;
     }
   }
@@ -140,8 +151,8 @@ function calloutMetadata(text) {
   if (!callout) {
     return { date: null, status: null };
   }
-  const status = callout.match(/^\s*Status:\s*(.+)$/m)?.[1] ?? null;
-  const date = callout.match(/^\s*Date:\s*(.+)$/m)?.[1] ?? null;
+  const status = callout.match(CALLOUT_STATUS_RE)?.[1] ?? null;
+  const date = callout.match(CALLOUT_DATE_RE)?.[1] ?? null;
   return {
     date: date ? cleanMetadataValue(date) : null,
     status: status ? cleanMetadataValue(status) : null,

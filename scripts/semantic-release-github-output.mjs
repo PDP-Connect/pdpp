@@ -5,6 +5,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 
 const SEMVER_RE = /([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+][0-9A-Za-z.-]+)?/;
+const NEXT_RELEASE_VERSION_RE = /next release version is\s+([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)/i;
 
 function fail(message) {
   console.error(message);
@@ -47,7 +48,7 @@ function releaseOutputs(version, gitTag = `v${version}`) {
 
 function parseDryRun(logPath) {
   const log = readFileSync(logPath, "utf8");
-  const match = log.match(/next release version is\s+([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)/i);
+  const match = log.match(NEXT_RELEASE_VERSION_RE);
 
   if (!match) {
     appendOutputs({

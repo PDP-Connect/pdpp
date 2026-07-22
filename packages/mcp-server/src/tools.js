@@ -446,6 +446,7 @@ const SCHEMA_CONNECTION_ID_DESCRIPTION =
  * silently coercing to `compact` (defense-in-depth behind the Zod enum).
  */
 function resolveSchemaDetail(value) {
+  // biome-ignore lint/suspicious/noEqualsToNull: An omitted optional argument must use the compact default too.
   if (value == null) {
     return "compact";
   }
@@ -959,7 +960,7 @@ function resolveRecordResourceRef(uri, variables) {
   let payload;
   try {
     payload = decodeResourceHandle(handle, "record");
-  } catch (error) {
+  } catch {
     const ref = parseRecordResultId(decodeURIComponent(handle));
     return { connectionId: ref.connectionId, recordId: ref.recordId, stream: ref.stream };
   }
@@ -1526,8 +1527,8 @@ const CONTENT_LADDER_RECORD_LIMIT = 5;
 const CONTENT_LADDER_FIELD_LIMIT = 5;
 const CONTENT_LADDER_WINDOW_LIMIT_CHARS = 4096;
 const CONTENT_LADDER_BINARY_FIELD_LIMIT = 5;
-const BINARY_INLINE_STRING_CHAR_LIMIT = 256;
-const CONTENT_LADDER_OMIT_FIELD_KEYS = new Set([
+const _BINARY_INLINE_STRING_CHAR_LIMIT = 256;
+const _CONTENT_LADDER_OMIT_FIELD_KEYS = new Set([
   "id",
   "record_id",
   "recordId",
@@ -1800,6 +1801,7 @@ function summarizeAggregate(body, stream) {
     const shown = groups.slice(0, AGGREGATE_GROUP_PREVIEW_LIMIT).map((g) => {
       const key = g && typeof g === "object" ? g.key : g;
       const count = g && typeof g === "object" ? g.count : undefined;
+      // biome-ignore lint/suspicious/noEqualsToNull: Missing counts and explicit null both render as an unknown count.
       return `${formatScalar(key)}=${count == null ? "?" : count}`;
     });
     const more =
@@ -1881,7 +1883,7 @@ const RECORD_PREVIEW_FOOTER_RESERVE = 96;
 const RECORD_PREVIEW_MIN_RECORD_CHARS = 24;
 const RECORD_PREVIEW_TRUNCATED_MARKER = "record_preview_truncated=true; machine envelope in structuredContent.data";
 
-function summarizeRecordEnvelope(body, label) {
+function _summarizeRecordEnvelope(body, label) {
   const records = extractRecordRows(body);
   const hasMore = envelopeField(body, "has_more") === true ? " has_more=true." : "";
   const handles = formatRecordEnvelopeHandles(body);
@@ -2541,7 +2543,7 @@ function formatSearchMatchWindowLines(result, index) {
     });
 }
 
-function formatSearchReadArgs(args) {
+function _formatSearchReadArgs(args) {
   if (!args) {
     return "";
   }
@@ -2839,16 +2841,19 @@ function compactSearchEnvelope(body, { resultCount } = {}) {
   const out = { ...body };
   if (Array.isArray(out.results)) {
     out.result_count = resultCount ?? out.results.length;
+    // biome-ignore lint/performance/noDelete: The compact envelope must omit this field, not retain it with undefined.
     delete out.results;
     out.results_ref = "structuredContent.results";
   }
   if (Array.isArray(out.hits)) {
     out.result_count = resultCount ?? out.hits.length;
+    // biome-ignore lint/performance/noDelete: The compact envelope must omit this field, not retain it with undefined.
     delete out.hits;
     out.results_ref = "structuredContent.results";
   }
   if (Array.isArray(out.data)) {
     out.result_count = resultCount ?? out.data.length;
+    // biome-ignore lint/performance/noDelete: The compact envelope must omit this field, not retain it with undefined.
     delete out.data;
     out.results_ref = "structuredContent.results";
   } else if (out.data && typeof out.data === "object") {
@@ -2861,16 +2866,19 @@ function compactSearchEnvelopeDataObject(data, { resultCount } = {}) {
   const out = { ...data };
   if (Array.isArray(out.results)) {
     out.result_count = resultCount ?? out.results.length;
+    // biome-ignore lint/performance/noDelete: The compact envelope must omit this field, not retain it with undefined.
     delete out.results;
     out.results_ref = "structuredContent.results";
   }
   if (Array.isArray(out.hits)) {
     out.result_count = resultCount ?? out.hits.length;
+    // biome-ignore lint/performance/noDelete: The compact envelope must omit this field, not retain it with undefined.
     delete out.hits;
     out.results_ref = "structuredContent.results";
   }
   if (Array.isArray(out.data)) {
     out.result_count = resultCount ?? out.data.length;
+    // biome-ignore lint/performance/noDelete: The compact envelope must omit this field, not retain it with undefined.
     delete out.data;
     out.results_ref = "structuredContent.results";
   }
@@ -2912,7 +2920,7 @@ function resultIdForHit(hit, index, fallback = {}) {
 function recordUriRefForHit(hit) {
   for (const value of [hit?.record_uri, hit?.recordUri, hit?.id]) {
     const raw = stringValue(value);
-    if (!(raw && raw.startsWith("pdpp://record/"))) {
+    if (!raw?.startsWith("pdpp://record/")) {
       continue;
     }
     const parsed = parseRecordResultIdOrNull(raw);
@@ -3155,7 +3163,7 @@ const FETCH_TEXT_FALLBACK_CHAR_LIMIT = 1024;
 const FETCH_TEXT_FALLBACK_POINTER =
   "… [record has no text/content/body/summary field; use query_records or fetch(fields) for structured records]";
 
-function textForRecord(record) {
+function _textForRecord(record) {
   const declared = declaredTextForRecord(record);
   if (declared) {
     return declared;
