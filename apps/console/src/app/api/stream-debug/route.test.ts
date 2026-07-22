@@ -26,6 +26,8 @@ test("stream debug route appends sanitized events to date-grouped JSONL", async 
               clipboardChangeEventAvailable: true,
               password: "do-not-store-password",
               rawClipboardText: "do-not-store-clipboard",
+              proxyUrl: "https://token:do-not-store@neko.internal/session",
+              transportError: "upstream disconnected at wss://neko.internal/socket?token=do-not-store",
               safeLengthBucket: "17-64",
             },
           ],
@@ -54,6 +56,8 @@ test("stream debug route appends sanitized events to date-grouped JSONL", async 
     assert.equal(lines.length, 1);
     assert.equal(files.includes("do-not-store-clipboard"), false);
     assert.equal(files.includes("do-not-store-password"), false);
+    assert.equal(files.includes("neko.internal"), false);
+    assert.equal(files.includes("do-not-store"), false);
 
     const stored = JSON.parse(lines[0] ?? "{}") as {
       events?: Record<string, unknown>[];
@@ -64,6 +68,8 @@ test("stream debug route appends sanitized events to date-grouped JSONL", async 
     assert.equal(stored.events?.[0]?.clipboardChangeEventAvailable, true);
     assert.equal(stored.events?.[0]?.rawClipboardText, "[redacted]");
     assert.equal(stored.events?.[0]?.password, "[redacted]");
+    assert.equal(stored.events?.[0]?.proxyUrl, "[redacted]");
+    assert.equal(stored.events?.[0]?.transportError, "[redacted]");
     assert.equal(stored.events?.[0]?.safeLengthBucket, "17-64");
   } finally {
     console.info = consoleInfo;

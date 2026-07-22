@@ -3607,6 +3607,7 @@ function buildAsApp(opts = {}) {
         interactionId: session?.interaction_id,
         browserSurfaceLeaseManager: opts.browserSurfaceLeaseManager,
       }),
+    logger: opts.streamingLogger || opts.logger || null,
     nekoProxyAutoLogin:
       opts.nekoProxyAutoLogin !== undefined
         ? opts.nekoProxyAutoLogin
@@ -5444,6 +5445,7 @@ export async function startServer(opts = {}) {
     publicDynamicClientRegistrationRateLimit: opts.publicDynamicClientRegistrationRateLimit,
     referenceRevision: opts.referenceRevision,
     streamingCompanionFactory: opts.streamingCompanionFactory,
+    streamingLogger: opts.streamingLogger,
     streamingSessionStore: opts.streamingSessionStore,
     streamingNow: opts.streamingNow,
     streamingSessionTtlMs: opts.streamingSessionTtlMs,

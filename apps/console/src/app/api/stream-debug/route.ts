@@ -9,6 +9,8 @@ const MAX_ARRAY_ITEMS = 25;
 const MAX_OBJECT_KEYS = 40;
 const MAX_STRING_LENGTH = 512;
 const MAX_DEPTH = 8;
+const SENSITIVE_QUERY_VALUE_RE = /(?:token|password|secret|credential)=/i;
+const URL_VALUE_RE = /\b(?:https?|wss?):\/\//i;
 const REPO_ROOT =
   path.basename(process.cwd()) === "web" && path.basename(path.dirname(process.cwd())) === "apps"
     ? path.resolve(process.cwd(), "..", "..")
@@ -27,7 +29,12 @@ function shouldRedactKey(key: string): boolean {
     normalizedKey.includes("password") ||
     normalizedKey.includes("secret") ||
     normalizedKey.includes("authorization") ||
-    normalizedKey.includes("cookie")
+    normalizedKey.includes("cookie") ||
+    normalizedKey.includes("credential") ||
+    normalizedKey.includes("url") ||
+    normalizedKey.includes("uri") ||
+    normalizedKey.includes("origin") ||
+    normalizedKey.includes("path")
   ) {
     return true;
   }
@@ -57,6 +64,10 @@ function originMatchesHost(request: Request): boolean {
   }
 }
 
+function isSensitiveString(value: string): boolean {
+  return URL_VALUE_RE.test(value) || SENSITIVE_QUERY_VALUE_RE.test(value);
+}
+
 function sanitizeValue(value: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) {
     return "[depth-limit]";
@@ -68,6 +79,9 @@ function sanitizeValue(value: unknown, depth = 0): unknown {
     return Number.isFinite(value) ? value : null;
   }
   if (typeof value === "string") {
+    if (isSensitiveString(value)) {
+      return "[redacted]";
+    }
     return value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH)}...` : value;
   }
   if (Array.isArray(value)) {
