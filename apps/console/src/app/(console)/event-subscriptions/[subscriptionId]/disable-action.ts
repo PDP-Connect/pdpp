@@ -1,7 +1,7 @@
+"use server";
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
-
-"use server";
 
 /**
  * Server action for the operator-disable affordance on the full-page

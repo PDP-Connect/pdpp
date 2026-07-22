@@ -1,7 +1,7 @@
+"use server";
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
-
-"use server";
 
 import type { ExploreBucketRequest } from "@pdpp/operator-ui/components/views/records-explorer-view";
 import { BUCKET_TIME_ZONE, type BucketSeries, chartIsVisible } from "@pdpp/operator-ui/explore/over-time-chart";

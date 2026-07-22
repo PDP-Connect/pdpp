@@ -1,7 +1,7 @@
+"use client";
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
-
-"use client";
 
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { useActionState } from "react";

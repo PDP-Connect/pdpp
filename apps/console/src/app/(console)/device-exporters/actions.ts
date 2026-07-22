@@ -1,7 +1,7 @@
+"use server";
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
-
-"use server";
 
 import { revalidatePath } from "next/cache";
 import { isSupportedLocalCollectorConnector } from "../lib/connection-modality.ts";
