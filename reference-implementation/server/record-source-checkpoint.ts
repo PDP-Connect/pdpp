@@ -153,11 +153,11 @@ async function readPostgresCheckpoint(connectorInstanceId: string): Promise<Reco
  * columns as decimal text so the composite never loses precision through
  * JS `Number`.
  */
-export function readRecordSourceCheckpoint(connectorInstanceId: string): Promise<RecordSourceCheckpoint> {
+export async function readRecordSourceCheckpoint(connectorInstanceId: string): Promise<RecordSourceCheckpoint> {
   if (isPostgresStorageBackend()) {
-    return readPostgresCheckpoint(connectorInstanceId);
+    return await readPostgresCheckpoint(connectorInstanceId);
   }
-  return readSqliteCheckpoint(connectorInstanceId);
+  return await readSqliteCheckpoint(connectorInstanceId);
 }
 
 /** Synchronous SQLite read for callers already inside one better-sqlite3 transaction. */

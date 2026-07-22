@@ -1736,7 +1736,7 @@ async function foldConnectorSummaryStreamFactsOnce(
  * predicate alone already guarantees the row participates again next pass
  * and RESUMES (never restarts) from this exact partial progress.
  */
-function writeParticipantStreamFacts(
+async function writeParticipantStreamFacts(
   foldStore: ReturnType<typeof createStreamFactsFoldStore>,
   instanceId: string,
   facts: Record<string, StoredStreamFactEntry>,
@@ -1749,7 +1749,7 @@ function writeParticipantStreamFacts(
   const effectiveCheckpoint = checkpointByInstance.get(instanceId) ?? null;
   const participantEventSeq = effectiveCheckpoint == null ? writeSeq : Math.max(writeSeq, effectiveCheckpoint);
   const casBaseline = casBaselineByInstance.get(instanceId) ?? { eventSeq: null, foldVersion: null };
-  return foldStore.updateStreamFacts({
+  return await foldStore.updateStreamFacts({
     connectorInstanceId: instanceId,
     factsJson: Object.keys(facts).length > 0 ? JSON.stringify(facts) : null,
     eventSeq: participantEventSeq,

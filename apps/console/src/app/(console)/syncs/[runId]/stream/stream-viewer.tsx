@@ -1444,6 +1444,14 @@ function streamEventData(event: Event): string {
   return typeof data === "string" ? data : "";
 }
 
+function setCanonicalViewportFromPayload(
+  viewport: ViewportPayload,
+  setCanonicalViewportInfo: (viewportInfo: StreamViewportInfo) => void
+): void {
+  const viewportInfo = viewportInfoFromPayload(viewport);
+  setCanonicalViewportInfo(viewportInfo);
+}
+
 export function StreamSurface({
   autoOpen = false,
   connector,
@@ -2773,8 +2781,7 @@ function StreamStage({
         },
         post: () => {
           keyboardResizeStateRef.current = createMobileKeyboardResizeState();
-          const postedViewportInfo = viewportInfoFromPayload(viewport);
-          setCanonicalViewportInfo(postedViewportInfo);
+          setCanonicalViewportFromPayload(viewport, setCanonicalViewportInfo);
           logViewportDecision(decision.action, decision.reason);
           logDebug("viewport.post.start", debugPayload);
           const body = JSON.stringify(viewport);
@@ -3626,7 +3633,7 @@ function NekoSurface({
   setKeyboardAffordanceVisible,
   session,
   surfaceRef,
-  status,
+  status: connectionStatus,
   viewportInfo,
   viewerRef,
 }: {
@@ -3662,7 +3669,8 @@ function NekoSurface({
   const viewportInfoRef = useRef(viewportInfo);
   const applyViewportRef = useRef(applyViewport);
   const [clientConfig, setClientConfig] = useState<NekoClientConfig | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const setError = setStreamError;
   const [configLoadRetryEpoch, setConfigLoadRetryEpoch] = useState(0);
   const [mediaRefreshEpoch, setMediaRefreshEpoch] = useState(0);
   const [mediaDisplayable, setMediaDisplayable] = useState(false);
@@ -3837,13 +3845,13 @@ function NekoSurface({
             },
             viewer: nextViewer,
           });
-        } catch (mountError) {
+        } catch (error) {
           if (viewerRef.current === nextViewer) {
             viewerRef.current = null;
           }
           adapter = null;
           viewer = null;
-          throw mountError;
+          throw error;
         }
         logDebug("remote_surface_viewer_mounted", {
           lifecycleState: nextViewer.getLifecycleState(),
@@ -4484,7 +4492,7 @@ function NekoSurface({
     presentationMatchesRequestedViewport &&
     localSurfaceCanDisplayPresentation(localSurfaceViewportInfo, presentationViewportInfo);
   const presentationReadyForDisplay = mediaReady && presentationMatchesRequestedViewport && localSurfaceCanDisplay;
-  const showLoadingOverlay = !(error || presentationReadyForDisplay || mediaDisplayable);
+  const showLoadingOverlay = !(streamError || presentationReadyForDisplay || mediaDisplayable);
 
   return (
     <div className="flex flex-1 items-center justify-center overflow-hidden">
@@ -4498,14 +4506,14 @@ function NekoSurface({
         }}
         role="application"
       >
-        {error ? (
+        {streamError ? (
           <div
             className="absolute inset-0 z-20 flex items-center justify-center bg-background/95 p-6 text-center text-muted-foreground text-sm"
             data-pdpp-stream-ui
           >
             <div className="max-w-sm">
               <p className="font-medium text-foreground">The n.eko WebRTC stream did not attach.</p>
-              <p className="mt-2">{error}</p>
+              <p className="mt-2">{streamError}</p>
               <button
                 className="mt-4 rounded-md border border-border bg-background px-3 py-1.5 font-medium text-foreground text-xs hover:bg-muted"
                 onClick={() => {
@@ -4527,7 +4535,7 @@ function NekoSurface({
             className="absolute inset-0 z-20 flex items-center justify-center bg-black text-sm text-white/70"
             data-pdpp-stream-loading
           >
-            {status.display === "live" ? "Starting WebRTC stream..." : "Waiting for browser..."}
+            {connectionStatus.display === "live" ? "Starting WebRTC stream..." : "Waiting for browser..."}
           </div>
         ) : null}
         {/* Hidden soft-keyboard textarea — MobileTextInputController binds */}

@@ -405,7 +405,7 @@ async function resolveSetupStatusInstance(
   return { instance, namespace, store };
 }
 
-function readCredentialMetadata(
+async function readCredentialMetadata(
   setupKind: ConnectionSetupKind,
   credentialStore: ConnectorInstanceCredentialStore,
   connectorInstanceId: string
@@ -413,7 +413,7 @@ function readCredentialMetadata(
   if (setupKind !== "static_secret") {
     return null;
   }
-  return credentialStore.getMetadata(connectorInstanceId);
+  return await credentialStore.getMetadata(connectorInstanceId);
 }
 
 async function readLatestAcquisitionBatch(

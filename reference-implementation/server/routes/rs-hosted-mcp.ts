@@ -315,7 +315,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     };
   }
 
-  function buildHostedMcpServerOptions(
+  async function buildHostedMcpServerOptions(
     req: RouteRequest,
     res: RouteResponse,
     resource: string,
@@ -323,9 +323,9 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     inboundToken: string
   ): Promise<McpServerOptions | null> {
     if (req.tokenInfo?.pdpp_token_kind === "mcp_package") {
-      return buildPackageMcpServerOptions(req, res, resource, internalBase);
+      return await buildPackageMcpServerOptions(req, res, resource, internalBase);
     }
-    return buildStandaloneMcpServerOptions(resource, internalBase, inboundToken);
+    return await buildStandaloneMcpServerOptions(resource, internalBase, inboundToken);
   }
 
   async function handleHostedMcp(req: RouteRequest, res: RouteResponse): Promise<void> {

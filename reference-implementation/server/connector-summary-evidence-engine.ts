@@ -671,11 +671,11 @@ interface RepairedEvidence {
  * reason code — never a fabricated clean row.
  */
 function repairCandidate(connectorInstanceId: string): Promise<RepairedEvidence> {
-  return withConnectorInstanceWrite(connectorInstanceId, () => {
+  return withConnectorInstanceWrite(connectorInstanceId, async () => {
     if (isPostgresStorageBackend()) {
-      return repairCandidatePostgres(connectorInstanceId);
+      return await repairCandidatePostgres(connectorInstanceId);
     }
-    return repairCandidateSqlite(connectorInstanceId);
+    return await repairCandidateSqlite(connectorInstanceId);
   }).catch((err) => {
     const failedRow = buildFailedRow(connectorInstanceId, REASON_CODES.LOCK_UNAVAILABLE, err);
     // The lock itself could not be acquired, so nothing about this
