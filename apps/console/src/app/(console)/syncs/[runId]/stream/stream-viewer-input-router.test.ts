@@ -193,6 +193,7 @@ test("production delivery parity isolates touch residuals while the viewer owns 
   const direct = createMountedAdapter();
   await mountAdapter(direct.adapter);
   for (const intent of pointerGesture) {
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     await direct.adapter.sendPointer({
       button: intent.button,
       pointerId: intent.pointerId ?? 0,
@@ -203,6 +204,7 @@ test("production delivery parity isolates touch residuals while the viewer owns 
     });
   }
   for (const intent of desktopWheelBurst.slice(0, 1)) {
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     await direct.adapter.sendWheel?.({
       deltaX: intent.deltaX ?? 0,
       deltaY: intent.deltaY ?? 0,
@@ -214,6 +216,7 @@ test("production delivery parity isolates touch residuals while the viewer owns 
     deliverProductionDirectTouchScroll(direct.bridgeControl, gesture);
   }
   for (const intent of desktopWheelBurst.slice(1)) {
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     await direct.adapter.sendWheel?.({
       deltaX: intent.deltaX ?? 0,
       deltaY: intent.deltaY ?? 0,

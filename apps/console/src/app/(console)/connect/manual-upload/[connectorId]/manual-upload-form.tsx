@@ -393,6 +393,7 @@ async function pollArtifactStatus(
   }
 ): Promise<ManualUploadArtifactWire> {
   for (let attempt = 0; attempt < 180; attempt += 1) {
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     const res = await fetch(`/_ref/manual-upload/artifacts/${encodeURIComponent(artifactId)}`, {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
@@ -581,6 +582,7 @@ async function importManualUploads(
   let shouldRun = false;
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index] as File;
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     const artifact = await stageManualUploadFile(setup, file, {
       connectionId,
       displayName: target.displayName,

@@ -77,6 +77,7 @@ async function collectRouteSources(dir = SANDBOX_DIR): Promise<RouteSource[]> {
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential by design
       routes.push(...(await collectRouteSources(full)));
       continue;
     }

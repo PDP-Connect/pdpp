@@ -1540,6 +1540,7 @@ export async function recoverLocalCollector(
   let previousOpenAfterRun: number | null = null;
 
   for (let attempt = 0; attempt < maxPasses; attempt += 1) {
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     const run = summarizeRunResultForCli(await runOnce(resolved.options));
     runs.push(run);
     statusAfter = inspectStatus(resolved.options);

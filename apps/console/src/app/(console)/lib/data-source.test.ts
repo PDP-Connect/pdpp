@@ -47,6 +47,7 @@ async function walk(dir: string, files: string[] = []): Promise<string[]> {
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential by design
       await walk(full, files);
     } else if (TS_FILE_RE.test(entry.name)) {
       files.push(full);
@@ -116,6 +117,7 @@ test("/** never imports from /sandbox/**", async () => {
     if (file === SELF) {
       continue;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     const src = await readFile(file, "utf8");
     // Match Next/TS import statements that resolve to the sandbox tree:
     //   import ... from "@/app/sandbox/..."
@@ -192,6 +194,7 @@ test("/** never references the sandbox data source binding", async () => {
     if (file === SELF) {
       continue;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     const src = stripComments(await readFile(file, "utf8"));
     if (src.includes("sandboxDashboardDataSource")) {
       offenders.push(file);

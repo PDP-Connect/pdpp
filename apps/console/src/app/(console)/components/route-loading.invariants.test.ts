@@ -64,11 +64,13 @@ test("every high-value sources/runs surface ships a route-level loading.tsx", ()
 });
 
 test("each loading.tsx renders inside the shared DashboardShell for stable chrome", async () => {
-  for (const rel of LOADING_FILES) {
-    const src = await readFile(`${DASHBOARD}${rel}`, "utf8");
-    assert.match(src, DASHBOARD_SHELL_RE, `${rel} must reuse DashboardShell`);
-    assert.match(src, SHARED_SKELETON_IMPORT_RE, `${rel} must use the shared skeleton`);
-  }
+  await Promise.all(
+    LOADING_FILES.map(async (rel) => {
+      const src = await readFile(`${DASHBOARD}${rel}`, "utf8");
+      assert.match(src, DASHBOARD_SHELL_RE, `${rel} must reuse DashboardShell`);
+      assert.match(src, SHARED_SKELETON_IMPORT_RE, `${rel} must use the shared skeleton`);
+    })
+  );
 });
 
 test("the shared skeleton is lightweight and accessible", async () => {

@@ -199,6 +199,7 @@ async function manifestsDir(): Promise<string | null> {
   }
   for (const candidate of MANIFESTS_DIR_CANDIDATES) {
     try {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential by design
       const entries = await readdir(candidate);
       if (entries.length > 0) {
         resolvedManifestsDir = candidate;
@@ -753,23 +754,23 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
     return [];
   }
   const files = await readdir(dir);
-  const manifests: ConnectorManifest[] = [];
-  for (const file of files) {
-    if (!file.endsWith(".json")) {
-      continue;
-    }
-    try {
-      const raw = await readFile(join(dir, file), "utf8");
-      const m = JSON.parse(raw) as ConnectorManifest;
-      if (m.connector_id) {
-        manifests.push(m);
-      }
-    } catch {
-      // skip malformed
-    }
-  }
-  manifests.sort((a, b) => a.connector_id.localeCompare(b.connector_id));
-  return manifests;
+  const manifests = await Promise.all(
+    files
+      .filter((file) => file.endsWith(".json"))
+      .map(async (file) => {
+        try {
+          const raw = await readFile(join(dir, file), "utf8");
+          const m = JSON.parse(raw) as ConnectorManifest;
+          return m.connector_id ? m : null;
+        } catch {
+          // skip malformed
+          return null;
+        }
+      })
+  );
+  return manifests
+    .filter((manifest): manifest is ConnectorManifest => manifest !== null)
+    .sort((a, b) => a.connector_id.localeCompare(b.connector_id));
 }
 
 export interface ConnectorOverview {
@@ -1156,6 +1157,7 @@ async function paginateSampleRecords(
   let cursor: string | undefined;
   while (records.length < sampleLimit) {
     const remaining = sampleLimit - records.length;
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     const page = await queryRecords(connectorId, streamName, {
       connectionId: opts.connectionId,
       connectorInstanceId: opts.connectorInstanceId,

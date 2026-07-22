@@ -1445,14 +1445,6 @@ function streamEventData(event: Event): string {
   return typeof data === "string" ? data : "";
 }
 
-function setCanonicalViewportFromPayload(
-  viewport: ViewportPayload,
-  setCanonicalViewportInfo: (viewportInfo: StreamViewportInfo) => void
-): void {
-  const viewportInfo = viewportInfoFromPayload(viewport);
-  setCanonicalViewportInfo(viewportInfo);
-}
-
 export function StreamSurface({
   autoOpen = false,
   connector,
@@ -2785,7 +2777,8 @@ function StreamStage({
         },
         post: () => {
           keyboardResizeStateRef.current = createMobileKeyboardResizeState();
-          setCanonicalViewportFromPayload(viewport, setCanonicalViewportInfo);
+          const viewportInfo = viewportInfoFromPayload(viewport);
+          setCanonicalViewportInfo(viewportInfo);
           logViewportDecision(decision.action, decision.reason);
           logDebug("viewport.post.start", debugPayload);
           const body = JSON.stringify(viewport);
@@ -3640,7 +3633,7 @@ function NekoSurface({
   setKeyboardAffordanceVisible,
   session,
   surfaceRef,
-  status: connectionStatus,
+  status,
   viewportInfo,
   viewerRef,
 }: {
@@ -3676,8 +3669,7 @@ function NekoSurface({
   const viewportInfoRef = useRef(viewportInfo);
   const applyViewportRef = useRef(applyViewport);
   const [clientConfig, setClientConfig] = useState<NekoClientConfig | null>(null);
-  const [streamError, setStreamError] = useState<string | null>(null);
-  const setError = setStreamError;
+  const [error, setError] = useState<string | null>(null);
   const [configLoadRetryEpoch, setConfigLoadRetryEpoch] = useState(0);
   const [mediaRefreshEpoch, setMediaRefreshEpoch] = useState(0);
   const [mediaDisplayable, setMediaDisplayable] = useState(false);
@@ -4255,11 +4247,11 @@ function NekoSurface({
       return !cancelled && layoutRequestRef.current === requestId;
     }
 
-    function emitPlaygroundEvents(polledStatus: NekoStatusSnapshot) {
-      if (!polledStatus.playgroundEvents || polledStatus.playgroundEvents.length === 0) {
+    function emitPlaygroundEvents(status: NekoStatusSnapshot) {
+      if (!status.playgroundEvents || status.playgroundEvents.length === 0) {
         return;
       }
-      for (const entry of polledStatus.playgroundEvents) {
+      for (const entry of status.playgroundEvents) {
         if (claimPlaygroundEvent(playgroundSeenRef.current, entry) === "duplicate") {
           continue;
         }
@@ -4275,16 +4267,16 @@ function NekoSurface({
       }
     }
 
-    function handlePolledStatus(polledStatus: NekoStatusSnapshot) {
-      emitPlaygroundEvents(polledStatus);
+    function handlePolledStatus(status: NekoStatusSnapshot) {
+      emitPlaygroundEvents(status);
       if (!isCurrentRequest()) {
         return "done";
       }
-      const screen = polledStatus.screen;
+      const screen = status.screen;
       if (!screen) {
         logDebug("neko.status.poll", {
-          page: polledStatus.page,
-          pageCdpAvailable: polledStatus.pageCdpAvailable,
+          page: status.page,
+          pageCdpAvailable: status.pageCdpAvailable,
           requestId,
           result: "missing-screen",
           viewport,
@@ -4294,16 +4286,16 @@ function NekoSurface({
 
       latestPolledScreen = screen;
       const fitsScreen = screenFitsViewport(screen, viewport);
-      const fitsPage = pageFitsViewport(polledStatus, viewport);
+      const fitsPage = pageFitsViewport(status, viewport);
       const fits = fitsScreen && fitsPage;
       logDebug("neko.status.poll", {
         fits,
         fitsPage,
         fitsScreen,
-        page: polledStatus.page,
-        pageCdpAvailable: polledStatus.pageCdpAvailable,
-        pageMetricsMismatch: polledStatus.pageMetricsMismatch,
-        pageMetricsMismatchAfterReapply: polledStatus.pageMetricsMismatchAfterReapply,
+        page: status.page,
+        pageCdpAvailable: status.pageCdpAvailable,
+        pageMetricsMismatch: status.pageMetricsMismatch,
+        pageMetricsMismatchAfterReapply: status.pageMetricsMismatchAfterReapply,
         requestId,
         result: fits ? "done" : "retry",
         screen,
@@ -4324,8 +4316,9 @@ function NekoSurface({
           requestId,
           viewport,
         });
-        const polledStatus = await fetchNekoStatusBestEffort(resolvedStatusPath);
-        if (handlePolledStatus(polledStatus) === "done") {
+        // biome-ignore lint/performance/noAwaitInLoops: sequential by design
+        const status = await fetchNekoStatusBestEffort(resolvedStatusPath);
+        if (handlePolledStatus(status) === "done") {
           return;
         }
         const canRetry = attempt < STREAM_VIEWER_POLICY.nekoStatusPollAttempts;
@@ -4499,7 +4492,7 @@ function NekoSurface({
     presentationMatchesRequestedViewport &&
     localSurfaceCanDisplayPresentation(localSurfaceViewportInfo, presentationViewportInfo);
   const presentationReadyForDisplay = mediaReady && presentationMatchesRequestedViewport && localSurfaceCanDisplay;
-  const showLoadingOverlay = !(streamError || presentationReadyForDisplay || mediaDisplayable);
+  const showLoadingOverlay = !(error || presentationReadyForDisplay || mediaDisplayable);
 
   return (
     <div className="flex flex-1 items-center justify-center overflow-hidden">
@@ -4514,14 +4507,14 @@ function NekoSurface({
         }}
         role="application"
       >
-        {streamError ? (
+        {error ? (
           <div
             className="absolute inset-0 z-20 flex items-center justify-center bg-background/95 p-6 text-center text-muted-foreground text-sm"
             data-pdpp-stream-ui
           >
             <div className="max-w-sm">
               <p className="font-medium text-foreground">The n.eko WebRTC stream did not attach.</p>
-              <p className="mt-2">{streamError}</p>
+              <p className="mt-2">{error}</p>
               <button
                 className="mt-4 rounded-md border border-border bg-background px-3 py-1.5 font-medium text-foreground text-xs hover:bg-muted"
                 // biome-ignore lint/performance/noJsxPropsBind: non-memoized, inline binding intentional
@@ -4544,7 +4537,7 @@ function NekoSurface({
             className="absolute inset-0 z-20 flex items-center justify-center bg-black text-sm text-white/70"
             data-pdpp-stream-loading
           >
-            {connectionStatus.display === "live" ? "Starting WebRTC stream..." : "Waiting for browser..."}
+            {status.display === "live" ? "Starting WebRTC stream..." : "Waiting for browser..."}
           </div>
         ) : null}
         {/* Hidden soft-keyboard textarea — MobileTextInputController binds */}

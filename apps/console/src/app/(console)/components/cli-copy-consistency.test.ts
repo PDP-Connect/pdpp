@@ -61,24 +61,26 @@ const PEEK_NO_INSTALL_HOOK = /peek-cli-no-install/;
 const DETAIL_NO_INSTALL_HOOK = /cli-no-install-command/;
 
 test("no surfaced file advertises legacy bare pdpp run/grant/trace aliases", async () => {
-  for (const relPath of SURFACED_FILES) {
-    const src = await read(relPath);
-    assert.equal(
-      LEGACY_RUN_TIMELINE.test(src),
-      false,
-      `${relPath}: found legacy 'pdpp run timeline' - use 'pdpp ref run timeline'`
-    );
-    assert.equal(
-      LEGACY_GRANT_TIMELINE.test(src),
-      false,
-      `${relPath}: found legacy 'pdpp grant timeline' - use 'pdpp ref grant timeline'`
-    );
-    assert.equal(
-      LEGACY_TRACE_SHOW.test(src),
-      false,
-      `${relPath}: found legacy 'pdpp trace show' - use 'pdpp ref trace show'`
-    );
-  }
+  await Promise.all(
+    SURFACED_FILES.map(async (relPath) => {
+      const src = await read(relPath);
+      assert.equal(
+        LEGACY_RUN_TIMELINE.test(src),
+        false,
+        `${relPath}: found legacy 'pdpp run timeline' - use 'pdpp ref run timeline'`
+      );
+      assert.equal(
+        LEGACY_GRANT_TIMELINE.test(src),
+        false,
+        `${relPath}: found legacy 'pdpp grant timeline' - use 'pdpp ref grant timeline'`
+      );
+      assert.equal(
+        LEGACY_TRACE_SHOW.test(src),
+        false,
+        `${relPath}: found legacy 'pdpp trace show' - use 'pdpp ref trace show'`
+      );
+    })
+  );
 });
 
 test("reference-implementation.md advertises canonical pdpp ref commands", async () => {

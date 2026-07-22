@@ -36,6 +36,7 @@ async function recoverStartedBrowserRun(
 ): Promise<string | null> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (attempt > 0) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential by design
       await delay(400);
     }
     try {

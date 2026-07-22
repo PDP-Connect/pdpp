@@ -16,6 +16,7 @@ export async function resolveRepoRoot(): Promise<string> {
 
   // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   while (true) {
+    // biome-ignore lint/performance/noAwaitInLoops: sequential by design
     const hasWorkspace = await fileExists(path.join(dir, "pnpm-workspace.yaml"));
     const hasOpenSpec = await dirExists(path.join(dir, "openspec"));
     if (hasWorkspace && hasOpenSpec) {
