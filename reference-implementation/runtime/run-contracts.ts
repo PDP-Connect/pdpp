@@ -28,7 +28,7 @@ export interface RunNowOptions {
   force?: boolean;
   manifest?: ConnectorManifest;
   ownerToken?: string;
-  priorityClass?: "owner_interactive" | "scheduled_refresh";
+  priorityClass?: "interactive" | "background";
   resources?: Readonly<Record<string, readonly string[]>>;
   rsUrl?: string;
   runId?: string;

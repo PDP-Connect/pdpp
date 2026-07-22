@@ -161,6 +161,187 @@ export function getPostgresLockPoolCapacity() {
   return lockPoolCapacity;
 }
 
+const POSTGRES_LEASE_PRIORITY_CURRENT = ['interactive', 'background'];
+const POSTGRES_LEASE_PRIORITY_LEGACY = ['owner_interactive', 'scheduled_refresh'];
+const POSTGRES_LEASE_PRIORITY_MIXED = [
+  'owner_interactive', 'scheduled_refresh', 'interactive', 'background',
+];
+// Stable, migration-specific key. This serializes only the durable lease
+// priority conversion, not unrelated bootstrap work or ordinary lease I/O.
+const POSTGRES_LEASE_PRIORITY_MIGRATION_LOCK = [482571, 151];
+// The public initializer also runs older additive migrations which are not
+// individually concurrency-safe. Keep their DDL from racing a fully
+// bootstrapped legacy-priority starter; the priority migration retains its own
+// transaction-scoped lock below so its catalog decision is independently safe.
+const POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK = [482571, 150];
+const POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS = 120;
+const POSTGRES_BOOTSTRAP_LOCK_INITIAL_DELAY_MS = 25;
+const POSTGRES_BOOTSTRAP_LOCK_MAX_DELAY_MS = 250;
+
+function samePostgresEnumMembers(actual, expected) {
+  return actual.length === expected.length && actual.every((value) => expected.includes(value));
+}
+
+function postgresCheckLiterals(definition) {
+  return [...definition.matchAll(/'((?:''|[^'])*)'/g)].map((match) => match[1].replaceAll("''", "'"));
+}
+
+// pg_get_constraintdef renders an IN check as either IN (...) or = ANY (ARRAY[...])
+// depending on the server version. Accept only those complete, direct enum forms:
+// a compound check mentioning priority_class must never be rewritten by this migration.
+function postgresDirectPriorityEnum(definition) {
+  const compact = definition.replace(/::text\b/gi, '').replace(/\s+/g, ' ').trim();
+  const isDirectIn = /^CHECK \(\(?priority_class IN \([^)]*\)\)?\)$/i.test(compact);
+  const isDirectAny = /^CHECK \(\(?priority_class = ANY \(ARRAY\[[^\]]*\]\)\)?\)$/i.test(compact);
+  return isDirectIn || isDirectAny ? postgresCheckLiterals(compact) : null;
+}
+
+function quotePostgresIdentifier(identifier) {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+/**
+ * Migrate only the known, direct priority enum check. Catalog discovery is
+ * deliberately narrower than a text search: application-owned compound checks
+ * remain untouched, and a current schema takes no priority DDL path at all.
+ */
+async function migratePostgresBrowserSurfaceLeasePriority(client) {
+  await client.query('BEGIN');
+  try {
+    await client.query(
+      'SELECT pg_advisory_xact_lock($1, $2)',
+      POSTGRES_LEASE_PRIORITY_MIGRATION_LOCK,
+    );
+    // Read only after taking the migration lock. A waiting second starter must
+    // classify the schema the first starter committed, not stale constraint
+    // names it observed before the first ALTER TABLE.
+    const table = await client.query("SELECT to_regclass('public.browser_surface_leases') AS table_name");
+    if (!table.rows[0]?.table_name) {
+      await client.query('COMMIT');
+      return;
+    }
+    const constraints = await client.query(`
+      SELECT conname, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint
+      WHERE conrelid = 'browser_surface_leases'::regclass AND contype = 'c'
+    `);
+    const direct = constraints.rows.map((constraint) => ({
+      ...constraint,
+      values: postgresDirectPriorityEnum(constraint.definition),
+    })).filter((constraint) => constraint.values);
+    const legacy = direct.filter((constraint) => (
+      samePostgresEnumMembers(constraint.values, POSTGRES_LEASE_PRIORITY_LEGACY)
+      || samePostgresEnumMembers(constraint.values, POSTGRES_LEASE_PRIORITY_MIXED)
+    ));
+    const current = direct.filter((constraint) =>
+      samePostgresEnumMembers(constraint.values, POSTGRES_LEASE_PRIORITY_CURRENT));
+    const oldRows = await client.query(`
+      SELECT 1 FROM browser_surface_leases
+      WHERE priority_class IN ('owner_interactive', 'scheduled_refresh') LIMIT 1
+    `);
+
+    if (legacy.length === 0) {
+      if (oldRows.rowCount > 0 || current.length === 0) {
+        throw new Error('Unsupported browser_surface_leases priority CHECK shape; refusing an unsafe migration.');
+      }
+      await client.query('COMMIT');
+      return;
+    }
+    for (const constraint of legacy) {
+      await client.query(`ALTER TABLE browser_surface_leases DROP CONSTRAINT ${quotePostgresIdentifier(constraint.conname)}`);
+    }
+    await client.query(`
+      UPDATE browser_surface_leases
+      SET priority_class = CASE priority_class
+        WHEN 'owner_interactive' THEN 'interactive'
+        WHEN 'scheduled_refresh' THEN 'background'
+        ELSE priority_class
+      END
+      WHERE priority_class IN ('owner_interactive', 'scheduled_refresh')
+    `);
+    if (current.length === 0) {
+      await client.query(`
+        ALTER TABLE browser_surface_leases
+          ADD CONSTRAINT browser_surface_leases_priority_class_check
+          CHECK (priority_class IN ('interactive', 'background'))
+      `);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  }
+}
+
+async function migratePostgresBrowserSurfaceLeaseLifecycleChecks(client) {
+  const constraints = await client.query(`
+    SELECT conname, pg_get_constraintdef(oid) AS definition
+    FROM pg_constraint
+    WHERE conrelid = 'browser_surface_leases'::regclass AND contype = 'c'
+      AND conname IN ('browser_surface_leases_status_check', 'browser_surface_leases_wait_reason_check')
+  `);
+  const byName = new Map(constraints.rows.map((constraint) => [constraint.conname, constraint.definition]));
+  const status = byName.get('browser_surface_leases_status_check');
+  const waitReason = byName.get('browser_surface_leases_wait_reason_check');
+  const needsStatus = status && !status.includes("'starting_surface'");
+  const needsWaitReason = waitReason && !waitReason.includes("'retained_capacity_reserved'");
+  if (!needsStatus && !needsWaitReason) return;
+  await client.query('BEGIN');
+  try {
+    if (needsStatus) {
+      await client.query('ALTER TABLE browser_surface_leases DROP CONSTRAINT browser_surface_leases_status_check');
+      await client.query(`ALTER TABLE browser_surface_leases ADD CONSTRAINT browser_surface_leases_status_check CHECK (status IN (
+        'waiting_for_browser_surface', 'starting_surface', 'leased', 'released',
+        'expired', 'deferred', 'cancelled', 'surface_failed'
+      ))`);
+    }
+    if (needsWaitReason) {
+      await client.query('ALTER TABLE browser_surface_leases DROP CONSTRAINT browser_surface_leases_wait_reason_check');
+      await client.query(`ALTER TABLE browser_surface_leases ADD CONSTRAINT browser_surface_leases_wait_reason_check CHECK (wait_reason IS NULL OR wait_reason IN (
+        'capacity_full', 'surface_starting', 'surface_unhealthy', 'surface_start_failed',
+        'surface_readiness_timeout', 'incompatible_static_profile',
+        'launch_precondition_failed', 'lease_wait_timeout', 'retained_capacity_reserved'
+      ))`);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  }
+}
+
+async function ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client) {
+  const column = await client.query(`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'browser_surface_leases'
+      AND column_name = 'surface_subject_id'
+  `);
+  if (column.rowCount === 0) {
+    await client.query('ALTER TABLE browser_surface_leases ADD COLUMN surface_subject_id TEXT');
+  }
+  const index = await client.query(`
+    SELECT indexdef FROM pg_indexes
+    WHERE schemaname = 'public' AND tablename = 'browser_surface_leases'
+      AND indexname = 'idx_pg_browser_surface_leases_one_pending_connector_profile'
+  `);
+  if (index.rowCount > 0 && index.rows[0].indexdef.includes('surface_subject_id')) return;
+  await client.query('BEGIN');
+  try {
+    if (index.rowCount > 0) {
+      await client.query('DROP INDEX idx_pg_browser_surface_leases_one_pending_connector_profile');
+    }
+    await client.query(`
+      CREATE UNIQUE INDEX idx_pg_browser_surface_leases_one_pending_connector_profile
+      ON browser_surface_leases(connector_id, profile_key, COALESCE(surface_subject_id, ''), COALESCE(account_key, ''))
+      WHERE status IN ('waiting_for_browser_surface', 'starting_surface')
+    `);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  }
+}
+
 export async function postgresQuery(sql, params = []) {
   return getPostgresPool().query(sql, params);
 }
@@ -326,7 +507,10 @@ export async function closePostgresStorage() {
 
 export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
   const client = await getPostgresPool().connect();
+  let bootstrapLockHeld = false;
   try {
+    await acquirePostgresBootstrapLock(client);
+    bootstrapLockHeld = true;
     // pgvector is optional. When available, the boot migration below moves
     // semantic embeddings to the pgvector representation; without it the
     // semantic fallback stores vectors as JSONB and computes distances after
@@ -1033,7 +1217,7 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
           'cancelled',
           'surface_failed'
         )),
-        priority_class TEXT NOT NULL CHECK (priority_class IN ('owner_interactive', 'scheduled_refresh')),
+        priority_class TEXT NOT NULL CHECK (priority_class IN ('interactive', 'background')),
         requested_at TEXT NOT NULL,
         leased_at TEXT,
         released_at TEXT,
@@ -1059,15 +1243,6 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_one_active_surface
         ON browser_surface_leases(surface_id)
         WHERE surface_id IS NOT NULL AND status = 'leased';
-
-      ALTER TABLE browser_surface_leases
-        ADD COLUMN IF NOT EXISTS surface_subject_id TEXT;
-
-      DROP INDEX IF EXISTS idx_pg_browser_surface_leases_one_pending_connector_profile;
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_one_pending_connector_profile
-        ON browser_surface_leases(connector_id, profile_key, COALESCE(surface_subject_id, ''), COALESCE(account_key, ''))
-        WHERE status IN ('waiting_for_browser_surface', 'starting_surface');
 
       CREATE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_non_terminal
         ON browser_surface_leases(status, priority_class, requested_at);
@@ -1126,33 +1301,6 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
 
       ALTER TABLE browser_surfaces
         ADD COLUMN IF NOT EXISTS browser_generation_hash TEXT;
-
-      ALTER TABLE browser_surface_leases
-        DROP CONSTRAINT IF EXISTS browser_surface_leases_status_check,
-        DROP CONSTRAINT IF EXISTS browser_surface_leases_wait_reason_check;
-
-      ALTER TABLE browser_surface_leases
-        ADD CONSTRAINT browser_surface_leases_status_check CHECK (status IN (
-          'waiting_for_browser_surface',
-          'starting_surface',
-          'leased',
-          'released',
-          'expired',
-          'deferred',
-          'cancelled',
-          'surface_failed'
-        )),
-        ADD CONSTRAINT browser_surface_leases_wait_reason_check CHECK (wait_reason IS NULL OR wait_reason IN (
-          'capacity_full',
-          'surface_starting',
-          'surface_unhealthy',
-          'surface_start_failed',
-          'surface_readiness_timeout',
-          'incompatible_static_profile',
-          'launch_precondition_failed',
-          'lease_wait_timeout',
-          'retained_capacity_reserved'
-        ));
 
       CREATE TABLE IF NOT EXISTS scheduler_run_history (
         id BIGSERIAL PRIMARY KEY,
@@ -1723,6 +1871,9 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
       CREATE INDEX IF NOT EXISTS idx_pg_client_event_attempts_queue
         ON client_event_attempts(queue_id, attempt_id);
     `);
+    await ensurePostgresBrowserSurfaceLeaseColumnsAndIndexes(client);
+    await migratePostgresBrowserSurfaceLeaseLifecycleChecks(client);
+    await migratePostgresBrowserSurfaceLeasePriority(client);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
     await migratePostgresManifestWriteViolations(client);
@@ -1738,8 +1889,39 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
     await migratePostgresSemanticEmbeddingToVector(client, log);
     await ensurePostgresLexicalScopedGinIndex(client, log);
   } finally {
-    client.release();
+    try {
+      if (bootstrapLockHeld) {
+        await client.query(
+          'SELECT pg_advisory_unlock($1, $2)',
+          POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK,
+        );
+      }
+    } finally {
+      client.release();
+    }
   }
+}
+
+function bootstrapLockDelay(attempt) {
+  return Math.min(
+    POSTGRES_BOOTSTRAP_LOCK_MAX_DELAY_MS,
+    POSTGRES_BOOTSTRAP_LOCK_INITIAL_DELAY_MS * 2 ** Math.min(attempt, 4),
+  );
+}
+
+async function acquirePostgresBootstrapLock(client) {
+  for (let attempt = 0; attempt < POSTGRES_BOOTSTRAP_LOCK_MAX_ATTEMPTS; attempt += 1) {
+    const result = await client.query(
+      'SELECT pg_try_advisory_lock($1, $2) AS locked',
+      POSTGRES_BOOTSTRAP_SERIALIZATION_LOCK,
+    );
+    if (result.rows[0]?.locked === true) return;
+    // pg_try_advisory_lock completes before this application-side sleep. A
+    // contender therefore has no active virtual transaction that could block
+    // CREATE/DROP INDEX CONCURRENTLY in the lock holder.
+    await new Promise((resolve) => setTimeout(resolve, bootstrapLockDelay(attempt)));
+  }
+  throw new Error('Timed out waiting for PostgreSQL bootstrap serialization lock.');
 }
 
 async function hasPgvectorExtension(client) {
@@ -1844,6 +2026,9 @@ function semanticHotHnswIndexName(connectorId, connectorInstanceId) {
 }
 
 async function ensureSemanticHotHnswIndexes(client, log = () => {}) {
+  // bootstrapPostgresSchema holds the polling-acquired session lock while this
+  // concurrent build runs; a losing bootstrap has finished pg_try_advisory_lock
+  // before backing off and cannot form a virtual-xact wait cycle here.
   if (!(await hasPgvectorExtension(client))) return;
   const minRows = semanticHotHnswMinRows();
   const maxIndexes = semanticHotHnswMaxIndexes();
@@ -2531,6 +2716,8 @@ async function ensurePostgresIndexDefinition(client, { name, createSql, expected
 }
 
 async function ensurePostgresLexicalScopedGinIndex(client, log = () => {}) {
+  // This includes both the invalid-index DROP CONCURRENTLY recovery path and
+  // the CREATE CONCURRENTLY path. Both execute under bootstrap's polling lock.
   const extension = await client.query("SELECT 1 FROM pg_extension WHERE extname = 'btree_gin' LIMIT 1");
   if (extension.rowCount === 0) {
     log('[PDPP] Lexical search scoped GIN index skipped: btree_gin extension is unavailable');

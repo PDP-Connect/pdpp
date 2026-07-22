@@ -42,7 +42,7 @@ function createLeaseManager() {
       staticStreamBaseUrl: "http://127.0.0.1:8080",
       leaseWaitTimeoutMs: 300_000,
       idleTtlMs: 600_000,
-      defaultPriorityClass: "scheduled_refresh",
+      defaultPriorityClass: "background",
       priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
       surfaceMode: "static",
     },

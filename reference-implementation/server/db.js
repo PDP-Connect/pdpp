@@ -701,7 +701,7 @@ CREATE TABLE IF NOT EXISTS browser_surface_leases (
     'cancelled',
     'surface_failed'
   )),
-  CHECK (priority_class IN ('owner_interactive', 'scheduled_refresh')),
+  CHECK (priority_class IN ('interactive', 'background')),
   CHECK (wait_reason IS NULL OR wait_reason IN (
     'capacity_full',
     'surface_starting',
@@ -1639,8 +1639,6 @@ function migrateManifestWriteViolations(raw) {
 
 function ensureBrowserSurfaceLeaseIndexes(raw) {
   raw.exec(`
-DROP INDEX IF EXISTS idx_browser_surface_leases_one_pending_connector_profile;
-
 CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_surface_leases_one_non_terminal_run
   ON browser_surface_leases(run_id)
   WHERE status NOT IN ('released', 'expired', 'deferred', 'cancelled', 'surface_failed');
@@ -1658,104 +1656,166 @@ CREATE INDEX IF NOT EXISTS idx_browser_surface_leases_non_terminal
 `);
 }
 
-function migrateBrowserSurfaceLeaseEnumChecks(raw) {
-  const row = raw.prepare(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'browser_surface_leases'"
-  ).get();
-  const createSql = typeof row?.sql === 'string' ? row.sql : '';
-  if (
-    createSql.includes("'starting_surface'") &&
-    createSql.includes("'surface_start_failed'") &&
-    createSql.includes("'retained_capacity_reserved'")
-  ) {
-    return;
+const BROWSER_SURFACE_LEASE_GENERATED_OBJECTS = new Set([
+  'idx_browser_surface_leases_one_non_terminal_run',
+  'idx_browser_surface_leases_one_active_surface',
+  'idx_browser_surface_leases_one_pending_connector_profile',
+  'idx_browser_surface_leases_non_terminal',
+]);
+
+const BROWSER_SURFACE_LEASE_ENUMS = {
+  status: {
+    current: [
+      'waiting_for_browser_surface', 'starting_surface', 'leased', 'released',
+      'expired', 'deferred', 'cancelled', 'surface_failed',
+    ],
+    legacy: [
+      'waiting_for_browser_surface', 'leased', 'released', 'expired', 'deferred',
+      'cancelled', 'surface_failed',
+    ],
+  },
+  priority_class: {
+    current: ['interactive', 'background'],
+    legacy: ['owner_interactive', 'scheduled_refresh'],
+    mixed: ['owner_interactive', 'scheduled_refresh', 'interactive', 'background'],
+  },
+  wait_reason: {
+    current: [
+      'capacity_full', 'surface_starting', 'surface_unhealthy', 'surface_start_failed',
+      'surface_readiness_timeout', 'incompatible_static_profile',
+      'launch_precondition_failed', 'lease_wait_timeout', 'retained_capacity_reserved',
+    ],
+    legacy: [
+      'capacity_full', 'surface_starting', 'surface_unhealthy',
+      'incompatible_static_profile', 'launch_precondition_failed', 'lease_wait_timeout',
+    ],
+    intermediate: [
+      'capacity_full', 'surface_starting', 'surface_unhealthy', 'surface_start_failed',
+      'surface_readiness_timeout', 'incompatible_static_profile',
+      'launch_precondition_failed', 'lease_wait_timeout',
+    ],
+  },
+};
+
+function sameEnumMembers(actual, expected) {
+  return actual.length === expected.length && actual.every((value) => expected.includes(value));
+}
+
+function enumLiterals(sql) {
+  return [...sql.matchAll(/'((?:''|[^'])*)'/g)].map((match) => match[1].replaceAll("''", "'"));
+}
+
+function sqliteLeaseCheckPattern(column) {
+  const quotedColumn = `(?:${column}|"${column}")`;
+  if (column === 'wait_reason') {
+    return new RegExp(
+      `((?:CONSTRAINT\\s+(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\\s+)?)CHECK\\s*\\(\\s*${quotedColumn}\\s+IS\\s+NULL\\s+OR\\s+${quotedColumn}\\s+IN\\s*\\([^)]*\\)\\s*\\)`,
+      'gi',
+    );
   }
+  return new RegExp(
+    `((?:CONSTRAINT\\s+(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\\s+)?)CHECK\\s*\\(\\s*${quotedColumn}\\s+IN\\s*\\([^)]*\\)\\s*\\)`,
+    'gi',
+  );
+}
 
-  addColumnIfMissing(raw, 'browser_surface_leases', 'surface_subject_id', 'TEXT');
+function sqliteLeaseCheckSql(column, values) {
+  const allowed = values.map((value) => `'${value}'`).join(', ');
+  return column === 'wait_reason'
+    ? `CHECK (${column} IS NULL OR ${column} IN (${allowed}))`
+    : `CHECK (${column} IN (${allowed}))`;
+}
 
-  raw.exec(`
-DROP TABLE IF EXISTS browser_surface_leases_new;
+function transformSupportedLeaseChecks(createSql) {
+  let changed = false;
+  let transformed = createSql;
+  for (const [column, shapes] of Object.entries(BROWSER_SURFACE_LEASE_ENUMS)) {
+    let found = 0;
+    transformed = transformed.replace(sqliteLeaseCheckPattern(column), (whole, prefix) => {
+      found += 1;
+      const values = enumLiterals(whole);
+      const knownShape = Object.values(shapes).find((shape) => sameEnumMembers(values, shape));
+      if (!knownShape) {
+        throw new Error(`Unsupported browser_surface_leases ${column} CHECK shape; refusing a lossy migration.`);
+      }
+      if (!sameEnumMembers(values, shapes.current)) changed = true;
+      return `${prefix}${sqliteLeaseCheckSql(column, shapes.current)}`;
+    });
+    if (found !== 1) {
+      throw new Error(`Expected exactly one direct browser_surface_leases ${column} CHECK; refusing a lossy migration.`);
+    }
+  }
+  return { createSql: transformed, changed };
+}
 
-CREATE TABLE browser_surface_leases_new (
-  lease_id        TEXT PRIMARY KEY,
-  surface_id      TEXT,
-  connector_id    TEXT NOT NULL,
-  profile_key     TEXT NOT NULL,
-  surface_subject_id TEXT,
-  account_key     TEXT,
-  run_id          TEXT NOT NULL,
-  status          TEXT NOT NULL,
-  priority_class  TEXT NOT NULL,
-  requested_at    TEXT NOT NULL,
-  leased_at       TEXT,
-  released_at     TEXT,
-  expires_at      TEXT NOT NULL,
-  fencing_token   INTEGER NOT NULL,
-  wait_reason     TEXT,
-  CHECK (status IN (
-    'waiting_for_browser_surface',
-    'starting_surface',
-    'leased',
-    'released',
-    'expired',
-    'deferred',
-    'cancelled',
-    'surface_failed'
-  )),
-  CHECK (priority_class IN ('owner_interactive', 'scheduled_refresh')),
-  CHECK (wait_reason IS NULL OR wait_reason IN (
-    'capacity_full',
-    'surface_starting',
-    'surface_unhealthy',
-    'surface_start_failed',
-    'surface_readiness_timeout',
-    'incompatible_static_profile',
-    'launch_precondition_failed',
-    'lease_wait_timeout',
-    'retained_capacity_reserved'
-  )),
-  FOREIGN KEY (surface_id) REFERENCES browser_surfaces(surface_id)
-);
+function quoteSqliteIdentifier(identifier) {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
 
-INSERT INTO browser_surface_leases_new(
-  lease_id,
-  surface_id,
-  connector_id,
-  profile_key,
-  surface_subject_id,
-  account_key,
-  run_id,
-  status,
-  priority_class,
-  requested_at,
-  leased_at,
-  released_at,
-  expires_at,
-  fencing_token,
-  wait_reason
-)
-SELECT
-  lease_id,
-  surface_id,
-  connector_id,
-  profile_key,
-  surface_subject_id,
-  account_key,
-  run_id,
-  status,
-  priority_class,
-  requested_at,
-  leased_at,
-  released_at,
-  expires_at,
-  fencing_token,
-  wait_reason
-FROM browser_surface_leases;
+function sqliteLeaseDependentObjects(raw) {
+  return raw.prepare(`
+    SELECT type, name, sql
+    FROM sqlite_master
+    WHERE tbl_name = 'browser_surface_leases'
+      AND type IN ('index', 'trigger')
+      AND sql IS NOT NULL
+    ORDER BY type, name
+  `).all().filter((object) => !BROWSER_SURFACE_LEASE_GENERATED_OBJECTS.has(object.name));
+}
 
-DROP TABLE browser_surface_leases;
-ALTER TABLE browser_surface_leases_new RENAME TO browser_surface_leases;
-`);
-  ensureBrowserSurfaceLeaseIndexes(raw);
+function migrateBrowserSurfaceLeaseEnumChecks(raw) {
+  // SQLite cannot rebuild a referenced table while foreign-key enforcement is
+  // enabled: dropping the old table invalidates inbound references before the
+  // replacement takes its name. Disable enforcement only around this single
+  // connection's transaction, then run foreign_key_check before committing.
+  const foreignKeysEnabled = raw.pragma('foreign_keys', { simple: true }) === 1;
+  if (foreignKeysEnabled) raw.pragma('foreign_keys = OFF');
+  try {
+    raw.transaction(() => {
+    if (raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'browser_surface_leases_new'").get()) {
+      throw new Error('Found unfinished browser_surface_leases_new migration table; refusing to overwrite it.');
+    }
+    if (!hasTableColumn(raw, 'browser_surface_leases', 'surface_subject_id')) {
+      raw.exec('ALTER TABLE browser_surface_leases ADD COLUMN surface_subject_id TEXT');
+    }
+    const row = raw.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'browser_surface_leases'",
+    ).get();
+    const originalSql = typeof row?.sql === 'string' ? row.sql : '';
+    const { createSql, changed } = transformSupportedLeaseChecks(originalSql);
+    const oldRows = raw.prepare(
+      "SELECT 1 FROM browser_surface_leases WHERE priority_class IN ('owner_interactive', 'scheduled_refresh') LIMIT 1",
+    ).get();
+    if (!changed && !oldRows) return;
+    const newTableSql = createSql.replace(
+      /^(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?:"browser_surface_leases"|browser_surface_leases)/i,
+      '$1browser_surface_leases_new',
+    );
+    if (newTableSql === createSql) throw new Error('Unsupported browser_surface_leases CREATE TABLE shape; refusing a lossy migration.');
+    const dependentObjects = sqliteLeaseDependentObjects(raw);
+    const columns = tableColumns(raw, 'browser_surface_leases');
+    if (!columns.includes('priority_class')) throw new Error('browser_surface_leases has no priority_class column.');
+    const quotedColumns = columns.map(quoteSqliteIdentifier).join(', ');
+    const projection = columns.map((column) => (
+      column === 'priority_class'
+        ? "CASE priority_class WHEN 'owner_interactive' THEN 'interactive' WHEN 'scheduled_refresh' THEN 'background' ELSE priority_class END"
+        : quoteSqliteIdentifier(column)
+    )).join(', ');
+    raw.exec('PRAGMA defer_foreign_keys = ON');
+    raw.exec(newTableSql);
+    raw.exec(`INSERT INTO browser_surface_leases_new (${quotedColumns}) SELECT ${projection} FROM browser_surface_leases`);
+    raw.exec('DROP TABLE browser_surface_leases');
+    raw.exec('ALTER TABLE browser_surface_leases_new RENAME TO browser_surface_leases');
+    ensureBrowserSurfaceLeaseIndexes(raw);
+    for (const object of dependentObjects) raw.exec(object.sql);
+    const foreignKeyViolations = raw.prepare('PRAGMA foreign_key_check').all();
+    if (foreignKeyViolations.length > 0) {
+      throw new Error(`browser_surface_leases migration failed foreign_key_check: ${JSON.stringify(foreignKeyViolations)}`);
+    }
+    })();
+  } finally {
+    if (foreignKeysEnabled) raw.pragma('foreign_keys = ON');
+  }
 }
 
 function tableColumns(raw, table) {
@@ -3807,7 +3867,6 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_dir', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_volume', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'browser_generation_hash', 'TEXT'));
-  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surface_leases', 'surface_subject_id', 'TEXT'));
   // Dataset summary projection fencing: a `generation` column lets rebuild
   // and reconcile writers guard their final summary write against
   // concurrent record/blob delta writers. Pre-existing rows seed with 0;

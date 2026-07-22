@@ -66,7 +66,7 @@ export interface SourceWebhookController {
     connectorId: string,
     input: {
       readonly manifest: ConnectorManifestLike;
-      readonly priorityClass: "scheduled_refresh";
+      readonly priorityClass: "background";
       readonly triggerKind: "webhook";
     }
   ): RunNowResult | Promise<RunNowResult>;
@@ -169,7 +169,7 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
             // result unchanged to preserve that behaviour.
             return ctx.controller.runNow(connectorId, {
               manifest,
-              priorityClass: "scheduled_refresh",
+              priorityClass: "background",
               triggerKind,
             });
           },

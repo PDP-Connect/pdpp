@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-07-22
+goal: Adopt interactive/background once while preserving trigger-kind semantics
+  and data across SQLite/Postgres upgrades.

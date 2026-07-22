@@ -27,6 +27,47 @@ async function remoteSurfaceInstalled() {
   }
 }
 
+function retainedIdleSurface(overrides = {}) {
+  return {
+    surface_id: 'retained_surface',
+    backend: 'neko',
+    profile_key: 'retained-profile',
+    connector_id: 'retained-connector',
+    cdp_url: 'http://neko:9222',
+    stream_base_url: 'http://neko:8080',
+    health: 'ready',
+    created_at: '2026-07-22T12:00:00.000Z',
+    last_used_at: '2026-07-22T12:00:00.000Z',
+    retained: true,
+    ...overrides,
+  };
+}
+
+async function loadLeaseManager(t) {
+  try {
+    return await import('@opendatalabs/remote-surface/leases');
+  } catch {
+    t.skip('@opendatalabs/remote-surface not installed; skipping installed-package retention assertion');
+    return null;
+  }
+}
+
+function createRetainedSurfaceManager(leases) {
+  return new leases.BrowserSurfaceLeaseManager({
+    config: {
+      managedConnectors: new Set(['retained-connector', 'background-connector']),
+      surfaceCap: 1,
+      leaseWaitTimeoutMs: 60_000,
+      idleTtlMs: 60_000,
+      defaultPriorityClass: 'background',
+      priorityRanks: leases.DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceMode: 'dynamic',
+    },
+    now: () => new Date('2026-07-22T12:10:00.000Z'),
+    initialSurfaces: [retainedIdleSurface()],
+  });
+}
+
 test('reference streaming routes adapt package session APIs while owning the PDPP wire shape and preserving _ref ownership', () => {
   const sessionsShim = read('reference-implementation/server/streaming/sessions.ts');
   const routes = read('reference-implementation/server/streaming/routes.js');
@@ -88,4 +129,43 @@ test('dynamic n.eko allocation seams use package leases while Docker lifecycle s
     return;
   }
   assert.match(leaseStore, /from ['"]@opendatalabs\/remote-surface\/leases['"]/);
+});
+
+test('installed remote-surface excludes retained surfaces from idle-TTL reap', async (t) => {
+  const leases = await loadLeaseManager(t);
+  if (!leases) return;
+
+  const manager = createRetainedSurfaceManager(leases);
+  const stopped = [];
+  const allocator = {
+    async stopSurface(request) {
+      stopped.push(request);
+      return retainedIdleSurface({ health: 'stopping' });
+    },
+  };
+
+  const idleResult = await manager.cleanupIdleSurfaces(allocator);
+  assert.deepEqual(idleResult.stopped, [], 'retained surface must not be idle-TTL reaped');
+  assert.deepEqual(stopped, [], 'idle-TTL must not call the allocator for a retained surface');
+});
+
+test('installed remote-surface excludes retained surfaces from capacity-pressure reap', async (t) => {
+  const leases = await loadLeaseManager(t);
+  if (!leases) return;
+
+  const manager = createRetainedSurfaceManager(leases);
+
+  const waiting = manager.acquire({
+    connectorId: 'background-connector',
+    runId: 'background_run',
+    profileKey: 'background-profile',
+    priorityClass: 'background',
+  });
+  assert.equal(waiting.lease.status, 'waiting_for_browser_surface');
+  assert.equal(waiting.lease.wait_reason, 'capacity_full');
+  assert.equal(
+    manager.planCapacityPressureReclaim(waiting.lease.lease_id),
+    undefined,
+    'capacity pressure must leave a retained idle surface alone',
+  );
 });

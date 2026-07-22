@@ -145,7 +145,7 @@ test('boot re-derives retained on a rehydrated NONTERMINAL LEASE that has no sur
     surface_subject_id: 'acct-a',
     run_id: 'run_queued',
     status: 'waiting_for_browser_surface',
-    priority_class: 'scheduled_refresh',
+    priority_class: 'background',
     requested_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
     fencing_token: 1,
