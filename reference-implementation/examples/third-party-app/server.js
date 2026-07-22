@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: The PDP-Connect Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Reference-local example third-party client app.
  *

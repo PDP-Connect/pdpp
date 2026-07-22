@@ -1,0 +1,40 @@
+version = 1
+
+# The catch-all covers code, packaged software, generated artifacts, configs,
+# SQL, and build files. Later annotations narrow this default by content type.
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The PDP-Connect Contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+# User-facing documentation prose, excluding the protocol specification blocks
+# below, is available under CC BY 4.0.
+[[annotations]]
+path = ["docs/**", "openspec/**/*.md", "**/*.md", "**/*.mdx", "design-notes/**", "*.md", "LICENSE-docs"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The PDP-Connect Contributors"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+# Fumadocs output is a generated code artifact, not documentation prose.
+[[annotations]]
+path = "apps/site/.source/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The PDP-Connect Contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+# Connector captures and synthetic fixtures are test data rather than authored
+# software or prose.
+[[annotations]]
+path = ["**/fixtures/**", "**/*.jsonl"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The PDP-Connect Contributors"
+SPDX-License-Identifier = "CC0-1.0"
+
+# This is last and override-level so the protocol-specification license cannot
+# be shadowed by the documentation annotation.
+[[annotations]]
+path = ["spec-*.md", "apps/site/content/docs/spec-*.md", "LICENSE-specs"]
+precedence = "override"
+SPDX-FileCopyrightText = "The PDP-Connect Contributors"
+SPDX-License-Identifier = "LicenseRef-CSL-1.0"
