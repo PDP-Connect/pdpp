@@ -16,8 +16,8 @@
   display: none;
 }
 .rr-head__brand {
-  align-items: center;
   gap: 10px;
+  align-items: center;
   font-size: 14px;
   font-weight: 800;
   letter-spacing: -0.01em;
@@ -28,22 +28,22 @@
 .rr-drawer-overlay {
   position: fixed;
   inset: 0;
-  background: oklch(0 0 0 / 0.5);
   z-index: 70;
+  background: oklch(0 0 0 / 0.5);
   animation: fade-in var(--duration-fast) var(--ease-enter) both;
 }
 .rr-drawer {
   position: absolute;
-  left: 0;
   top: 0;
   bottom: 0;
-  width: min(300px, 84vw);
-  background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
-  border-right: 1px solid var(--border-strong);
-  padding: 18px 0 14px;
+  left: 0;
   display: flex;
   flex-direction: column;
+  width: min(300px, 84vw);
+  padding: 18px 0 14px;
   overflow-y: auto;
+  background: color-mix(in oklab, var(--background) 88%, oklch(0 0 0));
+  border-right: 1px solid var(--border-strong);
 }
 @media (prefers-reduced-motion: no-preference) {
   .rr-drawer {
@@ -63,8 +63,8 @@
 .rr-drawer__nav {
   display: flex;
   flex-direction: column;
-  padding: 10px;
   gap: 2px;
+  padding: 10px;
 }
 .rr-drawer .rr-nav-item {
   padding: 12px 12px;
@@ -92,8 +92,8 @@
     overflow-x: hidden;
   }
   .rr-content :is(.pdpp-sheet__serial, .rr-attn__meta, .pdpp-typed-sm) {
-    white-space: normal;
     overflow-wrap: anywhere;
+    white-space: normal;
   }
   .rr-hero__meta {
     white-space: normal;
@@ -120,8 +120,8 @@
   }
   .rr-page-head {
     flex-direction: column;
-    align-items: flex-start;
     gap: 4px;
+    align-items: flex-start;
     margin-bottom: 18px;
   }
   .rr-page-head__s {
@@ -159,16 +159,16 @@
   }
   .rr-cols-runs .pdpp-data-row__detail,
   .rr-cols-schedules .pdpp-data-row__detail {
-    grid-column: 1 / -1;
     grid-row: 2;
+    grid-column: 1 / -1;
     white-space: normal;
   }
   .rr-cols-runs .pdpp-data-row__meta {
     display: none;
   }
   .rr-cols-schedules .pdpp-data-row__meta {
-    grid-column: 1 / -1;
     grid-row: 3;
+    grid-column: 1 / -1;
     text-align: left;
   }
 
@@ -243,9 +243,9 @@
     grid-template-columns: minmax(0, 1fr);
   }
   .rr-attn__side {
+    flex-direction: row;
     grid-row: auto;
     grid-column: 1;
-    flex-direction: row;
     align-items: center;
     justify-content: flex-start;
   }
@@ -259,8 +259,8 @@
 
   /* ── Stat band: 2-up grid ── */
   .pdpp-band {
-    grid-auto-flow: row;
     grid-template-columns: 1fr 1fr;
+    grid-auto-flow: row;
   }
   .pdpp-band__cell {
     border-left: 0;
@@ -279,8 +279,8 @@
   }
   .rr-hero__sheet {
     flex-direction: column;
-    align-items: stretch;
     gap: 14px;
+    align-items: stretch;
     padding: 16px 18px;
   }
   .rr-hero__sheet .pdpp-btn {
@@ -303,8 +303,8 @@
 
   /* ── The ceremony becomes a bottom sheet ── */
   .rr-overlay {
-    padding: 10px;
     align-items: flex-end;
+    padding: 10px;
   }
   .rr-ceremony {
     width: 100%;
@@ -348,8 +348,8 @@
   /* Incoming banner stacks like the hero */
   .rr-incoming__sheet {
     flex-direction: column;
-    align-items: stretch;
     gap: 10px;
+    align-items: stretch;
   }
   .rr-incoming__sheet .pdpp-btn--sm {
     align-self: flex-start;
@@ -380,7 +380,7 @@
     padding: 14px 16px;
   }
   .pdpp-sheet__foot {
-    padding: 11px 16px;
     flex-wrap: wrap;
+    padding: 11px 16px;
   }
 }

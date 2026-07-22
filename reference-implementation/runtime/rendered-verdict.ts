@@ -844,7 +844,7 @@ function shouldOfferRetryGapAction(
   if (progress?.mode === "deferred" || progress?.mode === "scheduled") {
     return false;
   }
-  if (snapshot.state === "cooling_off" || Boolean(snapshot.next_attempt_at)) {
+  if (snapshot.state === "cooling_off" || snapshot.next_attempt_at) {
     return false;
   }
   if (snapshot.axes.coverage === "retryable_gap") {

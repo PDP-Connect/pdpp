@@ -52,7 +52,7 @@ export function resolveCredentialFile({ credentialFile, resource, home } = {}) {
  */
 export async function writeOwnerAgentCredential(targetPath, payload) {
   const dir = dirname(targetPath);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await mkdir(dir, { mode: 0o700, recursive: true });
   // Best-effort tighten on the directory we own; ignore EPERM on shared parents.
   await chmod(dir, 0o700).catch(() => {});
   await writeFile(targetPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
@@ -83,40 +83,44 @@ export function buildCredentialRecord({
   const expiresAt = credential.expires_at ?? null;
   const scope = credential.scope ?? null;
   return {
-    profile: "trusted_owner_agent",
-    pdpp_token_kind: "owner",
-    resource,
+    access_token: credential.access_token,
     authorization_server: authorizationServer ?? null,
     client_id: clientId ?? null,
-    introspection_endpoint: introspectionEndpoint ?? null,
-    schema_endpoint: schemaEndpoint ?? null,
-    schema_compact_endpoint: schemaCompactEndpoint ?? null,
-    streams_endpoint: streamsEndpoint ?? null,
-    // RFC 7592 client-delete revocation handle, when the credential was bound
-    // to a dynamically registered client. The reference implementation gates
-    // DELETE with an owner session, not a registration access token.
-    registration_client_uri: registrationClientUri ?? credential.registration_client_uri ?? null,
-    registration_endpoint: registrationEndpoint ?? null,
-    access_token: credential.access_token,
-    token_type: tokenType,
-    expires_at: expiresAt,
-    scope,
+    created_at: createdAt,
     // Backward-compatible nested credential block for callers that adopted the
     // first CLI preview. Daisy and the owner-agent runbook read the top-level
     // access_token.
     credential: {
       access_token: credential.access_token,
-      token_type: tokenType,
       expires_at: expiresAt,
       scope,
+      token_type: tokenType,
     },
-    created_at: createdAt,
+    expires_at: expiresAt,
+    introspection_endpoint: introspectionEndpoint ?? null,
+    pdpp_token_kind: "owner",
+    profile: "trusted_owner_agent",
+    // RFC 7592 client-delete revocation handle, when the credential was bound
+    // to a dynamically registered client. The reference implementation gates
+    // DELETE with an owner session, not a registration access token.
+    registration_client_uri: registrationClientUri ?? credential.registration_client_uri ?? null,
+    registration_endpoint: registrationEndpoint ?? null,
+    resource,
+    schema_compact_endpoint: schemaCompactEndpoint ?? null,
+    schema_endpoint: schemaEndpoint ?? null,
+    scope,
+    streams_endpoint: streamsEndpoint ?? null,
+    token_type: tokenType,
   };
 }
 
 function expandHome(p, base) {
-  if (p === "~") return base;
-  if (p.startsWith("~/")) return join(base, p.slice(2));
+  if (p === "~") {
+    return base;
+  }
+  if (p.startsWith("~/")) {
+    return join(base, p.slice(2));
+  }
   return p;
 }
 

@@ -22,19 +22,19 @@ export async function createEnrollmentCodeAction(
   const expiresRaw = String(formData.get("expires_in_seconds") ?? "").trim();
 
   if (!(connectorId && localBindingName)) {
-    return { ok: false, message: "Connector id and local binding name are required." };
+    return { message: "Connector id and local binding name are required.", ok: false };
   }
   if (!isSupportedLocalCollectorConnector(connectorId)) {
     return {
-      ok: false,
       message:
         "This setup form only creates packaged local collector enrollments. Browser-based sources will use the dashboard browser setup flow when it ships.",
+      ok: false,
     };
   }
 
   const expiresInSeconds = expiresRaw ? Number(expiresRaw) : undefined;
   if (expiresInSeconds !== undefined && !Number.isInteger(expiresInSeconds)) {
-    return { ok: false, message: "Expiration must be a whole number of seconds." };
+    return { message: "Expiration must be a whole number of seconds.", ok: false };
   }
 
   try {
@@ -47,7 +47,7 @@ export async function createEnrollmentCodeAction(
     revalidatePath("/device-exporters");
     return { code, deviceLabel: displayName || null, ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    return { message: err instanceof Error ? err.message : String(err), ok: false };
   }
 }
 

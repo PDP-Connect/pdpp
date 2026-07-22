@@ -57,7 +57,9 @@ export async function runRead(argv, io = {}, fetchImpl = globalThis.fetch) {
 
 export function buildReadRequest(command, positionals, flags, providerUrl) {
   const origin = normalizeProviderUrl(providerUrl);
-  if (!origin) throw new PdppUsageError(`Invalid provider URL: ${providerUrl}`);
+  if (!origin) {
+    throw new PdppUsageError(`Invalid provider URL: ${providerUrl}`);
+  }
 
   if (command === "schema") {
     return {
@@ -108,7 +110,9 @@ export function buildReadRequest(command, positionals, flags, providerUrl) {
   if (command === "field-window") {
     const stream = requirePositional(positionals, 0, "stream");
     const recordId = requirePositional(positionals, 1, "record-id");
-    if (!flags.field) throw new PdppUsageError("Missing required flag: --field");
+    if (!flags.field) {
+      throw new PdppUsageError("Missing required flag: --field");
+    }
     const query = pickQuery(flags, [
       "connection-id",
       "field",
@@ -143,7 +147,9 @@ export function buildReadRequest(command, positionals, flags, providerUrl) {
 
   if (command === "aggregate") {
     const stream = requirePositional(positionals, 0, "stream");
-    if (!flags.metric) throw new PdppUsageError("Missing required flag: --metric");
+    if (!flags.metric) {
+      throw new PdppUsageError("Missing required flag: --metric");
+    }
     if (flags["group-by"] && flags["group-by-time"]) {
       throw new PdppUsageError("Use only one of --group-by or --group-by-time.");
     }
@@ -156,8 +162,12 @@ export function buildReadRequest(command, positionals, flags, providerUrl) {
       "metric",
       "time-zone",
     ]);
-    if (flags["group-by"]) query.group_by = flags["group-by"];
-    if (flags["group-by-time"]) query.group_by_time = flags["group-by-time"];
+    if (flags["group-by"]) {
+      query.group_by = flags["group-by"];
+    }
+    if (flags["group-by-time"]) {
+      query.group_by_time = flags["group-by-time"];
+    }
     return { method: "GET", url: buildUrl(origin, `/v1/streams/${encodeURIComponent(stream)}/aggregate`, query) };
   }
 
@@ -168,11 +178,11 @@ async function fetchReadJson(request, token, fetchImpl) {
   let resp;
   try {
     resp = await fetchImpl(request.url, {
-      method: request.method,
       headers: {
         Accept: "application/json",
         Authorization: `Bearer ${token}`,
       },
+      method: request.method,
     });
   } catch (error) {
     throw new PdppUsageError(`Network request failed: ${error.message}`);
@@ -211,9 +221,13 @@ function buildUrl(origin, path, query = {}) {
 }
 
 function appendQuery(url, key, value) {
-  if (value === undefined || value === null || value === "") return;
+  if (value === undefined || value === null || value === "") {
+    return;
+  }
   if (Array.isArray(value)) {
-    for (const entry of value) appendQuery(url, key, entry);
+    for (const entry of value) {
+      appendQuery(url, key, entry);
+    }
     return;
   }
   url.searchParams.append(key, String(value));
@@ -223,7 +237,9 @@ function pickQuery(flags, names) {
   const query = {};
   for (const name of names) {
     const value = flags[name];
-    if (value === undefined || value === true) continue;
+    if (value === undefined || value === true) {
+      continue;
+    }
     query[name.replaceAll("-", "_")] = value;
   }
   return query;
@@ -231,7 +247,9 @@ function pickQuery(flags, names) {
 
 function csvQuery(flags, name) {
   const raw = flags[name];
-  if (typeof raw !== "string" || raw.trim() === "") return {};
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return {};
+  }
   return {
     [name]: raw
       .split(",")
@@ -247,7 +265,9 @@ function jsonFilterQuery(flags) {
   if (typeof flags.filter === "string") {
     return { filter: flags.filter };
   }
-  if (flags["filter-json"] === undefined) return {};
+  if (flags["filter-json"] === undefined) {
+    return {};
+  }
 
   let parsed;
   try {
@@ -272,8 +292,14 @@ function jsonFilterQuery(flags) {
 }
 
 function projectOutput(body, flags) {
-  if (!flags.data) return body;
-  if (body && typeof body === "object" && Array.isArray(body.data)) return body.data;
-  if (body && typeof body === "object" && Array.isArray(body.records)) return body.records;
+  if (!flags.data) {
+    return body;
+  }
+  if (body && typeof body === "object" && Array.isArray(body.data)) {
+    return body.data;
+  }
+  if (body && typeof body === "object" && Array.isArray(body.records)) {
+    return body.records;
+  }
   return body;
 }

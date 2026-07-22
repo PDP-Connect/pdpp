@@ -28,10 +28,10 @@ export default function RunsError({ error, reset }: { error: Error & { digest?: 
         is a read failure, not a change. Try again, or check your reference deployment status.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
+        <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={() => reset()} type="button">
           Try again
         </button>
-        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/syncs">
+        <a className={buttonVariants({ size: "sm", variant: "ghost" })} href="/syncs">
           Back to syncs
         </a>
       </div>

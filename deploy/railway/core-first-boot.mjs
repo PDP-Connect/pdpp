@@ -42,7 +42,9 @@ const LOG_PREFIX = "[railway-core]";
 const BANNER_RULE = "─".repeat(64);
 
 function trimmedValue(value) {
-  if (typeof value !== "string") return null;
+  if (typeof value !== "string") {
+    return null;
+  }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
@@ -63,13 +65,19 @@ export function resolveDataDir(env = process.env) {
 // PDPP_STORAGE_BACKEND wins, otherwise a database URL selects Postgres.
 function usesPostgresStorage(env) {
   const explicit = trimmedValue(env.PDPP_STORAGE_BACKEND)?.toLowerCase();
-  if (explicit === "postgres") return true;
-  if (explicit === "sqlite") return false;
+  if (explicit === "postgres") {
+    return true;
+  }
+  if (explicit === "sqlite") {
+    return false;
+  }
   return Boolean(trimmedValue(env.PDPP_DATABASE_URL) ?? trimmedValue(env.DATABASE_URL));
 }
 
 function readPersistedSecret(file) {
-  if (!existsSync(file)) return null;
+  if (!existsSync(file)) {
+    return null;
+  }
   try {
     return trimmedValue(readFileSync(file, "utf8"));
   } catch {
@@ -145,9 +153,11 @@ export function prepareFirstBoot({
   }
 
   if (
-    !usesPostgresStorage(env) &&
-    !trimmedValue(env.PDPP_CREDENTIAL_ENCRYPTION_KEY) &&
-    !trimmedValue(env.PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE)
+    !(
+      usesPostgresStorage(env) ||
+      trimmedValue(env.PDPP_CREDENTIAL_ENCRYPTION_KEY) ||
+      trimmedValue(env.PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE)
+    )
   ) {
     const keyFile = path.join(dataDir, CREDENTIAL_KEY_FILENAME);
     try {
@@ -165,5 +175,5 @@ export function prepareFirstBoot({
     }
   }
 
-  return { env: envAdditions, bannerLines };
+  return { bannerLines, env: envAdditions };
 }

@@ -77,7 +77,7 @@ export default async function GrantDetailPage({
             </Link>
           </div>
         }
-        breadcrumbs={[{ label: "Grants", href: "/grants" }, { label: "Grant" }]}
+        breadcrumbs={[{ href: "/grants", label: "Grants" }, { label: "Grant" }]}
         cliCommand={`pdpp ref grant timeline ${grantId}`}
         count={`${envelope.events.length} events${revoked ? " · revoked" : ""}`}
         envelope={envelope}

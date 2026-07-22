@@ -52,9 +52,9 @@ export function readManifests() {
       const manifestPath = join(dir.path, filename);
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
       manifests.push({
-        manifestSet: dir.label,
         connectorId: manifest.connector_key ?? manifest.connector_id ?? filename.replace(/\.json$/, ""),
         manifest,
+        manifestSet: dir.label,
       });
     }
   }
@@ -165,7 +165,7 @@ function main() {
   const stale = existing !== markdown;
   const hasNewDebt = missingStrategyCount > 0 || requiredAcceptedAbsenceCount > 0;
 
-  if (!stale && !hasNewDebt) {
+  if (!(stale || hasNewDebt)) {
     process.stdout.write(
       "stream-evidence inventory: PASS (artifact current, no missing strategies, no required+accepted-absence contradictions)\n"
     );

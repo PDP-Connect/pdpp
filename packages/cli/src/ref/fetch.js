@@ -30,7 +30,7 @@ export async function fetchJson(url, opts = {}, fetchImpl = globalThis.fetch) {
     throw new PdppHttpError(message, resp.status, body);
   }
 
-  return { status: resp.status, body, headers: resp.headers };
+  return { body, headers: resp.headers, status: resp.status };
 }
 
 // Resolves owner session cookie with precedence:
@@ -47,13 +47,17 @@ export function ownerSessionHeaders(opts = {}) {
 
   if (!value && opts.referenceUrl) {
     const cached = readOwnerSession({
-      referenceUrl: opts.referenceUrl,
       cacheRoot: opts.cacheRoot,
+      referenceUrl: opts.referenceUrl,
     });
-    if (cached) value = cached.cookie;
+    if (cached) {
+      value = cached.cookie;
+    }
   }
 
-  if (!value) return {};
+  if (!value) {
+    return {};
+  }
   const cookie = value.includes("=") ? value : `${OWNER_SESSION_COOKIE_NAME}=${value}`;
   return { Cookie: cookie };
 }

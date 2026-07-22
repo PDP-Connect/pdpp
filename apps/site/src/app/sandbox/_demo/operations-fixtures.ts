@@ -88,7 +88,7 @@ import type { DemoGrantDef, DemoRecord, DemoRunDef, DemoTimelineEvent, DemoTrace
 const SANDBOX_AGGREGATE_SOURCE_ID = "sandbox_demo";
 
 function connectorSource(connectorId: string): { kind: "connector"; id: string } {
-  return { kind: "connector", id: connectorId };
+  return { id: connectorId, kind: "connector" };
 }
 
 function connectorIdForStream(streamName: string): string {
@@ -129,10 +129,10 @@ export function createSandboxStreamsListDependencies(
   const summaries: StreamSummary[] = filtered.map((stream) => {
     const lastUpdated = latestRecordTimeForStream(stream.key) ?? stream.latest_record_time;
     return {
-      object: "stream",
-      name: stream.key,
-      record_count: streamRecordCount(stream.key),
       last_updated: lastUpdated,
+      name: stream.key,
+      object: "stream",
+      record_count: streamRecordCount(stream.key),
     };
   });
   const sourceDescriptor: StreamsListSourceDescriptor = options.connectorId
@@ -140,8 +140,8 @@ export function createSandboxStreamsListDependencies(
     : connectorSource(SANDBOX_AGGREGATE_SOURCE_ID);
 
   return {
-    listSummaries: () => Promise.resolve(summaries),
     getSourceDescriptor: () => sourceDescriptor,
+    listSummaries: () => Promise.resolve(summaries),
   };
 }
 
@@ -161,13 +161,6 @@ export function createSandboxStreamDetailDependencies(streamName: string): Strea
   const sourceDescriptor: StreamDetailSourceDescriptor = connectorSource(connectorIdForStream(streamName));
 
   return {
-    getSourceDescriptor: () => sourceDescriptor,
-    hasManifestStream: (name: string) => Promise.resolve(streamByKey.has(name)),
-    // Sandbox routes always run as owner; this dependency is unreachable from
-    // the sandbox host but the operation requires it on the type. Returning
-    // `true` matches owner-equivalent visibility so any future client-actor
-    // mounting of this fixture profile would behave like the demo schema.
-    isStreamInGrant: () => true,
     buildStreamMetadata: (name: string) => {
       const stream = streamByKey.get(name);
       if (!stream) {
@@ -177,11 +170,18 @@ export function createSandboxStreamDetailDependencies(streamName: string): Strea
       }
       const metadata: StreamMetadataEnvelope = {
         ...buildLiveStreamMetadata(stream),
-        object: "stream_metadata",
         name: stream.key,
+        object: "stream_metadata",
       };
       return Promise.resolve(metadata);
     },
+    getSourceDescriptor: () => sourceDescriptor,
+    hasManifestStream: (name: string) => Promise.resolve(streamByKey.has(name)),
+    // Sandbox routes always run as owner; this dependency is unreachable from
+    // the sandbox host but the operation requires it on the type. Returning
+    // `true` matches owner-equivalent visibility so any future client-actor
+    // mounting of this fixture profile would behave like the demo schema.
+    isStreamInGrant: () => true,
   };
 }
 
@@ -203,14 +203,14 @@ export function createSandboxSchemaGetDependencies(): SchemaGetDependencies {
   const connectors: ConnectorSchemaItem[] = DEMO_CONNECTORS.map((connector) => {
     const streams = DEMO_STREAMS.filter((s) => s.connector_id === connector.connector_id);
     return {
+      connector_id: connector.connector_id,
       object: "connector",
       source: connectorSource(connector.connector_id),
-      connector_id: connector.connector_id,
       stream_count: streams.length,
       streams: streams.map((stream) => ({
         ...buildLiveStreamMetadata(stream),
-        object: "stream_metadata",
         name: stream.key,
+        object: "stream_metadata",
       })),
     };
   });
@@ -283,11 +283,11 @@ interface SandboxLiveRecord {
 
 function recordToLiveRecord(record: DemoRecord): SandboxLiveRecord {
   return {
-    object: "record",
-    id: record.record_id,
-    stream: record.stream,
     data: { ...record.fields },
     emitted_at: record.ingested_at,
+    id: record.record_id,
+    object: "record",
+    stream: record.stream,
   };
 }
 
@@ -325,9 +325,10 @@ export function createSandboxRecordsListDependencies(
     : connectorSource(connectorIdForStream(options.streamName ?? ""));
 
   return {
-    getSourceDescriptor: () => sourceDescriptor,
-    getManifest: () => sandboxManifest(),
+    decorateRecord: (record) => record,
     getGrant: () => sandboxOwnerGrantPlaceholder(),
+    getManifest: () => sandboxManifest(),
+    getSourceDescriptor: () => sourceDescriptor,
     queryRecords: (stream, _grant, params) => {
       const matching = DEMO_RECORDS.filter((record) => {
         if (record.stream !== stream) {
@@ -345,16 +346,15 @@ export function createSandboxRecordsListDependencies(
       const next = start + limit;
       const hasMore = next < sorted.length;
       const result: RecordsListQueryResult = {
-        object: "list",
-        has_more: hasMore,
         data: slice.map((record) => recordToLiveRecord(record) as unknown as Record<string, unknown>),
+        has_more: hasMore,
+        object: "list",
       };
       if (hasMore) {
         result.next_cursor = encodeSandboxCursor(next);
       }
       return Promise.resolve(result);
     },
-    decorateRecord: (record) => record,
     // Sandbox demo records have no field/filter validation yet; the route
     // never previously enforced manifest field/filter shape, so this is a
     // no-op fixture validator.
@@ -368,13 +368,13 @@ export function createSandboxRecordsListDependencies(
 export function createSandboxRecordDetailDependencies(streamName: string): RecordDetailDependencies {
   const sourceDescriptor: RecordDetailSourceDescriptor = connectorSource(connectorIdForStream(streamName));
   return {
-    getSourceDescriptor: () => sourceDescriptor,
-    getManifest: (): RecordDetailManifest => ({
-      streams: DEMO_STREAMS.map((stream) => ({ name: stream.key })),
-    }),
+    decorateRecord: (record) => record,
     // Sandbox is owner-shaped; the operation's owner branch overwrites this
     // with an owner read-grant before any capability call.
     getGrant: (): RecordDetailGrant => ({ streams: [] }),
+    getManifest: (): RecordDetailManifest => ({
+      streams: DEMO_STREAMS.map((stream) => ({ name: stream.key })),
+    }),
     getRecord: (stream, recordId) => {
       const record = DEMO_RECORDS.find((r) => r.stream === stream && r.record_id === recordId);
       if (!record) {
@@ -382,7 +382,7 @@ export function createSandboxRecordDetailDependencies(streamName: string): Recor
       }
       return Promise.resolve(recordToLiveRecord(record) as unknown as Record<string, unknown>);
     },
-    decorateRecord: (record) => record,
+    getSourceDescriptor: () => sourceDescriptor,
     // Sandbox demo records have no field validation yet; detail mirrors list
     // so the shared operation contract stays wired without changing demo data.
     validateRequestFields: () => undefined,
@@ -432,17 +432,17 @@ const SANDBOX_SEARCH_DEFAULT_LIMIT = 25;
 const SANDBOX_SEARCH_MAX_LIMIT = 100;
 
 const SANDBOX_LEXICAL_ADVERTISEMENT: SearchLexicalAdvertisement = {
-  supported: true,
   cross_stream: true,
-  snippets: true,
   default_limit: SANDBOX_SEARCH_DEFAULT_LIMIT,
   max_limit: SANDBOX_SEARCH_MAX_LIMIT,
   score: {
-    supported: true,
     kind: "bm25",
     order: "lower_is_better",
+    supported: true,
     value_semantics: "implementation_relative",
   },
+  snippets: true,
+  supported: true,
 };
 
 function escapeRegexLiteral(value: string): string {
@@ -493,7 +493,7 @@ interface SandboxCompiledFilters {
  */
 function compileSandboxFilterForStream(filter: unknown, streamName: string): SandboxCompiledFilters {
   if (filter == null) {
-    return { streamName, exact: [] };
+    return { exact: [], streamName };
   }
   if (typeof filter !== "object" || Array.isArray(filter)) {
     throw new SearchLexicalRequestError(
@@ -535,7 +535,7 @@ function compileSandboxFilterForStream(filter: unknown, streamName: string): San
     }
     exact.push({ field: fieldName, value: String(rawValue) });
   }
-  return { streamName, exact };
+  return { exact, streamName };
 }
 
 /**
@@ -582,12 +582,12 @@ function matchSandboxRecord(record: DemoRecord, trimmed: string, lower: string):
   const score = 1 / (1 + matchedFields.length + bestOccurrences);
   return {
     connectorId: record.connector_id,
-    stream: record.stream,
-    recordKey: record.record_id,
     emittedAt: record.ingested_at,
     matchedFields,
-    snippet: { field: bestField, text: bestSnippet },
+    recordKey: record.record_id,
     score,
+    snippet: { field: bestField, text: bestSnippet },
+    stream: record.stream,
   };
 }
 
@@ -611,24 +611,8 @@ function generateSandboxSnapshotId(): string {
 export function createSandboxSearchLexicalDependencies(): SearchLexicalDependencies {
   const snapshotCache = new Map<string, SearchLexicalSnapshot>();
   return {
-    getAdvertisement: () => SANDBOX_LEXICAL_ADVERTISEMENT,
-    listOwnerVisibleConnectorIds: () => DEMO_CONNECTORS.map((c) => c.connector_id),
-    resolveOwnerManifestForConnector: (connectorId: string): SearchLexicalManifest | null => {
-      const streams = DEMO_STREAMS.filter((s) => s.connector_id === connectorId).map((s) => ({ name: s.key }));
-      if (streams.length === 0) {
-        return null;
-      }
-      return { connector_id: connectorId, streams };
-    },
     buildOwnerReadGrantForManifest: (manifest: SearchLexicalManifest): SearchLexicalGrant => ({
       streams: (manifest.streams ?? []).map((s) => ({ name: s.name })),
-    }),
-    // Sandbox routes do not currently mount client-actor flows; the
-    // operation's owner branch is the only consumer. This stub is here so
-    // the dependency type is satisfied and future client-actor wiring stays
-    // mechanical.
-    resolveClientManifest: ({ grant }) => ({
-      streams: (grant.streams ?? []).map((s) => ({ name: s.name })),
     }),
     buildSearchPlanForGrant: ({ manifest, grant, streamsFilter, filter, filteredStream, connectorId }) => {
       const grantedStreams = new Set((grant.streams ?? []).map((s) => s.name));
@@ -654,17 +638,17 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
           continue;
         }
         plan.push({
-          streamName: stream.name,
+          // The fixture-only `compiledFilter` field rides on the plan
+          // entry so `buildSnapshot` can evaluate filters per-stream
+          // without re-parsing the request payload.
+          compiledFilter: compiledFilter && compiledFilter.streamName === stream.name ? compiledFilter : null,
+          connectorId: connectorId ?? null,
           // Sandbox records are scanned through every string field; the
           // declared search-field list is not surfaced in fixtures yet, so
           // the operation receives a sentinel non-empty list to keep the
           // plan-emptiness check meaningful.
           searchableFields: ["__sandbox_any_string_field__"],
-          connectorId: connectorId ?? null,
-          // The fixture-only `compiledFilter` field rides on the plan
-          // entry so `buildSnapshot` can evaluate filters per-stream
-          // without re-parsing the request payload.
-          compiledFilter: compiledFilter && compiledFilter.streamName === stream.name ? compiledFilter : null,
+          streamName: stream.name,
         });
       }
       return plan;
@@ -712,28 +696,44 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
       // exact. This mirrors the SLVP-ideal global top-k path and gives the
       // public sandbox surface an exhaustive, exact-counted envelope.
       return {
-        snapshot_id: generateSandboxSnapshotId(),
         query: q,
-        results: hits,
         recall_meta: {
           count: hits.length,
           count_accuracy: "exact",
           recall: {
             complete: true,
-            ranking_scope: "all_matches",
-            truncated: false,
             ranked_candidate_count: hits.length,
+            ranking_scope: "all_matches",
             sources_searched_count: perConnectorPlans.length,
+            truncated: false,
           },
         },
+        results: hits,
+        snapshot_id: generateSandboxSnapshotId(),
       };
     },
+    formatRecordUrl: ({ stream, recordKey }) =>
+      `/sandbox/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordKey)}`,
+    getAdvertisement: () => SANDBOX_LEXICAL_ADVERTISEMENT,
+    listOwnerVisibleConnectorIds: () => DEMO_CONNECTORS.map((c) => c.connector_id),
+    loadSnapshot: (snapshotId) => snapshotCache.get(snapshotId) ?? null,
     persistSnapshot: (snapshot) => {
       snapshotCache.set(snapshot.snapshot_id, snapshot);
     },
-    loadSnapshot: (snapshotId) => snapshotCache.get(snapshotId) ?? null,
-    formatRecordUrl: ({ stream, recordKey }) =>
-      `/sandbox/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordKey)}`,
+    // Sandbox routes do not currently mount client-actor flows; the
+    // operation's owner branch is the only consumer. This stub is here so
+    // the dependency type is satisfied and future client-actor wiring stays
+    // mechanical.
+    resolveClientManifest: ({ grant }) => ({
+      streams: (grant.streams ?? []).map((s) => ({ name: s.name })),
+    }),
+    resolveOwnerManifestForConnector: (connectorId: string): SearchLexicalManifest | null => {
+      const streams = DEMO_STREAMS.filter((s) => s.connector_id === connectorId).map((s) => ({ name: s.key }));
+      if (streams.length === 0) {
+        return null;
+      }
+      return { connector_id: connectorId, streams };
+    },
   };
 }
 
@@ -765,17 +765,17 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
 function sandboxDatasetCounts() {
   return {
     connector_count: DEMO_CONNECTORS.length,
-    stream_count: DEMO_STREAMS.length,
     record_count: DEMO_RECORDS.length,
+    stream_count: DEMO_STREAMS.length,
   };
 }
 
 function sandboxDatasetRetainedBytes() {
   const recordJsonBytes = DEMO_RECORDS.reduce((sum, r) => sum + JSON.stringify(r.fields).length, 0);
   return {
-    record_json_bytes: recordJsonBytes,
-    record_changes_json_bytes: 0,
     blob_bytes: 0,
+    record_changes_json_bytes: 0,
+    record_json_bytes: recordJsonBytes,
   };
 }
 
@@ -813,9 +813,9 @@ function sandboxDatasetTopConnectorCandidates(): Array<{
 export function createSandboxRefDatasetSummaryDependencies(): RefDatasetSummaryDependencies {
   return {
     getCounts: () => sandboxDatasetCounts(),
-    getRetainedBytes: () => sandboxDatasetRetainedBytes(),
-    getRecordTimeBounds: () => sandboxDatasetTimeBounds(DEMO_RECORDS.map((r) => r.record_time)),
     getIngestedTimeBounds: () => sandboxDatasetTimeBounds(DEMO_RECORDS.map((r) => r.ingested_at)),
+    getRecordTimeBounds: () => sandboxDatasetTimeBounds(DEMO_RECORDS.map((r) => r.record_time)),
+    getRetainedBytes: () => sandboxDatasetRetainedBytes(),
     listTopConnectorCandidates: () => sandboxDatasetTopConnectorCandidates(),
   };
 }
@@ -846,9 +846,9 @@ function paginateSandboxSpineSummaries(
   const slice = summaries.slice(start, start + limit);
   const next = start + limit;
   return {
-    summaries: slice,
     hasMore: next < summaries.length,
     nextCursor: next < summaries.length ? encodeSandboxCursor(next) : null,
+    summaries: slice,
   };
 }
 
@@ -884,47 +884,47 @@ function connectorIdForTrace(trace: DemoTraceDef): string | null {
 
 function demoGrantToSpineSummary(grant: DemoGrantDef): RefSpineCorrelationSummary {
   return {
-    id: grant.grant_id,
-    first_at: grant.first_at,
-    last_at: grant.last_at,
-    event_count: grant.events.length,
-    status: grant.status,
-    kinds: grant.events.map((event) => event.event_type),
-    request_id: null,
-    grant_id: grant.grant_id,
-    run_id: null,
+    actor_id: grant.client_id,
+    actor_type: "client",
     client_id: grant.client_id,
     connector_id: grant.connector_id,
+    event_count: grant.events.length,
+    failure: demoGrantFailure(grant),
+    first_at: grant.first_at,
+    grant_id: grant.grant_id,
+    id: grant.grant_id,
+    kinds: grant.events.map((event) => event.event_type),
+    last_at: grant.last_at,
+    needs_input: false,
+    request_id: null,
+    run_id: null,
     source: connectorSource(grant.connector_id),
     source_id: grant.connector_id,
     source_kind: "connector",
-    actor_type: "client",
-    actor_id: grant.client_id,
-    failure: demoGrantFailure(grant),
-    needs_input: false,
+    status: grant.status,
   };
 }
 
 function demoRunToSpineSummary(run: DemoRunDef): RefSpineCorrelationSummary {
   return {
-    id: run.run_id,
-    first_at: run.first_at,
-    last_at: run.last_at,
-    event_count: run.events.length,
-    status: run.status,
-    kinds: run.events.map((event) => event.event_type),
-    request_id: null,
-    grant_id: run.grant_id,
-    run_id: run.run_id,
+    actor_id: run.connector_id,
+    actor_type: "runtime",
     client_id: null,
     connector_id: run.connector_id,
+    event_count: run.events.length,
+    failure: run.failure_reason ? { event_type: "run.failed", reason: run.failure_reason } : null,
+    first_at: run.first_at,
+    grant_id: run.grant_id,
+    id: run.run_id,
+    kinds: run.events.map((event) => event.event_type),
+    last_at: run.last_at,
+    needs_input: run.needs_input,
+    request_id: null,
+    run_id: run.run_id,
     source: connectorSource(run.connector_id),
     source_id: run.connector_id,
     source_kind: "connector",
-    actor_type: "runtime",
-    actor_id: run.connector_id,
-    failure: run.failure_reason ? { event_type: "run.failed", reason: run.failure_reason } : null,
-    needs_input: run.needs_input,
+    status: run.status,
   };
 }
 
@@ -937,24 +937,24 @@ function demoTraceToSpineSummary(trace: DemoTraceDef): RefSpineCorrelationSummar
     actorType = "runtime";
   }
   return {
-    id: trace.trace_id,
-    first_at: trace.first_at,
-    last_at: trace.last_at,
-    event_count: trace.kinds.length,
-    status: trace.status,
-    kinds: [...trace.kinds],
-    request_id: null,
-    grant_id: trace.grant_id,
-    run_id: trace.run_id,
+    actor_id: trace.client_id ?? trace.run_id ?? "sandbox",
+    actor_type: actorType,
     client_id: trace.client_id,
     connector_id: connectorId,
+    event_count: trace.kinds.length,
+    failure: demoTraceFailure(trace),
+    first_at: trace.first_at,
+    grant_id: trace.grant_id,
+    id: trace.trace_id,
+    kinds: [...trace.kinds],
+    last_at: trace.last_at,
+    needs_input: false,
+    request_id: null,
+    run_id: trace.run_id,
     source: connectorId ? connectorSource(connectorId) : null,
     source_id: connectorId,
     source_kind: connectorId ? "connector" : null,
-    actor_type: actorType,
-    actor_id: trace.client_id ?? trace.run_id ?? "sandbox",
-    failure: demoTraceFailure(trace),
-    needs_input: false,
+    status: trace.status,
   };
 }
 
@@ -1051,10 +1051,10 @@ function sandboxEventsFor(kind: RefSpineEventsKind, id: string): DemoTimelineEve
 function demoEventToRefSpineInput(event: DemoTimelineEvent): RefSpineEventInput {
   return {
     ...event,
-    object_type: event.object_type ?? "event",
-    object_id: event.event_id,
-    trace_id: event.trace_id,
     data: { ...event.data },
+    object_id: event.event_id,
+    object_type: event.object_type ?? "event",
+    trace_id: event.trace_id,
   };
 }
 
@@ -1076,14 +1076,14 @@ export function createSandboxRefSpineEventsPageInput(
   const next = start + limit;
   const hasMore = next < events.length;
   return {
-    kind,
-    id,
     cursor,
+    id,
+    kind,
     page: {
       events: slice.map(demoEventToRefSpineInput),
-      truncated: hasMore,
-      next_cursor: hasMore ? encodeSandboxCursor(next) : null,
       limit,
+      next_cursor: hasMore ? encodeSandboxCursor(next) : null,
+      truncated: hasMore,
     },
   };
 }
@@ -1118,8 +1118,8 @@ function buildSandboxAuthorizationServerMetadataDocument({
   tokenEndpointAuthMethodsSupported,
 }: AsAuthorizationServerMetadataBuilderInput): SandboxAuthorizationServerMetadata {
   const metadata: SandboxAuthorizationServerMetadata = {
-    issuer,
     introspection_endpoint: introspectionEndpoint,
+    issuer,
     pdpp_provider_connect_capabilities: providerConnectCapabilities,
   };
   if (pushedAuthorizationRequestEndpoint) {
@@ -1157,7 +1157,7 @@ export function createSandboxAsAuthorizationServerMetadataDependencies(): AsAuth
 
 export function buildSandboxAuthorizationServerMetadata(issuer: string): unknown {
   return executeAsAuthorizationServerMetadata(
-    { issuer, dynamicClientRegistrationEnabled: false },
+    { dynamicClientRegistrationEnabled: false, issuer },
     createSandboxAsAuthorizationServerMetadataDependencies()
   );
 }
@@ -1202,23 +1202,23 @@ function buildSandboxAgentDiscovery(issuer: string): SandboxProtectedResourceMet
   const cli = getPdppCliPackageInfo(issuer);
   return {
     advisory: true,
-    skill_name: "pdpp-data-access",
-    recommended_flow: "pdpp connect",
     cli: {
-      package: cli.packageName,
-      package_specifier: cli.packageSpecifier,
       bin_name: cli.binName,
-      install_command: `npx -y ${cli.packageSpecifier} --help`,
-      run_command: cli.runCommand,
       connect_command: createPdppCliCommand("<provider-url>"),
-      version_policy: cli.versionPolicy,
+      install_command: `npx -y ${cli.packageSpecifier} --help`,
       no_owner_token: cli.noOwnerToken,
       no_owner_token_policy: cli.noOwnerTokenPolicy,
+      package: cli.packageName,
+      package_specifier: cli.packageSpecifier,
+      run_command: cli.runCommand,
+      version_policy: cli.versionPolicy,
     },
-    skill_catalog: `${siteOrigin}/.well-known/skills/index.json`,
-    skill: `${siteOrigin}/.well-known/skills/pdpp-data-access/SKILL.md`,
-    llms_txt: `${siteOrigin}/llms.txt`,
     llms_full_txt: `${siteOrigin}/llms-full.txt`,
+    llms_txt: `${siteOrigin}/llms.txt`,
+    recommended_flow: "pdpp connect",
+    skill: `${siteOrigin}/.well-known/skills/pdpp-data-access/SKILL.md`,
+    skill_catalog: `${siteOrigin}/.well-known/skills/index.json`,
+    skill_name: "pdpp-data-access",
   };
 }
 
@@ -1226,27 +1226,27 @@ export function createSandboxRsProtectedResourceMetadataDependencies(
   issuer: string
 ): RsProtectedResourceMetadataDependencies {
   const lexical: RsProtectedResourceMetadataLexicalCapability = {
-    supported: true,
-    endpoint: `${issuer}/v1/search`,
     cross_stream: true,
-    snippets: true,
     default_limit: SANDBOX_SEARCH_DEFAULT_LIMIT,
+    endpoint: `${issuer}/v1/search`,
     max_limit: SANDBOX_SEARCH_MAX_LIMIT,
     score: {
-      supported: true,
       kind: "bm25",
       order: "lower_is_better",
+      supported: true,
       value_semantics: "implementation_relative",
     },
+    snippets: true,
+    supported: true,
   };
   return {
-    resolveLexicalCapability: () => lexical,
-    resolveSemanticCapability: () => null,
-    resolveHybridCapabilityOverride: () => null,
     buildDefaultHybridCapability: (): RsProtectedResourceMetadataHybridCapability | null => null,
     isHybridSuppressed: () => false,
     isNativeSingleSourceMode: () => false,
     resolveClientEventSubscriptionsCapability: () => null,
+    resolveHybridCapabilityOverride: () => null,
+    resolveLexicalCapability: () => lexical,
+    resolveSemanticCapability: () => null,
   };
 }
 
@@ -1255,16 +1255,16 @@ export function buildSandboxProtectedResourceMetadataDocument(
   composition: RsProtectedResourceMetadataComposition
 ): SandboxProtectedResourceMetadata {
   const metadata: SandboxProtectedResourceMetadata = {
-    resource: issuer,
-    resource_name: "Sandbox demo Resource Server",
     authorization_servers: [issuer],
     bearer_methods_supported: ["header"],
+    pdpp_agent_discovery: buildSandboxAgentDiscovery(issuer),
+    pdpp_core_query_base: `${issuer}/v1`,
+    pdpp_discovery_hints: composition.discoveryHints,
     pdpp_provider_connect_version: SANDBOX_PROVIDER_CONNECT_VERSION,
     pdpp_self_export_supported: true,
     pdpp_token_kinds_supported: ["owner", "client"],
-    pdpp_core_query_base: `${issuer}/v1`,
-    pdpp_discovery_hints: composition.discoveryHints,
-    pdpp_agent_discovery: buildSandboxAgentDiscovery(issuer),
+    resource: issuer,
+    resource_name: "Sandbox demo Resource Server",
   };
   if (Object.keys(composition.capabilities).length > 0) {
     metadata.capabilities = composition.capabilities as Record<string, unknown>;

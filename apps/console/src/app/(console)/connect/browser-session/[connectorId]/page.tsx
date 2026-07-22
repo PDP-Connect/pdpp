@@ -65,10 +65,10 @@ function UnavailableSetupCard({ displayName }: { displayName: string }) {
         existing source to reconnect it, or return to Add source to see what this dashboard can add now.
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
-        <Link className={buttonVariants({ variant: "default", size: "sm" })} href="/sources">
+        <Link className={buttonVariants({ size: "sm", variant: "default" })} href="/sources">
           Open sources
         </Link>
-        <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/sources/add">
+        <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources/add">
           Add source
         </Link>
       </div>
@@ -119,7 +119,7 @@ export default async function BrowserSessionConnectPage({
               <IcInput id="browser-session-display-name" name="display_name" placeholder={`${displayName} personal`} />
             </label>
             <button
-              className={buttonVariants({ variant: "default", size: "lg", className: "w-full justify-center" })}
+              className={buttonVariants({ className: "w-full justify-center", size: "lg", variant: "default" })}
               type="submit"
             >
               Connect account
@@ -133,7 +133,7 @@ export default async function BrowserSessionConnectPage({
           Need to reconnect an existing source instead? Go back to Sources and open that source from the list.
         </p>
         <div className="mt-3">
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/sources">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
             Choose an existing source
           </Link>
         </div>
@@ -147,7 +147,7 @@ export default async function BrowserSessionConnectPage({
     <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/sources">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
             Back to sources
           </Link>
         }
@@ -199,7 +199,7 @@ export default async function BrowserSessionConnectPage({
               <input name="connection_id" type="hidden" value={pageParams.connectionId} />
             ) : null}
             <button
-              className={buttonVariants({ variant: "default", size: "lg", className: "w-full justify-center" })}
+              className={buttonVariants({ className: "w-full justify-center", size: "lg", variant: "default" })}
               type="submit"
             >
               Reconnect {displayName}

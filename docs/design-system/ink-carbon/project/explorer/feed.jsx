@@ -22,21 +22,23 @@
   // Reuses the stream-level dispatch to pick a card. "feed-generic" is
   // the universal fallback.
   const KIND_FOR_CAP = {
-    conversation: "message",
-    ledger: "money",
-    gallery: "photo",
     calendar: "event",
     chart: "activity",
-    reader: "reader",
+    conversation: "message",
+    gallery: "photo",
+    ledger: "money",
     map: "location",
-    timeline: "generic",
+    reader: "reader",
     table: "generic",
+    timeline: "generic",
   };
   function cardKindForStream(stream) {
     const { capabilities } = detect(stream);
     // The first non-table capability wins — same priority order as views.
     for (const cap of capabilities) {
-      if (cap === "table") continue;
+      if (cap === "table") {
+        continue;
+      }
       return KIND_FOR_CAP[cap] ?? "generic";
     }
     return "generic";
@@ -51,7 +53,9 @@
   }
   function findImageField(stream) {
     const blob = stream.schema.fields.find((f) => f.type === "blob" && (f.media_type ?? "").startsWith("image/"));
-    if (blob) return blob.name;
+    if (blob) {
+      return blob.name;
+    }
     return stream.schema.fields.find(
       (f) => /thumb|image|photo|picture/i.test(f.name) && (f.type === "blob" || f.type === "url")
     )?.name;
@@ -63,7 +67,9 @@
   }
 
   function cleanPerson(s) {
-    if (!s) return "";
+    if (!s) {
+      return "";
+    }
     return String(s)
       .replace(/<[^>]+>/g, "")
       .trim();
@@ -160,7 +166,9 @@
 
   function hashId(s) {
     let h = 0;
-    for (let i = 0; i < (s ?? "").length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    for (let i = 0; i < (s ?? "").length; i++) {
+      h = (h * 31 + s.charCodeAt(i)) | 0;
+    }
     return Math.abs(h);
   }
 
@@ -201,13 +209,18 @@
     const scoreField = findField(stream, /^score|^value$/i);
     const time = recordTimeISO(stream, record);
     const stats = [];
-    if (distField && record[distField] != null)
+    if (distField && record[distField] != null) {
       stats.push({ label: "distance", value: fmtDistance(record[distField]) });
-    if (durField && record[durField] != null) stats.push({ label: "duration", value: fmtDuration(record[durField]) });
-    if (elevField && record[elevField] != null)
+    }
+    if (durField && record[durField] != null) {
+      stats.push({ label: "duration", value: fmtDuration(record[durField]) });
+    }
+    if (elevField && record[elevField] != null) {
       stats.push({ label: "elevation", value: `${Math.round(record[elevField])}m` });
-    if (!stats.length && scoreField && record[scoreField] != null)
+    }
+    if (!stats.length && scoreField && record[scoreField] != null) {
       stats.push({ label: scoreField, value: String(record[scoreField]) });
+    }
     return (
       <article className="card card--activity" data-selected={selected} onClick={onClick}>
         <CardEyebrow stream={stream} time={time} />
@@ -299,20 +312,22 @@
   }
 
   const CARD_BY_KIND = {
+    activity: ActivityCard,
+    event: EventCard,
+    generic: GenericCard,
+    location: LocationCard,
     message: MessageCard,
     money: MoneyCard,
     photo: PhotoCard,
-    event: EventCard,
-    activity: ActivityCard,
     reader: ReaderCard,
-    location: LocationCard,
-    generic: GenericCard,
   };
 
   // ─── Stable color from a string (used for message-card avatars) ─────
   function avatarColor(s) {
     let h = 0;
-    for (let i = 0; i < (s ?? "").length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    for (let i = 0; i < (s ?? "").length; i++) {
+      h = (h * 31 + s.charCodeAt(i)) | 0;
+    }
     const hue = Math.abs(h) % 360;
     return `oklch(0.52 0.13 ${hue})`;
   }

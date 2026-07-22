@@ -54,41 +54,47 @@ async function jsonFetch(url, opts = {}) {
   } catch {
     body = text;
   }
-  return { status: resp.status, body };
+  return { body, status: resp.status };
 }
 
 /** Mint an owner token via the JSON device flow (owner gate disabled → auto-approve, default subject). */
 async function mintOwnerToken() {
   const { status: ds, body: device } = await jsonFetch(`${AS_URL}/oauth/device_authorization`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ client_id: CLIENT_ID }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
-  if (ds !== 200) throw new Error(`device_authorization failed (${ds}): ${JSON.stringify(device)}`);
+  if (ds !== 200) {
+    throw new Error(`device_authorization failed (${ds}): ${JSON.stringify(device)}`);
+  }
   const { status: as } = await jsonFetch(`${AS_URL}/device/approve`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_code: device.user_code }),
-  });
-  if (as !== 200) throw new Error(`device/approve failed (${as})`);
-  const { status: ts, body: tok } = await jsonFetch(`${AS_URL}/oauth/token`, {
-    method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-      device_code: device.device_code,
-      client_id: CLIENT_ID,
-    }),
+    method: "POST",
   });
-  if (ts !== 200) throw new Error(`token failed (${ts}): ${JSON.stringify(tok)}`);
+  if (as !== 200) {
+    throw new Error(`device/approve failed (${as})`);
+  }
+  const { status: ts, body: tok } = await jsonFetch(`${AS_URL}/oauth/token`, {
+    body: JSON.stringify({
+      client_id: CLIENT_ID,
+      device_code: device.device_code,
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (ts !== 200) {
+    throw new Error(`token failed (${ts}): ${JSON.stringify(tok)}`);
+  }
   return tok.access_token;
 }
 
 async function registerManifest(manifest) {
   const resp = await fetch(`${AS_URL}/connectors`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(manifest),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   if (resp.status !== 201 && resp.status !== 200) {
     throw new Error(`register ${manifest.connector_key} failed (${resp.status}): ${await resp.text()}`);
@@ -96,16 +102,18 @@ async function registerManifest(manifest) {
 }
 
 async function ingest(token, connectorId, stream, records, timeField) {
-  const lines = records.map((r) => JSON.stringify({ key: r.id, data: r, emitted_at: r[timeField] })).join("\n");
+  const lines = records.map((r) => JSON.stringify({ data: r, emitted_at: r[timeField], key: r.id })).join("\n");
   const { status, body } = await jsonFetch(
     `${RS_URL}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`,
     {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/x-ndjson" },
       body: lines,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/x-ndjson" },
+      method: "POST",
     }
   );
-  if (status !== 200) throw new Error(`ingest ${stream} failed (${status}): ${JSON.stringify(body)}`);
+  if (status !== 200) {
+    throw new Error(`ingest ${stream} failed (${status}): ${JSON.stringify(body)}`);
+  }
   return body;
 }
 
@@ -114,7 +122,9 @@ async function readFieldCapabilities(token, connectorId, stream) {
     `${RS_URL}/v1/streams/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  if (status !== 200) throw new Error(`GET /v1/streams/${stream} failed (${status})`);
+  if (status !== 200) {
+    throw new Error(`GET /v1/streams/${stream} failed (${status})`);
+  }
   return body.field_capabilities || {};
 }
 
@@ -123,12 +133,16 @@ async function readRecords(token, connectorId, stream, limit = 5) {
     `${RS_URL}/v1/streams/${encodeURIComponent(stream)}/records?connector_id=${encodeURIComponent(connectorId)}&limit=${limit}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  if (status !== 200) throw new Error(`GET records ${stream} failed (${status})`);
+  if (status !== 200) {
+    throw new Error(`GET records ${stream} failed (${status})`);
+  }
   return body.data || [];
 }
 
 function assert(cond, msg) {
-  if (!cond) throw new Error(`ASSERT FAILED: ${msg}`);
+  if (!cond) {
+    throw new Error(`ASSERT FAILED: ${msg}`);
+  }
 }
 
 async function main() {
@@ -142,10 +156,10 @@ async function main() {
     new URL("../../../../reference-implementation/server/index.js", import.meta.url)
   );
   const server = await startServer({
-    quiet: true,
     asPort: AS_PORT,
-    rsPort: RS_PORT,
     dbPath: DB_PATH,
+    quiet: true,
+    rsPort: RS_PORT,
   });
   console.log(`[uat] AS ${AS_URL} · RS ${RS_URL} · db ${DB_PATH}`);
 

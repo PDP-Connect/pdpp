@@ -54,8 +54,8 @@
 // before any HTTP call instead of being claimed as supported — it is never
 // sent as an Authorization header to a cookie-gated /_ref route.
 
-import { auditStreamHealth } from "./audit.mjs";
 import { resolveOwnerAuthForLive } from "../lib/owner-session.mjs";
+import { auditStreamHealth } from "./audit.mjs";
 
 /**
  * Resolve owner auth from the environment without exposing its value.
@@ -71,7 +71,7 @@ import { resolveOwnerAuthForLive } from "../lib/owner-session.mjs";
 export async function resolveOwnerAuthForStreamHealth({ base, env = process.env, fetchImpl = fetch }) {
   const cookie = env.PDPP_OWNER_SESSION_COOKIE?.trim();
   if (cookie) {
-    return { header: { cookie }, mode: "cookie", supported: true, error: null };
+    return { error: null, header: { cookie }, mode: "cookie", supported: true };
   }
 
   const password = env.PDPP_OWNER_PASSWORD?.trim();
@@ -82,10 +82,10 @@ export async function resolveOwnerAuthForStreamHealth({ base, env = process.env,
 
   const token = env.PDPP_OWNER_TOKEN?.trim();
   if (token) {
-    return { header: {}, mode: "bearer", supported: false, error: null };
+    return { error: null, header: {}, mode: "bearer", supported: false };
   }
 
-  return { header: {}, mode: "none", supported: false, error: null };
+  return { error: null, header: {}, mode: "none", supported: false };
 }
 
 function asArrayList(raw) {
@@ -132,16 +132,16 @@ export async function runLiveStreamHealthAudit({ origin, env = process.env, fetc
           ? `Owner login via PDPP_OWNER_PASSWORD failed: ${authError}`
           : "No owner session supplied. Set PDPP_OWNER_SESSION_COOKIE or PDPP_OWNER_PASSWORD to audit /_ref/connectors.";
     return {
-      origin: base,
-      authMode: mode,
       authCapability: "cookie_only",
-      fetched: false,
-      error,
+      authMode: mode,
       connectionCount: 0,
-      ok: false,
-      status: "inconclusive",
+      error,
       failures: [],
+      fetched: false,
       inconclusive: [],
+      ok: false,
+      origin: base,
+      status: "inconclusive",
     };
   }
 
@@ -152,16 +152,16 @@ export async function runLiveStreamHealthAudit({ origin, env = process.env, fetc
     });
     if (res.status < 200 || res.status >= 300) {
       return {
-        origin: base,
-        authMode: mode,
         authCapability: "cookie_only",
-        fetched: false,
-        error: `GET /_ref/connectors returned status ${res.status}`,
+        authMode: mode,
         connectionCount: 0,
-        ok: false,
-        status: "inconclusive",
+        error: `GET /_ref/connectors returned status ${res.status}`,
         failures: [],
+        fetched: false,
         inconclusive: [],
+        ok: false,
+        origin: base,
+        status: "inconclusive",
       };
     }
     const body = await res.text();
@@ -169,29 +169,29 @@ export async function runLiveStreamHealthAudit({ origin, env = process.env, fetc
     const connections = asArrayList(parsed);
     const { ok, status, failures, inconclusive } = auditStreamHealth(connections);
     return {
-      origin: base,
-      authMode: mode,
       authCapability: "cookie_only",
-      fetched: true,
-      error: null,
+      authMode: mode,
       connectionCount: connections.length,
-      ok,
-      status,
+      error: null,
       failures,
+      fetched: true,
       inconclusive,
+      ok,
+      origin: base,
+      status,
     };
   } catch (err) {
     return {
-      origin: base,
-      authMode: mode,
       authCapability: "cookie_only",
-      fetched: false,
-      error: err instanceof Error ? err.message : String(err),
+      authMode: mode,
       connectionCount: 0,
-      ok: false,
-      status: "inconclusive",
+      error: err instanceof Error ? err.message : String(err),
       failures: [],
+      fetched: false,
       inconclusive: [],
+      ok: false,
+      origin: base,
+      status: "inconclusive",
     };
   }
 }

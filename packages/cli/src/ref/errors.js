@@ -20,8 +20,8 @@ export class PdppUsageError extends PdppCliError {
 export class PdppHttpError extends PdppCliError {
   constructor(message, status, body = null, responseMetadata = null) {
     super(message, exitCodeForStatus(status), {
-      status,
       body,
+      status,
       ...(responseMetadata || {}),
     });
     this.name = "PdppHttpError";
@@ -33,8 +33,14 @@ export class PdppHttpError extends PdppCliError {
 }
 
 function exitCodeForStatus(status) {
-  if (status === 401) return 3;
-  if (status === 403) return 4;
-  if (status === 404) return 5;
+  if (status === 401) {
+    return 3;
+  }
+  if (status === 403) {
+    return 4;
+  }
+  if (status === 404) {
+    return 5;
+  }
   return 1;
 }

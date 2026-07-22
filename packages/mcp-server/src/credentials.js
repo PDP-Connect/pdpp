@@ -77,12 +77,12 @@ export async function loadScopedCredential(providerUrl, options = {}) {
   }
 
   return {
-    providerUrl: result.providerUrl,
-    cacheFile: result.cacheFile,
     accessToken: credential.access_token,
-    tokenType: credential.token_type ?? "Bearer",
-    scope: credential.scope ?? result.payload?.scope ?? null,
+    cacheFile: result.cacheFile,
     grantId: credential.grant_id ?? result.payload?.grant_id ?? null,
+    providerUrl: result.providerUrl,
+    scope: credential.scope ?? result.payload?.scope ?? null,
+    tokenType: credential.token_type ?? "Bearer",
   };
 }
 

@@ -80,13 +80,13 @@ function grantClientCaption(grant: GrantSummary): string | null {
 export default async function GrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams;
   const filters = {
-    cursor: params.cursor,
-    status: params.status,
     client_id: params.client_id,
+    cursor: params.cursor,
+    limit: 50,
+    q: params.q,
     source_id: params.source_id,
     source_kind: params.source_kind,
-    q: params.q,
-    limit: 50,
+    status: params.status,
   };
 
   let result: ListResponse<GrantSummary>;
@@ -166,21 +166,21 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     emptyHint: "Grant artifacts appear after client/provider-connect consent flows issue or reject grants.",
     emptyTitle: "No grants yet",
     filters: {
-      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
+      query: { defaultValue: params.q ?? "", name: "q", placeholder: "id contains…" },
       status: {
-        name: "status",
         defaultValue: params.status ?? "",
+        name: "status",
         options: [
-          { value: "issued", label: "issued" },
-          { value: "revoked", label: "revoked" },
-          { value: "denied", label: "denied" },
-          { value: "failed", label: "failed" },
-          { value: "pending", label: "pending" },
+          { label: "issued", value: "issued" },
+          { label: "revoked", value: "revoked" },
+          { label: "denied", value: "denied" },
+          { label: "failed", value: "failed" },
+          { label: "pending", value: "pending" },
         ],
       },
     },
     headerActions: (
-      <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/grants/request">
+      <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/grants/request">
         Grant request workspace
       </Link>
     ),

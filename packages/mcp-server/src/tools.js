@@ -5,10 +5,10 @@ import { buildRecordContentLadder as buildSharedRecordContentLadder, summarizeRe
 import { z } from "zod";
 
 const READ_ONLY_ANNOTATIONS = {
-  readOnlyHint: true,
   destructiveHint: false,
   idempotentHint: true,
   openWorldHint: false,
+  readOnlyHint: true,
 };
 
 export const PDPP_MCP_TOOL_NAMES = Object.freeze([
@@ -133,10 +133,10 @@ const TypedFilterInput = z.record(
     FilterScalar,
     z
       .object({
-        gte: FilterScalar.optional(),
         gt: FilterScalar.optional(),
-        lte: FilterScalar.optional(),
+        gte: FilterScalar.optional(),
         lt: FilterScalar.optional(),
+        lte: FilterScalar.optional(),
       })
       .strict(),
   ])
@@ -184,17 +184,23 @@ class UnadvertisedExpandError extends Error {
 // to expand-using calls. The connection_id is forwarded so multi-source grants
 // resolve cleanly.
 async function assertExpandCapabilities(rs, stream, relations, connectionId) {
-  const schemaQuery = { view: "compact", stream };
-  if (connectionId) schemaQuery.connection_id = connectionId;
+  const schemaQuery = { stream, view: "compact" };
+  if (connectionId) {
+    schemaQuery.connection_id = connectionId;
+  }
   const schemaResp = await rs.getJson("/v1/schema", { query: schemaQuery });
-  if (!schemaResp.ok) return; // schema unavailable — let RS enforce
+  if (!schemaResp.ok) {
+    return; // schema unavailable — let RS enforce
+  }
   const schemaDoc = unwrapSchemaBody(schemaResp.body);
   const streams = schemaDoc?.streams ?? [];
   // Find any stream row that matches (may be multiple for shared stream names).
   const matchingStream = Array.isArray(streams)
     ? streams.find((s) => s && (s.name === stream || s.stream === stream || s.stream_name === stream))
     : null;
-  if (!matchingStream) return; // unknown stream — let RS enforce
+  if (!matchingStream) {
+    return; // unknown stream — let RS enforce
+  }
   const expandCaps = matchingStream.expand_capabilities;
   const hasExpandCaps = Array.isArray(expandCaps) ? expandCaps.length > 0 : Boolean(expandCaps);
   if (!hasExpandCaps) {
@@ -239,7 +245,9 @@ function filterObjectToBracketEntries(filter) {
         `filter field '${field}' must be an advertised field name, not pre-encoded bracket syntax; pass filter: { "field": "value" }`
       );
     }
-    if (spec === undefined || spec === null) continue;
+    if (spec === undefined || spec === null) {
+      continue;
+    }
     if (typeof spec === "object" && !Array.isArray(spec)) {
       const opEntries = Object.entries(spec).filter(([, v]) => v !== undefined && v !== null);
       if (opEntries.length === 0) {
@@ -266,7 +274,9 @@ function filterObjectToBracketEntries(filter) {
 // Resolve the tool `filter` argument into the `filter[...]` query entries the
 // RS expects. Returns [] when no filter was supplied.
 function resolveFilterQueryEntries(filter) {
-  if (filter === undefined || filter === null) return [];
+  if (filter === undefined || filter === null) {
+    return [];
+  }
   if (typeof filter === "object" && !Array.isArray(filter)) {
     return filterObjectToBracketEntries(filter);
   }
@@ -286,7 +296,9 @@ function applyFilterToQuery(query, filter) {
 }
 
 function applyExpandLimitToQuery(query, expandLimit) {
-  if (expandLimit === undefined || expandLimit === null) return query;
+  if (expandLimit === undefined || expandLimit === null) {
+    return query;
+  }
   const entries = Object.entries(expandLimit);
   if (entries.length === 0) {
     throw new MalformedExpandLimitError(
@@ -321,12 +333,12 @@ const CANONICAL_SCHEMA_HINT =
 // envelopes during the migration window. Validating `data` as a generic
 // object keeps the MCP wrapper honest without over-promising RS structure.
 const READ_OUTPUT_SCHEMA_SHAPE = {
+  content_ladder: z.unknown().optional(),
   data: z
     .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
     .describe(
       "Canonical RS response body. Follows the public read envelope advertised by `GET /v1/schema` plus operation-specific extensions; source metadata uses canonical `connector_key` and concrete `connection_id` values when present."
     ),
-  content_ladder: z.unknown().optional(),
   provider_url: z.string().describe("RS base URL the MCP server was configured with."),
   request_id: z.string().nullable().describe("RS x-request-id when present."),
 };
@@ -349,61 +361,61 @@ const SEARCH_OUTPUT_SCHEMA_SHAPE = {
 };
 
 const FETCH_OUTPUT_SCHEMA_SHAPE = {
-  id: z.string(),
-  title: z.string(),
-  text: z.string(),
-  url: z.string(),
-  metadata: z.record(z.string(), z.unknown()),
   content_ladder: z.unknown().optional(),
+  id: z.string(),
+  metadata: z.record(z.string(), z.unknown()),
+  text: z.string(),
+  title: z.string(),
+  url: z.string(),
 };
 
 const READ_RECORD_FIELD_OUTPUT_SCHEMA_SHAPE = {
-  record: z
-    .object({
-      id: z.string(),
-      connection_id: z.string().nullable(),
-      stream: z.string(),
-      record_id: z.string(),
-    })
-    .passthrough(),
   field: z
     .object({
       path: z.string(),
-      type: z.string().optional(),
       text_like: z.boolean(),
+      type: z.string().optional(),
     })
     .passthrough(),
-  window: z
+  provider_url: z.string(),
+  record: z
     .object({
-      text: z.string(),
-      start_chars: z.number().int().min(0),
-      end_chars: z.number().int().min(0),
-      limit_chars: z.number().int().min(1),
-      complete: z.boolean(),
+      connection_id: z.string().nullable(),
+      id: z.string(),
+      record_id: z.string(),
+      stream: z.string(),
     })
     .passthrough(),
+  request_id: z.string().nullable(),
   resource: z
     .object({
-      uri: z.string(),
       mime_type: z.string(),
+      uri: z.string(),
     })
     .passthrough()
     .optional(),
-  provider_url: z.string(),
-  request_id: z.string().nullable(),
+  window: z
+    .object({
+      complete: z.boolean(),
+      end_chars: z.number().int().min(0),
+      limit_chars: z.number().int().min(1),
+      start_chars: z.number().int().min(0),
+      text: z.string(),
+    })
+    .passthrough(),
 };
 
 const DISCOVERY_STREAM_SUMMARY_LIMIT = 50;
 const DISCOVERY_FIELD_SUMMARY_LIMIT = 16;
 const DISCOVERY_CONNECTION_SUMMARY_LIMIT = 8;
 const FIELD_CAPABILITY_FLAG_LEGEND = {
-  t: "declared type",
-  eq: "exact filter supported",
-  r: "range filter operators",
-  lex: "lexical search field",
-  sem: "semantic search field",
   a: "aggregation capabilities",
+  eq: "exact filter supported",
   "g=false": "field is not granted",
+  lex: "lexical search field",
+  r: "range filter operators",
+  sem: "semantic search field",
+  t: "declared type",
 };
 
 // The `schema` tool's default `structuredContent.data` is a COMPACT projection
@@ -434,8 +446,12 @@ const SCHEMA_CONNECTION_ID_DESCRIPTION =
  * silently coercing to `compact` (defense-in-depth behind the Zod enum).
  */
 function resolveSchemaDetail(value) {
-  if (value == null) return "compact";
-  if (value === "compact" || value === "full") return value;
+  if (value == null) {
+    return "compact";
+  }
+  if (value === "compact" || value === "full") {
+    return value;
+  }
   throw new Error(`Invalid schema detail: ${JSON.stringify(value)} (expected 'compact' or 'full')`);
 }
 
@@ -447,19 +463,9 @@ function resolveSchemaDetail(value) {
 export function buildTools({ rs, providerUrl }) {
   const tools = [
     {
-      name: "schema",
-      title: "Get PDPP schema",
+      annotations: READ_ONLY_ANNOTATIONS,
       description:
         'Return the grant-scoped PDPP schema document from `GET /v1/schema`. This is the canonical capability source: streams, canonical connector-type metadata (`connector_key`), per-field filter operators (`field_capabilities`), expandable relations (`expand_capabilities`), projection support, search modes, pagination support, count support, and granted connection identities (`connection_id`, `display_name`). Defaults to a compact, token-efficient projection (`detail: "compact"`) so the `schema -> schema(stream) -> schema(stream, connection_id) -> query_records` discovery path stays cheap. Stream names are not globally unique; add `connection_id` to narrow a shared stream to one configured source. `detail: "full"` is allowed only with `stream` and returns deduped exhaustive schema for matching stream rows, preserving raw per-field JSON Schema without duplicate stream arrays. Call this before issuing other tools to discover valid filter, sort, expand, fields, count, aggregate, stream, and connection-disambiguation arguments. Read-only.',
-      annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: z
-        .object({
-          detail: z.enum(["compact", "full"]).optional().describe(SCHEMA_DETAIL_DESCRIPTION),
-          stream: z.string().min(1).optional().describe(SCHEMA_STREAM_DESCRIPTION),
-          connection_id: z.string().min(1).optional().describe(SCHEMA_CONNECTION_ID_DESCRIPTION),
-        })
-        .strict(),
-      outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const stream = args?.stream ? requireSafeName(args.stream, "stream") : null;
         const connectionId = args?.connection_id ? requireSafeName(args.connection_id, "connection_id") : null;
@@ -480,14 +486,14 @@ export function buildTools({ rs, providerUrl }) {
           });
           if (compactResponse.ok) {
             return toSchemaToolResult(compactResponse, providerUrl, {
+              alreadyCompact: isCompactSchemaBody(compactResponse.body),
+              connectionId,
               detail,
               stream,
-              connectionId,
-              alreadyCompact: isCompactSchemaBody(compactResponse.body),
             });
           }
           if (!shouldFallbackFromCompactSchemaRequest(compactResponse)) {
-            return toSchemaToolResult(compactResponse, providerUrl, { detail, stream, connectionId });
+            return toSchemaToolResult(compactResponse, providerUrl, { connectionId, detail, stream });
           }
         }
         const response = await rs.getJson("/v1/schema", {
@@ -497,35 +503,25 @@ export function buildTools({ rs, providerUrl }) {
             ...(connectionId ? { connection_id: connectionId } : {}),
           },
         });
-        return toSchemaToolResult(response, providerUrl, { detail, stream, connectionId });
+        return toSchemaToolResult(response, providerUrl, { connectionId, detail, stream });
       },
+      inputSchema: z
+        .object({
+          connection_id: z.string().min(1).optional().describe(SCHEMA_CONNECTION_ID_DESCRIPTION),
+          detail: z.enum(["compact", "full"]).optional().describe(SCHEMA_DETAIL_DESCRIPTION),
+          stream: z.string().min(1).optional().describe(SCHEMA_STREAM_DESCRIPTION),
+        })
+        .strict(),
+      name: "schema",
+      outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
+      title: "Get PDPP schema",
     },
     {
-      name: "query_records",
-      title: "Query PDPP records",
+      annotations: READ_ONLY_ANNOTATIONS,
       description:
         "Query records in a stream via `GET /v1/streams/{stream}/records`. Default returns at most 25 records; `limit` is capped at 100 (enforced at input — a REST client that sends `limit>100` gets `limit_clamped` in `meta.warnings[]`). Page forward with `cursor`; narrow with `fields`. `structuredContent.data` carries the machine envelope; with `fields`, record payloads are narrowed to those fields plus required operational handles. `content[]` previews up to the first 5 records. Forwards all args verbatim. " +
         CANONICAL_SCHEMA_HINT +
         " Read-only.",
-      annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: z
-        .object({
-          stream: z.string().min(1).describe("Stream name advertised by `schema`."),
-          limit: z.number().int().positive().max(100).optional().describe(LIMIT_DESCRIPTION),
-          cursor: z.string().optional(),
-          order: z.string().optional().describe(ORDER_DESCRIPTION),
-          sort: z.string().optional().describe(SORT_DESCRIPTION),
-          count: z.enum(["none", "estimated", "exact"]).optional().describe(COUNT_DESCRIPTION),
-          filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
-          fields: z.array(z.string()).optional().describe(FIELDS_DESCRIPTION),
-          view: z.string().optional().describe(VIEW_DESCRIPTION),
-          expand: z.array(z.string()).optional().describe(EXPAND_DESCRIPTION),
-          expand_limit: z.record(z.string(), z.number().int().positive()).optional().describe(EXPAND_LIMIT_DESCRIPTION),
-          changes_since: z.string().optional().describe(CHANGES_SINCE_DESCRIPTION),
-          ...ConnectionIdInputShape,
-        })
-        .strict(),
-      outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const stream = requireSafeName(args?.stream, "stream");
         if (Array.isArray(args?.expand) && args.expand.length > 0) {
@@ -539,26 +535,48 @@ export function buildTools({ rs, providerUrl }) {
           query,
         });
         return toToolResult(response, providerUrl, `records from stream "${stream}"`, {
-          previewRecords: true,
-          contentLadderStream: stream,
           contentLadderConnectionId: args?.connection_id,
+          contentLadderStream: stream,
+          previewRecords: true,
         });
       },
+      inputSchema: z
+        .object({
+          changes_since: z.string().optional().describe(CHANGES_SINCE_DESCRIPTION),
+          count: z.enum(["none", "estimated", "exact"]).optional().describe(COUNT_DESCRIPTION),
+          cursor: z.string().optional(),
+          expand: z.array(z.string()).optional().describe(EXPAND_DESCRIPTION),
+          expand_limit: z.record(z.string(), z.number().int().positive()).optional().describe(EXPAND_LIMIT_DESCRIPTION),
+          fields: z.array(z.string()).optional().describe(FIELDS_DESCRIPTION),
+          filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
+          limit: z.number().int().positive().max(100).optional().describe(LIMIT_DESCRIPTION),
+          order: z.string().optional().describe(ORDER_DESCRIPTION),
+          sort: z.string().optional().describe(SORT_DESCRIPTION),
+          stream: z.string().min(1).describe("Stream name advertised by `schema`."),
+          view: z.string().optional().describe(VIEW_DESCRIPTION),
+          ...ConnectionIdInputShape,
+        })
+        .strict(),
+      name: "query_records",
+      outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
+      title: "Query PDPP records",
     },
     {
-      name: "aggregate",
-      title: "Aggregate PDPP records",
+      annotations: READ_ONLY_ANNOTATIONS,
       description:
         "Compute a single-stream aggregation via `GET /v1/streams/{stream}/aggregate`. Prefer over `query_records` when you only need a count, sum, min/max, distinct count, or grouped/time-bucketed rollup — returns small bucket rows, never record bodies. Metrics: `count`, `sum`, `min`, `max`, `count_distinct` (`field` required for all but `count`). Group with one dimension: `group_by` XOR `group_by_time` (requires `granularity`). Grouped responses include `other_count` (records in groups beyond `limit`) so you can detect top-N truncation without a second call. Groupable fields are advertised by `GET /v1/schema`. Forwards args verbatim. " +
         CANONICAL_SCHEMA_HINT +
         " Read-only.",
-      annotations: READ_ONLY_ANNOTATIONS,
+      handler: async (args) => {
+        const stream = requireSafeName(args?.stream, "stream");
+        const query = applyFilterToQuery(pickQuery(args, SUPPORTED_AGGREGATE_QUERY_KEYS), args?.filter);
+        const response = await rs.getJson(`/v1/streams/${encodeURIComponent(stream)}/aggregate`, {
+          query,
+        });
+        return toAggregateToolResult(response, providerUrl, stream);
+      },
       inputSchema: z
         .object({
-          stream: z.string().min(1).describe("Stream name advertised by `schema`."),
-          metric: z
-            .enum(["count", "sum", "min", "max", "count_distinct"])
-            .describe("Aggregation metric. `field` is required for sum, min, max, and count_distinct."),
           field: z
             .string()
             .min(1)
@@ -566,6 +584,11 @@ export function buildTools({ rs, providerUrl }) {
             .describe(
               "Target field for sum/min/max/count_distinct. Must be declared for the metric in `GET /v1/schema`."
             ),
+          filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
+          granularity: z
+            .enum(["minute", "hour", "day", "week", "month", "quarter", "year"])
+            .optional()
+            .describe("Calendar bucket unit for `group_by_time`. Required with `group_by_time`, forbidden otherwise."),
           group_by: z
             .string()
             .min(1)
@@ -578,17 +601,6 @@ export function buildTools({ rs, providerUrl }) {
             .describe(
               "Declared date/date-time field to bucket counts by. Requires `granularity`. Mutually exclusive with `group_by`."
             ),
-          granularity: z
-            .enum(["minute", "hour", "day", "week", "month", "quarter", "year"])
-            .optional()
-            .describe("Calendar bucket unit for `group_by_time`. Required with `group_by_time`, forbidden otherwise."),
-          time_zone: z
-            .string()
-            .min(1)
-            .optional()
-            .describe(
-              "IANA time zone for `group_by_time` bucket boundaries. Defaults to UTC; the response echoes the effective zone."
-            ),
           limit: z
             .number()
             .int()
@@ -596,73 +608,62 @@ export function buildTools({ rs, providerUrl }) {
             .max(100)
             .optional()
             .describe("Maximum number of group buckets (1-100). Only valid with `group_by` or `group_by_time`."),
-          filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
+          metric: z
+            .enum(["count", "sum", "min", "max", "count_distinct"])
+            .describe("Aggregation metric. `field` is required for sum, min, max, and count_distinct."),
+          stream: z.string().min(1).describe("Stream name advertised by `schema`."),
+          time_zone: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              "IANA time zone for `group_by_time` bucket boundaries. Defaults to UTC; the response echoes the effective zone."
+            ),
           ...ConnectionIdInputShape,
         })
         .strict(),
+      name: "aggregate",
       outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
-      handler: async (args) => {
-        const stream = requireSafeName(args?.stream, "stream");
-        const query = applyFilterToQuery(pickQuery(args, SUPPORTED_AGGREGATE_QUERY_KEYS), args?.filter);
-        const response = await rs.getJson(`/v1/streams/${encodeURIComponent(stream)}/aggregate`, {
-          query,
-        });
-        return toAggregateToolResult(response, providerUrl, stream);
-      },
+      title: "Aggregate PDPP records",
     },
     {
-      name: "search",
-      title: "Search PDPP records",
+      annotations: READ_ONLY_ANNOTATIONS,
       description:
         "Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per `mode`. Use lexical for exact known terms; semantic is approximate retrieval for conceptual matches. `structuredContent.results` carries the flattened page; `structuredContent.data` carries compact envelope metadata, not a duplicate hit array. Hit ids are self-contained `fetch` handles (the connection is encoded in the id); hits also carry `connection_id` and `connector_key`. Pass `connection_id` to scope, omit to fan in. Page default is 25 hits; `limit` is capped at 100 (enforced at input, and fan-in packages apply it globally). Page forward with `cursor` (lexical/semantic; hybrid does not page). Per-mode capability support is advertised by `GET /v1/schema`. Read-only.",
-      annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: z
-        .object({
-          q: z.string().min(1).describe("Search query string."),
-          streams: z.array(z.string()).optional(),
-          limit: z.number().int().positive().max(100).optional().describe(SEARCH_LIMIT_DESCRIPTION),
-          cursor: z.string().optional(),
-          mode: z.enum(["lexical", "semantic", "hybrid"]).optional(),
-          filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
-          ...ConnectionIdInputShape,
-        })
-        .strict(),
-      outputSchema: z.object(SEARCH_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const path = searchPathForMode(args.mode);
         const query = applyFilterToQuery(
           {
+            connection_id: args.connection_id,
+            cursor: args.cursor,
+            limit: args.limit,
             q: args.q,
             streams: args.streams,
-            limit: args.limit,
-            cursor: args.cursor,
-            connection_id: args.connection_id,
           },
           args.filter
         );
         const response = await rs.getJson(path, { query });
         return toSearchToolResult(response, providerUrl, { limit: args?.limit, q: args?.q });
       },
-    },
-    {
-      name: "fetch",
-      title: "Fetch PDPP search result",
-      description:
-        "Fetch a single OpenAI-compatible document by a result id from `search`. Id formats: self-contained `connection_id/stream:record_id` (pass it unchanged — no other argument is needed) or legacy `stream:record_id` plus an optional `connection_id` argument. Both resolve to `GET /v1/streams/{stream}/records/{record_id}`. Returns document fields only (`id`, `title`, `text`, `url`, `metadata`); use `query_records` for canonical PDPP record envelopes. Use `fields` to project the source record before rendering document text/metadata; if the projection excludes every text-like field (`text`, `content`, `body`, `summary`), `text` contains compact JSON for the projected record rather than the full document body. Operational source handles (`id`, stream, `connection_id`, `connector_key`) remain available in `metadata`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.",
-      annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
-          id: z
-            .string()
-            .min(1)
-            .describe("ID: `connection_id/stream:record_id`, `stream:record_id`, or `pdpp://record/...` URI."),
-          expand: z.array(z.string()).optional().describe(EXPAND_DESCRIPTION),
-          expand_limit: z.record(z.string(), z.number().int().positive()).optional().describe(EXPAND_LIMIT_DESCRIPTION),
-          fields: z.array(z.string()).optional().describe(FIELDS_DESCRIPTION),
+          cursor: z.string().optional(),
+          filter: TypedFilterInput.optional().describe(FILTER_DESCRIPTION),
+          limit: z.number().int().positive().max(100).optional().describe(SEARCH_LIMIT_DESCRIPTION),
+          mode: z.enum(["lexical", "semantic", "hybrid"]).optional(),
+          q: z.string().min(1).describe("Search query string."),
+          streams: z.array(z.string()).optional(),
           ...ConnectionIdInputShape,
         })
         .strict(),
-      outputSchema: z.object(FETCH_OUTPUT_SCHEMA_SHAPE),
+      name: "search",
+      outputSchema: z.object(SEARCH_OUTPUT_SCHEMA_SHAPE),
+      title: "Search PDPP records",
+    },
+    {
+      annotations: READ_ONLY_ANNOTATIONS,
+      description:
+        "Fetch a single OpenAI-compatible document by a result id from `search`. Id formats: self-contained `connection_id/stream:record_id` (pass it unchanged — no other argument is needed) or legacy `stream:record_id` plus an optional `connection_id` argument. Both resolve to `GET /v1/streams/{stream}/records/{record_id}`. Returns document fields only (`id`, `title`, `text`, `url`, `metadata`); use `query_records` for canonical PDPP record envelopes. Use `fields` to project the source record before rendering document text/metadata; if the projection excludes every text-like field (`text`, `content`, `body`, `summary`), `text` contains compact JSON for the projected record rather than the full document body. Operational source handles (`id`, stream, `connection_id`, `connector_key`) remain available in `metadata`. On `ambiguous_connection` (409), pick a `connection_id` from `available_connections` in the error and retry. Read-only.",
       handler: async (args) => {
         const ref = parseRecordResultId(args.id);
         if (ref.connectionId && typeof args?.connection_id === "string" && args.connection_id !== ref.connectionId) {
@@ -684,32 +685,25 @@ export function buildTools({ rs, providerUrl }) {
         );
         return toFetchToolResult(response, providerUrl, args.id);
       },
-    },
-    {
-      name: "read_record_field",
-      title: "Read PDPP record field window",
-      description: "Read bounded field text by record id or `pdpp://record/...` URI; page by offset, cursor, or q.",
-      annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
+          expand: z.array(z.string()).optional().describe(EXPAND_DESCRIPTION),
+          expand_limit: z.record(z.string(), z.number().int().positive()).optional().describe(EXPAND_LIMIT_DESCRIPTION),
+          fields: z.array(z.string()).optional().describe(FIELDS_DESCRIPTION),
           id: z
             .string()
             .min(1)
-            .optional()
             .describe("ID: `connection_id/stream:record_id`, `stream:record_id`, or `pdpp://record/...` URI."),
-          connection_id: z.string().min(1).optional(),
-          stream: z.string().min(1).optional(),
-          record_id: z.string().min(1).optional(),
-          field_path: z.string().min(1),
-          cursor: z.string().min(1).optional(),
-          offset_chars: z.number().int().min(0).optional(),
-          limit_chars: z.number().int().min(1).max(16384).optional(),
-          q: z.string().min(1).optional(),
-          before_chars: z.number().int().min(0).max(8192).optional(),
-          after_chars: z.number().int().min(0).max(8192).optional(),
+          ...ConnectionIdInputShape,
         })
         .strict(),
-      outputSchema: z.object(READ_RECORD_FIELD_OUTPUT_SCHEMA_SHAPE),
+      name: "fetch",
+      outputSchema: z.object(FETCH_OUTPUT_SCHEMA_SHAPE),
+      title: "Fetch PDPP search result",
+    },
+    {
+      annotations: READ_ONLY_ANNOTATIONS,
+      description: "Read bounded field text by record id or `pdpp://record/...` URI; page by offset, cursor, or q.",
       handler: async (args) => {
         const ref = resolveReadRecordFieldRef(args);
         const fieldPath = requireSafeName(args?.field_path, "field_path");
@@ -720,11 +714,33 @@ export function buildTools({ rs, providerUrl }) {
         );
         return toReadRecordFieldToolResult(response, providerUrl, {
           connectionId: ref.connectionId,
-          stream: ref.stream,
-          recordId: ref.recordId,
           fieldPath,
+          recordId: ref.recordId,
+          stream: ref.stream,
         });
       },
+      inputSchema: z
+        .object({
+          after_chars: z.number().int().min(0).max(8192).optional(),
+          before_chars: z.number().int().min(0).max(8192).optional(),
+          connection_id: z.string().min(1).optional(),
+          cursor: z.string().min(1).optional(),
+          field_path: z.string().min(1),
+          id: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("ID: `connection_id/stream:record_id`, `stream:record_id`, or `pdpp://record/...` URI."),
+          limit_chars: z.number().int().min(1).max(16_384).optional(),
+          offset_chars: z.number().int().min(0).optional(),
+          q: z.string().min(1).optional(),
+          record_id: z.string().min(1).optional(),
+          stream: z.string().min(1).optional(),
+        })
+        .strict(),
+      name: "read_record_field",
+      outputSchema: z.object(READ_RECORD_FIELD_OUTPUT_SCHEMA_SHAPE),
+      title: "Read PDPP record field window",
     },
   ];
 
@@ -732,8 +748,12 @@ export function buildTools({ rs, providerUrl }) {
 }
 
 function searchPathForMode(mode) {
-  if (mode === "semantic") return "/v1/search/semantic";
-  if (mode === "hybrid") return "/v1/search/hybrid";
+  if (mode === "semantic") {
+    return "/v1/search/semantic";
+  }
+  if (mode === "hybrid") {
+    return "/v1/search/hybrid";
+  }
   return "/v1/search";
 }
 
@@ -754,15 +774,15 @@ function resolveReadRecordFieldRef(args) {
     }
     return ref;
   }
-  if (!args?.connection_id || !args?.stream || !args?.record_id) {
+  if (!(args?.connection_id && args?.stream && args?.record_id)) {
     throw new InvalidReadRecordFieldSelectorError(
       "read_record_field requires either `id` + `field_path` or `connection_id` + `stream` + `record_id` + `field_path`"
     );
   }
   return {
     connectionId: requireSafeName(args.connection_id, "connection_id"),
-    stream: requireSafeName(args.stream, "stream"),
     recordId: requireSafeName(args.record_id, "record_id"),
+    stream: requireSafeName(args.stream, "stream"),
   };
 }
 
@@ -811,23 +831,23 @@ function parseFieldWindowCursor(cursor) {
 
 export function buildResourceTemplates({ rs, providerUrl }) {
   return [
-    buildStreamResourceTemplate({ rs, providerUrl }),
-    buildRecordResourceTemplate({ rs, providerUrl }),
-    buildRecordFieldResourceTemplate({ rs, providerUrl }),
+    buildStreamResourceTemplate({ providerUrl, rs }),
+    buildRecordResourceTemplate({ providerUrl, rs }),
+    buildRecordFieldResourceTemplate({ providerUrl, rs }),
   ];
 }
 
 function buildRecordResourceTemplate({ rs, providerUrl }) {
   return {
-    uriTemplate: "pdpp://record/{handle}",
-    name: "pdpp-record",
-    title: "PDPP record",
     description: "Returns one grant-scoped PDPP record through the resource server. Read-only.",
     mimeType: "application/json",
+    name: "pdpp-record",
     read: async (uri, variables) => {
       const ref = resolveRecordResourceRef(uri, variables);
       const query = {};
-      if (ref.connectionId) query.connection_id = ref.connectionId;
+      if (ref.connectionId) {
+        query.connection_id = ref.connectionId;
+      }
       const response = await rs.getJson(
         `/v1/streams/${encodeURIComponent(ref.stream)}/records/${encodeURIComponent(ref.recordId)}`,
         { query }
@@ -836,25 +856,25 @@ function buildRecordResourceTemplate({ rs, providerUrl }) {
         return {
           contents: [
             {
-              uri,
               mimeType: "application/json",
               text: JSON.stringify(response.body, null, 2),
+              uri,
             },
           ],
         };
       }
       return resourceErrorContents(uri, response, providerUrl);
     },
+    title: "PDPP record",
+    uriTemplate: "pdpp://record/{handle}",
   };
 }
 
 function buildRecordFieldResourceTemplate({ rs, providerUrl }) {
   return {
-    uriTemplate: "pdpp://field-window/{handle}",
-    name: "pdpp-field-window",
-    title: "PDPP record field window",
     description: "Returns one bounded text window from an authorized PDPP record field. Read-only.",
     mimeType: "text/plain",
+    name: "pdpp-field-window",
     read: async (uri, variables) => {
       const ref = resolveFieldWindowResourceRef(uri, variables);
       const query = readRecordFieldQuery(ref, ref.connectionId, ref.field_path);
@@ -867,30 +887,30 @@ function buildRecordFieldResourceTemplate({ rs, providerUrl }) {
       }
       const result = toReadRecordFieldToolResult(response, providerUrl, {
         connectionId: ref.connectionId,
-        stream: ref.stream,
-        recordId: ref.recordId,
         fieldPath: ref.field_path,
+        recordId: ref.recordId,
+        stream: ref.stream,
       });
       return {
         contents: [
           {
-            uri,
             mimeType: "text/plain",
             text: result.content[0]?.text ?? "",
+            uri,
           },
         ],
       };
     },
+    title: "PDPP record field window",
+    uriTemplate: "pdpp://field-window/{handle}",
   };
 }
 
 export function buildStreamResourceTemplate({ rs, providerUrl }) {
   return {
-    uriTemplate: "pdpp://stream/{name}",
-    name: "pdpp-stream",
-    title: "PDPP stream metadata",
     description: "Returns the stream metadata document for a single stream (GET /v1/streams/{name}). Read-only.",
     mimeType: "application/json",
+    name: "pdpp-stream",
     read: async (uri, variables) => {
       const streamName = resolveStreamName(uri, variables);
       const response = await rs.getJson(`/v1/streams/${encodeURIComponent(streamName)}`);
@@ -898,35 +918,37 @@ export function buildStreamResourceTemplate({ rs, providerUrl }) {
         return {
           contents: [
             {
-              uri,
               mimeType: "application/json",
               text: JSON.stringify(response.body, null, 2),
+              uri,
             },
           ],
         };
       }
-      const error = response.error ?? { type: "rs_error", code: "unknown", message: "Unknown RS error" };
+      const error = response.error ?? { code: "unknown", message: "Unknown RS error", type: "rs_error" };
       return {
         contents: [
           {
-            uri,
             mimeType: "application/json",
-            text: JSON.stringify({ error, provider_url: providerUrl, http_status: response.status }, null, 2),
+            text: JSON.stringify({ error, http_status: response.status, provider_url: providerUrl }, null, 2),
+            uri,
           },
         ],
       };
     },
+    title: "PDPP stream metadata",
+    uriTemplate: "pdpp://stream/{name}",
   };
 }
 
 function resourceErrorContents(uri, response, providerUrl) {
-  const error = response.error ?? { type: "rs_error", code: "unknown", message: "Unknown RS error" };
+  const error = response.error ?? { code: "unknown", message: "Unknown RS error", type: "rs_error" };
   return {
     contents: [
       {
-        uri,
         mimeType: "application/json",
-        text: JSON.stringify({ error, provider_url: providerUrl, http_status: response.status }, null, 2),
+        text: JSON.stringify({ error, http_status: response.status, provider_url: providerUrl }, null, 2),
+        uri,
       },
     ],
   };
@@ -939,12 +961,12 @@ function resolveRecordResourceRef(uri, variables) {
     payload = decodeResourceHandle(handle, "record");
   } catch (error) {
     const ref = parseRecordResultId(decodeURIComponent(handle));
-    return { connectionId: ref.connectionId, stream: ref.stream, recordId: ref.recordId };
+    return { connectionId: ref.connectionId, recordId: ref.recordId, stream: ref.stream };
   }
   return {
     connectionId: requireSafeName(payload.connection_id, "connection_id"),
-    stream: requireSafeName(payload.stream, "stream"),
     recordId: requireSafeName(payload.record_id, "record_id"),
+    stream: requireSafeName(payload.stream, "stream"),
   };
 }
 
@@ -952,16 +974,28 @@ function resolveFieldWindowResourceRef(uri, variables) {
   const payload = decodeResourceHandle(resolveResourceHandle(uri, variables, "field-window"), "field-window");
   const ref = {
     connectionId: requireSafeName(payload.connection_id, "connection_id"),
-    stream: requireSafeName(payload.stream, "stream"),
-    recordId: requireSafeName(payload.record_id, "record_id"),
     field_path: requireSafeName(payload.field_path, "field_path"),
+    recordId: requireSafeName(payload.record_id, "record_id"),
+    stream: requireSafeName(payload.stream, "stream"),
   };
-  if (payload.cursor !== undefined) ref.cursor = String(payload.cursor);
-  if (payload.offset_chars !== undefined) ref.offset_chars = payload.offset_chars;
-  if (payload.limit_chars !== undefined) ref.limit_chars = payload.limit_chars;
-  if (payload.q !== undefined) ref.q = String(payload.q);
-  if (payload.before_chars !== undefined) ref.before_chars = payload.before_chars;
-  if (payload.after_chars !== undefined) ref.after_chars = payload.after_chars;
+  if (payload.cursor !== undefined) {
+    ref.cursor = String(payload.cursor);
+  }
+  if (payload.offset_chars !== undefined) {
+    ref.offset_chars = payload.offset_chars;
+  }
+  if (payload.limit_chars !== undefined) {
+    ref.limit_chars = payload.limit_chars;
+  }
+  if (payload.q !== undefined) {
+    ref.q = String(payload.q);
+  }
+  if (payload.before_chars !== undefined) {
+    ref.before_chars = payload.before_chars;
+  }
+  if (payload.after_chars !== undefined) {
+    ref.after_chars = payload.after_chars;
+  }
   return ref;
 }
 
@@ -998,7 +1032,7 @@ function decodeIfEncoded(value) {
 }
 
 function encodeResourceUri(kind, payload) {
-  return `pdpp://${kind}/${encodeResourceHandle({ v: 1, kind, ...payload })}`;
+  return `pdpp://${kind}/${encodeResourceHandle({ kind, v: 1, ...payload })}`;
 }
 
 function encodeResourceHandle(payload) {
@@ -1046,17 +1080,25 @@ function pickQuery(args, supportedKeys) {
   }
   const out = {};
   for (const key of Object.keys(args)) {
-    if (key === "stream") continue;
+    if (key === "stream") {
+      continue;
+    }
     // `filter` is never forwarded as a flat param: the RS expects bracketed
     // `filter[field]=value` query keys, which callers build via
     // `applyFilterToQuery`. Forwarding the raw value here would re-introduce the
     // silent bare-`filter=` no-op this change fixes.
-    if (key === "filter") continue;
+    if (key === "filter") {
+      continue;
+    }
     // `expand_limit` mirrors the same nested REST query shape:
     // `expand_limit[relation]=N`. Forwarding the raw object would become a JSON
     // string under URLSearchParams instead of the query key the RS parses.
-    if (key === "expand_limit") continue;
-    if (!supportedKeys.has(key)) continue;
+    if (key === "expand_limit") {
+      continue;
+    }
+    if (!supportedKeys.has(key)) {
+      continue;
+    }
     out[key] = args[key];
   }
   return out;
@@ -1074,8 +1116,8 @@ function toToolResult(response, providerUrl, label = "response", options = {}) {
     return {
       content: [
         {
-          type: "text",
           text: summarizeBody(body, label, options),
+          type: "text",
         },
       ],
       structuredContent: {
@@ -1111,11 +1153,11 @@ function toSchemaToolResult(
   return {
     content: [
       {
-        type: "text",
         text: summarizeSchemaDiscovery(schemaDocument, "PDPP schema", {
           includeFieldDetail: Boolean(stream),
           ...(connectionId ? { connectionId } : {}),
         }),
+        type: "text",
       },
     ],
     structuredContent: { data: schemaDocument, provider_url: providerUrl, request_id: response.requestId },
@@ -1127,7 +1169,9 @@ function isCompactSchemaBody(body) {
 }
 
 function shouldFallbackFromCompactSchemaRequest(response) {
-  if (response.ok) return false;
+  if (response.ok) {
+    return false;
+  }
   const code = response.error?.code ?? response.error?.type ?? "";
   return response.status === 400 && ["bad_request", "invalid_request", "unsupported_query"].includes(code);
 }
@@ -1153,8 +1197,8 @@ function compactSchemaDocument(body, { includeFieldDetail = false } = {}) {
   if (connectors.length > 0) {
     compactSchema = {
       ...stripSchemaStreamArrays(schema),
-      field_capability_legend: FIELD_CAPABILITY_FLAG_LEGEND,
       connectors: connectors.map((connector) => compactSchemaConnector(connector, { includeFieldDetail })),
+      field_capability_legend: FIELD_CAPABILITY_FLAG_LEGEND,
     };
   } else if (Array.isArray(schema.streams)) {
     compactSchema = {
@@ -1173,9 +1217,13 @@ function dedupeFullSchemaDocument(body) {
   const wrapped =
     body && typeof body === "object" && body.data && typeof body.data === "object" && !Array.isArray(body.data);
   const schema = unwrapSchemaBody(body);
-  if (!schema || typeof schema !== "object") return body;
+  if (!schema || typeof schema !== "object") {
+    return body;
+  }
   const connectors = extractSchemaConnectors(schema);
-  if (connectors.length === 0) return body;
+  if (connectors.length === 0) {
+    return body;
+  }
   const deduped = stripSchemaStreamArrays(schema);
   return wrapped ? { ...body, data: deduped } : deduped;
 }
@@ -1186,14 +1234,16 @@ function stripSchemaStreamArrays(schema) {
 }
 
 function compactSchemaConnector(connector, { includeFieldDetail = false } = {}) {
-  if (!connector || typeof connector !== "object") return connector;
+  if (!connector || typeof connector !== "object") {
+    return connector;
+  }
   const streams = Array.isArray(connector.streams) ? connector.streams : [];
   const { shared, sharedKey } = pickSharedGrantedConnections(streams);
   const hasShared = shared !== null;
   return {
     ...connector,
     ...(shared ? { granted_connections: shared } : {}),
-    streams: streams.map((entry) => compactSchemaStream(entry, { hasShared, sharedKey, includeFieldDetail })),
+    streams: streams.map((entry) => compactSchemaStream(entry, { hasShared, includeFieldDetail, sharedKey })),
   };
 }
 
@@ -1202,7 +1252,9 @@ function compactSchemaConnector(connector, { includeFieldDetail = false } = {}) 
 // `expand_capabilities` are compacted; everything else is dropped to keep the
 // payload bounded.
 function compactSchemaStream(entry, { hasShared = false, sharedKey = "", includeFieldDetail = false } = {}) {
-  if (!entry || typeof entry !== "object") return entry;
+  if (!entry || typeof entry !== "object") {
+    return entry;
+  }
   const out = {};
   const passthrough = [
     "name",
@@ -1221,7 +1273,9 @@ function compactSchemaStream(entry, { hasShared = false, sharedKey = "", include
     "source",
   ];
   for (const key of passthrough) {
-    if (entry[key] !== undefined) out[key] = entry[key];
+    if (entry[key] !== undefined) {
+      out[key] = entry[key];
+    }
   }
   if (entry.granted_connections !== undefined) {
     const compactGrantedConnections = compactSchemaGrantedConnections(entry.granted_connections);
@@ -1252,10 +1306,12 @@ function compactSchemaStream(entry, { hasShared = false, sharedKey = "", include
 // structured capability sub-objects. Preserves the map vs array container shape.
 function compactFieldCapabilities(fieldCapabilities) {
   const entries = fieldCapabilityEntries(fieldCapabilities);
-  if (entries.length === 0) return fieldCapabilities;
+  if (entries.length === 0) {
+    return fieldCapabilities;
+  }
   const isArray = Array.isArray(fieldCapabilities);
   if (isArray) {
-    return entries.map(([name, capabilities]) => ({ name, flags: formatFieldCapabilityFlags(capabilities) }));
+    return entries.map(([name, capabilities]) => ({ flags: formatFieldCapabilityFlags(capabilities), name }));
   }
   const out = {};
   for (const [name, capabilities] of entries) {
@@ -1265,9 +1321,13 @@ function compactFieldCapabilities(fieldCapabilities) {
 }
 
 function compactExpandCapabilities(expandCapabilities) {
-  if (!Array.isArray(expandCapabilities)) return expandCapabilities;
+  if (!Array.isArray(expandCapabilities)) {
+    return expandCapabilities;
+  }
   return expandCapabilities.map((relation) => {
-    if (!relation || typeof relation !== "object") return relation;
+    if (!relation || typeof relation !== "object") {
+      return relation;
+    }
     const out = {};
     for (const key of [
       "name",
@@ -1282,16 +1342,22 @@ function compactExpandCapabilities(expandCapabilities) {
       "default_limit",
       "reason",
     ]) {
-      if (relation[key] !== undefined) out[key] = relation[key];
+      if (relation[key] !== undefined) {
+        out[key] = relation[key];
+      }
     }
     return Object.keys(out).length > 0 ? out : relation;
   });
 }
 
 function grantedConnectionsKey(value) {
-  if (!Array.isArray(value)) return "";
+  if (!Array.isArray(value)) {
+    return "";
+  }
   const entries = value.map((entry) => {
-    if (!entry || typeof entry !== "object") return JSON.stringify(entry);
+    if (!entry || typeof entry !== "object") {
+      return JSON.stringify(entry);
+    }
     const id = typeof entry.connection_id === "string" ? entry.connection_id : "";
     const label = typeof entry.display_name === "string" ? entry.display_name : "";
     return JSON.stringify([id, label]);
@@ -1301,9 +1367,13 @@ function grantedConnectionsKey(value) {
 }
 
 function compactSchemaGrantedConnections(value) {
-  if (!Array.isArray(value)) return value;
+  if (!Array.isArray(value)) {
+    return value;
+  }
   return value.map((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return entry;
+    }
     const { connector_instance_id: _deprecatedAlias, ...rest } = entry;
     return rest;
   });
@@ -1312,14 +1382,18 @@ function compactSchemaGrantedConnections(value) {
 function pickSharedGrantedConnections(streams) {
   const byKey = new Map();
   for (const stream of streams) {
-    if (!stream || typeof stream !== "object" || !Array.isArray(stream.granted_connections)) continue;
-    if (stream.granted_connections.length === 0) continue;
+    if (!stream || typeof stream !== "object" || !Array.isArray(stream.granted_connections)) {
+      continue;
+    }
+    if (stream.granted_connections.length === 0) {
+      continue;
+    }
     const key = grantedConnectionsKey(stream.granted_connections);
     const existing = byKey.get(key);
     if (existing) {
       existing.count += 1;
     } else {
-      byKey.set(key, { value: compactSchemaGrantedConnections(stream.granted_connections), count: 1 });
+      byKey.set(key, { count: 1, value: compactSchemaGrantedConnections(stream.granted_connections) });
     }
   }
   let bestKey = "";
@@ -1337,7 +1411,7 @@ function toSearchToolResult(response, providerUrl, options = {}) {
   if (!response.ok) {
     return errorToolResult(response, providerUrl);
   }
-  const allResults = normalizeSearchResults(response.body, { q: options.q, providerUrl });
+  const allResults = normalizeSearchResults(response.body, { providerUrl, q: options.q });
   const limit = requestedSearchLimit(options.limit);
   const results = allResults.slice(0, limit);
   const summaryBody = allResults.length > results.length ? { ...response.body, has_more: true } : response.body;
@@ -1346,8 +1420,8 @@ function toSearchToolResult(response, providerUrl, options = {}) {
   return {
     content: [
       {
-        type: "text",
         text: summarizeSearch(summaryBody, results),
+        type: "text",
       },
     ],
     structuredContent: {
@@ -1371,10 +1445,10 @@ function toReadRecordFieldToolResult(response, providerUrl, identity) {
   const recordId = firstString(body.record_id, identity.recordId);
   const connectionId = firstString(body.connection_id, body.connector_instance_id, identity.connectionId) || null;
   const record = {
-    id: connectionId ? `${connectionId}/${stream}:${recordId}` : `${stream}:${recordId}`,
     connection_id: connectionId,
-    stream,
+    id: connectionId ? `${connectionId}/${stream}:${recordId}` : `${stream}:${recordId}`,
     record_id: recordId,
+    stream,
   };
   const window = {
     ...rawWindow,
@@ -1389,8 +1463,8 @@ function toReadRecordFieldToolResult(response, providerUrl, identity) {
   };
   const fieldInfo = {
     path: firstString(field.path, identity.fieldPath),
-    type: firstString(field.type, rawWindow.type),
     text_like: true,
+    type: firstString(field.type, rawWindow.type),
   };
   const header = [
     `record=${record.id}`,
@@ -1405,12 +1479,14 @@ function toReadRecordFieldToolResult(response, providerUrl, identity) {
     .join(" ");
   const continuationArgs = (offsetChars) => {
     const args = {
-      id: record.id,
       field_path: fieldInfo.path,
+      id: record.id,
       offset_chars: offsetChars,
     };
     const limitChars = numberValue(window.limit_chars);
-    if (limitChars !== null) args.limit_chars = limitChars;
+    if (limitChars !== null) {
+      args.limit_chars = limitChars;
+    }
     return args;
   };
   const nextOffsetChars = numberValue(window.next_offset_chars);
@@ -1419,29 +1495,29 @@ function toReadRecordFieldToolResult(response, providerUrl, identity) {
     window.complete === true
       ? []
       : [
-          nextOffsetChars !== null ? `next_offset_chars=${nextOffsetChars}` : null,
-          nextOffsetChars !== null
-            ? `next read_record_field args=${JSON.stringify(continuationArgs(nextOffsetChars))}`
-            : null,
-          previousOffsetChars !== null ? `previous_offset_chars=${previousOffsetChars}` : null,
-          previousOffsetChars !== null
-            ? `previous read_record_field args=${JSON.stringify(continuationArgs(previousOffsetChars))}`
-            : null,
+          nextOffsetChars === null ? null : `next_offset_chars=${nextOffsetChars}`,
+          nextOffsetChars === null
+            ? null
+            : `next read_record_field args=${JSON.stringify(continuationArgs(nextOffsetChars))}`,
+          previousOffsetChars === null ? null : `previous_offset_chars=${previousOffsetChars}`,
+          previousOffsetChars === null
+            ? null
+            : `previous read_record_field args=${JSON.stringify(continuationArgs(previousOffsetChars))}`,
         ].filter(Boolean);
   const text = typeof window.text === "string" ? window.text : "";
   return {
     content: [
       {
-        type: "text",
         text: [header, ...continuationLines, text].join("\n"),
+        type: "text",
       },
     ],
     structuredContent: {
-      record,
       field: fieldInfo,
-      window,
       provider_url: providerUrl,
+      record,
       request_id: response.requestId ?? null,
+      window,
     },
   };
 }
@@ -1474,13 +1550,15 @@ function buildResponseContentLadder(body, options = {}) {
   const records = extractRecordRows(body)
     .map((record) =>
       buildRecordContentLadder(record, {
-        stream: options.contentLadderStream,
         connectionId: options.contentLadderConnectionId,
+        stream: options.contentLadderStream,
       })
     )
     .filter(Boolean)
     .slice(0, CONTENT_LADDER_RECORD_LIMIT);
-  if (records.length === 0) return null;
+  if (records.length === 0) {
+    return null;
+  }
   return {
     kind: "record_set",
     read_tool: "read_record_field",
@@ -1492,11 +1570,13 @@ function buildSearchContentLadder(results) {
   const records = results
     .map((result) => {
       const record = buildRecordContentLadder(result, {
-        stream: result.stream,
-        recordId: result.record_key,
         connectionId: result.connection_id,
+        recordId: result.record_key,
+        stream: result.stream,
       });
-      if (!record || !Array.isArray(result.match_windows) || result.match_windows.length === 0) return record;
+      if (!(record && Array.isArray(result.match_windows)) || result.match_windows.length === 0) {
+        return record;
+      }
       const recordId = firstString(record.id);
       const evidenceExcerpts = searchEvidenceExcerpts(result.match_windows, recordId);
       return {
@@ -1507,7 +1587,9 @@ function buildSearchContentLadder(results) {
     })
     .filter(Boolean)
     .slice(0, CONTENT_LADDER_RECORD_LIMIT);
-  if (records.length === 0) return null;
+  if (records.length === 0) {
+    return null;
+  }
   return {
     kind: "search_results",
     read_tool: "read_record_field",
@@ -1533,16 +1615,20 @@ function mergeSearchMatchWindows(existing, matchWindows, recordId) {
 }
 
 function searchEvidenceExcerpts(matchWindows, recordId) {
-  if (!Array.isArray(matchWindows)) return [];
+  if (!Array.isArray(matchWindows)) {
+    return [];
+  }
   return matchWindows
     .map((window) => {
       const previewText = searchEvidencePreviewText(window);
-      if (!previewText) return null;
+      if (!previewText) {
+        return null;
+      }
       const read = searchMatchWindowRead(window, recordId, window.field_path);
       return {
         field_path: window.field_path,
-        preview_text: previewText,
         preview_status: window.complete === true ? "complete" : "truncated",
+        preview_text: previewText,
         ...(read ? { read } : {}),
       };
     })
@@ -1550,7 +1636,9 @@ function searchEvidenceExcerpts(matchWindows, recordId) {
 }
 
 function searchEvidencePreviewText(window) {
-  if (typeof window?.preview_text === "string") return window.preview_text;
+  if (typeof window?.preview_text === "string") {
+    return window.preview_text;
+  }
   return typeof window?.text === "string" ? truncateText(window.text, SEARCH_TEXT_SNIPPET_CHAR_LIMIT) : null;
 }
 
@@ -1560,38 +1648,44 @@ function searchMatchWindowRead(window, recordId, fieldPath) {
   // bounded `read_record_field` continuation from the hit id + matched field so
   // a visible search excerpt is never a dead end for content-only clients.
   if (!read) {
-    if (!recordId || !fieldPath) return null;
+    if (!(recordId && fieldPath)) {
+      return null;
+    }
     return {
-      tool: "read_record_field",
       args: searchMatchWindowReadArgs({}, recordId, fieldPath),
+      tool: "read_record_field",
     };
   }
   const args = searchMatchWindowReadArgs(read.args, recordId, fieldPath);
-  if (!firstString(args.id, args.record_uri)) return null;
+  if (!firstString(args.id, args.record_uri)) {
+    return null;
+  }
   return {
-    tool: read.tool ?? "read_record_field",
     args,
+    tool: read.tool ?? "read_record_field",
   };
 }
 
 function searchMatchWindowReadArgs(args, recordId, fieldPath) {
   const rawArgs = objectValue(args) ?? {};
-  if (firstString(rawArgs.id, rawArgs.record_uri)) return rawArgs;
+  if (firstString(rawArgs.id, rawArgs.record_uri)) {
+    return rawArgs;
+  }
   const connectionId = firstString(rawArgs.connection_id, rawArgs.connector_instance_id);
   const stream = firstString(rawArgs.stream);
   const rawRecordId = firstString(rawArgs.record_id, rawArgs.recordId, rawArgs.record_key, rawArgs.recordKey);
   const id =
     connectionId && stream && rawRecordId ? selfContainedResultId(`${stream}:${rawRecordId}`, connectionId) : recordId;
   return {
-    id,
     field_path: firstString(rawArgs.field_path, rawArgs.fieldPath, rawArgs.path) ?? fieldPath,
+    id,
     ...definedObject({
-      q: rawArgs.q,
-      cursor: rawArgs.cursor,
-      offset_chars: rawArgs.offset_chars,
-      limit_chars: rawArgs.limit_chars,
-      before_chars: rawArgs.before_chars,
       after_chars: rawArgs.after_chars,
+      before_chars: rawArgs.before_chars,
+      cursor: rawArgs.cursor,
+      limit_chars: rawArgs.limit_chars,
+      offset_chars: rawArgs.offset_chars,
+      q: rawArgs.q,
     }),
   };
 }
@@ -1603,9 +1697,13 @@ function definedObject(values) {
 }
 
 function hideModelVisibleResourceUris(record) {
-  if (!record) return record;
+  if (!record) {
+    return record;
+  }
   const { record_uri: _recordUri, recordUri: _recordUriCamel, ...rest } = record;
-  if (!Array.isArray(rest.field_windows)) return rest;
+  if (!Array.isArray(rest.field_windows)) {
+    return rest;
+  }
   return {
     ...rest,
     field_windows: rest.field_windows.map(
@@ -1616,10 +1714,12 @@ function hideModelVisibleResourceUris(record) {
 
 function buildFetchContentLadder(recordBody, document) {
   const record = buildRecordContentLadder(recordBody, {
-    id: document.id,
     connectionId: document.metadata?.connection_id,
+    id: document.id,
   });
-  if (!record) return null;
+  if (!record) {
+    return null;
+  }
   return {
     kind: "record",
     read_tool: "read_record_field",
@@ -1629,10 +1729,10 @@ function buildFetchContentLadder(recordBody, document) {
 
 function buildRecordContentLadder(record, fallback = {}) {
   const ladder = buildSharedRecordContentLadder(record, {
-    fallback,
-    encodeResourceUri,
-    fieldLimit: CONTENT_LADDER_FIELD_LIMIT,
     binaryLimit: CONTENT_LADDER_BINARY_FIELD_LIMIT,
+    encodeResourceUri,
+    fallback,
+    fieldLimit: CONTENT_LADDER_FIELD_LIMIT,
     windowLimitChars: CONTENT_LADDER_WINDOW_LIMIT_CHARS,
   });
   return hideModelVisibleResourceUris(ladder);
@@ -1648,8 +1748,8 @@ function toFetchToolResult(response, providerUrl, requestedId) {
   return {
     content: [
       {
-        type: "text",
         text,
+        type: "text",
       },
     ],
     structuredContent: {
@@ -1671,8 +1771,8 @@ function toAggregateToolResult(response, providerUrl, stream) {
   return {
     content: [
       {
-        type: "text",
         text: summarizeAggregate(response.body, stream),
+        type: "text",
       },
     ],
     structuredContent: { data: response.body, provider_url: providerUrl, request_id: response.requestId },
@@ -1712,7 +1812,7 @@ function summarizeAggregate(body, stream) {
 
   // Ungrouped: the scalar answer lives in `value`. Fall back to
   // `filtered_record_count` for a count when `value` is absent.
-  const value = agg.value !== undefined ? agg.value : agg.filtered_record_count;
+  const value = agg.value === undefined ? agg.filtered_record_count : agg.value;
   return `${head} = ${formatAggregateValue(value)}. canonical envelope in structuredContent.data`;
 }
 
@@ -1720,14 +1820,22 @@ function summarizeAggregate(body, stream) {
 // count/sum/min/max case) so the text reads as the numeric result; strings are
 // quoted for disambiguation.
 function formatAggregateValue(value) {
-  if (value === undefined || value === null) return "null";
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (value === undefined || value === null) {
+    return "null";
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
   return formatScalar(value);
 }
 
 function unwrapAggregateBody(body) {
-  if (!body || typeof body !== "object") return {};
-  if (body.object === "aggregation") return body;
+  if (!body || typeof body !== "object") {
+    return {};
+  }
+  if (body.object === "aggregation") {
+    return body;
+  }
   if (body.data && typeof body.data === "object" && !Array.isArray(body.data)) {
     return body.data;
   }
@@ -1808,18 +1916,32 @@ function formatRecordEnvelopeHandles(body) {
   const parts = [];
   const nextCursor = envelopeStringField(body, "next_cursor");
   const nextChangesSince = envelopeStringField(body, "next_changes_since");
-  if (nextCursor) parts.push(`next_cursor=${formatScalar(nextCursor)}`);
-  if (nextChangesSince) parts.push(`next_changes_since=${formatScalar(nextChangesSince)}`);
+  if (nextCursor) {
+    parts.push(`next_cursor=${formatScalar(nextCursor)}`);
+  }
+  if (nextChangesSince) {
+    parts.push(`next_changes_since=${formatScalar(nextChangesSince)}`);
+  }
   const count = envelopeCount(body);
-  if (count) parts.push(`count=${count}`);
+  if (count) {
+    parts.push(`count=${count}`);
+  }
   return parts.length > 0 ? ` ${parts.join(" ")}.` : "";
 }
 
 function extractRecordRows(body) {
-  if (Array.isArray(body)) return body;
-  if (!body || typeof body !== "object") return [];
-  if (Array.isArray(body.records)) return body.records;
-  if (Array.isArray(body.data)) return body.data;
+  if (Array.isArray(body)) {
+    return body;
+  }
+  if (!body || typeof body !== "object") {
+    return [];
+  }
+  if (Array.isArray(body.records)) {
+    return body.records;
+  }
+  if (Array.isArray(body.data)) {
+    return body.data;
+  }
   if (body.data && typeof body.data === "object" && Array.isArray(body.data.records)) {
     return body.data.records;
   }
@@ -1893,7 +2015,9 @@ function formatSchemaStreamIndex(streamRefs) {
   for (const { stream, connector } of streamRefs) {
     const connectorKey = connectorKeyFor(stream, connector) || "unknown";
     const name = streamName(stream);
-    if (!name) continue;
+    if (!name) {
+      continue;
+    }
     if (!byConnector.has(connectorKey)) {
       byConnector.set(connectorKey, []);
     }
@@ -1909,10 +2033,18 @@ function formatSchemaStreamIndex(streamRefs) {
 }
 
 function extractListRows(body) {
-  if (Array.isArray(body)) return body;
-  if (!body || typeof body !== "object") return [];
-  if (Array.isArray(body.data)) return body.data;
-  if (Array.isArray(body.streams)) return body.streams;
+  if (Array.isArray(body)) {
+    return body;
+  }
+  if (!body || typeof body !== "object") {
+    return [];
+  }
+  if (Array.isArray(body.data)) {
+    return body.data;
+  }
+  if (Array.isArray(body.streams)) {
+    return body.streams;
+  }
   if (body.data && typeof body.data === "object" && Array.isArray(body.data.streams)) {
     return body.data.streams;
   }
@@ -1920,7 +2052,9 @@ function extractListRows(body) {
 }
 
 function unwrapSchemaBody(body) {
-  if (!body || typeof body !== "object") return {};
+  if (!body || typeof body !== "object") {
+    return {};
+  }
   if (body.data && typeof body.data === "object" && !Array.isArray(body.data)) {
     const data = body.data;
     if (
@@ -1944,13 +2078,13 @@ function extractSchemaStreamRefs(schema) {
   if (connectors.length > 0) {
     return connectors.flatMap((connector) => {
       const streams = Array.isArray(connector.streams) ? connector.streams : [];
-      return streams.map((stream) => ({ stream, connector }));
+      return streams.map((stream) => ({ connector, stream }));
     });
   }
   const streams = Array.isArray(schema?.streams) ? schema.streams : [];
   return streams
     .filter((stream) => stream && typeof stream === "object")
-    .map((stream) => ({ stream, connector: null }));
+    .map((stream) => ({ connector: null, stream }));
 }
 
 function extractSchemaStreamNames(schema) {
@@ -2004,7 +2138,9 @@ function formatSchemaStreamSummary(stream, connector, { includeFieldDetail = tru
 }
 
 function streamName(stream) {
-  if (typeof stream === "string" && stream.length > 0) return stream;
+  if (typeof stream === "string" && stream.length > 0) {
+    return stream;
+  }
   return firstString(stream?.name, stream?.stream, stream?.stream_name, stream?.streamName);
 }
 
@@ -2051,18 +2187,22 @@ function grantedConnectionsFor(stream, connector) {
 
   const source = objectValue(stream?.source);
   const connectionId = firstString(stream?.connection_id, stream?.connector_instance_id, source?.connection_id);
-  if (!connectionId) return [];
+  if (!connectionId) {
+    return [];
+  }
   return [
     {
       connection_id: connectionId,
-      display_name: firstString(stream?.display_name, source?.display_name),
       connector_key: connectorKeyFor(stream, null),
+      display_name: firstString(stream?.display_name, source?.display_name),
     },
   ];
 }
 
 function formatConnections(connections) {
-  if (!connections || connections.length === 0) return "none";
+  if (!connections || connections.length === 0) {
+    return "none";
+  }
   const rendered = connections.slice(0, DISCOVERY_CONNECTION_SUMMARY_LIMIT).map((connection) => {
     const id = firstString(connection?.connection_id, connection?.connector_instance_id);
     const displayName = firstString(connection?.display_name, connection?.name);
@@ -2072,8 +2212,12 @@ function formatConnections(connections) {
       objectValue(connection?.source)?.connector_key
     );
     const parts = [`connection_id:${formatInlineValue(id)}`];
-    if (displayName) parts.push(`display_name:${formatInlineValue(displayName)}`);
-    if (connectorKey) parts.push(`connector_key:${formatInlineValue(connectorKey)}`);
+    if (displayName) {
+      parts.push(`display_name:${formatInlineValue(displayName)}`);
+    }
+    if (connectorKey) {
+      parts.push(`connector_key:${formatInlineValue(connectorKey)}`);
+    }
     return `{${parts.join(",")}}`;
   });
   if (connections.length > DISCOVERY_CONNECTION_SUMMARY_LIMIT) {
@@ -2084,7 +2228,9 @@ function formatConnections(connections) {
 
 function formatFieldCapabilities(fieldCapabilities) {
   const entries = fieldCapabilityEntries(fieldCapabilities);
-  if (entries.length === 0) return "none";
+  if (entries.length === 0) {
+    return "none";
+  }
 
   const rendered = entries
     .slice(0, DISCOVERY_FIELD_SUMMARY_LIMIT)
@@ -2096,7 +2242,9 @@ function formatFieldCapabilities(fieldCapabilities) {
 }
 
 function fieldCapabilityEntries(fieldCapabilities) {
-  if (!fieldCapabilities || typeof fieldCapabilities !== "object") return [];
+  if (!fieldCapabilities || typeof fieldCapabilities !== "object") {
+    return [];
+  }
   if (Array.isArray(fieldCapabilities)) {
     return fieldCapabilities
       .map((entry) => {
@@ -2109,15 +2257,24 @@ function fieldCapabilityEntries(fieldCapabilities) {
 }
 
 function formatFieldCapabilityFlags(capabilities) {
-  if (typeof capabilities === "string" && capabilities.length > 0) return capabilities;
-  if (!capabilities || typeof capabilities !== "object") return "declared";
-  if (typeof capabilities.flags === "string" && capabilities.flags.length > 0) return capabilities.flags;
+  if (typeof capabilities === "string" && capabilities.length > 0) {
+    return capabilities;
+  }
+  if (!capabilities || typeof capabilities !== "object") {
+    return "declared";
+  }
+  if (typeof capabilities.flags === "string" && capabilities.flags.length > 0) {
+    return capabilities.flags;
+  }
   const flags = [];
   const schema = objectValue(capabilities.schema);
   const type = firstString(capabilities.type, schemaType(schema));
-  if (type) flags.push(`t=${formatInlineValue(type)}`);
-  if (typeof capabilities.role === "string" && capabilities.role.length > 0)
+  if (type) {
+    flags.push(`t=${formatInlineValue(type)}`);
+  }
+  if (typeof capabilities.role === "string" && capabilities.role.length > 0) {
     flags.push(`role=${formatInlineValue(capabilities.role)}`);
+  }
   if (capabilities.granted === false) {
     flags.push("g=false");
   }
@@ -2130,7 +2287,9 @@ function formatFieldCapabilityFlags(capabilities) {
 }
 
 function addCapabilityFlag(flags, name, capability) {
-  if (!capability || typeof capability !== "object") return;
+  if (!capability || typeof capability !== "object") {
+    return;
+  }
   if (capability.usable === true) {
     flags.push(name);
   } else if (capability.declared === true && capability.usable === false) {
@@ -2139,7 +2298,9 @@ function addCapabilityFlag(flags, name, capability) {
 }
 
 function addRangeCapabilityFlag(flags, capability) {
-  if (!capability || typeof capability !== "object") return;
+  if (!capability || typeof capability !== "object") {
+    return;
+  }
   const operators =
     Array.isArray(capability.operators) && capability.operators.length > 0 ? capability.operators.join("|") : null;
   if (capability.usable === true) {
@@ -2150,7 +2311,9 @@ function addRangeCapabilityFlag(flags, capability) {
 }
 
 function addAggregationCapabilityFlags(flags, aggregation) {
-  if (!aggregation || typeof aggregation !== "object") return;
+  if (!aggregation || typeof aggregation !== "object") {
+    return;
+  }
   const usable = orderedAggregationKinds(
     Object.entries(aggregation)
       .filter(([, capability]) => capability && typeof capability === "object" && capability.usable === true)
@@ -2166,7 +2329,9 @@ const AGGREGATION_FIELD_SUMMARY_LIMIT = 12;
 
 function formatAggregationCapabilities(fieldCapabilities) {
   const entries = fieldCapabilityEntries(fieldCapabilities);
-  if (entries.length === 0) return "none";
+  if (entries.length === 0) {
+    return "none";
+  }
   const byKind = new Map(AGGREGATION_SUMMARY_KINDS.map((kind) => [kind, []]));
   for (const [field, capabilities] of entries) {
     for (const kind of aggregationKindsForField(capabilities)) {
@@ -2178,7 +2343,9 @@ function formatAggregationCapabilities(fieldCapabilities) {
   const parts = [];
   for (const kind of AGGREGATION_SUMMARY_KINDS) {
     const fields = byKind.get(kind) || [];
-    if (fields.length === 0) continue;
+    if (fields.length === 0) {
+      continue;
+    }
     const shown = fields.slice(0, AGGREGATION_FIELD_SUMMARY_LIMIT);
     const more =
       fields.length > AGGREGATION_FIELD_SUMMARY_LIMIT ? `|more:${fields.length - AGGREGATION_FIELD_SUMMARY_LIMIT}` : "";
@@ -2188,11 +2355,19 @@ function formatAggregationCapabilities(fieldCapabilities) {
 }
 
 function aggregationKindsForField(capabilities) {
-  if (typeof capabilities === "string") return aggregationKindsFromFlags(capabilities);
-  if (!capabilities || typeof capabilities !== "object") return [];
-  if (typeof capabilities.flags === "string") return aggregationKindsFromFlags(capabilities.flags);
+  if (typeof capabilities === "string") {
+    return aggregationKindsFromFlags(capabilities);
+  }
+  if (!capabilities || typeof capabilities !== "object") {
+    return [];
+  }
+  if (typeof capabilities.flags === "string") {
+    return aggregationKindsFromFlags(capabilities.flags);
+  }
   const aggregation = objectValue(capabilities.aggregation);
-  if (!aggregation) return [];
+  if (!aggregation) {
+    return [];
+  }
   return orderedAggregationKinds(
     Object.entries(aggregation)
       .filter(([, capability]) => capability && typeof capability === "object" && capability.usable === true)
@@ -2202,7 +2377,9 @@ function aggregationKindsForField(capabilities) {
 
 function aggregationKindsFromFlags(flags) {
   const match = /(?:^|,)a=([^,]+)/.exec(flags);
-  if (!match) return [];
+  if (!match) {
+    return [];
+  }
   return orderedAggregationKinds(
     match[1]
       .split("|")
@@ -2224,10 +2401,15 @@ function reasonSuffix(reason) {
 }
 
 function schemaType(schema) {
-  if (!schema || typeof schema !== "object") return undefined;
-  if (typeof schema.type === "string") return schema.type;
-  if (Array.isArray(schema.type)) return schema.type.filter((item) => typeof item === "string").join("|") || undefined;
-  return undefined;
+  if (!schema || typeof schema !== "object") {
+    return;
+  }
+  if (typeof schema.type === "string") {
+    return schema.type;
+  }
+  if (Array.isArray(schema.type)) {
+    return schema.type.filter((item) => typeof item === "string").join("|") || undefined;
+  }
 }
 
 function objectValue(value) {
@@ -2236,9 +2418,10 @@ function objectValue(value) {
 
 function firstString(...values) {
   for (const value of values) {
-    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
   }
-  return undefined;
 }
 
 function numberValue(value) {
@@ -2250,14 +2433,16 @@ function formatScalar(value) {
 }
 
 function formatInlineValue(value) {
-  if (value === undefined || value === null) return "null";
+  if (value === undefined || value === null) {
+    return "null";
+  }
   return String(value)
-    .replace(/[;,\[\]{}]/g, "_")
+    .replace(/[;,[\]{}]/g, "_")
     .replace(/\s+/g, "_");
 }
 
 function formatFieldName(value) {
-  return String(value).replace(/[;,\[\]{}]/g, "_");
+  return String(value).replace(/[;,[\]{}]/g, "_");
 }
 
 function stableInlineJson(value) {
@@ -2269,7 +2454,9 @@ function stableInlineJson(value) {
 }
 
 function sanitizeRecordForPreview(record) {
-  if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    return record;
+  }
   const out = {};
   for (const [key, value] of Object.entries(record)) {
     const blob = blobRefMetadata(value);
@@ -2277,9 +2464,9 @@ function sanitizeRecordForPreview(record) {
       out[key] = { object: "binary_field", preview_status: "binary-only", ...blob };
     } else if (isLargeBase64Field(key, value)) {
       out[key] = {
+        encoding: "base64",
         object: "binary_field",
         preview_status: "binary-only",
-        encoding: "base64",
         size_chars: value.length,
       };
     } else {
@@ -2291,8 +2478,12 @@ function sanitizeRecordForPreview(record) {
 
 function truncateText(value, limit) {
   const safeLimit = Math.max(0, limit);
-  if (value.length <= safeLimit) return value;
-  if (safeLimit <= 1) return "…";
+  if (value.length <= safeLimit) {
+    return value;
+  }
+  if (safeLimit <= 1) {
+    return "…";
+  }
   return `${value.slice(0, safeLimit - 1)}…`;
 }
 
@@ -2351,7 +2542,9 @@ function formatSearchMatchWindowLines(result, index) {
 }
 
 function formatSearchReadArgs(args) {
-  if (!args) return "";
+  if (!args) {
+    return "";
+  }
   return Object.entries(args)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([key, value]) => `${formatFieldName(key)}=${formatInlineValue(truncateText(String(value), 120))}`)
@@ -2366,7 +2559,9 @@ function formatSearchReadArgs(args) {
 function formatSearchRecallWarning(body) {
   const meta = objectValue(envelopeField(body, "meta"));
   const recall = objectValue(meta?.recall);
-  if (!recall) return "";
+  if (!recall) {
+    return "";
+  }
   if (recall.ranking_scope === "candidate_window" || recall.complete === false) {
     const facts = [];
     if (typeof recall.ranked_candidate_count === "number") {
@@ -2386,17 +2581,23 @@ function formatSearchRecallWarning(body) {
 
 function formatSearchSourceMix(body) {
   const sourceMix = body?.meta?.package?.source_mix;
-  if (!Array.isArray(sourceMix) || sourceMix.length === 0) return "";
+  if (!Array.isArray(sourceMix) || sourceMix.length === 0) {
+    return "";
+  }
   const rendered = sourceMix.slice(0, 8).map((entry) => {
     const parts = [
       `connection_id:${formatInlineValue(entry?.connection_id)}`,
       `connector_key:${formatInlineValue(entry?.connector_key)}`,
       `count:${formatInlineValue(entry?.count)}`,
     ];
-    if (entry?.display_name) parts.push(`display_name:${formatInlineValue(entry.display_name)}`);
+    if (entry?.display_name) {
+      parts.push(`display_name:${formatInlineValue(entry.display_name)}`);
+    }
     return `{${parts.join(",")}}`;
   });
-  if (sourceMix.length > 8) rendered.push(`more:${sourceMix.length - 8}`);
+  if (sourceMix.length > 8) {
+    rendered.push(`more:${sourceMix.length - 8}`);
+  }
   return ` source_mix=${rendered.join("|")}.`;
 }
 
@@ -2407,22 +2608,34 @@ function formatSearchPreviewLine(result, index) {
   if (result.connection_id && !String(result.id).startsWith(`${result.connection_id}/`)) {
     parts.push(`connection_id=${formatInlineValue(truncateText(result.connection_id, 80))}`);
   }
-  if (result.connector_key) parts.push(`connector_key=${formatInlineValue(truncateText(result.connector_key, 60))}`);
-  if (result.stream) parts.push(`stream=${formatInlineValue(truncateText(result.stream, 60))}`);
-  if (result.title && result.title !== result.id) parts.push(`title=${formatScalar(truncateText(result.title, 80))}`);
-  if (result.display_name) parts.push(`display_name=${formatScalar(truncateText(result.display_name, 60))}`);
-  if (result.snippet)
+  if (result.connector_key) {
+    parts.push(`connector_key=${formatInlineValue(truncateText(result.connector_key, 60))}`);
+  }
+  if (result.stream) {
+    parts.push(`stream=${formatInlineValue(truncateText(result.stream, 60))}`);
+  }
+  if (result.title && result.title !== result.id) {
+    parts.push(`title=${formatScalar(truncateText(result.title, 80))}`);
+  }
+  if (result.display_name) {
+    parts.push(`display_name=${formatScalar(truncateText(result.display_name, 60))}`);
+  }
+  if (result.snippet) {
     parts.push(`snippet=${formatScalar(truncateText(result.snippet, SEARCH_TEXT_SNIPPET_CHAR_LIMIT))}`);
+  }
   return parts.join(" ");
 }
 
 function envelopeField(body, field) {
-  if (!body || typeof body !== "object") return undefined;
-  if (Object.prototype.hasOwnProperty.call(body, field)) return body[field];
+  if (!body || typeof body !== "object") {
+    return;
+  }
+  if (Object.hasOwn(body, field)) {
+    return body[field];
+  }
   if (body.data && typeof body.data === "object" && !Array.isArray(body.data)) {
     return body.data[field];
   }
-  return undefined;
 }
 
 function envelopeStringField(body, field) {
@@ -2433,12 +2646,20 @@ function envelopeStringField(body, field) {
 function envelopeCount(body) {
   const meta = objectValue(envelopeField(body, "meta"));
   const count = objectValue(meta?.count);
-  if (!count) return null;
+  if (!count) {
+    return null;
+  }
   const kind = firstString(count.kind, count.type);
   const value = count.value ?? count.count ?? count.total;
-  if (kind && value !== undefined && value !== null) return `${formatInlineValue(kind)}:${formatInlineValue(value)}`;
-  if (kind) return formatInlineValue(kind);
-  if (value !== undefined && value !== null) return formatInlineValue(value);
+  if (kind && value !== undefined && value !== null) {
+    return `${formatInlineValue(kind)}:${formatInlineValue(value)}`;
+  }
+  if (kind) {
+    return formatInlineValue(kind);
+  }
+  if (value !== undefined && value !== null) {
+    return formatInlineValue(value);
+  }
   return null;
 }
 
@@ -2458,7 +2679,7 @@ function normalizeSearchResults(body, options = {}) {
     // The id is the single opaque handle a model carries into `fetch`; encode
     // the hit's connection so multi-source grants resolve without a second
     // model-carried `connection_id` field.
-    const id = selfContainedResultId(resultIdForHit(hit, index, { stream, recordKey }), connectionId);
+    const id = selfContainedResultId(resultIdForHit(hit, index, { recordKey, stream }), connectionId);
     const displayName = firstString(hit?.display_name, source.display_name);
     const connectorKey = firstString(hit?.connector_key, hit?.connector_id, source.connector_key, source.connector_id);
     const snippet = snippetForSearchHit(hit);
@@ -2466,17 +2687,33 @@ function normalizeSearchResults(body, options = {}) {
     const evidenceExcerpts = searchEvidenceExcerpts(matchWindows, id);
     const normalized = {
       id,
-      title: titleForSearchHit(hit, id, { stream, recordKey, connectionId, displayName, connectorKey }),
+      title: titleForSearchHit(hit, id, { connectionId, connectorKey, displayName, recordKey, stream }),
       url: urlForRecord(hit, id, options.providerUrl),
     };
-    if (stream) normalized.stream = stream;
-    if (recordKey) normalized.record_key = recordKey;
-    if (connectionId) normalized.connection_id = connectionId;
-    if (displayName) normalized.display_name = displayName;
-    if (connectorKey) normalized.connector_key = connectorKey;
-    if (snippet) normalized.snippet = truncateText(snippet, SEARCH_RESULT_SNIPPET_CHAR_LIMIT);
-    if (matchWindows.length > 0) normalized.match_windows = matchWindows;
-    if (evidenceExcerpts.length > 0) normalized.evidence_excerpts = evidenceExcerpts;
+    if (stream) {
+      normalized.stream = stream;
+    }
+    if (recordKey) {
+      normalized.record_key = recordKey;
+    }
+    if (connectionId) {
+      normalized.connection_id = connectionId;
+    }
+    if (displayName) {
+      normalized.display_name = displayName;
+    }
+    if (connectorKey) {
+      normalized.connector_key = connectorKey;
+    }
+    if (snippet) {
+      normalized.snippet = truncateText(snippet, SEARCH_RESULT_SNIPPET_CHAR_LIMIT);
+    }
+    if (matchWindows.length > 0) {
+      normalized.match_windows = matchWindows;
+    }
+    if (evidenceExcerpts.length > 0) {
+      normalized.evidence_excerpts = evidenceExcerpts;
+    }
     return normalized;
   });
 }
@@ -2495,7 +2732,9 @@ function normalizeSearchMatchWindows(hit, options = {}) {
     hit?.data?.field_windows,
     hit?.data?.evidence_excerpts,
   ].find((value) => Array.isArray(value));
-  if (!Array.isArray(candidates)) return [];
+  if (!Array.isArray(candidates)) {
+    return [];
+  }
   return candidates
     .map((window) => normalizeSearchMatchWindow(window, options))
     .filter(Boolean)
@@ -2511,12 +2750,16 @@ function normalizeSearchMatchWindowReadHints(matchWindows, recordId) {
 
 function normalizeSearchMatchWindow(window, options = {}) {
   const value = objectValue(window);
-  if (!value) return null;
+  if (!value) {
+    return null;
+  }
   // `preview_text` is the RS `evidence_excerpt` text field; `text`/`preview`/
   // `snippet` cover match-window and legacy hit shapes.
   const text = firstString(value.text, value.preview_text, value.preview, value.snippet, value.window?.text);
   const fieldPath = firstString(value.field_path, value.fieldPath, value.path, value.field?.path);
-  if (!text || !fieldPath) return null;
+  if (!(text && fieldPath)) {
+    return null;
+  }
   const read = objectValue(value.read);
   const normalizedText = centeredSearchText(text, options.q, SEARCH_RESULT_SNIPPET_CHAR_LIMIT);
   const previewText = centeredSearchText(text, options.q, SEARCH_TEXT_SNIPPET_CHAR_LIMIT);
@@ -2524,10 +2767,10 @@ function normalizeSearchMatchWindow(window, options = {}) {
   // match window declares completeness explicitly via `complete: true`.
   const complete = value.complete === true || value.truncated === false;
   return {
-    field_path: fieldPath,
-    text: normalizedText,
-    preview_text: previewText,
     complete,
+    field_path: fieldPath,
+    preview_text: previewText,
+    text: normalizedText,
     ...(firstString(value.next_cursor, value.window?.next_cursor)
       ? { next_cursor: firstString(value.next_cursor, value.window?.next_cursor) }
       : {}),
@@ -2536,15 +2779,21 @@ function normalizeSearchMatchWindow(window, options = {}) {
 }
 
 function centeredSearchText(text, query, limit) {
-  if (typeof text !== "string" || text.length <= limit) return text;
+  if (typeof text !== "string" || text.length <= limit) {
+    return text;
+  }
   const q = typeof query === "string" ? query.trim() : "";
-  if (!q) return truncateText(text, limit);
+  if (!q) {
+    return truncateText(text, limit);
+  }
   const index = text.toLowerCase().indexOf(q.toLowerCase());
-  if (index < 0) return truncateText(text, limit);
+  if (index < 0) {
+    return truncateText(text, limit);
+  }
 
   const available = Math.max(q.length, limit - 6);
   let start = Math.max(0, index - Math.floor((available - q.length) / 2));
-  let end = Math.min(text.length, start + available);
+  const end = Math.min(text.length, start + available);
   start = Math.max(0, end - available);
   const prefix = start > 0 ? "..." : "";
   const suffix = end < text.length ? "..." : "";
@@ -2552,12 +2801,24 @@ function centeredSearchText(text, query, limit) {
 }
 
 function searchCandidatesFromBody(body) {
-  if (!body || typeof body !== "object") return [];
-  if (Array.isArray(body.results)) return body.results;
-  if (Array.isArray(body.hits)) return body.hits;
-  if (Array.isArray(body.data)) return body.data;
-  if (body.data && typeof body.data === "object" && Array.isArray(body.data.results)) return body.data.results;
-  if (body.data && typeof body.data === "object" && Array.isArray(body.data.data)) return body.data.data;
+  if (!body || typeof body !== "object") {
+    return [];
+  }
+  if (Array.isArray(body.results)) {
+    return body.results;
+  }
+  if (Array.isArray(body.hits)) {
+    return body.hits;
+  }
+  if (Array.isArray(body.data)) {
+    return body.data;
+  }
+  if (body.data && typeof body.data === "object" && Array.isArray(body.data.results)) {
+    return body.data.results;
+  }
+  if (body.data && typeof body.data === "object" && Array.isArray(body.data.data)) {
+    return body.data.data;
+  }
   return [];
 }
 
@@ -2569,9 +2830,11 @@ function requestedSearchLimit(value) {
 }
 
 function compactSearchEnvelope(body, { resultCount } = {}) {
-  if (!body || typeof body !== "object") return body;
+  if (!body || typeof body !== "object") {
+    return body;
+  }
   if (Array.isArray(body)) {
-    return { object: "list", results_ref: "structuredContent.results", result_count: resultCount ?? body.length };
+    return { object: "list", result_count: resultCount ?? body.length, results_ref: "structuredContent.results" };
   }
   const out = { ...body };
   if (Array.isArray(out.results)) {
@@ -2617,8 +2880,12 @@ function compactSearchEnvelopeDataObject(data, { resultCount } = {}) {
 function resultIdForHit(hit, index, fallback = {}) {
   const directId = stringValue(hit?.result_id ?? hit?.resultId);
   const directRef = parseRecordResultIdOrNull(directId);
-  if (directRef) return selfContainedRecordId(directRef);
-  if (directId) return directId;
+  if (directRef) {
+    return selfContainedRecordId(directRef);
+  }
+  if (directId) {
+    return directId;
+  }
 
   // REST search envelopes may include a canonical `pdpp://record/...`
   // resource URI. Keep that accepted as input, but do not make it the
@@ -2627,7 +2894,9 @@ function resultIdForHit(hit, index, fallback = {}) {
   // `fetch` and `read_record_field`, so normalize parseable record URIs into
   // the self-contained tool id grammar.
   const recordUriRef = recordUriRefForHit(hit);
-  if (recordUriRef) return selfContainedRecordId(recordUriRef);
+  if (recordUriRef) {
+    return selfContainedRecordId(recordUriRef);
+  }
 
   const stream = fallback.stream ?? streamForHit(hit);
   const recordId =
@@ -2643,9 +2912,13 @@ function resultIdForHit(hit, index, fallback = {}) {
 function recordUriRefForHit(hit) {
   for (const value of [hit?.record_uri, hit?.recordUri, hit?.id]) {
     const raw = stringValue(value);
-    if (!raw || !raw.startsWith("pdpp://record/")) continue;
+    if (!(raw && raw.startsWith("pdpp://record/"))) {
+      continue;
+    }
     const parsed = parseRecordResultIdOrNull(raw);
-    if (parsed) return parsed;
+    if (parsed) {
+      return parsed;
+    }
   }
   return null;
 }
@@ -2696,8 +2969,8 @@ function parseRecordResultId(id) {
       const payload = decodeResourceHandle(handle, "record");
       return {
         connectionId: requireSafeName(payload.connection_id, "connection_id"),
-        stream: requireSafeName(payload.stream, "stream"),
         recordId: requireSafeName(payload.record_id, "record_id"),
+        stream: requireSafeName(payload.stream, "stream"),
       };
     } catch (error) {
       if (error instanceof InvalidResourceUriError) {
@@ -2724,8 +2997,8 @@ function parseStreamRecordId(id) {
     throw new Error("id must use connection_id/stream:record_id or stream:record_id format");
   }
   return {
-    stream: requireSafeName(value.slice(0, separator), "stream"),
     recordId: requireSafeName(value.slice(separator + 1), "record_id"),
+    stream: requireSafeName(value.slice(0, separator), "stream"),
   };
 }
 
@@ -2735,11 +3008,21 @@ function parseStreamRecordId(id) {
 // and connection ids that could not survive the grammar (`/` or `:` inside)
 // never produce a malformed handle.
 function selfContainedResultId(baseId, connectionId) {
-  if (typeof baseId !== "string" || baseId.length === 0) return baseId;
-  if (typeof connectionId !== "string" || connectionId.length === 0) return baseId;
-  if (connectionId.includes("/") || connectionId.includes(":")) return baseId;
-  if (baseId.includes("/")) return baseId;
-  if (!parseRecordResultIdOrNull(baseId)) return baseId;
+  if (typeof baseId !== "string" || baseId.length === 0) {
+    return baseId;
+  }
+  if (typeof connectionId !== "string" || connectionId.length === 0) {
+    return baseId;
+  }
+  if (connectionId.includes("/") || connectionId.includes(":")) {
+    return baseId;
+  }
+  if (baseId.includes("/")) {
+    return baseId;
+  }
+  if (!parseRecordResultIdOrNull(baseId)) {
+    return baseId;
+  }
   return `${connectionId}/${baseId}`;
 }
 
@@ -2757,7 +3040,7 @@ function normalizeFetchedDocument(record, requestedId, providerUrl) {
   const text = textForFetchedRecord(record, payload);
   const url = urlForFetchedRecord(record, payload, resultId, providerUrl);
   const metadata = metadataForRecord(record, { id: resultId, title, url });
-  return { id: resultId, title, text, url, metadata };
+  return { id: resultId, metadata, text, title, url };
 }
 
 function titleForFetchedRecord(record, payload, fallbackId) {
@@ -2777,7 +3060,9 @@ function titleForRecord(record, fallbackId) {
 
 function titleForSearchHit(record, fallbackId, source = {}) {
   const explicit = titleForRecord(record, "");
-  if (explicit) return explicit;
+  if (explicit) {
+    return explicit;
+  }
   const timestamp = titleTimestampForRecord(record);
   const label = source.displayName || source.connectorKey || source.connectionId;
   const parts = [label, source.stream, timestamp].filter(Boolean);
@@ -2839,7 +3124,9 @@ function titleTimestampForRecord(record) {
       value.updatedAt,
     ])
   );
-  if (authored) return authored;
+  if (authored) {
+    return authored;
+  }
   return firstString(
     record?.emitted_at,
     record?.emittedAt,
@@ -2849,7 +3136,9 @@ function titleTimestampForRecord(record) {
 
 function textForFetchedRecord(record, payload) {
   const declared = (payload ? declaredTextForRecord(payload) : undefined) || declaredTextForRecord(record);
-  if (declared) return declared;
+  if (declared) {
+    return declared;
+  }
   return fallbackTextForRecord(payload || record);
 }
 
@@ -2868,7 +3157,9 @@ const FETCH_TEXT_FALLBACK_POINTER =
 
 function textForRecord(record) {
   const declared = declaredTextForRecord(record);
-  if (declared) return declared;
+  if (declared) {
+    return declared;
+  }
   return fallbackTextForRecord(record);
 }
 
@@ -2883,7 +3174,9 @@ function declaredTextForRecord(record) {
 
 function fallbackTextForRecord(record) {
   const serialized = JSON.stringify(record, null, 2);
-  if (serialized.length <= FETCH_TEXT_FALLBACK_CHAR_LIMIT) return serialized;
+  if (serialized.length <= FETCH_TEXT_FALLBACK_CHAR_LIMIT) {
+    return serialized;
+  }
   const head = FETCH_TEXT_FALLBACK_CHAR_LIMIT - FETCH_TEXT_FALLBACK_POINTER.length;
   return `${serialized.slice(0, Math.max(0, head))}${FETCH_TEXT_FALLBACK_POINTER}`;
 }
@@ -2903,7 +3196,9 @@ function urlForFetchedRecord(record, payload, fallbackId, providerUrl) {
     record?.source_url,
     record?.sourceUrl
   );
-  if (directUrl) return directUrl;
+  if (directUrl) {
+    return directUrl;
+  }
   return urlForRecord(record, fallbackId, providerUrl);
 }
 
@@ -2911,7 +3206,9 @@ function urlForRecord(record, fallbackId, providerUrl) {
   const directUrl = stringValue(
     record?.url ?? record?.record_url ?? record?.recordUrl ?? record?.href ?? record?.source_url ?? record?.sourceUrl
   );
-  if (directUrl) return directUrl;
+  if (directUrl) {
+    return directUrl;
+  }
   if (providerUrl && fallbackId) {
     const recordRef = parseRecordResultIdOrNull(fallbackId);
     if (recordRef) {
@@ -2940,7 +3237,9 @@ function metadataForRecord(record, omitted) {
   const metadata = {};
   if (record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)) {
     for (const [key, value] of Object.entries(record.metadata)) {
-      if (isDocumentMetadataValue(value)) metadata[key] = value;
+      if (isDocumentMetadataValue(value)) {
+        metadata[key] = value;
+      }
     }
   }
   const payload = objectValue(record.data);
@@ -2960,19 +3259,33 @@ function metadataForRecord(record, omitted) {
     }
   }
   for (const [key, value] of Object.entries(record)) {
-    if (["metadata", "data", "text", "content", "body"].includes(key)) continue;
-    if (isOmittedDocumentField(key, value, omitted)) continue;
-    if (!FETCH_METADATA_RECORD_KEYS.has(key)) continue;
-    if (!isDocumentMetadataValue(value)) continue;
+    if (["metadata", "data", "text", "content", "body"].includes(key)) {
+      continue;
+    }
+    if (isOmittedDocumentField(key, value, omitted)) {
+      continue;
+    }
+    if (!FETCH_METADATA_RECORD_KEYS.has(key)) {
+      continue;
+    }
+    if (!isDocumentMetadataValue(value)) {
+      continue;
+    }
     metadata[key] = value;
   }
   return metadata;
 }
 
 function isOmittedDocumentField(key, value, omitted) {
-  if (["id", "record_id", "recordId"].includes(key)) return value === omitted.id;
-  if (key === "title") return value === omitted.title;
-  if (["url", "record_url", "recordUrl", "href", "source_url", "sourceUrl"].includes(key)) return value === omitted.url;
+  if (["id", "record_id", "recordId"].includes(key)) {
+    return value === omitted.id;
+  }
+  if (key === "title") {
+    return value === omitted.title;
+  }
+  if (["url", "record_url", "recordUrl", "href", "source_url", "sourceUrl"].includes(key)) {
+    return value === omitted.url;
+  }
   return false;
 }
 
@@ -3008,37 +3321,37 @@ function stringValue(value) {
 
 function errorToolResult(response, providerUrl) {
   const error = response.error ?? {
-    type: "rs_error",
     code: `http_${response.status}`,
     message: `Resource server returned HTTP ${response.status}`,
+    type: "rs_error",
   };
   return {
-    isError: true,
     content: [
       {
-        type: "text",
         text: JSON.stringify(error, null, 2),
+        type: "text",
       },
     ],
+    isError: true,
     structuredContent: {
       error,
-      provider_url: providerUrl,
       http_status: response.status,
+      provider_url: providerUrl,
       request_id: response.requestId,
     },
   };
 }
 
 export const __internal = {
-  requireSafeName,
-  pickQuery,
-  toToolResult,
-  toSearchToolResult,
-  toFetchToolResult,
-  resolveStreamName,
-  resolveSchemaDetail,
   assertExpandCapabilities,
-  UnadvertisedExpandError,
-  parseRecordResultId,
   encodeResourceUri,
+  parseRecordResultId,
+  pickQuery,
+  requireSafeName,
+  resolveSchemaDetail,
+  resolveStreamName,
+  toFetchToolResult,
+  toSearchToolResult,
+  toToolResult,
+  UnadvertisedExpandError,
 };

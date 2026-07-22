@@ -24,61 +24,61 @@ function projectSummaryRow(summary) {
   const latestBatch = summary?.acquisition_coverage?.latest_batch || null;
   const dominantCondition = findConditionById(health.conditions, health.dominant_condition_id);
   return {
+    attention: axes.attention ?? "none",
     connection_id: summary?.connection_id ?? null,
     connector_id: summary?.connector_id ?? null,
-    display_name: summary?.display_name ?? null,
-    state: health.state ?? "unknown",
     coverage: axes.coverage ?? "unknown",
-    freshness: axes.freshness ?? "unknown",
-    attention: axes.attention ?? "none",
-    outbox: axes.outbox ?? "unknown",
-    syncing: badges.syncing === true,
-    stale: badges.stale === true,
-    reason_code: health.reason_code ?? null,
+    display_name: summary?.display_name ?? null,
     dominant_condition_id: health.dominant_condition_id ?? null,
-    dominant_condition_type: dominantCondition?.type ?? null,
-    dominant_condition_reason: dominantCondition?.reason ?? null,
-    dominant_condition_severity: dominantCondition?.severity ?? null,
     dominant_condition_message: dominantCondition?.message ?? null,
     dominant_condition_origin: dominantCondition?.origin ?? null,
-    supporting_condition_ids: Array.isArray(health.supporting_condition_ids) ? health.supporting_condition_ids : [],
-    unknown_reasons: Array.isArray(health.unknown_reasons) ? health.unknown_reasons : [],
-    rendered_verdict_label: verdict?.pill?.label ?? null,
-    rendered_verdict_tone: verdict?.pill?.tone ?? null,
-    rendered_verdict_channel: verdict?.channel ?? null,
-    rendered_verdict_statement: verdict?.forward_statement ?? null,
-    primary_action_kind: primaryAction?.kind ?? null,
-    primary_action_audience: primaryAction?.audience ?? null,
-    primary_action_cta: primaryAction?.cta ?? null,
-    primary_action_satisfied_when: primaryAction?.satisfied_when?.kind ?? null,
-    primary_action_terminal: primaryAction?.terminal ?? null,
-    next_action_source: nextAction?.source ?? "none",
-    next_action_reason: nextAction?.reason_code ?? null,
-    next_action_owner_action: nextAction?.owner_action ?? null,
-    next_action_target: nextAction?.action_target ?? null,
-    next_action_expires_at: nextAction?.expires_at ?? null,
+    dominant_condition_reason: dominantCondition?.reason ?? null,
+    dominant_condition_severity: dominantCondition?.severity ?? null,
+    dominant_condition_type: dominantCondition?.type ?? null,
+    freshness: axes.freshness ?? "unknown",
     last_run_at: lastRun?.last_at ?? null,
     last_run_status: lastRun?.status ?? null,
     last_success_at: health.last_success_at ?? lastSuccess?.last_at ?? null,
-    next_attempt_at: health.next_attempt_at ?? schedule?.next_due_at ?? null,
-    latest_acquisition_batch_id: latestBatch?.batch_id ?? null,
-    latest_acquisition_status: latestBatch?.status ?? null,
-    latest_acquisition_method: latestBatch?.acquisition_method ?? null,
-    latest_acquisition_format: latestBatch?.detected_format ?? null,
-    latest_acquisition_file: latestBatch?.uploaded_file_name ?? null,
-    latest_acquisition_start: latestBatch?.date_range?.start ?? null,
-    latest_acquisition_end: latestBatch?.date_range?.end ?? null,
-    latest_acquisition_parsed: latestBatch?.parsed_count ?? null,
     latest_acquisition_accepted: latestBatch?.accepted_count ?? null,
+    latest_acquisition_batch_id: latestBatch?.batch_id ?? null,
     latest_acquisition_duplicates: latestBatch?.duplicate_count ?? null,
-    latest_acquisition_skipped: latestBatch?.skipped_count ?? null,
+    latest_acquisition_end: latestBatch?.date_range?.end ?? null,
     latest_acquisition_failed: latestBatch?.failed_count ?? null,
+    latest_acquisition_file: latestBatch?.uploaded_file_name ?? null,
+    latest_acquisition_format: latestBatch?.detected_format ?? null,
+    latest_acquisition_method: latestBatch?.acquisition_method ?? null,
+    latest_acquisition_parsed: latestBatch?.parsed_count ?? null,
+    latest_acquisition_skipped: latestBatch?.skipped_count ?? null,
+    latest_acquisition_start: latestBatch?.date_range?.start ?? null,
+    latest_acquisition_status: latestBatch?.status ?? null,
     latest_acquisition_warnings: Array.isArray(latestBatch?.warnings) ? latestBatch.warnings.length : 0,
+    next_action_expires_at: nextAction?.expires_at ?? null,
+    next_action_owner_action: nextAction?.owner_action ?? null,
+    next_action_reason: nextAction?.reason_code ?? null,
+    next_action_source: nextAction?.source ?? "none",
+    next_action_target: nextAction?.action_target ?? null,
+    next_attempt_at: health.next_attempt_at ?? schedule?.next_due_at ?? null,
+    outbox: axes.outbox ?? "unknown",
+    primary_action_audience: primaryAction?.audience ?? null,
+    primary_action_cta: primaryAction?.cta ?? null,
+    primary_action_kind: primaryAction?.kind ?? null,
+    primary_action_satisfied_when: primaryAction?.satisfied_when?.kind ?? null,
+    primary_action_terminal: primaryAction?.terminal ?? null,
+    reason_code: health.reason_code ?? null,
+    rendered_verdict_channel: verdict?.channel ?? null,
+    rendered_verdict_label: verdict?.pill?.label ?? null,
+    rendered_verdict_statement: verdict?.forward_statement ?? null,
+    rendered_verdict_tone: verdict?.pill?.tone ?? null,
+    stale: badges.stale === true,
+    state: health.state ?? "unknown",
+    supporting_condition_ids: Array.isArray(health.supporting_condition_ids) ? health.supporting_condition_ids : [],
+    syncing: badges.syncing === true,
+    unknown_reasons: Array.isArray(health.unknown_reasons) ? health.unknown_reasons : [],
   };
 }
 
 function findConditionById(conditions, id) {
-  if (!id || !Array.isArray(conditions)) {
+  if (!(id && Array.isArray(conditions))) {
     return null;
   }
   return conditions.find((condition) => condition?.id === id) || null;
@@ -96,7 +96,7 @@ export async function runRefConnectors(argv, io = {}, fetchImpl = globalThis.fet
     const cacheRoot = flags["cache-root"];
     const { body } = await fetchJson(
       `${asUrl}/_ref/connectors`,
-      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
+      { headers: { ...ownerSessionHeaders({ cacheRoot, ownerSession, referenceUrl: asUrl }) } },
       fetchImpl
     );
     const format = resolveFormat(flags, "table", "json");
@@ -107,7 +107,7 @@ export async function runRefConnectors(argv, io = {}, fetchImpl = globalThis.fet
       return 0;
     }
     const rows = Array.isArray(body?.data) ? body.data.map(projectSummaryRow) : [];
-    writeData(format === "table" ? rows.map(projectSummaryTableRow) : { object: "list", data: rows }, format, out);
+    writeData(format === "table" ? rows.map(projectSummaryTableRow) : { data: rows, object: "list" }, format, out);
     writeEnvelopeWarnings(body, err);
     return 0;
   }
@@ -119,7 +119,7 @@ export async function runRefConnectors(argv, io = {}, fetchImpl = globalThis.fet
     const cacheRoot = flags["cache-root"];
     const { body } = await fetchJson(
       `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}`,
-      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
+      { headers: { ...ownerSessionHeaders({ cacheRoot, ownerSession, referenceUrl: asUrl }) } },
       fetchImpl
     );
     const format = resolveFormat(flags, "table", "json");
@@ -142,27 +142,27 @@ export async function runRefConnectors(argv, io = {}, fetchImpl = globalThis.fet
 
 function projectSummaryTableRow(row) {
   return {
+    attention: row.attention,
     connection_id: row.connection_id,
     connector_id: row.connector_id,
-    display_name: row.display_name,
-    state: row.state,
     coverage: row.coverage,
-    freshness: row.freshness,
-    attention: row.attention,
-    outbox: row.outbox,
-    syncing: row.syncing,
-    stale: row.stale,
-    reason_code: row.reason_code,
+    display_name: row.display_name,
     dominant_condition_reason: row.dominant_condition_reason,
-    rendered_verdict_label: row.rendered_verdict_label,
-    rendered_verdict_tone: row.rendered_verdict_tone,
-    primary_action_kind: row.primary_action_kind,
-    primary_action_cta: row.primary_action_cta,
-    latest_acquisition_status: row.latest_acquisition_status,
-    latest_acquisition_method: row.latest_acquisition_method,
+    freshness: row.freshness,
+    last_success_at: row.last_success_at,
     latest_acquisition_accepted: row.latest_acquisition_accepted,
     latest_acquisition_end: row.latest_acquisition_end,
-    last_success_at: row.last_success_at,
+    latest_acquisition_method: row.latest_acquisition_method,
+    latest_acquisition_status: row.latest_acquisition_status,
     next_attempt_at: row.next_attempt_at,
+    outbox: row.outbox,
+    primary_action_cta: row.primary_action_cta,
+    primary_action_kind: row.primary_action_kind,
+    reason_code: row.reason_code,
+    rendered_verdict_label: row.rendered_verdict_label,
+    rendered_verdict_tone: row.rendered_verdict_tone,
+    stale: row.stale,
+    state: row.state,
+    syncing: row.syncing,
   };
 }

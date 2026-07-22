@@ -15,7 +15,7 @@
       revoked: ["pdpp-endorse--revoked", "revoked"],
     };
     const [cls, label] = map[status] || map.active;
-    return <span className={"pdpp-endorse " + cls}>{label}</span>;
+    return <span className={"pdpp-endorse" + cls}>{label}</span>;
   }
 
   function Sidebar({ view, onView, counts }) {
@@ -27,13 +27,13 @@
     return (
       <aside className="rr-side">
         <div className="rr-side__brand">
-          <span className="rr-side__mark"></span>
+          <span className="rr-side__mark" />
           <span className="rr-side__name">Recordroom</span>
         </div>
         <nav className="rr-side__nav">
           {items.map(([id, label, n]) => (
             <button
-              className={"rr-nav-item" + (view === id ? " is-active" : "")}
+              className={"rr-nav-item" + (view === id ? "is-active" : "")}
               key={id}
               onClick={() => onView(id)}
               type="button"
@@ -43,7 +43,7 @@
             </button>
           ))}
         </nav>
-        <div className="rr-side__spacer"></div>
+        <div className="rr-side__spacer" />
         <div className="rr-side__foot">
           <span className="rr-side__owner">M. Okafor</span>
           <span className="rr-side__host">rs.okafor.recordroom.net · pdpp 0.1.0</span>
@@ -56,7 +56,7 @@
     return (
       <aside className="rr-side">
         <div className="rr-side__brand">
-          <span className="rr-side__mark"></span>
+          <span className="rr-side__mark" />
           <span className="rr-side__name">Recordroom</span>
         </div>
         <nav className="rr-side__nav" style={{ overflowY: "auto" }}>
@@ -67,7 +67,7 @@
               </div>
             ) : (
               <button
-                className={"rr-nav-item" + (view === item.id ? " is-active" : "")}
+                className={"rr-nav-item" + (view === item.id ? "is-active" : "")}
                 key={item.id}
                 onClick={() => onView(item.id)}
                 type="button"
@@ -79,19 +79,19 @@
             )
           )}
         </nav>
-        <div className="rr-side__spacer"></div>
+        <div className="rr-side__spacer" />
         <div className="rr-side__foot">
           <span className="rr-side__owner">M. Okafor</span>
           <span className="rr-side__host">rs.okafor.recordroom.net · pdpp 0.1.0</span>
           <span className="rr-side__motto">your data, at home</span>
           <div className="rr-env">
             <span className="rr-env__row">
-              <span className="rr-env__dot"></span>
+              <span className="rr-env__dot" />
               <span className="rr-env__label">AS</span>
               <span className="rr-env__url">as.okafor.recordroom.net</span>
             </span>
             <span className="rr-env__row">
-              <span className="rr-env__dot"></span>
+              <span className="rr-env__dot" />
               <span className="rr-env__label">RS</span>
               <span className="rr-env__url">rs.okafor.recordroom.net</span>
             </span>
@@ -115,7 +115,7 @@
       (grant.justAdded ? " pdpp-data-row--landed" : "");
     return (
       <button
-        className={"rr-row-btn" + (selected ? " is-selected" : "")}
+        className={"rr-row-btn" + (selected ? "is-selected" : "")}
         onClick={() => onSelect(grant.id)}
         type="button"
       >
@@ -141,12 +141,12 @@
   }
 
   const STREAM_HUMAN = {
-    pay_statements: "Your pay",
-    employment: "Your work history",
-    transactions: "Your spending",
-    listening_history: "Your listening",
-    tax_docs: "Your tax documents",
     browsing: "Your browsing",
+    employment: "Your work history",
+    listening_history: "Your listening",
+    pay_statements: "Your pay",
+    tax_docs: "Your tax documents",
+    transactions: "Your spending",
   };
 
   function Inspector({ grant, streams, log, revoking, striking, onRevokeStart, onRevokeConfirm, onRevokeCancel }) {
@@ -163,7 +163,7 @@
       const stream = (streams || []).find((x) => x.id === sid);
       const proj = (grant.projections && grant.projections[sid]) || [];
       const dropped = stream ? stream.fields.filter((f) => !proj.includes(f)) : [];
-      return { sid, s, proj, total: stream ? stream.fields.length : null, dropped };
+      return { dropped, proj, s, sid, total: stream ? stream.fields.length : null };
     });
     const reads = (log || []).filter((e) => e.ref === grant.id && e.kind === "read");
     return (
@@ -173,11 +173,11 @@
             <div className="pdpp-sheet__head">
               <h3
                 className="pdpp-sheet__title"
-                style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
               >
-                <span className={"rr-strikeable" + (striking ? " rr-strike-go" : "")}>
+                <span className={"rr-strikeable" + (striking ? "rr-strike-go" : "")}>
                   {grant.client}
-                  <span className="rr-strikeable__line"></span>
+                  <span className="rr-strikeable__line" />
                 </span>
               </h3>
               <span className="pdpp-sheet__serial">{grant.id}</span>
@@ -238,7 +238,7 @@
             </div>
             <div className="pdpp-sheet__foot">
               {!revoking && <span className="pdpp-copyline">Carbon — your copy stays here</span>}
-              {!revoked && !revoking && (
+              {!(revoked || revoking) && (
                 <button className="pdpp-btn pdpp-btn--destructive pdpp-btn--sm" onClick={onRevokeStart} type="button">
                   Revoke
                 </button>
@@ -280,10 +280,10 @@
       <div className="pdpp-sheet rr-stream">
         <div className="pdpp-sheet__head">
           <h3 className="pdpp-sheet__title">{stream.id}</h3>
-          <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ alignItems: "center", display: "flex", gap: 10 }}>
             {granted.map((g) => (
               <button
-                className={"rr-lens" + (lens === g.id ? " is-on" : "")}
+                className={"rr-lens" + (lens === g.id ? "is-on" : "")}
                 key={g.id}
                 onClick={() => setLens(lens === g.id ? null : g.id)}
                 type="button"
@@ -300,7 +300,7 @@
           {stream.fields.map((f) => {
             const dropped = projected && !projected.includes(f);
             return (
-              <span className={"rr-field-chip" + (dropped ? " rr-field-chip--dropped" : "")} key={f}>
+              <span className={"rr-field-chip" + (dropped ? "rr-field-chip--dropped" : "")} key={f}>
                 {f}
               </span>
             );
@@ -323,7 +323,7 @@
     return (
       <div className="rr-log">
         {entries.map((e, i) => (
-          <div className={"rr-log__row" + (e.fresh ? " rr-log__row--new" : "")} key={entries.length - i}>
+          <div className={"rr-log__row" + (e.fresh ? "rr-log__row--new" : "")} key={entries.length - i}>
             <span className="rr-log__t">{e.t}</span>
             <span className={"rr-log__verb rr-log__verb--" + e.kind}>{e.verb}</span>
             <span className="rr-log__what">{e.what}</span>
@@ -339,7 +339,9 @@
   function Ceremony({ request, pressing, onToggle, onApprove, onRefuse, onDismiss }) {
     useEffect(() => {
       function onKey(e) {
-        if (e.key === "Escape") onDismiss();
+        if (e.key === "Escape") {
+          onDismiss();
+        }
       }
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);
@@ -348,7 +350,7 @@
     return (
       <div className="rr-overlay" onClick={pressing ? undefined : onDismiss}>
         <div
-          className={"rr-ceremony rr-paper-scope" + (pressing ? " is-pressing" : "")}
+          className={"rr-ceremony rr-paper-scope" + (pressing ? "is-pressing" : "")}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="pdpp-carbon">
@@ -367,11 +369,11 @@
                 </p>
                 <div className="rr-ceremony__scopes">
                   {request.scopes.map((s, i) => (
-                    <div className={"rr-scope-decide" + (s.allowed ? "" : " rr-scope-decide--off")} key={s.name}>
+                    <div className={"rr-scope-decide" + (s.allowed ? "" : "rr-scope-decide--off")} key={s.name}>
                       <span className="rr-scope-decide__name">{s.name}</span>
                       <span className="rr-scope-decide__terms">{s.terms}</span>
                       <button
-                        className={"rr-allow" + (s.allowed ? " is-on" : "")}
+                        className={"rr-allow" + (s.allowed ? "is-on" : "")}
                         disabled={pressing}
                         onClick={() => onToggle(i)}
                         type="button"
@@ -394,7 +396,7 @@
                     className="pdpp-btn pdpp-btn--human"
                     disabled={allowed.length === 0}
                     onClick={onApprove}
-                    style={allowed.length === 0 ? { opacity: 0.45, cursor: "default" } : null}
+                    style={allowed.length === 0 ? { cursor: "default", opacity: 0.45 } : null}
                     type="button"
                   >
                     Approve {allowed.length} {allowed.length === 1 ? "stream" : "streams"}
@@ -417,13 +419,13 @@
   }
 
   Object.assign(window, {
-    RREndorse: Endorse,
-    RRSidebar: Sidebar,
-    RRSidebarFull: SidebarFull,
-    RRGrantRow: GrantRow,
-    RRInspector: Inspector,
-    RRStreamSheet: StreamSheet,
     RRActivityLog: ActivityLog,
     RRCeremony: Ceremony,
+    RREndorse: Endorse,
+    RRGrantRow: GrantRow,
+    RRInspector: Inspector,
+    RRSidebar: Sidebar,
+    RRSidebarFull: SidebarFull,
+    RRStreamSheet: StreamSheet,
   });
 })();

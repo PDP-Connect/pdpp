@@ -31,7 +31,7 @@
             </h1>
             <span className="cc-lockup__sub">File copy — holder</span>
           </div>
-          <span className="cc-mono" style={{ fontSize: 9.5, color: "oklch(0.55 0.01 270)", textAlign: "right" }}>
+          <span className="cc-mono" style={{ color: "oklch(0.55 0.01 270)", fontSize: 9.5, textAlign: "right" }}>
             ref — carbon paper,
             <br />
             the duplicate you keep
@@ -79,7 +79,7 @@
             ["oklch(0.46 0.15 295)", "carbon"],
             ["oklch(0.46 0.15 295 / 0.12)", "impression"],
           ]}
-          labelStyle={{ fontFamily: '"Fragment Mono", monospace', color: "oklch(0.5 0.01 270)" }}
+          labelStyle={{ color: "oklch(0.5 0.01 270)", fontFamily: '"Fragment Mono", monospace' }}
         />
       </div>
     );
@@ -94,7 +94,7 @@
             <h1 className="rb-lockup__name">PDPP</h1>
             <span className="rb-lockup__sub">black for the record · red for refusal</span>
           </div>
-          <span style={{ fontSize: 9.5, color: "oklch(0.55 0.02 75)", textAlign: "right" }}>
+          <span style={{ color: "oklch(0.55 0.02 75)", fontSize: 9.5, textAlign: "right" }}>
             ref — two-color
             <br />
             typewriter ribbon
@@ -194,7 +194,7 @@
             ["oklch(0.24 0.02 60)", "ink"],
             ["oklch(0.43 0.07 165)", "banknote"],
           ]}
-          labelStyle={{ fontFamily: '"Spline Sans Mono", monospace', color: "oklch(0.55 0.02 60)" }}
+          labelStyle={{ color: "oklch(0.55 0.02 60)", fontFamily: '"Spline Sans Mono", monospace' }}
         />
       </div>
     );
@@ -209,7 +209,7 @@
             <h1 className="pc-lockup__name">PDPP</h1>
             <span className="pc-lockup__sub">col 01–80 · personal data</span>
           </div>
-          <span className="pc-mono" style={{ fontSize: 8.5, color: "oklch(0.5 0.04 75)", textAlign: "right" }}>
+          <span className="pc-mono" style={{ color: "oklch(0.5 0.04 75)", fontSize: 8.5, textAlign: "right" }}>
             ref — tabulating cards,
             <br />a hole is a grant
           </span>
@@ -222,13 +222,13 @@
           </div>
           {SCOPES.map((s) => (
             <div className="pc-scope" key={s.name}>
-              <span className="pc-slot pc-slot--punched"></span>
+              <span className="pc-slot pc-slot--punched" />
               <span className="pc-scope__name">{s.name}</span>
               <span className="pc-scope__terms">{s.terms}</span>
             </div>
           ))}
           <div className="pc-scope">
-            <span className="pc-slot"></span>
+            <span className="pc-slot" />
             <span className="pc-scope__name" style={{ color: "oklch(0.55 0.04 75)", fontWeight: 400 }}>
               tax_docs.read
             </span>
@@ -258,7 +258,7 @@
             ["oklch(0.27 0.02 75)", "ink"],
             ["oklch(0.6 0.1 40)", "column rule"],
           ]}
-          labelStyle={{ fontFamily: '"Martian Mono", monospace', fontSize: 8, color: "oklch(0.5 0.04 75)" }}
+          labelStyle={{ color: "oklch(0.5 0.04 75)", fontFamily: '"Martian Mono", monospace', fontSize: 8 }}
         />
       </div>
     );
@@ -273,7 +273,7 @@
             <h1 className="cb-lockup__name">PDPP</h1>
             <span className="cb-lockup__sub">protocol, in public</span>
           </div>
-          <span className="cb-mono" style={{ fontSize: 9.5, color: "oklch(0.45 0 0)", textAlign: "right" }}>
+          <span className="cb-mono" style={{ color: "oklch(0.45 0 0)", fontSize: 9.5, textAlign: "right" }}>
             ref — civic signage,
             <br />
             public notices
@@ -313,7 +313,7 @@
             ["oklch(0.16 0 0)", "ink"],
             ["oklch(0.45 0.12 262)", "stamp blue"],
           ]}
-          labelStyle={{ fontFamily: '"Fragment Mono", monospace', color: "oklch(0.45 0 0)" }}
+          labelStyle={{ color: "oklch(0.45 0 0)", fontFamily: '"Fragment Mono", monospace' }}
         />
       </div>
     );
@@ -323,14 +323,14 @@
   function VGreenbar() {
     return (
       <div className="vs gb" style={{ paddingLeft: 30, paddingRight: 30, position: "relative" }}>
-        <div className="gb-sprockets gb-sprockets--l"></div>
-        <div className="gb-sprockets gb-sprockets--r"></div>
+        <div className="gb-sprockets gb-sprockets--l" />
+        <div className="gb-sprockets gb-sprockets--r" />
         <div className="vs-row">
           <div>
             <h1 className="gb-lockup__name">PDPP</h1>
             <span className="gb-lockup__sub">continuous form · holder's printout</span>
           </div>
-          <span style={{ fontSize: 9, color: "oklch(0.5 0.02 250)", textAlign: "right" }}>
+          <span style={{ color: "oklch(0.5 0.02 250)", fontSize: 9, textAlign: "right" }}>
             ref — greenbar paper,
             <br />
             tractor-feed printouts
@@ -385,5 +385,5 @@
     );
   }
 
-  Object.assign(window, { VCarbon, VRibbon, VClarendon, VPunch, VCivic, VGreenbar });
+  Object.assign(window, { VCarbon, VCivic, VClarendon, VGreenbar, VPunch, VRibbon });
 })();

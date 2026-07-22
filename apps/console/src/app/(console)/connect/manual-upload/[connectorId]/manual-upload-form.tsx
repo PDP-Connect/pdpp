@@ -552,8 +552,8 @@ async function stageManualUploadFile(
     `/_ref/connectors/${encodeURIComponent(setup.connector_id)}/manual-upload-staged-artifact`,
     file,
     {
-      contentType: "application/vnd.pdpp.manual-upload",
       connectionId: args.connectionId,
+      contentType: "application/vnd.pdpp.manual-upload",
       displayName: args.connectionId ? null : args.displayName,
       onProgress: (percent) =>
         args.setState(uploadProgress(file, { currentFile, percent, phase: "uploading", totalFiles: args.totalFiles })),
@@ -645,7 +645,7 @@ export function ManualUploadForm({
     }
     const submission = prepareSubmission(event, setup);
     if ("error" in submission) {
-      setState({ ok: false, message: submission.error });
+      setState({ message: submission.error, ok: false });
       return;
     }
 
@@ -657,7 +657,7 @@ export function ManualUploadForm({
       }
       window.location.href = await importManualUploads(setup, submission.files, submission.target, setState);
     } catch (err) {
-      setState({ ok: false, message: err instanceof Error ? err.message : "Manual upload setup failed." });
+      setState({ message: err instanceof Error ? err.message : "Manual upload setup failed.", ok: false });
     } finally {
       setPending(false);
     }

@@ -14,7 +14,9 @@
   const { fmtRelative, fmtDate, fmtCurrency, fmtDuration, fmtDistance, Avatar: PeekAvatar } = window.PDPPPrim;
 
   function Peek({ stream, record, onClose, projection }) {
-    if (!stream || !record) return null;
+    if (!(stream && record)) {
+      return null;
+    }
     const fields = stream.schema.fields;
     const granted = fields.filter((f) => f.granted);
     const redacted = fields.filter((f) => !f.granted);
@@ -24,27 +26,34 @@
 
     function renderValue(field) {
       const v = record[field.name];
-      if (v == null) return <span style={{ color: "var(--muted-foreground)" }}>—</span>;
-      if (field.type === "timestamp")
+      if (v == null) {
+        return <span style={{ color: "var(--muted-foreground)" }}>—</span>;
+      }
+      if (field.type === "timestamp") {
         return (
           <span style={{ fontFamily: "var(--font-mono)" }}>
             {new Date(v).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}
           </span>
         );
-      if (field.type === "currency")
+      }
+      if (field.type === "currency") {
         return (
-          <span style={{ fontFamily: "var(--font-mono)", color: v > 0 ? "var(--success)" : "var(--foreground)" }}>
+          <span style={{ color: v > 0 ? "var(--success)" : "var(--foreground)", fontFamily: "var(--font-mono)" }}>
             {fmtCurrency(v)}
           </span>
         );
+      }
       if (field.type === "number") {
-        if (field.unit === "meters")
+        if (field.unit === "meters") {
           return (
             <span style={{ fontFamily: "var(--font-mono)" }}>
               {fmtDistance(v)} <small style={{ color: "var(--muted-foreground)" }}>({v.toLocaleString()} m)</small>
             </span>
           );
-        if (field.unit === "seconds") return <span style={{ fontFamily: "var(--font-mono)" }}>{fmtDuration(v)}</span>;
+        }
+        if (field.unit === "seconds") {
+          return <span style={{ fontFamily: "var(--font-mono)" }}>{fmtDuration(v)}</span>;
+        }
         return (
           <span style={{ fontFamily: "var(--font-mono)" }}>
             {v.toLocaleString()}
@@ -52,21 +61,23 @@
           </span>
         );
       }
-      if (field.type === "id")
-        return <code style={{ fontSize: "0.72rem", color: "var(--muted-foreground)" }}>{v}</code>;
-      if (field.type === "url")
+      if (field.type === "id") {
+        return <code style={{ color: "var(--muted-foreground)", fontSize: "0.72rem" }}>{v}</code>;
+      }
+      if (field.type === "url") {
         return (
           <a href={v} rel="noreferrer" style={{ color: "var(--primary)", textDecoration: "underline" }} target="_blank">
             {v}
           </a>
         );
+      }
       if (field.type === "blob") {
         if ((field.media_type ?? "").startsWith("image/")) {
-          return <img alt="" src={v} style={{ maxWidth: "100%", borderRadius: 4, marginTop: 4 }} />;
+          return <img alt="" src={v} style={{ borderRadius: 4, marginTop: 4, maxWidth: "100%" }} />;
         }
         return <code style={{ fontSize: "0.72rem" }}>blob: {v}</code>;
       }
-      if (field.type === "person")
+      if (field.type === "person") {
         return (
           <span>
             {String(v)
@@ -74,14 +85,18 @@
               .trim()}
           </span>
         );
+      }
       if (Array.isArray(v)) {
-        if (v.length === 0) return <span style={{ color: "var(--muted-foreground)" }}>[]</span>;
-        if (typeof v[0] === "object")
+        if (v.length === 0) {
+          return <span style={{ color: "var(--muted-foreground)" }}>[]</span>;
+        }
+        if (typeof v[0] === "object") {
           return (
             <pre style={{ fontFamily: "var(--font-mono)", fontSize: "0.7rem", whiteSpace: "pre-wrap" }}>
               {JSON.stringify(v, null, 2)}
             </pre>
           );
+        }
         return <span>{v.join(", ")}</span>;
       }
       return <span className={`exp-peek__field-value ${String(v).length > 80 ? "long" : ""}`}>{String(v)}</span>;
@@ -112,7 +127,9 @@
         <div className="exp-peek__body">
           {visibleFields.map((f) => {
             const isRedacted = !f.granted;
-            if (isRedacted && projection) return null;
+            if (isRedacted && projection) {
+              return null;
+            }
             return (
               <div className="exp-peek__field" data-redacted={isRedacted} key={f.name}>
                 <span className="exp-peek__field-name">{f.name}</span>
@@ -125,10 +142,10 @@
           {projection && redacted.length ? (
             <div
               style={{
-                marginTop: "0.9rem",
+                color: "var(--muted-foreground)",
                 fontFamily: "var(--font-mono)",
                 fontSize: "0.7rem",
-                color: "var(--muted-foreground)",
+                marginTop: "0.9rem",
               }}
             >
               +{redacted.length} field{redacted.length === 1 ? "" : "s"} hidden by projection

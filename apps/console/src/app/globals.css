@@ -220,8 +220,8 @@
 
 @layer base {
   body {
-    @apply bg-background text-foreground;
     font-family: var(--font-sans);
+    @apply bg-background text-foreground;
   }
   html,
   body {
@@ -248,8 +248,8 @@ html {
 }
 
 html > body[data-scroll-locked] {
-  margin-right: 0 !important;
   --removed-body-scroll-bar-size: 0 !important;
+  margin-right: 0 !important;
 }
 
 /*
@@ -292,10 +292,10 @@ html:has(.pdpp-stream-dialog) {
 .pdpp-stream-frame {
   --pdpp-stream-video-matte: oklch(0.08 0.005 260);
   inline-size: 100%;
-  block-size: 100%;
   min-inline-size: 0;
-  min-block-size: 0;
   max-width: 100%;
+  block-size: 100%;
+  min-block-size: 0;
   max-height: 100%;
   background: var(--pdpp-stream-video-matte);
 }
@@ -332,8 +332,8 @@ html:has(.pdpp-stream-dialog) {
  * which per-route CSS chunk order Next.js produces.
  */
 .pdpp-dialog-backdrop.pdpp-stream-dialog-backdrop {
-  background: transparent;
   overflow: clip;
+  background: transparent;
 }
 
 .pdpp-dialog.pdpp-stream-dialog {
@@ -344,28 +344,28 @@ html:has(.pdpp-stream-dialog) {
   inset-inline-start: 0;
   top: 0;
   left: 0;
-  transform: none;
   z-index: 50;
   display: grid;
   grid-template-rows: 1fr;
+  gap: 0;
   inline-size: 100%;
-  block-size: 100vh;
-  block-size: 100svh;
   max-inline-size: 100%;
   width: 100%;
+  max-width: 100%;
+  block-size: 100vh;
+  block-size: 100svh;
   height: 100vh;
   height: 100svh;
-  max-width: 100%;
+  padding: 0;
   margin: 0;
   overflow: hidden;
-  translate: 0 0;
-  scale: 1;
+  background: var(--pdpp-stream-video-matte);
   border: 0;
   border-radius: 0;
-  background: var(--pdpp-stream-video-matte);
-  padding: 0;
   box-shadow: none;
-  gap: 0;
+  transform: none;
+  scale: 1;
+  translate: 0 0;
 }
 
 .pdpp-dialog.pdpp-stream-dialog:is([data-starting-style], [data-ending-style]) {
@@ -375,52 +375,52 @@ html:has(.pdpp-stream-dialog) {
 .pdpp-stream-corner-controls {
   --pdpp-stream-control-offset: 0.75rem;
   --pdpp-stream-control-gap: 0.5rem;
-  pointer-events: none;
   position: absolute;
   inset-block-start: var(--pdpp-stream-control-offset);
   inset-inline-end: var(--pdpp-stream-control-offset);
   z-index: 10;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
   gap: var(--pdpp-stream-control-gap);
+  align-items: flex-end;
+  pointer-events: none;
 }
 
 .pdpp-stream-control-row {
   display: flex;
-  align-items: center;
   gap: var(--pdpp-stream-control-gap);
+  align-items: center;
 }
 
 @media (max-width: 40rem), (pointer: coarse) {
   .pdpp-stream-corner-controls {
     inset-block-start: auto;
-    inset-inline-end: 50%;
     inset-block-end: calc(
       env(safe-area-inset-bottom) +
       var(--pdpp-stream-control-offset)
     );
-    translate: 50% 0;
+    inset-inline-end: 50%;
     align-items: center;
+    translate: 50% 0;
   }
 }
 
 .pdpp-stream-control-button {
   --pdpp-stream-control-size: 2.75rem;
-  pointer-events: auto;
   display: inline-flex;
-  inline-size: var(--pdpp-stream-control-size);
-  block-size: var(--pdpp-stream-control-size);
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
-  background: color-mix(in oklch, var(--background) 90%, transparent);
+  inline-size: var(--pdpp-stream-control-size);
+  block-size: var(--pdpp-stream-control-size);
   color: var(--foreground);
-  box-shadow: 0 1px 2px color-mix(in oklch, var(--foreground) 12%, transparent);
+  pointer-events: auto;
   outline: none;
+  background: color-mix(in oklch, var(--background) 90%, transparent);
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 1px 2px color-mix(in oklch, var(--foreground) 12%, transparent);
   backdrop-filter: blur(8px);
   transition: background-color 150ms ease;
-  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
 }
 
 .pdpp-stream-control-button:hover {
@@ -433,9 +433,9 @@ html:has(.pdpp-stream-dialog) {
 }
 
 .pdpp-stream-keyboard-affordance {
+  gap: 0.4rem;
   inline-size: auto;
   min-inline-size: var(--pdpp-stream-control-size);
-  gap: 0.4rem;
   padding-inline: 0.75rem;
 }
 
@@ -447,17 +447,17 @@ html:has(.pdpp-stream-dialog) {
 }
 
 .pdpp-stream-location-label {
-  pointer-events: auto;
   display: flex;
-  max-inline-size: calc(100vw - 2rem);
-  align-items: baseline;
   gap: 0.25rem;
-  border-radius: 999px;
-  background: color-mix(in oklch, var(--background) 90%, transparent);
+  align-items: baseline;
+  max-inline-size: calc(100vw - 2rem);
   padding: 0.25rem 0.75rem;
+  pointer-events: auto;
+  background: color-mix(in oklch, var(--background) 90%, transparent);
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  border-radius: 999px;
   box-shadow: 0 1px 2px color-mix(in oklch, var(--foreground) 12%, transparent);
   backdrop-filter: blur(8px);
-  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
 }
 
 @media (min-width: 40rem) {
@@ -468,19 +468,19 @@ html:has(.pdpp-stream-dialog) {
 
 .pdpp-stream-toast-zone {
   --pdpp-stream-toast-offset: 0.75rem;
-  pointer-events: none;
   position: absolute;
-  inset-inline: 0;
   inset-block-end: calc(
     env(safe-area-inset-bottom) +
     var(--pdpp-stream-toast-offset)
   );
+  inset-inline: 0;
   z-index: 10;
   display: flex;
-  max-inline-size: 24rem;
   justify-content: center;
-  margin-inline: auto;
+  max-inline-size: 24rem;
   padding-inline: 1rem;
+  margin-inline: auto;
+  pointer-events: none;
 }
 
 .pdpp-stream-toast-zone[data-slot="popup"] {
@@ -500,19 +500,19 @@ html:has(.pdpp-stream-dialog) {
    the destructive choice is never tucked under the step panel it is guarding. */
 .pdpp-stream-toast-zone[data-slot="close-confirm"] {
   --pdpp-stream-toast-offset: 8.5rem;
-  max-inline-size: min(34rem, 100vw);
   z-index: 11;
+  max-inline-size: min(34rem, 100vw);
 }
 
 .pdpp-stream-toast-bubble {
-  pointer-events: auto;
-  border-radius: 0.375rem;
-  background: color-mix(in oklch, var(--background) 95%, transparent);
   padding: 0.5rem 0.75rem;
   color: var(--foreground);
+  pointer-events: auto;
+  background: color-mix(in oklch, var(--background) 95%, transparent);
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  border-radius: 0.375rem;
   box-shadow: 0 1px 2px color-mix(in oklch, var(--foreground) 12%, transparent);
   backdrop-filter: blur(8px);
-  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
 }
 
 .pdpp-stream-clipboard-textarea[data-masked="true"] {
@@ -543,8 +543,8 @@ html:has(.pdpp-stream-dialog) {
 }
 
 [data-pdpp-neko-client] {
-  background: var(--pdpp-stream-video-matte);
   overflow: hidden;
+  background: var(--pdpp-stream-video-matte);
 }
 
 /* Prevent the host browser (e.g. Brave on Android) from hijacking
@@ -611,8 +611,8 @@ html:has(.pdpp-stream-dialog) {
   display: flex !important;
   width: 100% !important;
   height: 100% !important;
-  margin: 0 !important;
   padding: 0 !important;
+  margin: 0 !important;
   background: var(--pdpp-stream-video-matte) !important;
 }
 
@@ -630,8 +630,8 @@ html:has(.pdpp-stream-dialog) {
 [data-pdpp-neko-client] .emotes {
   inset: 0 !important;
   width: 100% !important;
-  height: 100% !important;
   max-width: none !important;
+  height: 100% !important;
   max-height: none !important;
   margin: 0 !important;
 }
@@ -658,29 +658,29 @@ html:has(.pdpp-stream-dialog) {
   margin-top: var(--docs-prose-spacing);
 }
 .docs-prose h1 {
+  margin-top: 1.75rem;
   font-size: 1.6rem;
   font-weight: 600;
   letter-spacing: -0.01em;
-  margin-top: 1.75rem;
 }
 .docs-prose h2 {
+  padding-top: 0.5rem;
+  margin-top: 1.75rem;
   font-size: 1.25rem;
   font-weight: 600;
   letter-spacing: -0.005em;
-  margin-top: 1.75rem;
-  padding-top: 0.5rem;
   border-top: 1px solid var(--border);
 }
 .docs-prose h3 {
+  margin-top: 1.25rem;
   font-size: 1.05rem;
   font-weight: 600;
-  margin-top: 1.25rem;
 }
 .docs-prose h4,
 .docs-prose h5,
 .docs-prose h6 {
-  font-weight: 600;
   margin-top: 1rem;
+  font-weight: 600;
 }
 .docs-prose p {
   color: var(--foreground);
@@ -694,12 +694,12 @@ html:has(.pdpp-stream-dialog) {
   text-decoration-thickness: 2px;
 }
 .docs-prose ul {
-  list-style: disc;
   padding-left: 1.25rem;
+  list-style: disc;
 }
 .docs-prose ol {
-  list-style: decimal;
   padding-left: 1.25rem;
+  list-style: decimal;
 }
 .docs-prose li + li {
   margin-top: 0.25rem;
@@ -708,34 +708,34 @@ html:has(.pdpp-stream-dialog) {
   margin: 0;
 }
 .docs-prose code {
+  padding: 0.1em 0.35em;
   font-family: var(--font-mono);
   font-size: 0.85em;
   background: var(--muted);
-  padding: 0.1em 0.35em;
   border-radius: 0.3em;
 }
 .docs-prose pre {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
   padding: 0.875rem 1rem;
   overflow-x: auto;
   font-size: 0.85em;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
 }
 .docs-prose pre code {
-  background: transparent;
   padding: 0;
+  background: transparent;
   border-radius: 0;
 }
 .docs-prose blockquote {
-  border-left: 2px solid var(--border);
   padding: 0.25rem 0 0.25rem 0.875rem;
   color: var(--muted-foreground);
+  border-left: 2px solid var(--border);
 }
 .docs-prose hr {
+  margin: 2rem 0;
   border: 0;
   border-top: 1px solid var(--border);
-  margin: 2rem 0;
 }
 .docs-prose table {
   width: 100%;
@@ -744,9 +744,9 @@ html:has(.pdpp-stream-dialog) {
 }
 .docs-prose th,
 .docs-prose td {
-  border-bottom: 1px solid var(--border);
   padding: 0.45rem 0.6rem;
   text-align: left;
+  border-bottom: 1px solid var(--border);
 }
 .docs-prose th {
   font-weight: 600;

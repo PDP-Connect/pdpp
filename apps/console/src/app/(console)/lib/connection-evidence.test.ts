@@ -66,12 +66,12 @@ test("formatForwardDisposition renders unmeasured coverage as resting missing ev
 
 function backlog(overrides: Partial<RefDetailGapBacklog> = {}): RefDetailGapBacklog {
   return {
+    max_attempt_count: 0,
+    next_attempt_at: null,
     pending: 0,
     pending_is_floor: false,
     pending_other: 0,
     pending_other_is_floor: false,
-    max_attempt_count: 0,
-    next_attempt_at: null,
     recovered: null,
     ...overrides,
   };
@@ -79,16 +79,16 @@ function backlog(overrides: Partial<RefDetailGapBacklog> = {}): RefDetailGapBack
 
 function snapshot(overrides: Partial<RefConnectionHealthSnapshot> = {}): RefConnectionHealthSnapshot {
   return {
-    state: "healthy",
-    reason_code: null,
-    unknown_reasons: [],
-    last_success_at: "2026-05-19T12:00:00Z",
-    next_attempt_at: null,
-    next_action: null,
+    axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "idle" },
     badges: { stale: false, syncing: false },
-    axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
     conditions: [],
     dominant_condition_id: null,
+    last_success_at: "2026-05-19T12:00:00Z",
+    next_action: null,
+    next_attempt_at: null,
+    reason_code: null,
+    state: "healthy",
+    unknown_reasons: [],
     ...overrides,
   };
 }
@@ -96,11 +96,11 @@ function snapshot(overrides: Partial<RefConnectionHealthSnapshot> = {}): RefConn
 function baseOverview(overrides: Partial<ConnectorOverview> = {}): ConnectorOverview {
   return {
     connector: { connector_id: "demo", display_name: "Demo" },
-    streams: [],
-    totalRecords: 0,
+    isRunning: false,
     lastRun: null,
     lastSuccessfulRun: null,
-    isRunning: false,
+    streams: [],
+    totalRecords: 0,
     ...overrides,
   };
 }
@@ -268,39 +268,39 @@ test("outbox active is colour-coded as a progressing (non-neutral) state", () =>
 
 test("formatSourceOutboxState distinguishes granular local collector states", () => {
   const failedUploadOutbox = formatSourceOutboxState({
-    outbox_state: "dead_letter",
     outbox_diagnostics: { dead_letter: 1 },
+    outbox_state: "dead_letter",
   });
   assert.equal(failedUploadOutbox.tone, "danger");
   assert.equal(failedUploadOutbox.label, "Outbox · failed uploads");
   assert.equal(failedUploadOutbox.value, "failed uploads");
   assert.doesNotMatch(failedUploadOutbox.title, /dead-letter/i);
   assert.equal(
-    formatSourceOutboxState({ outbox_state: "stale", outbox_diagnostics: { stale_leases: 1 } }).tone,
+    formatSourceOutboxState({ outbox_diagnostics: { stale_leases: 1 }, outbox_state: "stale" }).tone,
     "danger"
   );
   assert.equal(
-    formatSourceOutboxState({ outbox_state: "retrying", outbox_diagnostics: { retrying: 1 } }).tone,
+    formatSourceOutboxState({ outbox_diagnostics: { retrying: 1 }, outbox_state: "retrying" }).tone,
     "warning"
   );
   assert.equal(
-    formatSourceOutboxState({ outbox_state: "pending", outbox_diagnostics: { pending: 1 } }).label,
+    formatSourceOutboxState({ outbox_diagnostics: { pending: 1 }, outbox_state: "pending" }).label,
     "Outbox · pending"
   );
   assert.equal(
-    formatSourceOutboxState({ outbox_state: "backlog", outbox_diagnostics: { backlog_open: 1 } }).tone,
+    formatSourceOutboxState({ outbox_diagnostics: { backlog_open: 1 }, outbox_state: "backlog" }).tone,
     "warning"
   );
   assert.equal(
-    formatSourceOutboxState({ outbox_state: "drained", outbox_diagnostics: { total: 2, succeeded: 2 } }).tone,
+    formatSourceOutboxState({ outbox_diagnostics: { succeeded: 2, total: 2 }, outbox_state: "drained" }).tone,
     "success"
   );
-  assert.equal(formatSourceOutboxState({ outbox_state: undefined, outbox_diagnostics: null }).tone, "neutral");
+  assert.equal(formatSourceOutboxState({ outbox_diagnostics: null, outbox_state: undefined }).tone, "neutral");
 });
 
 test("summarizeAxisChips omits attention when none and always includes coverage/freshness/outbox", () => {
   const out = summarizeAxisChips(
-    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" } }).axes
+    snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "idle" } }).axes
   );
   assert.equal(
     out.some((c) => c.label.startsWith("Attention")),
@@ -315,7 +315,7 @@ test("summarizeAxisChips omits attention when none and always includes coverage/
 
 test("summarizeAxisChips surfaces attention when open", () => {
   const out = summarizeAxisChips(
-    snapshot({ axes: { coverage: "gaps", freshness: "fresh", attention: "open", outbox: "idle" } }).axes
+    snapshot({ axes: { attention: "open", coverage: "gaps", freshness: "fresh", outbox: "idle" } }).axes
   );
   assert.equal(out.length, 4);
   assert.ok(out.some((c) => c.label.startsWith("Attention")));
@@ -354,7 +354,7 @@ test("summarizeAxisChips omits the outbox chip for a non-local connection with u
   // The exact owner-reported defect: a Gmail/Chase-class connection shows
   // "Outbox · unknown" purely because the reference has no heartbeats for it.
   const out = summarizeAxisChips(
-    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "unknown" } }).axes,
+    snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "unknown" } }).axes,
     { isLocalDeviceBacked: false }
   );
   assert.equal(out.length, 2);
@@ -366,7 +366,7 @@ test("summarizeAxisChips omits the outbox chip for a non-local connection with u
 
 test("summarizeAxisChips keeps the outbox chip for a local-backed connection with unknown outbox, sharpened to 'evidence unavailable'", () => {
   const out = summarizeAxisChips(
-    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "unknown" } }).axes,
+    snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "unknown" } }).axes,
     { isLocalDeviceBacked: true }
   );
   assert.equal(out.length, 3);
@@ -382,7 +382,7 @@ test("summarizeAxisChips shows a stalled outbox even for a non-local connection 
   // Defensive: if the reference ever projects a real stalled verdict without a
   // local_device_progress row, the danger signal must not be hidden.
   const out = summarizeAxisChips(
-    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" } }).axes,
+    snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" } }).axes,
     { isLocalDeviceBacked: false }
   );
   const outbox = out.find((c) => c.dimension === "Outbox");
@@ -392,7 +392,7 @@ test("summarizeAxisChips shows a stalled outbox even for a non-local connection 
 
 test("summarizeAxisChips shows a colour-coded active outbox for a local-backed connection", () => {
   const out = summarizeAxisChips(
-    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "active" } }).axes,
+    snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "active" } }).axes,
     { isLocalDeviceBacked: true }
   );
   const outbox = out.find((c) => c.dimension === "Outbox");
@@ -404,7 +404,7 @@ test("summarizeAxisChips defaults to omitting an unknown outbox when no local-ba
   // Back-compat: callers that have not threaded the signal get the honest
   // (non-local) default — an absence-default unknown outbox is suppressed.
   const out = summarizeAxisChips(
-    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "unknown" } }).axes
+    snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "unknown" } }).axes
   );
   assert.equal(
     out.some((c) => c.dimension === "Outbox"),
@@ -436,28 +436,28 @@ test("formatProjectionFreshness handles missing snapshot", () => {
 test("formatDominantCondition surfaces only false dominant evidence", () => {
   const out = formatDominantCondition(
     snapshot({
-      state: "blocked",
-      dominant_condition_id: "CredentialsValid:auth_expired",
       conditions: [
         {
-          id: "CredentialsValid:auth_expired",
-          type: "CredentialsValid",
-          status: "false",
-          severity: "blocked",
-          reason: "auth_expired",
-          message: "The source rejected the configured credentials.",
-          origin: "readiness",
-          observed_at: null,
           expires_at: null,
-          sensitivity: "secret_redacted",
+          id: "CredentialsValid:auth_expired",
+          message: "The source rejected the configured credentials.",
+          observed_at: null,
+          origin: "readiness",
+          reason: "auth_expired",
           remediation: {
             action: "refresh_credentials",
             label: "Reconnect this account",
             retryable: false,
             target: "credentials",
           },
+          sensitivity: "secret_redacted",
+          severity: "blocked",
+          status: "false",
+          type: "CredentialsValid",
         },
       ],
+      dominant_condition_id: "CredentialsValid:auth_expired",
+      state: "blocked",
     })
   );
   assert.equal(out?.tone, "danger");
@@ -482,12 +482,12 @@ test("formatLastDurableProgress reports last successful event count when present
     hasError: false,
     lastRun: null,
     lastSuccessfulRun: {
-      run_id: "r1",
+      event_count: 42,
+      failure_reason: null,
       first_at: "x",
       last_at: "y",
-      event_count: 42,
+      run_id: "r1",
       status: "succeeded",
-      failure_reason: null,
     },
     totalRecords: 50,
   });
@@ -499,12 +499,12 @@ test("formatLastDurableProgress reports last attempt when no success and no erro
   const out = formatLastDurableProgress({
     hasError: false,
     lastRun: {
-      run_id: "r2",
+      event_count: 0,
+      failure_reason: "boom",
       first_at: "x",
       last_at: "y",
-      event_count: 0,
+      run_id: "r2",
       status: "failed",
-      failure_reason: "boom",
     },
     lastSuccessfulRun: null,
     totalRecords: 0,
@@ -579,13 +579,13 @@ test("formatLastDurableProgress still prefers scheduler-run evidence over local-
     hasError: false,
     lastRun: null,
     lastSuccessfulRun: {
-      run_id: "r9",
-      first_at: "x",
-      last_at: "y",
       event_count: 3,
-      status: "succeeded",
       failure_reason: null,
+      first_at: "x",
       known_gaps: [],
+      last_at: "y",
+      run_id: "r9",
+      status: "succeeded",
     },
     localDeviceProgress: {
       last_heartbeat_at: "2026-05-22T16:30:00Z",
@@ -603,11 +603,11 @@ test("formatLastDurableProgress still prefers scheduler-run evidence over local-
 test("summarizeOutboxForRow returns null for idle and a label otherwise", () => {
   assert.equal(summarizeOutboxForRow(snapshot()), null);
   const stalled = summarizeOutboxForRow(
-    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" } })
+    snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" } })
   );
   assert.equal(stalled?.tone, "danger");
   const unknown = summarizeOutboxForRow(
-    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "unknown" } })
+    snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "unknown" } })
   );
   assert.equal(unknown?.tone, "neutral");
 });
@@ -618,22 +618,22 @@ test("summarizeOutboxForRow returns null when there is no snapshot at all", () =
 
 function clearBacklogCondition(overrides: Partial<RefConnectionHealthCondition> = {}): RefConnectionHealthCondition {
   return {
-    id: "cond-backlog",
-    type: "LocalExporterAvailable",
-    status: "false",
-    severity: "error",
-    reason: "local_exporter_stalled",
-    message: "Local exporter work is stalled or blocked.",
-    origin: "local_device",
-    observed_at: "2026-05-19T12:00:00Z",
     expires_at: null,
-    sensitivity: "owner",
+    id: "cond-backlog",
+    message: "Local exporter work is stalled or blocked.",
+    observed_at: "2026-05-19T12:00:00Z",
+    origin: "local_device",
+    reason: "local_exporter_stalled",
     remediation: {
       action: "clear_backlog",
       label: "Inspect the local collector backlog",
       retryable: true,
       target: "local_device",
     },
+    sensitivity: "owner",
+    severity: "error",
+    status: "false",
+    type: "LocalExporterAvailable",
     ...overrides,
   };
 }
@@ -641,9 +641,9 @@ function clearBacklogCondition(overrides: Partial<RefConnectionHealthCondition> 
 test("summarizeOutboxStallRemediation surfaces the reference remediation label for a clear_backlog condition", () => {
   const remediation = summarizeOutboxStallRemediation(
     snapshot({
-      state: "degraded",
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" },
       conditions: [clearBacklogCondition()],
+      state: "degraded",
     })
   );
   assert.equal(remediation?.label, "Inspect the local collector backlog");
@@ -652,7 +652,7 @@ test("summarizeOutboxStallRemediation surfaces the reference remediation label f
 
 test("summarizeOutboxStallRemediation stays quiet for a stalled axis without a clear_backlog action", () => {
   const remediation = summarizeOutboxStallRemediation(
-    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" } })
+    snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" } })
   );
 
   assert.equal(remediation, null);
@@ -662,7 +662,7 @@ test("summarizeOutboxStallRemediation stays quiet for healthy/idle/active/unknow
   for (const outbox of ["idle", "active", "unknown"] as const) {
     assert.equal(
       summarizeOutboxStallRemediation(
-        snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox } })
+        snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox } })
       ),
       null,
       `expected no remediation for outbox=${outbox}`
@@ -676,7 +676,7 @@ test("summarizeOutboxStallRemediation ignores a clear_backlog remediation on a r
   // remediation noise once the outbox is no longer stalled.
   const remediation = summarizeOutboxStallRemediation(
     snapshot({
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "idle" },
       conditions: [clearBacklogCondition({ status: "true" })],
     })
   );
@@ -686,7 +686,7 @@ test("summarizeOutboxStallRemediation ignores a clear_backlog remediation on a r
 test("summarizeOutboxStallRemediation: scale is null when no count rollup is available", () => {
   const remediation = summarizeOutboxStallRemediation(
     snapshot({
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" },
       conditions: [clearBacklogCondition()],
     })
   );
@@ -696,14 +696,14 @@ test("summarizeOutboxStallRemediation: scale is null when no count rollup is ava
 test("summarizeOutboxStallRemediation: surfaces a count-backed scale from outbox_counts on a stall", () => {
   const remediation = summarizeOutboxStallRemediation(
     snapshot({
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" },
       conditions: [clearBacklogCondition()],
     }),
     {
       last_heartbeat_at: "2026-05-19T11:55:00Z",
       last_heartbeat_status: "blocked",
       last_ingest_at: null,
-      outbox_counts: { pending: 12, dead_letter: 2, stale_leases: 1, total: 15 },
+      outbox_counts: { dead_letter: 2, pending: 12, stale_leases: 1, total: 15 },
       records_pending: 12,
       source_count: 1,
     }
@@ -714,14 +714,14 @@ test("summarizeOutboxStallRemediation: surfaces a count-backed scale from outbox
 test("summarizeOutboxStallRemediation: scale omits zero categories so it never reads as alarming noise", () => {
   const remediation = summarizeOutboxStallRemediation(
     snapshot({
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" },
       conditions: [clearBacklogCondition()],
     }),
     {
       last_heartbeat_at: "2026-05-19T11:55:00Z",
       last_heartbeat_status: "blocked",
       last_ingest_at: null,
-      outbox_counts: { pending: 0, dead_letter: 3, stale_leases: 0, total: 3 },
+      outbox_counts: { dead_letter: 3, pending: 0, stale_leases: 0, total: 3 },
       records_pending: 0,
       source_count: 1,
     }
@@ -735,12 +735,12 @@ test("summarizeOutboxStallRemediation: counts never attach to a quiet (non-stall
   for (const outbox of ["idle", "active", "unknown"] as const) {
     assert.equal(
       summarizeOutboxStallRemediation(
-        snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox } }),
+        snapshot({ axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox } }),
         {
           last_heartbeat_at: "2026-05-19T11:55:00Z",
           last_heartbeat_status: "healthy",
           last_ingest_at: "2026-05-19T11:55:00Z",
-          outbox_counts: { pending: 5, dead_letter: 1 },
+          outbox_counts: { dead_letter: 1, pending: 5 },
           records_pending: 5,
           source_count: 1,
         }
@@ -939,8 +939,8 @@ test("deriveConnectionStatusDisplay: healthy scheduled connection reads as a hea
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
     health: snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "idle" },
       state: "healthy",
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
     }),
     localDeviceProgress: null,
   });
@@ -957,8 +957,8 @@ test("deriveConnectionStatusDisplay: stale-but-healthy connection does not claim
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
     health: snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
       state: "healthy",
-      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
     }),
     localDeviceProgress: null,
   });
@@ -973,8 +973,8 @@ test("deriveConnectionStatusDisplay: fresh-and-healthy connection still reads cu
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
     health: snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "idle" },
       state: "healthy",
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
     }),
     localDeviceProgress: null,
   });
@@ -1004,8 +1004,8 @@ test("deriveConnectionStatusDisplay: local collector with ingest evidence and id
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
     health: snapshot({
+      axes: { attention: "none", coverage: "unknown", freshness: "unknown", outbox: "idle" },
       state: "idle",
-      axes: { coverage: "unknown", freshness: "unknown", attention: "none", outbox: "idle" },
     }),
     localDeviceProgress: {
       last_heartbeat_at: "2026-05-22T16:30:00Z",
@@ -1054,8 +1054,8 @@ test("deriveConnectionStatusDisplay: outbox=active overrides idle as Syncing reg
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
     health: snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "active" },
       state: "idle",
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "active" },
     }),
     localDeviceProgress: null,
   });
@@ -1067,29 +1067,29 @@ test("deriveConnectionStatusDisplay: blocked connection surfaces dominant condit
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: false,
     health: snapshot({
-      state: "blocked",
-      reason_code: "credential_rejected",
-      dominant_condition_id: "CredentialsValid:credential_rejected",
       conditions: [
         {
-          id: "CredentialsValid:credential_rejected",
-          type: "CredentialsValid",
-          status: "false",
-          severity: "blocked",
-          reason: "credential_rejected",
-          message: "The source rejected the configured credentials.",
-          origin: "readiness",
-          observed_at: null,
           expires_at: null,
-          sensitivity: "secret_redacted",
+          id: "CredentialsValid:credential_rejected",
+          message: "The source rejected the configured credentials.",
+          observed_at: null,
+          origin: "readiness",
+          reason: "credential_rejected",
           remediation: {
             action: "refresh_credentials",
             label: "Reconnect this account",
             retryable: false,
             target: "credentials",
           },
+          sensitivity: "secret_redacted",
+          severity: "blocked",
+          status: "false",
+          type: "CredentialsValid",
         },
       ],
+      dominant_condition_id: "CredentialsValid:credential_rejected",
+      reason_code: "credential_rejected",
+      state: "blocked",
     }),
     localDeviceProgress: null,
   });
@@ -1103,7 +1103,7 @@ test("deriveConnectionStatusDisplay: blocked connection surfaces dominant condit
 test("deriveConnectionStatusDisplay: source-pressure cooling_off reads as catch-up, never a raw token", () => {
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
-    health: snapshot({ state: "cooling_off", reason_code: "source_pressure" }),
+    health: snapshot({ reason_code: "source_pressure", state: "cooling_off" }),
     localDeviceProgress: null,
   });
   assert.equal(out.label, "Cooling off");
@@ -1118,7 +1118,7 @@ test("deriveConnectionStatusDisplay: source-pressure cooling_off reads as catch-
 test("deriveConnectionStatusDisplay: failure-backoff cooling_off keeps the retry-wait copy", () => {
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
-    health: snapshot({ state: "cooling_off", reason_code: "scheduler_backoff_active" }),
+    health: snapshot({ reason_code: "scheduler_backoff_active", state: "cooling_off" }),
     localDeviceProgress: null,
   });
   assert.equal(out.label, "Cooling off");
@@ -1129,8 +1129,8 @@ test("deriveConnectionStatusDisplay: degraded with partial coverage reads as Par
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
     health: snapshot({
+      axes: { attention: "none", coverage: "partial", freshness: "fresh", outbox: "idle" },
       state: "degraded",
-      axes: { coverage: "partial", freshness: "fresh", attention: "none", outbox: "idle" },
     }),
     localDeviceProgress: null,
   });
@@ -1143,8 +1143,8 @@ test("deriveConnectionStatusDisplay: degraded with retryable coverage reads as R
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
     health: snapshot({
+      axes: { attention: "none", coverage: "retryable_gap", freshness: "unknown", outbox: "unknown" },
       state: "degraded",
-      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "unknown" },
     }),
     localDeviceProgress: null,
   });
@@ -1160,28 +1160,28 @@ test("deriveConnectionStatusDisplay: needs_attention surfaces dominant condition
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
     health: snapshot({
-      state: "needs_attention",
-      dominant_condition_id: "AttentionClear:otp_required",
       conditions: [
         {
-          id: "AttentionClear:otp_required",
-          type: "AttentionClear",
-          status: "false",
-          severity: "warning",
-          reason: "otp_required",
-          message: "A one-time passcode is required to continue.",
-          origin: "operator",
-          observed_at: null,
           expires_at: null,
-          sensitivity: "owner",
+          id: "AttentionClear:otp_required",
+          message: "A one-time passcode is required to continue.",
+          observed_at: null,
+          origin: "operator",
+          reason: "otp_required",
           remediation: {
             action: "provide_value",
             label: "Provide the OTP",
             retryable: true,
             target: "dashboard",
           },
+          sensitivity: "owner",
+          severity: "warning",
+          status: "false",
+          type: "AttentionClear",
         },
       ],
+      dominant_condition_id: "AttentionClear:otp_required",
+      state: "needs_attention",
     }),
     localDeviceProgress: null,
   });
@@ -1226,8 +1226,8 @@ test("next-step guidance is suppressed when a structured next_action already ren
     hasDominantCondition: false,
     hasStructuredNextAction: true,
     health: snapshot({
+      axes: { attention: "open", coverage: "complete", freshness: "stale", outbox: "idle" },
       state: "needs_attention",
-      axes: { coverage: "complete", freshness: "stale", attention: "open", outbox: "idle" },
     }),
     supportsOwnerSync: true,
   });
@@ -1277,8 +1277,8 @@ test("action-bearing guidance still fires even when a dominant condition is pres
     hasDominantCondition: true,
     hasStructuredNextAction: false,
     health: snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" },
       state: "degraded",
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
     }),
     supportsOwnerSync: true,
   });
@@ -1290,7 +1290,7 @@ test("cooling_off guidance names the next attempt time when known", () => {
   const out = deriveConnectionNextStep({
     hasDominantCondition: false,
     hasStructuredNextAction: false,
-    health: snapshot({ state: "cooling_off", next_attempt_at: "2026-05-19T13:00:00Z" }),
+    health: snapshot({ next_attempt_at: "2026-05-19T13:00:00Z", state: "cooling_off" }),
     supportsOwnerSync: true,
   });
   assert.ok(out);
@@ -1304,7 +1304,7 @@ test("cooling_off with no source-pressure reason still reads as failure backoff"
   const out = deriveConnectionNextStep({
     hasDominantCondition: false,
     hasStructuredNextAction: false,
-    health: snapshot({ state: "cooling_off", next_attempt_at: "2026-05-19T13:00:00Z" }),
+    health: snapshot({ next_attempt_at: "2026-05-19T13:00:00Z", state: "cooling_off" }),
     supportsOwnerSync: true,
   });
   assert.ok(out);
@@ -1321,9 +1321,9 @@ test("source-pressure cooling_off reads as catching up, not a failure", () => {
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
       next_attempt_at: "2026-05-19T13:00:00Z",
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -1340,7 +1340,7 @@ test("source-pressure cooling_off without a next attempt still reads as catching
   const out = deriveConnectionNextStep({
     hasDominantCondition: false,
     hasStructuredNextAction: false,
-    health: snapshot({ state: "cooling_off", reason_code: "source_pressure", next_attempt_at: null }),
+    health: snapshot({ next_attempt_at: null, reason_code: "source_pressure", state: "cooling_off" }),
     supportsOwnerSync: true,
   });
   assert.ok(out);
@@ -1369,10 +1369,10 @@ test("source-pressure cooling_off attaches a backlog count plus the backlog's ow
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
+      detail_gap_backlog: backlog({ next_attempt_at: "2026-05-19T13:30:00Z", pending: 42 }),
       next_attempt_at: "2026-05-19T13:00:00Z",
-      detail_gap_backlog: backlog({ pending: 42, next_attempt_at: "2026-05-19T13:30:00Z" }),
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -1390,10 +1390,10 @@ test("the backlog resume floor is independent of the connection-level scheduler 
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
+      detail_gap_backlog: backlog({ next_attempt_at: "2026-05-19T14:00:00Z", pending: 8 }),
       next_attempt_at: null,
-      detail_gap_backlog: backlog({ pending: 8, next_attempt_at: "2026-05-19T14:00:00Z" }),
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -1406,10 +1406,10 @@ test("source-pressure backlog with a bounded read reads as a floor, never exact"
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
-      next_attempt_at: null,
       detail_gap_backlog: backlog({ pending: 100, pending_is_floor: true }),
+      next_attempt_at: null,
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -1424,10 +1424,10 @@ test("an unreadable backlog rollup never invents a count", () => {
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
-      next_attempt_at: "2026-05-19T13:00:00Z",
       detail_gap_backlog: null,
+      next_attempt_at: "2026-05-19T13:00:00Z",
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -1440,10 +1440,10 @@ test("a drained backlog with recoveries reads as caught up, not broken", () => {
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
-      next_attempt_at: null,
       detail_gap_backlog: backlog({ pending: 0, recovered: 17 }),
+      next_attempt_at: null,
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -1457,10 +1457,10 @@ test("a drained backlog with no recovery aggregate still reads as caught up (rea
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
-      next_attempt_at: null,
       detail_gap_backlog: backlog({ pending: 0, recovered: null }),
+      next_attempt_at: null,
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -1473,10 +1473,10 @@ test("a source-pressure-drained backlog does not say caught up when other detail
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
-      next_attempt_at: null,
       detail_gap_backlog: backlog({ pending: 0, pending_other: 1899, pending_other_is_floor: true }),
+      next_attempt_at: null,
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -1490,10 +1490,10 @@ test("degraded+retryable_gap manual path carries the backlog count", () => {
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "degraded",
-      next_attempt_at: null,
-      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "unknown" },
+      axes: { attention: "none", coverage: "retryable_gap", freshness: "unknown", outbox: "unknown" },
       detail_gap_backlog: backlog({ pending: 3 }),
+      next_attempt_at: null,
+      state: "degraded",
     }),
     supportsOwnerSync: true,
   });
@@ -1507,10 +1507,10 @@ test("a singular pending gap uses singular noun", () => {
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "degraded",
-      next_attempt_at: null,
-      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "idle" },
+      axes: { attention: "none", coverage: "retryable_gap", freshness: "unknown", outbox: "idle" },
       detail_gap_backlog: backlog({ pending: 1 }),
+      next_attempt_at: null,
+      state: "degraded",
     }),
     supportsOwnerSync: false,
   });
@@ -1526,9 +1526,9 @@ test("the device-outbox scale and the source-pressure backlog scale never collid
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
       detail_gap_backlog: backlog({ pending: 5 }),
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -1541,8 +1541,8 @@ test("degraded+partial coverage routes to a coverage review, not a sync", () => 
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
+      axes: { attention: "none", coverage: "gaps", freshness: "fresh", outbox: "idle" },
       state: "degraded",
-      axes: { coverage: "gaps", freshness: "fresh", attention: "none", outbox: "idle" },
     }),
     supportsOwnerSync: true,
   });
@@ -1556,9 +1556,9 @@ test("degraded+retryable_gap with owner sync offers a non-alarming way to contin
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "degraded",
+      axes: { attention: "none", coverage: "retryable_gap", freshness: "unknown", outbox: "unknown" },
       next_attempt_at: null,
-      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "unknown" },
+      state: "degraded",
     }),
     supportsOwnerSync: true,
   });
@@ -1573,9 +1573,9 @@ test("degraded+retryable_gap without owner sync points at the collector host", (
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "degraded",
+      axes: { attention: "none", coverage: "retryable_gap", freshness: "unknown", outbox: "idle" },
       next_attempt_at: null,
-      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "idle" },
+      state: "degraded",
     }),
     supportsOwnerSync: false,
   });
@@ -1590,9 +1590,9 @@ test("degraded+retryable_gap suppresses the CTA only when an automatic attempt i
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "degraded",
+      axes: { attention: "none", coverage: "retryable_gap", freshness: "unknown", outbox: "unknown" },
       next_attempt_at: "2026-05-19T13:00:00Z",
-      axes: { coverage: "retryable_gap", freshness: "unknown", attention: "none", outbox: "unknown" },
+      state: "degraded",
     }),
     supportsOwnerSync: true,
   });
@@ -1604,8 +1604,8 @@ test("stale freshness suggests Sync now only when owner sync is supported", () =
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
       state: "degraded",
-      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
     }),
     supportsOwnerSync: true,
   });
@@ -1615,8 +1615,8 @@ test("stale freshness suggests Sync now only when owner sync is supported", () =
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
       state: "degraded",
-      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
     }),
     supportsOwnerSync: false,
   });
@@ -1629,8 +1629,8 @@ test("a stalled outbox always routes to the host, never a remote button", () => 
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" },
       state: "degraded",
-      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
     }),
     supportsOwnerSync: true,
   });
@@ -1644,8 +1644,8 @@ test("an otherwise-healthy but stale connection still gets a nudge", () => {
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
       state: "healthy",
-      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
     }),
     supportsOwnerSync: true,
   });
@@ -1663,8 +1663,8 @@ test("an otherwise-healthy but stale connection still gets a nudge", () => {
 
 function stalledHealth(): RefConnectionHealthSnapshot {
   return snapshot({
+    axes: { attention: "none", coverage: "complete", freshness: "fresh", outbox: "stalled" },
     state: "degraded",
-    axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "stalled" },
   });
 }
 
@@ -1684,7 +1684,7 @@ test("stalled-row guidance carries a count-backed scale from outbox_counts", () 
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: stalledHealth(),
-    localDeviceProgress: localDeviceProgress({ pending: 12, dead_letter: 2, stale_leases: 1, total: 15 }),
+    localDeviceProgress: localDeviceProgress({ dead_letter: 2, pending: 12, stale_leases: 1, total: 15 }),
     supportsOwnerSync: false,
   });
   assert.ok(out);
@@ -1698,7 +1698,7 @@ test("stalled-row scale omits zero categories so a counted rollup never reads as
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: stalledHealth(),
-    localDeviceProgress: localDeviceProgress({ pending: 0, dead_letter: 3, stale_leases: 0, total: 3 }),
+    localDeviceProgress: localDeviceProgress({ dead_letter: 3, pending: 0, stale_leases: 0, total: 3 }),
     supportsOwnerSync: false,
   });
   assert.equal(out?.scale, "3 failed uploads");
@@ -1735,7 +1735,7 @@ test("stalled-row scale is null when every stuck-work category is zero", () => {
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: stalledHealth(),
-    localDeviceProgress: localDeviceProgress({ pending: 0, dead_letter: 0, stale_leases: 0, succeeded: 40, total: 40 }),
+    localDeviceProgress: localDeviceProgress({ dead_letter: 0, pending: 0, stale_leases: 0, succeeded: 40, total: 40 }),
     supportsOwnerSync: false,
   });
   assert.equal(out?.scale, null);
@@ -1750,12 +1750,12 @@ test("non-stalled guidance never carries a count scale, even with a populated ro
       hasDominantCondition: false,
       hasStructuredNextAction: false,
       health: snapshot({
+        axes: { attention: "none", coverage: "complete", freshness: "stale", outbox },
         // freshness=stale forces a non-null guidance (Sync now / collector) so
         // we can assert scale is still null on that non-stalled path.
         state: "degraded",
-        axes: { coverage: "complete", freshness: "stale", attention: "none", outbox },
       }),
-      localDeviceProgress: localDeviceProgress({ pending: 9, dead_letter: 4, total: 13 }),
+      localDeviceProgress: localDeviceProgress({ dead_letter: 4, pending: 9, total: 13 }),
       supportsOwnerSync: false,
     });
     assert.ok(out, `expected guidance for outbox=${outbox}`);
@@ -1809,12 +1809,12 @@ test("derivePrimaryRowAction keeps Sync now for an existing browser-bound connec
 test("derivePrimaryRowAction disables ordinary sync during source-pressure cooldown", () => {
   const action = derivePrimaryRowAction({
     connectorId: "chatgpt",
-    health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
-      next_attempt_at: "2026-06-10T22:30:00.000Z",
-    }),
     hasLocalDeviceProgress: false,
+    health: snapshot({
+      next_attempt_at: "2026-06-10T22:30:00.000Z",
+      reason_code: "source_pressure",
+      state: "cooling_off",
+    }),
   });
   assert.equal(action.kind, "cooldown_wait");
   if (action.kind === "cooldown_wait") {
@@ -1827,17 +1827,17 @@ test("derivePrimaryRowAction disables ordinary sync during source-pressure coold
 test("derivePrimaryRowAction disables ordinary sync when source-pressure backlog coexists with a blocked headline state", () => {
   const action = derivePrimaryRowAction({
     connectorId: "chatgpt",
+    hasLocalDeviceProgress: false,
     health: snapshot({
-      state: "blocked",
-      reason_code: "connector_reported_failed",
-      next_attempt_at: "2026-06-11T14:17:24.984Z",
       detail_gap_backlog: backlog({
+        max_attempt_count: 10,
         pending: 100,
         pending_is_floor: true,
-        max_attempt_count: 10,
       }),
+      next_attempt_at: "2026-06-11T14:17:24.984Z",
+      reason_code: "connector_reported_failed",
+      state: "blocked",
     }),
-    hasLocalDeviceProgress: false,
   });
   assert.equal(action.kind, "cooldown_wait");
   if (action.kind === "cooldown_wait") {
@@ -1851,8 +1851,8 @@ test("derivePrimaryRowAction disables ordinary sync when source-pressure backlog
 test("derivePrimaryRowAction keeps ordinary sync for non-pressure cooling-off", () => {
   const action = derivePrimaryRowAction({
     connectorId: "github",
-    health: snapshot({ state: "cooling_off", reason_code: "scheduler_backoff_active" }),
     hasLocalDeviceProgress: false,
+    health: snapshot({ reason_code: "scheduler_backoff_active", state: "cooling_off" }),
   });
   assert.equal(action.kind, "sync");
 });
@@ -1907,7 +1907,7 @@ test("deriveFailureSummary returns null for null input", () => {
 
 test("deriveFailureSummary degraded → 'What's missing?' trigger, view_runs CTA", () => {
   const result = deriveFailureSummary(
-    snapshot({ state: "degraded", axes: { coverage: "gaps", freshness: "fresh", attention: "none", outbox: "idle" } })
+    snapshot({ axes: { attention: "none", coverage: "gaps", freshness: "fresh", outbox: "idle" }, state: "degraded" })
   );
   assert.ok(result);
   assert.equal(result.triggerLabel, "What's missing?");
@@ -1918,8 +1918,8 @@ test("deriveFailureSummary degraded → 'What's missing?' trigger, view_runs CTA
 test("deriveFailureSummary degraded with complete coverage → generic prose", () => {
   const result = deriveFailureSummary(
     snapshot({
+      axes: { attention: "none", coverage: "complete", freshness: "stale", outbox: "idle" },
       state: "degraded",
-      axes: { coverage: "complete", freshness: "stale", attention: "none", outbox: "idle" },
     })
   );
   assert.ok(result);
@@ -1928,7 +1928,7 @@ test("deriveFailureSummary degraded with complete coverage → generic prose", (
 });
 
 test("deriveFailureSummary cooling_off source_pressure → honest prose about throttling", () => {
-  const result = deriveFailureSummary(snapshot({ state: "cooling_off", reason_code: "source_pressure" }));
+  const result = deriveFailureSummary(snapshot({ reason_code: "source_pressure", state: "cooling_off" }));
   assert.ok(result);
   assert.equal(result.triggerLabel, "What's wrong?");
   assert.equal(result.cta, "wait");
@@ -1936,7 +1936,7 @@ test("deriveFailureSummary cooling_off source_pressure → honest prose about th
 });
 
 test("deriveFailureSummary cooling_off failure back-off → retry prose", () => {
-  const result = deriveFailureSummary(snapshot({ state: "cooling_off", reason_code: "reddit_login_unexpected_ui" }));
+  const result = deriveFailureSummary(snapshot({ reason_code: "reddit_login_unexpected_ui", state: "cooling_off" }));
   assert.ok(result);
   assert.equal(result.cta, "wait");
   assert.match(result.prose, PROSE_BACKOFF_RE);
@@ -1957,19 +1957,19 @@ test("deriveFailureSummary needs_attention → reconnect CTA", () => {
 });
 
 test("deriveFailureSummary passes through reason_code", () => {
-  const result = deriveFailureSummary(snapshot({ state: "blocked", reason_code: "browser_context_died" }));
+  const result = deriveFailureSummary(snapshot({ reason_code: "browser_context_died", state: "blocked" }));
   assert.ok(result);
   assert.equal(result.reasonCode, "browser_context_died");
 });
 
 test("deriveFailureSummary passes through next_attempt_at", () => {
-  const result = deriveFailureSummary(snapshot({ state: "cooling_off", next_attempt_at: "2026-05-15T15:36:00Z" }));
+  const result = deriveFailureSummary(snapshot({ next_attempt_at: "2026-05-15T15:36:00Z", state: "cooling_off" }));
   assert.ok(result);
   assert.equal(result.nextAttemptAt, "2026-05-15T15:36:00Z");
 });
 
 test("deriveFailureSummary passes through last_success_at", () => {
-  const result = deriveFailureSummary(snapshot({ state: "blocked", last_success_at: "2026-04-28T19:33:00Z" }));
+  const result = deriveFailureSummary(snapshot({ last_success_at: "2026-04-28T19:33:00Z", state: "blocked" }));
   assert.ok(result);
   assert.equal(result.lastSuccessAt, "2026-04-28T19:33:00Z");
 });
@@ -1980,7 +1980,7 @@ test("deriveFailureSummary passes through last_success_at", () => {
 // and confusing. deriveFailureSummary applies the shared isSourcePressureCooldown
 // guard (also load-bearing for the blocked-branch fallback in this file). (spec §6.2)
 test("deriveFailureSummary blocked + source_pressure reason_code → cta is 'wait', NOT 'reconnect'", () => {
-  const result = deriveFailureSummary(snapshot({ state: "blocked", reason_code: "source_pressure" }));
+  const result = deriveFailureSummary(snapshot({ reason_code: "source_pressure", state: "blocked" }));
   assert.ok(result);
   assert.notEqual(result.cta, "reconnect", "source-pressure blocked must not yield reconnect CTA");
   assert.equal(result.cta, "wait");
@@ -1992,10 +1992,10 @@ test("deriveFailureSummary blocked + backlog + next_attempt_at (inferred source-
   // deriveFailureSummary blocked branch must honour the same inference.
   const result = deriveFailureSummary(
     snapshot({
-      state: "blocked",
-      reason_code: null,
-      next_attempt_at: "2026-05-20T10:00:00Z",
       detail_gap_backlog: backlog({ pending: 5 }),
+      next_attempt_at: "2026-05-20T10:00:00Z",
+      reason_code: null,
+      state: "blocked",
     })
   );
   assert.ok(result);
@@ -2015,10 +2015,10 @@ test("§6.3 backlog with terminal>0 does NOT say 'caught up' — emits caveat ab
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
-      next_attempt_at: null,
       detail_gap_backlog: backlog({ pending: 0, recovered: 10, terminal: 3 }),
+      next_attempt_at: null,
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -2032,10 +2032,10 @@ test("§6.3 backlog with terminal===0 still says 'caught up' (no false caveat)",
     hasDominantCondition: false,
     hasStructuredNextAction: false,
     health: snapshot({
-      state: "cooling_off",
-      reason_code: "source_pressure",
-      next_attempt_at: null,
       detail_gap_backlog: backlog({ pending: 0, recovered: 10, terminal: 0 }),
+      next_attempt_at: null,
+      reason_code: "source_pressure",
+      state: "cooling_off",
     }),
     supportsOwnerSync: true,
   });
@@ -2050,7 +2050,7 @@ test("deriveStreakDots returns empty array for no runs", () => {
 });
 
 test("deriveStreakDots maps succeeded → ✓ success", () => {
-  const dots = deriveStreakDots([{ status: "succeeded", first_at: "2026-05-15T00:00:00Z" }]);
+  const dots = deriveStreakDots([{ first_at: "2026-05-15T00:00:00Z", status: "succeeded" }]);
   assert.equal(dots.length, 1);
   assert.ok(dots[0]);
   assert.equal(dots[0].symbol, "✓");
@@ -2059,7 +2059,7 @@ test("deriveStreakDots maps succeeded → ✓ success", () => {
 
 test("deriveStreakDots maps failed → ✕ danger", () => {
   const dots = deriveStreakDots([
-    { status: "failed", first_at: "2026-05-15T00:00:00Z", failure_reason: "browser_timeout" },
+    { failure_reason: "browser_timeout", first_at: "2026-05-15T00:00:00Z", status: "failed" },
   ]);
   assert.ok(dots[0]);
   assert.equal(dots[0].symbol, "✕");
@@ -2068,21 +2068,21 @@ test("deriveStreakDots maps failed → ✕ danger", () => {
 });
 
 test("deriveStreakDots maps cancelled → ⊘ neutral", () => {
-  const dots = deriveStreakDots([{ status: "cancelled", first_at: "2026-05-15T00:00:00Z" }]);
+  const dots = deriveStreakDots([{ first_at: "2026-05-15T00:00:00Z", status: "cancelled" }]);
   assert.ok(dots[0]);
   assert.equal(dots[0].symbol, "⊘");
   assert.equal(dots[0].tone, "neutral");
 });
 
 test("deriveStreakDots maps degraded → ⚠ warning", () => {
-  const dots = deriveStreakDots([{ status: "degraded", first_at: "2026-05-15T00:00:00Z" }]);
+  const dots = deriveStreakDots([{ first_at: "2026-05-15T00:00:00Z", status: "degraded" }]);
   assert.ok(dots[0]);
   assert.equal(dots[0].symbol, "⚠");
   assert.equal(dots[0].tone, "warning");
 });
 
 test("deriveStreakDots maps succeeded_with_gaps → ⚠ warning", () => {
-  const dots = deriveStreakDots([{ status: "succeeded_with_gaps", first_at: "2026-05-15T00:00:00Z" }]);
+  const dots = deriveStreakDots([{ first_at: "2026-05-15T00:00:00Z", status: "succeeded_with_gaps" }]);
   assert.ok(dots[0]);
   assert.equal(dots[0].symbol, "⚠");
   assert.equal(dots[0].tone, "warning");
@@ -2091,18 +2091,18 @@ test("deriveStreakDots maps succeeded_with_gaps → ⚠ warning", () => {
 
 test("summarizeStreakDots distinguishes clean, failed, and completed-with-gaps runs", () => {
   assert.equal(
-    summarizeStreakDots(deriveStreakDots([{ status: "succeeded", first_at: "2026-05-15T00:00:00Z" }])),
+    summarizeStreakDots(deriveStreakDots([{ first_at: "2026-05-15T00:00:00Z", status: "succeeded" }])),
     "0 failures"
   );
   assert.equal(
-    summarizeStreakDots(deriveStreakDots([{ status: "succeeded_with_gaps", first_at: "2026-05-15T00:00:00Z" }])),
+    summarizeStreakDots(deriveStreakDots([{ first_at: "2026-05-15T00:00:00Z", status: "succeeded_with_gaps" }])),
     "1 with gaps"
   );
   assert.equal(
     summarizeStreakDots(
       deriveStreakDots([
-        { status: "failed", first_at: "2026-05-15T00:00:00Z" },
-        { status: "succeeded_with_gaps", first_at: "2026-05-14T00:00:00Z" },
+        { first_at: "2026-05-15T00:00:00Z", status: "failed" },
+        { first_at: "2026-05-14T00:00:00Z", status: "succeeded_with_gaps" },
       ])
     ),
     "1 failure · 1 with gaps"
@@ -2111,15 +2111,15 @@ test("summarizeStreakDots distinguishes clean, failed, and completed-with-gaps r
 
 test("deriveStreakDots caps at 14 runs", () => {
   const runs = Array.from({ length: 20 }, (_, i) => ({
-    status: "succeeded",
     first_at: `2026-05-${String(i + 1).padStart(2, "0")}T00:00:00Z`,
+    status: "succeeded",
   }));
   assert.equal(deriveStreakDots(runs).length, 14);
 });
 
 test("deriveStreakDots preserves the at timestamp for tooltip", () => {
   const ts = "2026-05-15T13:00:00Z";
-  const dots = deriveStreakDots([{ status: "succeeded", first_at: ts }]);
+  const dots = deriveStreakDots([{ first_at: ts, status: "succeeded" }]);
   assert.ok(dots[0]);
   assert.equal(dots[0].at, ts);
 });

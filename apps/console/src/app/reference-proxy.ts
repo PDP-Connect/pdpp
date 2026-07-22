@@ -94,8 +94,8 @@ export async function proxyReferenceRequest(
       {
         error: {
           code: "reference_unreachable",
-          message: `Cannot reach PDPP ${target.toUpperCase()} service.`,
           detail: error instanceof Error ? error.message : String(error),
+          message: `Cannot reach PDPP ${target.toUpperCase()} service.`,
         },
       },
       { status: 502 }

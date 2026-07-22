@@ -23,17 +23,21 @@
 
 (() => {
   const FIELD_ALIASES = {
-    from: ["from", "sender", "author", "actor", "user"],
-    to: ["to", "recipient", "recipients"],
-    text: ["subject", "snippet", "body", "text", "message", "content", "title", "caption", "merchant", "memo"],
     amount: ["amount", "value", "total"],
     cat: ["category"],
+    from: ["from", "sender", "author", "actor", "user"],
+    text: ["subject", "snippet", "body", "text", "message", "content", "title", "caption", "merchant", "memo"],
+    to: ["to", "recipient", "recipients"],
     type: ["type"],
   };
 
   function normPerson(p) {
-    if (p == null) return "";
-    if (Array.isArray(p)) return p.map(normPerson).join(" ");
+    if (p == null) {
+      return "";
+    }
+    if (Array.isArray(p)) {
+      return p.map(normPerson).join(" ");
+    }
     return String(p).toLowerCase();
   }
 
@@ -41,12 +45,18 @@
    * Handles "Maya Chen <maya@figma.com>", "the owner@example.com", and arrays.
    */
   function firstNameToken(person) {
-    if (!person) return "";
-    if (Array.isArray(person)) person = person[0];
+    if (!person) {
+      return "";
+    }
+    if (Array.isArray(person)) {
+      person = person[0];
+    }
     let s = String(person)
       .replace(/<[^>]+>/g, "")
       .trim();
-    if (!s) return "";
+    if (!s) {
+      return "";
+    }
     // If it's an email-only string, take the local part and split on punctuation
     if (s.includes("@") && !/\s/.test(s)) {
       s = s.split("@")[0].replace(/[._-]+/g, " ");
@@ -106,11 +116,19 @@
       case "amount": {
         const fs = stream.schema.fields;
         const af = fs.find((f) => f.type === "currency")?.name ?? fs.find((f) => /amount/i.test(f.name))?.name;
-        if (!af) return false;
+        if (!af) {
+          return false;
+        }
         const x = Math.abs(r[af] ?? 0);
-        if (chip.op === ">") return x > Number(chip.value);
-        if (chip.op === "<") return x < Number(chip.value);
-        if (chip.op === "=") return x === Number(chip.value);
+        if (chip.op === ">") {
+          return x > Number(chip.value);
+        }
+        if (chip.op === "<") {
+          return x < Number(chip.value);
+        }
+        if (chip.op === "=") {
+          return x === Number(chip.value);
+        }
         return false;
       }
       case "category": {
@@ -152,7 +170,9 @@
   }
 
   function textMatches(stream, r, text) {
-    if (!text || !text.trim()) return true;
+    if (!(text && text.trim())) {
+      return true;
+    }
     const q = text.toLowerCase();
     const fields = stream.schema.fields.filter(
       (f) =>
@@ -161,7 +181,9 @@
     );
     for (const f of fields) {
       const v = r[f.name];
-      if (typeof v === "string" && v.toLowerCase().includes(q)) return true;
+      if (typeof v === "string" && v.toLowerCase().includes(q)) {
+        return true;
+      }
     }
     return false;
   }
@@ -172,16 +194,22 @@
     for (const s of allStreams) {
       // Cheap stream-level rejection: if there's a `stream:` chip and this stream doesn't match, skip.
       const streamChips = query.chips.filter((c) => c.field === "stream" || c.field === "connection");
-      if (streamChips.length && !streamChips.every((c) => recordMatchesChip(s, s.records[0] ?? {}, c))) continue;
+      if (streamChips.length && !streamChips.every((c) => recordMatchesChip(s, s.records[0] ?? {}, c))) {
+        continue;
+      }
 
       for (const r of s.records) {
         // Apply non-stream chips
         const passes = query.chips
           .filter((c) => c.field !== "stream" && c.field !== "connection")
           .every((c) => recordMatchesChip(s, r, c));
-        if (!passes) continue;
-        if (!textMatches(s, r, query.text)) continue;
-        hits.push({ stream: s, record: r });
+        if (!passes) {
+          continue;
+        }
+        if (!textMatches(s, r, query.text)) {
+          continue;
+        }
+        hits.push({ record: r, stream: s });
       }
     }
     // Sort by time field if available, otherwise by id (stable enough for the prototype)
@@ -222,20 +250,24 @@
             const name = String(p)
               .replace(/<[^>]+>/g, "")
               .trim();
-            if (name) peopleCounts.set(name, (peopleCounts.get(name) ?? 0) + 1);
+            if (name) {
+              peopleCounts.set(name, (peopleCounts.get(name) ?? 0) + 1);
+            }
           }
         }
         if (/category/i.test(f.name)) {
           const v = record[f.name];
-          if (v) catCounts.set(v, (catCounts.get(v) ?? 0) + 1);
+          if (v) {
+            catCounts.set(v, (catCounts.get(v) ?? 0) + 1);
+          }
         }
       }
     }
     return {
-      streams: [...streamCounts.entries()].sort((a, b) => b[1] - a[1]),
+      categories: [...catCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
       months: [...monthCounts.entries()].sort((a, b) => b[0].localeCompare(a[0])),
       people: [...peopleCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
-      categories: [...catCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
+      streams: [...streamCounts.entries()].sort((a, b) => b[1] - a[1]),
     };
   }
 
@@ -245,7 +277,9 @@
    */
   function suggestChips(text, allStreams) {
     const t = (text ?? "").trim().toLowerCase();
-    if (!t) return [];
+    if (!t) {
+      return [];
+    }
     const out = [];
 
     // Stream suggestions
@@ -256,10 +290,10 @@
         if (!seenStreams.has(key)) {
           seenStreams.add(key);
           out.push({
-            kind: "chip",
             chip: { field: "stream", op: "in", value: [key] },
-            label: `stream: ${key}`,
             hint: s.title,
+            kind: "chip",
+            label: `stream: ${key}`,
           });
         }
       }
@@ -277,25 +311,37 @@
               .replace(/<[^>]+>/g, "")
               .trim();
             const first = firstNameToken(p);
-            if (!first || !first.includes(t)) continue;
-            if (seenPpl.has(first)) continue;
+            if (!(first && first.includes(t))) {
+              continue;
+            }
+            if (seenPpl.has(first)) {
+              continue;
+            }
             seenPpl.add(first);
             out.push({
-              kind: "chip",
               chip: { field: "from", op: "is", value: first },
-              label: `from: ${first}`,
               hint: display,
+              kind: "chip",
+              label: `from: ${first}`,
             });
-            if (out.length > 4) break;
+            if (out.length > 4) {
+              break;
+            }
           }
-          if (out.length > 6) break;
+          if (out.length > 6) {
+            break;
+          }
         }
-        if (out.length > 6) break;
+        if (out.length > 6) {
+          break;
+        }
       }
-      if (out.length > 6) break;
+      if (out.length > 6) {
+        break;
+      }
     }
     return out.slice(0, 6);
   }
 
-  window.PDPP_QUERY = { runQuery, computeFacets, suggestChips, recordTime, firstNameToken };
+  window.PDPP_QUERY = { computeFacets, firstNameToken, recordTime, runQuery, suggestChips };
 })();

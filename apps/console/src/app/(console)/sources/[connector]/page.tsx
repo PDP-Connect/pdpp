@@ -166,13 +166,13 @@ function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
     return null;
   }
   return {
-    run_id: summary.run_id,
-    first_at: summary.first_at,
-    last_at: summary.last_at,
     event_count: summary.event_count,
-    status: summary.status,
     failure_reason: summary.failure_reason,
+    first_at: summary.first_at,
     known_gaps: summary.known_gaps ?? [],
+    last_at: summary.last_at,
+    run_id: summary.run_id,
+    status: summary.status,
   };
 }
 
@@ -240,17 +240,17 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
     },
     connectorDisplayName: summary.connector_display_name,
     connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
-    streams,
-    streamCount: summary.stream_count,
-    retainedBytes: summary.retained_bytes ?? null,
-    revokedAt: summary.revoked_at ?? null,
-    totalRetainedBytes: summary.total_retained_bytes,
-    totalRecords: summary.total_records,
-    totalRecordsState: summary.total_records_state,
-    localDeviceProgress: summary.local_device_progress ?? null,
+    isRunning: lastRun != null && isActiveConnectorRunSummaryStatus(lastRun.status),
     lastRun,
     lastSuccessfulRun,
-    isRunning: lastRun != null && isActiveConnectorRunSummaryStatus(lastRun.status),
+    localDeviceProgress: summary.local_device_progress ?? null,
+    retainedBytes: summary.retained_bytes ?? null,
+    revokedAt: summary.revoked_at ?? null,
+    streamCount: summary.stream_count,
+    streams,
+    totalRecords: summary.total_records,
+    totalRecordsState: summary.total_records_state,
+    totalRetainedBytes: summary.total_retained_bytes,
   };
 }
 
@@ -266,6 +266,9 @@ function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummar
     orderedNames.add(name);
     const record = recordsByStream.get(name);
     streams.push({
+      count_state: record?.count_state,
+      declaration_state: record?.declaration_state,
+      last_updated: record?.last_updated ?? null,
       name,
       object: "stream",
       // An absent retained-size row is NOT zero: the server synthesizes
@@ -275,9 +278,6 @@ function streamsFromConnectorSummary(summary: RefConnectorSummary): StreamSummar
       // (count_state: "unobserved"/"stale"/"unknown") — never coerced to a
       // fabricated 0 either.
       record_count: record ? record.record_count : null,
-      last_updated: record?.last_updated ?? null,
-      declaration_state: record?.declaration_state,
-      count_state: record?.count_state,
     });
   };
 
@@ -418,16 +418,16 @@ async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageMod
     : (summary.display_name ?? "");
 
   return {
+    activeRunId: schedule?.active_run_id ?? null,
     collectionFactsByStream,
     collectionOwnerActionByStream,
-    activeRunId: schedule?.active_run_id ?? null,
     connectionHealth: summary.connection_health ?? null,
     connectionId,
+    connectionLabelSeed,
     connectionPrimaryAction: actionability.primaryAction,
     connectionRenderedVerdict: summary.rendered_verdict ?? null,
     connectorId,
     connectorInstanceId,
-    connectionLabelSeed,
     deviceLabels,
     displayName,
     headerCount,
@@ -606,7 +606,7 @@ function ConnectorPageView({
             syncIdleLabel={syncIdleLabel}
           />
         }
-        breadcrumbs={[{ label: "Sources", href: "/sources" }, { label: displayName }]}
+        breadcrumbs={[{ href: "/sources", label: "Sources" }, { label: displayName }]}
         count={headerCount}
         description={
           <ConnectionIdentityLine
@@ -758,11 +758,11 @@ function ConnectorHeaderActions({
   return (
     <>
       {activeRunHref ? (
-        <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={activeRunHref} prefetch={false}>
+        <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={activeRunHref} prefetch={false}>
           Active sync →
         </Link>
       ) : null}
-      <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/syncs">
+      <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/syncs">
         All syncs →
       </Link>
       {/* Update credential: visible on static-secret connections so the owner can
@@ -771,7 +771,7 @@ function ConnectorHeaderActions({
           declared for the connector. */}
       {storedCredentialUpdateHref && !revoked && hasStaticSecretCredentialUpdate ? (
         <Link
-          className={buttonVariants({ variant: "ghost", size: "sm" })}
+          className={buttonVariants({ size: "sm", variant: "ghost" })}
           href={storedCredentialUpdateHref}
           title="Replace the stored credential for this connection. Records, history, and schedule are preserved."
         >
@@ -836,7 +836,7 @@ function ConnectorPrimaryHeaderAction({
   if (revoked) {
     return (
       <Link
-        className={buttonVariants({ variant: "default", size: "sm" })}
+        className={buttonVariants({ size: "sm", variant: "default" })}
         href={addSourceHrefForConnector(connectorId)}
         title="This connection is revoked. Reconnect starts the supported setup path for this source."
       >
@@ -863,7 +863,7 @@ function ConnectorPrimaryHeaderAction({
       return (
         <>
           <Link
-            className={buttonVariants({ variant: "default", size: "sm" })}
+            className={buttonVariants({ size: "sm", variant: "default" })}
             href={manualUploadHref}
             title="Upload another exported file into this same source. Use Add source only for a different account or identity."
           >
@@ -974,7 +974,7 @@ function RenderedVerdictHeaderAction({
     });
     return (
       <Link
-        className={buttonVariants({ variant: "default", size: "sm" })}
+        className={buttonVariants({ size: "sm", variant: "default" })}
         data-testid="detail-action-rendered-verdict"
         href={repair.href}
         title={repair.title}
@@ -1020,7 +1020,7 @@ function RenderedVerdictHeaderAction({
     }
     return (
       <Link
-        className={buttonVariants({ variant: "default", size: "sm" })}
+        className={buttonVariants({ size: "sm", variant: "default" })}
         data-testid="detail-action-rendered-verdict"
         href={`/syncs/${encodeURIComponent(action.target.run_id)}`}
       >
@@ -1119,7 +1119,7 @@ function AcquisitionBatchRow({
           ) : null}
         </div>
         <Link
-          className={buttonVariants({ variant: "ghost", size: "sm" })}
+          className={buttonVariants({ size: "sm", variant: "ghost" })}
           href={`/connect/status/${encodeURIComponent(connectionId)}`}
         >
           Open receipt
@@ -1378,7 +1378,7 @@ function RevokedConnectionSection({ connectorId, revokedAt }: { connectorId: str
       title="Revoked connection"
     >
       <Link
-        className={buttonVariants({ variant: "default", size: "sm" })}
+        className={buttonVariants({ size: "sm", variant: "default" })}
         href={addSourceHrefForConnector(connectorId)}
       >
         Reconnect source

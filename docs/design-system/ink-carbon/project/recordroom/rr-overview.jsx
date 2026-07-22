@@ -10,12 +10,12 @@
 
   /* ── Plain-language lexicon: scope → what it means to a person ── */
   const SCOPE_HUMAN = {
-    "pay_statements.read": "your pay",
+    "browsing.read": "your browsing",
     "employment.read": "your employment history",
     "listening_history.read": "what you listen to",
-    "transactions.read": "your spending",
+    "pay_statements.read": "your pay",
     "tax_docs.read": "your tax documents",
-    "browsing.read": "your browsing",
+    "transactions.read": "your spending",
   };
   function scopeHuman(name) {
     return SCOPE_HUMAN[name] || name.replace(/\.read$/, "").replace(/_/g, " ");
@@ -24,19 +24,23 @@
   /* ── What holds BEARER access — acts as you, reads everything. The tier
       most owners actually use; grants are the scoped minority case. ── */
   const BEARER = [
-    { who: "Claude Desktop", how: "owner token · MCP", last: "read everything · 2 h ago", kind: "app" },
-    { who: "CLI on framework", how: "owner token", last: "last used yesterday", kind: "key" },
+    { how: "owner token · MCP", kind: "app", last: "read everything · 2 h ago", who: "Claude Desktop" },
+    { how: "owner token", kind: "key", last: "last used yesterday", who: "CLI on framework" },
   ];
   function joinHuman(arr) {
-    if (arr.length <= 1) return arr[0] || "";
-    if (arr.length === 2) return arr[0] + " and " + arr[1];
+    if (arr.length <= 1) {
+      return arr[0] || "";
+    }
+    if (arr.length === 2) {
+      return arr[0] + " and " + arr[1];
+    }
     return arr.slice(0, -1).join(", ") + ", and " + arr[arr.length - 1];
   }
 
   const STREAM_RECORD_NOUN = {
-    pay_statements: "pay records",
     employment: "employment records",
     listening_history: "listening records",
+    pay_statements: "pay records",
     tax_docs: "tax records",
     transactions: "transactions",
   };
@@ -47,9 +51,15 @@
   function relDay(t) {
     // t like "2026-06-11 07:58:12Z"; now is 2026-06-12
     const d = t.slice(0, 10);
-    if (d === "2026-06-12") return "today";
-    if (d === "2026-06-11") return "yesterday";
-    if (d === "2026-05-02") return "May 2";
+    if (d === "2026-06-12") {
+      return "today";
+    }
+    if (d === "2026-06-11") {
+      return "yesterday";
+    }
+    if (d === "2026-05-02") {
+      return "May 2";
+    }
     return d.slice(5);
   }
 
@@ -63,7 +73,11 @@
     let hero;
     if (pending) {
       hero = {
-        tone: "decide",
+        cta: (
+          <button className="pdpp-btn pdpp-btn--human" onClick={onReview} type="button">
+            Review the request
+          </button>
+        ),
         kicker: "A request is waiting on you",
         line: (
           <React.Fragment>
@@ -71,22 +85,10 @@
           </React.Fragment>
         ),
         sub: "Nothing leaves until you say so — approve it one piece at a time.",
-        cta: (
-          <button className="pdpp-btn pdpp-btn--human" onClick={onReview} type="button">
-            Review the request
-          </button>
-        ),
+        tone: "decide",
       };
     } else if (hasFailure) {
       hero = {
-        tone: "alarm",
-        kicker: "One thing needs you",
-        line: (
-          <React.Fragment>
-            Your bank data <em>stopped arriving</em> on Jun 11.
-          </React.Fragment>
-        ),
-        sub: "First Meridian's connection expired. Nothing you already have is lost — but nothing new arrives until you reconnect.",
         cta: (
           <button
             className="pdpp-btn pdpp-btn--sm"
@@ -98,10 +100,17 @@
             Reconnect the bank
           </button>
         ),
+        kicker: "One thing needs you",
+        line: (
+          <React.Fragment>
+            Your bank data <em>stopped arriving</em> on Jun 11.
+          </React.Fragment>
+        ),
+        sub: "First Meridian's connection expired. Nothing you already have is lost — but nothing new arrives until you reconnect.",
+        tone: "alarm",
       };
     } else {
       hero = {
-        tone: "calm",
         kicker: "Where you stand",
         line: (
           <React.Fragment>
@@ -113,6 +122,7 @@
           " tokens can act as you, with full access. " +
           active.length +
           " apps read only the slices you granted. Revoke any of them instantly.",
+        tone: "calm",
       };
     }
 
@@ -126,25 +136,25 @@
               ? "you'd revoked it"
               : tr.reason;
         return {
-          id: tr.id,
-          when: relDay(tr.t),
           deny: true,
+          id: tr.id,
           text: (
             <React.Fragment>
               <b>{tr.client}</b> tried to read {tr.stream.replace(/_/g, " ")} — turned away, {why}.
             </React.Fragment>
           ),
+          when: relDay(tr.t),
         };
       }
       return {
-        id: tr.id,
-        when: relDay(tr.t),
         deny: false,
+        id: tr.id,
         text: (
           <React.Fragment>
             <b>{tr.client}</b> read {tr.records} {recordNoun(tr.stream)} — {tr.fields} fields each.
           </React.Fragment>
         ),
+        when: relDay(tr.t),
       };
     });
 
@@ -223,7 +233,7 @@
             </div>
             <div className="rr-lately">
               {lately.map((e) => (
-                <div className={"rr-lately__row" + (e.deny ? " is-deny" : "")} key={e.id}>
+                <div className={"rr-lately__row" + (e.deny ? "is-deny" : "")} key={e.id}>
                   <span className="rr-lately__text">{e.text}</span>
                   <span className="rr-lately__when">{e.when}</span>
                 </div>

@@ -48,18 +48,18 @@ export const dynamic = "force-dynamic";
 const SCHEME_RE = /^https?:\/\//;
 
 const HREFS: StandingHrefs = {
-  grants: dashboardRoutes.section.grants,
-  grantPackages: `${dashboardRoutes.section.grants}/packages`,
-  runs: dashboardRoutes.section.runs,
-  sources: dashboardRoutes.section.records,
-  traces: dashboardRoutes.section.traces,
+  connection: (connectorKey) => dashboardRoutes.connector(connectorKey),
   deployment: dashboardRoutes.section.deployment,
   deploymentTokens: dashboardRoutes.section.deploymentTokens,
-  notifications: dashboardRoutes.section.notifications,
-  connection: (connectorKey) => dashboardRoutes.connector(connectorKey),
   grant: (id) => dashboardRoutes.grant(id),
+  grantPackages: `${dashboardRoutes.section.grants}/packages`,
+  grants: dashboardRoutes.section.grants,
+  notifications: dashboardRoutes.section.notifications,
   run: (id) => dashboardRoutes.run(id),
+  runs: dashboardRoutes.section.runs,
+  sources: dashboardRoutes.section.records,
   trace: (id) => dashboardRoutes.trace(id),
+  traces: dashboardRoutes.section.traces,
 };
 
 interface SafeRead<T> {
@@ -119,21 +119,21 @@ async function loadStandingInputs(): Promise<StandingInputs> {
 
   const connectors = connectorsRes.value.data;
   return {
-    now: new Date(),
-    hrefs: HREFS,
-    summary: summary.value,
-    grants: grantsRes.value.data,
-    grantPackageCount: packageCountRes.value.count,
-    traces: tracesRes.value.data,
-    failedTraces: [],
-    failedRuns: [],
-    overviewLoadIssues,
-    pendingApprovals: pendingRes.value.data,
-    bearerClients: clientsRes.value.data,
-    sourceWork: sourceWorkFromConnectors(connectors),
     advisoryOwnerActions: advisoryOwnerActionsFromConnectors(connectors),
     attentionConnections: attentionConnectionsFromConnectors(connectors),
+    bearerClients: clientsRes.value.data,
+    failedRuns: [],
+    failedTraces: [],
+    grantPackageCount: packageCountRes.value.count,
+    grants: grantsRes.value.data,
+    hrefs: HREFS,
+    now: new Date(),
+    overviewLoadIssues,
+    pendingApprovals: pendingRes.value.data,
     sourceIssues: sourceIssueConnectionsFromConnectors(connectors),
+    sourceWork: sourceWorkFromConnectors(connectors),
+    summary: summary.value,
+    traces: tracesRes.value.data,
   };
 }
 

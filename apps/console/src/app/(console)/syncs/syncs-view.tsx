@@ -52,14 +52,14 @@ type FailureSection = (typeof FAILURE_SECTION_ORDER)[number];
 // category copy. Only "other" is local to this surface.
 const FAILURE_SECTION_COPY: Record<FailureSection, { label: string; note: string }> = {
   needsOwner: SOURCE_WORK_GROUP_COPY.needsOwner,
-  review: SOURCE_WORK_GROUP_COPY.review,
-  systemIssue: SOURCE_WORK_GROUP_COPY.systemIssue,
-  working: SOURCE_WORK_GROUP_COPY.working,
   notMeasured: SOURCE_WORK_GROUP_COPY.notMeasured,
   other: {
     label: "Other source work",
     note: "Worth a look when you have a moment.",
   },
+  review: SOURCE_WORK_GROUP_COPY.review,
+  systemIssue: SOURCE_WORK_GROUP_COPY.systemIssue,
+  working: SOURCE_WORK_GROUP_COPY.working,
 };
 
 // ─── Health stat band ─────────────────────────────────────────────────────────

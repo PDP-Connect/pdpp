@@ -39,19 +39,19 @@ export async function probePackageHelp({ specifier, timeoutMs = 120_000, execImp
     dir = await mkdtemp(path.join(tmpdir(), "ojh-clean-shell-"));
     const { stdout, stderr } = await execImpl("npx", ["-y", specifier, "--help"], {
       cwd: dir,
-      timeout: timeoutMs,
       // A clean environment: no owner auth, no PDPP_* leakage into the probe.
       env: sanitizedEnv(),
       maxBuffer: 4 * 1024 * 1024,
+      timeout: timeoutMs,
     });
-    return { ok: true, help: `${stdout ?? ""}\n${stderr ?? ""}`, error: null };
+    return { error: null, help: `${stdout ?? ""}\n${stderr ?? ""}`, ok: true };
   } catch (err) {
     // `--help` may exit non-zero on some CLIs but still print usage; keep output.
     const help = `${err?.stdout ?? ""}\n${err?.stderr ?? ""}`.trim();
-    return { ok: help.length > 0, help, error: err instanceof Error ? err.message : String(err) };
+    return { error: err instanceof Error ? err.message : String(err), help, ok: help.length > 0 };
   } finally {
     if (dir) {
-      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      await rm(dir, { force: true, recursive: true }).catch(() => {});
     }
   }
 }
@@ -97,15 +97,15 @@ export async function checkCleanShellFreshness({ renderedCommands, publishedPack
   for (const [pkgName, subcommands] of byPackage) {
     const meta = publishedPackages[pkgName];
     const result = await probe({ specifier: meta.specifier });
-    probes.push({ package: pkgName, specifier: meta.specifier, ok: result.ok, error: result.error });
+    probes.push({ error: result.error, ok: result.ok, package: pkgName, specifier: meta.specifier });
     if (!result.ok) {
       findings.push({
-        ruleId: "clean-shell-probe-failed",
         class: "unpublished-command",
-        path: `clean-shell:${meta.specifier}`,
-        line: 0,
         excerpt: result.error ?? "probe produced no output",
+        line: 0,
+        path: `clean-shell:${meta.specifier}`,
         rationale: `Could not verify ${pkgName} from a clean shell (${meta.specifier}). The UI advertises its commands; the published package must resolve.`,
+        ruleId: "clean-shell-probe-failed",
       });
       continue;
     }
@@ -114,12 +114,12 @@ export async function checkCleanShellFreshness({ renderedCommands, publishedPack
       const re = new RegExp(`\\b${sub.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
       if (!re.test(result.help)) {
         findings.push({
-          ruleId: "clean-shell-missing-subcommand",
           class: "unpublished-command",
-          path: `clean-shell:${meta.specifier}`,
-          line: 0,
           excerpt: `${meta.binName} ${sub}`,
+          line: 0,
+          path: `clean-shell:${meta.specifier}`,
           rationale: `Subcommand '${sub}' rendered in owner UI is not present in the published ${meta.specifier} --help output.`,
+          ruleId: "clean-shell-missing-subcommand",
         });
       }
     }

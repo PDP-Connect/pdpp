@@ -12,7 +12,7 @@
 // Default mode prints a compact summary to stdout. Use --json to emit a
 // machine-readable shape for tooling.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,7 +25,7 @@ const wantJson = process.argv.includes("--json");
 function classify(changeName) {
   const tasksFile = join(changesDir, changeName, "tasks.md");
   if (!existsSync(tasksFile)) {
-    return { name: changeName, done: 0, total: 0, status: "no-tasks-file" };
+    return { done: 0, name: changeName, status: "no-tasks-file", total: 0 };
   }
   const body = readFileSync(tasksFile, "utf8");
   let done = 0;
@@ -48,7 +48,7 @@ function classify(changeName) {
   } else {
     status = "in-flight";
   }
-  return { name: changeName, done, total, status };
+  return { done, name: changeName, status, total };
 }
 
 function listActiveChanges() {
@@ -64,11 +64,11 @@ function listActiveChanges() {
 const records = listActiveChanges().map(classify);
 
 const byStatus = {
-  "in-flight": [],
-  "zero-progress": [],
   complete: [],
+  "in-flight": [],
   "no-tasks": [],
   "no-tasks-file": [],
+  "zero-progress": [],
 };
 for (const record of records) {
   byStatus[record.status].push(record);
@@ -86,7 +86,7 @@ byStatus["in-flight"].sort((a, b) => {
 });
 
 if (wantJson) {
-  console.log(JSON.stringify({ records, byStatus }, null, 2));
+  console.log(JSON.stringify({ byStatus, records }, null, 2));
   process.exit(0);
 }
 

@@ -66,7 +66,7 @@ export function evaluateFlyioCoreEnv(coreEnv) {
   const origin = coreEnv.PDPP_REFERENCE_ORIGIN;
   if (isPlaceholder(origin)) {
     violations.push(
-      "PDPP_REFERENCE_ORIGIN is not set. Set it to the public Core HTTPS origin " + "(e.g. https://<app-name>.fly.dev)."
+      "PDPP_REFERENCE_ORIGIN is not set. Set it to the public Core HTTPS origin (e.g. https://<app-name>.fly.dev)."
     );
   } else if (!/^https:\/\//.test(String(origin).trim())) {
     violations.push(`PDPP_REFERENCE_ORIGIN must be an https:// origin for a public deploy; got "${origin}".`);

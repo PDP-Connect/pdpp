@@ -31,17 +31,31 @@ export function stableInlineJson(value) {
 
 export function truncateText(value, limit) {
   const text = String(value ?? "");
-  if (!Number.isFinite(limit) || limit <= 0) return "";
-  if (text.length <= limit) return text;
-  if (limit <= 1) return "…".slice(0, limit);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return "";
+  }
+  if (text.length <= limit) {
+    return text;
+  }
+  if (limit <= 1) {
+    return "…".slice(0, limit);
+  }
   return `${text.slice(0, limit - 1)}…`;
 }
 
 export function extractRecordRows(body) {
-  if (Array.isArray(body)) return body;
-  if (Array.isArray(body?.records)) return body.records;
-  if (Array.isArray(body?.data)) return body.data;
-  if (Array.isArray(body?.data?.records)) return body.data.records;
+  if (Array.isArray(body)) {
+    return body;
+  }
+  if (Array.isArray(body?.records)) {
+    return body.records;
+  }
+  if (Array.isArray(body?.data)) {
+    return body.data;
+  }
+  if (Array.isArray(body?.data?.records)) {
+    return body.data.records;
+  }
   return [];
 }
 
@@ -55,7 +69,9 @@ export function summarizeRecordEvidence(body, label, options = {}) {
   const hasMore = envelopeField(body, "has_more") === true ? " has_more=true." : "";
   const handles = formatEnvelopeHandles(body);
 
-  if (records.length === 0) return `${label}: 0 record(s).${handles}`;
+  if (records.length === 0) {
+    return `${label}: 0 record(s).${handles}`;
+  }
 
   const shown = Math.min(records.length, limit);
   const lines = [`${label}: ${records.length} record(s).${hasMore}${handles} Showing up to ${shown}:`];
@@ -71,7 +87,9 @@ export function summarizeRecordEvidence(body, label, options = {}) {
       break;
     }
     const inlineRecord = stableInlineJson(sanitizeRecordForEvidence(record));
-    if (inlineRecord.length > budget) truncated = true;
+    if (inlineRecord.length > budget) {
+      truncated = true;
+    }
     const rendered = `${prefix}${truncateText(inlineRecord, budget)}`;
     lines.push(rendered);
     used += rendered.length + 1;
@@ -100,7 +118,7 @@ export function summarizeFieldWindowEvidence(body) {
   const nextCursor = firstString(window.next_cursor);
   const previousCursor = firstString(window.previous_cursor);
   const range =
-    start !== null && end !== null ? `chars ${start}..${end}` : start !== null ? `chars ${start}..` : "chars";
+    start !== null && end !== null ? `chars ${start}..${end}` : start === null ? "chars" : `chars ${start}..`;
   const identity = [connectionId, stream, recordId].filter(Boolean).join("/");
   const cursorText = [
     nextCursor ? `next_cursor=${formatScalar(nextCursor)}` : null,
@@ -121,17 +139,25 @@ export function summarizeFieldWindowEvidence(body) {
 export function formatEnvelopeHandles(body) {
   const parts = [];
   const nextCursor = envelopeField(body, "next_cursor");
-  if (nextCursor) parts.push(`next_cursor=${formatScalar(nextCursor)}`);
+  if (nextCursor) {
+    parts.push(`next_cursor=${formatScalar(nextCursor)}`);
+  }
   const nextChangesSince = envelopeField(body, "next_changes_since");
-  if (nextChangesSince) parts.push(`next_changes_since=${formatScalar(nextChangesSince)}`);
+  if (nextChangesSince) {
+    parts.push(`next_changes_since=${formatScalar(nextChangesSince)}`);
+  }
   const count = envelopeCount(body);
-  if (count) parts.push(`count=${count}`);
+  if (count) {
+    parts.push(`count=${count}`);
+  }
   return parts.length > 0 ? ` ${parts.join(" ")}.` : "";
 }
 
 export function buildRecordContentLadder(record, options = {}) {
   const identity = recordContentIdentity(record, options.fallback);
-  if (!identity) return null;
+  if (!identity) {
+    return null;
+  }
 
   const encodeResourceUri = options.encodeResourceUri ?? defaultEncodeResourceUri;
   const fieldWindows = recordContentFields(record, identity, {
@@ -148,17 +174,17 @@ export function buildRecordContentLadder(record, options = {}) {
   });
 
   return {
-    id: identity.id,
     connection_id: identity.connectionId,
-    stream: identity.stream,
-    record_id: identity.recordId,
+    field_windows: fieldWindows,
     handle_semantics: "live_lookup",
+    id: identity.id,
+    record_id: identity.recordId,
     record_uri: encodeResourceUri("record", {
       connection_id: identity.connectionId,
-      stream: identity.stream,
       record_id: identity.recordId,
+      stream: identity.stream,
     }),
-    field_windows: fieldWindows,
+    stream: identity.stream,
     ...(jsonFields.length > 0 ? { json_fields: jsonFields } : {}),
     ...(binaryFields.length > 0 ? { binary_fields: binaryFields } : {}),
   };
@@ -169,7 +195,9 @@ export function buildRecordSetContentLadder(body, options = {}) {
     .map((record) => buildRecordContentLadder(record, options))
     .filter(Boolean)
     .slice(0, options.recordLimit ?? DEFAULT_RECORD_PREVIEW_LIMIT);
-  if (records.length === 0) return null;
+  if (records.length === 0) {
+    return null;
+  }
   return {
     kind: "record_set",
     read_tool: options.readTool ?? "read_record_field",
@@ -184,8 +212,8 @@ export function defaultEncodeResourceUri(kind, payload) {
 export function encodeContentHandle(kind, payload) {
   return base64UrlEncode(
     JSON.stringify({
-      v: 1,
       kind,
+      v: 1,
       ...payload,
     })
   );
@@ -203,7 +231,9 @@ export function decodeContentHandle(handle, expectedKind) {
 }
 
 export function sanitizeRecordForEvidence(record) {
-  if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    return record;
+  }
   const sanitized = {};
   for (const [key, value] of Object.entries(record)) {
     if (key === "data" && value && typeof value === "object" && !Array.isArray(value)) {
@@ -216,29 +246,31 @@ export function sanitizeRecordForEvidence(record) {
 }
 
 export function binaryFieldMetadata(fieldPath, value) {
-  if (typeof fieldPath !== "string" || fieldPath.length === 0 || OMIT_FIELD_KEYS.has(fieldPath)) return null;
+  if (typeof fieldPath !== "string" || fieldPath.length === 0 || OMIT_FIELD_KEYS.has(fieldPath)) {
+    return null;
+  }
 
   const blob = blobRefMetadata(value);
   if (blob) {
     return {
-      field_path: fieldPath,
       binary_field: true,
-      text_like: false,
+      field_path: fieldPath,
       handle_semantics: "live_lookup",
       preview_status: "binary-only",
+      text_like: false,
       ...blob,
     };
   }
 
   if (isLargeBase64Field(fieldPath, value)) {
     return {
-      field_path: fieldPath,
       binary_field: true,
-      text_like: false,
+      encoding: "base64",
+      field_path: fieldPath,
       handle_semantics: "live_lookup",
       preview_status: "binary-only",
-      encoding: "base64",
       size_chars: value.length,
+      text_like: false,
     };
   }
 
@@ -268,9 +300,11 @@ function recordContentIdentity(record, fallback = {}) {
     parsed?.connectionId
   );
 
-  if (!stream || !recordId) return null;
+  if (!(stream && recordId)) {
+    return null;
+  }
   const id = connectionId ? `${connectionId}/${stream}:${recordId}` : `${stream}:${recordId}`;
-  return { id, connectionId: connectionId ?? null, stream, recordId };
+  return { connectionId: connectionId ?? null, id, recordId, stream };
 }
 
 function recordContentFields(record, identity, options) {
@@ -280,27 +314,27 @@ function recordContentFields(record, identity, options) {
     .slice(0, options.fieldLimit)
     .map(([fieldPath, value]) => ({
       field_path: fieldPath,
-      text_like: true,
       handle_semantics: "live_lookup",
       preview_status: value.length > options.windowLimitChars ? "truncated" : "complete",
-      size_chars: value.length,
       read: {
-        tool: "read_record_field",
         args: {
-          id: identity.id,
           field_path: fieldPath,
-          offset_chars: 0,
+          id: identity.id,
           limit_chars: options.windowLimitChars,
+          offset_chars: 0,
         },
+        tool: "read_record_field",
       },
       resource_uri: options.encodeResourceUri("field-window", {
         connection_id: identity.connectionId,
-        stream: identity.stream,
-        record_id: identity.recordId,
         field_path: fieldPath,
-        offset_chars: 0,
         limit_chars: options.windowLimitChars,
+        offset_chars: 0,
+        record_id: identity.recordId,
+        stream: identity.stream,
       }),
+      size_chars: value.length,
+      text_like: true,
     }));
 }
 
@@ -321,27 +355,33 @@ function recordContentJsonFields(record, identity, options) {
       const rendered = stableInlineJson(value);
       return {
         field_path: fieldPath,
-        json_field: true,
-        text_like: false,
         handle_semantics: "live_lookup",
+        json_field: true,
         preview_status: rendered.length > options.jsonPreviewChars ? "truncated" : "complete",
-        size_chars: rendered.length,
         preview_text: truncateText(rendered, options.jsonPreviewChars),
         read: {
-          tool: "fetch",
           args: {
-            id: identity.id,
             fields: [fieldPath],
+            id: identity.id,
           },
+          tool: "fetch",
         },
+        size_chars: rendered.length,
+        text_like: false,
       };
     });
 }
 
 function isJsonEvidenceField(fieldPath, value) {
-  if (typeof fieldPath !== "string" || fieldPath.length === 0 || OMIT_FIELD_KEYS.has(fieldPath)) return false;
-  if (!value || typeof value !== "object") return false;
-  if (blobRefMetadata(value)) return false;
+  if (typeof fieldPath !== "string" || fieldPath.length === 0 || OMIT_FIELD_KEYS.has(fieldPath)) {
+    return false;
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (blobRefMetadata(value)) {
+    return false;
+  }
   return true;
 }
 
@@ -355,13 +395,17 @@ function sanitizePayloadObject(payload) {
 }
 
 function sanitizeEvidenceValue(value) {
-  if (Array.isArray(value)) return value.map((entry) => sanitizeEvidenceValue(entry));
-  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeEvidenceValue(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
   const blob = blobRefMetadata(value);
   if (blob) {
     return {
-      text_like: false,
       preview_status: "binary-only",
+      text_like: false,
       ...blob,
     };
   }
@@ -385,15 +429,23 @@ function isContentStringField(fieldPath, value) {
 }
 
 function isLargeBase64Field(fieldPath, value) {
-  if (typeof value !== "string" || value.length < 256) return false;
-  if (value.length % 4 !== 0) return false;
-  if (new Set(value).size < 4) return false;
+  if (typeof value !== "string" || value.length < 256) {
+    return false;
+  }
+  if (value.length % 4 !== 0) {
+    return false;
+  }
+  if (new Set(value).size < 4) {
+    return false;
+  }
   return /^[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
 
 function blobRefMetadata(value) {
   const obj = objectValue(value);
-  if (!obj) return null;
+  if (!obj) {
+    return null;
+  }
 
   const blobId = firstString(obj.blob_id, obj.blobId, obj.id);
   const fetchUrl = firstString(obj.fetch_url, obj.fetchUrl, obj.url, obj.href);
@@ -401,50 +453,61 @@ function blobRefMetadata(value) {
   const digest = firstString(obj.digest, obj.sha256, obj.content_digest, obj.contentDigest);
   const sizeBytes = numberValue(obj.size_bytes, obj.sizeBytes, obj.byte_length, obj.byteLength);
 
-  if (!blobId && !fetchUrl && !mimeType) return null;
+  if (!(blobId || fetchUrl || mimeType)) {
+    return null;
+  }
 
   return {
     ...(blobId ? { blob_id: blobId } : {}),
     ...(fetchUrl ? { fetch_url: fetchUrl } : {}),
     ...(mimeType ? { mime_type: mimeType } : {}),
     ...(digest ? { digest } : {}),
-    ...(sizeBytes !== null ? { size_bytes: sizeBytes } : {}),
+    ...(sizeBytes === null ? {} : { size_bytes: sizeBytes }),
   };
 }
 
 function parseRecordResultId(id) {
   const slash = id.indexOf("/");
   const colon = id.indexOf(":", slash + 1);
-  if (colon <= 0) return null;
+  if (colon <= 0) {
+    return null;
+  }
   if (slash > 0) {
     return {
       connectionId: id.slice(0, slash),
-      stream: id.slice(slash + 1, colon),
       recordId: id.slice(colon + 1),
+      stream: id.slice(slash + 1, colon),
     };
   }
   return {
     connectionId: null,
-    stream: id.slice(0, colon),
     recordId: id.slice(colon + 1),
+    stream: id.slice(0, colon),
   };
 }
 
 function envelopeField(body, key) {
-  if (body && Object.hasOwn(body, key)) return body[key];
-  if (body?.meta && Object.hasOwn(body.meta, key)) return body.meta[key];
+  if (body && Object.hasOwn(body, key)) {
+    return body[key];
+  }
+  if (body?.meta && Object.hasOwn(body.meta, key)) {
+    return body.meta[key];
+  }
   if (body?.data && typeof body.data === "object" && !Array.isArray(body.data) && Object.hasOwn(body.data, key)) {
     return body.data[key];
   }
-  return undefined;
 }
 
 function envelopeCount(body) {
   const count = envelopeField(body, "count");
-  if (!count || typeof count !== "object") return null;
+  if (!count || typeof count !== "object") {
+    return null;
+  }
   const kind = firstString(count.kind);
   const value = numberValue(count.value);
-  if (!kind || value === null) return null;
+  if (!kind || value === null) {
+    return null;
+  }
   return `${kind}:${value}`;
 }
 
@@ -454,17 +517,23 @@ function objectValue(value) {
 
 function firstString(...values) {
   for (const value of values) {
-    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
   }
   return null;
 }
 
 function numberValue(...values) {
   for (const value of values) {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
     if (typeof value === "string" && value.trim() !== "") {
       const parsed = Number.parseInt(value, 10);
-      if (Number.isFinite(parsed)) return parsed;
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
     }
   }
   return null;

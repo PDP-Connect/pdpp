@@ -71,8 +71,8 @@ export async function runMcpServerCli(argv, deps = {}) {
   let handle;
   try {
     handle = await start({
-      providerUrl: credential.providerUrl,
       accessToken: credential.accessToken,
+      providerUrl: credential.providerUrl,
       serverName: options.serverName,
     });
   } catch (error) {
@@ -117,23 +117,25 @@ export function parseOptions(argv, env) {
     );
   }
 
-  return { providerUrl, cacheRoot, serverName };
+  return { cacheRoot, providerUrl, serverName };
 }
 
 function readOption(argv, name) {
   const index = argv.indexOf(name);
-  if (index === -1) return undefined;
+  if (index === -1) {
+    return;
+  }
   return argv[index + 1];
 }
 
 export { CredentialError, loadScopedCredential } from "./credentials.js";
+export { RsClient } from "./rs-client.js";
 export {
   createPdppMcpServer,
-  handleStreamableHttpRequest,
-  startStdioServer,
   DEFAULT_SERVER_NAME,
   DEFAULT_SERVER_VERSION,
+  handleStreamableHttpRequest,
   PDPP_MCP_TOOL_NAMES,
+  startStdioServer,
 } from "./server.js";
-export { RsClient } from "./rs-client.js";
-export { buildTools, buildResourceTemplates, buildStreamResourceTemplate, InvalidResourceUriError } from "./tools.js";
+export { buildResourceTemplates, buildStreamResourceTemplate, buildTools, InvalidResourceUriError } from "./tools.js";

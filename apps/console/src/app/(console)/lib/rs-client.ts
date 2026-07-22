@@ -229,8 +229,8 @@ async function authedFetch(path: string, params?: Record<string, string | number
   let res: Response;
   try {
     res = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
+      headers: { Authorization: `Bearer ${token}` },
     });
   } catch (err) {
     throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
@@ -249,8 +249,8 @@ interface ConnectionReadOptions {
 
 export async function listStreams(connectorId: string, opts: ConnectionReadOptions = {}): Promise<StreamSummary[]> {
   const body = (await authedFetch("/v1/streams", {
-    connector_id: connectorId,
     connection_id: opts.connectionId,
+    connector_id: connectorId,
     connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
   })) as {
     data: StreamSummary[];
@@ -264,8 +264,8 @@ export async function getStreamMetadata(
   opts: ConnectionReadOptions = {}
 ): Promise<StreamMetadata> {
   return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}`, {
-    connector_id: connectorId,
     connection_id: opts.connectionId,
+    connector_id: connectorId,
     connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
   })) as StreamMetadata;
 }
@@ -297,12 +297,12 @@ export async function queryRecords(
     }
   }
   const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records`, {
-    connector_id: connectorId,
     connection_id: opts.connectionId,
+    connector_id: connectorId,
     connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
     count: opts.count,
-    limit: opts.limit ?? 50,
     cursor: opts.cursor,
+    limit: opts.limit ?? 50,
     order: opts.order,
     window: opts.window,
     ...filterParams,
@@ -378,12 +378,12 @@ export async function aggregateRecordsByTime(
   }
 ): Promise<TimeBucketAggregate> {
   const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/aggregate`, {
-    connector_id: connectorId,
     connection_id: opts.connectionId,
+    connector_id: connectorId,
     connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
-    metric: "count",
-    group_by_time: opts.groupByTime,
     granularity: opts.granularity,
+    group_by_time: opts.groupByTime,
+    metric: "count",
     time_zone: opts.timeZone,
   })) as TimeBucketAggregate;
   return {
@@ -456,13 +456,13 @@ export async function listExploreRecordBuckets(opts: {
   // which silently suppressed the over-time chart on the default browse.
   const body = (await refFetch("/_ref/explore/records/buckets", {
     connections: joinList(opts.connections),
+    granularity: opts.granularity,
+    since: opts.since ?? undefined,
     streams: joinList(opts.streams),
+    time_zone: opts.timeZone,
+    until: opts.until ?? undefined,
     xconnections: joinList(opts.excludeConnections),
     xstreams: joinList(opts.excludeStreams),
-    since: opts.since ?? undefined,
-    until: opts.until ?? undefined,
-    granularity: opts.granularity,
-    time_zone: opts.timeZone,
   })) as ExploreRecordBucketsResponse;
   return {
     ...body,
@@ -486,8 +486,8 @@ export async function getRecord(
   opts: ConnectionReadOptions = {}
 ): Promise<StreamRecord> {
   const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`, {
-    connector_id: connectorId,
     connection_id: opts.connectionId,
+    connector_id: connectorId,
     connector_instance_id: opts.connectionId ? undefined : opts.connectorInstanceId,
   })) as StreamRecord;
   return {
@@ -580,8 +580,8 @@ export async function searchRecordsLexical(
   let res: Response;
   try {
     res = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
+      headers: { Authorization: `Bearer ${token}` },
     });
   } catch (err) {
     throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
@@ -639,8 +639,8 @@ export async function searchRecordsSemantic(
   let res: Response;
   try {
     res = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
+      headers: { Authorization: `Bearer ${token}` },
     });
   } catch (err) {
     throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
@@ -725,8 +725,8 @@ export async function searchRecordsHybrid(
   let res: Response;
   try {
     res = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
+      headers: { Authorization: `Bearer ${token}` },
     });
   } catch (err) {
     throw new ReferenceServerUnreachableError(`Cannot reach resource server at ${getRsInternalUrl()}`, err);
@@ -904,7 +904,7 @@ function computeColumnStats(key: string, records: StreamRecord[]): ColumnStats {
       allLong = false;
     }
   }
-  return { nonNullCount, allSameValue, allLong };
+  return { allLong, allSameValue, nonNullCount };
 }
 
 function shouldKeepColumn(key: string, records: StreamRecord[]): boolean {
@@ -1159,8 +1159,8 @@ async function paginateSampleRecords(
     const page = await queryRecords(connectorId, streamName, {
       connectionId: opts.connectionId,
       connectorInstanceId: opts.connectorInstanceId,
-      limit: Math.min(pageSize, remaining),
       cursor,
+      limit: Math.min(pageSize, remaining),
     });
     records.push(...page.data);
     if (!(page.has_more && page.next_cursor)) {
@@ -1199,11 +1199,11 @@ function initAggMap(fieldNames: Set<string>): Map<string, FieldAgg> {
   const agg = new Map<string, FieldAgg>();
   for (const f of fieldNames) {
     agg.set(f, {
-      present: false,
-      nullCount: 0,
-      nonNullCount: 0,
       distinct: new Set<string>(),
       distinctCapped: false,
+      nonNullCount: 0,
+      nullCount: 0,
+      present: false,
       sampleValue: null,
     });
   }
@@ -1263,8 +1263,8 @@ interface ScanResult {
 
 function scanRecords(records: StreamRecord[], fieldNames: Set<string>, cursorField: string | null): ScanResult {
   const agg = initAggMap(fieldNames);
-  const emittedRange: RangeTracker = { min: null, max: null };
-  const cursorRange: RangeTracker = { min: null, max: null };
+  const emittedRange: RangeTracker = { max: null, min: null };
+  const cursorRange: RangeTracker = { max: null, min: null };
 
   for (const r of records) {
     if (r.emitted_at) {
@@ -1283,19 +1283,19 @@ function scanRecords(records: StreamRecord[], fieldNames: Set<string>, cursorFie
     }
   }
 
-  return { agg, emittedRange, cursorRange };
+  return { agg, cursorRange, emittedRange };
 }
 
 function projectFields(agg: Map<string, FieldAgg>, declaredProps: string[]): FieldHealth[] {
   const declaredSet = new Set(declaredProps);
   return Array.from(agg, ([name, a]) => ({
-    name,
     declared: declaredSet.has(name),
-    present: a.present,
-    nullCount: a.nullCount,
-    nonNullCount: a.nonNullCount,
-    distinctValues: a.distinct.size,
     distinctCapped: a.distinctCapped,
+    distinctValues: a.distinct.size,
+    name,
+    nonNullCount: a.nonNullCount,
+    nullCount: a.nullCount,
+    present: a.present,
     sampleValue: a.sampleValue,
   })).sort((x, y) => {
     // declared-first, then by name, for stable display
@@ -1308,11 +1308,11 @@ function projectFields(agg: Map<string, FieldAgg>, declaredProps: string[]): Fie
 
 function computeFieldSummary(fields: FieldHealth[]) {
   return {
-    declared: fields.filter((f) => f.declared).length,
-    present: fields.filter((f) => f.present).length,
-    entirelyNull: fields.filter((f) => f.present && f.nonNullCount === 0).length,
     constValued: fields.filter((f) => f.nonNullCount > 0 && f.distinctValues === 1).length,
+    declared: fields.filter((f) => f.declared).length,
     declaredButAbsent: fields.filter((f) => f.declared && !f.present).length,
+    entirelyNull: fields.filter((f) => f.present && f.nonNullCount === 0).length,
+    present: fields.filter((f) => f.present).length,
     undeclaredPresent: fields.filter((f) => !f.declared && f.present).length,
   };
 }
@@ -1348,16 +1348,16 @@ export async function streamHealth(
 
   return {
     connectorId,
-    streamName,
-    totalRecords,
+    cursorField,
+    cursorRange: cursorField ? { max: cursorRange.max, min: cursorRange.min } : null,
+    emittedAt: { max: emittedRange.max, min: emittedRange.min },
+    fields,
+    limited: totalRecords > records.length,
     sampled: records.length,
     sampleLimit,
-    limited: totalRecords > records.length,
-    emittedAt: { min: emittedRange.min, max: emittedRange.max },
-    cursorField,
-    cursorRange: cursorField ? { min: cursorRange.min, max: cursorRange.max } : null,
-    fields,
+    streamName,
     summary,
+    totalRecords,
   };
 }
 
@@ -1378,13 +1378,13 @@ function projectRun(
     return null;
   }
   return {
-    run_id: summary.run_id,
-    first_at: summary.first_at,
-    last_at: summary.last_at,
     event_count: summary.event_count,
-    status: summary.status,
     failure_reason: summary.failure_reason,
+    first_at: summary.first_at,
     known_gaps: summary.known_gaps ?? [],
+    last_at: summary.last_at,
+    run_id: summary.run_id,
+    status: summary.status,
   };
 }
 
@@ -1399,7 +1399,7 @@ export async function getConnectorOverview(connector: ConnectorManifest): Promis
     const { listRuns } = await import("./ref-client.ts");
     const [latestResp, successResp] = await Promise.all([
       listRuns({ connector_id: connector.connector_id, limit: 1 }),
-      listRuns({ connector_id: connector.connector_id, status: "succeeded", limit: 1 }),
+      listRuns({ connector_id: connector.connector_id, limit: 1, status: "succeeded" }),
     ]);
     const lastRun = projectRun(latestResp.data?.[0]);
     const lastSuccessfulRun = projectRun(successResp.data?.[0]);
@@ -1407,11 +1407,11 @@ export async function getConnectorOverview(connector: ConnectorManifest): Promis
 
     return {
       connector,
-      streams,
-      totalRecords,
+      isRunning,
       lastRun,
       lastSuccessfulRun,
-      isRunning,
+      streams,
+      totalRecords,
     };
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
@@ -1419,12 +1419,12 @@ export async function getConnectorOverview(connector: ConnectorManifest): Promis
     }
     return {
       connector,
-      streams: [],
-      totalRecords: 0,
+      error: err instanceof Error ? err.message : String(err),
+      isRunning: false,
       lastRun: null,
       lastSuccessfulRun: null,
-      isRunning: false,
-      error: err instanceof Error ? err.message : String(err),
+      streams: [],
+      totalRecords: 0,
     };
   }
 }

@@ -4,9 +4,8 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-
-import { buildResourceTemplates, buildTools, PDPP_MCP_TOOL_NAMES } from "./tools.js";
 import { RsClient } from "./rs-client.js";
+import { buildResourceTemplates, buildTools } from "./tools.js";
 
 export const DEFAULT_SERVER_NAME = "pdpp-mcp-server";
 export const DEFAULT_SERVER_VERSION = "0.0.0";
@@ -41,7 +40,7 @@ export function createPdppMcpServer({
   // Callers may inject a custom RsClient-compatible adapter (e.g. the hosted
   // adapter's PackageRsClient fan-out). Otherwise we build a single-bearer
   // RsClient from the supplied accessToken.
-  const rs = rsClient ?? new RsClient({ providerUrl, accessToken, fetch });
+  const rs = rsClient ?? new RsClient({ accessToken, fetch, providerUrl });
   const serverInfo = { name: serverName, version: serverVersion };
   if (Array.isArray(serverIcons) && serverIcons.length > 0) {
     serverInfo.icons = serverIcons;
@@ -50,13 +49,13 @@ export function createPdppMcpServer({
     instructions: PDPP_MCP_INSTRUCTIONS,
   });
 
-  const tools = buildTools({ rs, providerUrl });
+  const tools = buildTools({ providerUrl, rs });
   for (const tool of tools) {
     const config = {
-      title: tool.title,
-      description: tool.description,
       annotations: tool.annotations,
+      description: tool.description,
       inputSchema: tool.inputSchema,
+      title: tool.title,
     };
     if (tool.outputSchema) {
       config.outputSchema = tool.outputSchema;
@@ -70,22 +69,20 @@ export function createPdppMcpServer({
     });
   }
 
-  for (const template of buildResourceTemplates({ rs, providerUrl })) {
+  for (const template of buildResourceTemplates({ providerUrl, rs })) {
     server.registerResource(
       template.name,
       new ResourceTemplate(template.uriTemplate, { list: undefined }),
       {
-        title: template.title,
         description: template.description,
         mimeType: template.mimeType,
+        title: template.title,
       },
-      async (uri, variables) => {
-        return await template.read(uri.href ?? String(uri), variables);
-      }
+      async (uri, variables) => await template.read(uri.href ?? String(uri), variables)
     );
   }
 
-  return { server, rs };
+  return { rs, server };
 }
 
 export async function startStdioServer(options) {
@@ -102,7 +99,7 @@ export async function startStdioServer(options) {
     };
   });
   await server.connect(transport);
-  return { server, transport, closed };
+  return { closed, server, transport };
 }
 
 /**
@@ -115,8 +112,8 @@ export async function startStdioServer(options) {
 export async function handleStreamableHttpRequest(request, options) {
   const { server } = createPdppMcpServer(options);
   const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
     enableJsonResponse: true,
+    sessionIdGenerator: undefined,
   });
 
   try {
@@ -129,26 +126,26 @@ export async function handleStreamableHttpRequest(request, options) {
 
 function toolHandlerError(error) {
   return {
-    isError: true,
     content: [
       {
-        type: "text",
         text: JSON.stringify(
           {
-            type: "adapter_error",
             code: error?.code ?? "tool_handler_error",
             message: error?.message ?? "Tool handler threw an error",
+            type: "adapter_error",
           },
           null,
           2
         ),
+        type: "text",
       },
     ],
+    isError: true,
     structuredContent: {
       error: {
-        type: "adapter_error",
         code: error?.code ?? "tool_handler_error",
         message: error?.message ?? "Tool handler threw an error",
+        type: "adapter_error",
       },
     },
   };

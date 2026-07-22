@@ -16,8 +16,8 @@
   const { fmtRelative, CAP_GLYPH, CAP_LABEL, NOW } = window.PDPPPrim;
 
   const APP_DEFAULTS = /*EDITMODE-BEGIN*/ {
-    projectionDefault: false,
     defaultMode: "lex",
+    projectionDefault: false,
   } /*EDITMODE-END*/;
 
   function App() {
@@ -42,11 +42,8 @@
           e.preventDefault();
           document.querySelector(".exp-query__text")?.focus();
         }
-        if (e.key === "Escape") {
-          if (selected) {
-            setSelected(null);
-            return;
-          }
+        if (e.key === "Escape" && selected) {
+          setSelected(null);
         }
       }
       window.addEventListener("keydown", onKey);
@@ -61,7 +58,9 @@
     // or multi-stream (route to unified feed).
     const uniqueStreams = useMemo(() => {
       const s = new Map();
-      for (const h of hits) s.set(`${h.stream.connection_id}::${h.stream.name}`, h.stream);
+      for (const h of hits) {
+        s.set(`${h.stream.connection_id}::${h.stream.name}`, h.stream);
+      }
       return [...s.values()];
     }, [hits]);
 
@@ -84,7 +83,7 @@
 
     // ── Handlers ─────────────────────────────────────────────────────
     function openRecord(stream, record) {
-      setSelected({ stream, record });
+      setSelected({ record, stream });
     }
     function clearQuery() {
       setQuery({ chips: [], text: "" });
@@ -121,10 +120,10 @@
         records: singleStream.records.filter((r) => hitIds.has(r.id)),
       };
       const viewProps = {
-        stream: filteredStream,
-        selectedId: selected?.record?.id,
         onSelect: (r) => openRecord(filteredStream, r),
         projection,
+        selectedId: selected?.record?.id,
+        stream: filteredStream,
       };
       switch (activeView) {
         case "table":
@@ -235,9 +234,9 @@
                 setMode(v);
               }}
               options={[
-                { value: "lex", label: "Lexical" },
-                { value: "sem", label: "Semantic" },
-                { value: "hyb", label: "Hybrid" },
+                { label: "Lexical", value: "lex" },
+                { label: "Semantic", value: "sem" },
+                { label: "Hybrid", value: "hyb" },
               ]}
               value={tweaks.defaultMode}
             />
@@ -264,12 +263,16 @@
     // — there's nothing useful to switch to, so hide the chrome entirely.
     // The switcher only appears once the user has narrowed to one stream
     // and the stream's capability views can light up.
-    if (isFeed) return null;
+    if (isFeed) {
+      return null;
+    }
     return (
-      <div style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", position: "relative" }}>
+      <div style={{ alignItems: "center", display: "inline-flex", gap: "0.4rem", position: "relative" }}>
         <div className="exp-views">
           {window.PDPP_DISPATCH.VIEW_ORDER.map((cap) => {
-            if (!available.includes(cap)) return null;
+            if (!available.includes(cap)) {
+              return null;
+            }
             return (
               <button
                 className="exp-views__btn"
@@ -287,14 +290,14 @@
         <button
           onClick={onWhy}
           style={{
-            border: "1px solid var(--border)",
             background: whyOpen ? "var(--muted)" : "var(--card)",
+            border: "1px solid var(--border)",
             borderRadius: 999,
-            padding: "0.2rem 0.55rem",
-            fontFamily: "var(--font-mono)",
-            fontSize: "0.66rem",
             color: "var(--muted-foreground)",
             cursor: "pointer",
+            fontFamily: "var(--font-mono)",
+            fontSize: "0.66rem",
+            padding: "0.2rem 0.55rem",
           }}
           title="Explain which views activated"
         >
@@ -365,7 +368,9 @@
                 <span className="exp-facets__group">
                   {facets.people.slice(0, 4).map(([p, c]) => {
                     const first = window.PDPP_QUERY.firstNameToken(p);
-                    if (!first) return null;
+                    if (!first) {
+                      return null;
+                    }
                     return (
                       <button
                         className="exp-facet"

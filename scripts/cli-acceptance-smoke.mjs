@@ -96,21 +96,21 @@ async function runLocalConnectSmoke() {
     ]);
     server = await startServer({
       asPort: 0,
-      rsPort: 0,
-      bindHost: "127.0.0.1",
-      quiet: true,
-      dbPath: join(tmpRoot, "reference.sqlite"),
-      nativeManifest,
-      semanticRetrievalSupported: false,
-      lexicalRetrievalSupported: false,
-      hybridRetrievalSupported: false,
       awaitStartupBackfill: true,
+      bindHost: "127.0.0.1",
+      dbPath: join(tmpRoot, "reference.sqlite"),
+      hybridRetrievalSupported: false,
+      lexicalRetrievalSupported: false,
+      nativeManifest,
+      quiet: true,
+      rsPort: 0,
+      semanticRetrievalSupported: false,
     });
 
     const providerUrl = `http://localhost:${server.rsPort}`;
     const result = await runConnectAndApprove({
-      providerUrl,
       cwd: tmpRoot,
+      providerUrl,
       timeoutMs: 15_000,
     });
     if (result.status !== 0) {
@@ -119,7 +119,7 @@ async function runLocalConnectSmoke() {
     process.stdout.write(`PASS local pdpp connect ${providerUrl}\n`);
   } finally {
     await closeReferenceServer(server);
-    await rm(tmpRoot, { recursive: true, force: true });
+    await rm(tmpRoot, { force: true, recursive: true });
   }
 }
 
@@ -189,7 +189,7 @@ function runConnectAndApprove({ providerUrl, cwd, timeoutMs }) {
     });
     child.on("close", (status) => {
       clearTimeout(timeout);
-      resolve({ status, stdout, stderr });
+      resolve({ status, stderr, stdout });
     });
   });
 }
@@ -206,9 +206,9 @@ async function approveAccess(approvalUrl) {
     throw new Error(`FAIL approval URL missing request_uri: ${approvalUrl}`);
   }
   const response = await fetch(new URL("/consent/approve", url), {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ request_uri: requestUri, subject_id: "owner_local" }).toString(),
+    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
     redirect: "manual",
   });
   if (!response.ok && response.status !== 302 && response.status !== 303) {

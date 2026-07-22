@@ -35,8 +35,8 @@ import {
   FORBIDDEN_STRING_RULES,
   FULL_SCREEN_DASHBOARD_ROUTE_EXCEPTIONS,
   HELP_LINK_RULE,
-  NORMAL_OWNER_UI_FILES,
   NORMAL_OWNER_ROUTE_SCAN_ROOTS,
+  NORMAL_OWNER_UI_FILES,
   POST_SUBMIT_RULE,
   PUBLISHED_PACKAGES,
   SHARED_SHELL_FILE,
@@ -140,10 +140,10 @@ export async function runLocalAcceptance(opts = {}) {
   // any command literals embedded directly in the page.
   const scanRenderedTier = async (file, tier) => {
     const src = await readRepoFile(file);
-    findings.push(...scanForbiddenStrings({ path: file, src, tier, rules: FORBIDDEN_STRING_RULES }));
-    findings.push(...scanRenderedHelperReachability({ path: file, src, forbiddenHelpers: FORBIDDEN_RENDERED_HELPERS }));
+    findings.push(...scanForbiddenStrings({ path: file, rules: FORBIDDEN_STRING_RULES, src, tier }));
+    findings.push(...scanRenderedHelperReachability({ forbiddenHelpers: FORBIDDEN_RENDERED_HELPERS, path: file, src }));
     const cmds = extractRenderedCommands(src).map((c) => ({ ...c, path: file }));
-    const fresh = checkCommandFreshness({ commands: cmds, surfaceByPackage, publishedPackages: PUBLISHED_PACKAGES });
+    const fresh = checkCommandFreshness({ commands: cmds, publishedPackages: PUBLISHED_PACKAGES, surfaceByPackage });
     findings.push(...fresh.findings);
     renderedCommands.push(...fresh.rendered);
   };
@@ -162,7 +162,7 @@ export async function runLocalAcceptance(opts = {}) {
   for (const file of commandSourceFiles) {
     const src = await readRepoFile(file);
     const cmds = extractRenderedCommands(src).map((c) => ({ ...c, path: file }));
-    const fresh = checkCommandFreshness({ commands: cmds, surfaceByPackage, publishedPackages: PUBLISHED_PACKAGES });
+    const fresh = checkCommandFreshness({ commands: cmds, publishedPackages: PUBLISHED_PACKAGES, surfaceByPackage });
     findings.push(...fresh.findings);
     renderedCommands.push(...fresh.rendered);
   }
@@ -176,7 +176,7 @@ export async function runLocalAcceptance(opts = {}) {
   // Post-submit durability check (single declared file).
   {
     const src = await readRepoFile(POST_SUBMIT_RULE.file);
-    findings.push(...checkPostSubmitDurability({ path: POST_SUBMIT_RULE.file, src, rule: POST_SUBMIT_RULE }));
+    findings.push(...checkPostSubmitDurability({ path: POST_SUBMIT_RULE.file, rule: POST_SUBMIT_RULE, src }));
   }
 
   // Shared shell / navigation contract. This pins the current route-map
@@ -187,8 +187,8 @@ export async function runLocalAcceptance(opts = {}) {
     findings.push(
       ...checkSharedShellNavContract({
         path: SHARED_SHELL_FILE,
-        src,
         requiredItems: SHELL_NAV_REQUIRED_ITEMS,
+        src,
       })
     );
     findings.push(
@@ -203,14 +203,14 @@ export async function runLocalAcceptance(opts = {}) {
 
   return {
     findings,
-    renderedCommands,
+    ok: findings.length === 0,
     publishedSurface,
+    renderedCommands,
     scannedFiles: {
-      normal: allNormalFiles,
       advanced: [...advancedFiles],
       commandSource: [...commandSourceFiles],
       discoveredNormalRoutes: discoveredNormalRouteFiles,
+      normal: allNormalFiles,
     },
-    ok: findings.length === 0,
   };
 }

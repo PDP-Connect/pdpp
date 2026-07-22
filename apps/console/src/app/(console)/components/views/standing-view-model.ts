@@ -41,31 +41,31 @@ import {
 // back to its own prettified name. We never invent a meaning we can't justify.
 
 const SCOPE_HUMAN: Record<string, string> = {
+  browser_history: "your browsing",
+  browsing: "your browsing",
+  "consent.approved": "grant decisions",
+  conversations: "your conversations",
+  current_activity: "your spending",
+  "disclosure.served": "data disclosures",
+  emails: "your email",
+  employment: "your employment history",
+  health: "your health records",
+  income: "your pay",
+  listening_history: "what you listen to",
+  location: "where you've been",
+  messages: "your messages",
+  orders: "your orders",
   pay_statements: "your pay",
   paystubs: "your pay",
-  income: "your pay",
-  employment: "your employment history",
-  listening_history: "what you listen to",
-  watch_history: "what you watch",
-  transactions: "your spending",
-  current_activity: "your spending",
+  purchases: "your purchases",
+  "query.received": "read requests",
+  "query.rejected": "rejected reads",
   statements: "your statements",
   tax_docs: "your tax documents",
   tax_documents: "your tax documents",
-  browsing: "your browsing",
-  browser_history: "your browsing",
-  messages: "your messages",
-  conversations: "your conversations",
-  emails: "your email",
-  orders: "your orders",
-  purchases: "your purchases",
-  health: "your health records",
-  location: "where you've been",
-  "consent.approved": "grant decisions",
-  "disclosure.served": "data disclosures",
-  "query.received": "read requests",
-  "query.rejected": "rejected reads",
   "token.issued": "token activity",
+  transactions: "your spending",
+  watch_history: "what you watch",
 };
 
 const READ_SUFFIX_RE = /\.read$/;
@@ -100,15 +100,15 @@ export function joinHuman(parts: readonly string[]): string {
 }
 
 const STREAM_RECORD_NOUN: Record<string, string> = {
-  pay_statements: "pay records",
+  current_activity: "transactions",
+  emails: "emails",
   employment: "employment records",
   listening_history: "listening records",
+  messages: "messages",
+  orders: "orders",
+  pay_statements: "pay records",
   tax_docs: "tax records",
   transactions: "transactions",
-  current_activity: "transactions",
-  messages: "messages",
-  emails: "emails",
-  orders: "orders",
 };
 
 /** "transactions" / "pay records" — the plural noun for a stream of records. */
@@ -528,13 +528,13 @@ function toBearers(clients: OwnerIssuedClient[], hrefs: StandingHrefs): BearerVi
     const tokenWord = count === 1 ? "token" : "tokens";
     return {
       clientId: c.client_id,
-      who: clientLabel(c.client_name, c.client_id),
       how: `owner token · ${count} active ${tokenWord}`,
+      issuedAt: c.created_at,
       // A client with more than one active token registered before the newest
       // token was issued, so `created_at` is a "first issued", not "issued".
       issuedLabel: count > 1 ? "first issued" : "issued",
-      issuedAt: c.created_at,
       revokeHref: hrefs.deploymentTokens,
+      who: clientLabel(c.client_name, c.client_id),
     };
   });
 }
@@ -741,18 +741,18 @@ function toLately(traces: TraceSummary[], now: Date): LatelyView[] {
     let row: LatelyView;
     if (isDeny) {
       row = {
-        id: tr.trace_id,
-        when: relDay(tr.last_at, now),
         deny: true,
-        text: { who, rest: `tried to read — turned away, ${denyReason(tr.failure?.reason ?? null)}.` },
+        id: tr.trace_id,
+        text: { rest: `tried to read — turned away, ${denyReason(tr.failure?.reason ?? null)}.`, who },
+        when: relDay(tr.last_at, now),
       };
     } else {
       const noun = tr.event_count === 1 ? "record" : "records";
       row = {
-        id: tr.trace_id,
-        when: relDay(tr.last_at, now),
         deny: false,
-        text: { who, rest: `read ${fmtInt(tr.event_count)} ${noun}.` },
+        id: tr.trace_id,
+        text: { rest: `read ${fmtInt(tr.event_count)} ${noun}.`, who },
+        when: relDay(tr.last_at, now),
       };
     }
     const key = `${row.deny ? "deny" : "read"}|${row.when}|${row.text.who}|${row.text.rest}`;
@@ -829,19 +829,19 @@ export function advisoryOwnerActionsFromConnectors(
 
 function toAttention(attention: AttentionConnection[], hrefs: StandingHrefs): AttentionRowView[] {
   return attention.map((a) => ({
+    href: hrefs.connection(a.routeId),
     id: `connection:${a.routeId}`,
     what: `${a.label} needs you`,
     why: a.what,
-    href: hrefs.connection(a.routeId),
   }));
 }
 
 function toSourceIssues(sourceIssues: SourceIssueConnection[], hrefs: StandingHrefs): AttentionRowView[] {
   return sourceIssues.map((issue) => ({
+    href: hrefs.connection(issue.routeId),
     id: `source-issue:${issue.routeId}`,
     what: `${issue.label} ${issue.status}`,
     why: issue.what,
-    href: hrefs.connection(issue.routeId),
   }));
 }
 
@@ -850,10 +850,10 @@ function toAdvisoryOwnerActions(
   hrefs: StandingHrefs
 ): AttentionRowView[] {
   return advisoryOwnerActions.map((action) => ({
+    href: hrefs.connection(action.routeId),
     id: `advisory-owner-action:${action.routeId}`,
     what: `${action.label} has an action to review`,
     why: action.what,
-    href: hrefs.connection(action.routeId),
   }));
 }
 
@@ -864,13 +864,13 @@ function toOverviewIssues(loadIssues: readonly string[], hrefs: StandingHrefs): 
   const count = loadIssues.length;
   return [
     {
+      href: hrefs.deployment,
       id: "overview:partial-data",
       what: "Overview could not check everything",
       why:
         count === 1
           ? "One dashboard check did not load. Refresh this page; if it keeps happening, check deployment."
           : `${count} dashboard checks did not load. Refresh this page; if it keeps happening, check deployment.`,
-      href: hrefs.deployment,
     },
   ];
 }
@@ -958,10 +958,10 @@ function sourceWorkRow(item: SourceWorkItem, hrefs: StandingHrefs): AttentionRow
     what = `${item.label} ${item.statusLabel}`;
   }
   return {
+    href: hrefs.connection(item.routeId),
     id: item.id,
     what,
     why: item.group === "working" || item.group === "notMeasured" ? item.statusLabel : item.what,
-    href: hrefs.connection(item.routeId),
   };
 }
 
@@ -977,52 +977,52 @@ function toSourceWorkSections(
   const sections: SourceWorkSectionView[] = [];
   if (groups.needsOwner.length > 0) {
     sections.push({
-      id: "needsOwner",
-      title: SOURCE_WORK_GROUP_COPY.needsOwner.label,
-      note: SOURCE_WORK_GROUP_COPY.needsOwner.note,
       countLabel: pluralSource(groups.needsOwner.length),
-      tone: "owner",
+      id: "needsOwner",
+      note: SOURCE_WORK_GROUP_COPY.needsOwner.note,
       rows: groups.needsOwner.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.needsOwner.label,
+      tone: "owner",
     });
   }
   if (groups.review.length > 0) {
     sections.push({
-      id: "review",
-      title: SOURCE_WORK_GROUP_COPY.review.label,
-      note: SOURCE_WORK_GROUP_COPY.review.note,
       countLabel: pluralSource(groups.review.length),
-      tone: "review",
+      id: "review",
+      note: SOURCE_WORK_GROUP_COPY.review.note,
       rows: groups.review.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.review.label,
+      tone: "review",
     });
   }
   if (groups.systemIssues.length > 0 || overviewIssues.length > 0) {
     sections.push({
-      id: "systemIssue",
-      title: SOURCE_WORK_GROUP_COPY.systemIssue.label,
-      note: SOURCE_WORK_GROUP_COPY.systemIssue.note,
       countLabel: pluralSource(groups.systemIssues.length + overviewIssues.length),
-      tone: "system",
+      id: "systemIssue",
+      note: SOURCE_WORK_GROUP_COPY.systemIssue.note,
       rows: [...groups.systemIssues.map((item) => sourceWorkRow(item, hrefs)), ...overviewIssues],
+      title: SOURCE_WORK_GROUP_COPY.systemIssue.label,
+      tone: "system",
     });
   }
   if (groups.working.length > 0) {
     sections.push({
-      id: "working",
-      title: SOURCE_WORK_GROUP_COPY.working.label,
-      note: SOURCE_WORK_GROUP_COPY.working.note,
       countLabel: pluralSource(groups.working.length),
-      tone: "muted",
+      id: "working",
+      note: SOURCE_WORK_GROUP_COPY.working.note,
       rows: groups.working.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.working.label,
+      tone: "muted",
     });
   }
   if (groups.notMeasured.length > 0) {
     sections.push({
-      id: "notMeasured",
-      title: SOURCE_WORK_GROUP_COPY.notMeasured.label,
-      note: SOURCE_WORK_GROUP_COPY.notMeasured.note,
       countLabel: pluralSource(groups.notMeasured.length),
-      tone: "muted",
+      id: "notMeasured",
+      note: SOURCE_WORK_GROUP_COPY.notMeasured.note,
       rows: groups.notMeasured.map((item) => sourceWorkRow(item, hrefs)),
+      title: SOURCE_WORK_GROUP_COPY.notMeasured.label,
+      tone: "muted",
     });
   }
   return sections;
@@ -1038,11 +1038,11 @@ function buildDecideHero(pending: PendingApproval[], hrefs: StandingHrefs): Stan
   const reads = first ? approvalReads(first) : "parts of your data";
   const moreSub = `Nothing leaves until you say so — review each request one at a time. ${more} more after this one.`;
   return {
-    tone: "decide",
+    cta: { href: hrefs.grants, human: true, label: "Review the request" },
     kicker: pending.length === 1 ? "A request is waiting on you" : `${pending.length} requests are waiting`,
-    line: { text: `${who} wants to read `, emphasis: reads, tail: "." },
+    line: { emphasis: reads, tail: ".", text: `${who} wants to read ` },
     sub: more > 0 ? moreSub : "Nothing leaves until you say so — approve it one piece at a time.",
-    cta: { label: "Review the request", href: hrefs.grants, human: true },
+    tone: "decide",
   };
 }
 
@@ -1055,27 +1055,27 @@ function buildFailureHero(attention: AttentionConnection[], hrefs: StandingHrefs
   const [only] = attention;
   if (count === 1 && only) {
     return {
-      tone: "alarm",
-      kicker: "One thing needs you",
-      line: { text: `${only.label} `, emphasis: "needs you", tail: "." },
-      sub: only.what,
       // A device-local recovery is not performed by clicking — the CTA only
       // navigates to where the commands are. Use a navigation label ("See what
       // to do") so the owner doesn't click expecting the dashboard to run it.
       // A dashboard-actionable verdict (reauth, refresh) keeps its action verb.
       cta: {
-        label: only.deviceLocal ? "See what to do" : only.actionLabel,
         href: hrefs.connection(only.routeId),
         human: true,
+        label: only.deviceLocal ? "See what to do" : only.actionLabel,
       },
+      kicker: "One thing needs you",
+      line: { emphasis: "needs you", tail: ".", text: `${only.label} ` },
+      sub: only.what,
+      tone: "alarm",
     };
   }
   return {
-    tone: "alarm",
+    cta: { href: hrefs.runs, label: "See what needs you" },
     kicker: `${count} things need you`,
-    line: { text: `${count} connections `, emphasis: "need a look", tail: "." },
+    line: { emphasis: "need a look", tail: ".", text: `${count} connections ` },
     sub: "Nothing you already have is lost — open each one to see what it needs.",
-    cta: { label: "See what needs you", href: hrefs.runs },
+    tone: "alarm",
   };
 }
 
@@ -1084,32 +1084,32 @@ function buildStaleHero(summary: DatasetSummary | null, hrefs: StandingHrefs): S
   const projectionState = summary?.projection?.state;
   const isFailed = projectionState === "failed";
   return {
-    tone: "alarm",
+    cta: { href: hrefs.deployment, label: "View status" },
     kicker: isFailed ? "Totals update delayed" : "Totals updating",
     line: {
-      text: "Records ",
       emphasis: "are still available",
       tail: ".",
+      text: "Records ",
     },
     sub: isFailed
       ? "Dashboard totals are using the last completed update."
       : "Dashboard totals may use the last completed update for a few minutes.",
-    cta: { label: "View status", href: hrefs.deployment },
+    tone: "alarm",
   };
 }
 
 function buildPartialDataHero(loadIssues: readonly string[], hrefs: StandingHrefs): StandingHero {
   const count = loadIssues.length;
   return {
-    tone: "alarm",
+    cta: { href: hrefs.deployment, label: "Check deployment" },
     kicker: "Overview is incomplete",
     line: {
-      text: count === 1 ? "One dashboard check " : `${count} dashboard checks `,
       emphasis: "did not load",
       tail: ".",
+      text: count === 1 ? "One dashboard check " : `${count} dashboard checks `,
     },
     sub: "Refresh this page; if it keeps happening, check deployment. This page will not claim all-clear from partial data.",
-    cta: { label: "Check deployment", href: hrefs.deployment },
+    tone: "alarm",
   };
 }
 
@@ -1120,19 +1120,19 @@ function buildAdvisoryHero(actions: AdvisoryOwnerActionConnection[], hrefs: Stan
     // now"), not the "ready for review" taxonomy phrasing.
     const action = only.actionLabel ?? "Run the available action";
     return {
-      tone: "decide",
+      cta: { href: hrefs.connection(only.routeId), human: true, label: action },
       kicker: "One optional action is available",
-      line: { text: `${only.label}: `, emphasis: action, tail: "." },
+      line: { emphasis: action, tail: ".", text: `${only.label}: ` },
       sub: only.what,
-      cta: { label: action, href: hrefs.connection(only.routeId), human: true },
+      tone: "decide",
     };
   }
   return {
-    tone: "decide",
+    cta: { href: hrefs.sources, label: "See available actions" },
     kicker: `${actions.length} optional actions are available`,
-    line: { text: "Refreshes and retries ", emphasis: "are available", tail: "." },
+    line: { emphasis: "are available", tail: ".", text: "Refreshes and retries " },
     sub: "Nothing is broken — run these refreshes and retries when you like. Records remain available.",
-    cta: { label: "See available actions", href: hrefs.sources },
+    tone: "decide",
   };
 }
 
@@ -1151,10 +1151,10 @@ function buildCalmHero(input: StandingInputs): StandingHero {
   const withBearers = `${activeClients.length} ${clientWord} ${fmtInt(activeTokenCount)} active owner ${tokenWord} with full access. ${liveGrants.length} ${grantWord} only the slices you granted. Revoke any of them instantly.`;
   const noBearers = `No owner token can act as you yet. ${liveGrants.length} ${grantWord} only the slices you granted. Revoke any of them instantly.`;
   return {
-    tone: "calm",
     kicker: "Where you stand",
-    line: { text: `${records} records from ${sources} ${sourceWord} — `, emphasis: "all yours to read", tail: "." },
+    line: { emphasis: "all yours to read", tail: ".", text: `${records} records from ${sources} ${sourceWord} — ` },
     sub: activeTokenCount > 0 ? withBearers : noBearers,
+    tone: "calm",
   };
 }
 
@@ -1178,9 +1178,9 @@ export function computeHero(input: StandingInputs): StandingHero {
       sourceWork.needsOwner.map((item) => ({
         actionLabel: item.actionLabel ?? "Review source",
         connectorKey: "",
-        routeId: item.routeId,
         deviceLocal: item.deviceLocal,
         label: item.label,
+        routeId: item.routeId,
         what: item.what,
       })),
       input.hrefs
@@ -1215,15 +1215,15 @@ export function buildStandingData(input: StandingInputs): StandingData {
   const allBearers = toBearers(input.bearerClients, input.hrefs);
   const bearers = allBearers.slice(0, BEARER_PREVIEW_LIMIT);
   return {
-    hero: computeHero(input),
+    advisoryOwnerActions: toAdvisoryOwnerActions(input.advisoryOwnerActions, input.hrefs),
+    attention: toAttention(input.attentionConnections, input.hrefs),
     bearers,
     bearersOverflow: allBearers.length - bearers.length,
     grantPackages: toGrantPackages(input.grants, input.hrefs, input.grantPackageCount),
-    relationships: toRelationships(input.grants, input.hrefs, input.now, clientNamesById(input.bearerClients)),
+    hero: computeHero(input),
     lately: toLately(input.traces, input.now),
-    advisoryOwnerActions: toAdvisoryOwnerActions(input.advisoryOwnerActions, input.hrefs),
-    attention: toAttention(input.attentionConnections, input.hrefs),
     overviewIssues,
+    relationships: toRelationships(input.grants, input.hrefs, input.now, clientNamesById(input.bearerClients)),
     sourceIssues: toSourceIssues(input.sourceIssues, input.hrefs),
     sourceWorkSections: toSourceWorkSections(sourceWork, overviewIssues, input.hrefs),
   };

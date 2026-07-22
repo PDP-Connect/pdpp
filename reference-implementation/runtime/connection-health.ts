@@ -1079,7 +1079,6 @@ export interface ComputeConnectionHealthInput {
   readonly activity: ConnectionActivityEvidence | null;
   readonly attention: ConnectionAttentionEvidence | null;
   readonly backoff: ConnectionBackoffEvidence | null;
-  readonly browserSurfaceRepair?: BrowserSurfaceRepairContext | null;
   /**
    * True when this connection has a browser/session repair path. This is a
    * durable connection/runtime capability, not evidence that a browser surface
@@ -1092,6 +1091,7 @@ export interface ComputeConnectionHealthInput {
    * strings.
    */
   readonly browserSessionRepairCapable?: boolean;
+  readonly browserSurfaceRepair?: BrowserSurfaceRepairContext | null;
   /**
    * Adaptive collection rate controller snapshot. Passed through verbatim from
    * the caller (the reference derives it from run-trace progress events). Pure

@@ -34,8 +34,8 @@ test("attributeSearchHit honors hit.connection_id when present", () => {
   ];
   const result = attributeSearchHit(
     {
-      connector_id: "gmail",
       connection_id: "conn-work",
+      connector_id: "gmail",
     },
     visible
   );
@@ -94,13 +94,13 @@ test("shouldIncludeSearchHit drops a hit whose concrete connection identity is n
   // is filtered out at the summaries layer and so is not in this set.
   const allowedConnectionIds = new Set(["conn-personal"]);
   const hit = {
-    connector_id: "gmail",
     connection_id: "conn-work",
+    connector_id: "gmail",
   };
   assert.equal(
     shouldIncludeSearchHit(hit, {
-      allowedConnectors,
       allowedConnectionIds,
+      allowedConnectors,
       enforceConnectionFilter: true,
     }),
     false
@@ -111,13 +111,13 @@ test("shouldIncludeSearchHit keeps a hit whose concrete connection identity matc
   const allowedConnectors = new Set(["gmail"]);
   const allowedConnectionIds = new Set(["conn-personal"]);
   const hit = {
-    connector_id: "gmail",
     connection_id: "conn-personal",
+    connector_id: "gmail",
   };
   assert.equal(
     shouldIncludeSearchHit(hit, {
-      allowedConnectors,
       allowedConnectionIds,
+      allowedConnectors,
       enforceConnectionFilter: true,
     }),
     true
@@ -133,8 +133,8 @@ test("shouldIncludeSearchHit honors the deprecated connector_instance_id alias w
   };
   assert.equal(
     shouldIncludeSearchHit(hit, {
-      allowedConnectors,
       allowedConnectionIds,
+      allowedConnectors,
       enforceConnectionFilter: true,
     }),
     false
@@ -150,8 +150,8 @@ test("shouldIncludeSearchHit falls through to connector-scope when the hit carri
   const hit = { connector_id: "gmail" };
   assert.equal(
     shouldIncludeSearchHit(hit, {
-      allowedConnectors,
       allowedConnectionIds,
+      allowedConnectors,
       enforceConnectionFilter: true,
     }),
     true
@@ -161,11 +161,11 @@ test("shouldIncludeSearchHit falls through to connector-scope when the hit carri
 test("shouldIncludeSearchHit drops hits whose connector type is not in the visible set", () => {
   const allowedConnectors = new Set(["gmail"]);
   const allowedConnectionIds = new Set(["conn-personal"]);
-  const hit = { connector_id: "github", connection_id: "conn-personal" };
+  const hit = { connection_id: "conn-personal", connector_id: "github" };
   assert.equal(
     shouldIncludeSearchHit(hit, {
-      allowedConnectors,
       allowedConnectionIds,
+      allowedConnectors,
       enforceConnectionFilter: true,
     }),
     false
@@ -178,11 +178,11 @@ test("shouldIncludeSearchHit does not enforce connection-scope when no chips are
   // carry an unrecognized connection_id.
   const allowedConnectors = new Set(["gmail"]);
   const allowedConnectionIds = new Set<string>();
-  const hit = { connector_id: "gmail", connection_id: "conn-unknown" };
+  const hit = { connection_id: "conn-unknown", connector_id: "gmail" };
   assert.equal(
     shouldIncludeSearchHit(hit, {
-      allowedConnectors,
       allowedConnectionIds,
+      allowedConnectors,
       enforceConnectionFilter: false,
     }),
     true
@@ -195,8 +195,8 @@ test("attributeSearchHit prefers server-provided display_name over summary fallb
   ];
   const result = attributeSearchHit(
     {
-      connector_id: "gmail",
       connection_id: "conn-personal",
+      connector_id: "gmail",
       display_name: "Server Label",
     },
     visible

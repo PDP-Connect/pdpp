@@ -38,10 +38,10 @@ function releaseOutputs(version, gitTag = `v${version}`) {
   }
 
   return {
-    "new-release-published": "true",
-    "new-release-version": version,
     "new-release-git-tag": gitTag,
     "new-release-major-minor": `${match[1]}.${match[2]}`,
+    "new-release-published": "true",
+    "new-release-version": version,
   };
 }
 
@@ -51,10 +51,10 @@ function parseDryRun(logPath) {
 
   if (!match) {
     appendOutputs({
-      "new-release-published": "false",
-      "new-release-version": "",
       "new-release-git-tag": "",
       "new-release-major-minor": "",
+      "new-release-published": "false",
+      "new-release-version": "",
     });
     console.log("semantic-release dry run did not resolve a new release.");
     return;
@@ -80,7 +80,7 @@ if (mode === "dry-run") {
   parseDryRun(logPath);
 } else if (mode === "publish") {
   const [version, gitTag] = args;
-  if (!version || !gitTag) {
+  if (!(version && gitTag)) {
     fail("Usage: semantic-release-github-output.mjs publish <version> <git-tag>");
   }
   markPublished(version, gitTag);

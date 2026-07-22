@@ -106,17 +106,17 @@ export const SHARED_SHELL_FILE = "packages/pdpp-brand-react/src/shell-frame.tsx"
 export const DASHBOARD_ROUTE_ROOT = "apps/console/src/app/(console)";
 
 export const SHELL_NAV_REQUIRED_ITEMS = [
-  { label: "Overview", href: "/" },
-  { label: "Explore", href: "/explore" },
-  { label: "Sources", href: "/sources" },
-  { label: "Syncs", href: "/syncs" },
-  { label: "Schedules", href: "/schedules" },
-  { label: "Connect AI apps", href: "/connect" },
-  { label: "Grants", href: "/grants" },
-  { label: "Audit", href: "/audit" },
-  { label: "Deployment", href: "/deployment" },
-  { label: "Device exporters", href: "/device-exporters" },
-  { label: "Event subscriptions", href: "/event-subscriptions" },
+  { href: "/", label: "Overview" },
+  { href: "/explore", label: "Explore" },
+  { href: "/sources", label: "Sources" },
+  { href: "/syncs", label: "Syncs" },
+  { href: "/schedules", label: "Schedules" },
+  { href: "/connect", label: "Connect AI apps" },
+  { href: "/grants", label: "Grants" },
+  { href: "/audit", label: "Audit" },
+  { href: "/deployment", label: "Deployment" },
+  { href: "/device-exporters", label: "Device exporters" },
+  { href: "/event-subscriptions", label: "Event subscriptions" },
 ];
 
 export const FULL_SCREEN_DASHBOARD_ROUTE_EXCEPTIONS = [
@@ -134,12 +134,12 @@ export const FULL_SCREEN_DASHBOARD_ROUTE_EXCEPTIONS = [
  */
 export const FORBIDDEN_RENDERED_HELPERS = [
   {
-    id: "browser-collector-monorepo-helper",
     class: "developer-only-path",
-    // Helper symbols that emit `pnpm --dir packages/polyfill-connectors ...`.
-    symbols: ["pdppBrowserCollectorEnrollCommand", "pdppBrowserCollectorRunCommand", "pdppCliMonorepoCommand"],
+    id: "browser-collector-monorepo-helper",
     rationale:
       "These helpers emit monorepo-only `pnpm --dir packages/...` commands. No rendered owner page may wire them into displayed setup copy.",
+    // Helper symbols that emit `pnpm --dir packages/polyfill-connectors ...`.
+    symbols: ["pdppBrowserCollectorEnrollCommand", "pdppBrowserCollectorRunCommand", "pdppCliMonorepoCommand"],
   },
 ];
 
@@ -159,58 +159,57 @@ export const FORBIDDEN_RENDERED_HELPERS = [
  */
 export const FORBIDDEN_STRING_RULES = [
   {
-    id: "monorepo-package-path",
     class: "developer-only-path",
-    tiers: ["normal", "advanced"],
+    id: "monorepo-package-path",
     pattern: /packages\/[a-z0-9-]+\//i,
     rationale:
       "Normal owner UI must not reference a monorepo package path (packages/...). Self-host owners on Railway/Docker have no repo checkout.",
+    tiers: ["normal", "advanced"],
   },
   {
-    id: "pnpm-dir",
     class: "developer-only-path",
-    tiers: ["normal", "advanced"],
+    id: "pnpm-dir",
     pattern: /pnpm\s+--dir\b/,
     rationale: "`pnpm --dir` is a monorepo-checkout command. It cannot run from an owner's shipped install.",
+    tiers: ["normal", "advanced"],
   },
   {
-    id: "monorepo-checkout",
     class: "developer-only-path",
-    tiers: ["normal", "advanced"],
+    id: "monorepo-checkout",
     pattern: /PDPP monorepo checkout|monorepo checkout/i,
     rationale: "Owner setup must never instruct the owner to obtain a PDPP monorepo checkout.",
+    tiers: ["normal", "advanced"],
   },
   {
-    id: "source-tree-node-server",
     class: "developer-only-path",
-    tiers: ["normal", "advanced"],
+    id: "source-tree-node-server",
     pattern: /node\s+reference-implementation\/server\//,
     rationale:
       "Running the server from `reference-implementation/server/...` assumes a source checkout, not a shipped deployment.",
+    tiers: ["normal", "advanced"],
   },
   {
-    id: "replace-placeholders",
     class: "placeholder-substitution",
-    tiers: ["normal"],
+    id: "replace-placeholders",
     // "replace placeholders" / "replace the placeholder" style copy paired with
     // an internal id token. The UI must pass values through, not ask the owner
     // to hand-substitute internal ids.
     pattern: /replace (?:the )?placeholder/i,
     rationale:
       "Owner UI must supply ids directly. 'Replace placeholders' copy with internal ids forces manual id surgery (the connector_instance_id vs source_instance_id failure).",
+    tiers: ["normal"],
   },
   {
-    id: "env-var-per-account",
     class: "env-var-jargon",
-    tiers: ["normal"],
+    id: "env-var-per-account",
     pattern: /env var per account|environment variable per account|env-var per account/i,
     rationale:
       "'Env var per account' is deployment jargon. Adding an account must not require editing deployment env vars; say so in owner terms or hide in operator detail.",
+    tiers: ["normal"],
   },
   {
-    id: "raw-setup-planner-label",
     class: "raw-planner-label",
-    tiers: ["normal"],
+    id: "raw-setup-planner-label",
     // Legacy raw setup-planner labels that pre-date the owner-facing vocabulary.
     // These are the exact strings the prior implementation leaked; the realigned
     // page maps planner state to friendly labels instead (Add now / Add account
@@ -219,11 +218,11 @@ export const FORBIDDEN_STRING_RULES = [
       /"Track only"|"Manual setup"|"Ready with provider secret"|"Needs browser proof"|"No setup path yet"|"Ready with provider"/,
     rationale:
       "Raw setup-planner enum labels (Track only, Manual setup, Ready with provider secret, ...) must not render as owner-facing status. They are engine states, not owner language.",
+    tiers: ["normal"],
   },
   {
-    id: "raw-support-state-token",
     class: "raw-planner-label",
-    tiers: ["normal"],
+    id: "raw-support-state-token",
     // A raw ConnectorSetupSupportState / disposition enum value rendered inside
     // a JSX text node (between > and <) or as a quoted owner-facing label.
     // Matching is deliberately scoped to rendered-text contexts in scan.mjs so
@@ -233,6 +232,7 @@ export const FORBIDDEN_STRING_RULES = [
       />\s*(?:proof_gated|needs_deployment_config|local_collector_unproven|provider_auth_proof_gated|browser_bound_runbook|api_network_unsupported|unknown_unsupported)\s*</,
     rationale:
       "Raw support-state / disposition enum values must not appear as rendered owner text. The page maps them to owner-facing labels.",
+    tiers: ["normal"],
   },
 ];
 
@@ -244,11 +244,11 @@ export const FORBIDDEN_STRING_RULES = [
  * walkthrough.
  */
 export const HELP_LINK_RULE = {
-  id: "static-secret-help-link-new-tab",
   class: "help-link-same-tab",
   // Files whose external help links must open in a new tab. Scoped to the
   // static-secret credential form, the surface where losing form state hurts.
   files: ["apps/console/src/app/(console)/connect/static-secret/[connectorId]/page.tsx"],
+  id: "static-secret-help-link-new-tab",
   rationale:
     "Static-secret credential help links must open in a new tab and preserve the form. A same-tab link loses the owner's in-progress credential entry.",
 };
@@ -263,17 +263,17 @@ export const HELP_LINK_RULE = {
  * `?notice=` query flag. This is detectable from source without a browser.
  */
 export const POST_SUBMIT_RULE = {
-  id: "static-secret-post-submit-durable",
   class: "transient-notice-only",
   file: "apps/console/src/app/(console)/connect/static-secret/[connectorId]/actions.ts",
+  id: "static-secret-post-submit-durable",
+  rationale:
+    "After submit, the owner must land on a durable connection/run reference (visible setup lifecycle), not only a transient redirect notice.",
   // The post-submit surface must reference BOTH a durable connection identity
   // and a way to follow the run, so it is not a pure transient notice.
   requiredSignals: [
     { id: "connection-id-shown", pattern: /draft\.connection_id|draftConnectionId|connectionId\b/ },
     { id: "durable-status-redirect", pattern: /statusHref\(|\/status\/|run_id\b/ },
   ],
-  rationale:
-    "After submit, the owner must land on a durable connection/run reference (visible setup lifecycle), not only a transient redirect notice.",
 };
 
 /**
@@ -288,16 +288,16 @@ export const POST_SUBMIT_RULE = {
  */
 export const PUBLISHED_PACKAGES = {
   "@pdpp/cli": {
-    specifier: "@pdpp/cli",
     binName: "pdpp",
     // Source of truth for the published subcommand set.
     commandDispatchFile: "packages/cli/src/index.js",
+    specifier: "@pdpp/cli",
     verificationMode: "npx -y @pdpp/cli --help",
   },
   "@pdpp/local-collector": {
-    specifier: "@pdpp/local-collector",
     binName: "pdpp-local-collector",
     commandDispatchFile: "packages/local-collector/bin/pdpp-local-collector.ts",
+    specifier: "@pdpp/local-collector",
     verificationMode: "npx -y @pdpp/local-collector --help",
   },
 };

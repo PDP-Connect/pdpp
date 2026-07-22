@@ -74,17 +74,17 @@ export function Hero({
           <div
             className="shrink-0"
             style={{
-              width: "var(--pdpp-sidebar-width)",
               background: gradientForLeftQuadrant(gradient),
               borderBottom: "1px solid var(--border)",
+              width: "var(--pdpp-sidebar-width)",
             }}
           />
           <div
             className="flex-1"
             style={{
-              borderLeft: "1px solid var(--human)",
-              borderBottom: "1px solid var(--border)",
               background: gradientForRightQuadrant(gradient),
+              borderBottom: "1px solid var(--border)",
+              borderLeft: "1px solid var(--human)",
             }}
           >
             <HeroContent actions={actions} description={description} eyebrow={eyebrow} size={size} title={title} />
@@ -95,9 +95,9 @@ export function Hero({
         <div
           className="md:hidden"
           style={{
-            borderLeft: "1px solid var(--human)",
-            borderBottom: "1px solid var(--border)",
             background: gradientForRightQuadrant(gradient),
+            borderBottom: "1px solid var(--border)",
+            borderLeft: "1px solid var(--human)",
           }}
         >
           <HeroContent actions={actions} description={description} eyebrow={eyebrow} size={size} title={title} />
@@ -110,9 +110,9 @@ export function Hero({
   return (
     <div
       style={{
-        borderLeft: "1px solid var(--human)",
-        borderBottom: "1px solid var(--border)",
         background: gradientForRightQuadrant(gradient),
+        borderBottom: "1px solid var(--border)",
+        borderLeft: "1px solid var(--human)",
       }}
     >
       <HeroContent actions={actions} description={description} eyebrow={eyebrow} size={size} title={title} />
@@ -144,14 +144,14 @@ function HeroContent({
       <h1
         className={titleClass}
         style={{
-          marginTop: eyebrow && !isSplash ? "0.5rem" : 0,
           marginBottom: titleMarginBottom({ description: Boolean(description), isSplash }),
+          marginTop: eyebrow && !isSplash ? "0.5rem" : 0,
         }}
       >
         {title}
       </h1>
       {description && (
-        <div className={descClass} style={{ maxWidth: "52ch", color: "var(--muted-foreground)" }}>
+        <div className={descClass} style={{ color: "var(--muted-foreground)", maxWidth: "52ch" }}>
           {description}
         </div>
       )}

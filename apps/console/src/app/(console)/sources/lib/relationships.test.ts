@@ -24,13 +24,13 @@ import {
 } from "./relationships.ts";
 
 const USER_STATS_CAP: ExpandCapability = {
-  name: "user_stats",
-  stream: "user_stats",
-  target_stream: "user_stats",
   cardinality: "has_many",
   child_parent_key_field: "user_id",
   foreign_key: "user_id",
   granted: true,
+  name: "user_stats",
+  stream: "user_stats",
+  target_stream: "user_stats",
   usable: true,
 };
 
@@ -53,7 +53,7 @@ test("has_many usable relation links to the filtered child list, not a child det
 });
 
 test("has_many link percent-encodes connection, stream, field, and parent key", () => {
-  const cap: ExpandCapability = { ...USER_STATS_CAP, target_stream: "user stats", child_parent_key_field: "user id" };
+  const cap: ExpandCapability = { ...USER_STATS_CAP, child_parent_key_field: "user id", target_stream: "user stats" };
   const links = buildRelatedLinks([cap], { connectionId: "git hub", parentRecordKey: "1/0 1" });
   const link = links[0];
   assert.ok(link);
@@ -64,8 +64,8 @@ test("unusable relation renders inert with the manifest reason as advisory", () 
   const cap: ExpandCapability = {
     ...USER_STATS_CAP,
     granted: false,
-    usable: false,
     reason: "related_stream_not_granted",
+    usable: false,
   };
   const link = onlyLink([cap], "101");
   assert.equal(link.navigable, false);
@@ -82,13 +82,13 @@ test("each declared reason maps to calm advisory copy", () => {
 
 test("usable has_one without a resolvable child key renders inert, never a parent-key child URL", () => {
   const cap: ExpandCapability = {
-    name: "profile",
-    target_stream: "profile",
-    stream: "profile",
     cardinality: "has_one",
     child_parent_key_field: "user_id",
     foreign_key: "user_id",
     granted: true,
+    name: "profile",
+    stream: "profile",
+    target_stream: "profile",
     usable: true,
   };
   const link = onlyLink([cap], "101");
@@ -107,8 +107,8 @@ test("no expand capabilities yields no related links", () => {
 test("child field matching a declared relation links back to the parent record", () => {
   const link = findParentBackLink(
     "user_stats",
-    { id: "101:2026-04-01", user_id: "101", observed_on: "2026-04-01" },
-    [{ parentStream: "user", capability: USER_STATS_CAP }],
+    { id: "101:2026-04-01", observed_on: "2026-04-01", user_id: "101" },
+    [{ capability: USER_STATS_CAP, parentStream: "user" }],
     { connectionId: "github" }
   );
   assert.ok(link);
@@ -127,8 +127,8 @@ test("child back-link can be resolved for the requested relation field", () => {
     "user_stats",
     { id: "101:2026-04-01", owner_id: "owner-1", user_id: "user-1" },
     [
-      { parentStream: "user", capability: USER_STATS_CAP },
-      { parentStream: "owners", capability: ownerStatsCap },
+      { capability: USER_STATS_CAP, parentStream: "user" },
+      { capability: ownerStatsCap, parentStream: "owners" },
     ],
     { childParentKeyField: "owner_id", connectionId: "github" }
   );
@@ -144,7 +144,7 @@ test("child back-link is absent when no declared relation targets the child stre
   const link = findParentBackLink(
     "issues",
     { id: "i1", repository_id: "r1" },
-    [{ parentStream: "user", capability: USER_STATS_CAP }],
+    [{ capability: USER_STATS_CAP, parentStream: "user" }],
     { connectionId: "github" }
   );
   assert.equal(link, null);
@@ -154,18 +154,18 @@ test("candidateParentStreamsForChild uses the manifest only to prune parent meta
   const streams = [
     {
       name: "user",
-      relationships: [
-        { name: "user_stats", stream: "user_stats", foreign_key: "user_id", cardinality: "has_many" as const },
-      ],
       query: { expand: [{ name: "user_stats" }] },
+      relationships: [
+        { cardinality: "has_many" as const, foreign_key: "user_id", name: "user_stats", stream: "user_stats" },
+      ],
     },
     {
       name: "repositories",
+      query: { expand: [] },
       // Declared but NOT enabled in query.expand → must be ignored.
       relationships: [
-        { name: "issues", stream: "issues", foreign_key: "repository_id", cardinality: "has_many" as const },
+        { cardinality: "has_many" as const, foreign_key: "repository_id", name: "issues", stream: "issues" },
       ],
-      query: { expand: [] },
     },
     { name: "user_stats" },
   ];
@@ -217,7 +217,7 @@ test("short connection connector key resolves child-declared relationship manife
   const stream = connectorManifest?.streams.find((candidate) => candidate.name === "transactions");
   const links = childHasOneBackLinksFromManifest(
     stream,
-    { id: "1212486749|2026042024323046109400600036029", account_id: "1212486749" },
+    { account_id: "1212486749", id: "1212486749|2026042024323046109400600036029" },
     { connectionId: "cin_029a67a16d8a252f6e3eb896" }
   );
 
@@ -227,22 +227,22 @@ test("short connection connector key resolves child-declared relationship manife
 test("parentRelationsForChild derives linkable relations from live expand_capabilities metadata", () => {
   const relations = parentRelationsForChild(
     [
-      { parentStream: "user", expandCapabilities: [USER_STATS_CAP] },
+      { expandCapabilities: [USER_STATS_CAP], parentStream: "user" },
       {
-        parentStream: "repositories",
         expandCapabilities: [
           {
-            name: "issues",
-            stream: "issues",
-            target_stream: "issues",
             cardinality: "has_many",
             child_parent_key_field: "repository_id",
             foreign_key: "repository_id",
             granted: false,
-            usable: false,
+            name: "issues",
             reason: "related_stream_not_granted",
+            stream: "issues",
+            target_stream: "issues",
+            usable: false,
           },
         ],
+        parentStream: "repositories",
       },
     ],
     "user_stats"
@@ -258,7 +258,7 @@ test("child back-link is absent when the child field value is missing or empty",
   const missing = findParentBackLink(
     "user_stats",
     { id: "101:2026-04-01", observed_on: "2026-04-01" },
-    [{ parentStream: "user", capability: USER_STATS_CAP }],
+    [{ capability: USER_STATS_CAP, parentStream: "user" }],
     { connectionId: "github" }
   );
   assert.equal(missing, null);
@@ -266,7 +266,7 @@ test("child back-link is absent when the child field value is missing or empty",
   const empty = findParentBackLink(
     "user_stats",
     { id: "x", user_id: "" },
-    [{ parentStream: "user", capability: USER_STATS_CAP }],
+    [{ capability: USER_STATS_CAP, parentStream: "user" }],
     { connectionId: "github" }
   );
   assert.equal(empty, null);
@@ -276,13 +276,13 @@ test("child back-link is absent when the child field value is missing or empty",
 
 const CHASE_TRANSACTIONS_MANIFEST_STREAM = {
   name: "transactions",
-  relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
+  relationships: [{ cardinality: "has_one", foreign_key: "account_id", name: "account", stream: "accounts" }],
 };
 
 test("child-declared has_one links to the parent record detail page", () => {
   const links = childHasOneBackLinksFromManifest(
     CHASE_TRANSACTIONS_MANIFEST_STREAM,
-    { id: "1212486749|2026042024323046109400600036029", account_id: "1212486749", amount: -1234 },
+    { account_id: "1212486749", amount: -1234, id: "1212486749|2026042024323046109400600036029" },
     { connectionId: "cin_029a67a16d8a252f6e3eb896" }
   );
   assert.equal(links.length, 1);
@@ -297,7 +297,7 @@ test("child-declared has_one percent-encodes connection, stream, and key value",
   const links = childHasOneBackLinksFromManifest(
     {
       name: "items",
-      relationships: [{ name: "order", stream: "open orders", foreign_key: "order id", cardinality: "has_one" }],
+      relationships: [{ cardinality: "has_one", foreign_key: "order id", name: "order", stream: "open orders" }],
     },
     { "order id": "ref/42" },
     { connectionId: "my conn" }
@@ -311,7 +311,7 @@ test("child-declared has_many relationships are ignored by childHasOneBackLinksF
   const links = childHasOneBackLinksFromManifest(
     {
       name: "transactions",
-      relationships: [{ name: "tags", stream: "tags", foreign_key: "transaction_id", cardinality: "has_many" }],
+      relationships: [{ cardinality: "has_many", foreign_key: "transaction_id", name: "tags", stream: "tags" }],
     },
     { id: "tx1", transaction_id: "tx1" },
     { connectionId: "conn" }
@@ -323,7 +323,7 @@ test("unrelated id-looking fields do not link when not covered by a declared has
   // account_id is NOT declared in this stream's relationships — must not produce a link.
   const links = childHasOneBackLinksFromManifest(
     { name: "transactions", relationships: [] },
-    { id: "tx1", account_id: "1212486749" },
+    { account_id: "1212486749", id: "tx1" },
     { connectionId: "conn" }
   );
   assert.deepEqual(links, []);
@@ -341,7 +341,7 @@ test("child-declared has_one yields no link when foreign_key field is absent fro
 test("child-declared has_one yields no link when foreign_key value is empty", () => {
   const links = childHasOneBackLinksFromManifest(
     CHASE_TRANSACTIONS_MANIFEST_STREAM,
-    { id: "tx1", account_id: "" },
+    { account_id: "", id: "tx1" },
     { connectionId: "cin" }
   );
   assert.deepEqual(links, []);
@@ -371,10 +371,10 @@ test("childHasOneLinkFields ignores has_many and incomplete relations, and toler
   const fields = childHasOneLinkFields({
     name: "transactions",
     relationships: [
-      { name: "tags", stream: "tags", foreign_key: "transaction_id", cardinality: "has_many" },
-      { name: "account", stream: "accounts", cardinality: "has_one" }, // missing foreign_key
-      { name: "owner", foreign_key: "owner_id", cardinality: "has_one" }, // missing stream
-      { name: "category", stream: "categories", foreign_key: "category_id", cardinality: "has_one" },
+      { cardinality: "has_many", foreign_key: "transaction_id", name: "tags", stream: "tags" },
+      { cardinality: "has_one", name: "account", stream: "accounts" }, // missing foreign_key
+      { cardinality: "has_one", foreign_key: "owner_id", name: "owner" }, // missing stream
+      { cardinality: "has_one", foreign_key: "category_id", name: "category", stream: "categories" },
     ],
   });
   assert.deepEqual([...fields], ["category_id"]);
@@ -385,7 +385,7 @@ test("childHasOneLinkFields ignores has_many and incomplete relations, and toler
 test("childHasOneBackLinkForField links a declared has_one cell to the parent record", () => {
   const link = childHasOneBackLinkForField(
     CHASE_TRANSACTIONS_MANIFEST_STREAM,
-    { id: "tx1", account_id: "1212486749", amount: -1234 },
+    { account_id: "1212486749", amount: -1234, id: "tx1" },
     "account_id",
     { connectionId: "cin_chase" }
   );
@@ -398,7 +398,7 @@ test("childHasOneBackLinkForField links a declared has_one cell to the parent re
 test("childHasOneBackLinkForField resolves each field of a two-edges-to-same-parent stream independently", () => {
   // YNAB transactions: account_id and transfer_account_id are different columns
   // and resolve to DIFFERENT account records — the list page links each cell.
-  const record = { id: "t1", account_id: "acc-A", transfer_account_id: "acc-B" };
+  const record = { account_id: "acc-A", id: "t1", transfer_account_id: "acc-B" };
   const a = childHasOneBackLinkForField(YNAB_TRANSACTIONS_TWO_ACCOUNT_EDGES, record, "account_id", {
     connectionId: "cin_ynab",
   });
@@ -414,7 +414,7 @@ test("childHasOneBackLinkForField percent-encodes connection, parent stream, and
   const link = childHasOneBackLinkForField(
     {
       name: "items",
-      relationships: [{ name: "order", stream: "open orders", foreign_key: "order id", cardinality: "has_one" }],
+      relationships: [{ cardinality: "has_one", foreign_key: "order id", name: "order", stream: "open orders" }],
     },
     { "order id": "ref/42" },
     "order id",
@@ -433,7 +433,7 @@ test("childHasOneBackLinkForField returns null for an undeclared field or empty/
   );
   // Declared field but empty value.
   assert.equal(
-    childHasOneBackLinkForField(CHASE_TRANSACTIONS_MANIFEST_STREAM, { id: "tx1", account_id: "" }, "account_id", {
+    childHasOneBackLinkForField(CHASE_TRANSACTIONS_MANIFEST_STREAM, { account_id: "", id: "tx1" }, "account_id", {
       connectionId: "cin",
     }),
     null
@@ -455,15 +455,15 @@ const CHASE_STREAMS = [
   { name: "accounts" },
   {
     name: "transactions",
-    relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
+    relationships: [{ cardinality: "has_one", foreign_key: "account_id", name: "account", stream: "accounts" }],
   },
 ];
 
 test("Chase accounts parent yields a transactions filtered-list link, never a detail URL", () => {
   const links = reverseChildListLinksFromManifest(CHASE_STREAMS, {
     connectionId: "cin_029a67a16d8a252f6e3eb896",
-    parentStream: "accounts",
     parentRecordKey: "1212486749",
+    parentStream: "accounts",
   });
   assert.equal(links.length, 1);
   const link = links[0];
@@ -479,8 +479,8 @@ test("Chase accounts parent yields a transactions filtered-list link, never a de
 test("reverse link is a filtered list URL with a filter[…] query, never a detail segment", () => {
   const [link] = reverseChildListLinksFromManifest(CHASE_STREAMS, {
     connectionId: "chase",
-    parentStream: "accounts",
     parentRecordKey: "acc1",
+    parentStream: "accounts",
   });
   assert.ok(link);
   // The path part ends at the child stream; the parent key is only in the query.
@@ -496,15 +496,15 @@ test("a child-declared has_many produces no reverse link", () => {
       name: "tags",
       // has_many back to the parent — must NOT yield a reverse link by this rule.
       relationships: [
-        { name: "transaction", stream: "transactions", foreign_key: "transaction_id", cardinality: "has_many" },
+        { cardinality: "has_many", foreign_key: "transaction_id", name: "transaction", stream: "transactions" },
       ],
     },
   ];
   assert.deepEqual(
     reverseChildListLinksFromManifest(streams, {
       connectionId: "conn",
-      parentStream: "transactions",
       parentRecordKey: "tx1",
+      parentStream: "transactions",
     }),
     []
   );
@@ -516,8 +516,8 @@ test("a parent stream not targeted by any child has_one produces no reverse link
   // field exists elsewhere.
   const links = reverseChildListLinksFromManifest(CHASE_STREAMS, {
     connectionId: "chase",
-    parentStream: "merchants",
     parentRecordKey: "m1",
+    parentStream: "merchants",
   });
   assert.deepEqual(links, []);
 });
@@ -525,13 +525,13 @@ test("a parent stream not targeted by any child has_one produces no reverse link
 test("a child has_one without a foreign_key produces no reverse link", () => {
   const streams = [
     { name: "accounts" },
-    { name: "transactions", relationships: [{ name: "account", stream: "accounts", cardinality: "has_one" }] },
+    { name: "transactions", relationships: [{ cardinality: "has_one", name: "account", stream: "accounts" }] },
   ];
   assert.deepEqual(
     reverseChildListLinksFromManifest(streams, {
       connectionId: "chase",
-      parentStream: "accounts",
       parentRecordKey: "a1",
+      parentStream: "accounts",
     }),
     []
   );
@@ -542,13 +542,13 @@ test("reverse link percent-encodes connection, child stream, filter field, and p
     { name: "open orders" },
     {
       name: "line items",
-      relationships: [{ name: "order", stream: "open orders", foreign_key: "order id", cardinality: "has_one" }],
+      relationships: [{ cardinality: "has_one", foreign_key: "order id", name: "order", stream: "open orders" }],
     },
   ];
   const [link] = reverseChildListLinksFromManifest(streams, {
     connectionId: "my conn",
-    parentStream: "open orders",
     parentRecordKey: "ref/42",
+    parentStream: "open orders",
   });
   assert.ok(link);
   assert.equal(link.href, "/sources/my%20conn/line%20items?filter[order%20id]=ref%2F42");
@@ -568,8 +568,8 @@ test("reverse links resolve via findManifestForConnectorId for URL-form and shor
     assert.ok(manifest, `manifest should resolve for ${id}`);
     const links = reverseChildListLinksFromManifest(manifest.streams, {
       connectionId: "cin_live",
-      parentStream: "accounts",
       parentRecordKey: "a1",
+      parentStream: "accounts",
     });
     assert.equal(links.length, 1);
     assert.equal(links[0]?.href, "/sources/cin_live/transactions?filter[account_id]=a1");
@@ -582,13 +582,13 @@ test("reverse link deduplicates against a forward has_many target on the same ch
   const forwardLinks = buildRelatedLinks(
     [
       {
-        name: "transactions",
-        stream: "transactions",
-        target_stream: "transactions",
         cardinality: "has_many",
         child_parent_key_field: "account_id",
         foreign_key: "account_id",
         granted: true,
+        name: "transactions",
+        stream: "transactions",
+        target_stream: "transactions",
         usable: true,
       },
     ],
@@ -603,7 +603,7 @@ test("reverse link deduplicates against a forward has_many target on the same ch
 
   const reverse = reverseChildListLinksFromManifest(
     CHASE_STREAMS,
-    { connectionId: "chase", parentStream: "accounts", parentRecordKey: "a1" },
+    { connectionId: "chase", parentRecordKey: "a1", parentStream: "accounts" },
     forwardKeys
   );
   // Forward already covers (transactions, account_id) → reverse suppresses it.
@@ -614,7 +614,7 @@ test("reverse link is kept when a forward has_many targets a different child str
   const forwardKeys = new Set([reverseChildListDedupKey("other_stream", "account_id")]);
   const reverse = reverseChildListLinksFromManifest(
     CHASE_STREAMS,
-    { connectionId: "chase", parentStream: "accounts", parentRecordKey: "a1" },
+    { connectionId: "chase", parentRecordKey: "a1", parentStream: "accounts" },
     forwardKeys
   );
   assert.equal(reverse.length, 1);
@@ -627,15 +627,15 @@ test("reverse link self-deduplicates a child stream declaring the same has_one t
     {
       name: "transactions",
       relationships: [
-        { name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
-        { name: "owning_account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
+        { cardinality: "has_one", foreign_key: "account_id", name: "account", stream: "accounts" },
+        { cardinality: "has_one", foreign_key: "account_id", name: "owning_account", stream: "accounts" },
       ],
     },
   ];
   const links = reverseChildListLinksFromManifest(streams, {
     connectionId: "chase",
-    parentStream: "accounts",
     parentRecordKey: "a1",
+    parentStream: "accounts",
   });
   assert.equal(links.length, 1);
 });
@@ -644,20 +644,20 @@ test("reverseChildListLinksFromManifest returns empty for missing streams or arg
   assert.deepEqual(
     reverseChildListLinksFromManifest(undefined, {
       connectionId: "c",
-      parentStream: "accounts",
       parentRecordKey: "a1",
+      parentStream: "accounts",
     }),
     []
   );
   assert.deepEqual(
-    reverseChildListLinksFromManifest(CHASE_STREAMS, { connectionId: "c", parentStream: "", parentRecordKey: "a1" }),
+    reverseChildListLinksFromManifest(CHASE_STREAMS, { connectionId: "c", parentRecordKey: "a1", parentStream: "" }),
     []
   );
   assert.deepEqual(
     reverseChildListLinksFromManifest(CHASE_STREAMS, {
       connectionId: "c",
-      parentStream: "accounts",
       parentRecordKey: "",
+      parentStream: "accounts",
     }),
     []
   );
@@ -704,7 +704,7 @@ test("reverseChildListEdgesFromManifest ignores a child-declared has_many", () =
     {
       name: "tags",
       relationships: [
-        { name: "transaction", stream: "transactions", foreign_key: "transaction_id", cardinality: "has_many" },
+        { cardinality: "has_many", foreign_key: "transaction_id", name: "transaction", stream: "transactions" },
       ],
     },
   ];
@@ -717,8 +717,8 @@ test("reverseChildListEdgesFromManifest self-dedups a child declaring the same h
     {
       name: "transactions",
       relationships: [
-        { name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
-        { name: "owning_account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
+        { cardinality: "has_one", foreign_key: "account_id", name: "account", stream: "accounts" },
+        { cardinality: "has_one", foreign_key: "account_id", name: "owning_account", stream: "accounts" },
       ],
     },
   ];
@@ -735,20 +735,20 @@ test("reverseChildListEdgesFromManifest lists multiple distinct child streams an
     { name: "accounts" },
     {
       name: "balances",
-      relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
+      relationships: [{ cardinality: "has_one", foreign_key: "account_id", name: "account", stream: "accounts" }],
     },
     {
       name: "statements",
-      relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
+      relationships: [{ cardinality: "has_one", foreign_key: "account_id", name: "account", stream: "accounts" }],
     },
     {
       name: "transactions",
-      relationships: [{ name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" }],
+      relationships: [{ cardinality: "has_one", foreign_key: "account_id", name: "account", stream: "accounts" }],
     },
     // A non-matching child (points at a different parent) must not appear.
     {
       name: "merchants",
-      relationships: [{ name: "category", stream: "categories", foreign_key: "category_id", cardinality: "has_one" }],
+      relationships: [{ cardinality: "has_one", foreign_key: "category_id", name: "category", stream: "categories" }],
     },
   ];
   assert.deepEqual(reverseChildListEdgesFromManifest(streams, "accounts"), [
@@ -770,8 +770,8 @@ test("a Chase accounts list renders a distinct filtered-transactions link per ro
   const perRow = rows.map((row) =>
     reverseChildListLinksFromManifest(CHASE_STREAMS, {
       connectionId: "cin_live",
-      parentStream: "accounts",
       parentRecordKey: row.id,
+      parentStream: "accounts",
     })
   );
   assert.equal(perRow[0]?.length, 1);
@@ -794,8 +794,8 @@ test("a list page for a childless stream yields no per-row reverse links", () =>
   assert.equal(reverseChildListEdgesFromManifest(CHASE_STREAMS, "transactions").length, 0);
   const links = reverseChildListLinksFromManifest(CHASE_STREAMS, {
     connectionId: "cin_live",
-    parentStream: "transactions",
     parentRecordKey: "t1",
+    parentStream: "transactions",
   });
   assert.deepEqual(links, []);
 });
@@ -810,15 +810,15 @@ test("a list page for a childless stream yields no per-row reverse links", () =>
 const YNAB_TRANSACTIONS_TWO_ACCOUNT_EDGES = {
   name: "transactions",
   relationships: [
-    { name: "account", stream: "accounts", foreign_key: "account_id", cardinality: "has_one" },
-    { name: "transfer_account", stream: "accounts", foreign_key: "transfer_account_id", cardinality: "has_one" },
+    { cardinality: "has_one", foreign_key: "account_id", name: "account", stream: "accounts" },
+    { cardinality: "has_one", foreign_key: "transfer_account_id", name: "transfer_account", stream: "accounts" },
   ],
 };
 
 test("two child-declared has_one edges to the same parent stream via different fields both render", () => {
   const childLinks = childHasOneBackLinksFromManifest(
     YNAB_TRANSACTIONS_TWO_ACCOUNT_EDGES,
-    { id: "t1", account_id: "acc-A", transfer_account_id: "acc-B" },
+    { account_id: "acc-A", id: "t1", transfer_account_id: "acc-B" },
     { connectionId: "cin_ynab" }
   );
   const merged = mergeParentBackLinks(null, childLinks);
@@ -834,13 +834,13 @@ test("mergeParentBackLinks collapses the SAME edge discovered via both sources",
   // metadata source and child-declared source describe the same (accounts,
   // account_id) edge → one link, metadata-derived preferred.
   const metadata: ParentBackLink = {
-    parentStream: "accounts",
     childParentKeyField: "account_id",
     href: "/sources/cin/accounts/acc-A",
+    parentStream: "accounts",
   };
   const childDeclared = childHasOneBackLinksFromManifest(
     CHASE_TRANSACTIONS_MANIFEST_STREAM,
-    { id: "t1", account_id: "acc-A" },
+    { account_id: "acc-A", id: "t1" },
     { connectionId: "cin" }
   );
   const merged = mergeParentBackLinks(metadata, childDeclared);
@@ -850,9 +850,9 @@ test("mergeParentBackLinks collapses the SAME edge discovered via both sources",
 
 test("mergeParentBackLinks keeps distinct parent streams and is order-stable", () => {
   const childLinks: ParentBackLink[] = [
-    { parentStream: "accounts", childParentKeyField: "account_id", href: "/a" },
-    { parentStream: "payees", childParentKeyField: "payee_id", href: "/p" },
-    { parentStream: "categories", childParentKeyField: "category_id", href: "/c" },
+    { childParentKeyField: "account_id", href: "/a", parentStream: "accounts" },
+    { childParentKeyField: "payee_id", href: "/p", parentStream: "payees" },
+    { childParentKeyField: "category_id", href: "/c", parentStream: "categories" },
   ];
   const merged = mergeParentBackLinks(null, childLinks);
   assert.deepEqual(

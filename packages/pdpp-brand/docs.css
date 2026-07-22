@@ -14,15 +14,9 @@
 }
 
 #nd-docs-layout {
-  background: transparent;
-  /* Docs grid sits under the site header (h-12 = 3rem, matching / and /design).
-     --fd-banner-height feeds into Fumadocs's --fd-docs-row-1 which controls
-     sticky offsets for sidebar, TOC, and mobile popover. Setting it here
-     guarantees sticky elements park below the site header, not under it.
-     --fd-docs-height shrinks the grid so sticky panes use the remaining
-     viewport height. */
   --fd-banner-height: 3rem;
   --fd-docs-height: calc(100dvh - 3rem);
+  background: transparent;
 }
 
 @media (min-width: 1024px) {
@@ -82,8 +76,8 @@
 
 .pdpp-docs-navtitle {
   display: inline-flex;
-  align-items: center;
   gap: 0.5rem;
+  align-items: center;
   min-width: 0;
   color: var(--foreground);
   text-decoration: none;
@@ -95,12 +89,12 @@
   justify-content: center;
   width: 1.25rem;
   height: 1.25rem;
-  border-radius: 0.25rem;
-  background: var(--primary);
-  color: var(--primary-foreground);
   font-size: 9px;
   font-weight: 700;
   line-height: 1;
+  color: var(--primary-foreground);
+  background: var(--primary);
+  border-radius: 0.25rem;
 }
 
 .pdpp-docs-navtitle__brand {
@@ -156,8 +150,8 @@
 
 #nd-sidebar a[data-active="true"],
 #nd-sidebar button[data-active="true"] {
-  background: var(--muted);
   color: var(--foreground);
+  background: var(--muted);
 }
 
 #nd-sidebar [data-active="true"]::before {
@@ -177,9 +171,9 @@
   font-family: var(--font-mono);
   font-size: 0.62rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 #nd-page.pdpp-docs-page {
@@ -187,8 +181,8 @@
   gap: 0;
   width: 100%;
   max-width: none;
-  margin-inline: 0;
   padding-top: 1.25rem;
+  margin-inline: 0;
 }
 
 @media (min-width: 768px) {
@@ -205,11 +199,11 @@
 }
 
 .pdpp-docs-hero {
-  margin-bottom: 2.75rem;
   margin-inline: calc(var(--pdpp-docs-gutter) * -1);
-  border-left: 1px solid var(--human);
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 2.75rem;
   background: linear-gradient(to right, var(--human-wash), transparent 70%);
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--human);
 }
 
 .pdpp-docs-hero__content {
@@ -245,10 +239,10 @@
 .pdpp-docs-actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 0.625rem;
-  margin-top: 1.25rem;
+  align-items: center;
   padding-top: 1rem;
+  margin-top: 1.25rem;
   border-top: 1px solid color-mix(in oklab, var(--border) 92%, transparent);
 }
 
@@ -262,9 +256,9 @@
 }
 
 .pdpp-docs-body.prose {
-  color: color-mix(in oklab, var(--foreground) 84%, var(--surface-tint));
   font-size: 1rem;
   line-height: 1.8;
+  color: color-mix(in oklab, var(--foreground) 84%, var(--surface-tint));
 }
 
 .pdpp-docs-body :where(h2, h3, h4) {
@@ -273,20 +267,20 @@
 }
 
 .pdpp-docs-body h2 {
+  padding-top: 1.2rem;
   margin-top: 3.25rem;
   margin-bottom: 1rem;
-  padding-top: 1.2rem;
-  border-top: 1px solid var(--border);
   font-size: clamp(1.45rem, 2vw, 1.82rem);
   line-height: 1.08;
+  border-top: 1px solid var(--border);
 }
 
 /* First heading in a doc has no prior section to separate from.
    Reset the divider + top spacing that h2 inherits from the section rule. */
 .pdpp-docs-body > h2:first-child,
 .pdpp-docs-body > :first-child h2:first-child {
-  margin-top: 0;
   padding-top: 0;
+  margin-top: 0;
   border-top: 0;
 }
 
@@ -309,29 +303,29 @@
 }
 
 .pdpp-docs-body blockquote {
-  margin: 1.75rem 0;
   padding: 1rem 1.1rem;
-  border-left: 2px solid var(--human);
-  background: color-mix(in oklab, var(--human-wash) 82%, var(--surface-tint));
+  margin: 1.75rem 0;
   color: var(--foreground);
+  background: color-mix(in oklab, var(--human-wash) 82%, var(--surface-tint));
+  border-left: 2px solid var(--human);
 }
 
 .pdpp-docs-body :not(pre) > code {
   padding: 0.18rem 0.42rem;
+  font-size: 0.9em;
+  background: color-mix(in oklab, var(--muted) 84%, var(--surface-tint));
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: color-mix(in oklab, var(--muted) 84%, var(--surface-tint));
-  font-size: 0.9em;
 }
 
 /* Code blocks: style ONLY the outer Shiki figure container.
    Fumadocs renders <figure class="shiki">…<pre>…</pre></figure>; styling
    both creates a double border. Inner pre is transparent. */
 .pdpp-docs-body figure.shiki {
+  color: var(--muted-foreground) !important;
+  background: var(--muted) !important;
   border: 1px solid var(--border);
   border-radius: 1rem;
-  background: var(--muted) !important;
-  color: var(--muted-foreground) !important;
   box-shadow:
     0 1px 2px rgb(0 0 0 / 0.04),
     0 1px 3px rgb(0 0 0 / 0.02);
@@ -340,8 +334,8 @@
 .pdpp-docs-body figure.shiki pre,
 .pdpp-docs-body figure.shiki code,
 .pdpp-docs-body figure.shiki span {
-  background: transparent !important;
   color: inherit !important;
+  background: transparent !important;
   border: 0 !important;
   box-shadow: none !important;
 }
@@ -353,10 +347,10 @@
 .pdpp-docs-body table {
   width: 100%;
   margin: 1.75rem 0;
+  overflow: hidden;
   border-collapse: collapse;
   border: 1px solid var(--border);
   border-radius: 1rem;
-  overflow: hidden;
 }
 
 .pdpp-docs-body thead {
@@ -366,17 +360,17 @@
 .pdpp-docs-body tbody,
 .pdpp-docs-body tr,
 .pdpp-docs-body td {
-  background: var(--background);
   color: color-mix(in oklab, var(--foreground) 82%, var(--surface-tint));
+  background: var(--background);
 }
 
 .pdpp-docs-body th {
   font-family: var(--font-mono);
   font-size: 0.72rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .pdpp-docs-body th,
@@ -398,9 +392,9 @@
   font-family: var(--font-mono);
   font-size: 0.7rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 #nd-toc a[data-active="true"] {
@@ -408,11 +402,11 @@
 }
 
 [data-toc-popover] header {
-  border-bottom-color: var(--border);
   background: color-mix(
     in oklab,
     var(--background) 90%,
     var(--surface-tint) /
     78%
   );
+  border-bottom-color: var(--border);
 }

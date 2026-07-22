@@ -57,7 +57,7 @@ function normalizeType(value: unknown): string | null {
 function formatDollars(n: number): FormattedAmount {
   const positive = n >= 0;
   const sign = positive ? "" : "-";
-  return { text: `${sign}$${Math.abs(n).toFixed(2)}`, positive };
+  return { positive, text: `${sign}$${Math.abs(n).toFixed(2)}` };
 }
 
 /**

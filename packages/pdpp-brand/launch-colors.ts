@@ -22,10 +22,10 @@
 // See: packages/pdpp-brand/base.css (:root line ~8, dark block line ~219,
 // system @media line ~339).
 export const LAUNCH_COLORS = {
-  /** :root --background: oklch(0.99 0.002 95) → sRGB */
-  light: "#fcfcfa",
   /** html.dark --background: oklch(0.16 0.005 260) → sRGB */
   dark: "#0c0d0f",
+  /** :root --background: oklch(0.99 0.002 95) → sRGB */
+  light: "#fcfcfa",
 } as const;
 
 /**

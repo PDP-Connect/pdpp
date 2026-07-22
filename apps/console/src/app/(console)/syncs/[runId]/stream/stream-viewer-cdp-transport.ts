@@ -60,44 +60,44 @@ function inputHandlers(sendInput: SendPdppCdpInput): Record<string, CdpCommandHa
   return {
     "Input.dispatchKeyEvent": async (params) => {
       await sendInput({
-        type: "keyboard",
         action: params.type === "keyUp" ? "keyup" : "keydown",
-        key: params.key,
         code: params.code,
+        key: params.key,
         modifiers: params.modifiers,
+        type: "keyboard",
       });
     },
     "Input.dispatchMouseEvent": async (params) => {
       if (params.type === "mouseWheel") {
         await sendInput({
+          deltaX: params.deltaX,
+          deltaY: params.deltaY,
           type: "scroll",
           x: params.x,
           y: params.y,
-          deltaX: params.deltaX,
-          deltaY: params.deltaY,
         });
         return;
       }
       await sendInput({
-        type: "mouse",
         action: mouseAction(params.type),
+        button: mouseButton(params.button),
+        type: "mouse",
         x: params.x,
         y: params.y,
-        button: mouseButton(params.button),
       });
     },
     "Input.dispatchTouchEvent": async (params) => {
       const touch = firstTouchPoint(params);
       await sendInput({
-        type: "touch",
         action: touchAction(params.type),
+        type: "touch",
         x: touch.x ?? 0,
         y: touch.y ?? 0,
         ...(typeof touch.id === "number" ? { id: touch.id } : {}),
       });
     },
     "Input.insertText": async (params) => {
-      await sendInput({ type: "paste", text: params.text });
+      await sendInput({ text: params.text, type: "paste" });
     },
   };
 }
@@ -105,6 +105,14 @@ function inputHandlers(sendInput: SendPdppCdpInput): Record<string, CdpCommandHa
 export function createPdppCdpTransport(sendInput: SendPdppCdpInput): CdpCommandTransport {
   const handlers = inputHandlers(sendInput);
   return {
+    on() {
+      // Frames arrive on the console's existing SSE stream, not this input-only bridge.
+      return {
+        unsubscribe() {
+          // No local subscription was created.
+        },
+      };
+    },
     async send<Result = unknown>(method: string, params: CdpCommandParams = {}): Promise<Result> {
       if (HOST_OWNED_COMMANDS.has(method)) {
         // The PDPP host owns these through its viewport endpoint and SSE stream.
@@ -116,14 +124,6 @@ export function createPdppCdpTransport(sendInput: SendPdppCdpInput): CdpCommandT
       }
       await handler(params);
       return undefined as Result;
-    },
-    on() {
-      // Frames arrive on the console's existing SSE stream, not this input-only bridge.
-      return {
-        unsubscribe() {
-          // No local subscription was created.
-        },
-      };
     },
   };
 }

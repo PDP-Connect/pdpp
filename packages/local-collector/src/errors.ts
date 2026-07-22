@@ -33,9 +33,9 @@ export class CollectorCustomCommandRefusedError extends Error {
   readonly code: "custom_command_refused";
   constructor() {
     super(
-      `pdpp-local-collector refuses --command <bin> by default to keep the ` +
+      "pdpp-local-collector refuses --command <bin> by default to keep the " +
         `device-token supply chain narrow. Set ${ALLOW_CUSTOM_COMMAND_ENV}=1 ` +
-        `to opt in for monorepo development; see openspec/changes/publish-pdpp-local-collector/design.md §3.`
+        "to opt in for monorepo development; see openspec/changes/publish-pdpp-local-collector/design.md §3."
     );
     this.name = "CollectorCustomCommandRefusedError";
     this.code = "custom_command_refused";

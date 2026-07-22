@@ -55,8 +55,8 @@ function existingSourcesForConnector(summaries: readonly RefConnectorSummary[], 
     })
     .map((summary) => ({
       connection_id: summary.connection_id,
-      display_name: summary.display_name || summary.connector_display_name || summary.connector_id,
       detail: sourceDetail(summary),
+      display_name: summary.display_name || summary.connector_display_name || summary.connector_id,
     }));
 }
 
@@ -126,7 +126,7 @@ export default async function ManualUploadConnectPage({
     <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/sources">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
             Back to Sources
           </Link>
         }

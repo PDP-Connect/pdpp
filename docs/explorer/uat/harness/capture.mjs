@@ -54,22 +54,26 @@ const PROBE = () => {
     if (cls.includes("before:bg-primary")) {
       money += 1;
       const amt = card.querySelector("span.font-mono.tabular-nums");
-      if (amt) moneyAmounts.push(amt.textContent.trim());
+      if (amt) {
+        moneyAmounts.push(amt.textContent.trim());
+      }
     } else if (cls.includes("var(--human)")) {
       message += 1;
       const author = card.querySelector("span.font-medium");
-      if (author) messageAuthors.push(author.textContent.trim());
+      if (author) {
+        messageAuthors.push(author.textContent.trim());
+      }
     } else if (cls.includes("before:bg-border")) {
       generic += 1;
     }
   }
   return {
-    totalCards: cards.length,
-    money,
-    message,
     generic,
-    moneyAmounts: moneyAmounts.slice(0, 8),
+    message,
     messageAuthors: messageAuthors.slice(0, 8),
+    money,
+    moneyAmounts: moneyAmounts.slice(0, 8),
+    totalCards: cards.length,
   };
 };
 
@@ -82,10 +86,10 @@ async function waitForText(page, text, timeout = 45_000) {
 }
 
 async function capture(browser, { name, url, waitText, extraWaitText, probe }) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 1600 } });
-  const result = { name, url, ok: false };
+  const page = await browser.newPage({ viewport: { height: 1600, width: 1280 } });
+  const result = { name, ok: false, url };
   try {
-    await page.goto(url, { waitUntil: "networkidle", timeout: 60_000 });
+    await page.goto(url, { timeout: 60_000, waitUntil: "networkidle" });
     if (waitText) {
       await waitForText(page, waitText);
     }
@@ -95,20 +99,22 @@ async function capture(browser, { name, url, waitText, extraWaitText, probe }) {
     // settle layout
     await page.waitForTimeout(800);
     const shot = join(OUT_DIR, `${name}.png`);
-    await page.screenshot({ path: shot, fullPage: true });
+    await page.screenshot({ fullPage: true, path: shot });
     result.screenshot = shot;
     if (probe) {
       result.probe = await page.evaluate(probe);
     }
     result.ok = true;
     console.log(`[capture] ${name}: OK -> ${shot}`);
-    if (result.probe) console.log(`[capture] ${name} probe:`, JSON.stringify(result.probe));
+    if (result.probe) {
+      console.log(`[capture] ${name} probe:`, JSON.stringify(result.probe));
+    }
   } catch (err) {
     result.error = err.message;
     // Best-effort screenshot of whatever state we reached for diagnosis.
     try {
       const shot = join(OUT_DIR, `${name}.error.png`);
-      await page.screenshot({ path: shot, fullPage: true });
+      await page.screenshot({ fullPage: true, path: shot });
       result.screenshot = shot;
     } catch {}
     console.error(`[capture] ${name}: FAILED — ${err.message}`);
@@ -124,19 +130,19 @@ async function main() {
   try {
     results.push(
       await capture(browser, {
+        extraWaitText: DASH_MESSAGE_TEXT,
         name: "dashboard-explore",
+        probe: PROBE,
         url: DASH_URL,
         waitText: DASH_MONEY_TEXT,
-        extraWaitText: DASH_MESSAGE_TEXT,
-        probe: PROBE,
       })
     );
     results.push(
       await capture(browser, {
         name: "sandbox-explore",
+        probe: PROBE,
         url: SANDBOX_URL,
         waitText: null,
-        probe: PROBE,
       })
     );
   } finally {

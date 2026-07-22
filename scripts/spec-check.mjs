@@ -111,7 +111,7 @@ function normalizeBody(text) {
 function rootMetadata(text) {
   const status = text.match(/^Status:\s*(.+)$/m)?.[1]?.trim() ?? null;
   const date = text.match(/^Date:\s*(.+)$/m)?.[1]?.trim() ?? null;
-  return { status, date };
+  return { date, status };
 }
 
 function leadingCallout(text) {
@@ -138,13 +138,13 @@ function cleanMetadataValue(value) {
 function calloutMetadata(text) {
   const callout = leadingCallout(text);
   if (!callout) {
-    return { status: null, date: null };
+    return { date: null, status: null };
   }
   const status = callout.match(/^\s*Status:\s*(.+)$/m)?.[1] ?? null;
   const date = callout.match(/^\s*Date:\s*(.+)$/m)?.[1] ?? null;
   return {
-    status: status ? cleanMetadataValue(status) : null,
     date: date ? cleanMetadataValue(date) : null,
+    status: status ? cleanMetadataValue(status) : null,
   };
 }
 
@@ -171,10 +171,10 @@ function checkPair(file) {
   const actualMeta = calloutMetadata(siteText);
   const errors = [];
 
-  if (!expectedMeta.status || !expectedMeta.date) {
+  if (!(expectedMeta.status && expectedMeta.date)) {
     errors.push(`${file}: root spec must declare Status and Date`);
   }
-  if (!actualMeta.status || !actualMeta.date) {
+  if (!(actualMeta.status && actualMeta.date)) {
     errors.push(`${file}: public-site copy must start with a Status/Date Callout`);
   }
   if (expectedMeta.status && actualMeta.status !== expectedMeta.status) {

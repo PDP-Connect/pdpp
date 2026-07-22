@@ -48,14 +48,14 @@ export function primaryTimestamp(
 ): { value: string; label: string; secondary: { label: string; value: string } | null } {
   if (semanticTimestamp) {
     return {
-      value: formatSemanticTimestamp(semanticTimestamp.value),
       label: humanizeFieldName(semanticTimestamp.field),
       secondary: { label: "ingested", value: formatTimestamp(emittedAt) },
+      value: formatSemanticTimestamp(semanticTimestamp.value),
     };
   }
   return {
-    value: formatTimestamp(emittedAt),
     label: "ingested",
     secondary: null,
+    value: formatTimestamp(emittedAt),
   };
 }

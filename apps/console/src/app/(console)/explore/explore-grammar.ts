@@ -105,84 +105,84 @@ function applyKvToken(out: ParsedQuery, tok: string, negated: boolean, key: stri
   const lower = value.toLowerCase();
   if (negated && key === "con") {
     out.conNot = lower;
-    out.tokens.push({ raw: tok, label: `not in ${value}` });
+    out.tokens.push({ label: `not in ${value}`, raw: tok });
     return;
   }
   if (negated && key === "stream") {
     out.streamNot = lower;
-    out.tokens.push({ raw: tok, label: `not stream: ${value}` });
+    out.tokens.push({ label: `not stream: ${value}`, raw: tok });
     return;
   }
   switch (key) {
     case "con":
       out.con = lower;
-      out.tokens.push({ raw: tok, label: `in ${value}` });
+      out.tokens.push({ label: `in ${value}`, raw: tok });
       break;
     case "stream":
       out.stream = lower;
-      out.tokens.push({ raw: tok, label: `stream: ${value}` });
+      out.tokens.push({ label: `stream: ${value}`, raw: tok });
       break;
     case "role":
       out.role = lower;
-      out.tokens.push({ raw: tok, label: `role: ${value}` });
+      out.tokens.push({ label: `role: ${value}`, raw: tok });
       break;
     case "has":
       if (lower === "image") {
         out.hasImage = true;
-        out.tokens.push({ raw: tok, label: "has image" });
+        out.tokens.push({ label: "has image", raw: tok });
       } else if (lower === "link") {
         out.hasLink = true;
-        out.tokens.push({ raw: tok, label: "has link" });
+        out.tokens.push({ label: "has link", raw: tok });
       } else {
         out.fields.push({ key, value: lower });
-        out.tokens.push({ raw: tok, label: `${key}: ${value}` });
+        out.tokens.push({ label: `${key}: ${value}`, raw: tok });
       }
       break;
     case "is":
       if (lower === "folded") {
         out.folded = true;
-        out.tokens.push({ raw: tok, label: "folded" });
+        out.tokens.push({ label: "folded", raw: tok });
       } else {
         out.fields.push({ key, value: lower });
-        out.tokens.push({ raw: tok, label: `${key}: ${value}` });
+        out.tokens.push({ label: `${key}: ${value}`, raw: tok });
       }
       break;
     case "before":
       out.before = value;
-      out.tokens.push({ raw: tok, label: `before ${value}` });
+      out.tokens.push({ label: `before ${value}`, raw: tok });
       break;
     case "after":
       out.after = value;
-      out.tokens.push({ raw: tok, label: `after ${value}` });
+      out.tokens.push({ label: `after ${value}`, raw: tok });
       break;
     default:
       out.fields.push({ key, value: lower });
-      out.tokens.push({ raw: tok, label: `${key}: ${value}` });
+      out.tokens.push({ label: `${key}: ${value}`, raw: tok });
   }
 }
 
 /** Parse a raw query string into structured tokens. Pure; never throws. */
 export function parseQuery(input: string): ParsedQuery {
   const out: ParsedQuery = {
-    text: [],
+    after: null,
+    before: null,
     con: null,
     conNot: null,
-    stream: null,
-    streamNot: null,
-    role: null,
+    fields: [],
+    folded: false,
     hasImage: false,
     hasLink: false,
-    folded: false,
-    before: null,
-    after: null,
-    fields: [],
+    role: null,
+    stream: null,
+    streamNot: null,
+    text: [],
     tokens: [],
   };
   for (const tok of input.trim().split(WHITESPACE_RE).filter(Boolean)) {
     const m = tok.match(KV_RE);
     if (!m) {
       out.text.push(tok.toLowerCase());
-      out.tokens.push({ raw: tok, label: tok });
+      out.tokens.push({ label: tok, raw: tok });
       continue;
     }
     applyKvToken(out, tok, m[1] === "-", (m[2] ?? "").toLowerCase(), m[3] ?? "");
@@ -263,10 +263,10 @@ export interface QueryFacetLift {
  */
 export function liftFacetTokens(query: string): QueryFacetLift {
   const lift: QueryFacetLift = {
-    includeConnections: [],
     excludeConnections: [],
-    includeStreams: [],
     excludeStreams: [],
+    includeConnections: [],
+    includeStreams: [],
     rest: "",
   };
   const kept: string[] = [];
@@ -405,7 +405,7 @@ function splitFieldFilters(
       clientFields.push(f);
     }
   }
-  return { serverFilters, clientFields };
+  return { clientFields, serverFilters };
 }
 
 /**
@@ -457,18 +457,18 @@ export function buildCompiledQuery(input: CompiledQueryInput): string {
     // Connection/stream include + exclude scope (the chip toggle and the operator
     // render identically; exclusion is a first-class `!=` scope param).
     ...renderScopeParams({
-      include: selectedConnectionIds,
       exclude: input.excludedConnectionIds ?? [],
-      tokenInclude: parsed.con,
-      tokenExclude: parsed.conNot,
+      include: selectedConnectionIds,
       param: "connection",
+      tokenExclude: parsed.conNot,
+      tokenInclude: parsed.con,
     }),
     ...renderScopeParams({
-      include: selectedStreams,
       exclude: input.excludedStreams ?? [],
-      tokenInclude: parsed.stream,
-      tokenExclude: parsed.streamNot,
+      include: selectedStreams,
       param: "stream",
+      tokenExclude: parsed.streamNot,
+      tokenInclude: parsed.stream,
     }),
   ];
 

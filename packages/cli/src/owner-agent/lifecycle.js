@@ -28,13 +28,13 @@ export async function introspectOwnerAgentCredential({ fetchFn, record }) {
   let response;
   try {
     response = await fetchFn(record.introspection_endpoint, {
-      method: "POST",
+      body: body.toString(),
       headers: {
         Accept: "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
         Authorization: `Bearer ${token}`,
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: body.toString(),
+      method: "POST",
     });
   } catch (error) {
     throw new OwnerAgentError("request_failed", `Introspection request failed: ${error.message}.`);
@@ -50,11 +50,11 @@ export async function introspectOwnerAgentCredential({ fetchFn, record }) {
   }
   return {
     active: Boolean(json.active),
-    token_kind: json.pdpp_token_kind ?? json.token_kind ?? null,
-    sub: json.sub ?? null,
     client_id: json.client_id ?? null,
     exp: json.exp ?? null,
     scope: json.scope ?? null,
+    sub: json.sub ?? null,
+    token_kind: json.pdpp_token_kind ?? json.token_kind ?? null,
   };
 }
 
@@ -82,8 +82,8 @@ export async function revokeOwnerAgentCredential({ fetchFn, record, ownerSession
   let response;
   try {
     response = await fetchFn(uri, {
+      headers: { Accept: "application/json", Cookie: normalizeOwnerSessionCookie(ownerSessionCookie) },
       method: "DELETE",
-      headers: { Cookie: normalizeOwnerSessionCookie(ownerSessionCookie), Accept: "application/json" },
     });
   } catch (error) {
     throw new OwnerAgentError("request_failed", `Revocation request failed: ${error.message}.`);
@@ -97,7 +97,7 @@ export async function revokeOwnerAgentCredential({ fetchFn, record, ownerSession
   }
   if (response.status === 404) {
     // Already gone is an acceptable terminal state for revocation.
-    return { revoked: true, already_absent: true };
+    return { already_absent: true, revoked: true };
   }
   throw new OwnerAgentError("revocation_failed", `Revocation failed with HTTP ${response.status}.`);
 }

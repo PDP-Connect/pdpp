@@ -18,10 +18,10 @@ export default function Home() {
           actions={
             <div className="flex w-full flex-col gap-6">
               <div className="flex flex-wrap gap-2.5">
-                <Link className={buttonVariants({ variant: "default", size: "lg" })} href="/docs">
+                <Link className={buttonVariants({ size: "lg", variant: "default" })} href="/docs">
                   Read the docs
                 </Link>
-                <a className={buttonVariants({ variant: "outline", size: "lg" })} href="#request">
+                <a className={buttonVariants({ size: "lg", variant: "outline" })} href="#request">
                   See the flow
                 </a>
               </div>
@@ -41,8 +41,8 @@ export default function Home() {
                 className="rounded px-2 py-0.5 font-mono text-xs"
                 style={{
                   backgroundColor: "var(--primary-wash)",
-                  color: "var(--primary)",
                   border: "1px solid var(--authorship-protocol-border)",
+                  color: "var(--primary)",
                 }}
               >
                 PDPP

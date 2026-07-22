@@ -217,9 +217,9 @@ export default async function StreamPage({
         connectionId,
         connectorInstanceId,
         count: countModeForFilters(filtered),
-        limit: PAGE_SIZE,
         cursor: trail.at(-1),
         filter: filterParamForQuery(filtered, exactFilters),
+        limit: PAGE_SIZE,
         order,
       }),
       manifestsPromise,
@@ -239,8 +239,8 @@ export default async function StreamPage({
               connectorInstanceId,
             }).catch(() => null);
             return {
-              parentStream,
               expandCapabilities: Array.isArray(metadata?.expand_capabilities) ? metadata.expand_capabilities : [],
+              parentStream,
             };
           })
         );
@@ -285,8 +285,8 @@ export default async function StreamPage({
         <RecordroomShellWithPalette>
           <PageHeader
             breadcrumbs={[
-              { label: "Sources", href: "/sources" },
-              { label: sourceLabel, href: `/sources/${encodeURIComponent(connectionId)}` },
+              { href: "/sources", label: "Sources" },
+              { href: `/sources/${encodeURIComponent(connectionId)}`, label: sourceLabel },
               { label: streamName },
             ]}
             title={<code className="font-mono">{streamName}</code>}
@@ -405,8 +405,8 @@ export default async function StreamPage({
     hasReverseChildEdges
       ? reverseChildListLinksFromManifest(connectorStreams, {
           connectionId,
-          parentStream: streamName,
           parentRecordKey: record.id,
+          parentStream: streamName,
         })
       : [];
 
@@ -423,14 +423,14 @@ export default async function StreamPage({
                 selectedColumns={columns}
               />
             )}
-            <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={`${streamPath}/health`}>
+            <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={`${streamPath}/health`}>
               Stream health →
             </Link>
           </>
         }
         breadcrumbs={[
-          { label: "Sources", href: "/sources" },
-          { label: sourceLabel, href: `/sources/${encodeURIComponent(connectionId)}` },
+          { href: "/sources", label: "Sources" },
+          { href: `/sources/${encodeURIComponent(connectionId)}`, label: sourceLabel },
           { label: streamName },
         ]}
         count={headerCount}
@@ -659,11 +659,11 @@ function latestStreamRunEvidence(
   const href = latestRun ? `/syncs/${encodeURIComponent(latestRun.run_id)}` : null;
   if (!facts) {
     return {
-      href,
-      value: latestRun ? "stream report unavailable" : "not seen yet",
       detail: latestRun
         ? "The latest source run did not include stream-level collection facts for this stream."
         : "No attributed source run has reached this dashboard yet.",
+      href,
+      value: latestRun ? "stream report unavailable" : "not seen yet",
     };
   }
   const detailParts = [
@@ -674,9 +674,9 @@ function latestStreamRunEvidence(
     facts.skipLabel,
   ].filter((part): part is string => part !== null);
   return {
+    detail: detailParts.join(" · "),
     href,
     value: facts.countsLabel ?? facts.coverage.label,
-    detail: detailParts.join(" · "),
   };
 }
 

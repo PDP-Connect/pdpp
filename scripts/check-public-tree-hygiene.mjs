@@ -38,24 +38,24 @@ const SELF_PATH = "scripts/check-public-tree-hygiene.mjs";
 
 export const RESIDUE_CLASSES = [
   {
+    describe: () => "operator's real absolute home path (/home/tnunamak)",
     id: "operator-home-path",
     pattern: /\/home\/tnunamak\b/,
-    describe: () => "operator's real absolute home path (/home/tnunamak)",
   },
   {
+    describe: () => "operator's personal machine codename (peregrine)",
     id: "machine-codename",
     pattern: /\bperegrine\b/i,
-    describe: () => "operator's personal machine codename (peregrine)",
   },
   {
+    describe: (match) => `operator's private internal network domain (${match})`,
     id: "internal-hostname",
     pattern: /[a-z0-9-]*\.vivid\.fish\b/i,
-    describe: (match) => `operator's private internal network domain (${match})`,
   },
   {
+    describe: (match) => `internal cross-provider orchestrator branch reference (${match})`,
     id: "orchestrator-branch-jargon",
     pattern: /\bwaspflow\/[a-zA-Z0-9._-]+/,
-    describe: (match) => `internal cross-provider orchestrator branch reference (${match})`,
   },
 ];
 
@@ -81,7 +81,7 @@ export function scanText(text, classes = RESIDUE_CLASSES) {
     for (const cls of classes) {
       const match = line.match(cls.pattern);
       if (match) {
-        hits.push({ classId: cls.id, lineNumber: i + 1, line, match: match[0] });
+        hits.push({ classId: cls.id, line, lineNumber: i + 1, match: match[0] });
       }
     }
   }
@@ -101,14 +101,16 @@ export function runScan({ repoRoot = REPO_ROOT, files = null, readFile = readFil
   const findings = [];
   for (const path of scanFiles) {
     const text = readFile(path, repoRoot);
-    if (text === null) continue;
+    if (text === null) {
+      continue;
+    }
     for (const hit of scanText(text)) {
       const cls = RESIDUE_CLASSES.find((c) => c.id === hit.classId);
       findings.push({
-        file: path,
-        line: hit.lineNumber,
         classId: hit.classId,
         description: cls.describe(hit.match),
+        file: path,
+        line: hit.lineNumber,
       });
     }
   }

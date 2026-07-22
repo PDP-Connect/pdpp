@@ -83,21 +83,21 @@
 }
 
 html {
-  background: var(--paper);
-  color: var(--ink);
   font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
   font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  color: var(--ink);
+  background: var(--paper);
+  text-rendering: optimizeLegibility;
 }
 
 body {
+  min-height: 100vh;
   margin: 0;
   background:
     radial-gradient(ellipse at 15% 0%, var(--human-wash), transparent 45%),
     radial-gradient(ellipse at 85% 10%, var(--protocol-wash), transparent 50%),
     var(--paper);
-  min-height: 100vh;
   transition:
     background 400ms var(--ease-read),
     color 200ms;
@@ -115,19 +115,19 @@ body {
 
 /* Selection — copper ink */
 ::selection {
-  background: var(--human-wash);
   color: var(--ink);
+  background: var(--human-wash);
 }
 
 /* ═══ Type — serif display, sans body, mono machine ═══ */
 
 .t-display {
   font-family: var(--font-serif);
-  font-weight: 400;
   font-size: clamp(48px, 7vw, 96px);
+  font-variation-settings: "opsz" 144;
+  font-weight: 400;
   line-height: 0.98;
   letter-spacing: -0.03em;
-  font-variation-settings: "opsz" 144;
 }
 
 .t-display em {
@@ -138,34 +138,34 @@ body {
 
 .t-section {
   font-family: var(--font-serif);
-  font-weight: 400;
   font-size: clamp(32px, 4vw, 52px);
+  font-variation-settings: "opsz" 72;
+  font-weight: 400;
   line-height: 1.05;
   letter-spacing: -0.02em;
-  font-variation-settings: "opsz" 72;
 }
 
 .t-lede {
   font-family: var(--font-serif);
-  font-weight: 300;
   font-size: 22px;
-  line-height: 1.45;
   font-variation-settings: "opsz" 36;
+  font-weight: 300;
+  line-height: 1.45;
   color: var(--ink-soft);
 }
 
 .t-body {
   font-family: var(--font-sans);
-  font-weight: 400;
   font-size: 15px;
+  font-weight: 400;
   line-height: 1.65;
   color: var(--ink-soft);
 }
 
 .t-small {
   font-family: var(--font-sans);
-  font-weight: 400;
   font-size: 13px;
+  font-weight: 400;
   line-height: 1.55;
   color: var(--ink-faint);
 }
@@ -182,17 +182,17 @@ body {
   font-family: var(--font-mono);
   font-size: 10.5px;
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
   font-feature-settings: "tnum";
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 /* A numeric mono for tabular figures */
 .num {
   font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum", "cv02";
+  font-variant-numeric: tabular-nums;
 }
 
 /* ═══ Structural elements ═══ */
@@ -216,22 +216,22 @@ body {
 /* Buttons — flat, inked, no shadows, press-feedback only */
 .btn {
   display: inline-flex;
-  align-items: center;
   gap: 8px;
+  align-items: center;
   height: 40px;
   padding: 0 18px;
   font-family: var(--font-sans);
   font-size: 14px;
   font-weight: 500;
-  border-radius: 2px;
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: all 150ms var(--ease-read);
   letter-spacing: 0.01em;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  transition: all 150ms var(--ease-read);
 }
 .btn-ink {
-  background: var(--ink);
   color: var(--paper);
+  background: var(--ink);
 }
 .btn-ink:hover {
   background: var(--ink-soft);
@@ -240,8 +240,8 @@ body {
   transform: translateY(1px);
 }
 .btn-paper {
-  background: transparent;
   color: var(--ink);
+  background: transparent;
   border-color: var(--rule-deep);
 }
 .btn-paper:hover {
@@ -249,8 +249,8 @@ body {
   border-color: var(--ink-faint);
 }
 .btn-ghost {
-  background: transparent;
   color: var(--ink-soft);
+  background: transparent;
 }
 .btn-ghost:hover {
   color: var(--ink);
@@ -259,30 +259,30 @@ body {
 /* Chips — the pill-in-prose */
 .chip {
   display: inline-flex;
-  align-items: center;
   gap: 4px;
+  align-items: center;
   padding: 1px 7px;
-  border-radius: 2px;
   font-family: var(--font-mono);
   font-size: 11.5px;
-  background: var(--paper-warm);
   color: var(--ink-soft);
+  background: var(--paper-warm);
   border: 1px solid var(--rule);
+  border-radius: 2px;
 }
 .chip-human {
   color: var(--human);
-  border-color: oklch(from var(--human) l c h / 0.25);
   background: var(--human-wash);
+  border-color: oklch(from var(--human) l c h / 0.25);
 }
 .chip-protocol {
   color: var(--protocol);
-  border-color: oklch(from var(--protocol) l c h / 0.25);
   background: var(--protocol-wash);
+  border-color: oklch(from var(--protocol) l c h / 0.25);
 }
 .chip-live {
   color: var(--live);
-  border-color: oklch(from var(--live) l c h / 0.3);
   background: oklch(from var(--live) l c h / 0.08);
+  border-color: oklch(from var(--live) l c h / 0.3);
 }
 
 /* ═══ Animations ═══ */
@@ -345,8 +345,8 @@ body {
   *,
   *::before,
   *::after {
+    transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
   }
 }

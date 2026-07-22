@@ -18,7 +18,9 @@
   function fmtRelative(iso) {
     const t = new Date(iso).getTime();
     const d = NOW - t;
-    if (Math.abs(d) < 60_000) return d < 0 ? "in <1m" : "just now";
+    if (Math.abs(d) < 60_000) {
+      return d < 0 ? "in <1m" : "just now";
+    }
     if (Math.abs(d) < 3_600_000) {
       const m = Math.round(Math.abs(d) / 60_000);
       return d < 0 ? `in ${m}m` : `${m}m ago`;
@@ -28,34 +30,42 @@
       return d < 0 ? `in ${h}h` : `${h}h ago`;
     }
     const days = Math.round(Math.abs(d) / 86_400_000);
-    if (days < 30) return d < 0 ? `in ${days}d` : `${days}d ago`;
-    return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    if (days < 30) {
+      return d < 0 ? `in ${days}d` : `${days}d ago`;
+    }
+    return new Date(iso).toLocaleDateString("en-US", { day: "numeric", month: "short" });
   }
 
   function fmtClock(iso) {
     return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   }
   function fmtDate(iso) {
-    return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return new Date(iso).toLocaleDateString("en-US", { day: "numeric", month: "short" });
   }
   function fmtDay(iso) {
     const d = new Date(iso);
     const today = new Date(NOW);
     const sameDay = (a, b) =>
       a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-    if (sameDay(d, today)) return "Today";
+    if (sameDay(d, today)) {
+      return "Today";
+    }
     const y = new Date(NOW - 86_400_000);
-    if (sameDay(d, y)) return "Yesterday";
-    return d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+    if (sameDay(d, y)) {
+      return "Yesterday";
+    }
+    return d.toLocaleDateString("en-US", { day: "numeric", month: "short", weekday: "long" });
   }
   function fmtCurrency(n) {
     const sign = n < 0 ? "−" : n > 0 ? "+" : "";
-    const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const abs = Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
     return `${sign}$${abs}`;
   }
   function fmtDuration(seconds) {
     const m = Math.round(seconds / 60);
-    if (m < 60) return `${m}m`;
+    if (m < 60) {
+      return `${m}m`;
+    }
     const h = Math.floor(m / 60);
     const mm = m % 60;
     return mm === 0 ? `${h}h` : `${h}h ${mm}m`;
@@ -68,11 +78,17 @@
   // ─── Initials avatar ──────────────────────────────────────────────────
 
   function initials(label) {
-    if (!label) return "·";
+    if (!label) {
+      return "·";
+    }
     const cleaned = label.replace(/<[^>]+>/g, "").trim();
     const parts = cleaned.split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return "·";
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    if (parts.length === 0) {
+      return "·";
+    }
+    if (parts.length === 1) {
+      return parts[0].slice(0, 2).toUpperCase();
+    }
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   }
 
@@ -80,7 +96,7 @@
     return (
       <span
         className="exp-conv__avatar"
-        style={{ width: size, height: size, fontSize: size * 0.4, borderRadius: Math.round(size * 0.22) }}
+        style={{ borderRadius: Math.round(size * 0.22), fontSize: size * 0.4, height: size, width: size }}
       >
         {initials(label)}
       </span>
@@ -106,13 +122,13 @@
       const intensity = v === 0 ? 0 : Math.min(1, 0.18 + 0.82 * (v / max));
       cells.push(
         <span
-          key={key}
           className="exp-heatmap__cell"
-          title={`${key} · ${v}`}
+          key={key}
           style={{
             background:
               v === 0 ? "var(--muted)" : `color-mix(in oklab, ${color} ${Math.round(intensity * 100)}%, transparent)`,
           }}
+          title={`${key} · ${v}`}
         />
       );
     }
@@ -122,7 +138,9 @@
   // ─── Tiny sparkline ────────────────────────────────────────────────────
 
   function Sparkline({ values, width = 120, height = 28, color = "var(--foreground)" }) {
-    if (!values?.length) return null;
+    if (!values?.length) {
+      return null;
+    }
     const min = Math.min(...values);
     const max = Math.max(...values);
     const range = max - min || 1;
@@ -131,20 +149,20 @@
       .map((v, i) => `${(i * step).toFixed(1)},${(height - ((v - min) / range) * height).toFixed(1)}`)
       .join(" ");
     return (
-      <svg width={width} height={height} style={{ display: "block" }}>
+      <svg height={height} style={{ display: "block" }} width={width}>
         <polyline
           fill="none"
+          points={points}
           stroke={color}
-          strokeWidth="1.5"
           strokeLinecap="round"
           strokeLinejoin="round"
-          points={points}
+          strokeWidth="1.5"
         />
         <circle
           cx={(values.length - 1) * step}
           cy={height - ((values[values.length - 1] - min) / range) * height}
-          r="2"
           fill={color}
+          r="2"
         />
       </svg>
     );
@@ -153,26 +171,26 @@
   // ─── Capability icons (glyphs, not icons-as-an-iconset) ────────────────
 
   const CAP_GLYPH = {
-    table: "▦",
-    timeline: "│",
-    conversation: "❝",
-    ledger: "$",
-    gallery: "▥",
-    map: "◎",
     calendar: "▤",
     chart: "↟",
+    conversation: "❝",
+    gallery: "▥",
+    ledger: "$",
+    map: "◎",
     reader: "¶",
+    table: "▦",
+    timeline: "│",
   };
   const CAP_LABEL = {
-    table: "Table",
-    timeline: "Timeline",
-    conversation: "Conversation",
-    ledger: "Ledger",
-    gallery: "Gallery",
-    map: "Map",
     calendar: "Calendar",
     chart: "Chart",
+    conversation: "Conversation",
+    gallery: "Gallery",
+    ledger: "Ledger",
+    map: "Map",
     reader: "Reader",
+    table: "Table",
+    timeline: "Timeline",
   };
 
   // ─── Useful: useKeyboard for cmd-k ─────────────────────────────────────
@@ -211,23 +229,23 @@
   }
 
   window.PDPPPrim = {
-    fmtRelative,
-    fmtClock,
-    fmtDate,
-    fmtDay,
-    fmtCurrency,
-    fmtDuration,
-    fmtDistance,
     Avatar,
-    Heatmap,
-    Sparkline,
     CAP_GLYPH,
     CAP_LABEL,
-    useGlobalKey,
-    getTimeField,
+    fmtClock,
+    fmtCurrency,
+    fmtDate,
+    fmtDay,
+    fmtDistance,
+    fmtDuration,
+    fmtRelative,
     getRecordTime,
     getRecordTitle,
+    getTimeField,
+    Heatmap,
     initials,
     NOW,
+    Sparkline,
+    useGlobalKey,
   };
 })();

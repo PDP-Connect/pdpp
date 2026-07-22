@@ -251,7 +251,7 @@ export function auditStreamHealth(connections) {
         return;
       }
       maskedStreamClasses.add(key);
-      maskedStreams.push({ stream, class: streamClass });
+      maskedStreams.push({ class: streamClass, stream });
     }
 
     function pushUnsettled(stream, streamClass) {
@@ -260,7 +260,7 @@ export function auditStreamHealth(connections) {
         return;
       }
       unsettledStreamClasses.add(key);
-      unsettledStreams.push({ stream, class: streamClass });
+      unsettledStreams.push({ class: streamClass, stream });
     }
 
     const activeBoundedWork = hasActiveBoundedWork(connection);
@@ -274,10 +274,10 @@ export function auditStreamHealth(connections) {
     for (const stream of auditedStreams) {
       const reportEntry = report.find((entry) => entry?.stream === stream);
       if (!reportEntry) {
-        if (!recordSnapshotCurrent) {
-          pushUnsettled(stream, "declared_stream_count_unavailable");
-        } else {
+        if (recordSnapshotCurrent) {
           pushMasked(stream, "runtime_evidence_missing");
+        } else {
+          pushUnsettled(stream, "declared_stream_count_unavailable");
         }
         continue;
       }
@@ -304,7 +304,7 @@ export function auditStreamHealth(connections) {
       inconclusive.push({
         connection_id: connectionId(connection),
         connection_label: connectionLabel(connection),
-        streams: [{ stream: "<active bounded work>", class: "active_bounded_work" }],
+        streams: [{ class: "active_bounded_work", stream: "<active bounded work>" }],
       });
     }
 
@@ -326,5 +326,5 @@ export function auditStreamHealth(connections) {
   }
 
   const status = failures.length > 0 ? "fail" : inconclusive.length > 0 ? "inconclusive" : "pass";
-  return { ok: status === "pass", status, failures, inconclusive };
+  return { failures, inconclusive, ok: status === "pass", status };
 }

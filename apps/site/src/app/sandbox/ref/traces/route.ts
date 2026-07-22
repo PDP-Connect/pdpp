@@ -13,12 +13,12 @@ export async function GET(request: Request) {
   return jsonResponse(
     await executeRefSpineCorrelationsList(
       {
-        kind: "trace",
         filters: {
           cursor: params.cursor,
           limit: params.limit,
           status: params.status,
         },
+        kind: "trace",
       },
       createSandboxRefSpineCorrelationsListDependencies()
     )

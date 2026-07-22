@@ -24,10 +24,10 @@ export function sandboxExploreRedirectHref({
     params.set(
       "peek",
       explorerPeekParam({
-        connectorId,
         connectionId: connectorId,
-        stream,
+        connectorId,
         recordId,
+        stream,
       })
     );
   }

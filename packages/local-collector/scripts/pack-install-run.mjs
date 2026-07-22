@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -132,11 +132,11 @@ async function main() {
 
     if (await pathExists(referenceServerEntry)) {
       await runFixtureBackedEnrollRunSmoke({
-        projectDir,
-        env,
         advertisedProtocolVersion: advertised.collector_protocol_version,
+        env,
+        projectDir,
       });
-      await runProtocolMismatchSmoke({ projectDir, env });
+      await runProtocolMismatchSmoke({ env, projectDir });
     } else {
       log("SKIP fixture-backed enroll/run smoke: reference-implementation/server/index.js not present.");
       log("SKIP collector_protocol_mismatch smoke: reference-implementation/server/index.js not present.");
@@ -145,7 +145,7 @@ async function main() {
     log("PASS pack-install-run local smoke");
   } finally {
     await rm(collectorTarball, { force: true });
-    await rm(tempRoot, { recursive: true, force: true });
+    await rm(tempRoot, { force: true, recursive: true });
   }
 }
 
@@ -275,7 +275,7 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
     log(`Fixture-backed enroll/run smoke PASS: ${persisted.n} record(s) persisted at ingest.`);
   } finally {
     await closeServer(server);
-    await rm(codexHome, { recursive: true, force: true });
+    await rm(codexHome, { force: true, recursive: true });
   }
 }
 

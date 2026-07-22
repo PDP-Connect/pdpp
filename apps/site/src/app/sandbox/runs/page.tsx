@@ -33,22 +33,42 @@ export default async function SandboxRunsPage({ searchParams }: { searchParams: 
   const params = await searchParams;
   const ds = sandboxDashboardDataSource;
   const result = await ds.listRuns({
-    cursor: params.cursor,
-    status: params.status,
     connector_id: params.connector_id,
-    q: params.q,
+    cursor: params.cursor,
     limit: 50,
+    q: params.q,
+    status: params.status,
   });
   const peekEnvelope = params.peek ? await ds.getRunTimeline(params.peek) : null;
 
   const viewParams: ListWithPeekParams<RunSummary> = {
     active: "runs",
-    routes: sandboxRoutes,
-    subject: "run",
-    title: "Runs",
+    activeFilterChips: [
+      params.status ? { label: "status", value: params.status } : null,
+      params.connector_id ? { label: "connector", value: params.connector_id } : null,
+      params.q ? { label: "query", value: params.q } : null,
+    ].filter((c): c is { label: string; value: string } => Boolean(c)),
+    buildListHref: (overrides) => listHref(params, overrides),
     description: "Connector runs and their outcomes.",
-    result,
-    rowKey: (r) => r.run_id,
+    emptyHint: "No runs match this filter.",
+    emptyTitle: "No runs",
+    filters: {
+      connector: { defaultValue: params.connector_id ?? "", name: "connector_id" },
+      query: { defaultValue: params.q ?? "", name: "q", placeholder: "id contains…" },
+      status: {
+        defaultValue: params.status ?? "",
+        name: "status",
+        options: [
+          { label: "succeeded", value: "succeeded" },
+          { label: "failed", value: "failed" },
+          { label: "needs input", value: "needs_input" },
+          { label: "started", value: "started" },
+        ],
+      },
+    },
+    peekCliCommand: (id) => `pdpp ref run timeline ${id}`,
+    peekEnvelope,
+    peekId: params.peek,
     renderRow: (run, { peeked, href, detailHref }) => {
       const rowContent = (
         <>
@@ -88,32 +108,12 @@ export default async function SandboxRunsPage({ searchParams }: { searchParams: 
         </div>
       );
     },
-    filters: {
-      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
-      connector: { name: "connector_id", defaultValue: params.connector_id ?? "" },
-      status: {
-        name: "status",
-        defaultValue: params.status ?? "",
-        options: [
-          { value: "succeeded", label: "succeeded" },
-          { value: "failed", label: "failed" },
-          { value: "needs_input", label: "needs input" },
-          { value: "started", label: "started" },
-        ],
-      },
-    },
-    activeFilterChips: [
-      params.status ? { label: "status", value: params.status } : null,
-      params.connector_id ? { label: "connector", value: params.connector_id } : null,
-      params.q ? { label: "query", value: params.q } : null,
-    ].filter((c): c is { label: string; value: string } => Boolean(c)),
     resetHref: "/sandbox/runs",
-    buildListHref: (overrides) => listHref(params, overrides),
-    peekId: params.peek,
-    peekEnvelope,
-    peekCliCommand: (id) => `pdpp ref run timeline ${id}`,
-    emptyTitle: "No runs",
-    emptyHint: "No runs match this filter.",
+    result,
+    routes: sandboxRoutes,
+    rowKey: (r) => r.run_id,
+    subject: "run",
+    title: "Runs",
   };
 
   return (

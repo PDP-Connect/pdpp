@@ -121,7 +121,9 @@ function mapMouseEventToCdp(event: WireInput): CdpCommand[] {
   const y = ensureNumber(event.y, "y");
   const button = BUTTON_MAP[event.button ?? 0] ?? "left";
   const buildCommands = MOUSE_COMMANDS[event.action];
-  if (!buildCommands) throw invalidInput(`unknown mouse action: ${event.action}`);
+  if (!buildCommands) {
+    throw invalidInput(`unknown mouse action: ${event.action}`);
+  }
   return buildCommands({ x, y, button });
 }
 
@@ -134,8 +136,12 @@ function virtualKeyCodeParams(vk: number | undefined) {
 }
 
 function keyboardType(action: unknown, isPrintable: boolean): string {
-  if (action === "keydown") return isPrintable ? "keyDown" : "rawKeyDown";
-  if (action === "keyup") return "keyUp";
+  if (action === "keydown") {
+    return isPrintable ? "keyDown" : "rawKeyDown";
+  }
+  if (action === "keyup") {
+    return "keyUp";
+  }
   throw invalidInput(`unknown keyboard action: ${action}`);
 }
 
@@ -162,7 +168,9 @@ function mapTouchEventToCdp(event: WireInput): CdpCommand[] {
   const y = ensureNumber(event.y, "y");
   const id = Number.isFinite(event.id) ? Number(event.id) : 1;
   const cdpType = TOUCH_TYPE_MAP[event.action] ?? null;
-  if (!cdpType) throw invalidInput(`unknown touch action: ${event.action}`);
+  if (!cdpType) {
+    throw invalidInput(`unknown touch action: ${event.action}`);
+  }
   const touchPoints = cdpType === "touchEnd" ? [] : [{ x, y, id }];
   return [{ method: "Input.dispatchTouchEvent", params: { type: cdpType, touchPoints } }];
 }
@@ -176,7 +184,9 @@ function mapScrollEventToCdp(event: WireInput): CdpCommand[] {
 }
 
 function mapPasteEventToCdp(event: WireInput): CdpCommand[] {
-  if (typeof event.text !== "string") throw invalidInput("paste.text must be a string");
+  if (typeof event.text !== "string") {
+    throw invalidInput("paste.text must be a string");
+  }
   return [{ method: "Input.insertText", params: { text: event.text } }];
 }
 
@@ -212,7 +222,9 @@ export function mapInputEventToCdp(event: any): CdpCommand[] {
     throw invalidInput("input event must be an object");
   }
   const mapEvent = INPUT_EVENT_MAPPERS[event.type];
-  if (!mapEvent) throw invalidInput(`unknown input event type: ${event.type}`);
+  if (!mapEvent) {
+    throw invalidInput(`unknown input event type: ${event.type}`);
+  }
   return mapEvent(event);
 }
 

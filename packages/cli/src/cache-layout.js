@@ -6,10 +6,10 @@ import { dirname, join } from "node:path";
 
 export function getPdppCacheLayout(cacheRoot = ".pdpp") {
   return {
-    root: cacheRoot,
     clientsDir: join(cacheRoot, "clients"),
-    gitignoreFile: join(cacheRoot, ".gitignore"),
     credentialFile: (providerUrl) => join(cacheRoot, "clients", `${providerCacheKey(providerUrl)}.json`),
+    gitignoreFile: join(cacheRoot, ".gitignore"),
+    root: cacheRoot,
   };
 }
 
@@ -19,7 +19,7 @@ function providerCacheKey(providerUrl) {
 }
 
 export function writePdppSecretFile(path, value) {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
   writeFileSync(path, value, { mode: 0o600 });
 }
 

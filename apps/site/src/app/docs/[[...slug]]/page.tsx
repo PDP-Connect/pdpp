@@ -71,10 +71,10 @@ export async function generateMetadata({ params }: DocsPageProps): Promise<Metad
   }
 
   return {
-    title: page.data.title,
     description: page.data.description,
     openGraph: {
       images: getPageImage(page).url,
     },
+    title: page.data.title,
   };
 }

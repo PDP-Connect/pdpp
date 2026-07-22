@@ -18,24 +18,24 @@ import { createViewportWriters, shouldPostViewport } from "./stream-viewport-wri
 test("buildViewportPayload keeps viewport dimensions in CSS pixels and sends DPR separately", () => {
   assert.deepEqual(
     buildViewportPayload({
-      width: 390.9,
-      height: 844.8,
       deviceScaleFactor: 3,
       hasTouch: true,
+      height: 844.8,
       mobile: true,
-      screenWidth: 1080.2,
       screenHeight: 1920.8,
+      screenWidth: 1080.2,
       userAgent: "Mobile Safari",
+      width: 390.9,
     }),
     {
-      width: 390,
-      height: 844,
       deviceScaleFactor: 3,
       hasTouch: true,
+      height: 844,
       mobile: true,
-      screenWidth: 1080,
       screenHeight: 1920,
+      screenWidth: 1080,
       userAgent: "Mobile Safari",
+      width: 390,
     }
   );
 });
@@ -43,42 +43,42 @@ test("buildViewportPayload keeps viewport dimensions in CSS pixels and sends DPR
 test("buildViewportPayload clamps invalid dimensions and deviceScaleFactor", () => {
   assert.deepEqual(
     buildViewportPayload({
-      width: 0,
-      height: Number.NaN,
       deviceScaleFactor: 0,
       hasTouch: false,
+      height: Number.NaN,
       mobile: false,
       userAgent: "x".repeat(600),
+      width: 0,
     }),
     {
-      width: 1,
-      height: 1,
       deviceScaleFactor: 1,
       hasTouch: false,
+      height: 1,
       mobile: false,
       userAgent: "x".repeat(512),
+      width: 1,
     }
   );
 });
 
 test("viewportsAreEquivalent tolerates subpixel observer jitter", () => {
-  assert.equal(viewportsAreEquivalent({ width: 390, height: 844 }, { width: 391, height: 843 }), true);
-  assert.equal(viewportsAreEquivalent({ width: 390, height: 844 }, { width: 394, height: 844 }), false);
+  assert.equal(viewportsAreEquivalent({ height: 844, width: 390 }, { height: 843, width: 391 }), true);
+  assert.equal(viewportsAreEquivalent({ height: 844, width: 390 }, { height: 844, width: 394 }), false);
 });
 
 test("viewportPayloadsAreEquivalent includes capture size and DPR", () => {
   const base = buildViewportPayload({
-    width: 390,
-    height: 844,
     deviceScaleFactor: 3,
     hasTouch: true,
+    height: 844,
     mobile: true,
-    screenWidth: 1080,
     screenHeight: 1920,
+    screenWidth: 1080,
     userAgent: "Mobile Safari",
+    width: 390,
   });
   assert.equal(
-    viewportPayloadsAreEquivalent(base, { ...base, width: 391, height: 843, screenWidth: 1081, screenHeight: 1919 }),
+    viewportPayloadsAreEquivalent(base, { ...base, height: 843, screenHeight: 1919, screenWidth: 1081, width: 391 }),
     true
   );
   assert.equal(viewportPayloadsAreEquivalent(base, { ...base, screenWidth: 960 }), false);
@@ -87,31 +87,31 @@ test("viewportPayloadsAreEquivalent includes capture size and DPR", () => {
 
 test("shouldPostViewport changes only when the payload changes materially", () => {
   const viewport = buildViewportPayload({
-    width: 844,
-    height: 390,
     deviceScaleFactor: 1,
     hasTouch: true,
+    height: 390,
     mobile: true,
-    screenWidth: 844,
     screenHeight: 390,
+    screenWidth: 844,
     userAgent: "Mobile Safari",
+    width: 844,
   });
 
   assert.equal(shouldPostViewport(null, viewport), true);
-  assert.equal(shouldPostViewport(viewport, { ...viewport, width: 845, height: 389 }), false);
+  assert.equal(shouldPostViewport(viewport, { ...viewport, height: 389, width: 845 }), false);
   assert.equal(shouldPostViewport(viewport, { ...viewport, screenWidth: 960 }), true);
 });
 
 test("PDPP postViewport and viewer applyViewport share one injected transport post", () => {
   const viewport = buildViewportPayload({
-    width: 844,
-    height: 390,
     deviceScaleFactor: 1,
     hasTouch: true,
+    height: 390,
     mobile: true,
-    screenWidth: 844,
     screenHeight: 390,
+    screenWidth: 844,
     userAgent: "Mobile Safari",
+    width: 844,
   });
   const lastPostState: { current: ReturnType<typeof buildViewportPayload> | null } = { current: null };
   const transportCalls: ReturnType<typeof buildViewportPayload>[] = [];
@@ -141,8 +141,8 @@ test("PDPP postViewport and viewer applyViewport share one injected transport po
 test("isMobileKeyboardViewportResize identifies same-width mobile keyboard occlusion", () => {
   assert.equal(
     isMobileKeyboardViewportResize({
-      previous: { width: 390, height: 844, mobile: true },
-      next: { width: 390, height: 560, mobile: true },
+      next: { height: 560, mobile: true, width: 390 },
+      previous: { height: 844, mobile: true, width: 390 },
     }),
     true
   );
@@ -152,10 +152,10 @@ test("isMobileKeyboardViewportResize does not require a focused local input for 
   assert.equal(
     isMobileKeyboardViewportResize({
       hasLocalTextInputFocus: false,
-      previous: { width: 430, height: 932, mobile: true },
-      next: { width: 430, height: 590, mobile: true },
-      previousLocal: { width: 430, height: 932, visualHeight: 932, visualWidth: 430 },
-      nextLocal: { width: 430, height: 932, visualHeight: 590, visualWidth: 430 },
+      next: { height: 590, mobile: true, width: 430 },
+      nextLocal: { height: 932, visualHeight: 590, visualWidth: 430, width: 430 },
+      previous: { height: 932, mobile: true, width: 430 },
+      previousLocal: { height: 932, visualHeight: 932, visualWidth: 430, width: 430 },
     }),
     true
   );
@@ -164,29 +164,29 @@ test("isMobileKeyboardViewportResize does not require a focused local input for 
 test("isMobileKeyboardViewportResize does not hide orientation or desktop resizes", () => {
   assert.equal(
     isMobileKeyboardViewportResize({
-      previous: { width: 390, height: 844, mobile: true },
-      next: { width: 844, height: 390, mobile: true },
+      next: { height: 390, mobile: true, width: 844 },
+      previous: { height: 844, mobile: true, width: 390 },
     }),
     false
   );
   assert.equal(
     isMobileKeyboardViewportResize({
-      previous: { width: 1280, height: 800, mobile: false },
-      next: { width: 1280, height: 600, mobile: false },
+      next: { height: 600, mobile: false, width: 1280 },
+      previous: { height: 800, mobile: false, width: 1280 },
     }),
     false
   );
   assert.equal(
     isMobileKeyboardViewportResize({
-      previous: { width: 390, height: 844, mobile: true },
-      next: { width: 390, height: 800, mobile: true },
+      next: { height: 800, mobile: true, width: 390 },
+      previous: { height: 844, mobile: true, width: 390 },
     }),
     false
   );
   assert.equal(
     isMobileKeyboardViewportResize({
-      previous: { width: 390, height: 844, mobile: true },
-      next: { width: 390, height: 250, mobile: true },
+      next: { height: 250, mobile: true, width: 390 },
+      previous: { height: 844, mobile: true, width: 390 },
     }),
     false
   );
@@ -194,24 +194,24 @@ test("isMobileKeyboardViewportResize does not hide orientation or desktop resize
 
 test("assessMobileKeyboardViewportResize suppresses keyboard animation until the viewport restores", () => {
   const opened = assessMobileKeyboardViewportResize({
-    previous: { width: 390, height: 844, mobile: true },
-    next: { width: 390, height: 600, mobile: true },
+    next: { height: 600, mobile: true, width: 390 },
+    previous: { height: 844, mobile: true, width: 390 },
     state: createMobileKeyboardResizeState(),
   });
   assert.equal(opened.suppress, true);
   assert.equal(opened.state.mode, "keyboard");
 
   const animating = assessMobileKeyboardViewportResize({
-    previous: { width: 390, height: 844, mobile: true },
-    next: { width: 390, height: 570, mobile: true },
+    next: { height: 570, mobile: true, width: 390 },
+    previous: { height: 844, mobile: true, width: 390 },
     state: opened.state,
   });
   assert.equal(animating.suppress, true);
   assert.equal(animating.state.mode, "keyboard");
 
   const restored = assessMobileKeyboardViewportResize({
-    previous: { width: 390, height: 844, mobile: true },
-    next: { width: 390, height: 842, mobile: true },
+    next: { height: 842, mobile: true, width: 390 },
+    previous: { height: 844, mobile: true, width: 390 },
     state: animating.state,
   });
   assert.equal(restored.suppress, false);
@@ -219,11 +219,11 @@ test("assessMobileKeyboardViewportResize suppresses keyboard animation until the
 });
 
 test("containedStreamRect removes horizontal letterbox bands for object-contain images", () => {
-  assert.deepEqual(containedStreamRect({ left: 0, top: 0, width: 1000, height: 500 }, { width: 400, height: 800 }), {
+  assert.deepEqual(containedStreamRect({ height: 500, left: 0, top: 0, width: 1000 }, { height: 800, width: 400 }), {
+    height: 500,
     left: 375,
     top: 0,
     width: 250,
-    height: 500,
   });
 });
 
@@ -231,9 +231,9 @@ test("pointToStreamViewport maps clicks through horizontal letterboxing", () => 
   const mapped = pointToStreamViewport(
     { clientX: 500, clientY: 250 },
     {
-      containerBox: { left: 0, top: 0, width: 1000, height: 500 },
-      imageBox: { left: 0, top: 0, width: 1000, height: 500 },
-      viewport: { width: 400, height: 800 },
+      containerBox: { height: 500, left: 0, top: 0, width: 1000 },
+      imageBox: { height: 500, left: 0, top: 0, width: 1000 },
+      viewport: { height: 800, width: 400 },
     }
   );
 
@@ -242,9 +242,9 @@ test("pointToStreamViewport maps clicks through horizontal letterboxing", () => 
     pointToStreamViewport(
       { clientX: 100, clientY: 250 },
       {
-        containerBox: { left: 0, top: 0, width: 1000, height: 500 },
-        imageBox: { left: 0, top: 0, width: 1000, height: 500 },
-        viewport: { width: 400, height: 800 },
+        containerBox: { height: 500, left: 0, top: 0, width: 1000 },
+        imageBox: { height: 500, left: 0, top: 0, width: 1000 },
+        viewport: { height: 800, width: 400 },
       }
     ),
     null
@@ -256,9 +256,9 @@ test("pointToStreamViewport maps clicks through vertical letterboxing", () => {
     pointToStreamViewport(
       { clientX: 200, clientY: 500 },
       {
-        containerBox: { left: 0, top: 0, width: 400, height: 1000 },
-        imageBox: { left: 0, top: 0, width: 400, height: 1000 },
-        viewport: { width: 800, height: 400 },
+        containerBox: { height: 1000, left: 0, top: 0, width: 400 },
+        imageBox: { height: 1000, left: 0, top: 0, width: 400 },
+        viewport: { height: 400, width: 800 },
       }
     ),
     { x: 400, y: 200 }
@@ -270,7 +270,7 @@ test("pointToStreamViewport falls back to container-local coordinates before a f
     pointToStreamViewport(
       { clientX: 40, clientY: 70 },
       {
-        containerBox: { left: 10, top: 20, width: 300, height: 200 },
+        containerBox: { height: 200, left: 10, top: 20, width: 300 },
       }
     ),
     { x: 30, y: 50 }

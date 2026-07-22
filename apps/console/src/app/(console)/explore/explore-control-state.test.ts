@@ -98,8 +98,8 @@ test("buildRecordDetailHref builds the record-detail route from clean path segme
   const href = buildRecordDetailHref("/sources", {
     connectionId: "cin_bc1efca69a1c386d610f0924",
     connectorId: "usaa",
-    stream: "transactions",
     recordId: "d495b98f5bfe6ce1ae10c465aeb607b5",
+    stream: "transactions",
   });
   assert.equal(href, "/sources/cin_bc1efca69a1c386d610f0924/transactions/d495b98f5bfe6ce1ae10c465aeb607b5");
 });
@@ -114,8 +114,8 @@ test("buildRecordDetailHref reproduce-the-bug: no query string, record key is th
   const href = buildRecordDetailHref("/sources", {
     connectionId: null,
     connectorId: "gmail",
-    stream: "messages",
     recordId,
+    stream: "messages",
   });
   assert.ok(!href.includes("?"), `record detail href must not contain a query string: ${href}`);
   assert.ok(!href.includes("order="), `record detail href must not carry a sort order: ${href}`);
@@ -128,8 +128,8 @@ test("buildRecordDetailHref falls back to connectorId when connection identity i
   const href = buildRecordDetailHref("/sources", {
     connectionId: null,
     connectorId: "github",
-    stream: "issues",
     recordId: "42",
+    stream: "issues",
   });
   assert.equal(href, "/sources/github/issues/42");
 });
@@ -152,7 +152,7 @@ test("resolveRowKeyAction: Cmd/Ctrl-Enter ESCALATES to the full record route (di
     action: "open-full",
     preventDefault: true,
   });
-  assert.deepEqual(resolveRowKeyAction({ key: "Enter", ctrlKey: true }), {
+  assert.deepEqual(resolveRowKeyAction({ ctrlKey: true, key: "Enter" }), {
     action: "open-full",
     preventDefault: true,
   });

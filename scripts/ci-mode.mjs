@@ -114,8 +114,8 @@ signoff fails outright rather than silently skipping the gate.`;
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
     encoding: "utf8",
-    stdio: options.input === undefined ? ["ignore", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
     input: options.input,
+    stdio: options.input === undefined ? ["ignore", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
   }).trim();
 }
 
@@ -175,12 +175,12 @@ export function rulesetWithRequiredStatusContexts(ruleset, contexts) {
   });
   if (!replaced) {
     nextRules.push({
-      type: "required_status_checks",
       parameters: {
         do_not_enforce_on_create: false,
         required_status_checks: contexts.map((context) => ({ context })),
         strict_required_status_checks_policy: false,
       },
+      type: "required_status_checks",
     });
   }
   return {

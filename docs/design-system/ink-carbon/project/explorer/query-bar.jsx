@@ -17,15 +17,27 @@
       const v = Array.isArray(c.value) ? c.value.join(", ") : c.value;
       return { field: "stream", op: "in", value: v };
     }
-    if (c.field === "amount") return { field: "amount", op: c.op, value: `$${c.value}` };
-    if (c.field === "month") return { field: "month", op: "", value: monthLabel(c.value) };
-    if (c.field === "year") return { field: "year", op: "", value: String(c.value) };
-    if (c.field === "has") return { field: "has", op: "", value: c.value };
-    if (c.field === "category") return { field: "category", op: "", value: c.value };
+    if (c.field === "amount") {
+      return { field: "amount", op: c.op, value: `$${c.value}` };
+    }
+    if (c.field === "month") {
+      return { field: "month", op: "", value: monthLabel(c.value) };
+    }
+    if (c.field === "year") {
+      return { field: "year", op: "", value: String(c.value) };
+    }
+    if (c.field === "has") {
+      return { field: "has", op: "", value: c.value };
+    }
+    if (c.field === "category") {
+      return { field: "category", op: "", value: c.value };
+    }
     return { field: c.field, op: "", value: String(c.value) };
   }
   function monthLabel(s) {
-    if (!s) return "";
+    if (!s) {
+      return "";
+    }
     const d = new Date(s + "-15");
     return d.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toLowerCase();
   }
@@ -40,7 +52,9 @@
     }, [query.text]);
 
     const suggestions = useMemo(() => {
-      if (!text.trim()) return [];
+      if (!text.trim()) {
+        return [];
+      }
       return suggestChips(text, streams);
     }, [text, streams]);
 
@@ -84,7 +98,9 @@
         return;
       }
       if (suggestions.length === 0) {
-        if (e.key === "Enter") commitText(text);
+        if (e.key === "Enter") {
+          commitText(text);
+        }
         return;
       }
       if (e.key === "ArrowDown") {
@@ -98,8 +114,11 @@
       if (e.key === "Enter") {
         e.preventDefault();
         const sel = suggestions[suggestionIdx];
-        if (sel) addChip(sel.chip);
-        else commitText(text);
+        if (sel) {
+          addChip(sel.chip);
+        } else {
+          commitText(text);
+        }
       }
       if (e.key === "Escape") {
         setText("");
@@ -110,7 +129,9 @@
     // Debounce text changes into the query
     useEffect(() => {
       const t = setTimeout(() => {
-        if (text !== query.text) commitText(text);
+        if (text !== query.text) {
+          commitText(text);
+        }
       }, 180);
       return () => clearTimeout(t);
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -166,7 +187,7 @@
                   e.stopPropagation();
                   onModeChange(m);
                 }}
-                title={{ lex: "Lexical search", sem: "Semantic search", hyb: "Hybrid" }[m]}
+                title={{ hyb: "Hybrid", lex: "Lexical search", sem: "Semantic search" }[m]}
                 type="button"
               >
                 {m}
@@ -200,7 +221,7 @@
                 e.preventDefault();
                 commitText(text);
               }}
-              style={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
+              style={{ paddingBottom: "0.5rem", paddingTop: "0.5rem" }}
             >
               <span className="exp-suggest__row-kind">text</span>
               <span className="exp-suggest__row-label">search for “{text}”</span>

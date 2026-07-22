@@ -55,7 +55,7 @@ async function listFiles(root, prefix = "") {
 }
 
 async function sync() {
-  await fs.rm(DIST_ROOT, { recursive: true, force: true });
+  await fs.rm(DIST_ROOT, { force: true, recursive: true });
   for (const relativePath of FILES) {
     const sourcePath = path.join(SOURCE_ROOT, relativePath);
     const distPath = path.join(DIST_ROOT, relativePath);
@@ -81,7 +81,7 @@ async function check() {
   for (const relativePath of expected) {
     const source = await readIfExists(path.join(SOURCE_ROOT, relativePath));
     const dist = await readIfExists(path.join(DIST_ROOT, relativePath));
-    if (!source || !dist) {
+    if (!(source && dist)) {
       continue;
     }
     if (!source.equals(dist)) {

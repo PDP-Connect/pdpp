@@ -24,7 +24,7 @@ import {
   setNekoRemoteInputFocused,
   startNeko,
   stopNeko,
-} from "./neko-client";
+} from "./neko-client.ts";
 
 /**
  * Construct a NekoClientApi bound to the module-singleton neko-client.ts
@@ -44,36 +44,14 @@ export function createNekoClientApi(opts?: {
   let mountedContainer: HTMLElement | null = null;
 
   return {
-    async start(container: HTMLElement, config: unknown): Promise<void> {
-      mountedContainer = container;
-      // The dashboard always passes a fully-typed NekoClientConfig; the
-      // adapter's `unknown` is just to avoid leaking apps/console types into
-      // the package.
-      await startNeko(container, config as NekoClientConfig, { dispatchInput: opts?.dispatchInput });
-    },
-    stop(): void {
-      if (mountedContainer) {
-        stopNeko(mountedContainer);
-        mountedContainer = null;
-      }
-    },
-    focusKeyboard(): void {
-      focusNekoKeyboard();
-    },
     blurKeyboard(): void {
       blurNekoKeyboard();
     },
-    setRemoteInputFocused(focused: boolean): void {
-      setNekoRemoteInputFocused(focused);
-    },
-    sendText(text: string): boolean {
-      return pasteTextIntoNeko(text, { focusKeyboardAfterPaste: false });
-    },
-    pasteText(text: string): boolean {
-      return pasteTextIntoNeko(text);
-    },
     copyRemoteSelection(): boolean {
       return copyRemoteSelectionFromNeko();
+    },
+    focusKeyboard(): void {
+      focusNekoKeyboard();
     },
     getPointerControl(): NekoPointerControl | null {
       const control = getNekoPointerControlForAdapter();
@@ -94,9 +72,6 @@ export function createNekoClientApi(opts?: {
     getTextareaElement(): HTMLTextAreaElement | null {
       return opts?.getTextarea?.() ?? null;
     },
-    sendKeysym(keysym: number): void {
-      dispatchNekoKeysymForAdapter(keysym);
-    },
     mapPointerToRemote(xLocal: number, yLocal: number): { x: number; y: number } {
       // Open question (step 2) resolved: `getNekoControlPos` takes
       // viewport-absolute clientX/clientY. The dashboard passes
@@ -109,6 +84,31 @@ export function createNekoClientApi(opts?: {
       // mapper is missing; here we return *something* so the controller
       // does not throw. The controller's no-mapping warning fires upstream.
       return { x: xLocal, y: yLocal };
+    },
+    pasteText(text: string): boolean {
+      return pasteTextIntoNeko(text);
+    },
+    sendKeysym(keysym: number): void {
+      dispatchNekoKeysymForAdapter(keysym);
+    },
+    sendText(text: string): boolean {
+      return pasteTextIntoNeko(text, { focusKeyboardAfterPaste: false });
+    },
+    setRemoteInputFocused(focused: boolean): void {
+      setNekoRemoteInputFocused(focused);
+    },
+    async start(container: HTMLElement, config: unknown): Promise<void> {
+      mountedContainer = container;
+      // The dashboard always passes a fully-typed NekoClientConfig; the
+      // adapter's `unknown` is just to avoid leaking apps/console types into
+      // the package.
+      await startNeko(container, config as NekoClientConfig, { dispatchInput: opts?.dispatchInput });
+    },
+    stop(): void {
+      if (mountedContainer) {
+        stopNeko(mountedContainer);
+        mountedContainer = null;
+      }
     },
   };
 }

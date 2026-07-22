@@ -45,7 +45,7 @@ interface ConnectorContext {
 function RunDetailLink({ children, runId }: { children: string; runId: string }) {
   return (
     <a
-      className={buttonVariants({ variant: "default", size: "sm", className: "mt-5" })}
+      className={buttonVariants({ className: "mt-5", size: "sm", variant: "default" })}
       href={`/syncs/${encodeURIComponent(runId)}`}
     >
       {children}

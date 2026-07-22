@@ -8,60 +8,60 @@
 (() => {
   /* ── Lexicon: wire key → human label. Fallback prettifies snake_case. ── */
   const FIELD_LABELS = {
-    employer: "Employer",
-    period_start: "Period start",
-    period_end: "Period end",
-    gross_pay: "Gross pay",
-    net_pay: "Net pay",
-    taxes_withheld: "Taxes withheld",
-    benefits_detail: "Benefits",
-    bank_routing: "Deposited to",
-    date: "Date",
-    amount: "Amount",
-    merchant: "Merchant",
-    category: "Category",
     account_ref: "Account",
-    memo: "Memo",
-    track: "Track",
+    amount: "Amount",
     artist: "Artist",
-    played_at: "Played",
+    bank_routing: "Deposited to",
+    benefits_detail: "Benefits",
+    breakdown: "Breakdown",
+    bytes: "Size",
+    calls: "Calls",
+    category: "Category",
+    chars: "Length",
+    charset: "Encoding",
+    commits: "Commits",
+    content: "Message",
+    content_type: "Type",
+    date: "Date",
     device: "Device",
-    playlist_ref: "Playlist",
+    doc_type: "Document",
+    employer: "Employer",
+    filename: "File",
     from: "From",
-    subject: "Subject",
-    received: "Received",
-    size: "Size",
+    gross_pay: "Gross pay",
     label: "Label",
-    participants: "Participants",
+    memo: "Memo",
+    merchant: "Merchant",
+    message_ref: "Message",
     messages: "Messages",
+    model: "Model",
+    net_pay: "Net pay",
+    open_prs: "Open PRs",
+    participants: "Participants",
+    period_end: "Period end",
+    period_start: "Period start",
+    pings: "Pings",
+    played_at: "Played",
+    playlist_ref: "Playlist",
+    prompt: "Prompt",
+    prs_opened: "PRs opened",
+    pushed: "Last push",
+    received: "Received",
+    repo: "Repository",
+    reviews: "Reviews",
     role: "Role",
     session: "Session",
-    chars: "Length",
-    content: "Message",
-    model: "Model",
-    charset: "Encoding",
-    bytes: "Size",
-    message_ref: "Message",
-    text: "Body",
-    repo: "Repository",
-    visibility: "Visibility",
-    pushed: "Last push",
-    open_prs: "Open PRs",
-    commits: "Commits",
-    prs_opened: "PRs opened",
-    reviews: "Reviews",
-    title: "Title",
-    started: "Started",
-    prompt: "Prompt",
-    turns: "Turns",
-    calls: "Calls",
+    size: "Size",
     span: "Over",
-    breakdown: "Breakdown",
-    pings: "Pings",
-    filename: "File",
-    content_type: "Type",
-    doc_type: "Document",
+    started: "Started",
+    subject: "Subject",
     tax_year: "Tax year",
+    taxes_withheld: "Taxes withheld",
+    text: "Body",
+    title: "Title",
+    track: "Track",
+    turns: "Turns",
+    visibility: "Visibility",
   };
 
   function prettify(k) {
@@ -76,24 +76,24 @@
   }
 
   const STREAM_NOUN = {
-    messages: "message",
-    message_bodies: "message body",
-    threads: "thread",
     attachments: "attachment",
-    sessions: "session",
-    function_calls: "tool calls",
-    conversations: "conversation",
-    repositories: "repository",
-    user_stats: "stats snapshot",
-    pay_statements: "pay statement",
-    transactions: "transaction",
-    listening_history: "play",
-    tax_docs: "document",
-    employment: "record",
     balances: "balance",
-    statements: "statement",
+    conversations: "conversation",
+    employment: "record",
+    function_calls: "tool calls",
+    listening_history: "play",
+    message_bodies: "message body",
+    messages: "message",
+    pay_statements: "pay statement",
+    repositories: "repository",
+    sessions: "session",
     skills: "skill",
+    statements: "statement",
+    tax_docs: "document",
+    threads: "thread",
+    transactions: "transaction",
     user: "record",
+    user_stats: "stats snapshot",
   };
   function nounFor(stream) {
     return STREAM_NOUN[stream] || "record";
@@ -107,13 +107,27 @@
       stream is email from Gmail but an agent turn from Codex). ── */
   function kindOf(rec) {
     const k = new Set((rec.fields || []).map((f) => f[0]));
-    if (rec.image || k.has("filename") || k.has("content_type")) return "attachment";
-    if (k.has("amount") || k.has("gross_pay") || k.has("net_pay")) return "money";
-    if (k.has("track") || k.has("artist")) return "media";
-    if (k.has("charset") && k.has("text")) return "body";
-    if (k.has("role")) return "agent";
-    if (k.has("from") || k.has("subject") || k.has("participants")) return "email";
-    if (k.has("repo") || k.has("commits")) return "code";
+    if (rec.image || k.has("filename") || k.has("content_type")) {
+      return "attachment";
+    }
+    if (k.has("amount") || k.has("gross_pay") || k.has("net_pay")) {
+      return "money";
+    }
+    if (k.has("track") || k.has("artist")) {
+      return "media";
+    }
+    if (k.has("charset") && k.has("text")) {
+      return "body";
+    }
+    if (k.has("role")) {
+      return "agent";
+    }
+    if (k.has("from") || k.has("subject") || k.has("participants")) {
+      return "email";
+    }
+    if (k.has("repo") || k.has("commits")) {
+      return "code";
+    }
     return "generic";
   }
 
@@ -127,18 +141,24 @@
 
   /* ── One derived-title grammar. Never "no X" — a quiet kicker + a fact. ── */
   function displayTitle(rec) {
-    if (!rec.degraded) return { primary: rec.title, kicker: null };
+    if (!rec.degraded) {
+      return { kicker: null, primary: rec.title };
+    }
     const f = fieldMap(rec);
     const noun = nounFor(rec.stream);
     let hint = "";
-    if (f.from) hint = "from " + f.from;
-    else if (f.role) hint = f.role + " turn";
-    else if (f.bytes || f.charset)
+    if (f.from) {
+      hint = "from " + f.from;
+    } else if (f.role) {
+      hint = f.role + " turn";
+    } else if (f.bytes || f.charset) {
       hint = [f.charset, f.bytes ? Math.round(String(f.bytes).replace(/[^\d]/g, "") / 1024) + " KB" : ""]
         .filter(Boolean)
         .join(" · ");
-    else if (f.date) hint = f.date;
-    return { primary: hint || noun, kicker: "untitled " + noun };
+    } else if (f.date) {
+      hint = f.date;
+    }
+    return { kicker: "untitled " + noun, primary: hint || noun };
   }
 
   /* ── Dual-key field row ── */
@@ -149,7 +169,7 @@
           <span className="rr-fld__label">{labelFor(k)}</span>
           <span className="rr-fld__wire">{k}</span>
         </span>
-        <span className={"rr-fld__val" + (isMoneyVal(v) ? " is-num" : "")}>{v}</span>
+        <span className={"rr-fld__val" + (isMoneyVal(v) ? "is-num" : "")}>{v}</span>
       </div>
     );
   }
@@ -167,20 +187,26 @@
     if (kind === "money") {
       ["merchant", "employer", "category", "period_end", "date"].forEach((k) => {
         const p = present(k);
-        if (p) captionParts.push(p[1]);
+        if (p) {
+          captionParts.push(p[1]);
+        }
       });
     }
 
     const skip = new Set();
-    if (heroKey) skip.add(heroKey);
-    if (bodyPair) skip.add(bodyPair[0]);
+    if (heroKey) {
+      skip.add(heroKey);
+    }
+    if (bodyPair) {
+      skip.add(bodyPair[0]);
+    }
     const rest = pairs.filter(([k]) => !skip.has(k));
 
     return (
       <React.Fragment>
         {heroKey && (
           <div className="rr-hero rr-hero--money">
-            <span className={"rr-hero__amount" + (negative ? " is-neg" : "")}>{heroVal}</span>
+            <span className={"rr-hero__amount" + (negative ? "is-neg" : "")}>{heroVal}</span>
             {captionParts.length > 0 && <span className="rr-hero__cap">{captionParts.slice(0, 2).join(" · ")}</span>}
             <span className="rr-hero__wire">
               {labelFor(heroKey)} · <span className="rr-fld__wire">{heroKey}</span>
@@ -194,7 +220,7 @@
             placeholder="Image field — drop the file to render it inline"
             radius="0"
             shape="rect"
-          ></image-slot>
+          />
         )}
         {bodyPair && (
           <div className="rr-bodytext">
@@ -216,6 +242,6 @@
   }
 
   Object.assign(window, {
-    RRREC: { labelFor, nounFor, kindOf, displayTitle, Field, RecordBody },
+    RRREC: { displayTitle, Field, kindOf, labelFor, nounFor, RecordBody },
   });
 })();

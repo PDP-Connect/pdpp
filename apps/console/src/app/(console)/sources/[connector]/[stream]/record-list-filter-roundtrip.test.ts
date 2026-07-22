@@ -96,8 +96,8 @@ test("BEHAVIOR a non-filter search param (cursors/columns) is ignored", () => {
   // The page also receives pagination/column params; only `filter[...]` keys feed
   // the exact-filter map. Mixing them must not fabricate a filter.
   const filters = readExactFiltersReplica({
-    cursors: "abc,def",
     columns: "amount,description",
+    cursors: "abc,def",
     "filter[account_id]": "acc1",
   });
   assert.deepEqual(filters, { account_id: "acc1" }, "only filter[...] keys contribute; cursors/columns are ignored");

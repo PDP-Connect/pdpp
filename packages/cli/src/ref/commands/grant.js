@@ -19,7 +19,7 @@ export async function runRefGrant(argv, io = {}, fetchImpl = globalThis.fetch) {
     const cacheRoot = flags["cache-root"];
     const { body } = await fetchJson(
       `${asUrl}/_ref/grants/${encodeURIComponent(grantId)}/timeline`,
-      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
+      { headers: { ...ownerSessionHeaders({ cacheRoot, ownerSession, referenceUrl: asUrl }) } },
       fetchImpl
     );
     const format = resolveFormat(flags, "table", "json");

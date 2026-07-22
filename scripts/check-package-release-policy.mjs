@@ -171,8 +171,8 @@ if (rootPackage.private !== true) {
 
 const packageFiles = listPackageJsonFiles();
 const packages = packageFiles.map((file) => ({
-  file,
   dir: path.dirname(file),
+  file,
   manifest: readJson(path.join(repoRoot, file)),
 }));
 const publishablePackages = packages
@@ -209,7 +209,7 @@ for (const { file, dir, manifest } of publishablePackages) {
   if (!manifest.license) {
     fail(errors, `${file} must declare a license`);
   }
-  if (!manifest.files || !Array.isArray(manifest.files) || manifest.files.length === 0) {
+  if (!(manifest.files && Array.isArray(manifest.files)) || manifest.files.length === 0) {
     fail(errors, `${file} must use an explicit files allowlist`);
   }
   if (!manifest.scripts?.verify) {
@@ -279,8 +279,8 @@ for (const packageName of publishablePackageNames) {
 
 const installDocFiles = installDocRoots.flatMap((root) => listMarkdownFiles(root));
 const retiredTagInstallDocReferences = findRetiredTagInstallDocReferences({
-  packageNames: publishablePackageNames,
   docFiles: installDocFiles,
+  packageNames: publishablePackageNames,
   readFile: (relativePath) => readFileSync(path.join(repoRoot, relativePath), "utf8"),
 });
 for (const problem of retiredTagInstallDocReferences) {

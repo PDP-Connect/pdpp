@@ -11,16 +11,16 @@ const NightToggle = () => {
   }, [night]);
   return (
     <button
-      onClick={() => setNight((n) => !n)}
       className="gutter"
+      onClick={() => setNight((n) => !n)}
       style={{
         background: "none",
         border: "1px solid var(--rule-deep)",
-        padding: "6px 10px",
-        cursor: "pointer",
-        color: "var(--ink-soft)",
-        fontSize: 10,
         borderRadius: 2,
+        color: "var(--ink-soft)",
+        cursor: "pointer",
+        fontSize: 10,
+        padding: "6px 10px",
       }}
     >
       {night ? "◐ night" : "◑ day"}
@@ -32,31 +32,31 @@ const NightToggle = () => {
 const MarkP = ({ size = 32 }) => (
   <div
     style={{
-      width: size,
-      height: size,
+      alignItems: "center",
       background: "var(--ink)",
       color: "var(--paper)",
       display: "inline-flex",
-      alignItems: "center",
-      justifyContent: "center",
       fontFamily: "var(--font-serif)",
-      fontWeight: 500,
       fontSize: size * 0.58,
+      fontVariationSettings: '"opsz" 144',
+      fontWeight: 500,
+      height: size,
+      justifyContent: "center",
       letterSpacing: "-0.04em",
       position: "relative",
-      fontVariationSettings: '"opsz" 144',
+      width: size,
     }}
   >
     P
     <span
       style={{
-        position: "absolute",
-        bottom: 3,
-        right: 3,
-        width: 3,
-        height: 3,
         background: "var(--human)",
         borderRadius: 999,
+        bottom: 3,
+        height: 3,
+        position: "absolute",
+        right: 3,
+        width: 3,
       }}
     />
   </div>
@@ -66,11 +66,11 @@ const MarkP = ({ size = 32 }) => (
 const SpecRow = ({ num, t, children, tone }) => (
   <div
     style={{
-      display: "grid",
-      gridTemplateColumns: "80px 1fr",
-      gap: 24,
-      padding: "22px 0",
       borderTop: "1px solid var(--rule)",
+      display: "grid",
+      gap: 24,
+      gridTemplateColumns: "80px 1fr",
+      padding: "22px 0",
     }}
   >
     <div>
@@ -86,11 +86,11 @@ const SpecRow = ({ num, t, children, tone }) => (
     <div>
       <div
         style={{
+          color: "var(--ink)",
           fontFamily: "var(--font-serif)",
           fontSize: 22,
-          lineHeight: 1.3,
           letterSpacing: "-0.015em",
-          color: "var(--ink)",
+          lineHeight: 1.3,
         }}
       >
         {t}
@@ -108,36 +108,36 @@ const SpecRow = ({ num, t, children, tone }) => (
 const ThermalLegend = () => (
   <div
     style={{
-      display: "flex",
       alignItems: "stretch",
       border: "1px solid var(--rule)",
       borderRadius: 2,
+      display: "flex",
       overflow: "hidden",
     }}
   >
     <div
-      style={{ flex: 1, padding: "14px 18px", background: "linear-gradient(90deg, var(--human-wash), transparent)" }}
+      style={{ background: "linear-gradient(90deg, var(--human-wash), transparent)", flex: 1, padding: "14px 18px" }}
     >
       <div className="gutter" style={{ color: "var(--human)" }}>
         HOLDER SIDE
       </div>
-      <div className="t-mono" style={{ marginTop: 4, color: "var(--ink)" }}>
+      <div className="t-mono" style={{ color: "var(--ink)", marginTop: 4 }}>
         warm · declarative · consent
       </div>
     </div>
-    <div style={{ width: 1, background: "var(--thermal)", opacity: 0.5 }} />
+    <div style={{ background: "var(--thermal)", opacity: 0.5, width: 1 }} />
     <div
       style={{
+        background: "linear-gradient(270deg, var(--protocol-wash), transparent)",
         flex: 1,
         padding: "14px 18px",
-        background: "linear-gradient(270deg, var(--protocol-wash), transparent)",
         textAlign: "right",
       }}
     >
       <div className="gutter" style={{ color: "var(--protocol)" }}>
         ISSUER SIDE
       </div>
-      <div className="t-mono" style={{ marginTop: 4, color: "var(--ink)" }}>
+      <div className="t-mono" style={{ color: "var(--ink)", marginTop: 4 }}>
         cool · enforcing · precise
       </div>
     </div>
@@ -154,19 +154,19 @@ const PURPOSES = [
 ];
 
 const PurposeTaxonomy = () => (
-  <div style={{ display: "flex", flexDirection: "column", gap: 0, border: "1px solid var(--rule)" }}>
+  <div style={{ border: "1px solid var(--rule)", display: "flex", flexDirection: "column", gap: 0 }}>
     {PURPOSES.map((p, i) => {
       const color = `color-mix(in oklch, var(--human) ${(1 - p.tone) * 100}%, var(--protocol) ${p.tone * 100}%)`;
       return (
         <div
           key={p.c}
           style={{
-            display: "grid",
-            gridTemplateColumns: "32px 1fr 1fr auto",
             alignItems: "center",
-            padding: "14px 18px",
             borderTop: i > 0 ? "1px solid var(--rule)" : "none",
+            display: "grid",
             gap: 16,
+            gridTemplateColumns: "32px 1fr 1fr auto",
+            padding: "14px 18px",
           }}
         >
           <span className="num t-mono" style={{ color: "var(--ink-whisper)" }}>
@@ -175,10 +175,10 @@ const PurposeTaxonomy = () => (
           <span className="t-mono" style={{ color }}>
             {p.c}
           </span>
-          <span className="t-body" style={{ fontStyle: "italic", fontFamily: "var(--font-serif)", fontWeight: 300 }}>
+          <span className="t-body" style={{ fontFamily: "var(--font-serif)", fontStyle: "italic", fontWeight: 300 }}>
             "{p.gloss}"
           </span>
-          <div style={{ width: 60, height: 3, background: color, borderRadius: 999 }} />
+          <div style={{ background: color, borderRadius: 999, height: 3, width: 60 }} />
         </div>
       );
     })}
@@ -189,16 +189,16 @@ const PurposeTaxonomy = () => (
 const Colophon = () => (
   <div
     style={{
-      padding: "48px 0 64px",
-      display: "grid",
-      gridTemplateColumns: "repeat(4, 1fr)",
-      gap: 32,
       borderTop: "1px solid var(--rule)",
+      display: "grid",
+      gap: 32,
+      gridTemplateColumns: "repeat(4, 1fr)",
+      padding: "48px 0 64px",
     }}
   >
     <div>
       <div className="gutter">DOCUMENT</div>
-      <div className="t-mono" style={{ marginTop: 8, color: "var(--ink)" }}>
+      <div className="t-mono" style={{ color: "var(--ink)", marginTop: 8 }}>
         PDPP-0.1.0 · draft 3
       </div>
       <div className="t-mono" style={{ color: "var(--ink-faint)", marginTop: 2 }}>
@@ -207,7 +207,7 @@ const Colophon = () => (
     </div>
     <div>
       <div className="gutter">SET</div>
-      <div className="t-mono" style={{ marginTop: 8, color: "var(--ink)" }}>
+      <div className="t-mono" style={{ color: "var(--ink)", marginTop: 8 }}>
         Fraunces · Geist · JetBrains Mono
       </div>
       <div className="t-mono" style={{ color: "var(--ink-faint)", marginTop: 2 }}>
@@ -216,7 +216,7 @@ const Colophon = () => (
     </div>
     <div>
       <div className="gutter">PRINTED</div>
-      <div className="t-mono" style={{ marginTop: 8, color: "var(--ink)" }}>
+      <div className="t-mono" style={{ color: "var(--ink)", marginTop: 8 }}>
         paper oklch(0.985 0.005 85)
       </div>
       <div className="t-mono" style={{ color: "var(--ink-faint)", marginTop: 2 }}>
@@ -225,12 +225,12 @@ const Colophon = () => (
     </div>
     <div style={{ textAlign: "right" }}>
       <div className="gutter">COLOPHON</div>
-      <div className="t-mono" style={{ marginTop: 8, color: "var(--ink)" }}>
+      <div className="t-mono" style={{ color: "var(--ink)", marginTop: 8 }}>
         vana-com/pdpp
       </div>
       <div
         className="t-mono"
-        style={{ color: "var(--ink-faint)", marginTop: 2, fontStyle: "italic", fontFamily: "var(--font-serif)" }}
+        style={{ color: "var(--ink-faint)", fontFamily: "var(--font-serif)", fontStyle: "italic", marginTop: 2 }}
       >
         "the grant is the artifact"
       </div>

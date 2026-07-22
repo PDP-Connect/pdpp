@@ -463,7 +463,7 @@ function maxTimestampFieldMs(
   let max = 0;
   for (const gap of gaps) {
     const value = gap[field];
-    const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+    const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
     max = Number.isFinite(parsed) ? Math.max(max, parsed) : max;
   }
   return max;

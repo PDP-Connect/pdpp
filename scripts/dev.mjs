@@ -56,8 +56,8 @@ try {
 }
 const env = {
   ...process.env,
-  PDPP_WEB_PORT: String(webPort),
   PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN ?? `http://localhost:${webPort}`,
+  PDPP_WEB_PORT: String(webPort),
 };
 
 console.error(`[pdpp dev] console origin: ${env.PDPP_REFERENCE_ORIGIN}`);

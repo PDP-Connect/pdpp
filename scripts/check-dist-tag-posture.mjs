@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -26,10 +27,10 @@
 // The reason is printed and the check exits 0, but the
 // finding is still reported so the waiver stays honest and visible.
 
+import { execFile } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -73,8 +74,8 @@ function listPublishablePackageNames(rootDir = "packages") {
 export function classifyDistTagPosture(packageName, distTags) {
   if (!distTags) {
     return {
-      status: "skip",
       detail: `${packageName}: not published yet or registry unreachable; nothing to verify`,
+      status: "skip",
     };
   }
   const latest = distTags.latest;
@@ -82,26 +83,26 @@ export function classifyDistTagPosture(packageName, distTags) {
   if (!latest) {
     if (beta) {
       return {
-        status: "hazard",
         detail: `${packageName}: no "latest" dist-tag while "beta" is ${beta}; a bare install has no stable target`,
+        status: "hazard",
       };
     }
     return {
-      status: "skip",
       detail: `${packageName}: no dist-tags published yet; nothing to verify`,
+      status: "skip",
     };
   }
   if (latest === placeholderVersion) {
     return {
-      status: "hazard",
       detail: `${packageName}: "latest" resolves to placeholder ${placeholderVersion}${
         beta ? ` while "beta" is ${beta}` : ""
       }; a bare \`npm install ${packageName}\` would install an empty package`,
+      status: "hazard",
     };
   }
   return {
-    status: "ok",
     detail: `${packageName}: "latest" is ${latest}${beta ? ` ("beta" is ${beta})` : ""}`,
+    status: "ok",
   };
 }
 
@@ -137,7 +138,7 @@ async function main() {
   const results = [];
   for (const packageName of packageNames) {
     const distTags = await fetchDistTags(packageName);
-    results.push({ packageName, distTags, ...classifyDistTagPosture(packageName, distTags) });
+    results.push({ distTags, packageName, ...classifyDistTagPosture(packageName, distTags) });
   }
 
   const hazards = results.filter((result) => result.status === "hazard");

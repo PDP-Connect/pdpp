@@ -84,27 +84,27 @@ const STREAM_NOT_BUDGET_RE = /stream!=budget_months/;
 test("CHIP == OPERATOR for exclusion: the facet 'is not' and -con: compile to the SAME query", () => {
   // Typing the operator -con:ynab:
   const viaOperator = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery("-con:ynab"),
     selectedConnectionIds: [],
     selectedStreams: [],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   // Clicking the "is not" chip for the same connection (excludedConnectionIds):
   const viaChip = buildCompiledQuery({
+    excludedConnectionIds: ["ynab"],
+    excludedStreams: [],
+    limit: 50,
+    order: "newest",
     parsed: parseQuery(""),
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludedConnectionIds: ["ynab"],
-    excludedStreams: [],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   // Both produce the identical exclusion param (chip == operator).
   assert.match(viaOperator, CONNECTION_NOT_YNAB_RE);
@@ -157,25 +157,25 @@ test("liftDateTokens: last-write-wins on a repeated operator (no stacking)", () 
 
 test("buildCompiledQuery renders excluded streams as stream!= (chip == -stream: operator)", () => {
   const viaOperator = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery("-stream:budget_months"),
     selectedConnectionIds: [],
     selectedStreams: [],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   const viaChip = buildCompiledQuery({
+    excludedStreams: ["budget_months"],
+    limit: 50,
+    order: "newest",
     parsed: parseQuery(""),
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludedStreams: ["budget_months"],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   assert.match(viaOperator, STREAM_NOT_BUDGET_RE);
   assert.match(viaChip, STREAM_NOT_BUDGET_RE);
@@ -202,6 +202,8 @@ test("hasClientSideTokens treats a declared exact-filterable field as server-sid
 
 test("buildCompiledQuery renders server params plainly and undeclared field tokens behind a comment", () => {
   const line = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery("con:gmail stream:messages has:image merchant:coffee coffee"),
     selectedConnectionIds: [],
     selectedStreams: [],
@@ -209,8 +211,6 @@ test("buildCompiledQuery renders server params plainly and undeclared field toke
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   assert.match(line, GET_RECORDS_RE);
   assert.match(line, CONNECTION_GMAIL_RE);
@@ -228,6 +228,8 @@ test("buildCompiledQuery renders server params plainly and undeclared field toke
 
 test("buildCompiledQuery promotes a declared exact-filterable field:value to a server filter[] param", () => {
   const line = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery("merchant:coffee has:image"),
     selectedConnectionIds: [],
     selectedStreams: [],
@@ -235,8 +237,6 @@ test("buildCompiledQuery promotes a declared exact-filterable field:value to a s
     serverFilterableFields: new Set(["merchant"]),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   // merchant:coffee renders as a real server param in the server section.
   const [serverPart] = line.split("# client-side:");
@@ -251,14 +251,14 @@ test("buildCompiledQuery promotes a declared exact-filterable field:value to a s
 
 test("buildCompiledQuery prefers facet-selected ids and maps before/after to since/until", () => {
   const line = buildCompiledQuery({
+    limit: 50,
+    order: "oldest",
     parsed: parseQuery("before:2026-06-11 after:2026-06-10"),
     selectedConnectionIds: ["conn_abc"],
     selectedStreams: ["transactions"],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "oldest",
-    limit: 50,
   });
   assert.match(line, CONNECTION_ABC_RE);
   assert.match(line, STREAM_TX_RE);

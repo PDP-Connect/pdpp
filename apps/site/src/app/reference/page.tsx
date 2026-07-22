@@ -18,9 +18,9 @@ const RAILWAY_DEPLOY_URL =
   "https://railway.com/new/template/pdpp-core-template-source?utm_medium=integration&utm_source=button&utm_campaign=pdpp-core";
 
 export const metadata: Metadata = {
-  title: "Reference Implementation - PDPP",
   description:
     "A public explainer for the forkable PDPP reference implementation: purpose, architecture, trust boundaries, and local/self-hosted operation.",
+  title: "Reference Implementation - PDPP",
 };
 
 async function getRequestOrigin(): Promise<string> {
@@ -34,28 +34,28 @@ async function getRequestOrigin(): Promise<string> {
 
 const architectureLayers = [
   {
+    body: "Normative protocol semantics, extension docs, grant shapes, query behavior, and intentionally deferred scope.",
     label: "Protocol authority",
     route: "/docs",
     title: "PDPP docs",
-    body: "Normative protocol semantics, extension docs, grant shapes, query behavior, and intentionally deferred scope.",
   },
   {
+    body: "Current code, tests, dashboards, example clients, and operator diagnostics for one implementation of PDPP.",
     label: "Reference authority",
     route: "/reference",
     title: "Forkable implementation",
-    body: "Current code, tests, dashboards, example clients, and operator diagnostics for one implementation of PDPP.",
   },
   {
+    body: "A stateful control plane for a running local or self-hosted instance. It is not a public hosted demo.",
     label: "Live instance",
     route: "/",
     title: "Operator dashboard",
-    body: "A stateful control plane for a running local or self-hosted instance. It is not a public hosted demo.",
   },
   {
+    body: "A mock-adapter-backed reference instance with deterministic data. Browse connectors, streams, records, grants, runs, traces, and call sandbox-prefixed AS/RS-shaped APIs.",
     label: "Reference sandbox",
     route: "/sandbox",
     title: "Mock-adapter reference instance",
-    body: "A mock-adapter-backed reference instance with deterministic data. Browse connectors, streams, records, grants, runs, traces, and call sandbox-prefixed AS/RS-shaped APIs.",
   },
 ] as const;
 
@@ -68,40 +68,40 @@ const trustBoundaries = [
 
 const referenceLinks = [
   {
+    body: "Falsifiable status rows for protocol flows, retrieval extensions, collection profiles, reference diagnostics, sandbox, and deferred scope.",
+    href: "/reference/coverage",
     label: "Coverage",
     title: "Public coverage matrix",
-    href: "/reference/coverage",
-    body: "Falsifiable status rows for protocol flows, retrieval extensions, collection profiles, reference diagnostics, sandbox, and deferred scope.",
   },
   {
+    body: "Browse a public PDPP reference surface backed by deterministic mock adapters. Inspect records, grants, runs, and traces, then call sandbox-prefixed AS/RS-shaped APIs (/sandbox/v1/**, /sandbox/_ref/**, /sandbox/.well-known/**).",
+    href: "/sandbox",
     label: "Sandbox",
     title: "Mock reference demo instance",
-    href: "/sandbox",
-    body: "Browse a public PDPP reference surface backed by deterministic mock adapters. Inspect records, grants, runs, and traces, then call sandbox-prefixed AS/RS-shaped APIs (/sandbox/v1/**, /sandbox/_ref/**, /sandbox/.well-known/**).",
   },
   {
+    body: "Browse the monorepo, issues, tests, Docker files, and reference package.",
+    href: GITHUB_REPO,
     label: "Repository",
     title: "GitHub source",
-    href: GITHUB_REPO,
-    body: "Browse the monorepo, issues, tests, Docker files, and reference package.",
   },
   {
+    body: "Repo overview, dev commands, Docker image posture, and top-level project map.",
+    href: GITHUB_ROOT_README,
     label: "Start here",
     title: "Root README",
-    href: GITHUB_ROOT_README,
-    body: "Repo overview, dev commands, Docker image posture, and top-level project map.",
   },
   {
+    body: "Local stack, direct AS/RS mode, Docker Compose, owner auth, and generated artifacts.",
+    href: GITHUB_REFERENCE_README,
     label: "Run/deploy",
     title: "Reference README",
-    href: GITHUB_REFERENCE_README,
-    body: "Local stack, direct AS/RS mode, Docker Compose, owner auth, and generated artifacts.",
   },
   {
+    body: "Protocol-facing architecture notes. Treat repo package topology as reference behavior unless specified by docs.",
+    href: "/docs/spec-architecture",
     label: "Architecture",
     title: "Architecture docs",
-    href: "/docs/spec-architecture",
-    body: "Protocol-facing architecture notes. Treat repo package topology as reference behavior unless specified by docs.",
   },
 ] as const;
 
@@ -129,10 +129,10 @@ export default async function ReferencePage() {
               docs remain the normative authority.
             </p>
             <div className="mt-7 flex flex-wrap gap-2.5">
-              <a className={buttonVariants({ variant: "default", size: "lg" })} href={GITHUB_REFERENCE_README}>
+              <a className={buttonVariants({ size: "lg", variant: "default" })} href={GITHUB_REFERENCE_README}>
                 Clone and run
               </a>
-              <Link className={buttonVariants({ variant: "outline", size: "lg" })} href="/docs">
+              <Link className={buttonVariants({ size: "lg", variant: "outline" })} href="/docs">
                 Read protocol docs
               </Link>
             </div>
@@ -326,18 +326,18 @@ printf 'Origin: https://%s.fly.dev\\nOwner password: %s\\n' "$APP" "$OWNER_PASSW
             ))}
             <ReferenceLink
               item={{
+                body: "Existing reference notes remain available, labeled as current implementation behavior rather than protocol truth.",
+                href: "/docs/reference-implementation",
                 label: "Implementation notes",
                 title: "Reference topology",
-                href: "/docs/reference-implementation",
-                body: "Existing reference notes remain available, labeled as current implementation behavior rather than protocol truth.",
               }}
             />
             <ReferenceLink
               item={{
+                body: "Concrete request, consent, owner self-export, and query examples from the current reference.",
+                href: "/docs/reference-implementation-examples",
                 label: "Examples",
                 title: "End-to-end flows",
-                href: "/docs/reference-implementation-examples",
-                body: "Concrete request, consent, owner self-export, and query examples from the current reference.",
               }}
             />
           </div>

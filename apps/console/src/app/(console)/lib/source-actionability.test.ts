@@ -244,8 +244,8 @@ test("source actionability routes a Needs refresh pill (no wired owner action) t
     connector({
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Needs refresh", tone: "amber" },
         forward_statement: "This connection is paused.",
+        pill: { label: "Needs refresh", tone: "amber" },
         required_actions: [],
       }),
     })
@@ -269,8 +269,8 @@ test("source actionability routes a Syncing pill (active run over stale/owner-re
       }),
       rendered_verdict: verdict({
         channel: "calm",
-        pill: { label: "Syncing", tone: "amber" },
         forward_statement: "Refreshing now.",
+        pill: { label: "Syncing", tone: "amber" },
         required_actions: [],
       }),
     })
@@ -288,8 +288,8 @@ test("source actionability keeps a Degraded pill (no wired owner action) in syst
     connector({
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Degraded", tone: "amber" },
         forward_statement: "Connector code needs a fix before this can collect again.",
+        pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           action({
             audience: "maintainer",
@@ -438,7 +438,7 @@ test("source actionability projects a draft connection as needs-you setup_in_pro
 
 test("source actionability: revoked outranks draft — a revoked connection never reads as setup_in_progress", () => {
   const actionability = projectSourceActionability(
-    draftConnector({ status: "revoked", revoked_at: "2026-07-10T00:00:00Z" })
+    draftConnector({ revoked_at: "2026-07-10T00:00:00Z", status: "revoked" })
   );
 
   assert.equal(actionability.revoked, true);
@@ -493,8 +493,8 @@ test("source actionability headline counts only needs-owner work and exposes sta
       display_name: "Review source",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Healthy", tone: "green" },
         forward_statement: "Run a refresh to bring this up to date.",
+        pill: { label: "Healthy", tone: "green" },
         required_actions: [
           action({
             cta: "Refresh now",
@@ -510,8 +510,8 @@ test("source actionability headline counts only needs-owner work and exposes sta
       display_name: "System source",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Degraded", tone: "amber" },
         forward_statement: "Connector code needs a fix before this can collect again.",
+        pill: { label: "Degraded", tone: "amber" },
         required_actions: [
           action({
             audience: "maintainer",
@@ -528,8 +528,8 @@ test("source actionability headline counts only needs-owner work and exposes sta
       display_name: "Not measured source",
       rendered_verdict: verdict({
         channel: "calm",
-        pill: { label: "Not measured", tone: "grey" },
         forward_statement: "Freshness has not been measured yet.",
+        pill: { label: "Not measured", tone: "grey" },
         required_actions: [],
       }),
     }),
@@ -538,8 +538,8 @@ test("source actionability headline counts only needs-owner work and exposes sta
       display_name: "Working source",
       rendered_verdict: verdict({
         channel: "calm",
-        pill: { label: "Checking", tone: "grey" },
         forward_statement: "Measuring coverage now.",
+        pill: { label: "Checking", tone: "grey" },
         required_actions: [],
       }),
     }),
@@ -556,6 +556,10 @@ test("source actionability headline counts only needs-owner work and exposes sta
       label: "Needs you",
       note: "Requires your input before collection can continue.",
     },
+    notMeasured: {
+      label: "Not measured",
+      note: "Evidence is missing and no active check is running.",
+    },
     review: {
       label: "Available actions",
       note: "Optional refreshes and retries you can start.",
@@ -567,10 +571,6 @@ test("source actionability headline counts only needs-owner work and exposes sta
     working: {
       label: "PDPP is working",
       note: "Collection, recovery, or a bounded check is active.",
-    },
-    notMeasured: {
-      label: "Not measured",
-      note: "Evidence is missing and no active check is running.",
     },
   });
 });
@@ -586,8 +586,8 @@ test("source actionability groups a Needs refresh connection under review, never
       display_name: "Paused source",
       rendered_verdict: verdict({
         channel: "advisory",
-        pill: { label: "Needs refresh", tone: "amber" },
         forward_statement: "This connection is paused.",
+        pill: { label: "Needs refresh", tone: "amber" },
         required_actions: [],
       }),
     }),

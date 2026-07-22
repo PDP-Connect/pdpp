@@ -27,8 +27,8 @@ import {
 } from "../../operations/ref-dataset-summary/index.ts";
 import {
   executeRefDatasetSummaryStreams,
-  type RefDatasetSummaryStreamsDependencies,
   type RefDatasetSummaryStreamRow,
+  type RefDatasetSummaryStreamsDependencies,
 } from "../../operations/ref-dataset-summary-streams/index.ts";
 import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 

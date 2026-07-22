@@ -8,7 +8,7 @@
 // owner attention surfaces must consume the rendered verdict; diagnostics may
 // still show raw evidence under an explicit inspection layer.
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -27,29 +27,29 @@ const LEGACY_RAW_HEALTH_PATHS = new Set(["apps/console/src/app/(console)/sources
 const RULES = [
   {
     id: "raw-health-state",
-    pattern: /\b(?:health|connectionHealth)\.state\b/,
     message: "owner surface must read rendered_verdict.pill/channel, not raw health.state",
+    pattern: /\b(?:health|connectionHealth)\.state\b/,
   },
   {
     id: "legacy-next-action",
+    message: "owner surface must derive CTAs from rendered_verdict.required_actions",
     pattern:
       /\b(?:formatNextAction\(|summary\.next_action|connection_health\?\.next_action|connectionHealth\?\.next_action)/,
-    message: "owner surface must derive CTAs from rendered_verdict.required_actions",
   },
   {
     id: "legacy-failure-expander",
-    pattern: /\b(?:deriveFailureSummary|FailureExpander)\b/,
     message: "owner surface must route health explanation through RenderedVerdict/diagnostics",
+    pattern: /\b(?:deriveFailureSummary|FailureExpander)\b/,
   },
   {
     id: "raw-primary-action-health",
-    pattern: /derivePrimaryRowAction\(\{[\s\S]{0,240}\bhealth:/,
     message: "owner surface must not derive primary action from raw health axes",
+    pattern: /derivePrimaryRowAction\(\{[\s\S]{0,240}\bhealth:/,
   },
   {
     id: "inspection-field-on-dashboard",
-    pattern: /\b(?:detail_gap_backlog|collection_rate|next_attempt_at)\b/,
     message: "mechanistic counts/timers belong in diagnostics, not the dashboard attention layer",
+    pattern: /\b(?:detail_gap_backlog|collection_rate|next_attempt_at)\b/,
   },
 ];
 
@@ -66,10 +66,10 @@ export function scanActiveOwnerSurface(relPath, src) {
     const match = rule.pattern.exec(src);
     if (match) {
       findings.push({
-        path: relPath,
         line: lineForOffset(src, match.index),
-        ruleId: rule.id,
         message: rule.message,
+        path: relPath,
+        ruleId: rule.id,
       });
     }
   }
@@ -100,10 +100,10 @@ export function findLegacyConnectorRowImports(files) {
     }
     if (/from ["'][^"']*connector-row(?:\.tsx)?["']|<ConnectorRow\b/.test(src)) {
       findings.push({
-        path: relPath,
         line: lineForOffset(src, src.search(/connector-row|<ConnectorRow\b/)),
-        ruleId: "legacy-connector-row-reactivated",
         message: "connector-row.tsx is a legacy raw-health surface; do not reintroduce it",
+        path: relPath,
+        ruleId: "legacy-connector-row-reactivated",
       });
     }
   }
@@ -134,7 +134,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const findings = checkRepository();
   if (args.json) {
-    process.stdout.write(`${JSON.stringify({ ok: findings.length === 0, findings }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ findings, ok: findings.length === 0 }, null, 2)}\n`);
   } else if (findings.length === 0) {
     process.stdout.write("console health-surface gate: PASS\n");
   } else {

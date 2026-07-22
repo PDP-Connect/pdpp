@@ -43,13 +43,13 @@ const STREAM_REACH_REASON_SET = new Set<string>(STREAM_REACH_REASONS);
  * generic give-up message verbatim so no occurrence regresses.
  */
 const STREAM_REACH_MESSAGE: Record<StreamReachReason, string> = {
+  companion_unavailable: "The browser session is no longer running on the server. Start the browser step again.",
   invalid_token: "The browser stream link is no longer valid. Start the browser step again.",
   session_consumed: "The browser stream was already opened elsewhere. Start the browser step again.",
   session_expired: "The browser stream link expired. Start the browser step again.",
-  companion_unavailable: "The browser session is no longer running on the server. Start the browser step again.",
+  unknown: "Couldn't reach the browser stream after several tries.",
   unreachable_origin:
     "Couldn't reach the browser stream. Check that the reference server is reachable, then try again.",
-  unknown: "Couldn't reach the browser stream after several tries.",
 };
 
 export interface StreamReachProbeResult {

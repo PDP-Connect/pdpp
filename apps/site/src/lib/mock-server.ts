@@ -112,30 +112,30 @@ export class MockPDPPServer {
   query(grantId: string, streamName: string): QueryResult {
     const grant = this.grants.get(grantId);
     if (!grant) {
-      return { status: 403, error: "grant_invalid", records: [], has_more: false };
+      return { error: "grant_invalid", has_more: false, records: [], status: 403 };
     }
     if (grant.status === "revoked") {
-      return { status: 403, error: "grant_revoked", records: [], has_more: false };
+      return { error: "grant_revoked", has_more: false, records: [], status: 403 };
     }
     if (grant.status === "expired") {
-      return { status: 403, error: "grant_expired", records: [], has_more: false };
+      return { error: "grant_expired", has_more: false, records: [], status: 403 };
     }
 
     // Check stream is in grant
     const grantStream = grant.streams.find((s) => s.name === streamName);
     if (!grantStream) {
-      return { status: 403, error: "insufficient_scope", records: [], has_more: false };
+      return { error: "insufficient_scope", has_more: false, records: [], status: 403 };
     }
 
     const stream = this.streams.get(streamName);
     if (!stream) {
-      return { status: 404, error: "stream_not_found", records: [], has_more: false };
+      return { error: "stream_not_found", has_more: false, records: [], status: 404 };
     }
 
     // Apply field projection
     const records = stream.records.map((r) => this.projectRecord(r, grantStream.fields, stream.schema_fields));
 
-    return { status: 200, records, has_more: false };
+    return { has_more: false, records, status: 200 };
   }
 
   // ── Incremental sync (changes_since) ──
@@ -143,36 +143,36 @@ export class MockPDPPServer {
   queryChangesSince(grantId: string, streamName: string, cursor?: string): QueryResult {
     const grant = this.grants.get(grantId);
     if (!grant) {
-      return { status: 403, error: "grant_invalid", records: [], has_more: false };
+      return { error: "grant_invalid", has_more: false, records: [], status: 403 };
     }
     if (grant.status === "revoked") {
-      return { status: 403, error: "grant_revoked", records: [], has_more: false };
+      return { error: "grant_revoked", has_more: false, records: [], status: 403 };
     }
 
     const grantStream = grant.streams.find((s) => s.name === streamName);
     if (!grantStream) {
-      return { status: 403, error: "insufficient_scope", records: [], has_more: false };
+      return { error: "insufficient_scope", has_more: false, records: [], status: 403 };
     }
 
     const stream = this.streams.get(streamName);
     if (!stream) {
-      return { status: 404, error: "stream_not_found", records: [], has_more: false };
+      return { error: "stream_not_found", has_more: false, records: [], status: 404 };
     }
 
     // Parse cursor (index into records array)
     const startIdx = cursor ? Number.parseInt(cursor, 10) : 0;
     if (Number.isNaN(startIdx)) {
-      return { status: 410, error: "cursor_expired", records: [], has_more: false };
+      return { error: "cursor_expired", has_more: false, records: [], status: 410 };
     }
 
     const newRecords = stream.records.slice(startIdx);
     const projected = newRecords.map((r) => this.projectRecord(r, grantStream.fields, stream.schema_fields));
 
     return {
-      status: 200,
-      records: projected,
       has_more: false,
       next_changes_since: String(stream.records.length),
+      records: projected,
+      status: 200,
     };
   }
 
@@ -181,11 +181,11 @@ export class MockPDPPServer {
   selfExport(streamName: string): QueryResult {
     const stream = this.streams.get(streamName);
     if (!stream) {
-      return { status: 404, error: "stream_not_found", records: [], has_more: false };
+      return { error: "stream_not_found", has_more: false, records: [], status: 404 };
     }
 
     // Owner sees all fields, no projection
-    return { status: 200, records: [...stream.records], has_more: false };
+    return { has_more: false, records: [...stream.records], status: 200 };
   }
 
   // ── Field projection ──
@@ -203,9 +203,9 @@ export class MockPDPPServer {
     }
 
     return {
-      key: record.key,
       data: projected,
       emitted_at: record.emitted_at,
+      key: record.key,
     };
   }
 
@@ -239,12 +239,12 @@ export class MockPDPPServer {
     const grant = this.grants.get(grantId);
     return {
       active: grant?.status === "active",
-      pdpp_token_kind: "client",
+      client_id: grant?.client_id ?? null,
       grant_id: grantId,
       grant_status: grant?.status ?? "unknown",
-      client_id: grant?.client_id ?? null,
-      subject_id: "user_abc123",
+      pdpp_token_kind: "client",
       scope_streams: grant?.streams.map((s) => s.name) ?? [],
+      subject_id: "user_abc123",
     };
   }
 
@@ -252,9 +252,9 @@ export class MockPDPPServer {
 
   getStreamStats(): { name: string; recordCount: number; fields: string[] }[] {
     return Array.from(this.streams.values()).map((s) => ({
+      fields: s.schema_fields,
       name: s.name,
       recordCount: s.records.length,
-      fields: s.schema_fields,
     }));
   }
 }
@@ -284,66 +284,66 @@ export function createSeededServer(): MockPDPPServer {
 
   server.addStream({
     name: "pay_statements",
-    semantics: "append_only",
-    schema_fields: payStatementFields,
     records: Array.from({ length: 24 }, (_, i) => {
       const payDate = new Date(Date.UTC(2025, 0, 15 + i * 14));
       const grossPay = 6150 + (i % 4) * 120;
       const netPay = grossPay - 1510 - (i % 3) * 35;
 
       return {
-        key: `pay_${i}`,
         data: {
-          employer: "Northstar Labs",
-          pay_period: payDate.toISOString().slice(0, 10),
-          gross_pay: grossPay,
-          net_pay: netPay,
-          employee_id: `emp_${String(4100 + i).padStart(4, "0")}`,
-          home_address: "1207 W Maple Ave, Chicago, IL",
           bank_account_last4: "4821",
+          employee_id: `emp_${String(4100 + i).padStart(4, "0")}`,
+          employer: "Northstar Labs",
+          gross_pay: grossPay,
+          home_address: "1207 W Maple Ave, Chicago, IL",
+          net_pay: netPay,
+          pay_period: payDate.toISOString().slice(0, 10),
           tax_id_fragment: "2487",
         },
         emitted_at: payDate.toISOString(),
+        key: `pay_${i}`,
       };
     }),
+    schema_fields: payStatementFields,
+    semantics: "append_only",
   });
 
   const grantTypes = ["ISO", "RSU", "NSO"] as const;
   const grantQuantities = [8000, 2400, 1200] as const;
   server.addStream({
     name: "equity_grants",
-    semantics: "mutable_state",
-    schema_fields: equityGrantFields,
     records: Array.from({ length: 3 }, (_, i) => ({
-      key: `grant_${i}`,
       data: {
+        beneficiary_name: "Primary beneficiary",
+        brokerage_account_last4: `71${i}4`,
         grant_type: grantTypes[i] ?? "NSO",
         quantity: grantQuantities[i] ?? 1200,
-        vesting_start: `202${i + 4}-05-01`,
         vesting_schedule: i === 1 ? "4y monthly after 1y cliff" : "4y quarterly after 1y cliff",
-        brokerage_account_last4: `71${i}4`,
-        beneficiary_name: "Primary beneficiary",
+        vesting_start: `202${i + 4}-05-01`,
       },
       emitted_at: "2026-04-15T12:00:00Z",
+      key: `grant_${i}`,
     })),
+    schema_fields: equityGrantFields,
+    semantics: "mutable_state",
   });
 
   server.addStream({
     name: "benefits_enrollments",
-    semantics: "mutable_state",
-    schema_fields: benefitsFields,
     records: Array.from({ length: 1 }, () => ({
-      key: "benefits_0",
       data: {
-        plan_name: "Blue Horizon PPO",
-        coverage_tier: "Employee + spouse",
-        employer_contribution: 840,
-        effective_date: "2026-01-01",
-        dependent_count: 1,
         claims_vendor: "Northstar Health Services",
+        coverage_tier: "Employee + spouse",
+        dependent_count: 1,
+        effective_date: "2026-01-01",
+        employer_contribution: 840,
+        plan_name: "Blue Horizon PPO",
       },
       emitted_at: "2026-01-01T12:00:00Z",
+      key: "benefits_0",
     })),
+    schema_fields: benefitsFields,
+    semantics: "mutable_state",
   });
 
   return server;

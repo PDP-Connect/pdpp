@@ -13,8 +13,8 @@ import {
 test("computePixelFitTelemetry identifies exact CSS-pixel mapping separately from physical pixels", () => {
   const fit = computePixelFitTelemetry({
     devicePixelRatio: 3,
-    intrinsic: { width: 390, height: 844 },
-    mediaRect: { left: 0, top: 0, width: 390, height: 844 },
+    intrinsic: { height: 844, width: 390 },
+    mediaRect: { height: 844, left: 0, top: 0, width: 390 },
     visualViewportScale: 1,
   });
 
@@ -28,9 +28,9 @@ test("computePixelFitTelemetry identifies exact CSS-pixel mapping separately fro
 
 test("computeStreamCaptureTarget requests bounded high-DPR capture pixels", () => {
   const target = computeStreamCaptureTarget({
-    viewport: { width: 448, height: 819 },
     devicePixelRatio: 2.25,
     maxPixels: 2_200_000,
+    viewport: { height: 819, width: 448 },
   });
 
   assert.equal(target.width, 1008);
@@ -41,9 +41,9 @@ test("computeStreamCaptureTarget requests bounded high-DPR capture pixels", () =
 
 test("computeStreamCaptureTarget caps very large high-DPR viewports", () => {
   const target = computeStreamCaptureTarget({
-    viewport: { width: 1440, height: 900 },
     devicePixelRatio: 3,
     maxPixels: 2_200_000,
+    viewport: { height: 900, width: 1440 },
   });
 
   assert.equal(target.capped, true);
@@ -57,7 +57,7 @@ test("computeStreamCaptureTargetForContext keeps desktop capture in CSS pixels",
   const target = computeStreamCaptureTargetForContext({
     devicePixelRatio: 1.15,
     highDprCapture: false,
-    viewport: { width: 1117, height: 1123 },
+    viewport: { height: 1123, width: 1117 },
   });
 
   assert.equal(target.width, 1117);
@@ -70,7 +70,7 @@ test("computeStreamCaptureTargetForContext allows mobile high-DPR capture", () =
   const target = computeStreamCaptureTargetForContext({
     devicePixelRatio: 2.25,
     highDprCapture: true,
-    viewport: { width: 947, height: 364 },
+    viewport: { height: 364, width: 947 },
   });
 
   assert.equal(target.width, 2128);
@@ -80,10 +80,10 @@ test("computeStreamCaptureTargetForContext allows mobile high-DPR capture", () =
 
 test("computePixelFitTelemetry flags non-uniform stretch and gutters", () => {
   const fit = computePixelFitTelemetry({
-    containerRect: { left: 0, top: 0, width: 1000, height: 500 },
+    containerRect: { height: 500, left: 0, top: 0, width: 1000 },
     devicePixelRatio: 1,
-    intrinsic: { width: 400, height: 800 },
-    mediaRect: { left: 100, top: 0, width: 800, height: 500 },
+    intrinsic: { height: 800, width: 400 },
+    mediaRect: { height: 500, left: 100, top: 0, width: 800 },
     visualViewportScale: 1,
   });
 

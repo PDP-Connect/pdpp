@@ -26,9 +26,12 @@
 
 import { parseArgs } from "../ref/args.js";
 import { ownerSessionHeaders } from "../ref/fetch.js";
-
-import { resolveCredentialFile, writeOwnerAgentCredential, buildCredentialRecord } from "./credential-store.js";
 import { discoverOwnerAgentControl, formatOwnerAgentControl } from "./control.js";
+import { buildCredentialRecord, resolveCredentialFile, writeOwnerAgentCredential } from "./credential-store.js";
+import { initiateDeviceAuthorization, pollForOwnerAgentToken } from "./device-flow.js";
+import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from "./discovery.js";
+import { OwnerAgentError } from "./errors.js";
+import { introspectOwnerAgentCredential, readCredentialRecord, revokeOwnerAgentCredential } from "./lifecycle.js";
 import {
   findConnectorTemplates,
   formatConnectionSetupPlan,
@@ -37,10 +40,6 @@ import {
   requestConnectionSetupPlan,
   requestConnectorTemplates,
 } from "./setup.js";
-import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from "./discovery.js";
-import { initiateDeviceAuthorization, pollForOwnerAgentToken } from "./device-flow.js";
-import { OwnerAgentError } from "./errors.js";
-import { introspectOwnerAgentCredential, readCredentialRecord, revokeOwnerAgentCredential } from "./lifecycle.js";
 
 const USAGE = `Trusted owner-agent onboarding (owner-level local automation):
   pdpp owner-agent onboard <entrypoint-url> [--credential-file <path>] [--client-id <id>] [--client-name <name>]
@@ -169,19 +168,19 @@ async function runOnboard(argv, { out }, deps) {
   const registeredClient = explicitClientId
     ? { client_id: explicitClientId, client_name: null }
     : await registerOwnerAgentClient({
-        fetchFn,
-        endpoint: profile.registrationEndpoint,
         clientName:
           typeof flags["client-name"] === "string" && flags["client-name"].trim()
             ? flags["client-name"].trim()
             : "PDPP trusted owner agent",
+        endpoint: profile.registrationEndpoint,
+        fetchFn,
       });
   const clientId = registeredClient.client_id;
   const registrationClientUri = buildRegistrationClientUri(profile, clientId);
   const device = await initiateDeviceAuthorization({
-    fetchFn,
-    endpoint: profile.deviceAuthorizationEndpoint,
     clientId,
+    endpoint: profile.deviceAuthorizationEndpoint,
+    fetchFn,
   });
 
   // Print only non-secret approval instructions.
@@ -193,35 +192,35 @@ async function runOnboard(argv, { out }, deps) {
   out.write("Waiting for owner approval...\n");
 
   const credential = await pollForOwnerAgentToken({
-    fetchFn,
-    endpoint: profile.tokenEndpoint,
     clientId,
     deviceCode: device.deviceCode,
+    endpoint: profile.tokenEndpoint,
+    fetchFn,
     intervalMs: device.intervalMs,
-    timeoutMs: device.expiresInMs,
-    sleep: deps.sleep,
     now,
     onPending: deps.onPending,
+    sleep: deps.sleep,
+    timeoutMs: device.expiresInMs,
   });
 
   const record = buildCredentialRecord({
-    resource: profile.resource,
     authorizationServer: profile.authorizationServer,
-    credential,
     clientId,
-    introspectionEndpoint: profile.introspectionEndpoint,
-    registrationEndpoint: profile.registrationEndpoint,
-    registrationClientUri,
-    schemaEndpoint: profile.schemaEndpoint,
-    schemaCompactEndpoint: profile.schemaCompactEndpoint,
-    streamsEndpoint: profile.streamsEndpoint,
     createdAt: new Date(now()).toISOString(),
+    credential,
+    introspectionEndpoint: profile.introspectionEndpoint,
+    registrationClientUri,
+    registrationEndpoint: profile.registrationEndpoint,
+    resource: profile.resource,
+    schemaCompactEndpoint: profile.schemaCompactEndpoint,
+    schemaEndpoint: profile.schemaEndpoint,
+    streamsEndpoint: profile.streamsEndpoint,
   });
 
   const targetPath = resolveCredentialFile({
     credentialFile: typeof flags["credential-file"] === "string" ? flags["credential-file"] : undefined,
-    resource: profile.resource,
     home: deps.home,
+    resource: profile.resource,
   });
   await writeOwnerAgentCredential(targetPath, record);
 
@@ -247,10 +246,18 @@ async function runStatus(argv, { out }, deps) {
   const fetchFn = deps.fetch ?? globalThis.fetch;
   const introspection = await introspectOwnerAgentCredential({ fetchFn, record });
   out.write(`active: ${introspection.active}\n`);
-  if (introspection.token_kind) out.write(`token kind: ${introspection.token_kind}\n`);
-  if (introspection.sub) out.write(`subject: ${introspection.sub}\n`);
-  if (introspection.client_id) out.write(`client id: ${introspection.client_id}\n`);
-  if (introspection.exp) out.write(`expires (epoch): ${introspection.exp}\n`);
+  if (introspection.token_kind) {
+    out.write(`token kind: ${introspection.token_kind}\n`);
+  }
+  if (introspection.sub) {
+    out.write(`subject: ${introspection.sub}\n`);
+  }
+  if (introspection.client_id) {
+    out.write(`client id: ${introspection.client_id}\n`);
+  }
+  if (introspection.exp) {
+    out.write(`expires (epoch): ${introspection.exp}\n`);
+  }
   return introspection.active ? 0 : 1;
 }
 
@@ -258,7 +265,7 @@ async function runControl(argv, { out }, deps) {
   const { record } = await loadRecord(argv, deps);
   const fetchFn = deps.fetch ?? globalThis.fetch;
   const { control, connections } = await discoverOwnerAgentControl({ fetchFn, record });
-  out.write(formatOwnerAgentControl({ control, connections }));
+  out.write(formatOwnerAgentControl({ connections, control }));
   return 0;
 }
 
@@ -274,7 +281,7 @@ async function runSetup(argv, { out }, deps) {
   }
   const displayName = typeof flags["display-name"] === "string" ? flags["display-name"] : null;
   const fetchFn = deps.fetch ?? globalThis.fetch;
-  const plan = await requestConnectionSetupPlan({ fetchFn, record, connectorId, displayName });
+  const plan = await requestConnectionSetupPlan({ connectorId, displayName, fetchFn, record });
   out.write(formatConnectionSetupPlan(plan));
   return 0;
 }
@@ -283,11 +290,11 @@ async function runRevoke(argv, { out }, deps) {
   const { record, targetPath, flags } = await loadRecord(argv, deps);
   const fetchFn = deps.fetch ?? globalThis.fetch;
   const ownerSession = ownerSessionHeaders({
+    cacheRoot: flags["cache-root"],
     ownerSession: flags["owner-session"] || "",
     referenceUrl: record.authorization_server,
-    cacheRoot: flags["cache-root"],
   }).Cookie;
-  const result = await revokeOwnerAgentCredential({ fetchFn, record, ownerSessionCookie: ownerSession });
+  const result = await revokeOwnerAgentCredential({ fetchFn, ownerSessionCookie: ownerSession, record });
   out.write(
     result.already_absent
       ? `Owner-agent credential already absent at the authorization server (${targetPath}).\n`
@@ -302,11 +309,11 @@ async function loadRecord(argv, deps) {
   const entrypoint = typeof flags.entrypoint === "string" ? normalizeEntrypointUrl(flags.entrypoint) : null;
   const targetPath = resolveCredentialFile({
     credentialFile,
-    resource: entrypoint ?? "https://owner-agent.invalid",
     home: deps.home,
+    resource: entrypoint ?? "https://owner-agent.invalid",
   });
   const record = await readCredentialRecord(targetPath);
-  return { record, targetPath, flags, positionals };
+  return { flags, positionals, record, targetPath };
 }
 
 export { USAGE as OWNER_AGENT_USAGE };
@@ -321,15 +328,15 @@ async function registerOwnerAgentClient({ fetchFn, endpoint, clientName }) {
   let response;
   try {
     response = await fetchFn(endpoint, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
       body: JSON.stringify({
         client_name: clientName,
         token_endpoint_auth_method: "none",
       }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
     });
   } catch (error) {
     throw new OwnerAgentError("registration_failed", `Dynamic client registration failed: ${error.message}.`);

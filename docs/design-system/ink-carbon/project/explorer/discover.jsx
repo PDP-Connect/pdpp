@@ -29,12 +29,16 @@
 
   function avatarColor(s) {
     let h = 0;
-    for (let i = 0; i < (s ?? "").length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    for (let i = 0; i < (s ?? "").length; i++) {
+      h = (h * 31 + s.charCodeAt(i)) | 0;
+    }
     return `oklch(0.55 0.12 ${Math.abs(h) % 360})`;
   }
 
   function cleanPerson(s) {
-    if (!s) return "";
+    if (!s) {
+      return "";
+    }
     return String(s)
       .replace(/<[^>]+>/g, "")
       .trim();
@@ -61,12 +65,16 @@
       const out = [];
       for (const s of streams) {
         const tf = s.schema.fields.find((f) => f.type === "timestamp")?.name;
-        if (!tf) continue;
+        if (!tf) {
+          continue;
+        }
         const today = s.records.filter((r) => {
           const t = new Date(r[tf]).getTime();
           return t >= todayStart && t < todayEnd;
         });
-        if (!today.length) continue;
+        if (!today.length) {
+          continue;
+        }
 
         const fs = s.schema.fields;
         const cur = fs.find((f) => f.type === "currency");
@@ -77,35 +85,37 @@
 
         if (cur) {
           const net = today.reduce((x, r) => x + (r[cur.name] ?? 0), 0);
-          out.push({ stream: s, label: net < 0 ? "spent" : "received", value: fmtCurrency(net), n: today.length });
+          out.push({ label: net < 0 ? "spent" : "received", n: today.length, stream: s, value: fmtCurrency(net) });
         } else if (dist) {
           const m = today.reduce((x, r) => x + (r[dist.name] ?? 0), 0);
-          out.push({ stream: s, label: "moved", value: fmtDistance(m), n: today.length });
+          out.push({ label: "moved", n: today.length, stream: s, value: fmtDistance(m) });
         } else if (blob) {
           out.push({
-            stream: s,
             label: "photo" + (today.length === 1 ? "" : "s"),
-            value: String(today.length),
             n: today.length,
+            stream: s,
+            value: String(today.length),
           });
         } else if (score) {
           const avg = today.reduce((x, r) => x + (r[score.name] ?? 0), 0) / today.length;
-          out.push({ stream: s, label: "score", value: avg.toFixed(0), n: today.length });
+          out.push({ label: "score", n: today.length, stream: s, value: avg.toFixed(0) });
         } else {
-          out.push({ stream: s, label: s.name, value: String(today.length), n: today.length });
+          out.push({ label: s.name, n: today.length, stream: s, value: String(today.length) });
         }
       }
       return out.sort((a, b) => b.n - a.n).slice(0, 4);
     }, [streams, todayStart, todayEnd]);
 
-    if (!stats.length) return null;
+    if (!stats.length) {
+      return null;
+    }
     const totalToday = stats.reduce((x, s) => x + s.n, 0);
 
     return (
       <section className="day-story">
         <div className="day-story__head">
           <div className="day-story__date">
-            {new Date(NOW).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+            {new Date(NOW).toLocaleDateString("en-US", { day: "numeric", month: "long", weekday: "long" })}
           </div>
           <div className="day-story__title">
             <b>{totalToday}</b> record{totalToday === 1 ? "" : "s"} so far
@@ -139,10 +149,14 @@
       const map = new Map();
       for (const s of streams) {
         const tf = s.schema.fields.find((f) => f.type === "timestamp")?.name;
-        if (!tf) continue;
+        if (!tf) {
+          continue;
+        }
         for (const r of s.records) {
           const t = r[tf];
-          if (!t) continue;
+          if (!t) {
+            continue;
+          }
           const d = t.slice(0, 10);
           map.set(d, (map.get(d) ?? 0) + 1);
         }
@@ -158,7 +172,7 @@
       const v = counts.get(key) ?? 0;
       const intensity = v === 0 ? 0 : 0.18 + 0.82 * (v / max);
       const isToday = i === 0;
-      cells.push({ key, d, v, intensity, isToday });
+      cells.push({ d, intensity, isToday, key, v });
     }
 
     return (
@@ -186,7 +200,7 @@
               key={key}
               onClick={() => onPickDay?.(key)}
               style={{ "--intensity": intensity }}
-              title={`${d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} · ${v} record${v === 1 ? "" : "s"}`}
+              title={`${d.toLocaleDateString("en-US", { day: "numeric", month: "short", weekday: "short" })} · ${v} record${v === 1 ? "" : "s"}`}
             >
               <span className="actstrip__cell-fill" />
               <span className="actstrip__cell-day">{d.getDate()}</span>
@@ -213,17 +227,25 @@
       const map = new Map();
       for (const s of streams) {
         const personFields = s.schema.fields.filter((f) => f.type === "person" || f.type === "person[]");
-        if (!personFields.length) continue;
+        if (!personFields.length) {
+          continue;
+        }
         for (const r of s.records) {
           for (const f of personFields) {
             const v = r[f.name];
             const list = Array.isArray(v) ? v : v ? [v] : [];
             for (const p of list) {
               const name = cleanPerson(p);
-              if (!name) continue;
+              if (!name) {
+                continue;
+              }
               const first = firstNameToken(p);
-              if (!first) continue;
-              if (!map.has(first)) map.set(first, { display: name, count: 0, first });
+              if (!first) {
+                continue;
+              }
+              if (!map.has(first)) {
+                map.set(first, { count: 0, display: name, first });
+              }
               map.get(first).count += 1;
             }
           }
@@ -231,7 +253,9 @@
       }
       return [...map.values()].sort((a, b) => b.count - a.count).slice(0, 12);
     }, [streams]);
-    if (!people.length) return null;
+    if (!people.length) {
+      return null;
+    }
     return (
       <Rail label="People" sub="across granted streams">
         {people.map((p) => (
@@ -256,20 +280,30 @@
       const map = new Map();
       for (const s of streams) {
         const merchField = s.schema.fields.find((f) => /merchant|payee|counterparty|seller|store/i.test(f.name))?.name;
-        if (!merchField) continue;
+        if (!merchField) {
+          continue;
+        }
         const amtField = s.schema.fields.find((f) => f.type === "currency")?.name;
         for (const r of s.records) {
           const m = r[merchField];
-          if (!m || typeof m !== "string") continue;
-          if (!map.has(m)) map.set(m, { name: m, count: 0, total: 0 });
+          if (!m || typeof m !== "string") {
+            continue;
+          }
+          if (!map.has(m)) {
+            map.set(m, { count: 0, name: m, total: 0 });
+          }
           const entry = map.get(m);
           entry.count += 1;
-          if (amtField) entry.total += r[amtField] ?? 0;
+          if (amtField) {
+            entry.total += r[amtField] ?? 0;
+          }
         }
       }
       return [...map.values()].sort((a, b) => b.count - a.count).slice(0, 10);
     }, [streams]);
-    if (!merchants.length) return null;
+    if (!merchants.length) {
+      return null;
+    }
     return (
       <Rail label="Merchants" sub="recent activity">
         {merchants.map((m) => (
@@ -300,17 +334,25 @@
       const map = new Map();
       for (const s of streams) {
         const ch = s.schema.fields.find((f) => /^channel$/i.test(f.name))?.name;
-        if (!ch) continue;
+        if (!ch) {
+          continue;
+        }
         for (const r of s.records) {
           const v = r[ch];
-          if (!v) continue;
-          if (!map.has(v)) map.set(v, { name: v, count: 0 });
+          if (!v) {
+            continue;
+          }
+          if (!map.has(v)) {
+            map.set(v, { count: 0, name: v });
+          }
           map.get(v).count += 1;
         }
       }
       return [...map.values()].sort((a, b) => b.count - a.count).slice(0, 8);
     }, [streams]);
-    if (!channels.length) return null;
+    if (!channels.length) {
+      return null;
+    }
     return (
       <Rail label="Channels" sub="conversations">
         {channels.map((c) => (
@@ -364,19 +406,25 @@
       const day = new Date(Date.UTC(ya, m, d)).toISOString().slice(0, 10);
       for (const s of streams) {
         const tf = s.schema.fields.find((f) => f.type === "timestamp")?.name;
-        if (!tf) continue;
+        if (!tf) {
+          continue;
+        }
         for (const r of s.records) {
           if (r[tf]?.slice(0, 10) === day) {
             const key = `${s.connection_id}::${r.id}`;
-            if (seen.has(key)) continue;
+            if (seen.has(key)) {
+              continue;
+            }
             seen.add(key);
             const yearsAgo = today.getFullYear() - ya;
             out.push({
-              stream: s,
-              record: r,
               label: yearsAgo === 1 ? "1 year ago" : `${yearsAgo} years ago`,
+              record: r,
+              stream: s,
             });
-            if (out.length >= 4) return out;
+            if (out.length >= 4) {
+              return out;
+            }
           }
         }
       }
@@ -386,11 +434,15 @@
       const lastMonth = new Date(today.getFullYear(), m - 1, d).toISOString().slice(0, 10);
       for (const s of streams) {
         const tf = s.schema.fields.find((f) => f.type === "timestamp")?.name;
-        if (!tf) continue;
+        if (!tf) {
+          continue;
+        }
         for (const r of s.records) {
           if (r[tf]?.slice(0, 10) === lastMonth) {
-            out.push({ stream: s, record: r, label: "1 month ago" });
-            if (out.length >= 4) return out;
+            out.push({ label: "1 month ago", record: r, stream: s });
+            if (out.length >= 4) {
+              return out;
+            }
           }
         }
       }
@@ -413,27 +465,39 @@
         latest = null;
       for (const s of streams) {
         const tf = s.schema.fields.find((f) => f.type === "timestamp")?.name;
-        if (!tf) continue;
+        if (!tf) {
+          continue;
+        }
         for (const r of s.records) {
           const t = r[tf];
-          if (!t) continue;
+          if (!t) {
+            continue;
+          }
           const y = Number(t.slice(0, 4));
           if (Number.isFinite(y)) {
             map.set(y, (map.get(y) ?? 0) + 1);
-            if (earliest == null || y < earliest) earliest = y;
-            if (latest == null || y > latest) latest = y;
+            if (earliest == null || y < earliest) {
+              earliest = y;
+            }
+            if (latest == null || y > latest) {
+              latest = y;
+            }
           }
         }
       }
-      if (earliest == null) return [];
+      if (earliest == null) {
+        return [];
+      }
       const list = [];
       for (let y = earliest; y <= latest; y++) {
-        list.push({ year: y, count: map.get(y) ?? 0 });
+        list.push({ count: map.get(y) ?? 0, year: y });
       }
       return list;
     }, [streams]);
 
-    if (years.length < 2) return null;
+    if (years.length < 2) {
+      return null;
+    }
     const max = Math.max(1, ...years.map((y) => y.count));
     const total = years.reduce((x, y) => x + y.count, 0);
     const span = years.length;
@@ -474,12 +538,12 @@
   }
 
   window.PDPP_DISCOVER = {
-    DayStory,
     ActivityStrip,
-    PeopleRail,
-    MerchantRail,
     ChannelRail,
-    YearStrip,
+    DayStory,
     findMemories,
+    MerchantRail,
+    PeopleRail,
+    YearStrip,
   };
 })();

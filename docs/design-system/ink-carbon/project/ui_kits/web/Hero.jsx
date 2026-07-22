@@ -4,12 +4,12 @@
 // Hero — the cross-quadrant layout from apps/web. Copper left rule on content column.
 
 const Hero = () => (
-  <section style={{ padding: "80px 48px 96px", maxWidth: "var(--content-wide-width)", margin: "0 auto" }}>
+  <section style={{ margin: "0 auto", maxWidth: "var(--content-wide-width)", padding: "80px 48px 96px" }}>
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "var(--pdpp-sidebar-width) 1fr",
         gap: 48,
+        gridTemplateColumns: "var(--pdpp-sidebar-width) 1fr",
       }}
     >
       <div /> {/* empty quadrant aligned with sidebar */}
@@ -28,61 +28,61 @@ const Hero = () => (
         <p
           className="pdpp-body-lg"
           style={{
+            color: "var(--muted-foreground)",
             margin: "20px 0 32px",
             maxWidth: 640,
-            color: "var(--muted-foreground)",
           }}
         >
           An open specification for how personal user data flows through the digital economy. Clients request named
           records and fields. Every response stays inside the grant.
         </p>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button className="pdpp-btn pdpp-btn-primary" style={{ height: 40, padding: "0 18px", fontSize: 14 }}>
+        <div style={{ alignItems: "center", display: "flex", gap: 10 }}>
+          <button className="pdpp-btn pdpp-btn-primary" style={{ fontSize: 14, height: 40, padding: "0 18px" }}>
             Read the spec
           </button>
-          <button className="pdpp-btn pdpp-btn-outline" style={{ height: 40, padding: "0 16px", fontSize: 14 }}>
+          <button className="pdpp-btn pdpp-btn-outline" style={{ fontSize: 14, height: 40, padding: "0 16px" }}>
             View on GitHub ›
           </button>
           <span
-            style={{ marginLeft: 12, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted-foreground)" }}
+            style={{ color: "var(--muted-foreground)", fontFamily: "var(--font-mono)", fontSize: 12, marginLeft: 12 }}
           >
             RFC status · draft 3
           </span>
         </div>
         <div
           style={{
-            marginTop: 56,
-            display: "grid",
-            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-            gap: 32,
-            borderTop: "1px solid var(--border)",
             borderBottom: "1px solid var(--border)",
+            borderTop: "1px solid var(--border)",
+            display: "grid",
+            gap: 32,
+            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+            marginTop: 56,
           }}
         >
           {[
             {
+              b: "A grant names resources, fields, purpose, duration, and mode.",
               k: "GRANT",
               t: "The portable artifact",
-              b: "A grant names resources, fields, purpose, duration, and mode.",
             },
             {
+              b: "Pay statements, employment, tax docs — declared, typed, versioned.",
               k: "STREAM",
               t: "Named data shapes",
-              b: "Pay statements, employment, tax docs — declared, typed, versioned.",
             },
             {
+              b: "Only the granted fields come back. Purpose is declared, not enforced.",
               k: "ENFORCE",
               t: "Server-side boundary",
-              b: "Only the granted fields come back. Purpose is declared, not enforced.",
             },
           ].map((c, i) => (
             <div
               key={i}
               style={{
-                padding: "24px 0",
                 borderRight: i < 2 ? "1px solid var(--border)" : "none",
-                paddingRight: i < 2 ? 32 : 0,
                 minWidth: 0,
+                padding: "24px 0",
+                paddingRight: i < 2 ? 32 : 0,
               }}
             >
               <div className="pdpp-eyebrow" style={{ color: "var(--primary)" }}>
@@ -91,7 +91,7 @@ const Hero = () => (
               <div className="pdpp-heading" style={{ marginTop: 6 }}>
                 {c.t}
               </div>
-              <p className="pdpp-body" style={{ margin: "6px 0 0", color: "var(--muted-foreground)" }}>
+              <p className="pdpp-body" style={{ color: "var(--muted-foreground)", margin: "6px 0 0" }}>
                 {c.b}
               </p>
             </div>

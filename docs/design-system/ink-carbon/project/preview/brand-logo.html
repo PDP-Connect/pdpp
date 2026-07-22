@@ -8,35 +8,35 @@
     <link href="../ui_kits/web/kit.css" rel="stylesheet">
     <style>
     body {
-      margin: 0;
-      padding: 24px 26px;
-      background: var(--background);
       display: flex;
-      align-items: center;
       gap: 34px;
+      align-items: center;
+      padding: 24px 26px;
+      margin: 0;
+      background: var(--background);
     }
     .lockup {
       display: flex;
-      align-items: center;
       gap: 12px;
+      align-items: center;
     }
     .mark {
+      position: relative;
       width: 26px;
       height: 26px;
-      position: relative;
     }
     .mark::before {
-      content: "";
       position: absolute;
       inset: 0;
-      transform: translate(6px, 6px);
+      content: "";
       background: var(--carbon-fill);
       border: 1px solid var(--carbon-outline);
+      transform: translate(6px, 6px);
     }
     .mark::after {
-      content: "";
       position: absolute;
       inset: 0;
+      content: "";
       background: var(--foreground);
     }
     .word {
@@ -49,8 +49,8 @@
       font-family: var(--font-mono);
       font-size: 10px;
       color: var(--muted-foreground);
-      letter-spacing: 0.1em;
       text-transform: uppercase;
+      letter-spacing: 0.1em;
     }
     .col {
       display: flex;
@@ -62,18 +62,18 @@
       max-width: 300px;
     }
     .claim {
+      padding: 14px 16px;
       font-family: var(--font-sans);
       font-size: 13px;
       font-weight: 600;
-      padding: 14px 16px;
     }
     .cap {
+      margin-top: 14px;
       font-family: var(--font-mono);
       font-size: 9.5px;
       color: var(--primary);
-      letter-spacing: 0.1em;
       text-transform: uppercase;
-      margin-top: 14px;
+      letter-spacing: 0.1em;
     }
     </style>
   </head>

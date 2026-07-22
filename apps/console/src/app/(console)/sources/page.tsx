@@ -138,9 +138,9 @@ function SourcesHeader({ error, message, notice }: { error?: string; message?: s
       </h1>
       <p
         style={{
+          color: "var(--muted-foreground)",
           fontFamily: "var(--font-mono)",
           fontSize: 11,
-          color: "var(--muted-foreground)",
           margin: 0,
         }}
       >

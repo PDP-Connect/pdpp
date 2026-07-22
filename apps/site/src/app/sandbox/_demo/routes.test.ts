@@ -196,7 +196,7 @@ test("/sandbox/v1/streams/:s/records returns 404 for unknown stream", async () =
 test("/sandbox/v1/streams/:s/records/:id returns a live `record` envelope", async () => {
   const res = await recordDetailGet(
     new Request("https://example.invalid/sandbox/v1/streams/pay_statements/records/rec_sb_paystmt_2026_03"),
-    { params: Promise.resolve({ stream: "pay_statements", recordId: "rec_sb_paystmt_2026_03" }) }
+    { params: Promise.resolve({ recordId: "rec_sb_paystmt_2026_03", stream: "pay_statements" }) }
   );
   assert.equal(res.status, 200);
   const body = (await jsonOf(res)) as Record<string, unknown>;
@@ -564,15 +564,15 @@ test("/sandbox/.well-known/oauth-protected-resource returns the live RS metadata
   assert.equal(agentDiscovery.llms_txt, "https://example.invalid/llms.txt");
   assert.equal(agentDiscovery.llms_full_txt, "https://example.invalid/llms-full.txt");
   assert.deepEqual(agentDiscovery.cli, {
-    package: "@pdpp/cli",
-    package_specifier: "@pdpp/cli",
     bin_name: "pdpp",
-    install_command: "npx -y @pdpp/cli --help",
-    run_command: "npx -y @pdpp/cli connect https://example.invalid/sandbox",
     connect_command: "npx -y @pdpp/cli connect <provider-url>",
-    version_policy: "latest",
+    install_command: "npx -y @pdpp/cli --help",
     no_owner_token: true,
     no_owner_token_policy: "owner_browser_approval_required",
+    package: "@pdpp/cli",
+    package_specifier: "@pdpp/cli",
+    run_command: "npx -y @pdpp/cli connect https://example.invalid/sandbox",
+    version_policy: "latest",
   });
   // Lexical retrieval must be advertised because the route is implemented.
   const caps = body.capabilities as { lexical_retrieval?: { supported?: boolean; endpoint?: string } } | undefined;
@@ -587,9 +587,9 @@ test("sandbox metadata prefers X-Forwarded-Host/Proto over the request URL", asy
   const res = authServerGet(
     new Request("http://0.0.0.0:3010/sandbox/.well-known/oauth-authorization-server", {
       headers: {
+        host: "0.0.0.0:3010",
         "x-forwarded-host": "pdpp.example.com",
         "x-forwarded-proto": "https",
-        host: "0.0.0.0:3010",
       },
     })
   );

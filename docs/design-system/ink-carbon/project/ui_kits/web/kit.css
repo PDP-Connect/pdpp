@@ -16,17 +16,17 @@
 }
 .pdpp-sheet__head {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
   gap: 14px;
+  align-items: baseline;
+  justify-content: space-between;
   padding: 13px 18px;
   border-bottom: 1px solid var(--border);
 }
 .pdpp-sheet__title {
+  margin: 0;
   font-family: var(--font-sans);
   font-size: 1rem;
   font-weight: 700;
-  margin: 0;
 }
 .pdpp-sheet__serial {
   font-family: var(--font-mono);
@@ -40,9 +40,9 @@
 .pdpp-sheet__foot {
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: center;
   gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
   padding: 11px 18px;
   border-top: 1px solid var(--border-strong);
 }
@@ -52,9 +52,9 @@
   font-family: var(--font-mono);
   font-size: 0.6rem;
   font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--primary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   white-space: nowrap;
 }
 
@@ -75,21 +75,21 @@
   font-weight: 500;
 }
 .pdpp-scope__terms {
+  align-self: center;
   font-family: var(--font-mono);
   font-size: 0.66rem;
   color: var(--muted-foreground);
   white-space: nowrap;
-  align-self: center;
 }
 .pdpp-scope__desc {
+  grid-column: 1 / -1;
   font-family: var(--font-sans);
   font-size: 0.75rem;
   color: var(--muted-foreground);
-  grid-column: 1 / -1;
 }
 .pdpp-scope--off .pdpp-scope__name {
-  color: var(--muted-foreground);
   font-weight: 400;
+  color: var(--muted-foreground);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
 }
@@ -117,18 +117,18 @@
   font-family: var(--font-mono);
   font-size: 0.625rem;
   font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   white-space: nowrap;
 }
 .pdpp-table__row {
-  border-bottom: 1px solid var(--border);
   position: relative;
+  border-bottom: 1px solid var(--border);
 }
 .pdpp-table .u-r {
-  text-align: right;
   justify-self: stretch;
+  text-align: right;
 }
 
 /* ─── Focus policy — rings only for keyboards ─────────────────── */
@@ -147,6 +147,7 @@
   width: 100%;
 }
 .pdpp-data-row {
+  position: relative;
   display: grid;
   grid-template-columns: var(
       --cols,
@@ -156,7 +157,6 @@
   align-items: center;
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
-  position: relative;
 }
 .pdpp-data-row__who {
   display: flex;
@@ -165,11 +165,11 @@
   min-width: 0;
 }
 .pdpp-data-row__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 0.875rem;
   font-weight: 600;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .pdpp-data-row__id {
   font-family: var(--font-mono);
@@ -178,34 +178,34 @@
   white-space: nowrap;
 }
 .pdpp-data-row__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--muted-foreground);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .pdpp-data-row__meta {
   font-family: var(--font-mono);
   font-size: 0.72rem;
-  color: var(--muted-foreground);
-  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
   text-align: right;
+  white-space: nowrap;
 }
 /* Client monogram — the doctrine's two-letter mark; a scannable anchor. */
 .pdpp-monogram {
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
+  width: 26px;
+  height: 26px;
   font-family: var(--font-mono);
   font-size: 0.625rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
   color: var(--muted-foreground);
+  letter-spacing: 0.04em;
   background: var(--card);
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
@@ -216,19 +216,19 @@
 /* A revoked row is struck, not erased — the record survives revocation. */
 .pdpp-data-row--revoked .pdpp-data-row__title,
 .pdpp-data-row--revoked .pdpp-data-row__detail {
+  color: var(--muted-foreground);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
-  color: var(--muted-foreground);
 }
 
 /* ─── Endorsement — status, typed by the protocol ──────────────── */
 .pdpp-endorse {
+  padding: 3px 8px;
   font-family: var(--font-mono);
   font-size: 0.625rem;
   font-weight: 500;
   letter-spacing: 0.06em;
   white-space: nowrap;
-  padding: 3px 8px;
   background: color-mix(in oklab, currentColor 11%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, currentColor 42%, transparent);
 }
@@ -252,26 +252,26 @@
 
 /* Taxonomy tag — typed, neutral, no color spent. */
 .pdpp-tag {
+  padding: 3px 8px;
   font-family: var(--font-mono);
   font-size: 0.625rem;
   font-weight: 400;
-  white-space: nowrap;
-  padding: 3px 8px;
   color: var(--muted-foreground);
+  white-space: nowrap;
   box-shadow: inset 0 0 0 1px var(--border);
 }
 
 /* ─── Buttons ──────────────────────────────────────────────────── */
 .pdpp-btn {
+  padding: 9px 18px;
   font-family: var(--font-sans);
   font-size: 0.84rem;
   font-weight: 700;
-  padding: 9px 18px;
-  border: 1.5px solid var(--foreground);
-  background: var(--foreground);
   color: var(--background);
-  border-radius: var(--radius-control);
   white-space: nowrap;
+  background: var(--foreground);
+  border: 1.5px solid var(--foreground);
+  border-radius: var(--radius-control);
   transition:
     background var(--motion-state),
     border-color var(--motion-state);
@@ -281,46 +281,46 @@
 }
 /* The owner's act — the one warm element on a surface. */
 .pdpp-btn--human {
+  color: var(--human-foreground);
   background: var(--human);
   border-color: var(--human);
-  color: var(--human-foreground);
 }
 .pdpp-btn--human:hover {
   background: color-mix(in oklab, var(--human) 88%, var(--background));
 }
 .pdpp-btn--ghost {
-  background: transparent;
-  color: var(--foreground);
-  border-color: var(--input);
   font-weight: 600;
+  color: var(--foreground);
+  background: transparent;
+  border-color: var(--input);
 }
 .pdpp-btn--ghost:hover {
   background: var(--muted);
   border-color: var(--border-strong);
 }
 .pdpp-btn--destructive {
-  background: transparent;
   color: var(--destructive);
+  background: transparent;
   border-color: var(--destructive);
 }
 .pdpp-btn--destructive:hover {
   background: var(--destructive-tint);
 }
 .pdpp-btn--sm {
-  font-size: 0.75rem;
   padding: 6px 12px;
+  font-size: 0.75rem;
 }
 
 /* ─── Inputs ───────────────────────────────────────────────────── */
 .pdpp-input {
+  padding: 8px 12px;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  padding: 8px 12px;
-  background: var(--card);
   color: var(--foreground);
+  outline: none;
+  background: var(--card);
   border: 1px solid var(--input);
   border-radius: var(--radius-control);
-  outline: none;
   transition:
     border-color var(--motion-state),
     box-shadow var(--motion-state);
@@ -330,8 +330,8 @@
   box-shadow: 0 0 0 2px var(--primary-tint);
 }
 .pdpp-input::placeholder {
-  color: var(--muted-foreground);
   font-family: var(--font-sans);
+  color: var(--muted-foreground);
 }
 .pdpp-field {
   display: flex;
@@ -358,8 +358,8 @@
   display: grid;
   grid-template-columns: 96px 1fr;
   gap: 14px;
-  padding: 5px 0;
   align-items: baseline;
+  padding: 5px 0;
 }
 .pdpp-kv__k {
   font-family: var(--font-sans);
@@ -377,16 +377,16 @@
 /* ─── Stat band — the dataset summary ──────────────────────────── */
 .pdpp-band {
   display: grid;
-  grid-auto-flow: column;
   grid-auto-columns: 1fr;
+  grid-auto-flow: column;
   border: 1px solid var(--border);
 }
 .pdpp-band__cell {
-  padding: 12px 14px;
-  border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 1px;
+  padding: 12px 14px;
+  border-left: 1px solid var(--border);
 }
 .pdpp-band__cell:first-child {
   border-left: 0;
@@ -400,18 +400,18 @@
 }
 .pdpp-band__k {
   font-size: 0.66rem;
-  color: var(--muted-foreground);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   font-weight: 500;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 /* ─── Legacy aliases (older explorer/labs markup) ──────────────── */
 .pdpp-surface-human {
-  border: 1px solid var(--border);
   background-color: color-mix(in oklab, var(--card) 95%, var(--human));
+  border: 1px solid var(--border);
 }
 .pdpp-surface-protocol {
-  border: 1px solid var(--border);
   background-color: color-mix(in oklab, var(--card) 95%, var(--primary));
+  border: 1px solid var(--border);
 }

@@ -105,8 +105,7 @@ function requireSame(violations, consoleEnv, referenceEnv, key, label) {
     violations.push(`${label}: reference ${key} is not set.`);
   }
   if (
-    !isPlaceholder(consoleValue) &&
-    !isPlaceholder(referenceValue) &&
+    !(isPlaceholder(consoleValue) || isPlaceholder(referenceValue)) &&
     String(consoleValue).trim() !== String(referenceValue).trim()
   ) {
     violations.push(
@@ -146,7 +145,7 @@ function hasDurableDatabaseUrl(env) {
 }
 
 function hasCredentialKeyProvider(env) {
-  return !isPlaceholder(env.PDPP_CREDENTIAL_ENCRYPTION_KEY) || !isPlaceholder(env.PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE);
+  return !(isPlaceholder(env.PDPP_CREDENTIAL_ENCRYPTION_KEY) && isPlaceholder(env.PDPP_CREDENTIAL_ENCRYPTION_KEY_FILE));
 }
 
 function requireExpectedIfSet(violations, env, key, expected, message) {
@@ -216,7 +215,7 @@ export function evaluateRailwayDeployEnv(env) {
     const dbPath = (env.PDPP_DB_PATH ?? "").trim();
     if (dbPath === "" || dbPath === UNMOUNTED_SQLITE_DEFAULT) {
       violations.push(
-        `PDPP_STORAGE_BACKEND=sqlite requires PDPP_DB_PATH on a mounted persistent volume. ` +
+        "PDPP_STORAGE_BACKEND=sqlite requires PDPP_DB_PATH on a mounted persistent volume. " +
           `"${dbPath || "(unset)"}" is the unmounted default and loses data on redeploy.`
       );
     }
@@ -239,9 +238,9 @@ export function evaluateRailwayCoreServiceEnv(coreEnv) {
     PDPP_RS_URL: coreEnv.PDPP_RS_URL ?? "http://127.0.0.1:7663",
   };
   violations.push(
-    ...evaluateRailwayDeployEnv(deployEnv).filter((violation) => {
-      return !violation.startsWith("PDPP_AS_URL") && !violation.startsWith("PDPP_RS_URL");
-    })
+    ...evaluateRailwayDeployEnv(deployEnv).filter(
+      (violation) => !(violation.startsWith("PDPP_AS_URL") || violation.startsWith("PDPP_RS_URL"))
+    )
   );
 
   for (const key of ["PORT", "AS_PORT", "RS_PORT", "PDPP_AS_URL", "PDPP_RS_URL"]) {
@@ -260,7 +259,7 @@ export function evaluateRailwayServiceEnvs({ consoleEnv, referenceEnv }) {
 
   requireSame(violations, consoleEnv, referenceEnv, "PDPP_REFERENCE_ORIGIN", "public origin");
   const origin = consoleEnv.PDPP_REFERENCE_ORIGIN;
-  if (!isPlaceholder(origin) && !/^https:\/\//.test(origin.trim())) {
+  if (!(isPlaceholder(origin) || /^https:\/\//.test(origin.trim()))) {
     violations.push(`public origin: PDPP_REFERENCE_ORIGIN must be an https:// origin; got "${origin}".`);
   }
 
@@ -343,14 +342,15 @@ export function evaluateRailwayServiceEnvs({ consoleEnv, referenceEnv }) {
   );
 
   violations.push(
-    ...evaluateRailwayDeployEnv(referenceEnv).filter((violation) => {
-      return (
-        !violation.startsWith("PDPP_REFERENCE_ORIGIN") &&
-        !violation.startsWith("PDPP_OWNER_PASSWORD") &&
-        !violation.startsWith("PDPP_AS_URL") &&
-        !violation.startsWith("PDPP_RS_URL")
-      );
-    })
+    ...evaluateRailwayDeployEnv(referenceEnv).filter(
+      (violation) =>
+        !(
+          violation.startsWith("PDPP_REFERENCE_ORIGIN") ||
+          violation.startsWith("PDPP_OWNER_PASSWORD") ||
+          violation.startsWith("PDPP_AS_URL") ||
+          violation.startsWith("PDPP_RS_URL")
+        )
+    )
   );
 
   return violations;
@@ -387,18 +387,18 @@ function main(argv) {
     const violations = evaluateRailwayCoreServiceEnv(coreEnv);
     const ok = violations.length === 0;
     if (json) {
-      process.stdout.write(`${JSON.stringify({ ok, core: coreFile, violations }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ core: coreFile, ok, violations }, null, 2)}\n`);
     } else if (ok) {
       process.stdout.write(`Railway core env contract satisfied: core=${coreFile}\n`);
     } else {
       process.stderr.write(
-        `Railway core env contract violations:\n` + violations.map((v) => `- ${v}`).join("\n") + "\n"
+        "Railway core env contract violations:\n" + violations.map((v) => `- ${v}`).join("\n") + "\n"
       );
     }
     process.exit(ok ? 0 : 1);
   }
 
-  if (!consoleFile || !referenceFile || consoleFile.startsWith("--") || referenceFile.startsWith("--")) {
+  if (!(consoleFile && referenceFile) || consoleFile.startsWith("--") || referenceFile.startsWith("--")) {
     process.stderr.write(
       "Usage: node scripts/check-railway-deploy-env.mjs --core <core-env> [--json]\n" +
         "   or: node scripts/check-railway-deploy-env.mjs --console <console-env> --reference <reference-env> [--json]\n"
@@ -421,13 +421,13 @@ function main(argv) {
 
   if (json) {
     process.stdout.write(
-      `${JSON.stringify({ ok, console: consoleFile, reference: referenceFile, violations }, null, 2)}\n`
+      `${JSON.stringify({ console: consoleFile, ok, reference: referenceFile, violations }, null, 2)}\n`
     );
   } else if (ok) {
     process.stdout.write(`Railway deploy env contract satisfied: console=${consoleFile} reference=${referenceFile}\n`);
   } else {
     process.stderr.write(
-      `Railway deploy env contract violations:\n` + violations.map((v) => `- ${v}`).join("\n") + "\n"
+      "Railway deploy env contract violations:\n" + violations.map((v) => `- ${v}`).join("\n") + "\n"
     );
   }
 

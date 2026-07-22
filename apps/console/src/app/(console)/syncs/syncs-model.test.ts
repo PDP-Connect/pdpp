@@ -185,14 +185,14 @@ function schedule(overrides: Partial<RefSchedule> = {}): RefSchedule {
 
 test("source-pressure cooldown produces a WAIT card, never a reconnect prompt", () => {
   const coolingHealth = health({
-    state: "cooling_off",
-    reason_code: "source_pressure",
-    next_attempt_at: "2026-06-13T09:00:00Z",
     axes: { attention: "none", coverage: "partial", freshness: "fresh", outbox: "idle" },
+    next_attempt_at: "2026-06-13T09:00:00Z",
+    reason_code: "source_pressure",
+    state: "cooling_off",
   });
   const model = buildSyncsViewModel({
     connectors: [connector({ connection_health: coolingHealth, display_name: "ChatGPT — personal" })],
-    runs: [run({ status: "succeeded", event_count: 34 })],
+    runs: [run({ event_count: 34, status: "succeeded" })],
   });
 
   assert.equal(model.failureCards.length, 1, "a cooling connection still gets an honest card");
@@ -214,9 +214,6 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
   // A `blocked` raw state that carries a scheduled next attempt + pending backlog
   // is a deferral, not a terminal stop — the guard must suppress the reconnect.
   const blockedButThrottled = health({
-    state: "blocked",
-    reason_code: "blocked_threshold",
-    next_attempt_at: "2026-06-13T09:00:00Z",
     detail_gap_backlog: {
       max_attempt_count: 5,
       next_attempt_at: "2026-06-13T09:00:00Z",
@@ -224,6 +221,9 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
       pending_is_floor: true,
       recovered: 100,
     },
+    next_attempt_at: "2026-06-13T09:00:00Z",
+    reason_code: "blocked_threshold",
+    state: "blocked",
   });
   const model = buildSyncsViewModel({
     connectors: [connector({ connection_health: blockedButThrottled })],
@@ -234,9 +234,9 @@ test("a blocked connection with a source-pressure backlog still gets the WAIT ca
 
 test("a genuine blocked connection (no backlog, no next attempt) DOES prompt reconnect", () => {
   const reallyBlocked = health({
-    state: "blocked",
-    reason_code: "credentials_expired",
     next_attempt_at: null,
+    reason_code: "credentials_expired",
+    state: "blocked",
   });
   const model = buildSyncsViewModel({
     connectors: [connector({ connection_health: reallyBlocked })],
@@ -625,15 +625,15 @@ test("describeCadence humanizes the schedule interval", () => {
   assert.equal(describeCadence(schedule({ interval_seconds: 900 })), "every 15 min");
   assert.equal(describeCadence(schedule({ interval_seconds: 86_400 })), "daily");
   assert.equal(describeCadence(schedule({ effective_mode: "manual" })), "manual");
-  assert.equal(describeCadence(schedule({ enabled: false, effective_mode: "paused" })), "paused");
+  assert.equal(describeCadence(schedule({ effective_mode: "paused", enabled: false })), "paused");
   assert.equal(describeCadence(null), "on demand");
 });
 
 test("describeDelta reads records, no change, and failure honestly", () => {
-  assert.equal(describeDelta({ failed: false, eventCount: 38 }), "+38 records");
-  assert.equal(describeDelta({ failed: false, eventCount: 1 }), "+1 record");
-  assert.equal(describeDelta({ failed: false, eventCount: 0 }), "no change");
-  assert.equal(describeDelta({ failed: true, eventCount: 5 }), "sync failed");
+  assert.equal(describeDelta({ eventCount: 38, failed: false }), "+38 records");
+  assert.equal(describeDelta({ eventCount: 1, failed: false }), "+1 record");
+  assert.equal(describeDelta({ eventCount: 0, failed: false }), "no change");
+  assert.equal(describeDelta({ eventCount: 5, failed: true }), "sync failed");
 });
 
 test("describeDuration formats sub-minute and minute spans", () => {
@@ -643,7 +643,7 @@ test("describeDuration formats sub-minute and minute spans", () => {
 });
 
 test("a failing connection holds its next and marks rows failed", () => {
-  const failHealth = health({ state: "blocked", reason_code: "credentials_expired" });
+  const failHealth = health({ reason_code: "credentials_expired", state: "blocked" });
   const model = buildSyncsViewModel({
     connectors: [connector({ connection_health: failHealth, schedule: schedule() })],
     runs: [run({ connection_id: "cin_test", status: "failed" })],
@@ -1289,9 +1289,6 @@ test("syncs cross-surface: an inactive queued recovery card is passive progress,
   const model = buildSyncsViewModel({
     connectors: [
       connector({
-        connection_id: "cin_amazon",
-        connector_id: "amazon",
-        display_name: "Amazon",
         connection_health: health({
           axes: { attention: "none", coverage: "deferred", freshness: "fresh", outbox: "idle" },
           badges: { stale: false, syncing: false },
@@ -1307,6 +1304,9 @@ test("syncs cross-surface: an inactive queued recovery card is passive progress,
           },
           state: "degraded",
         }),
+        connection_id: "cin_amazon",
+        connector_id: "amazon",
+        display_name: "Amazon",
         rendered_verdict: deferredRecoveryVerdict,
         streams: ["orders"],
       }),
@@ -1375,14 +1375,14 @@ test("per-stream collectedThisRun is populated from collection_report when prese
   const model = buildSyncsViewModel({
     connectors: [
       connector({
+        collection_report: [
+          collectionEntry({ collected: 120, coverage_condition: "complete", stream: "commits" }),
+          collectionEntry({ collected: 8, coverage_condition: "partial", stream: "pull_requests" }),
+        ],
         connection_id: "cin_gh",
         connector_id: "github",
         display_name: "GitHub",
         streams: ["commits", "pull_requests"],
-        collection_report: [
-          collectionEntry({ stream: "commits", collected: 120, coverage_condition: "complete" }),
-          collectionEntry({ stream: "pull_requests", collected: 8, coverage_condition: "partial" }),
-        ],
       }),
     ],
     runs: [],
@@ -1406,14 +1406,14 @@ test("two streams with different collection_report entries show DIFFERENT values
   const model = buildSyncsViewModel({
     connectors: [
       connector({
+        collection_report: [
+          collectionEntry({ collected: 42, stream: "messages" }),
+          collectionEntry({ collected: 0, stream: "attachments" }),
+        ],
         connection_id: "cin_multi",
         connector_id: "gmail",
         display_name: "Gmail",
         streams: ["messages", "attachments"],
-        collection_report: [
-          collectionEntry({ stream: "messages", collected: 42 }),
-          collectionEntry({ stream: "attachments", collected: 0 }),
-        ],
       }),
     ],
     runs: [run({ connection_id: "cin_multi", event_count: 42, status: "succeeded" })],
@@ -1442,9 +1442,9 @@ test("connection-level last-run facts live on the group, not on each stream row"
         display_name: "Chase",
         last_run: connectorRun({
           event_count: 99,
-          status: "succeeded",
           first_at: "2026-06-13T04:00:00Z",
           last_at: "2026-06-13T04:00:06Z",
+          status: "succeeded",
         }),
         streams: ["transactions", "balances"],
       }),
@@ -1514,14 +1514,14 @@ test("streamSkipped is true only when collection_report entry has a skip", () =>
   const model = buildSyncsViewModel({
     connectors: [
       connector({
+        collection_report: [
+          collectionEntry({ collected: 0, skipped: { reason: "rate_limited" }, stream: "transactions" }),
+          collectionEntry({ collected: 5, stream: "balances" }),
+        ],
         connection_id: "cin_skip",
         connector_id: "plaid",
         display_name: "Plaid",
         streams: ["transactions", "balances"],
-        collection_report: [
-          collectionEntry({ stream: "transactions", collected: 0, skipped: { reason: "rate_limited" } }),
-          collectionEntry({ stream: "balances", collected: 5 }),
-        ],
       }),
     ],
     runs: [],
@@ -1542,22 +1542,22 @@ test("a stream with a real collected count keeps its per-stream truth when the c
   const model = buildSyncsViewModel({
     connectors: [
       connector({
-        connection_id: "cin_partial",
-        connector_instance_id: "cin_partial",
-        connector_id: "gmail",
-        display_name: "Gmail",
-        streams: ["messages", "labels"],
         collection_report: [
-          collectionEntry({ stream: "messages", collected: 500 }),
+          collectionEntry({ collected: 500, stream: "messages" }),
           // labels has no report entry, so it falls back to connection failure.
         ],
+        connection_id: "cin_partial",
+        connector_id: "gmail",
+        connector_instance_id: "cin_partial",
+        display_name: "Gmail",
+        streams: ["messages", "labels"],
       }),
     ],
     runs: [
       run({
         connection_id: "cin_partial",
-        connector_instance_id: "cin_partial",
         connector_id: "gmail",
+        connector_instance_id: "cin_partial",
         event_count: 500,
         status: "failed",
       }),

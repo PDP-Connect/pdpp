@@ -66,13 +66,13 @@ function makeHit(over: {
   emitted_at?: string;
 }): SearchResultHit {
   return {
-    connector_id: over.connector_id,
     connection_id: over.connection_id,
-    stream: over.stream ?? "records",
-    record_key: over.record_key ?? "rec-1",
+    connector_id: over.connector_id,
     emitted_at: over.emitted_at ?? "2026-01-01T00:00:00Z",
     matched_fields: [],
     object: "search_result",
+    record_key: over.record_key ?? "rec-1",
+    stream: over.stream ?? "records",
   };
 }
 
@@ -99,11 +99,11 @@ function makeLexicalPage(
 function makeRecordsPage(ids: string[], opts?: { has_more?: boolean; next_cursor?: string }): RecordsPage {
   return {
     data: ids.map((id) => ({
+      data: {},
+      emitted_at: "2026-01-01T00:00:00Z",
       id,
       object: "record" as const,
       stream: "transactions",
-      emitted_at: "2026-01-01T00:00:00Z",
-      data: {},
     })),
     has_more: opts?.has_more ?? false,
     ...(opts?.next_cursor ? { next_cursor: opts.next_cursor } : {}),
@@ -132,42 +132,42 @@ const notStubbed = (name: string) => () => Promise.reject(new Error(`${name} not
 
 function makeDataSource(overrides: Partial<DashboardDataSource>): DashboardDataSource {
   const stub: DashboardDataSource = {
-    kind: "sandbox" as const,
     aggregateRecordsByTime: notStubbed("aggregateRecordsByTime"),
-    listExploreRecordBuckets: notStubbed("listExploreRecordBuckets"),
-    isHybridRetrievalAdvertised: () => Promise.resolve(false),
-    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
-    listConnectorSummaries: notStubbed("listConnectorSummaries"),
-    listConnectorManifests: notStubbed("listConnectorManifests"),
-    searchRecordsLexical: notStubbed("searchRecordsLexical"),
-    searchRecordsHybrid: notStubbed("searchRecordsHybrid"),
-    searchRecordsSemantic: notStubbed("searchRecordsSemantic"),
-    queryRecords: notStubbed("queryRecords"),
-    getRecord: notStubbed("getRecord"),
     getConnectorOverview: notStubbed("getConnectorOverview"),
+    getDatasetSummary: notStubbed("getDatasetSummary"),
+    getDeploymentDiagnostics: notStubbed("getDeploymentDiagnostics"),
+    getGrantTimeline: notStubbed("getGrantTimeline"),
+    getRecord: notStubbed("getRecord"),
+    getRunTimeline: notStubbed("getRunTimeline"),
     getStreamMetadata: notStubbed("getStreamMetadata"),
     getTraceTimeline: notStubbed("getTraceTimeline"),
+    isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    isSemanticRetrievalAdvertised: () => Promise.resolve(false),
+    kind: "sandbox" as const,
+    listConnectorManifests: notStubbed("listConnectorManifests"),
+    listConnectorSummaries: notStubbed("listConnectorSummaries"),
+    listExploreRecordBuckets: notStubbed("listExploreRecordBuckets"),
+    // The recent lens is the merged-timeline endpoint (single path; no fan-out
+    // fallback). Return an empty page so the empty-query feed assembles cleanly.
+    listExploreTimeline: () =>
+      Promise.resolve({
+        data: [],
+        has_more: false,
+        new_since_snapshot: 0,
+        next_cursor: null,
+        object: "list" as const,
+        snapshot_at: new Date(0).toISOString(),
+      }),
     listGrants: notStubbed("listGrants"),
     listPendingApprovals: notStubbed("listPendingApprovals"),
     listRuns: notStubbed("listRuns"),
     listStreams: notStubbed("listStreams"),
     listTraces: notStubbed("listTraces"),
+    queryRecords: notStubbed("queryRecords"),
     refSearch: notStubbed("refSearch"),
-    // The recent lens is the merged-timeline endpoint (single path; no fan-out
-    // fallback). Return an empty page so the empty-query feed assembles cleanly.
-    listExploreTimeline: () =>
-      Promise.resolve({
-        object: "list" as const,
-        data: [],
-        has_more: false,
-        next_cursor: null,
-        snapshot_at: new Date(0).toISOString(),
-        new_since_snapshot: 0,
-      }),
-    getDatasetSummary: notStubbed("getDatasetSummary"),
-    getDeploymentDiagnostics: notStubbed("getDeploymentDiagnostics"),
-    getGrantTimeline: notStubbed("getGrantTimeline"),
-    getRunTimeline: notStubbed("getRunTimeline"),
+    searchRecordsHybrid: notStubbed("searchRecordsHybrid"),
+    searchRecordsLexical: notStubbed("searchRecordsLexical"),
+    searchRecordsSemantic: notStubbed("searchRecordsSemantic"),
     ...overrides,
   };
   return stub;
@@ -177,11 +177,11 @@ function makeDataSource(overrides: Partial<DashboardDataSource>): DashboardDataS
 
 test("P2 lexical Most-relevant: has_more and next_cursor wired into searchHasMore + searchNextCursor", async () => {
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
-  const hit = makeHit({ connector_id: "ynab", stream: "transactions", connection_id: "ynab-1" });
+  const hit = makeHit({ connection_id: "ynab-1", connector_id: "ynab", stream: "transactions" });
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
-    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
     // Recall proven complete: the lexical page is exhaustively pageable, so the
     // descriptor is keyword_pageable and the cursor trail is honest.
     searchRecordsLexical: async () =>
@@ -202,23 +202,23 @@ test("P2 lexical Most-relevant: has_more and next_cursor wired into searchHasMor
 test("P2 lexical Load-more: passing cursor= calls searchRecordsLexical with that cursor", async () => {
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   const hitP1 = makeHit({
-    connector_id: "ynab",
-    stream: "transactions",
-    record_key: "p1-rec",
     connection_id: "ynab-1",
+    connector_id: "ynab",
+    record_key: "p1-rec",
+    stream: "transactions",
   });
   const hitP2 = makeHit({
-    connector_id: "ynab",
-    stream: "transactions",
-    record_key: "p2-rec",
     connection_id: "ynab-1",
+    connector_id: "ynab",
+    record_key: "p2-rec",
+    stream: "transactions",
   });
 
   const capturedCursors: (string | undefined)[] = [];
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
-    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
     searchRecordsLexical: (_q, opts) => {
       capturedCursors.push(opts?.cursor);
       if (opts?.cursor === "cursor-page2") {
@@ -237,7 +237,7 @@ test("P2 lexical Load-more: passing cursor= calls searchRecordsLexical with that
   assert.equal(page1.feed[0]?.recordId, "p1-rec");
 
   // Page 2: forward the cursor from page 1
-  const page2 = await assembleExplorerData({ q: "coffee", cursor: "cursor-page2" }, ds, "https://rs.test");
+  const page2 = await assembleExplorerData({ cursor: "cursor-page2", q: "coffee" }, ds, "https://rs.test");
   assert.equal(page2.searchHasMore, false);
   assert.equal(page2.searchNextCursor, null);
   assert.equal(page2.feed[0]?.recordId, "p2-rec");
@@ -256,28 +256,28 @@ test("P2 Most-recent single-stream: lexical is called (not queryRecords); return
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   // All hits from the same connector+stream so detectSingleStreamDoor fires.
   const hit = makeHit({
-    connector_id: "ynab",
-    stream: "transactions",
     connection_id: "ynab-1",
+    connector_id: "ynab",
     record_key: "rec-last",
+    stream: "transactions",
   });
 
   let queryRecordsCalled = false;
   const lexicalCalls: Array<{ streams?: string[]; cursor?: string }> = [];
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
-    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
-    // All lexical calls (stream-door probe + display fetch) go here.
-    searchRecordsLexical: (_q, opts) => {
-      lexicalCalls.push({ streams: opts?.streams, cursor: opts?.cursor });
-      return Promise.resolve(makeLexicalPage([hit], { has_more: false }));
-    },
+    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
     // queryRecords must NOT be called (F2 fix: was the display path, returned ALL records).
     queryRecords: () => {
       queryRecordsCalled = true;
       return Promise.reject(new Error("queryRecords must not be called for Most-recent single-stream (F2 fix)"));
+    },
+    // All lexical calls (stream-door probe + display fetch) go here.
+    searchRecordsLexical: (_q, opts) => {
+      lexicalCalls.push({ cursor: opts?.cursor, streams: opts?.streams });
+      return Promise.resolve(makeLexicalPage([hit], { has_more: false }));
     },
   });
 
@@ -305,19 +305,21 @@ test("P2 Most-recent single-stream: lexical is called (not queryRecords); return
 
 test("P2 Most-recent single-stream: second page (cursor forwarded to lexical) reaches last matching record", async () => {
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
-  const hit = makeHit({ connector_id: "ynab", stream: "transactions", connection_id: "ynab-1", record_key: "rec-p1" });
+  const hit = makeHit({ connection_id: "ynab-1", connector_id: "ynab", record_key: "rec-p1", stream: "transactions" });
   const hitEnd = makeHit({
-    connector_id: "ynab",
-    stream: "transactions",
     connection_id: "ynab-1",
+    connector_id: "ynab",
     record_key: "rec-end",
+    stream: "transactions",
   });
 
   const lexicalCursors: (string | undefined)[] = [];
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
-    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    // queryRecords must NOT be called (F2 fix).
+    queryRecords: () => Promise.reject(new Error("queryRecords must not be called (F2 fix)")),
     searchRecordsLexical: (_q, opts) => {
       // Track the cursor arg passed to lexical (skip the probe call which has no cursor).
       if (opts?.streams) {
@@ -329,8 +331,6 @@ test("P2 Most-recent single-stream: second page (cursor forwarded to lexical) re
       // Probe call (no streams) or page 1 display call returns hit with cursor.
       return Promise.resolve(makeLexicalPage([hit], { has_more: true, next_cursor: "lex-p2" }));
     },
-    // queryRecords must NOT be called (F2 fix).
-    queryRecords: () => Promise.reject(new Error("queryRecords must not be called (F2 fix)")),
   });
 
   // Page 1 of Most-recent
@@ -340,7 +340,7 @@ test("P2 Most-recent single-stream: second page (cursor forwarded to lexical) re
 
   // Page 2: forward the lexical cursor (F2 fix: was a keyset cursor to queryRecords)
   const page2 = await assembleExplorerData(
-    { q: "rent", search_sort: "recent", cursor: "lex-p2" },
+    { cursor: "lex-p2", q: "rent", search_sort: "recent" },
     ds,
     "https://rs.test"
   );
@@ -360,13 +360,13 @@ test("P2 Most-recent single-stream: second page (cursor forwarded to lexical) re
 
 test("P2 hybrid Most-relevant: searchHasMore false and searchNextCursor null (no fake Load-more)", async () => {
   const summary = makeSummary({ connection_id: "gmail-1", connector_id: "gmail", streams: ["messages"] });
-  const hit1 = makeHit({ connector_id: "gmail", stream: "messages", record_key: "msg-1", connection_id: "gmail-1" });
-  const hit2 = makeHit({ connector_id: "gmail", stream: "messages", record_key: "msg-2", connection_id: "gmail-1" });
+  const hit1 = makeHit({ connection_id: "gmail-1", connector_id: "gmail", record_key: "msg-1", stream: "messages" });
+  const hit2 = makeHit({ connection_id: "gmail-1", connector_id: "gmail", record_key: "msg-2", stream: "messages" });
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
-    listConnectorManifests: () => Promise.resolve([makeManifest("gmail", ["messages"])]),
     isHybridRetrievalAdvertised: () => Promise.resolve(true),
+    listConnectorManifests: () => Promise.resolve([makeManifest("gmail", ["messages"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
     searchRecordsHybrid: () => Promise.resolve(makeLexicalPage([hit1, hit2], { has_more: false })),
     // Hybrid mode should NOT call lexical
     searchRecordsLexical: () => Promise.reject(new Error("lexical must not be called when hybrid is used")),
@@ -390,7 +390,7 @@ test("P2 hybrid Most-relevant: searchHasMore false and searchNextCursor null (no
 
 test("P2 hybrid + search_sort=recent: uses lexical hit to detect stream door, then lexical (not queryRecords)", async () => {
   const summary = makeSummary({ connection_id: "gmail-1", connector_id: "gmail", streams: ["messages"] });
-  const hit = makeHit({ connector_id: "gmail", stream: "messages", connection_id: "gmail-1" });
+  const hit = makeHit({ connection_id: "gmail-1", connector_id: "gmail", stream: "messages" });
 
   let lexicalCallCount = 0;
   let lexicalStreamsArg: string[] | undefined;
@@ -398,9 +398,11 @@ test("P2 hybrid + search_sort=recent: uses lexical hit to detect stream door, th
   // detect the stream door, then uses lexical again (with stream scope) for the
   // actual display results (F2 fix: was queryRecords without query).
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
-    listConnectorManifests: () => Promise.resolve([makeManifest("gmail", ["messages"])]),
     isHybridRetrievalAdvertised: () => Promise.resolve(true),
+    listConnectorManifests: () => Promise.resolve([makeManifest("gmail", ["messages"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
+    // queryRecords must NOT be called (F2 fix: it returned ALL records ignoring query)
+    queryRecords: () => Promise.reject(new Error("queryRecords must not be called in Most-recent mode (F2 fix)")),
     // Hybrid must NOT be called when search_sort=recent
     searchRecordsHybrid: () => Promise.reject(new Error("hybrid must not be called in Most-recent mode")),
     searchRecordsLexical: (_q, opts) => {
@@ -410,8 +412,6 @@ test("P2 hybrid + search_sort=recent: uses lexical hit to detect stream door, th
       }
       return Promise.resolve(makeLexicalPage([hit], { has_more: false }));
     },
-    // queryRecords must NOT be called (F2 fix: it returned ALL records ignoring query)
-    queryRecords: () => Promise.reject(new Error("queryRecords must not be called in Most-recent mode (F2 fix)")),
   });
 
   const result = await assembleExplorerData({ q: "invoice", search_sort: "recent" }, ds, "https://rs.test");
@@ -440,29 +440,29 @@ test("P2 multi-stream Most-recent: returns matching records via lexical with wir
   const summaryA = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   const summaryB = makeSummary({ connection_id: "gmail-1", connector_id: "gmail", streams: ["messages"] });
   const hitA = makeHit({
-    connector_id: "ynab",
-    stream: "transactions",
     connection_id: "ynab-1",
+    connector_id: "ynab",
     record_key: "ynab-rec",
+    stream: "transactions",
   });
   const hitB = makeHit({
-    connector_id: "gmail",
-    stream: "messages",
     connection_id: "gmail-1",
+    connector_id: "gmail",
     record_key: "gmail-rec",
+    stream: "messages",
   });
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summaryA, summaryB])),
+    isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () =>
       Promise.resolve([makeManifest("ynab", ["transactions"]), makeManifest("gmail", ["messages"])]),
-    isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summaryA, summaryB])),
+    // queryRecords must NOT be called (multi-stream has no single-stream path)
+    queryRecords: () => Promise.reject(new Error("queryRecords must not be called for multi-stream Most-recent")),
     // Both the stream-door probe and the display fetch are lexical.
     // The display fetch carries has_more=true to verify the cursor is wired.
     searchRecordsLexical: () =>
       Promise.resolve(makeLexicalPage([hitA, hitB], { has_more: true, next_cursor: "lex-cursor-42" })),
-    // queryRecords must NOT be called (multi-stream has no single-stream path)
-    queryRecords: () => Promise.reject(new Error("queryRecords must not be called for multi-stream Most-recent")),
   });
 
   const result = await assembleExplorerData({ q: "payment", search_sort: "recent" }, ds, "https://rs.test");
@@ -493,16 +493,16 @@ test("P2 stream door: populated when all hits share one connector+stream", async
   const summary = makeSummary({
     connection_id: "ynab-1",
     connector_id: "ynab",
-    streams: ["transactions"],
     display_name: "My YNAB",
+    streams: ["transactions"],
   });
-  const hit1 = makeHit({ connector_id: "ynab", stream: "transactions", record_key: "r1", connection_id: "ynab-1" });
-  const hit2 = makeHit({ connector_id: "ynab", stream: "transactions", record_key: "r2", connection_id: "ynab-1" });
+  const hit1 = makeHit({ connection_id: "ynab-1", connector_id: "ynab", record_key: "r1", stream: "transactions" });
+  const hit2 = makeHit({ connection_id: "ynab-1", connector_id: "ynab", record_key: "r2", stream: "transactions" });
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
-    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
     searchRecordsLexical: () => Promise.resolve(makeLexicalPage([hit1, hit2], { has_more: false })),
   });
 
@@ -521,14 +521,14 @@ test("P2 stream door: populated when all hits share one connector+stream", async
 test("P2 stream door: null when hits span multiple connectors", async () => {
   const summaryA = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
   const summaryB = makeSummary({ connection_id: "gmail-1", connector_id: "gmail", streams: ["messages"] });
-  const hitA = makeHit({ connector_id: "ynab", stream: "transactions", connection_id: "ynab-1" });
-  const hitB = makeHit({ connector_id: "gmail", stream: "messages", connection_id: "gmail-1" });
+  const hitA = makeHit({ connection_id: "ynab-1", connector_id: "ynab", stream: "transactions" });
+  const hitB = makeHit({ connection_id: "gmail-1", connector_id: "gmail", stream: "messages" });
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summaryA, summaryB])),
+    isHybridRetrievalAdvertised: () => Promise.resolve(false),
     listConnectorManifests: () =>
       Promise.resolve([makeManifest("ynab", ["transactions"]), makeManifest("gmail", ["messages"])]),
-    isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summaryA, summaryB])),
     searchRecordsLexical: () => Promise.resolve(makeLexicalPage([hitA, hitB], { has_more: false })),
   });
 
@@ -573,9 +573,9 @@ test("P2 searchSort defaults to 'relevance' on non-search (empty-query) feeds", 
   const summary = makeSummary({ connection_id: "ynab-1", connector_id: "ynab", streams: ["transactions"] });
 
   const ds = makeDataSource({
-    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
-    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
     isHybridRetrievalAdvertised: () => Promise.resolve(false),
+    listConnectorManifests: () => Promise.resolve([makeManifest("ynab", ["transactions"])]),
+    listConnectorSummaries: () => Promise.resolve(summaryListResponse([summary])),
     queryRecords: () => Promise.resolve(makeRecordsPage(["rec-1"], { has_more: false })),
   });
 

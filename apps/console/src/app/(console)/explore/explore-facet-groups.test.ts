@@ -51,12 +51,12 @@ test("per-source loaded count = loaded feed rows for THAT (connection, stream), 
     entry("conn_slack", "channels"),
   ];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK, IMESSAGE],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
 
   const slack = groups.find((g) => g.connectionId === "conn_slack");
@@ -81,12 +81,12 @@ test("per-source loaded count = loaded feed rows for THAT (connection, stream), 
 test("source loadedTotal is the sum of its visible streams' loaded counts (same KIND, not a lifetime total)", () => {
   const feed = [entry("conn_slack", "messages"), entry("conn_slack", "messages"), entry("conn_slack", "channels")];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
   assert.equal(groups[0]?.loadedTotal, 3);
 });
@@ -96,12 +96,12 @@ test("0-in-window stream is hidden (no dead-end) UNLESS it is an active filter",
   const feed = [entry("conn_slack", "channels")];
 
   const hidden = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
   // messages (0 in window, not selected) must NOT appear — never a "0" dead-end.
   assert.equal(
@@ -112,12 +112,12 @@ test("0-in-window stream is hidden (no dead-end) UNLESS it is an active filter",
 
   // But a SELECTED messages stays visible even at 0 — an active filter is never hidden.
   const withSelected = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: ["messages"],
-    excludeStreams: [],
   });
   const sel = withSelected[0]?.streams.find((s) => s.stream === "messages");
   assert.ok(sel, "a selected stream with 0 in-window rows is kept (no dropped filter)");
@@ -126,12 +126,12 @@ test("0-in-window stream is hidden (no dead-end) UNLESS it is an active filter",
 
   // Likewise an EXCLUDED stream at 0 stays visible.
   const withExcluded = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK],
+    excludeStreams: ["messages"],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: ["messages"],
   });
   const ex = withExcluded[0]?.streams.find((s) => s.stream === "messages");
   assert.ok(ex);
@@ -142,12 +142,12 @@ test("a source with no visible streams is dropped entirely (no empty group)", ()
   // iMessage owns messages/attachments but the loaded window has neither.
   const feed = [entry("conn_slack", "channels")];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK, IMESSAGE],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
   assert.equal(
     groups.find((g) => g.connectionId === "conn_imessage"),
@@ -158,12 +158,12 @@ test("a source with no visible streams is dropped entirely (no empty group)", ()
 test("when connections are selected, the rail scopes to those sources only", () => {
   const feed = [entry("conn_slack", "messages"), entry("conn_imessage", "messages")];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK, IMESSAGE],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: ["conn_slack"],
     selectedStreams: [],
-    excludeStreams: [],
   });
   assert.equal(groups.length, 1);
   assert.equal(groups[0]?.connectionId, "conn_slack");
@@ -179,12 +179,12 @@ test("the client predicate is honored: counts only loaded rows that pass (count=
     return keep;
   };
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK],
+    excludeStreams: [],
+    feed,
     passes: everyOther,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
   assert.equal(
     groups[0]?.streams.find((s) => s.stream === "messages")?.loadedCount,
@@ -200,12 +200,12 @@ test("rows with a null connectionId never contribute to a per-source count", () 
     { ...entry("conn_slack", "messages"), connectionId: null },
   ];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
   // Only the row with a concrete connectionId counts (1, not 2).
   assert.equal(groups[0]?.streams.find((s) => s.stream === "messages")?.loadedCount, 1);
@@ -219,12 +219,12 @@ test("active filters pin to the top of a source group; the rest rank by loaded c
     entry("conn_slack", "messages"),
   ];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: ["messages"], // selected, but fewer loaded rows
-    excludeStreams: [],
   });
   // Selected `messages` pins first despite channels having more rows.
   assert.equal(groups[0]?.streams[0]?.stream, "messages");
@@ -235,12 +235,12 @@ test("active filters pin to the top of a source group; the rest rank by loaded c
 test("totalVisibleStreamFacets sums the rendered stream rows across groups", () => {
   const feed = [entry("conn_slack", "messages"), entry("conn_slack", "channels"), entry("conn_imessage", "messages")];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK, IMESSAGE],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
   // Slack: messages + channels (2); iMessage: messages (1) → 3 total.
   assert.equal(totalVisibleStreamFacets(groups), 3);
@@ -254,12 +254,12 @@ test("filterSourceGroups matches source name (keep whole group) or stream names 
     entry("conn_imessage", "attachments"),
   ];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK, IMESSAGE],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
 
   // Matching the SOURCE name keeps the whole group with all its streams.
@@ -284,12 +284,12 @@ test("filterSourceGroups matches source name (keep whole group) or stream names 
 test("filterSourceGroups recomputes the group total over the surviving streams", () => {
   const feed = [entry("conn_slack", "messages"), entry("conn_slack", "messages"), entry("conn_slack", "channels")];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [SLACK],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
   // Filtering to just `channels` makes the source total 1 (not the full 3).
   const filtered = filterSourceGroups(groups, "channels");

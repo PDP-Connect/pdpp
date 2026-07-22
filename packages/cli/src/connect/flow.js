@@ -30,7 +30,7 @@ export async function connectProvider(providerUrl, options = {}) {
     throw new ConnectError("fetch_unavailable", "This Node runtime does not provide fetch().");
   }
 
-  const io = options.io ?? { stdout: process.stdout, stderr: process.stderr };
+  const io = options.io ?? { stderr: process.stderr, stdout: process.stdout };
   const cacheRoot = options.cacheRoot ?? ".pdpp";
   const scope = options.scope ?? DEFAULT_SCOPE;
   const resourceMetadata = await discoverProtectedResourceMetadata(normalizedProviderUrl, fetchFn);
@@ -60,17 +60,17 @@ export async function connectProvider(providerUrl, options = {}) {
   }
 
   const publicClient = await getOrRegisterPublicClient({
-    fetchFn,
     authorizationMetadata,
     cacheRoot,
-    providerUrl: normalizedProviderUrl,
     clientName: "PDPP CLI",
+    fetchFn,
+    providerUrl: normalizedProviderUrl,
   });
 
   const startRequest = {
+    client_name: "PDPP CLI",
     resource: normalizedProviderUrl,
     scope,
-    client_name: "PDPP CLI",
   };
   if (publicClient?.client_id) {
     startRequest.client_id = publicClient.client_id;
@@ -80,7 +80,7 @@ export async function connectProvider(providerUrl, options = {}) {
 
   const approvalUrl = start.approval_url ?? start.verification_uri_complete ?? start.verification_uri;
   const pollUrl = start.poll_url ?? start.token_url ?? start.device_poll_endpoint ?? start.completion_endpoint;
-  if (!approvalUrl || !pollUrl) {
+  if (!(approvalUrl && pollUrl)) {
     throw new ConnectError(
       "connect_contract_invalid",
       "Agent connect start response must include approval_url and a polling token URL."
@@ -95,20 +95,20 @@ export async function connectProvider(providerUrl, options = {}) {
 
   const credential = await pollForCredential(fetchFn, pollUrl, {
     intervalMs: Number(start.interval_ms ?? start.interval ?? options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS),
-    timeoutMs: options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS,
-    sleep: options.sleep,
     now: options.now,
     pollingCode: start.polling_code,
+    sleep: options.sleep,
+    timeoutMs: options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS,
   });
 
   await verifySchema(fetchFn, normalizedProviderUrl, credential.access_token);
   const cacheFile = await storeCredential(cacheRoot, normalizedProviderUrl, {
-    provider_url: normalizedProviderUrl,
     authorization_server: authorizationServerUrl,
-    scope,
     client: publicClient,
-    credential,
     created_at: new Date(options.now?.() ?? Date.now()).toISOString(),
+    credential,
+    provider_url: normalizedProviderUrl,
+    scope,
   });
 
   io.stdout.write(
@@ -116,11 +116,11 @@ export async function connectProvider(providerUrl, options = {}) {
   );
 
   return {
-    providerUrl: normalizedProviderUrl,
     authorizationServerUrl,
     cacheFile,
-    scope,
     clientId: publicClient?.client_id ?? null,
+    providerUrl: normalizedProviderUrl,
+    scope,
   };
 }
 
@@ -161,7 +161,7 @@ export async function readStoredCredential(providerUrl, options = {}) {
     }
   }
 
-  return { cacheFile, payload, credential, providerUrl: normalizedProviderUrl };
+  return { cacheFile, credential, payload, providerUrl: normalizedProviderUrl };
 }
 
 export function normalizeProviderUrl(value) {
@@ -276,7 +276,9 @@ async function readCachedClientRegistration(cacheRoot, providerUrl) {
     const client = payload?.client;
     return client?.client_id ? client : null;
   } catch (error) {
-    if (error?.code === "ENOENT") return null;
+    if (error?.code === "ENOENT") {
+      return null;
+    }
     throw error;
   }
 }
@@ -309,10 +311,10 @@ async function pollForCredential(fetchFn, pollUrl, options) {
       }
       return {
         access_token: credential.access_token,
-        token_type: credential.token_type ?? "Bearer",
         expires_at: credential.expires_at,
         grant_id: credential.grant_id ?? result.grant_id,
         scope: credential.scope,
+        token_type: credential.token_type ?? "Bearer",
       };
     }
 
@@ -357,7 +359,7 @@ async function verifySchema(fetchFn, providerUrl, accessToken) {
 
 async function storeCredential(cacheRoot, providerUrl, payload) {
   const cacheFile = getCredentialCacheFile(cacheRoot, providerUrl);
-  await mkdir(dirname(cacheFile), { recursive: true, mode: 0o700 });
+  await mkdir(dirname(cacheFile), { mode: 0o700, recursive: true });
   await ensurePdppGitignore(cacheRoot);
   await writeFile(cacheFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
   return cacheFile;
@@ -377,7 +379,7 @@ async function ensurePdppGitignore(cacheRoot) {
   if (current.includes("*")) {
     return;
   }
-  await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+  await mkdir(cacheRoot, { mode: 0o700, recursive: true });
   const prefix = current && !current.endsWith("\n") ? `${current}\n` : current;
   await writeFile(gitignorePath, `${prefix}*\n!.gitignore\n`, { mode: 0o600 });
 }
@@ -399,9 +401,9 @@ async function postJson(fetchFn, url, body) {
   let response;
   try {
     response = await fetchFn(url, {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST",
     });
   } catch (error) {
     throw new ConnectError("connect_request_failed", `Connect request failed at ${url}: ${error.message}.`);

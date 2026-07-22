@@ -32,25 +32,25 @@ const STREAM_NOT_MESSAGES_RE = /stream!=messages/;
 test("clicking a SOURCE facet and typing con: compile to the IDENTICAL query (chip == operator)", () => {
   // Rail click → selectedConnectionIds: ["gmail"].
   const viaFacet = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery(""),
     selectedConnectionIds: ["gmail"],
     selectedStreams: [],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   // Typed operator → con:gmail.
   const viaOperator = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery("con:gmail"),
     selectedConnectionIds: [],
     selectedStreams: [],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   assert.match(viaFacet, CONNECTION_GMAIL_RE);
   assert.match(viaOperator, CONNECTION_GMAIL_RE);
@@ -59,24 +59,24 @@ test("clicking a SOURCE facet and typing con: compile to the IDENTICAL query (ch
 
 test("clicking a STREAM facet and typing stream: compile to the IDENTICAL query (chip == operator)", () => {
   const viaFacet = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery(""),
     selectedConnectionIds: [],
     selectedStreams: ["messages"],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   const viaOperator = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery("stream:messages"),
     selectedConnectionIds: [],
     selectedStreams: [],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   assert.match(viaFacet, STREAM_MESSAGES_RE);
   assert.match(viaOperator, STREAM_MESSAGES_RE);
@@ -107,26 +107,26 @@ test("removing a con:/stream: token from the query deselects the rail (no lifted
 
 test("the 'is not' SOURCE toggle and -con: compile to the same exclusion (inversion == flipped operator)", () => {
   const viaFacet = buildCompiledQuery({
+    excludedConnectionIds: ["gmail"],
+    excludedStreams: [],
+    limit: 50,
+    order: "newest",
     parsed: parseQuery(""),
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludedConnectionIds: ["gmail"],
-    excludedStreams: [],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   const viaOperator = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery("-con:gmail"),
     selectedConnectionIds: [],
     selectedStreams: [],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   assert.match(viaFacet, CONNECTION_NOT_GMAIL_RE);
   assert.match(viaOperator, CONNECTION_NOT_GMAIL_RE);
@@ -135,25 +135,25 @@ test("the 'is not' SOURCE toggle and -con: compile to the same exclusion (invers
 
 test("the 'is not' STREAM toggle and -stream: compile to the same exclusion", () => {
   const viaFacet = buildCompiledQuery({
+    excludedStreams: ["messages"],
+    limit: 50,
+    order: "newest",
     parsed: parseQuery(""),
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludedStreams: ["messages"],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   const viaOperator = buildCompiledQuery({
+    limit: 50,
+    order: "newest",
     parsed: parseQuery("-stream:messages"),
     selectedConnectionIds: [],
     selectedStreams: [],
     serverFilterableFields: new Set(),
     since: "",
     until: "",
-    order: "newest",
-    limit: 50,
   });
   assert.match(viaFacet, STREAM_NOT_MESSAGES_RE);
   assert.match(viaOperator, STREAM_NOT_MESSAGES_RE);
@@ -207,12 +207,12 @@ test("a stream owned by two sources shows source A's loaded count under A and so
     entry("conn_b", "messages", "b2"),
   ];
   const groups = computeSourceGroupedStreamFacets({
-    feed,
     connections: [A, B],
+    excludeStreams: [],
+    feed,
     passes: ALL,
     selectedConnectionIds: [],
     selectedStreams: [],
-    excludeStreams: [],
   });
   const a = groups.find((g) => g.connectionId === "conn_a");
   const b = groups.find((g) => g.connectionId === "conn_b");

@@ -8,16 +8,16 @@ import { classifyViewportTransition, type ViewportObservation } from "@opendatal
 function observation(overrides: Partial<ViewportObservation> = {}): ViewportObservation {
   return {
     editableFocused: false,
-    layout: { width: 390, height: 844 },
+    layout: { height: 844, width: 390 },
     mobile: true,
     visual: {
-      width: 390,
       height: 844,
       offsetLeft: 0,
       offsetTop: 0,
       pageLeft: 0,
       pageTop: 0,
       scale: 1,
+      width: 390,
     },
     ...overrides,
   };
@@ -29,13 +29,13 @@ test("classifies modern mobile visual-viewport keyboard occlusion without remote
     observation({
       editableFocused: true,
       visual: {
-        width: 390,
         height: 560,
         offsetLeft: 0,
         offsetTop: 0,
         pageLeft: 0,
         pageTop: 0,
         scale: 1,
+        width: 390,
       },
     })
   );
@@ -50,15 +50,15 @@ test("classifies resizes-content keyboard occlusion without remote resize", () =
     observation(),
     observation({
       editableFocused: true,
-      layout: { width: 390, height: 560 },
+      layout: { height: 560, width: 390 },
       visual: {
-        width: 390,
         height: 560,
         offsetLeft: 0,
         offsetTop: 0,
         pageLeft: 0,
         pageTop: 0,
         scale: 1,
+        width: 390,
       },
     })
   );
@@ -71,15 +71,15 @@ test("classifies browser chrome visual-viewport changes separately from keyboard
   const result = classifyViewportTransition(
     observation(),
     observation({
-      layout: { width: 390, height: 841 },
+      layout: { height: 841, width: 390 },
       visual: {
-        width: 390,
         height: 800,
         offsetLeft: 0,
         offsetTop: 44,
         pageLeft: 0,
         pageTop: 44,
         scale: 1,
+        width: 390,
       },
     })
   );
@@ -91,12 +91,12 @@ test("classifies browser chrome visual-viewport changes separately from keyboard
 test("classifies same-width mobile dynamic viewport height churn as browser chrome", () => {
   const result = classifyViewportTransition(
     observation({
-      layout: { width: 448, height: 819 },
-      visual: { width: 448, height: 819, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, scale: 1 },
+      layout: { height: 819, width: 448 },
+      visual: { height: 819, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, scale: 1, width: 448 },
     }),
     observation({
-      layout: { width: 448, height: 891 },
-      visual: { width: 448, height: 891, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, scale: 1 },
+      layout: { height: 891, width: 448 },
+      visual: { height: 891, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, scale: 1, width: 448 },
     })
   );
 
@@ -108,8 +108,8 @@ test("classifies viewport authority so layout and orientation resize while occlu
   assert.equal(classifyViewportTransition(null, observation()).remoteResize, "post");
   assert.equal(
     classifyViewportTransition(
-      observation({ layout: { width: 900, height: 600 }, mobile: false }),
-      observation({ layout: { width: 960, height: 600 }, mobile: false })
+      observation({ layout: { height: 600, width: 900 }, mobile: false }),
+      observation({ layout: { height: 600, width: 960 }, mobile: false })
     ).kind,
     "layout-resize"
   );
@@ -117,9 +117,9 @@ test("classifies viewport authority so layout and orientation resize while occlu
     classifyViewportTransition(
       observation({ orientation: { angle: 0, type: "portrait-primary" } }),
       observation({
-        layout: { width: 844, height: 390 },
+        layout: { height: 390, width: 844 },
         orientation: { angle: 90, type: "landscape-primary" },
-        visual: { width: 844, height: 390, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, scale: 1 },
+        visual: { height: 390, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, scale: 1, width: 844 },
       })
     ).remoteResize,
     "post"
@@ -129,7 +129,7 @@ test("classifies viewport authority so layout and orientation resize while occlu
       observation(),
       observation({
         editableFocused: true,
-        visual: { width: 390, height: 560, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, scale: 1 },
+        visual: { height: 560, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, scale: 1, width: 390 },
       })
     ).remoteResize,
     "hold"
@@ -141,25 +141,25 @@ test("holds remote resize during multi-step keyboard animation", () => {
     observation({
       editableFocused: true,
       visual: {
-        width: 390,
         height: 844,
         offsetLeft: 0,
         offsetTop: 0,
         pageLeft: 0,
         pageTop: 0,
         scale: 1,
+        width: 390,
       },
     }),
     observation({
       editableFocused: true,
       visual: {
-        width: 390,
         height: 780,
         offsetLeft: 0,
         offsetTop: 0,
         pageLeft: 0,
         pageTop: 0,
         scale: 1,
+        width: 390,
       },
     })
   );
@@ -174,16 +174,16 @@ test("classifies orientation as a remote resize candidate", () => {
       orientation: { angle: 0, type: "portrait-primary" },
     }),
     observation({
-      layout: { width: 844, height: 390 },
+      layout: { height: 390, width: 844 },
       orientation: { angle: 90, type: "landscape-primary" },
       visual: {
-        width: 844,
         height: 390,
         offsetLeft: 0,
         offsetTop: 0,
         pageLeft: 0,
         pageTop: 0,
         scale: 1,
+        width: 844,
       },
     })
   );
@@ -197,13 +197,13 @@ test("classifies pinch zoom as local-only", () => {
     observation(),
     observation({
       visual: {
-        width: 300,
         height: 650,
         offsetLeft: 0,
         offsetTop: 0,
         pageLeft: 0,
         pageTop: 0,
         scale: 1.3,
+        width: 300,
       },
     })
   );
@@ -216,25 +216,25 @@ test("classifies keyboard before zoom when both signals are present", () => {
   const result = classifyViewportTransition(
     observation({
       visual: {
-        width: 300,
         height: 650,
         offsetLeft: 0,
         offsetTop: 0,
         pageLeft: 0,
         pageTop: 0,
         scale: 1.3,
+        width: 300,
       },
     }),
     observation({
       editableFocused: true,
       visual: {
-        width: 300,
         height: 430,
         offsetLeft: 0,
         offsetTop: 0,
         pageLeft: 0,
         pageTop: 0,
         scale: 1.3,
+        width: 300,
       },
     })
   );
@@ -248,7 +248,7 @@ test("uses VirtualKeyboard geometry when available", () => {
     observation(),
     observation({
       editableFocused: false,
-      virtualKeyboard: { x: 0, y: 540, width: 390, height: 304 },
+      virtualKeyboard: { height: 304, width: 390, x: 0, y: 540 },
     })
   );
 

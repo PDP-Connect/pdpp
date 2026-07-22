@@ -48,7 +48,7 @@ export default async function BrowserSessionLaunchPage({
     <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/sources">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
             Back to sources
           </Link>
         }

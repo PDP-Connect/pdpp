@@ -33,14 +33,14 @@
  *       openspec/changes/define-stream-coverage-freshness-evidence/
  */
 
-import { getDb } from "./db.js";
-import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import {
   pruneOrphanedEvidenceComplete,
   readAllInstanceIdsForPruning,
   readInstanceIdPage,
   reconcileConnectorSummaryEvidence,
 } from "./connector-summary-evidence-engine.ts";
+import { getDb } from "./db.js";
+import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 
 /** A raw database row (column-keyed) crossing the untyped storage boundary. */
 type Row = Record<string, unknown>;
@@ -1326,8 +1326,6 @@ export interface FoldStreamFactsResult {
   /** Participant ids whose CAS write still lost after the bounded replay attempts. */
   readonly casRejectedInstanceIds: readonly string[];
   readonly folded: number;
-  readonly participants: number;
-  readonly refused: number;
   /**
    * `true` when this call's own work budget (`maxDurationMs`/`maxEvents`)
    * was exhausted before every participant reached the pass's high-water
@@ -1337,6 +1335,8 @@ export interface FoldStreamFactsResult {
    * budgeted call that genuinely finished within its budget.
    */
   readonly incomplete: boolean;
+  readonly participants: number;
+  readonly refused: number;
   /**
    * The event_seq every INCOMPLETE participant's durable checkpoint was
    * left at this call — a genuine resume cursor, not merely "call again
@@ -2040,8 +2040,6 @@ export async function reconcileDirtyConnectorSummaryEvidence(
 export interface BoundedSweepResult {
   /** Total instances discovered+repaired+considered across every page processed this call. */
   readonly discovered: number;
-  readonly repaired: number;
-  readonly skipped: number;
   /**
    * `true` when the sweep reached the deadline (or the page-count cap)
    * before covering the complete canonical set, OR when a page's OWN fold
@@ -2057,9 +2055,11 @@ export interface BoundedSweepResult {
    * rather than skipping past them.
    */
   readonly incomplete: boolean;
-  readonly resumeAfterId: string | null;
   /** Complete-set orphan pruning only ran when the sweep covered every page AND every page's fold genuinely converged this call (see below). */
   readonly prunedComplete: boolean;
+  readonly repaired: number;
+  readonly resumeAfterId: string | null;
+  readonly skipped: number;
 }
 
 /**

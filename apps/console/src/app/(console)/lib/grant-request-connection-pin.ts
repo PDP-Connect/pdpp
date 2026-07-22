@@ -117,7 +117,7 @@ export function buildConnectionPinOptions(
         connectorId,
         displayName: owned ? summary.display_name : null,
       });
-      return { value: trim(summary.connection_id), base };
+      return { base, value: trim(summary.connection_id) };
     });
 
   const labelCounts = new Map<string, number>();
@@ -128,10 +128,10 @@ export function buildConnectionPinOptions(
   const seen = new Map<string, number>();
   return matching.map((entry) => {
     if ((labelCounts.get(entry.base) ?? 0) <= 1) {
-      return { value: entry.value, label: entry.base };
+      return { label: entry.base, value: entry.value };
     }
     const ordinal = (seen.get(entry.base) ?? 0) + 1;
     seen.set(entry.base, ordinal);
-    return { value: entry.value, label: `${entry.base} · account ${ordinal}` };
+    return { label: `${entry.base} · account ${ordinal}`, value: entry.value };
   });
 }

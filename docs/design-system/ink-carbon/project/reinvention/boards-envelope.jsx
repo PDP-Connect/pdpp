@@ -6,7 +6,7 @@
   function EnvIdentity() {
     return (
       <div className="env">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 24 }}>
+        <div style={{ alignItems: "flex-start", display: "flex", gap: 24, justifyContent: "space-between" }}>
           <div className="env-indicia">
             <h1 className="env-indicia__name">PDPP</h1>
             <span className="env-indicia__line">Consent-class mail</span>
@@ -46,7 +46,7 @@
             </div>
             <div className="env-field">
               <span className="env-field__k">withheld field</span>
-              <span className="env-field__bar"></span>
+              <span className="env-field__bar" />
             </div>
           </div>
         </div>
@@ -58,15 +58,15 @@
           </div>
           <div className="env-tints" style={{ marginTop: 14 }}>
             <div className="env-tint-card">
-              <div className="env-tint-card__chip is-hatch"></div>
+              <div className="env-tint-card__chip is-hatch" />
               <span className="env-tint-card__name">tint/hatch — withheld</span>
             </div>
             <div className="env-tint-card">
-              <div className="env-tint-card__chip is-cross"></div>
+              <div className="env-tint-card__chip is-cross" />
               <span className="env-tint-card__name">tint/cross — sealed</span>
             </div>
             <div className="env-tint-card">
-              <div className="env-tint-card__chip is-weave"></div>
+              <div className="env-tint-card__chip is-weave" />
               <span className="env-tint-card__name">tint/weave — archive</span>
             </div>
           </div>
@@ -79,23 +79,23 @@
           </div>
           <div className="env-palette" style={{ marginTop: 14 }}>
             <div className="env-swatch">
-              <div className="env-swatch__chip" style={{ background: "oklch(0.42 0.09 265)" }}></div>
+              <div className="env-swatch__chip" style={{ background: "oklch(0.42 0.09 265)" }} />
               <span className="env-swatch__name">tint blue</span>
             </div>
             <div className="env-swatch">
-              <div className="env-swatch__chip" style={{ background: "oklch(0.975 0.005 95)" }}></div>
+              <div className="env-swatch__chip" style={{ background: "oklch(0.975 0.005 95)" }} />
               <span className="env-swatch__name">paper</span>
             </div>
             <div className="env-swatch">
-              <div className="env-swatch__chip" style={{ background: "oklch(0.85 0.035 85)" }}></div>
+              <div className="env-swatch__chip" style={{ background: "oklch(0.85 0.035 85)" }} />
               <span className="env-swatch__name">kraft</span>
             </div>
             <div className="env-swatch">
-              <div className="env-swatch__chip" style={{ background: "oklch(0.55 0.09 155)" }}></div>
+              <div className="env-swatch__chip" style={{ background: "oklch(0.55 0.09 155)" }} />
               <span className="env-swatch__name">receipt green</span>
             </div>
             <div className="env-swatch">
-              <div className="env-swatch__chip" style={{ background: "oklch(0.52 0.17 27)" }}></div>
+              <div className="env-swatch__chip" style={{ background: "oklch(0.52 0.17 27)" }} />
               <span className="env-swatch__name">return red</span>
             </div>
           </div>
@@ -168,11 +168,11 @@
               <span className="env-window__terms">current + 5y</span>
             </div>
             <div className="env-window__row">
-              <span className="env-window__bar"></span>
+              <span className="env-window__bar" />
               <span className="env-window__bar-tag">tax_docs — sealed</span>
             </div>
             <div className="env-window__row">
-              <span className="env-window__bar" style={{ maxWidth: 220 }}></span>
+              <span className="env-window__bar" style={{ maxWidth: 220 }} />
               <span className="env-window__bar-tag">identity — sealed</span>
             </div>
           </div>

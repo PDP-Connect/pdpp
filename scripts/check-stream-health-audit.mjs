@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -44,9 +45,9 @@
 // scripts/stream-health-audit/live.mjs for what each suggests
 // investigating).
 
+import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import path from "node:path";
 
 import { runLiveStreamHealthAudit } from "./stream-health-audit/live.mjs";
 

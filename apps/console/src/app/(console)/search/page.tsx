@@ -57,9 +57,9 @@ async function loadSearchResult(query: string, jump: string | undefined): Promis
     return {
       result: {
         exact: spineResult.exact,
-        traces: spineResult.traces,
         grants: spineResult.grants,
         runs: spineResult.runs,
+        traces: spineResult.traces,
       },
       unreachable: false,
     };

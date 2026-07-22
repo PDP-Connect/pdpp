@@ -1,18 +1,18 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { createPdppCliCommand, getPdppCliPackageInfo, PDPP_CLI_BIN_NAME } from "./package-info.js";
-import { ConnectError, connectProvider, normalizeProviderUrl, readStoredCredential } from "./connect/flow.js";
 import { runCollector } from "./collector/commands.js";
-import { runRefRun } from "./ref/commands/run.js";
-import { runRefGrant } from "./ref/commands/grant.js";
-import { runRefTrace } from "./ref/commands/trace.js";
-import { runRefLogin } from "./ref/commands/login.js";
+import { ConnectError, connectProvider, normalizeProviderUrl, readStoredCredential } from "./connect/flow.js";
+import { runOwnerAgent } from "./owner-agent/command.js";
+import { createPdppCliCommand, getPdppCliPackageInfo, PDPP_CLI_BIN_NAME } from "./package-info.js";
+import { readHelp, runRead } from "./read/commands.js";
+import { runRefCall } from "./ref/commands/call.js";
 import { runRefConnectors } from "./ref/commands/connectors.js";
 import { runRefEventSubscriptions } from "./ref/commands/event-subscriptions.js";
-import { runRefCall } from "./ref/commands/call.js";
-import { readHelp, runRead } from "./read/commands.js";
-import { runOwnerAgent } from "./owner-agent/command.js";
+import { runRefGrant } from "./ref/commands/grant.js";
+import { runRefLogin } from "./ref/commands/login.js";
+import { runRefRun } from "./ref/commands/run.js";
+import { runRefTrace } from "./ref/commands/trace.js";
 import { PdppCliError, PdppUsageError } from "./ref/errors.js";
 
 const HELP = `PDPP CLI
@@ -67,7 +67,7 @@ Notes:
   needed. Secrets are never printed.
 `;
 
-export async function runCli(argv, io = { stdout: process.stdout, stderr: process.stderr }) {
+export async function runCli(argv, io = { stderr: process.stderr, stdout: process.stdout }) {
   const [command, ...rest] = argv;
 
   if (!command || command === "--help" || command === "-h" || command === "help") {
@@ -150,7 +150,7 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
     const [refCommand, ...refRest] = rest;
 
     if (!refCommand || refCommand === "--help" || refCommand === "-h") {
-      io.stdout.write(`Reference diagnostics (reference server only):\n`);
+      io.stdout.write("Reference diagnostics (reference server only):\n");
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref login <reference-url> [--password-stdin] [--cache-root <dir>]\n`);
       io.stdout.write(
         `  ${PDPP_CLI_BIN_NAME} ref call <method> <path> --as-url <url> [--data <json> | --data-stdin] [--auth cookie|bearer] [--owner-session <cookie>] [--owner-token-stdin] [--status-only] [--format json|table]\n`
@@ -179,26 +179,26 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
       io.stdout.write(
         `  ${PDPP_CLI_BIN_NAME} ref event-subscriptions disable <subscription-id> --as-url <url> [--reason <text>] [--yes] [--owner-session <cookie>]\n`
       );
-      io.stdout.write(`\nNotes:\n`);
+      io.stdout.write("\nNotes:\n");
       io.stdout.write(`  "ref login" prompts the reference server's owner-login route and caches the\n`);
-      io.stdout.write(`  resulting session in .pdpp/owner-sessions/ (mode 0600). The cookie value is\n`);
-      io.stdout.write(`  never printed. The password must come from --password-stdin or\n`);
-      io.stdout.write(`  PDPP_OWNER_PASSWORD; it is not accepted on the command line.\n`);
+      io.stdout.write("  resulting session in .pdpp/owner-sessions/ (mode 0600). The cookie value is\n");
+      io.stdout.write("  never printed. The password must come from --password-stdin or\n");
+      io.stdout.write("  PDPP_OWNER_PASSWORD; it is not accepted on the command line.\n");
       io.stdout.write(`  "ref call" infers auth from the path: /_ref/* uses the owner session cookie,\n`);
-      io.stdout.write(`  /v1/owner/* uses the owner bearer (PDPP_OWNER_TOKEN or --owner-token-stdin).\n`);
-      io.stdout.write(`  It refuses a mismatched --auth, sends bodies as JSON (so no _csrf is needed),\n`);
-      io.stdout.write(`  and never prints the cookie or bearer.\n`);
+      io.stdout.write("  /v1/owner/* uses the owner bearer (PDPP_OWNER_TOKEN or --owner-token-stdin).\n");
+      io.stdout.write("  It refuses a mismatched --auth, sends bodies as JSON (so no _csrf is needed),\n");
+      io.stdout.write("  and never prints the cookie or bearer.\n");
       return 0;
     }
 
     const refDispatch = {
-      login: runRefLogin,
       call: runRefCall,
-      run: runRefRun,
-      grant: runRefGrant,
-      trace: runRefTrace,
       connectors: runRefConnectors,
       "event-subscriptions": runRefEventSubscriptions,
+      grant: runRefGrant,
+      login: runRefLogin,
+      run: runRefRun,
+      trace: runRefTrace,
     };
     const handler = refDispatch[refCommand];
     if (!handler) {
@@ -228,7 +228,7 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
 function readOption(argv, name) {
   const index = argv.indexOf(name);
   if (index === -1) {
-    return undefined;
+    return;
   }
 
   return argv[index + 1];
@@ -243,7 +243,6 @@ function readFirstPositional(argv) {
     }
     return value;
   }
-  return undefined;
 }
 
 export { connectProvider, normalizeProviderUrl, readStoredCredential };

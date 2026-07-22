@@ -94,8 +94,8 @@ function normalizeSourceKind(value: string | undefined): GrantRequestDraft["sour
 
 function sourceFromDraft(draft: GrantRequestDraft) {
   return {
-    kind: draft.sourceKind,
     id: draft.sourceId,
+    kind: draft.sourceKind,
   };
 }
 
@@ -122,44 +122,44 @@ export async function loadConnectionPinOptions(draft: GrantRequestDraft): Promis
 
 export function createDefaultGrantRequestDraft(): GrantRequestDraft {
   return {
-    initialAccessToken: DEFAULT_DCR_INITIAL_ACCESS_TOKEN,
+    accessMode: "single_use",
     clientId: "",
     clientName: "Longview",
     clientUri: "",
-    redirectUri: "",
-    sourceKind: "connector",
-    sourceId: "",
-    purposeCode: "https://pdpp.org/purpose/financial_planning",
-    purposeDescription: "Compare personal data across providers.",
-    accessMode: "single_use",
-    retention: "P30D",
-    streamName: "",
     connectionId: "",
     fields: "",
-    view: "",
+    initialAccessToken: DEFAULT_DCR_INITIAL_ACCESS_TOKEN,
+    purposeCode: "https://pdpp.org/purpose/financial_planning",
+    purposeDescription: "Compare personal data across providers.",
+    redirectUri: "",
+    retention: "P30D",
+    sourceId: "",
+    sourceKind: "connector",
+    streamName: "",
     subjectId: "owner_local",
+    view: "",
   };
 }
 
 function sanitizeDraft(input: Partial<GrantRequestDraft> = {}): GrantRequestDraft {
   const base = createDefaultGrantRequestDraft();
   return {
-    initialAccessToken: trim(input.initialAccessToken) || base.initialAccessToken,
+    accessMode: trim(input.accessMode) || base.accessMode,
     clientId: trim(input.clientId),
     clientName: trim(input.clientName) || base.clientName,
     clientUri: trim(input.clientUri),
-    redirectUri: trim(input.redirectUri),
-    sourceKind: normalizeSourceKind(input.sourceKind),
-    sourceId: trim(input.sourceId),
-    purposeCode: trim(input.purposeCode) || base.purposeCode,
-    purposeDescription: trim(input.purposeDescription) || base.purposeDescription,
-    accessMode: trim(input.accessMode) || base.accessMode,
-    retention: trim(input.retention) || base.retention,
-    streamName: trim(input.streamName),
     connectionId: trim(input.connectionId),
     fields: trim(input.fields),
-    view: trim(input.view),
+    initialAccessToken: trim(input.initialAccessToken) || base.initialAccessToken,
+    purposeCode: trim(input.purposeCode) || base.purposeCode,
+    purposeDescription: trim(input.purposeDescription) || base.purposeDescription,
+    redirectUri: trim(input.redirectUri),
+    retention: trim(input.retention) || base.retention,
+    sourceId: trim(input.sourceId),
+    sourceKind: normalizeSourceKind(input.sourceKind),
+    streamName: trim(input.streamName),
     subjectId: trim(input.subjectId) || base.subjectId,
+    view: trim(input.view),
   };
 }
 
@@ -200,13 +200,13 @@ function upsertWorkspace(workspaceId: string | undefined, input: Partial<GrantRe
   });
   const now = nowIso();
   const workspace: GrantRequestWorkspace = {
-    workspaceId: existing?.workspaceId || crypto.randomUUID(),
     createdAt: existing?.createdAt || now,
-    updatedAt: now,
     draft,
+    lastError: null,
     registeredClient: existing?.registeredClient ?? null,
     stagedRequest: existing?.stagedRequest ?? null,
-    lastError: null,
+    updatedAt: now,
+    workspaceId: existing?.workspaceId || crypto.randomUUID(),
   };
   return saveWorkspace(workspace);
 }
@@ -244,8 +244,8 @@ export function setGrantRequestWorkspaceError(workspaceId: string, message: stri
   }
   return saveWorkspace({
     ...workspace,
-    updatedAt: nowIso(),
     lastError: message,
+    updatedAt: nowIso(),
   });
 }
 
@@ -269,12 +269,12 @@ export async function registerGrantRequestClient(
   };
 
   const response = await fetchAs("/oauth/register", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${workspace.draft.initialAccessToken}`,
-    },
     body: JSON.stringify(metadata),
+    headers: {
+      Authorization: `Bearer ${workspace.draft.initialAccessToken}`,
+      "Content-Type": "application/json",
+    },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!(response.ok && body) || typeof body !== "object") {
@@ -284,13 +284,13 @@ export async function registerGrantRequestClient(
   const registeredClient = body as Record<string, unknown>;
   return saveWorkspace({
     ...workspace,
-    updatedAt: nowIso(),
     draft: {
       ...workspace.draft,
       clientId: typeof registeredClient.client_id === "string" ? registeredClient.client_id : workspace.draft.clientId,
     },
-    registeredClient,
     lastError: null,
+    registeredClient,
+    updatedAt: nowIso(),
   });
 }
 
@@ -310,25 +310,25 @@ export async function stageGrantRequest(
   }
 
   const request = {
-    client_id: clientId,
-    client_display: workspace.draft.clientName ? { name: workspace.draft.clientName } : undefined,
     authorization_details: [
       {
-        type: "https://pdpp.org/data-access",
-        source: sourceFromDraft(workspace.draft),
+        access_mode: workspace.draft.accessMode,
         purpose_code: workspace.draft.purposeCode,
         purpose_description: workspace.draft.purposeDescription,
-        access_mode: workspace.draft.accessMode,
         retention: workspace.draft.retention,
+        source: sourceFromDraft(workspace.draft),
         streams: [streamSelectionFromDraft(workspace.draft, workspace.draft.streamName)],
+        type: "https://pdpp.org/data-access",
       },
     ],
+    client_display: workspace.draft.clientName ? { name: workspace.draft.clientName } : undefined,
+    client_id: clientId,
   };
 
   const response = await fetchAs("/oauth/par", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!(response.ok && body) || typeof body !== "object") {
@@ -337,13 +337,13 @@ export async function stageGrantRequest(
 
   return saveWorkspace({
     ...workspace,
-    updatedAt: nowIso(),
     draft: {
       ...workspace.draft,
       clientId,
     },
-    stagedRequest: body as Record<string, unknown>,
     lastError: null,
+    stagedRequest: body as Record<string, unknown>,
+    updatedAt: nowIso(),
   });
 }
 
@@ -357,8 +357,8 @@ export async function approveGrantRequestWorkspace(workspaceId: string): Promise
   await approveConsentRequest(requestUri, workspace.draft.subjectId);
   return saveWorkspace({
     ...workspace,
-    updatedAt: nowIso(),
     lastError: null,
+    updatedAt: nowIso(),
   });
 }
 
@@ -372,8 +372,8 @@ export async function denyGrantRequestWorkspace(workspaceId: string): Promise<Gr
   await denyConsentRequest(requestUri);
   return saveWorkspace({
     ...workspace,
-    updatedAt: nowIso(),
     lastError: null,
+    updatedAt: nowIso(),
   });
 }
 
@@ -381,23 +381,23 @@ export async function buildGrantRequestExamples(workspace: GrantRequestWorkspace
   const asUrl = await getReferencePublicOrigin();
   const streamSelection = streamSelectionFromDraft(workspace.draft, workspace.draft.streamName || "<stream>");
   const request = {
+    authorization_details: [
+      {
+        access_mode: workspace.draft.accessMode,
+        purpose_code: workspace.draft.purposeCode,
+        purpose_description: workspace.draft.purposeDescription,
+        retention: workspace.draft.retention,
+        source: sourceFromDraft(workspace.draft),
+        streams: [streamSelection],
+        type: "https://pdpp.org/data-access",
+      },
+    ],
+    client_display: workspace.draft.clientName ? { name: workspace.draft.clientName } : undefined,
     client_id:
       workspace.draft.clientId ||
       (typeof workspace.registeredClient?.client_id === "string"
         ? workspace.registeredClient.client_id
         : "<client_id>"),
-    client_display: workspace.draft.clientName ? { name: workspace.draft.clientName } : undefined,
-    authorization_details: [
-      {
-        type: "https://pdpp.org/data-access",
-        source: sourceFromDraft(workspace.draft),
-        purpose_code: workspace.draft.purposeCode,
-        purpose_description: workspace.draft.purposeDescription,
-        access_mode: workspace.draft.accessMode,
-        retention: workspace.draft.retention,
-        streams: [streamSelection],
-      },
-    ],
   };
 
   return {

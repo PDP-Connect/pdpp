@@ -34,7 +34,7 @@
  *   PDPP_BENCH_TIMEOUT_MS  per-request timeout (default 30000)
  */
 
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,7 +46,7 @@ const BASE = (process.env.PDPP_BASE || "https://pdpp.example.com").replace(/\/$/
 const OWNER_TOKEN = process.env.PDPP_OWNER_TOKEN || "";
 const SAMPLES = Number(process.env.PDPP_BENCH_SAMPLES || 12);
 const WARMUP = Number(process.env.PDPP_BENCH_WARMUP || 2);
-const TIMEOUT_MS = Number(process.env.PDPP_BENCH_TIMEOUT_MS || 30000);
+const TIMEOUT_MS = Number(process.env.PDPP_BENCH_TIMEOUT_MS || 30_000);
 // A real connection to disambiguate the shared `messages` stream for records targets.
 const CONNECTION_ID = process.env.PDPP_BENCH_CONNECTION_ID || "cin_f565a96cb0a114b0a27e9606";
 
@@ -60,23 +60,25 @@ const COMPARE_PATH = compareIdx >= 0 ? process.argv[compareIdx + 1] : null;
 
 /** RS read-surface API targets. Skipped entirely when no owner token. */
 function apiTargets() {
-  if (!OWNER_TOKEN) return [];
+  if (!OWNER_TOKEN) {
+    return [];
+  }
   const h = { Authorization: `Bearer ${OWNER_TOKEN}` };
   const q = (params) => "?" + new URLSearchParams(params).toString();
   return [
-    { group: "api", name: "schema", url: `${BASE}/v1/schema`, headers: h },
-    { group: "api", name: "search.lexical", url: `${BASE}/v1/search${q({ q: "error", limit: "25" })}`, headers: h },
+    { group: "api", headers: h, name: "schema", url: `${BASE}/v1/schema` },
+    { group: "api", headers: h, name: "search.lexical", url: `${BASE}/v1/search${q({ limit: "25", q: "error" })}` },
     {
       group: "api",
-      name: "search.semantic",
-      url: `${BASE}/v1/search/semantic${q({ q: "deployment failure", limit: "25" })}`,
       headers: h,
+      name: "search.semantic",
+      url: `${BASE}/v1/search/semantic${q({ limit: "25", q: "deployment failure" })}`,
     },
     {
       group: "api",
-      name: "search.hybrid",
-      url: `${BASE}/v1/search/hybrid${q({ q: "deployment failure", limit: "25" })}`,
       headers: h,
+      name: "search.hybrid",
+      url: `${BASE}/v1/search/hybrid${q({ limit: "25", q: "deployment failure" })}`,
     },
     // messages is shared across connectors → must disambiguate with connection_id.
     // PDPP_BENCH_CONNECTION_ID lets a run pin a real connection; default below is a
@@ -84,15 +86,15 @@ function apiTargets() {
     // pinned connection_id was wrong, not a perf signal.
     {
       group: "api",
-      name: "records.page",
-      url: `${BASE}/v1/streams/messages/records${q({ limit: "25", connection_id: CONNECTION_ID })}`,
       headers: h,
+      name: "records.page",
+      url: `${BASE}/v1/streams/messages/records${q({ connection_id: CONNECTION_ID, limit: "25" })}`,
     },
     {
       group: "api",
-      name: "records.count",
-      url: `${BASE}/v1/streams/messages/records${q({ limit: "1", count: "exact", connection_id: CONNECTION_ID })}`,
       headers: h,
+      name: "records.count",
+      url: `${BASE}/v1/streams/messages/records${q({ connection_id: CONNECTION_ID, count: "exact", limit: "1" })}`,
     },
   ];
 }
@@ -102,12 +104,14 @@ function apiTargets() {
  *  unauthenticated shell/redirect instead. */
 async function fetchOwnerCookie() {
   const password = process.env.PDPP_OWNER_PASSWORD;
-  if (!password) return "";
+  if (!password) {
+    return "";
+  }
   try {
     const resp = await fetch(`${BASE}/owner/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
       redirect: "manual",
     });
     const setCookie = resp.headers.getSetCookie?.() || [];
@@ -125,7 +129,7 @@ function pageTargets(cookieOverride) {
   const cookie = cookieOverride || process.env.PDPP_BENCH_COOKIE || "";
   const headers = cookie ? { Cookie: cookie } : {};
   const routes = ["/", "/sources", "/sources/add", "/explore", "/syncs", "/grants", "/connect", "/search"];
-  return routes.map((r) => ({ group: "page", name: r, url: `${BASE}${r}`, headers }));
+  return routes.map((r) => ({ group: "page", headers, name: r, url: `${BASE}${r}` }));
 }
 
 // ── measurement ──────────────────────────────────────────────────────────────
@@ -155,11 +159,13 @@ async function timeOnce(target) {
     clearTimeout(to);
   }
   const totalMs = performance.now() - t0;
-  return { totalMs, ttfbMs, status, bytes };
+  return { bytes, status, totalMs, ttfbMs };
 }
 
 function pct(sorted, p) {
-  if (sorted.length === 0) return null;
+  if (sorted.length === 0) {
+    return null;
+  }
   const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
   return sorted[idx];
 }
@@ -168,24 +174,28 @@ function stats(samples) {
   const totals = samples.map((s) => s.totalMs).sort((a, b) => a - b);
   const sum = totals.reduce((a, b) => a + b, 0);
   return {
-    n: totals.length,
+    bytes: Math.round(samples.reduce((a, s) => a + s.bytes, 0) / samples.length),
+    max: round(totals[totals.length - 1]),
+    mean: round(sum / totals.length),
     min: round(totals[0]),
+    n: totals.length,
     p50: round(pct(totals, 50)),
     p95: round(pct(totals, 95)),
     p99: round(pct(totals, 99)),
-    max: round(totals[totals.length - 1]),
-    mean: round(sum / totals.length),
     statuses: [...new Set(samples.map((s) => s.status))],
-    bytes: Math.round(samples.reduce((a, s) => a + s.bytes, 0) / samples.length),
   };
 }
 
 const round = (n) => (n == null ? null : Math.round(n * 10) / 10);
 
 async function benchTarget(target) {
-  for (let i = 0; i < WARMUP; i++) await timeOnce(target);
+  for (let i = 0; i < WARMUP; i++) {
+    await timeOnce(target);
+  }
   const samples = [];
-  for (let i = 0; i < SAMPLES; i++) samples.push(await timeOnce(target));
+  for (let i = 0; i < SAMPLES; i++) {
+    samples.push(await timeOnce(target));
+  }
   return { group: target.group, name: target.name, url: target.url, ...stats(samples) };
 }
 
@@ -205,7 +215,9 @@ async function main() {
   }
 
   console.error(`# PDPP perf bench — base=${BASE} samples=${SAMPLES} warmup=${WARMUP}`);
-  if (!OWNER_TOKEN && !PAGES_ONLY) console.error("# (no PDPP_OWNER_TOKEN → RS /v1 API targets skipped)");
+  if (!(OWNER_TOKEN || PAGES_ONLY)) {
+    console.error("# (no PDPP_OWNER_TOKEN → RS /v1 API targets skipped)");
+  }
 
   const results = [];
   for (const t of targets) {
@@ -218,13 +230,13 @@ async function main() {
   }
 
   const out = {
-    schema: "pdpp-perf-bench/1",
     base: BASE,
-    samples: SAMPLES,
-    warmup: WARMUP,
     // No Date.now() in some sandboxes; here we are a normal node script so it's fine.
     ran_at: new Date().toISOString(),
     results,
+    samples: SAMPLES,
+    schema: "pdpp-perf-bench/1",
+    warmup: WARMUP,
   };
 
   mkdirSync(RESULTS_DIR, { recursive: true });
@@ -234,7 +246,9 @@ async function main() {
   writeFileSync(join(RESULTS_DIR, "bench-latest.json"), JSON.stringify(out, null, 2));
   console.error(`\n# wrote ${outPath}`);
 
-  if (COMPARE_PATH) compare(out, COMPARE_PATH);
+  if (COMPARE_PATH) {
+    compare(out, COMPARE_PATH);
+  }
 
   // Machine-readable to stdout for piping.
   console.log(JSON.stringify(out));
@@ -252,7 +266,9 @@ function compare(current, priorPath) {
   console.error(`\n# regression vs ${priorPath} (p50 Δ, >15% slower flagged):`);
   for (const r of current.results) {
     const p = byName.get(`${r.group}:${r.name}`);
-    if (!p || p.p50 == null || r.p50 == null) continue;
+    if (!p || p.p50 == null || r.p50 == null) {
+      continue;
+    }
     const deltaPct = ((r.p50 - p.p50) / p.p50) * 100;
     const flag = deltaPct > 15 ? " ⚠ SLOWER" : deltaPct < -15 ? " ✓ faster" : "";
     console.error(
@@ -265,8 +281,12 @@ function pad(v, n) {
   return String(v ?? "").padStart(n);
 }
 function fmtBytes(b) {
-  if (b < 1024) return `${b}B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)}KB`;
+  if (b < 1024) {
+    return `${b}B`;
+  }
+  if (b < 1024 * 1024) {
+    return `${(b / 1024).toFixed(1)}KB`;
+  }
   return `${(b / 1024 / 1024).toFixed(1)}MB`;
 }
 

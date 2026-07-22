@@ -131,15 +131,15 @@ export async function startOwnerBootstrapFlow(
     throw new Error("Token name is required");
   }
   const registerResp = await fetchAs("/oauth/register", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${DEFAULT_DCR_INITIAL_ACCESS_TOKEN}`,
-    },
     body: JSON.stringify({
       client_name: label,
       token_endpoint_auth_method: "none",
     }),
+    headers: {
+      Authorization: `Bearer ${DEFAULT_DCR_INITIAL_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    method: "POST",
   });
   const registerBody = await readBody(registerResp);
   if (!(registerResp.ok && registerBody) || typeof registerBody !== "object") {
@@ -154,9 +154,9 @@ export async function startOwnerBootstrapFlow(
   // JSON content-type uses the documented CSRF exemption, like every other
   // server-to-server BFF call from the dashboard.
   const response = await fetchAs("/oauth/device_authorization", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ client_id: clientId }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!(response.ok && body) || typeof body !== "object") {
@@ -181,26 +181,26 @@ export async function startOwnerBootstrapFlow(
   }
 
   const flow: OwnerBootstrapFlow = {
-    flowId: crypto.randomUUID(),
+    approvalUpdatedAt: null,
     clientId,
-    name: label,
-    subjectId: null,
-    status: "pending_approval",
-    startedAt: new Date().toISOString(),
+    deviceCode: payload.device_code,
     expiresAt:
       typeof payload.expires_in === "number" ? new Date(Date.now() + payload.expires_in * 1000).toISOString() : null,
+    flowId: crypto.randomUUID(),
     intervalSeconds: typeof payload.interval === "number" ? payload.interval : 5,
-    deviceCode: payload.device_code,
+    introspectedAt: null,
+    introspection: null,
+    lastError: null,
+    name: label,
+    startedAt: new Date().toISOString(),
+    status: "pending_approval",
+    subjectId: null,
+    token: null,
+    tokenIssuedAt: null,
+    tokenResponse: null,
     userCode: payload.user_code,
     verificationUri: payload.verification_uri ?? null,
     verificationUriComplete: payload.verification_uri_complete ?? null,
-    approvalUpdatedAt: null,
-    tokenIssuedAt: null,
-    token: null,
-    tokenResponse: null,
-    introspection: null,
-    introspectedAt: null,
-    lastError: null,
   };
 
   return saveFlow(flow);
@@ -215,9 +215,9 @@ export async function approveOwnerBootstrapFlow(flowId: string, subjectId: strin
   // derives the approved subject from the owner session when owner-auth is on;
   // `subjectId` here is retained only for the local UI transcript state.
   const response = await fetchAs("/device/approve", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_code: flow.userCode }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -225,10 +225,10 @@ export async function approveOwnerBootstrapFlow(flowId: string, subjectId: strin
   }
   return saveFlow({
     ...flow,
-    subjectId,
-    status: "approved",
     approvalUpdatedAt: new Date().toISOString(),
     lastError: null,
+    status: "approved",
+    subjectId,
   });
 }
 
@@ -237,9 +237,9 @@ export async function denyOwnerBootstrapFlow(flowId: string, subjectId: string):
   // See approveOwnerBootstrapFlow: JSON content-type uses the documented CSRF
   // exemption for server-to-server BFF callers.
   const response = await fetchAs("/device/deny", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_code: flow.userCode }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
@@ -247,27 +247,27 @@ export async function denyOwnerBootstrapFlow(flowId: string, subjectId: string):
   }
   return saveFlow({
     ...flow,
-    subjectId,
-    status: "denied",
     approvalUpdatedAt: new Date().toISOString(),
+    introspectedAt: null,
+    introspection: null,
+    lastError: null,
+    status: "denied",
+    subjectId,
     token: null,
     tokenResponse: null,
-    introspection: null,
-    introspectedAt: null,
-    lastError: null,
   });
 }
 
 export async function exchangeOwnerBootstrapToken(flowId: string): Promise<OwnerBootstrapFlow> {
   const flow = requireFlow(flowId);
   const response = await fetchAs("/oauth/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-      device_code: flow.deviceCode,
       client_id: flow.clientId,
+      device_code: flow.deviceCode,
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!(response.ok && body) || typeof body !== "object") {
@@ -281,11 +281,11 @@ export async function exchangeOwnerBootstrapToken(flowId: string): Promise<Owner
   }
   return saveFlow({
     ...flow,
+    lastError: null,
     status: "token_issued",
     token: payload.access_token,
-    tokenResponse: payload,
     tokenIssuedAt: new Date().toISOString(),
-    lastError: null,
+    tokenResponse: payload,
   });
 }
 
@@ -295,9 +295,9 @@ export async function introspectOwnerBootstrapToken(flowId: string): Promise<Own
     throw new Error("No token available yet for introspection");
   }
   const response = await fetchAs("/introspect", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token: flow.token }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   const body = await readBody(response);
   if (!(response.ok && body) || typeof body !== "object") {
@@ -305,8 +305,8 @@ export async function introspectOwnerBootstrapToken(flowId: string): Promise<Own
   }
   return saveFlow({
     ...flow,
-    introspection: body as Record<string, unknown>,
     introspectedAt: new Date().toISOString(),
+    introspection: body as Record<string, unknown>,
     lastError: null,
   });
 }
@@ -316,21 +316,16 @@ export async function buildOwnerBootstrapExamples(flow: OwnerBootstrapFlow) {
   const asUrl = referenceOrigin;
   const rsUrl = referenceOrigin;
   return {
-    cliLogin: `pdpp auth login --client-id ${shellQuote(flow.clientId)} --as-url ${shellQuote(asUrl)} --format json`,
+    approveCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/device/approve`)} \\\n  -H 'Content-Type: application/json' \\\n  -H 'Cookie: pdpp_owner_session=<your-session>' \\\n  --data ${shellQuote(JSON.stringify({ user_code: flow.userCode }))}`,
     cliIntrospect: flow.token
       ? `pdpp auth introspect --as-url ${shellQuote(asUrl)} --token ${shellQuote(flow.token)} --format json`
       : "pdpp auth introspect --as-url <as-url> --token <token> --format json",
-    // Curl examples mirror what the BFF actually sends on the wire:
-    // application/json bodies with the owner-session cookie, using the
-    // documented isJsonRequest CSRF exemption. /device/approve does not
-    // accept subject_id from the body — the AS derives it from the session.
-    startCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/device_authorization`)} \\\n  -H 'Content-Type: application/json' \\\n  --data ${shellQuote(JSON.stringify({ client_id: flow.clientId }))}`,
-    approveCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/device/approve`)} \\\n  -H 'Content-Type: application/json' \\\n  -H 'Cookie: pdpp_owner_session=<your-session>' \\\n  --data ${shellQuote(JSON.stringify({ user_code: flow.userCode }))}`,
+    cliLogin: `pdpp auth login --client-id ${shellQuote(flow.clientId)} --as-url ${shellQuote(asUrl)} --format json`,
     exchangeCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/token`)} \\\n  -H 'Content-Type: application/json' \\\n  --data ${shellQuote(
       JSON.stringify({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: flow.deviceCode,
         client_id: flow.clientId,
+        device_code: flow.deviceCode,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       })
     )}`,
     introspectCurl: flow.token
@@ -339,6 +334,11 @@ export async function buildOwnerBootstrapExamples(flow: OwnerBootstrapFlow) {
     ownerReadExample: flow.token
       ? `curl -sS ${shellQuote(`${rsUrl}/v1/streams`)} -H 'Authorization: Bearer ${flow.token}'`
       : `curl -sS ${shellQuote(`${rsUrl}/v1/streams`)} -H 'Authorization: Bearer <token>'`,
+    // Curl examples mirror what the BFF actually sends on the wire:
+    // application/json bodies with the owner-session cookie, using the
+    // documented isJsonRequest CSRF exemption. /device/approve does not
+    // accept subject_id from the body — the AS derives it from the session.
+    startCurl: `curl -sS -X POST ${shellQuote(`${asUrl}/oauth/device_authorization`)} \\\n  -H 'Content-Type: application/json' \\\n  --data ${shellQuote(JSON.stringify({ client_id: flow.clientId }))}`,
   };
 }
 

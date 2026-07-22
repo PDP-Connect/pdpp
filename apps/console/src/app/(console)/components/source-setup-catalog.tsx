@@ -186,13 +186,13 @@ function ExistingSourceLinks({
               </div>
               <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                 <Link
-                  className={buttonVariants({ variant: "ghost", size: "sm" })}
+                  className={buttonVariants({ size: "sm", variant: "ghost" })}
                   href={sourceRecordsHref(source.connectionId)}
                 >
                   Open in Explore
                 </Link>
                 <Link
-                  className={buttonVariants({ variant: "ghost", size: "sm" })}
+                  className={buttonVariants({ size: "sm", variant: "ghost" })}
                   href={sourceDetailHref(connectorKey, source.connectionId)}
                 >
                   Source details
@@ -263,11 +263,11 @@ function SourceSetupCard({
         {action ? (
           <>
             <span className="pdpp-eyebrow text-muted-foreground">Next</span>
-            <Link className={buttonVariants({ variant: "default", size: "sm" })} href={action.href}>
+            <Link className={buttonVariants({ size: "sm", variant: "default" })} href={action.href}>
               {action.label}
             </Link>
             {secondaryAction ? (
-              <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={secondaryAction.href}>
+              <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={secondaryAction.href}>
                 {secondaryAction.label}
               </Link>
             ) : null}
@@ -305,7 +305,7 @@ function ServerSetupSummary({ entries }: { entries: readonly ConnectorCatalogEnt
                 <p className="pdpp-caption font-medium text-foreground">{entry.displayName}</p>
                 <p className="pdpp-caption text-muted-foreground">{sourceMethodLine(entry, 0)}</p>
               </div>
-              <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/deployment">
+              <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment">
                 Open server settings
               </Link>
             </li>

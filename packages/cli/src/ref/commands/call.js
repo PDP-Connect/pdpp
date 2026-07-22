@@ -25,8 +25,8 @@
 //     [--status-only]
 
 import { parseArgs, requirePositional } from "../args.js";
-import { resolveAuthMode, buildAuthHeaders } from "../auth.js";
-import { PdppUsageError, PdppHttpError } from "../errors.js";
+import { buildAuthHeaders, resolveAuthMode } from "../auth.js";
+import { PdppHttpError, PdppUsageError } from "../errors.js";
 import { resolveReferenceUrl } from "../fetch.js";
 import { resolveFormat, writeData, writeEnvelopeWarnings } from "../output.js";
 
@@ -46,12 +46,12 @@ export async function runRefCall(argv, io = {}, fetchImpl = globalThis.fetch) {
 
   const referenceUrl = resolveReferenceUrl(flags);
   const mode = resolveAuthMode(path, flags.auth);
-  const authHeaders = await buildAuthHeaders({ mode, referenceUrl, flags, io });
+  const authHeaders = await buildAuthHeaders({ flags, io, mode, referenceUrl });
 
   const body = await resolveBody(flags, io, method);
 
   const headers = { Accept: "application/json", ...authHeaders };
-  const init = { method, headers, redirect: "manual" };
+  const init = { headers, method, redirect: "manual" };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
     init.body = body;
@@ -114,12 +114,12 @@ async function resolveBody(flags, io, method) {
   } else if (hasStdin) {
     raw = await readAll((io && io.stdin) || process.stdin);
   } else {
-    return undefined;
+    return;
   }
 
   const trimmed = String(raw).trim();
   if (!trimmed) {
-    return undefined;
+    return;
   }
 
   // Validate that the body is JSON before sending; the server only parses
@@ -138,10 +138,18 @@ async function resolveBody(flags, io, method) {
 }
 
 function statusExitCode(status) {
-  if (status >= 200 && status < 400) return 0;
-  if (status === 401) return 3;
-  if (status === 403) return 4;
-  if (status === 404) return 5;
+  if (status >= 200 && status < 400) {
+    return 0;
+  }
+  if (status === 401) {
+    return 3;
+  }
+  if (status === 403) {
+    return 4;
+  }
+  if (status === 404) {
+    return 5;
+  }
   return 1;
 }
 

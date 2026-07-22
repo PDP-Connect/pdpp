@@ -24,13 +24,21 @@ const buildWorkers = parseBuildWorkers(process.env.PDPP_WEB_BUILD_WORKERS);
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
+  experimental: {
+    // The default is host CPU count minus one (23 on the owner workstation),
+    // which repeatedly trips native SIGSEGV / SIGTRAP during production
+    // builds on Next 16.2.x. Keep the canonical build stable by default while
+    // still allowing CI/operators to raise it intentionally.
+    cpus: buildWorkers,
+  },
   output: "standalone",
-  outputFileTracingRoot: path.join(__dirname, "../.."),
   // Runtime file reads outside the bundled output need explicit tracing
   // includes so Next copies them into the standalone deploy. Without these,
   // /reference/coverage, the well-known agent-skill catalog, and /llms-full.txt
   // 500 on Vercel because the markdown they read is absent.
   outputFileTracingIncludes: {
+    "/llms-full.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
+    "/llms.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
     // resolveRepoRoot() looks for a directory containing both
     // pnpm-workspace.yaml and openspec/, so a stub openspec marker is needed
     // even for routes that only read docs/agent-skills.
@@ -39,100 +47,87 @@ const nextConfig = {
       "../../openspec/README.md",
       "../../pnpm-workspace.yaml",
     ],
-    "/llms-full.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
-    "/llms.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
   },
+  outputFileTracingRoot: path.join(__dirname, "../.."),
   reactStrictMode: true,
-  experimental: {
-    // The default is host CPU count minus one (23 on the owner workstation),
-    // which repeatedly trips native SIGSEGV / SIGTRAP during production
-    // builds on Next 16.2.x. Keep the canonical build stable by default while
-    // still allowing CI/operators to raise it intentionally.
-    cpus: buildWorkers,
-  },
-  // Transpile the reference-implementation workspace package so Next can
-  // consume its TypeScript sources directly once shim pairs (.js + .d.ts)
-  // collapse into single .ts exports. Without this, Next's bundler would
-  // reject .ts entries from a node_modules-resolved workspace package.
-  transpilePackages: ["pdpp-reference-implementation", "@pdpp/brand", "@pdpp/operator-ui"],
   async redirects() {
     return [
       {
-        source: "/spec-core",
         destination: "/docs/spec-core",
         permanent: true,
+        source: "/spec-core",
       },
       {
-        source: "/spec-collection-profile",
         destination: "/docs/spec-collection-profile",
         permanent: true,
+        source: "/spec-collection-profile",
       },
       {
-        source: "/spec-architecture",
         destination: "/docs/spec-architecture",
         permanent: true,
+        source: "/spec-architecture",
       },
       {
-        source: "/spec-auth-design",
         destination: "/docs/spec-auth-design",
         permanent: true,
+        source: "/spec-auth-design",
       },
       {
-        source: "/spec-change-tracking",
         destination: "/docs/spec-change-tracking",
         permanent: true,
+        source: "/spec-change-tracking",
       },
       {
-        source: "/spec-connector-ecosystem",
         destination: "/docs/spec-connector-ecosystem",
         permanent: true,
+        source: "/spec-connector-ecosystem",
       },
       {
-        source: "/spec-data-query-api",
         destination: "/docs/spec-data-query-api",
         permanent: true,
+        source: "/spec-data-query-api",
       },
       {
-        source: "/spec-deferred",
         destination: "/docs/spec-deferred",
         permanent: true,
+        source: "/spec-deferred",
       },
       {
-        source: "/spec-dti-alignment",
         destination: "/docs/spec-dti-alignment",
         permanent: true,
+        source: "/spec-dti-alignment",
       },
       {
+        destination: "/docs/reference-implementation-examples",
+        permanent: true,
         source: "/spec-e2e-examples",
-        destination: "/docs/reference-implementation-examples",
-        permanent: true,
       },
       {
+        destination: "/docs/reference-implementation-examples",
+        permanent: true,
         source: "/spec-reference-implementation-examples",
-        destination: "/docs/reference-implementation-examples",
-        permanent: true,
       },
       {
+        destination: "/docs/reference-implementation",
+        permanent: true,
         source: "/e2e",
-        destination: "/docs/reference-implementation",
-        permanent: true,
       },
       {
+        destination: "/docs/reference-implementation",
+        permanent: true,
         source: "/e2e/:path*",
-        destination: "/docs/reference-implementation",
-        permanent: true,
       },
       {
-        source: "/reference-implementation",
         destination: "/docs/reference-implementation",
         permanent: true,
+        source: "/reference-implementation",
       },
       // Sandbox IA parity: sandbox/records/timeline redirects to sandbox/explore
       // now that the sandbox Explore canvas exists.
       {
-        source: "/sandbox/records/timeline",
         destination: "/sandbox/explore",
         permanent: false,
+        source: "/sandbox/records/timeline",
       },
       // NOTE: old owner-console redirects were dropped when the operator
       // console moved to `apps/console`. The public site owns no live
@@ -142,25 +137,25 @@ const nextConfig = {
   async rewrites() {
     return [
       {
-        source: "/docs.mdx",
         destination: "/llms.mdx/docs",
+        source: "/docs.mdx",
       },
       {
-        source: "/docs/:path*.mdx",
         destination: "/llms.mdx/docs/:path*",
+        source: "/docs/:path*.mdx",
       },
       // Root agent skill discovery. Keep handlers under a filesystem-safe
       // internal path and expose the standards-shaped public .well-known URL.
       {
-        source: "/.well-known/skills/:path*",
         destination: "/well-known/skills/:path*",
+        source: "/.well-known/skills/:path*",
       },
       // Agents that probe the well-known namespace first should still land on
       // the canonical agent-readable entrypoint, so there is no single
       // universal URL to guess. Compact alias, not duplicate content.
       {
-        source: "/.well-known/llms.txt",
         destination: "/llms.txt",
+        source: "/.well-known/llms.txt",
       },
       // NOTE: the top-level `/.well-known/oauth-authorization-server` and
       // `/.well-known/oauth-protected-resource` rewrites were dropped with the
@@ -170,23 +165,28 @@ const nextConfig = {
       // Sandbox demo well-known metadata uses the same internal-path adapter:
       // handlers live under `well-known/**`; public URLs stay .well-known.
       {
-        source: "/sandbox/.well-known/oauth-authorization-server",
         destination: "/sandbox/well-known/oauth-authorization-server",
+        source: "/sandbox/.well-known/oauth-authorization-server",
       },
       {
-        source: "/sandbox/.well-known/oauth-protected-resource",
         destination: "/sandbox/well-known/oauth-protected-resource",
+        source: "/sandbox/.well-known/oauth-protected-resource",
       },
       // Sandbox demo reference-only inspection routes. Public path uses
       // the underscore convention from the live reference (`/_ref/`); the
       // handlers live under `ref/**` so Next's "private folder" rule does
       // not exclude them from routing.
       {
-        source: "/sandbox/_ref/:path*",
         destination: "/sandbox/ref/:path*",
+        source: "/sandbox/_ref/:path*",
       },
     ];
   },
+  // Transpile the reference-implementation workspace package so Next can
+  // consume its TypeScript sources directly once shim pairs (.js + .d.ts)
+  // collapse into single .ts exports. Without this, Next's bundler would
+  // reject .ts entries from a node_modules-resolved workspace package.
+  transpilePackages: ["pdpp-reference-implementation", "@pdpp/brand", "@pdpp/operator-ui"],
   webpack(config) {
     config.resolve.alias = {
       ...config.resolve.alias,

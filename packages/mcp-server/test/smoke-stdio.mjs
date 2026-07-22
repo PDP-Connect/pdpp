@@ -8,11 +8,11 @@
 // Usage:
 //   node packages/mcp-server/test/smoke-stdio.mjs > tmp/workstreams/mcp-stdio-smoke.json
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const binPath = join(__dirname, "..", "bin", "pdpp-mcp-server.js");
@@ -22,7 +22,7 @@ const cacheRoot = await mkdtemp(join(tmpdir(), "pdpp-mcp-smoke-"));
 const rs = createServer((req, res) => {
   if (req.url === "/v1/schema") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ version: "1", streams: ["orders"] }));
+    res.end(JSON.stringify({ streams: ["orders"], version: "1" }));
     return;
   }
   res.writeHead(404, { "content-type": "application/json" });
@@ -40,7 +40,7 @@ await writeFile(
 );
 
 const proc = spawn(process.execPath, [binPath, "--provider-url", providerUrl, "--cache-root", cacheRoot], {
-  env: { ...process.env, PDPP_OWNER_TOKEN: "", PDPP_OWNER_SESSION_COOKIE: "" },
+  env: { ...process.env, PDPP_OWNER_SESSION_COOKIE: "", PDPP_OWNER_TOKEN: "" },
 });
 
 let stdoutBuf = "";
@@ -59,13 +59,13 @@ function sendMessage(msg) {
 await new Promise((resolve) => setTimeout(resolve, 500));
 
 sendMessage({
-  jsonrpc: "2.0",
   id: 1,
+  jsonrpc: "2.0",
   method: "initialize",
   params: {
-    protocolVersion: "2025-06-18",
     capabilities: {},
     clientInfo: { name: "smoke", version: "0" },
+    protocolVersion: "2025-06-18",
   },
 });
 
@@ -73,7 +73,7 @@ sendMessage({
 await waitFor(() => stdoutBuf.includes('"id":1'), 3000);
 
 sendMessage({ jsonrpc: "2.0", method: "notifications/initialized" });
-sendMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+sendMessage({ id: 2, jsonrpc: "2.0", method: "tools/list" });
 
 await waitFor(() => stdoutBuf.includes('"id":2'), 3000);
 
@@ -83,7 +83,9 @@ rs.close();
 async function waitFor(predicate, timeoutMs) {
   const start = Date.now();
   while (!predicate()) {
-    if (Date.now() - start > timeoutMs) return;
+    if (Date.now() - start > timeoutMs) {
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -99,8 +101,8 @@ const parsed = lines.map((line, index) => {
 
 const result = {
   ok: true,
-  stdout_lines: parsed.length,
   stderr_excerpt: stderrBuf.split("\n").slice(0, 4),
+  stdout_lines: parsed.length,
   tool_names: parsed.flatMap((msg) => (msg?.result?.tools ?? []).map((tool) => tool.name)).sort(),
 };
 

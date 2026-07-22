@@ -58,17 +58,17 @@ export function readViewerViewport(width: number, height: number, options: ReadV
   const captureTarget = computeStreamCaptureTargetForContext({
     devicePixelRatio: deviceScaleFactor,
     highDprCapture: options.highDprCapture ?? mobile,
-    viewport: { width, height },
+    viewport: { height, width },
   });
   return buildViewportPayload({
-    width,
-    height,
     deviceScaleFactor,
     hasTouch,
+    height,
     mobile,
     screenHeight: captureTarget.height,
     screenWidth: captureTarget.width,
     userAgent: window.navigator.userAgent,
+    width,
   });
 }
 

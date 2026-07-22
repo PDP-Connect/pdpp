@@ -33,16 +33,16 @@ const VIEW_ORDER = [
 ];
 
 const FIELD_HINTS = {
+  amount: ["amount", "value", "price", "total"],
   // Lexical clues used in addition to type. Always lowercased before match.
   author: ["author", "from", "sender", "user", "user_id", "actor"],
   body: ["body", "text", "message", "content", "snippet"],
-  thread: ["thread_id", "thread_ts", "channel", "channel_id", "conversation_id", "conv_id"],
-  geo: ["lat", "lng", "longitude", "latitude", "geo", "location", "polyline", "coords"],
-  amount: ["amount", "value", "price", "total"],
-  ts_lex: ["date", "ts", "occurred_at", "created_at", "started_at", "taken_at", "posted_at", "night_of", "ordered_at"],
-  start: ["start", "starts_at", "start_at", "begin"],
   end: ["end", "ends_at", "end_at", "finish"],
+  geo: ["lat", "lng", "longitude", "latitude", "geo", "location", "polyline", "coords"],
+  start: ["start", "starts_at", "start_at", "begin"],
+  thread: ["thread_id", "thread_ts", "channel", "channel_id", "conversation_id", "conv_id"],
   title: ["title", "subject", "name", "headline"],
+  ts_lex: ["date", "ts", "occurred_at", "created_at", "started_at", "taken_at", "posted_at", "night_of", "ordered_at"],
 };
 
 function namesByHint(fields, hintKey) {
@@ -72,7 +72,9 @@ function detect(stream) {
 
   // ─── timeline ─────────────────────────────────────────────────────
   // Any record carrying a temporal anchor is timeline-able.
-  if (timeField) declare("timeline", [timeField]);
+  if (timeField) {
+    declare("timeline", [timeField]);
+  }
 
   // ─── map ──────────────────────────────────────────────────────────
   // Explicit geo type, or lat+lng pair, or named geo fields.
@@ -89,7 +91,9 @@ function detect(stream) {
   const namedImg = fields.find(
     (f) => /thumb|image|photo|picture|avatar/i.test(f.name) && (f.type === "blob" || f.type === "url")
   );
-  if (blobImg || namedImg) declare("gallery", [(blobImg ?? namedImg).name]);
+  if (blobImg || namedImg) {
+    declare("gallery", [(blobImg ?? namedImg).name]);
+  }
 
   // ─── ledger ──────────────────────────────────────────────────────
   // Currency type, or numeric `amount`/`value` field.
@@ -133,7 +137,9 @@ function detect(stream) {
   // accidentally light up the chart view.
   const isMeasure = (f) => f.type === "number" && !/^(lat|lng|longitude|latitude|id|.*_id|.*_count)$/i.test(f.name);
   const measures = fields.filter(isMeasure).map((f) => f.name);
-  if (timeField && measures.length) declare("chart", [timeField, ...measures.slice(0, 3)]);
+  if (timeField && measures.length) {
+    declare("chart", [timeField, ...measures.slice(0, 3)]);
+  }
 
   // ─── table ───────────────────────────────────────────────────────
   // Always.
@@ -154,8 +160,12 @@ function detect(stream) {
  */
 function pickInitial(stream, { override, hint } = {}) {
   const { capabilities } = detect(stream);
-  if (override && capabilities.includes(override)) return override;
-  if (hint && capabilities.includes(hint)) return hint;
+  if (override && capabilities.includes(override)) {
+    return override;
+  }
+  if (hint && capabilities.includes(hint)) {
+    return hint;
+  }
   // Prefer richer views by default; table only if nothing else matched.
   const ranked = capabilities.filter((c) => c !== "table");
   return ranked[0] ?? "table";

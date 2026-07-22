@@ -108,9 +108,9 @@ export function adaptListEnvelope<T>(body: unknown): CanonicalListEnvelope<T> {
   return {
     data,
     has_more: hasMore,
-    next_cursor: nextCursor,
     links: extractLinks((root as { links?: unknown }).links),
     meta: extractMeta((root as { meta?: unknown }).meta),
+    next_cursor: nextCursor,
   };
 }
 

@@ -16,13 +16,13 @@ export function createPdppCliCommand(providerUrl = "<provider-url>") {
 
 export function getPdppCliPackageInfo(providerUrl) {
   return {
-    packageName: PDPP_CLI_PACKAGE_NAME,
-    packageSpecifier: PDPP_CLI_PACKAGE_SPECIFIER,
     binName: PDPP_CLI_BIN_NAME,
     defaultClientId: PDPP_CLI_DEFAULT_CLIENT_ID,
-    versionPolicy: PDPP_CLI_VERSION_POLICY,
-    runCommand: createPdppCliCommand(providerUrl),
     noOwnerToken: true,
     noOwnerTokenPolicy: PDPP_CLI_NO_OWNER_TOKEN_POLICY,
+    packageName: PDPP_CLI_PACKAGE_NAME,
+    packageSpecifier: PDPP_CLI_PACKAGE_SPECIFIER,
+    runCommand: createPdppCliCommand(providerUrl),
+    versionPolicy: PDPP_CLI_VERSION_POLICY,
   };
 }

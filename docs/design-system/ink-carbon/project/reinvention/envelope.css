@@ -46,17 +46,17 @@
   --tint-weave:
     repeating-linear-gradient(0deg, var(--env-tint) 0 1px, transparent 1px 4px),
     repeating-linear-gradient(90deg, var(--env-tint) 0 1px, transparent 1px 4px);
-
-  background: var(--env-paper);
-  color: var(--env-ink);
-  font-family: var(--env-sans);
-  font-size: 15px;
-  line-height: 1.5;
-  padding: 44px 48px;
-  min-height: 100%;
   display: flex;
   flex-direction: column;
   gap: 30px;
+  min-height: 100%;
+  padding: 44px 48px;
+  font-family: var(--env-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--env-ink);
+
+  background: var(--env-paper);
 }
 .env * {
   box-sizing: border-box;
@@ -64,35 +64,35 @@
 
 /* ─── Indicia (the brand lockup) ─── */
 .env-indicia {
-  border: 2px solid var(--env-ink);
-  outline: 1px solid var(--env-ink);
-  outline-offset: 3px;
-  padding: 10px 14px;
   display: inline-flex;
   flex-direction: column;
   gap: 1px;
-  text-align: center;
   width: max-content;
+  padding: 10px 14px;
+  text-align: center;
+  outline: 1px solid var(--env-ink);
+  outline-offset: 3px;
+  border: 2px solid var(--env-ink);
 }
 .env-indicia__name {
-  font-weight: 800;
-  font-size: 22px;
-  letter-spacing: 0.18em;
-  text-indent: 0.18em;
-  line-height: 1.1;
   margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.1;
+  text-indent: 0.18em;
+  letter-spacing: 0.18em;
 }
 .env-indicia__line {
   font-size: 9.5px;
   font-weight: 600;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
   color: var(--env-ink);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
 }
 .env-indicia--tint {
-  border-color: var(--env-tint);
-  outline-color: var(--env-tint);
   color: var(--env-tint);
+  outline-color: var(--env-tint);
+  border-color: var(--env-tint);
 }
 .env-indicia--tint .env-indicia__line {
   color: var(--env-tint);
@@ -100,42 +100,42 @@
 
 /* ─── Display statement ─── */
 .env-statement {
+  max-width: 17ch;
+  margin: 0;
   font-size: 40px;
   font-weight: 700;
   line-height: 1.12;
   letter-spacing: -0.022em;
-  margin: 0;
-  max-width: 17ch;
   text-wrap: balance;
 }
 .env-statement .t {
   color: var(--env-tint);
 }
 .env-body {
-  font-size: 15px;
   max-width: 54ch;
   margin: 0;
+  font-size: 15px;
   color: var(--env-faint);
 }
 .env-body b {
-  color: var(--env-ink);
   font-weight: 600;
+  color: var(--env-ink);
 }
 
 /* ─── Section caption ─── */
 .env-cap {
   display: flex;
-  align-items: baseline;
   gap: 10px;
-  border-top: 2px solid var(--env-ink);
+  align-items: baseline;
   padding-top: 8px;
+  border-top: 2px solid var(--env-ink);
 }
 .env-cap__name {
+  margin: 0;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.18em;
   text-transform: uppercase;
-  margin: 0;
+  letter-spacing: 0.18em;
 }
 .env-cap__sub {
   font-family: var(--env-type);
@@ -215,27 +215,27 @@
 .env-field__k {
   font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
   color: var(--env-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
 }
 .env-field__window {
-  background: white;
-  border: 1px solid var(--env-hairline);
-  border-radius: 6px; /* envelope windows are round-cornered */
+  width: max-content;
+  min-width: 220px;
   padding: 7px 12px;
   font-family: var(--env-type);
   font-size: 14px;
-  width: max-content;
-  min-width: 220px;
+  background: white;
+  border: 1px solid var(--env-hairline);
+  border-radius: 6px; /* envelope windows are round-cornered */
   box-shadow:
     inset 0 0 0 1px oklch(1 0 0),
     inset 0 1px 3px oklch(0 0 0 / 0.07);
 }
 .env-field__bar {
-  height: 30px;
   width: 100%;
   max-width: 340px;
+  height: 30px;
   background-color: var(--env-tint-ground);
   background-image: var(--tint-cross);
   border: 1px solid var(--env-tint);
@@ -267,19 +267,19 @@
 
 /* ─── Envelope (the consent card) ─── */
 .env-envelope {
-  background: var(--env-kraft);
-  border: 1px solid var(--env-kraft-deep);
-  padding: 24px 26px 0;
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  position: relative;
+  padding: 24px 26px 0;
+  background: var(--env-kraft);
+  border: 1px solid var(--env-kraft-deep);
 }
 .env-envelope__row {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
   gap: 20px;
+  align-items: flex-start;
+  justify-content: space-between;
 }
 .env-envelope__from {
   display: flex;
@@ -298,15 +298,15 @@
   white-space: nowrap;
 }
 .env-envelope__indicia {
-  border: 1.5px solid var(--env-ink);
+  flex-shrink: 0;
   padding: 7px 10px;
-  text-align: center;
   font-size: 8.5px;
   font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
   line-height: 1.6;
-  flex-shrink: 0;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  border: 1.5px solid var(--env-ink);
 }
 .env-envelope__to {
   display: flex;
@@ -317,9 +317,9 @@
 .env-envelope__to-label {
   font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
   color: var(--env-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
 }
 .env-envelope__to-name {
   font-family: var(--env-type);
@@ -334,14 +334,14 @@
 
 /* The die-cut window */
 .env-window {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 18px;
   background: white;
   border-radius: 8px;
-  padding: 14px 18px;
   box-shadow:
     inset 0 0 0 1px oklch(0 0 0 / 0.06),
     inset 0 2px 5px oklch(0 0 0 / 0.08);
-  display: flex;
-  flex-direction: column;
 }
 .env-window__row {
   display: grid;
@@ -367,12 +367,12 @@
   white-space: nowrap;
 }
 .env-window__bar {
+  width: 100%;
+  max-width: 300px;
   height: 18px;
   background-color: var(--env-tint-ground);
   background-image: var(--tint-cross);
   border: 1px solid var(--env-tint);
-  width: 100%;
-  max-width: 300px;
 }
 .env-window__bar-tag {
   font-family: var(--env-type);
@@ -384,20 +384,20 @@
 
 /* Perforated revoke edge */
 .env-perf {
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 26px 14px;
   margin: 4px -26px 0;
   border-top: 2px dashed var(--env-kraft-deep);
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 16px;
-  padding: 10px 26px 14px;
 }
 .env-perf__hint {
   font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
   color: var(--env-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
 }
 .env-perf__no {
   font-family: var(--env-type);
@@ -408,26 +408,26 @@
 
 /* ─── The green card (grant record / proof of consent) ─── */
 .env-receipt {
-  background: var(--env-receipt-ground);
-  border: 1px solid var(--env-receipt);
-  padding: 20px 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: 20px 24px;
+  background: var(--env-receipt-ground);
+  border: 1px solid var(--env-receipt);
 }
 .env-receipt__head {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
   gap: 16px;
+  align-items: baseline;
+  justify-content: space-between;
 }
 .env-receipt__title {
+  margin: 0;
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
   color: var(--env-receipt);
-  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
 }
 .env-receipt__no {
   font-family: var(--env-type);
@@ -451,9 +451,9 @@
 .env-receipt__k {
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
   color: var(--env-receipt);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
 }
 .env-receipt__v {
   font-family: var(--env-type);
@@ -468,25 +468,25 @@
   align-items: center;
 }
 .env-tag {
+  padding: 4px 9px;
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.12em;
   text-transform: uppercase;
-  border: 1.5px solid var(--env-ink);
-  padding: 4px 9px;
+  letter-spacing: 0.12em;
   white-space: nowrap;
+  border: 1.5px solid var(--env-ink);
 }
 .env-tag--receipt {
-  border-color: var(--env-receipt);
   color: var(--env-receipt);
+  border-color: var(--env-receipt);
 }
 .env-tag--tint {
-  border-color: var(--env-tint);
   color: var(--env-tint);
+  border-color: var(--env-tint);
 }
 .env-tag--return {
-  border-color: var(--env-return);
   color: var(--env-return);
+  border-color: var(--env-return);
   transform: rotate(-3deg);
 }
 
@@ -497,31 +497,31 @@
   align-items: center;
 }
 .env-btn {
+  padding: 10px 18px;
   font-family: var(--env-sans);
   font-size: 11.5px;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  background: var(--env-ink);
   color: var(--env-paper);
-  border: 1.5px solid var(--env-ink);
-  padding: 10px 18px;
-  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
   white-space: nowrap;
+  cursor: pointer;
+  background: var(--env-ink);
+  border: 1.5px solid var(--env-ink);
 }
 .env-btn--ghost {
-  background: transparent;
   color: var(--env-ink);
+  background: transparent;
 }
 .env-btn--return {
-  background: transparent;
   color: var(--env-return);
+  background: transparent;
   border-color: var(--env-return);
 }
 
 .env-note {
+  margin: 0;
   font-family: var(--env-type);
   font-size: 11.5px;
   color: var(--env-faint);
-  margin: 0;
 }

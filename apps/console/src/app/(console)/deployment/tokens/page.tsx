@@ -81,7 +81,7 @@ function OwnerAgentOnboardingCard({ entrypoint }: { entrypoint: string }) {
             pasted into chat or copied out of the dashboard.
           </p>
         </div>
-        <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/deployment">
+        <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment">
           Review deployment metadata
         </Link>
       </div>
@@ -191,9 +191,9 @@ function Transcript({ flow }: { flow: FlowState }) {
   const approve = JSON.stringify({ user_code: flow.userCode }, null, 2);
   const exchange = JSON.stringify(
     {
-      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-      device_code: flow.deviceCode,
       client_id: flow.clientId,
+      device_code: flow.deviceCode,
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     },
     null,
     2
@@ -522,11 +522,11 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
     <RecordroomShellWithPalette>
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/deployment">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment">
             Deployment overview
           </Link>
         }
-        breadcrumbs={[{ label: "Deployment", href: "/deployment" }, { label: "Tokens" }]}
+        breadcrumbs={[{ href: "/deployment", label: "Deployment" }, { label: "Tokens" }]}
         description="Set up trusted local owner automation without pasting bearer material. Manual owner bearers stay available below for debugging."
         title="Owner-agent access"
       />

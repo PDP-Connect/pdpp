@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -177,7 +177,9 @@ function resolveLocalCollectorBin(packageDir) {
     }
   } catch {}
   const publishedBin = join(packageDir, "dist", "local-collector", "bin", "pdpp-local-collector.js");
-  if (existsSync(publishedBin)) return publishedBin;
+  if (existsSync(publishedBin)) {
+    return publishedBin;
+  }
   return join(packageDir, "bin", "pdpp-local-collector.ts");
 }
 

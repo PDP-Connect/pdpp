@@ -82,8 +82,8 @@ async function getPlaygroundSession(
     response = await fetch(
       `${asUrl}/_ref/dev/playground/session${suffix}`,
       await withOwnerSessionCookie({
-        method: "POST",
         cache: "no-store",
+        method: "POST",
         // No body: the endpoint either returns the existing playground
         // session or lazy-launches one. The backend is selected via query so
         // this works through strict JSON body parsers and simple proxies.

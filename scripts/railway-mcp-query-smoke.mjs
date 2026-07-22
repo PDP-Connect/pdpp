@@ -87,28 +87,28 @@ export const SEED_STREAM = "top_artists";
 // smoke deliberately avoids unadvertised sort fields and only asserts presence.
 export const SEED_RECORDS = [
   {
-    key: "railway-seed-artist-1",
     data: {
+      followers: 10,
+      genres: ["test-fixture"],
       id: "railway-seed-artist-1",
       name: "Deploy Test Quartet",
-      genres: ["test-fixture"],
       popularity: 41,
-      followers: 10,
       source_updated_at: "2026-01-01T00:00:01.000Z",
     },
     emitted_at: "2026-01-01T00:00:01.000Z",
+    key: "railway-seed-artist-1",
   },
   {
-    key: "railway-seed-artist-2",
     data: {
+      followers: 20,
+      genres: ["test-fixture"],
       id: "railway-seed-artist-2",
       name: "Restart Survival Band",
-      genres: ["test-fixture"],
       popularity: 42,
-      followers: 20,
       source_updated_at: "2026-01-01T00:00:02.000Z",
     },
     emitted_at: "2026-01-01T00:00:02.000Z",
+    key: "railway-seed-artist-2",
   },
 ];
 
@@ -124,27 +124,27 @@ export function buildSeedNdjson(records = SEED_RECORDS) {
 
 export function mcpInitializeMessage(id = 1) {
   return {
-    jsonrpc: "2.0",
     id,
+    jsonrpc: "2.0",
     method: "initialize",
     params: {
-      protocolVersion: "2024-11-05",
       capabilities: {},
       clientInfo: { name: "railway-mcp-query-smoke", version: "1" },
+      protocolVersion: "2024-11-05",
     },
   };
 }
 
 export function mcpToolsListMessage(id = 2) {
-  return { jsonrpc: "2.0", id, method: "tools/list", params: {} };
+  return { id, jsonrpc: "2.0", method: "tools/list", params: {} };
 }
 
 export function mcpQueryRecordsMessage(stream, args = {}, id = 3) {
   return {
-    jsonrpc: "2.0",
     id,
+    jsonrpc: "2.0",
     method: "tools/call",
-    params: { name: "query_records", arguments: { stream, ...args } },
+    params: { arguments: { stream, ...args }, name: "query_records" },
   };
 }
 
@@ -173,11 +173,19 @@ export function parseMcpResponseText(contentType, text) {
 // out without caring which envelope nesting the version uses.
 export function extractRecordsFromQueryResult(rpc) {
   const structured = rpc?.result?.structuredContent?.data;
-  if (structured == null) return [];
+  if (structured == null) {
+    return [];
+  }
   // Canonical RS read body: { data: [...] } or a bare array.
-  if (Array.isArray(structured)) return structured;
-  if (Array.isArray(structured.data)) return structured.data;
-  if (Array.isArray(structured.records)) return structured.records;
+  if (Array.isArray(structured)) {
+    return structured;
+  }
+  if (Array.isArray(structured.data)) {
+    return structured.data;
+  }
+  if (Array.isArray(structured.records)) {
+    return structured.records;
+  }
   return [];
 }
 
@@ -200,7 +208,7 @@ export function assertSeedRecordsPresent(rpc, expectedRecords = SEED_RECORDS) {
       returnedKeys: [...returnedKeys],
     };
   }
-  return { ok: true, foundKeys: expectedKeys };
+  return { foundKeys: expectedKeys, ok: true };
 }
 
 // Classify an anonymous /mcp probe. The hosted MCP surface must refuse a
@@ -208,11 +216,17 @@ export function assertSeedRecordsPresent(rpc, expectedRecords = SEED_RECORDS) {
 // as a refusal (token-kind guard) but the gate asserts 401 specifically per the
 // runbook. Any 2xx is a hard failure (anonymous data access).
 export function classifyAnonymousMcpStatus(status) {
-  if (status === 401) return { refused: true, code: "unauthorized" };
-  if (status === 403) return { refused: true, code: "forbidden" };
-  if (status >= 200 && status < 300) return { refused: false, code: "allowed" };
+  if (status === 401) {
+    return { code: "unauthorized", refused: true };
+  }
+  if (status === 403) {
+    return { code: "forbidden", refused: true };
+  }
+  if (status >= 200 && status < 300) {
+    return { code: "allowed", refused: false };
+  }
   // Any other non-2xx still means anonymous access did not succeed.
-  return { refused: true, code: `http_${status}` };
+  return { code: `http_${status}`, refused: true };
 }
 
 // PKCE S256 challenge for the client authorization-code flow.
@@ -234,7 +248,7 @@ async function readBody(resp) {
   } catch {
     json = null;
   }
-  return { text, json };
+  return { json, text };
 }
 
 // Establish an owner session via the shared owner-session helper
@@ -266,9 +280,9 @@ async function establishOwnerSession(origin, ownerPassword, log) {
 async function mintOwnerToken(origin, sessionCookie, subjectId, log) {
   const clientId = "pdpp-polyfill-owner-bootstrap";
   const deviceResp = await fetch(`${origin}/oauth/device_authorization`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ client_id: clientId }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   if (deviceResp.status !== 200) {
     const { text } = await readBody(deviceResp);
@@ -277,12 +291,12 @@ async function mintOwnerToken(origin, sessionCookie, subjectId, log) {
   const device = (await readBody(deviceResp)).json;
 
   const approveResp = await fetch(`${origin}/device/approve`, {
-    method: "POST",
+    body: JSON.stringify({ subject_id: subjectId, user_code: device.user_code }),
     headers: {
       "Content-Type": "application/json",
       ...(sessionCookie ? { Cookie: sessionCookie } : {}),
     },
-    body: JSON.stringify({ user_code: device.user_code, subject_id: subjectId }),
+    method: "POST",
   });
   if (approveResp.status !== 200) {
     const { text } = await readBody(approveResp);
@@ -293,13 +307,13 @@ async function mintOwnerToken(origin, sessionCookie, subjectId, log) {
   }
 
   const tokenResp = await fetch(`${origin}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-      device_code: device.device_code,
       client_id: clientId,
+      device_code: device.device_code,
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   if (tokenResp.status !== 200) {
     const { text } = await readBody(tokenResp);
@@ -316,35 +330,35 @@ async function registerSeedManifest(origin, log) {
   const manifest = {
     connector_id: SEED_CONNECTOR_ID,
     name: "Spotify (Railway seed fixture)",
-    version: "1.0.0",
     streams: [
       {
-        name: SEED_STREAM,
+        consent_time_field: "source_updated_at",
+        cursor_field: "source_updated_at",
         description: "Railway Core smoke fixture artists",
-        semantics: "mutable_state",
+        name: SEED_STREAM,
+        primary_key: ["id"],
         schema: {
-          type: "object",
           properties: {
+            followers: { type: "integer" },
+            genres: { items: { type: "string" }, type: "array" },
             id: { type: "string" },
             name: { type: "string" },
-            genres: { type: "array", items: { type: "string" } },
             popularity: { type: "integer" },
-            followers: { type: "integer" },
-            source_updated_at: { type: "string", format: "date-time" },
+            source_updated_at: { format: "date-time", type: "string" },
           },
           required: ["id", "name"],
+          type: "object",
         },
-        primary_key: ["id"],
-        cursor_field: "source_updated_at",
-        consent_time_field: "source_updated_at",
         selection: { fields: true, resources: true },
+        semantics: "mutable_state",
       },
     ],
+    version: "1.0.0",
   };
   const resp = await fetch(`${origin}/connectors`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(manifest),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   if (![200, 201, 409].includes(resp.status)) {
     const { text } = await readBody(resp);
@@ -357,12 +371,12 @@ async function registerSeedManifest(origin, log) {
 async function seedRecords(origin, ownerToken, log) {
   const url = `${origin}/v1/ingest/${encodeURIComponent(SEED_STREAM)}?connector_id=${encodeURIComponent(SEED_CONNECTOR_ID)}`;
   const resp = await fetch(url, {
-    method: "POST",
+    body: buildSeedNdjson(),
     headers: {
       Authorization: `Bearer ${ownerToken}`,
       "Content-Type": "application/x-ndjson",
     },
-    body: buildSeedNdjson(),
+    method: "POST",
   });
   const { text, json } = await readBody(resp);
   if (resp.status !== 200) {
@@ -378,9 +392,9 @@ async function seedRecords(origin, ownerToken, log) {
 
 async function assertAnonymousMcpRefused(origin, log) {
   const resp = await fetch(`${origin}/mcp`, {
-    method: "POST",
-    headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
     body: JSON.stringify(mcpInitializeMessage()),
+    headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
+    method: "POST",
   });
   const verdict = classifyAnonymousMcpStatus(resp.status);
   if (!verdict.refused) {
@@ -388,10 +402,10 @@ async function assertAnonymousMcpRefused(origin, log) {
       `anonymous /mcp was NOT refused (status ${resp.status}). A public origin must not serve MCP anonymously.`
     );
   }
-  if (resp.status !== 401) {
-    log(`anonymous /mcp refused with ${resp.status} (${verdict.code}); runbook expects 401`);
-  } else {
+  if (resp.status === 401) {
     log("anonymous /mcp refused with 401");
+  } else {
+    log(`anonymous /mcp refused with ${resp.status} (${verdict.code}); runbook expects 401`);
   }
   return resp.status;
 }
@@ -400,16 +414,16 @@ async function assertAnonymousMcpRefused(origin, log) {
 // authorization-code flow with consent approval under the owner session.
 async function mintClientToken(origin, sessionCookie, log) {
   const registerResp = await fetch(`${origin}/oauth/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      client_name: "Railway MCP query smoke client",
-      redirect_uris: ["https://client.example/callback"],
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
       application_type: "web",
+      client_name: "Railway MCP query smoke client",
+      grant_types: ["authorization_code", "refresh_token"],
+      redirect_uris: ["https://client.example/callback"],
+      response_types: ["code"],
       token_endpoint_auth_method: "none",
     }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
   });
   if (registerResp.status !== 201) {
     const { text } = await readBody(registerResp);
@@ -420,12 +434,12 @@ async function mintClientToken(origin, sessionCookie, log) {
   const verifier = crypto.randomBytes(32).toString("base64url");
   const authorizationDetails = [
     {
-      type: "https://pdpp.org/data-access",
-      source: { kind: "connector", id: SEED_CONNECTOR_ID },
+      access_mode: "continuous",
       purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
       purpose_description: "Railway MCP query smoke",
-      access_mode: "continuous",
+      source: { id: SEED_CONNECTOR_ID, kind: "connector" },
       streams: [{ name: "*" }],
+      type: "https://pdpp.org/data-access",
     },
   ];
   const authorizeUrl = new URL(`${origin}/oauth/authorize`);
@@ -438,8 +452,8 @@ async function mintClientToken(origin, sessionCookie, log) {
   authorizeUrl.searchParams.set("authorization_details", JSON.stringify(authorizationDetails));
 
   const authorizeResp = await fetch(authorizeUrl, {
-    redirect: "manual",
     headers: sessionCookie ? { Cookie: sessionCookie } : {},
+    redirect: "manual",
   });
   if (authorizeResp.status !== 302) {
     const { text } = await readBody(authorizeResp);
@@ -462,15 +476,19 @@ async function mintClientToken(origin, sessionCookie, log) {
 
   const approveHeaders = { "Content-Type": "application/x-www-form-urlencoded" };
   const cookieParts = [sessionCookie, consentCsrfCookie].filter(Boolean);
-  if (cookieParts.length > 0) approveHeaders.Cookie = cookieParts.join("; ");
+  if (cookieParts.length > 0) {
+    approveHeaders.Cookie = cookieParts.join("; ");
+  }
   const approveBody = { request_uri: requestUri, subject_id: "owner_railway_smoke" };
-  if (consentCsrfField) approveBody._csrf = consentCsrfField;
+  if (consentCsrfField) {
+    approveBody._csrf = consentCsrfField;
+  }
 
   const approveResp = await fetch(`${origin}/consent/approve`, {
+    body: new URLSearchParams(approveBody).toString(),
+    headers: approveHeaders,
     method: "POST",
     redirect: "manual",
-    headers: approveHeaders,
-    body: new URLSearchParams(approveBody).toString(),
   });
   if (approveResp.status !== 302) {
     const { text } = await readBody(approveResp);
@@ -483,15 +501,15 @@ async function mintClientToken(origin, sessionCookie, log) {
   }
 
   const tokenResp = await fetch(`${origin}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
       client_id: client.client_id,
-      redirect_uri: "https://client.example/callback",
+      code,
       code_verifier: verifier,
+      grant_type: "authorization_code",
+      redirect_uri: "https://client.example/callback",
     }).toString(),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
   });
   if (tokenResp.status !== 200) {
     const { text } = await readBody(tokenResp);
@@ -503,17 +521,17 @@ async function mintClientToken(origin, sessionCookie, log) {
 
 async function mcpPost(origin, token, message) {
   const resp = await fetch(`${origin}/mcp`, {
-    method: "POST",
+    body: JSON.stringify(message),
     headers: {
       Accept: "application/json, text/event-stream",
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(message),
+    method: "POST",
   });
   const text = await resp.text();
   const rpc = parseMcpResponseText(resp.headers.get("content-type"), text);
-  return { status: resp.status, rpc, text };
+  return { rpc, status: resp.status, text };
 }
 
 async function runScopedMcpQuery(origin, clientToken, log) {
@@ -575,12 +593,19 @@ export function parseArgs(argv) {
   const out = { json: false };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if (arg === "--json") out.json = true;
-    else if (arg === "--no-seed") out.noSeed = true;
-    else if (arg === "--origin") out.origin = args[++i];
-    else if (arg === "--owner-password") out.ownerPassword = args[++i];
-    else if (arg === "--subject") out.subjectId = args[++i];
-    else if (arg === "--help" || arg === "-h") out.help = true;
+    if (arg === "--json") {
+      out.json = true;
+    } else if (arg === "--no-seed") {
+      out.noSeed = true;
+    } else if (arg === "--origin") {
+      out.origin = args[++i];
+    } else if (arg === "--owner-password") {
+      out.ownerPassword = args[++i];
+    } else if (arg === "--subject") {
+      out.subjectId = args[++i];
+    } else if (arg === "--help" || arg === "-h") {
+      out.help = true;
+    }
   }
   return out;
 }
@@ -618,16 +643,20 @@ async function main(argv) {
   const steps = [];
   const log = (message) => {
     steps.push(message);
-    if (!opts.json) process.stdout.write(`  ${message}\n`);
+    if (!opts.json) {
+      process.stdout.write(`  ${message}\n`);
+    }
   };
 
-  if (!opts.json) process.stdout.write(`Railway MCP query smoke against ${origin}\n`);
+  if (!opts.json) {
+    process.stdout.write(`Railway MCP query smoke against ${origin}\n`);
+  }
   try {
-    await runLiveSmoke({ origin, ownerPassword, subjectId, logger: log, seed: !opts.noSeed });
+    await runLiveSmoke({ logger: log, origin, ownerPassword, seed: !opts.noSeed, subjectId });
   } catch (error) {
     const message = error?.message ?? String(error);
     if (opts.json) {
-      process.stdout.write(`${JSON.stringify({ ok: false, origin, steps, error: message }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ error: message, ok: false, origin, steps }, null, 2)}\n`);
     } else {
       process.stderr.write(`\nRailway MCP query smoke FAILED: ${message}\n`);
     }

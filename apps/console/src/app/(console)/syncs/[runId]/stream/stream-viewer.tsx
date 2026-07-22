@@ -312,8 +312,8 @@ interface ConnectionStatus {
   troubleMessage: string | null;
 }
 
-const CONNECTING: ConnectionStatus = { display: "connecting", cause: null, troubleMessage: null };
-const LIVE: ConnectionStatus = { display: "live", cause: null, troubleMessage: null };
+const CONNECTING: ConnectionStatus = { cause: null, display: "connecting", troubleMessage: null };
+const LIVE: ConnectionStatus = { cause: null, display: "live", troubleMessage: null };
 
 const SUPPORTED_KINDS = new Set(["manual_action", "otp"]);
 const INITIAL_INTERACTION_ACTION_STATE = { error: null, status: null } as const;
@@ -348,15 +348,15 @@ const STREAM_VIEWER_POLICY = {
   // One place for timing policy: resize sources are noisy on mobile, but every
   // delayed action below has a named UX reason and a replayable control test.
   keyboardRemoteBlurGraceMs: 350,
+  // Post-settle debug drain cadence. Keep it slower than the 50ms
+  // layout poll so telemetry does not perturb the stream UX.
+  nekoDebugDrainPollMs: 250,
   nekoMediaSettleMaxPolls: 40,
   nekoMediaSettlePollMs: 250,
   nekoStatusPollAttempts: 20,
   nekoStatusPollMs: 50,
-  // Post-settle debug drain cadence. Keep it slower than the 50ms
-  // layout poll so telemetry does not perturb the stream UX.
-  nekoDebugDrainPollMs: 250,
-  orientationSettleFollowUpMs: 300,
   orientationFollowUpMs: [350, 700] as const,
+  orientationSettleFollowUpMs: 300,
   presentationKeyboardCloseHoldMs: 700,
   presentationKeyboardOpenHoldMs: 900,
   presentationOrientationHoldMs: 700,
@@ -408,21 +408,21 @@ function classifyMintError(err: unknown): ConnectionStatus {
   const message = err instanceof Error ? err.message : String(err);
   if (message.startsWith(STREAMING_UNAVAILABLE_TAG)) {
     return {
-      display: "trouble",
       cause: "unavailable",
+      display: "trouble",
       troubleMessage: "The browser stream isn't available right now.",
     };
   }
   if (message.includes("expired") || message.includes("not_found")) {
     return {
-      display: "trouble",
       cause: "expired",
+      display: "trouble",
       troubleMessage: "Session expired. Try again to start a fresh one.",
     };
   }
   return {
-    display: "trouble",
     cause: "network",
+    display: "trouble",
     troubleMessage: "Couldn't reach the browser stream.",
   };
 }
@@ -492,8 +492,8 @@ function markRemoteKeyboardFocused(
     if (focusTransition.effect === "show-affordance") {
       logDebug("neko.keyboard_focus.affordance", {
         inputType,
-        remoteEditableRect,
         reason: "remote-focus-confirmed-after-trusted-touch",
+        remoteEditableRect,
       });
     } else if (!remoteEditableRect) {
       logDebug("neko.keyboard_focus.geometry_unavailable", {
@@ -888,7 +888,6 @@ function mediaDebugSnapshot(
           : null;
       return {
         intrinsic,
-        playback: mediaPlaybackQualitySnapshot(element),
         pixelFit: computePixelFitTelemetry({
           containerRect,
           devicePixelRatio,
@@ -896,6 +895,7 @@ function mediaDebugSnapshot(
           mediaRect,
           visualViewportScale,
         }),
+        playback: mediaPlaybackQualitySnapshot(element),
         readyState: element instanceof HTMLVideoElement ? element.readyState : null,
         rect: rectSnapshot(element),
         sharpness:
@@ -1094,11 +1094,11 @@ function useStreamDebugLogger({
     }
     const events = bufferRef.current.splice(0, bufferRef.current.length);
     fetch(STREAM_DEBUG_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ events }),
       credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
       keepalive: true,
+      method: "POST",
     }).catch(() => {
       /* Debug telemetry must never affect stream UX. */
     });
@@ -1207,8 +1207,8 @@ function useSurfaceDebugTelemetry({
         button: event.button,
         buttons: event.buttons,
         isPrimary: event.isPrimary,
-        pointerType: event.pointerType,
         point: pointerDebugPayload({ container: node, event, viewportInfo }),
+        pointerType: event.pointerType,
         pressure: event.pressure,
         target: elementDebugSnapshot(event.target),
       });
@@ -1370,12 +1370,12 @@ function readLocalViewportSample(): LocalViewportSample | null {
     return null;
   }
   return {
-    width: Math.max(1, Math.floor(window.innerWidth)),
     height: Math.max(1, Math.floor(window.innerHeight)),
     visualHeight:
       typeof window.visualViewport?.height === "number" ? Math.max(1, Math.floor(window.visualViewport.height)) : null,
     visualWidth:
       typeof window.visualViewport?.width === "number" ? Math.max(1, Math.floor(window.visualViewport.width)) : null,
+    width: Math.max(1, Math.floor(window.innerWidth)),
   };
 }
 
@@ -1412,6 +1412,7 @@ function readViewportObservation(): ViewportObservation | null {
           type: orientation.type,
         }
       : null,
+    timestampMs: Date.now(),
     virtualKeyboard: typeof navigator === "undefined" ? null : readVirtualKeyboardSample(),
     visual: visualViewport
       ? {
@@ -1424,7 +1425,6 @@ function readViewportObservation(): ViewportObservation | null {
           width: Math.max(1, Math.floor(visualViewport.width)),
         }
       : null,
-    timestampMs: Date.now(),
   };
 }
 
@@ -2029,11 +2029,11 @@ function StreamStage({
         phase: "post-start",
       });
       fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "copy" }),
         credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
         keepalive: true,
+        method: "POST",
       })
         .then((response) => {
           logDebug("neko.clipboard_remote_to_local", {
@@ -2062,8 +2062,8 @@ function StreamStage({
         const parsed = parseAttachedMessage(streamEventData(ev));
         if (!parsed.ok) {
           onStatus({
-            display: "trouble",
             cause: "network",
+            display: "trouble",
             troubleMessage: "Stream attached but the handshake was malformed.",
           });
           return;
@@ -2107,8 +2107,8 @@ function StreamStage({
         const payload = parsed.value;
         onStatus(LIVE);
         logDebug("stream_backend_ready_received", {
-          browserSessionId: browserSessionIdRef.current,
           backend: payload.backend,
+          browserSessionId: browserSessionIdRef.current,
           hasClientConfig: Boolean(payload.client_config_path),
           hasEntry: Boolean(payload.iframe_path),
         });
@@ -2140,8 +2140,8 @@ function StreamStage({
           setRemoteClipboard(null);
           setRemoteInputSensitive(false);
           setNekoSession({
-            browserSessionId,
             browserOwnerMode: payload.browser_owner_mode,
+            browserSessionId,
             clientConfigPath:
               typeof payload.client_config_path === "string" && payload.client_config_path.length > 0
                 ? payload.client_config_path
@@ -2196,8 +2196,8 @@ function StreamStage({
         }
         const payload = parsed.value;
         setPopup({
-          targetId: payload.targetId,
           message: `${connectorName} opened a new tab. The action may continue there.`,
+          targetId: payload.targetId,
         });
         if (popupTimeoutRef.current) {
           clearTimeout(popupTimeoutRef.current);
@@ -2298,9 +2298,9 @@ function StreamStage({
           logDebug,
           presentationKeyboardFocusedRef,
           presentationKeyboardHoldUntilRef,
+          remoteEditableRect: readRemoteEditableRectFromEventData(eventData),
           setKeyboardAffordanceVisible,
           setRemoteInputSensitive,
-          remoteEditableRect: readRemoteEditableRectFromEventData(eventData),
           surfaceAdapterRef: nekoSurfaceAdapterRef,
           viewerRef: nekoViewerRef,
         });
@@ -2315,8 +2315,8 @@ function StreamStage({
         const parsed = parseStreamErrorMessage(streamEventData(ev));
         if (parsed.ok) {
           onStatus({
-            display: "trouble",
             cause: "network",
+            display: "trouble",
             troubleMessage:
               typeof parsed.value.message === "string" && parsed.value.message.length > 0
                 ? parsed.value.message
@@ -2395,10 +2395,10 @@ function StreamStage({
     viewerUrl = initial.viewer_url;
     logDebug("stream_session_loaded", {
       browserSessionId: initial.browser_session_id,
-      reason: "initial",
       hasInputUrl: Boolean(initial.input_url),
-      hasViewportUrl: Boolean(initial.viewport_url),
       hasViewerUrl: Boolean(initial.viewer_url),
+      hasViewportUrl: Boolean(initial.viewport_url),
+      reason: "initial",
     });
 
     function clearBackoff() {
@@ -2457,10 +2457,10 @@ function StreamStage({
       currentBrowserSessionId = minted.browser_session_id;
       logDebug("stream_session_minted", {
         browserSessionId: minted.browser_session_id,
-        reason: "reattach",
         hasInputUrl: Boolean(minted.input_url),
-        hasViewportUrl: Boolean(minted.viewport_url),
         hasViewerUrl: Boolean(minted.viewer_url),
+        hasViewportUrl: Boolean(minted.viewport_url),
+        reason: "reattach",
       });
       // Fresh token => reset session-level state. A re-mint after token
       // death is a new lifecycle.
@@ -2496,8 +2496,8 @@ function StreamStage({
         return;
       }
       const { reason, troubleMessage } = classifyStreamReachFailure(probe);
-      logDebug("stream_reach_failed", { reason, httpStatus: probe.probeStatus });
-      onStatus({ display: "trouble", cause: "network", troubleMessage });
+      logDebug("stream_reach_failed", { httpStatus: probe.probeStatus, reason });
+      onStatus({ cause: "network", display: "trouble", troubleMessage });
       try {
         await reportStreamReachFailureAction({ httpStatus: probe.probeStatus, interactionId, reason, runId });
       } catch {
@@ -2526,8 +2526,8 @@ function StreamStage({
         // refines this to a reason-specific message. `EventSource` hid the
         // attach HTTP status; this one extra GET recovers it.
         onStatus({
-          display: "trouble",
           cause: "network",
+          display: "trouble",
           troubleMessage: "Couldn't reach the browser stream after several tries.",
         });
         diagnoseGiveUp(viewerUrl).catch(() => {
@@ -2543,8 +2543,8 @@ function StreamStage({
         return;
       }
       onStatus({
-        display: "trouble",
         cause: "network",
+        display: "trouble",
         troubleMessage: "Connecting to the browser stream…",
       });
       const delayIndex = Math.min(preAttachFailures - 1, RECONNECT_BACKOFF_MS.length - 1);
@@ -2568,8 +2568,8 @@ function StreamStage({
       }
       closeCurrentSource();
       logDebug("stream_attach_start", {
-        browserSessionId: currentBrowserSessionId,
         attempt: totalAttempts + 1,
+        browserSessionId: currentBrowserSessionId,
         hasViewerUrl: Boolean(viewerUrl),
         phase: attached ? "reattach-after-attached" : "initial",
       });
@@ -2724,12 +2724,12 @@ function StreamStage({
       });
       keyboardResizeStateRef.current = force ? createMobileKeyboardResizeState() : keyboardResize.state;
       const debugPayload = {
+        control: viewportControlCommand,
         force,
         keyboardResize: {
           mode: keyboardResize.state.mode,
           suppress: keyboardResize.suppress,
         },
-        control: viewportControlCommand,
         local: {
           next: nextLocal,
           previous: previousLocal,
@@ -2782,11 +2782,11 @@ function StreamStage({
           // legitimate resize will retry. Don't surface as `trouble` — the
           // stream is still functional, just at a stale viewport.
           fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
             body,
             credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
             keepalive: true,
+            method: "POST",
           })
             .then((response) => {
               logDebug("viewport.post.result", {
@@ -3002,8 +3002,8 @@ function StreamStage({
           snapshot: readViewportDebugSnapshot(observedNode),
           source,
           stable: stableViewport,
-          virtualKeyboard,
           viewport,
+          virtualKeyboard,
         });
         return;
       }
@@ -3032,8 +3032,8 @@ function StreamStage({
         return;
       }
       logDebug("viewport.presentation.pending", {
-        measured: { height: Math.round(rect.height), width: Math.round(rect.width) },
         command: presentationControlCommand,
+        measured: { height: Math.round(rect.height), width: Math.round(rect.width) },
         previous: presentationViewportInfoRef.current,
         snapshot: readViewportDebugSnapshot(observedNode),
         source,
@@ -3233,6 +3233,7 @@ function StreamStage({
     requestBrowserCopyFromSheet({
       logDebug,
       policy: clipboardPolicy,
+      session: getMountedNekoViewerSession(nekoViewerRef.current, nekoSurfaceAdapterRef.current),
       setCopyState: (state) => {
         logDebug("neko.corner.copy", {
           phase: "browser-copy-result",
@@ -3243,7 +3244,6 @@ function StreamStage({
           setClipboardSheetOpen(true);
         }
       },
-      session: getMountedNekoViewerSession(nekoViewerRef.current, nekoSurfaceAdapterRef.current),
     }).catch((err) => {
       logDebug("neko.corner.copy", {
         error: err instanceof Error ? err.message : String(err),
@@ -3273,8 +3273,8 @@ function StreamStage({
       keyboardFocusStateRef.current = activation.transition.state;
       setKeyboardAffordanceVisible(activation.transition.state.affordanceVisible);
       logDebug("neko.corner.keyboard.tapped", {
-        adapterPresent: !!adapter,
         adapterMounted: adapter?.getLifecycleState() === "mounted",
+        adapterPresent: !!adapter,
         adapterState: adapter?.getLifecycleState() ?? null,
         source: "confirmed-focus-affordance",
       });
@@ -3289,8 +3289,8 @@ function StreamStage({
       return;
     }
     logDebug("neko.corner.keyboard.tapped", {
-      adapterPresent: !!adapter,
       adapterMounted: adapter?.getLifecycleState() === "mounted",
+      adapterPresent: !!adapter,
       adapterState: adapter?.getLifecycleState() ?? null,
       source: "corner-control",
     });
@@ -3309,7 +3309,7 @@ function StreamStage({
   const interactionPending = interactionRequiresResponse && SUPPORTED_KINDS.has(interactionKind);
   const handleCloseRequest = useCallback(() => {
     if (interactionPending) {
-      logDebug("neko.corner.close", { phase: "close-guard-armed", interactionKind });
+      logDebug("neko.corner.close", { interactionKind, phase: "close-guard-armed" });
       setCloseConfirmArmed(true);
       return;
     }
@@ -3317,13 +3317,13 @@ function StreamStage({
   }, [interactionKind, interactionPending, logDebug, onClose]);
 
   const handleCloseConfirm = useCallback(() => {
-    logDebug("neko.corner.close", { phase: "close-guard-confirmed", interactionKind });
+    logDebug("neko.corner.close", { interactionKind, phase: "close-guard-confirmed" });
     setCloseConfirmArmed(false);
     onClose();
   }, [interactionKind, logDebug, onClose]);
 
   const handleCloseCancel = useCallback(() => {
-    logDebug("neko.corner.close", { phase: "close-guard-cancelled", interactionKind });
+    logDebug("neko.corner.close", { interactionKind, phase: "close-guard-cancelled" });
     setCloseConfirmArmed(false);
   }, [interactionKind, logDebug]);
 
@@ -3422,7 +3422,7 @@ function normalizeNekoClientConfig(payload: NekoClientConfigResponse): NekoClien
   const username = payload.login?.username;
   const password = payload.login?.password;
   return {
-    login: typeof username === "string" && typeof password === "string" ? { username, password } : null,
+    login: typeof username === "string" && typeof password === "string" ? { password, username } : null,
     serverPath,
     statusPath,
   };
@@ -3436,7 +3436,7 @@ function readNekoScreenSize(payload: unknown): { height: number; width: number }
   const size = screen?.size && typeof screen.size === "object" ? (screen.size as Record<string, unknown>) : screen;
   const width = Number(size?.width);
   const height = Number(size?.height);
-  return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 ? { width, height } : null;
+  return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 ? { height, width } : null;
 }
 
 function readNekoStatusSnapshot(payload: unknown): NekoStatusSnapshot {
@@ -3794,9 +3794,8 @@ function NekoSurface({
         adapter = nextAdapter;
         nekoSurfaceAdapterRef.current = nextAdapter;
         const nextViewer = createRemoteSurfaceViewer({
-          mediaPlane: "video-element",
           adapter: nextAdapter,
-          inputCapture: false,
+          applyViewport: (viewport) => applyViewportRef.current(viewport),
           client,
           config: { kind: "neko", ...(config as unknown as Record<string, unknown>) },
           // Kept in sync with the injected adapter's own `displayFit` above
@@ -3806,14 +3805,12 @@ function NekoSurface({
           // correct if a future change stops injecting the adapter).
           displayFit: "contain",
           initialViewport: viewportInfoRef.current ?? { height: 1, width: 1 },
-          applyViewport: (viewport) => applyViewportRef.current(viewport),
-          sampleMediaSettle: () => {
-            const viewport = viewportInfoRef.current;
-            return viewport ? readNekoMediaSettleSample(viewportCaptureSize(viewport)) : null;
-          },
+          inputCapture: false,
           logger: (level, msg, meta) => {
             logDebug(msg, { level, ...(meta ?? {}) });
           },
+          mediaPlane: "video-element",
+          onDiagnostic: handleViewerDiagnostic,
           onInputDiagnostic: (event) => {
             logDebug("remote_surface_viewer.input", {
               action: event.intent.type === "pointer" ? event.intent.action : event.intent.type,
@@ -3822,7 +3819,10 @@ function NekoSurface({
               source: event.intent.type === "pointer" ? (event.intent.source ?? null) : null,
             });
           },
-          onDiagnostic: handleViewerDiagnostic,
+          sampleMediaSettle: () => {
+            const viewport = viewportInfoRef.current;
+            return viewport ? readNekoMediaSettleSample(viewportCaptureSize(viewport)) : null;
+          },
         });
         viewer = nextViewer;
         viewerRef.current = nextViewer;
@@ -3851,7 +3851,6 @@ function NekoSurface({
         });
         if (cancelled) {
           await releaseCancelledViewer(nextAdapter, nextViewer);
-          return;
         }
       })
       .catch((err: unknown) => {
@@ -4614,10 +4613,10 @@ function BrowserSurface({
       }
       try {
         const response = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
           credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
         });
         if (logInput) {
           logDebug("stream.input.post.result", {
@@ -4647,15 +4646,15 @@ function BrowserSurface({
     const adapter = new CdpClientSurface({
       client: {
         cdp: createPdppCdpTransport(sendCdpInput),
+        getClipboardPolicy: () => clipboardPolicyRef.current,
+        getFrameElement: () => imgRef.current,
+        getSoftKeyboardElement: () => softKeyboardInputRef.current,
+        getViewportInfo: () => viewportInfoRef.current,
         mediaSink: {
           onFrame() {
             // Frames arrive on the console's existing SSE stream.
           },
         },
-        getViewportInfo: () => viewportInfoRef.current,
-        getFrameElement: () => imgRef.current,
-        getClipboardPolicy: () => clipboardPolicyRef.current,
-        getSoftKeyboardElement: () => softKeyboardInputRef.current,
         onInputDebug: (event, payload) => {
           logDebug(event, {
             ...payload,
@@ -4741,19 +4740,19 @@ function BrowserSurface({
           ref={softKeyboardInputRef}
           spellCheck={false}
           style={{
+            background: "transparent",
+            border: 0,
+            caretColor: "transparent",
+            color: "transparent",
+            height: "1px",
+            left: 0,
+            margin: 0,
+            opacity: 0,
+            padding: 0,
+            pointerEvents: "none",
             position: "absolute",
             top: 0,
-            left: 0,
             width: "1px",
-            height: "1px",
-            opacity: 0,
-            pointerEvents: "none",
-            border: 0,
-            padding: 0,
-            margin: 0,
-            background: "transparent",
-            color: "transparent",
-            caretColor: "transparent",
           }}
           type="text"
           value=""
@@ -5106,8 +5105,8 @@ function ClipboardSheet({
     requestBrowserCopyFromSheet({
       logDebug,
       policy,
-      setCopyState,
       session: getViewerSession(),
+      setCopyState,
     }).catch((err) => {
       setCopyState("failed");
       logDebug("clipboard.remote_to_local", {
@@ -5813,7 +5812,7 @@ export function ResolvedSurface({ connector, runId }: { connector: ConnectorCont
             The browser step is complete. You can close this tab with your browser controls, or open the run timeline.
           </p>
           <Link
-            className={buttonVariants({ variant: "default", size: "lg", className: "h-12 w-full justify-center" })}
+            className={buttonVariants({ className: "h-12 w-full justify-center", size: "lg", variant: "default" })}
             href={`/syncs/${encodeURIComponent(runId)}`}
           >
             Open run timeline

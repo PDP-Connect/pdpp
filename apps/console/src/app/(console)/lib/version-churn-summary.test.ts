@@ -118,9 +118,9 @@ test("summarizeVersionChurn returns null for an empty row set", () => {
 
 test("summarizeVersionChurn does NOT say 'needs review' when every row is expected retained history", () => {
   const rows = [
-    expectedRow({ connector_id: "github", stream: "user", risk_level: "high" }),
-    expectedRow({ connector_id: "slack", stream: "channels", risk_level: "high" }),
-    expectedRow({ connector_id: "ynab", stream: "accounts", risk_level: "watch" }),
+    expectedRow({ connector_id: "github", risk_level: "high", stream: "user" }),
+    expectedRow({ connector_id: "slack", risk_level: "high", stream: "channels" }),
+    expectedRow({ connector_id: "ynab", risk_level: "watch", stream: "accounts" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -134,9 +134,9 @@ test("summarizeVersionChurn does NOT say 'needs review' when every row is expect
 
 test("recurring snapshots fold into the 'expected retained history' headline bucket", () => {
   const rows = [
-    recurringRow({ connector_id: "claude-code", stream: "sessions", risk_level: "watch" }),
-    recurringRow({ connector_id: "codex", stream: "sessions", risk_level: "watch" }),
-    expectedRow({ connector_id: "github", stream: "user", risk_level: "high" }),
+    recurringRow({ connector_id: "claude-code", risk_level: "watch", stream: "sessions" }),
+    recurringRow({ connector_id: "codex", risk_level: "watch", stream: "sessions" }),
+    expectedRow({ connector_id: "github", risk_level: "high", stream: "user" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -148,9 +148,9 @@ test("recurring snapshots fold into the 'expected retained history' headline buc
 
 test("summarizeVersionChurn does NOT say 'needs review' when every row is a registered compaction candidate", () => {
   const rows = [
-    candidateRow({ connector_id: "ynab", stream: "budgets", risk_level: "high" }),
-    candidateRow({ connector_id: "gmail", stream: "labels", risk_level: "watch" }),
-    candidateRow({ connector_id: "amazon", stream: "orders", risk_level: "watch" }),
+    candidateRow({ connector_id: "ynab", risk_level: "high", stream: "budgets" }),
+    candidateRow({ connector_id: "gmail", risk_level: "watch", stream: "labels" }),
+    candidateRow({ connector_id: "amazon", risk_level: "watch", stream: "orders" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -162,8 +162,8 @@ test("summarizeVersionChurn does NOT say 'needs review' when every row is a regi
 
 test("summarizeVersionChurn SAYS 'needs review' when at least one row is unclassified", () => {
   const rows = [
-    expectedRow({ connector_id: "github", stream: "user", risk_level: "high" }),
-    candidateRow({ connector_id: "ynab", stream: "budgets", risk_level: "high" }),
+    expectedRow({ connector_id: "github", risk_level: "high", stream: "user" }),
+    candidateRow({ connector_id: "ynab", risk_level: "high", stream: "budgets" }),
     unclassifiedRow({ risk_level: "high" }),
   ];
   const summary = summarizeVersionChurn(rows);
@@ -205,7 +205,7 @@ test("countChurnDispositions buckets rows by disposition", () => {
     candidateRow({ connector_id: "ynab", stream: "budgets" }),
     unclassifiedRow(),
   ]);
-  assert.deepEqual(counts, { needsReview: 1, compactionCandidates: 1, expectedRetained: 2, reviewedResidueCount: 0 });
+  assert.deepEqual(counts, { compactionCandidates: 1, expectedRetained: 2, needsReview: 1, reviewedResidueCount: 0 });
 });
 
 test("countChurnDispositions folds recurring snapshots into expectedRetained", () => {
@@ -214,7 +214,7 @@ test("countChurnDispositions folds recurring snapshots into expectedRetained", (
     recurringRow({ connector_id: "codex", stream: "sessions" }),
     expectedRow({ connector_id: "github", stream: "user" }),
   ]);
-  assert.deepEqual(counts, { needsReview: 0, compactionCandidates: 0, expectedRetained: 3, reviewedResidueCount: 0 });
+  assert.deepEqual(counts, { compactionCandidates: 0, expectedRetained: 3, needsReview: 0, reviewedResidueCount: 0 });
 });
 
 test("isExpectedRetainedHistory / needsReview predicates agree with the disposition", () => {
@@ -230,7 +230,7 @@ test("isExpectedRetainedHistory / needsReview predicates agree with the disposit
 });
 
 test("churnRowLabel falls back to the connector key when no display name is set", () => {
-  assert.equal(churnRowLabel(row({ display_name: null, connector_id: "ynab" })), "ynab / budgets");
+  assert.equal(churnRowLabel(row({ connector_id: "ynab", display_name: null })), "ynab / budgets");
 });
 
 test("churnRowLabel prefers an owner-set display name", () => {
@@ -240,7 +240,7 @@ test("churnRowLabel prefers an owner-set display name", () => {
 // ─── buildChurnDrilldownRows ─────────────────────────────────────────────────
 
 test("buildChurnDrilldownRows surfaces all supplied rows in order", () => {
-  const rows = [candidateRow({ stream: "budgets" }), candidateRow({ stream: "accounts", risk_level: "watch" })];
+  const rows = [candidateRow({ stream: "budgets" }), candidateRow({ risk_level: "watch", stream: "accounts" })];
   const built = buildChurnDrilldownRows(rows);
   assert.equal(built.length, 2);
   assert.equal(built[0]?.label, "ynab / budgets");
@@ -314,7 +314,7 @@ test("churnDryRunCommand shell-quotes metadata and omits absent connector id", (
 
 test("buildChurnDrilldownRows omits the dry-run command for point-in-time rows and carries guidance", () => {
   const built = buildChurnDrilldownRows([
-    expectedRow({ connector_id: "github", stream: "user", connector_instance_id: "cin_gh_1" }),
+    expectedRow({ connector_id: "github", connector_instance_id: "cin_gh_1", stream: "user" }),
   ]);
   assert.equal(built[0]?.remediation, "point_in_time_retained_history");
   assert.equal(built[0]?.dryRunCommand, null, "point-in-time rows must not offer a (failing) compaction command");
@@ -327,7 +327,7 @@ test("buildChurnDrilldownRows omits the dry-run command for point-in-time rows a
 
 test("buildChurnDrilldownRows omits the dry-run command for recurring snapshots and carries guidance", () => {
   const built = buildChurnDrilldownRows([
-    recurringRow({ connector_id: "claude-code", stream: "sessions", connector_instance_id: "cin_cc_1" }),
+    recurringRow({ connector_id: "claude-code", connector_instance_id: "cin_cc_1", stream: "sessions" }),
   ]);
   assert.equal(built[0]?.remediation, "recurring_point_in_time_snapshot");
   assert.equal(built[0]?.dryRunCommand, null, "recurring snapshots are not compactable — no command");
@@ -352,7 +352,7 @@ test("buildChurnDrilldownRows keeps the dry-run command (as a diagnostic) for un
 
 test("buildChurnDrilldownRows keeps the dry-run command for reviewed residue rows", () => {
   const built = buildChurnDrilldownRows([
-    reviewedRow({ connector_id: "usaa", stream: "accounts", connector_instance_id: "cin_usaa_1" }),
+    reviewedRow({ connector_id: "usaa", connector_instance_id: "cin_usaa_1", stream: "accounts" }),
   ]);
   assert.equal(built[0]?.remediation, "reviewed_historical_residue");
   assert.ok(built[0]?.dryRunCommand, "reviewed residue rows keep the dry-run command (--apply frees disk)");
@@ -386,10 +386,10 @@ test("pointInTimeGuidance describes recurring snapshots as expected non-compacta
 
 test("summarizeVersionChurn names reviewed residue streams and says no review needed when all classified", () => {
   const rows = [
-    reviewedRow({ connector_id: "usaa", stream: "accounts", risk_level: "watch" }),
-    reviewedRow({ connector_id: "usaa", stream: "statements", risk_level: "watch" }),
-    reviewedRow({ connector_id: "chase", stream: "statements", risk_level: "watch" }),
-    recurringRow({ connector_id: "claude-code", stream: "sessions", risk_level: "watch" }),
+    reviewedRow({ connector_id: "usaa", risk_level: "watch", stream: "accounts" }),
+    reviewedRow({ connector_id: "usaa", risk_level: "watch", stream: "statements" }),
+    reviewedRow({ connector_id: "chase", risk_level: "watch", stream: "statements" }),
+    recurringRow({ connector_id: "claude-code", risk_level: "watch", stream: "sessions" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);
@@ -406,9 +406,9 @@ test("summarizeVersionChurn names reviewed residue streams and says no review ne
 
 test("summarizeVersionChurn includes reviewed residue count even alongside other dispositions", () => {
   const rows = [
-    reviewedRow({ connector_id: "usaa", stream: "accounts", risk_level: "watch" }),
-    candidateRow({ connector_id: "ynab", stream: "budgets", risk_level: "high" }),
-    expectedRow({ connector_id: "github", stream: "user", risk_level: "high" }),
+    reviewedRow({ connector_id: "usaa", risk_level: "watch", stream: "accounts" }),
+    candidateRow({ connector_id: "ynab", risk_level: "high", stream: "budgets" }),
+    expectedRow({ connector_id: "github", risk_level: "high", stream: "user" }),
   ];
   const summary = summarizeVersionChurn(rows);
   assert.ok(summary);

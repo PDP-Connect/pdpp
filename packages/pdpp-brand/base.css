@@ -460,21 +460,21 @@ html[data-density="compact"] {
 }
 
 html {
-  background: var(--background);
-  color: var(--foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  color: var(--foreground);
+  background: var(--background);
   text-rendering: optimizeLegibility;
 }
 
 body {
   margin: 0;
+  color: var(--foreground);
   /* Flat operator surface — no marketing corner-wash or top-of-page lift.
      Decorative gradients add visual noise to a dense surface meant for long
      sessions; leading dev tools strip exactly these. The marketing wash
      belongs on the public site, not the operator console. */
   background: var(--background);
-  color: var(--foreground);
 }
 
 *,
@@ -593,19 +593,19 @@ samp {
    marker + a single flat card-level tint (one step, no gradient, no resting
    shadow). The hue still says protocol (blue) vs human (warm), but quietly. */
 [data-surface="human"] {
+  background-color: color-mix(in oklab, var(--card) 94%, var(--human));
   border-top: 1px solid var(--border);
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   border-left: 2px solid var(--human);
-  background-color: color-mix(in oklab, var(--card) 94%, var(--human));
 }
 
 [data-surface="protocol"] {
+  background-color: color-mix(in oklab, var(--card) 94%, var(--primary));
   border-top: 1px solid var(--border);
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   border-left: 2px solid var(--primary);
-  background-color: color-mix(in oklab, var(--card) 94%, var(--primary));
 }
 
 .pdpp-shell {
@@ -687,9 +687,9 @@ samp {
 .pdpp-eyebrow {
   font-family: var(--font-mono);
   font-size: 0.72rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 
 .pdpp-rules {

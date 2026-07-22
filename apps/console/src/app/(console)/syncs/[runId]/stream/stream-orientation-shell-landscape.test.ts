@@ -112,9 +112,9 @@ test("orientation shell box model: the SAME content at portrait/desktop dimensio
   // media query's `max-height: 30rem` (480px) boundary correctly excludes them —
   // this is a landscape+short-height-specific fix, not a general padding change.
   const nonOffendingViewports = [
-    { name: "phone portrait", height: 844 },
-    { name: "desktop 1981x960", height: 960 },
-    { name: "desktop 1400x1005", height: 1005 },
+    { height: 844, name: "phone portrait" },
+    { height: 960, name: "desktop 1981x960" },
+    { height: 1005, name: "desktop 1400x1005" },
   ];
   const MAX_HEIGHT_QUERY_BOUNDARY_PX = 30 * 16; // 30rem at a 16px root font size
 

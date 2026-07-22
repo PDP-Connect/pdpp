@@ -104,14 +104,14 @@ test("capabilities include the headline reference flows", () => {
 
 test("seeded data uses safe public domains only", () => {
   const blob = JSON.stringify({
-    DEMO_CONNECTORS,
+    DEMO_CAPABILITIES,
     DEMO_CLIENTS,
+    DEMO_CONNECTORS,
     DEMO_GRANTS,
     DEMO_RECORDS,
     DEMO_RUNS,
     DEMO_STREAMS,
     DEMO_TRACES,
-    DEMO_CAPABILITIES,
   });
   for (const m of blob.matchAll(REAL_LOOKING_DOMAIN_RE)) {
     assert.ok(
@@ -126,14 +126,14 @@ test("seeded data uses safe public domains only", () => {
 
 test("seeded data contains no obvious credentials, tokens, or PII shibboleths", () => {
   const blob = JSON.stringify({
-    DEMO_CONNECTORS,
+    DEMO_CAPABILITIES,
     DEMO_CLIENTS,
+    DEMO_CONNECTORS,
     DEMO_GRANTS,
     DEMO_RECORDS,
     DEMO_RUNS,
     DEMO_STREAMS,
     DEMO_TRACES,
-    DEMO_CAPABILITIES,
   });
   for (const re of FORBIDDEN_CREDENTIAL_PATTERNS) {
     assert.ok(!re.test(blob), `dataset matched forbidden pattern ${re}`);

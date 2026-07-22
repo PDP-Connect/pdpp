@@ -48,7 +48,7 @@ export async function discoverOwnerAgentControl({ fetchFn, record }) {
   const control = await getJson(fetchFn, `${resource}/v1/owner/control`, headers, "control_failed");
   const connectionsBody = await getJson(fetchFn, `${resource}/v1/owner/connections`, headers, "connections_failed");
   const connections = Array.isArray(connectionsBody?.data) ? connectionsBody.data : [];
-  return { control, connections };
+  return { connections, control };
 }
 
 /**
@@ -63,7 +63,7 @@ export function formatOwnerAgentControl({ control, connections }) {
   if (control?.entrypoint) {
     lines.push(`  entrypoint: ${control.entrypoint}`);
   }
-  lines.push(`  /mcp owner bearer: rejected (use owner-bearer /v1/* REST, not /mcp)`);
+  lines.push("  /mcp owner bearer: rejected (use owner-bearer /v1/* REST, not /mcp)");
   lines.push("");
   lines.push("  Action families:");
   const actions = Array.isArray(control?.actions) ? control.actions : [];

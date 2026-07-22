@@ -47,16 +47,16 @@ const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 function parseArgs(argv) {
   const out = {
     host: DEFAULT_HOST,
+    insecure: false,
     port: DEFAULT_PORT,
     secret: process.env.WEBHOOK_SECRET ?? null,
     secretFile: process.env.WEBHOOK_SECRET_FILE ?? null,
-    insecure: false,
   };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--port") {
       out.port = Number.parseInt(argv[++i] ?? "", 10);
-      if (!Number.isInteger(out.port) || out.port <= 0 || out.port > 65535) {
+      if (!Number.isInteger(out.port) || out.port <= 0 || out.port > 65_535) {
         die(`invalid --port value: ${argv[i]}`);
       }
     } else if (arg === "--host") {
@@ -141,8 +141,12 @@ function verify(secret, eventId, timestampHeader, body, signatureHeader) {
   const tokens = signatureHeader.split(/\s+/).filter(Boolean);
   for (const token of tokens) {
     const idx = token.indexOf(",");
-    if (idx < 0) continue;
-    if (token.slice(0, idx) !== "v1") continue;
+    if (idx < 0) {
+      continue;
+    }
+    if (token.slice(0, idx) !== "v1") {
+      continue;
+    }
     const candidateBuf = Buffer.from(token.slice(idx + 1));
     if (candidateBuf.length === expectedBuf.length && timingSafeEqual(candidateBuf, expectedBuf)) {
       return { ok: true };
@@ -195,7 +199,7 @@ function resolveSecret(args) {
 async function main() {
   const args = parseArgs(process.argv);
   const initialSecret = resolveSecret(args);
-  if (!args.insecure && !initialSecret) {
+  if (!(args.insecure || initialSecret)) {
     process.stderr.write(
       [
         "warning: no secret configured.",
@@ -210,7 +214,7 @@ async function main() {
     if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
       const healthSecret = resolveSecret(args);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, host: args.host, listening: args.port, has_secret: Boolean(healthSecret) }));
+      res.end(JSON.stringify({ has_secret: Boolean(healthSecret), host: args.host, listening: args.port, ok: true }));
       return;
     }
     if (req.method !== "POST" || req.url !== "/webhook") {
@@ -223,9 +227,15 @@ async function main() {
     const sig = req.headers["webhook-signature"];
     const body = await readBody(req);
     const headerProblems = [];
-    if (typeof eventId !== "string") headerProblems.push("webhook-id missing");
-    if (typeof ts !== "string") headerProblems.push("webhook-timestamp missing");
-    if (typeof sig !== "string") headerProblems.push("webhook-signature missing");
+    if (typeof eventId !== "string") {
+      headerProblems.push("webhook-id missing");
+    }
+    if (typeof ts !== "string") {
+      headerProblems.push("webhook-timestamp missing");
+    }
+    if (typeof sig !== "string") {
+      headerProblems.push("webhook-signature missing");
+    }
     if (headerProblems.length > 0) {
       process.stderr.write(`[${timestamp()}] rejecting delivery: ${headerProblems.join("; ")}\n`);
       res.writeHead(400, { "content-type": "text/plain" });

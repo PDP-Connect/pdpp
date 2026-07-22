@@ -64,7 +64,7 @@ function parseYmd(value: string): CalendarDay | null {
   if (!m) {
     return null;
   }
-  return { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
+  return { day: Number(m[3]), month: Number(m[2]), year: Number(m[1]) };
 }
 
 /**
@@ -74,13 +74,13 @@ function parseYmd(value: string): CalendarDay | null {
  */
 function calendarDayInZone(ms: number, timeZone: string): CalendarDay {
   const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
     timeZone,
     year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
   }).formatToParts(new Date(ms));
   const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? "0");
-  return { year: get("year"), month: get("month"), day: get("day") };
+  return { day: get("day"), month: get("month"), year: get("year") };
 }
 
 /**
@@ -101,14 +101,14 @@ function startOfDayMs(day: CalendarDay, timeZone: string): number {
 /** The wall-clock instant (as if-UTC ms) that `timeZone` displays for epoch `ms`. */
 function wallClockMsInZone(ms: number, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
     hourCycle: "h23",
+    minute: "2-digit",
+    month: "2-digit",
+    second: "2-digit",
+    timeZone,
+    year: "numeric",
   }).formatToParts(new Date(ms));
   const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? "0");
   return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
@@ -207,7 +207,7 @@ const MONTH_DAY_FMT_CACHE = new Map<string, Intl.DateTimeFormat>();
 function monthDayFormatter(timeZone: string): Intl.DateTimeFormat {
   let fmt = MONTH_DAY_FMT_CACHE.get(timeZone);
   if (!fmt) {
-    fmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone });
+    fmt = new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone });
     MONTH_DAY_FMT_CACHE.set(timeZone, fmt);
   }
   return fmt;

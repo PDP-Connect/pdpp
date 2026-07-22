@@ -26,9 +26,9 @@ function notFound(): Response {
   return jsonResponse(
     {
       error: {
-        type: "not_found_error",
         code: "not_found",
         message: "Skill file not found",
+        type: "not_found_error",
       },
     },
     { status: 404 }

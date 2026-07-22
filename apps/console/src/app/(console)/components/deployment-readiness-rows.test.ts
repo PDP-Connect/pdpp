@@ -30,25 +30,25 @@ import {
 } from "./deployment-readiness-rows.ts";
 
 const HEALTHY_DISK_HEADROOM: DiskHeadroomInputs = {
-  path: "/data",
   freeBytesOnDataFs: 20 * 1024 * 1024 * 1024, // 20 GiB
-  totalBytesOnDataFs: 100 * 1024 * 1024 * 1024,
   largestRelationBytes: null,
   largestRelationName: null,
   mountLabel: null,
+  path: "/data",
+  totalBytesOnDataFs: 100 * 1024 * 1024 * 1024,
 };
 
 const baseInputs: ServerInputs = {
-  ownerPasswordProvenance: "redacted",
-  referenceOriginConfigured: "https://example.com",
-  embeddingBackendConfigured: true,
-  embeddingBackendAvailable: true,
-  embeddingModelCachePresent: true,
-  embeddingDownloadAllowed: true,
-  vectorIndexKind: "sqlite-vec",
-  vectorIndexState: "built",
   databasePath: "/data/pdpp.db",
   diskHeadroom: [HEALTHY_DISK_HEADROOM],
+  embeddingBackendAvailable: true,
+  embeddingBackendConfigured: true,
+  embeddingDownloadAllowed: true,
+  embeddingModelCachePresent: true,
+  ownerPasswordProvenance: "redacted",
+  referenceOriginConfigured: "https://example.com",
+  vectorIndexKind: "sqlite-vec",
+  vectorIndexState: "built",
 };
 
 const OWNER_PASSWORD_ENV_RE = /PDPP_OWNER_PASSWORD/;
@@ -138,8 +138,8 @@ test("embeddingCacheRow is error when uncached and download disabled", () => {
   const row = embeddingCacheRow({
     ...baseInputs,
     embeddingBackendAvailable: false,
-    embeddingModelCachePresent: false,
     embeddingDownloadAllowed: false,
+    embeddingModelCachePresent: false,
   });
   assert.equal(row.status, "error");
 });
@@ -148,8 +148,8 @@ test("embeddingCacheRow is warn while cache is warming", () => {
   const row = embeddingCacheRow({
     ...baseInputs,
     embeddingBackendAvailable: false,
-    embeddingModelCachePresent: false,
     embeddingDownloadAllowed: true,
+    embeddingModelCachePresent: false,
   });
   assert.equal(row.status, "warn");
 });
@@ -167,11 +167,11 @@ test("refreshTokenRow is warn when well-known is unreachable", () => {
 });
 
 test("refreshTokenRow is ok when refresh_token is advertised", () => {
-  assert.equal(refreshTokenRow({ state: "loaded", refreshTokenSupported: true }).status, "ok");
+  assert.equal(refreshTokenRow({ refreshTokenSupported: true, state: "loaded" }).status, "ok");
 });
 
 test("refreshTokenRow is error when refresh_token is missing", () => {
-  const row = refreshTokenRow({ state: "loaded", refreshTokenSupported: false });
+  const row = refreshTokenRow({ refreshTokenSupported: false, state: "loaded" });
   assert.equal(row.status, "error");
   assert.match(row.hint ?? "", DOCKER_COMPOSE_PULL_RE);
 });
@@ -179,31 +179,31 @@ test("refreshTokenRow is error when refresh_token is missing", () => {
 // ─── Overall verdict ────────────────────────────────────────────────────────
 
 test("overallVerdict ready when every row is ok", () => {
-  const rows: ReadinessRow[] = [{ check: "x", status: "ok", detail: "" }];
+  const rows: ReadinessRow[] = [{ check: "x", detail: "", status: "ok" }];
   assert.equal(overallVerdict(rows), "ready");
 });
 
 test("overallVerdict blocked when any row is error", () => {
   const rows: ReadinessRow[] = [
-    { check: "x", status: "ok", detail: "" },
-    { check: "y", status: "error", detail: "" },
-    { check: "z", status: "warn", detail: "" },
+    { check: "x", detail: "", status: "ok" },
+    { check: "y", detail: "", status: "error" },
+    { check: "z", detail: "", status: "warn" },
   ];
   assert.equal(overallVerdict(rows), "blocked");
 });
 
 test("overallVerdict attention when any row is warn but none is error", () => {
   const rows: ReadinessRow[] = [
-    { check: "x", status: "ok", detail: "" },
-    { check: "y", status: "warn", detail: "" },
+    { check: "x", detail: "", status: "ok" },
+    { check: "y", detail: "", status: "warn" },
   ];
   assert.equal(overallVerdict(rows), "attention");
 });
 
 test("overallVerdict unknown when probes still loading and nothing worse", () => {
   const rows: ReadinessRow[] = [
-    { check: "x", status: "ok", detail: "" },
-    { check: "y", status: "unknown", detail: "" },
+    { check: "x", detail: "", status: "ok" },
+    { check: "y", detail: "", status: "unknown" },
   ];
   assert.equal(overallVerdict(rows), "unknown");
 });
@@ -279,9 +279,9 @@ test("diskHeadroomRow includes workload hint when free < largestRelationBytes", 
       makeEntry({
         // 4 GiB free — below warn (5 GiB) and below largest relation (6 GiB).
         freeBytesOnDataFs: 4 * GiB,
-        totalBytesOnDataFs: 100 * GiB,
         largestRelationBytes: 6 * GiB,
         largestRelationName: "records",
+        totalBytesOnDataFs: 100 * GiB,
       }),
     ],
   });
@@ -297,9 +297,9 @@ test("diskHeadroomRow omits workload hint when free >= largestRelationBytes", ()
       makeEntry({
         // 4 GiB free — below warn but ABOVE largest relation (3 GiB).
         freeBytesOnDataFs: 4 * GiB,
-        totalBytesOnDataFs: 100 * GiB,
         largestRelationBytes: 3 * GiB,
         largestRelationName: "records",
+        totalBytesOnDataFs: 100 * GiB,
       }),
     ],
   });
@@ -313,9 +313,9 @@ test("diskHeadroomRow omits workload hint when largestRelationBytes is null (SQL
     diskHeadroom: [
       makeEntry({
         freeBytesOnDataFs: 4 * GiB,
-        totalBytesOnDataFs: 100 * GiB,
         largestRelationBytes: null,
         largestRelationName: null,
+        totalBytesOnDataFs: 100 * GiB,
       }),
     ],
   });
@@ -330,7 +330,7 @@ test("diskHeadroomRows returns one row per entry", () => {
     ...baseInputs,
     diskHeadroom: [
       makeEntry({ freeBytesOnDataFs: 20 * GiB, mountLabel: "data" }),
-      makeEntry({ path: "/var/lib/postgresql/data", freeBytesOnDataFs: 8 * GiB, mountLabel: "postgres" }),
+      makeEntry({ freeBytesOnDataFs: 8 * GiB, mountLabel: "postgres", path: "/var/lib/postgresql/data" }),
     ],
   });
   assert.equal(rows.length, 2);
@@ -356,10 +356,10 @@ test("diskHeadroomRows: unmeasured postgres entry shows info, not a false green"
     diskHeadroom: [
       makeEntry({ freeBytesOnDataFs: 20 * GiB, mountLabel: "data" }),
       makeEntry({
-        path: "/var/lib/postgresql/data",
         freeBytesOnDataFs: null,
-        totalBytesOnDataFs: null,
         mountLabel: "postgres",
+        path: "/var/lib/postgresql/data",
+        totalBytesOnDataFs: null,
       }),
     ],
   });

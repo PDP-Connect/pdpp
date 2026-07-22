@@ -285,7 +285,7 @@ export function countChurnDispositions(rows: readonly RefRecordVersionStatsRow[]
         break;
     }
   }
-  return { needsReview: needsReviewCount, compactionCandidates, expectedRetained, reviewedResidueCount };
+  return { compactionCandidates, expectedRetained, needsReview: needsReviewCount, reviewedResidueCount };
 }
 
 function pluralStreams(n: number): string {
@@ -355,10 +355,10 @@ export function summarizeVersionChurn(rows: readonly RefRecordVersionStatsRow[])
       : `Version churn is classified — no review needed: ${breakdown}.`;
 
   return {
+    dispositions,
     headline,
     highestSignal: `Highest signal: ${churnRowLabel(strongest)} retains ${strongest.versions_per_record.toLocaleString()} versions per current record.`,
     needsReview: dispositions.needsReview > 0,
-    dispositions,
   };
 }
 
@@ -461,14 +461,7 @@ export function buildChurnDrilldownRows(rows: readonly RefRecordVersionStatsRow[
     return {
       connectorId: row.connector_id,
       connectorInstanceId: row.connector_instance_id,
-      key: `${row.connector_instance_id}:${row.stream}`,
-      label: churnRowLabel(row),
-      risk: row.risk_level,
-      stream: row.stream,
-      remediation,
-      remediationAction: remediationForRow(row),
-      remediationChip: remediationChipLabel(row),
-      remediationGuidance: remediationGuidance(row),
+      current: countCell(row.current_record_count),
       // Non-compactable rows have no compaction policy the script resolves (it
       // exits 2), so they carry redesign/expected-history guidance instead of a
       // command. Compaction candidates, reviewed residue, and unclassified rows
@@ -476,15 +469,22 @@ export function buildChurnDrilldownRows(rows: readonly RefRecordVersionStatsRow[
       // plan, for reviewed residue `--apply` frees disk, and for an unclassified
       // row it is the safe first diagnostic (it prints whether a policy exists).
       dryRunCommand: notCompactable ? null : churnDryRunCommand(row),
+      history: countCell(row.record_history_count),
+      key: `${row.connector_instance_id}:${row.stream}`,
+      keys: countCell(row.record_key_count),
+      label: churnRowLabel(row),
+      lastHistoryAt: row.last_history_at,
       pointInTimeGuidance: notCompactable ? pointInTimeGuidance(row) : null,
+      reasons: row.risk_reasons.length > 0 ? row.risk_reasons.join("; ") : null,
+      remediation,
+      remediationAction: remediationForRow(row),
+      remediationChip: remediationChipLabel(row),
+      remediationGuidance: remediationGuidance(row),
+      risk: row.risk_level,
+      stream: row.stream,
       versionsPerRecord: {
         label: row.versions_per_record.toLocaleString(undefined, { maximumFractionDigits: 2 }),
       },
-      current: countCell(row.current_record_count),
-      history: countCell(row.record_history_count),
-      keys: countCell(row.record_key_count),
-      lastHistoryAt: row.last_history_at,
-      reasons: row.risk_reasons.length > 0 ? row.risk_reasons.join("; ") : null,
     };
   });
 }

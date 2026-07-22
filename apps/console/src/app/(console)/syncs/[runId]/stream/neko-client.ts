@@ -380,9 +380,9 @@ function computeAlternativePointerMappings(
   controlCoordinateSize: { height: number; width: number } | null
 ): Record<string, NekoControlPos | null> {
   const candidates: Record<string, NekoControlPos | null> = {
-    nekoScreenOverlay: null,
     cssViewportOverlay: null,
     intrinsicMedia: null,
+    nekoScreenOverlay: null,
   };
   if (overlayRect && overlayRect.width > 0 && overlayRect.height > 0) {
     if (
@@ -436,36 +436,12 @@ function readTouchTimeViewport(): Record<string, unknown> | null {
   const docEl = typeof document === "undefined" ? null : document.documentElement;
   const scrolling = typeof document === "undefined" ? null : document.scrollingElement;
   return {
-    window: {
-      innerWidth: window.innerWidth,
-      innerHeight: window.innerHeight,
-      outerWidth: window.outerWidth,
-      outerHeight: window.outerHeight,
-      devicePixelRatio: window.devicePixelRatio,
-    },
-    visualViewport: visualViewport
-      ? {
-          width: Math.round(visualViewport.width),
-          height: Math.round(visualViewport.height),
-          offsetLeft: Math.round(visualViewport.offsetLeft),
-          offsetTop: Math.round(visualViewport.offsetTop),
-          pageLeft: Math.round(visualViewport.pageLeft),
-          pageTop: Math.round(visualViewport.pageTop),
-          scale: Number.isFinite(visualViewport.scale) ? visualViewport.scale : null,
-        }
-      : null,
     documentElement: docEl
       ? {
-          clientWidth: docEl.clientWidth,
           clientHeight: docEl.clientHeight,
-          scrollWidth: docEl.scrollWidth,
+          clientWidth: docEl.clientWidth,
           scrollHeight: docEl.scrollHeight,
-        }
-      : null,
-    scrolling: scrolling
-      ? {
-          scrollLeft: Math.round(scrolling.scrollLeft || 0),
-          scrollTop: Math.round(scrolling.scrollTop || 0),
+          scrollWidth: docEl.scrollWidth,
         }
       : null,
     orientation: orientationApi
@@ -474,6 +450,30 @@ function readTouchTimeViewport(): Record<string, unknown> | null {
           type: orientationApi.type,
         }
       : null,
+    scrolling: scrolling
+      ? {
+          scrollLeft: Math.round(scrolling.scrollLeft || 0),
+          scrollTop: Math.round(scrolling.scrollTop || 0),
+        }
+      : null,
+    visualViewport: visualViewport
+      ? {
+          height: Math.round(visualViewport.height),
+          offsetLeft: Math.round(visualViewport.offsetLeft),
+          offsetTop: Math.round(visualViewport.offsetTop),
+          pageLeft: Math.round(visualViewport.pageLeft),
+          pageTop: Math.round(visualViewport.pageTop),
+          scale: Number.isFinite(visualViewport.scale) ? visualViewport.scale : null,
+          width: Math.round(visualViewport.width),
+        }
+      : null,
+    window: {
+      devicePixelRatio: window.devicePixelRatio,
+      innerHeight: window.innerHeight,
+      innerWidth: window.innerWidth,
+      outerHeight: window.outerHeight,
+      outerWidth: window.outerWidth,
+    },
   };
 }
 
@@ -766,8 +766,8 @@ function rememberTextInput(text: string, source = "unknown"): void {
   suppressClipboardWritesUntil = now + RECENT_TEXT_INPUT_CLIPBOARD_SUPPRESS_MS;
   pruneRecentTextInputs(now);
   recentTextInputs.push({
-    text,
     expiresAt: now + RECENT_TEXT_INPUT_CLIPBOARD_SUPPRESS_MS,
+    text,
   });
   emitNekoDebug("neko.mobile_text_input.remember", {
     length: text.length,
@@ -1751,8 +1751,8 @@ function startMobileTouchScrollBridge(neko: NekoInstance, dispatchInput?: NekoTo
   if (!(streamRoot && listenerTarget && control?.scroll && control.move && control.buttonDown && control.buttonUp)) {
     emitNekoDebug("neko.touch_scroll_bridge.skip", {
       hasControl: Boolean(control),
-      hasTarget: Boolean(streamRoot),
       hasListenerTarget: Boolean(listenerTarget),
+      hasTarget: Boolean(streamRoot),
       reason: "missing-target-or-control",
     });
     return;
@@ -2037,10 +2037,10 @@ function setMediaLayout(mediaEl: HTMLElement, property: string, value: string): 
 
 function getMediaIntrinsicSize(mediaEl: HTMLElement): { height: number; width: number } | null {
   if (mediaEl instanceof HTMLVideoElement && mediaEl.videoWidth > 0 && mediaEl.videoHeight > 0) {
-    return { width: mediaEl.videoWidth, height: mediaEl.videoHeight };
+    return { height: mediaEl.videoHeight, width: mediaEl.videoWidth };
   }
   if (mediaEl instanceof HTMLImageElement && mediaEl.naturalWidth > 0 && mediaEl.naturalHeight > 0) {
-    return { width: mediaEl.naturalWidth, height: mediaEl.naturalHeight };
+    return { height: mediaEl.naturalHeight, width: mediaEl.naturalWidth };
   }
   return null;
 }
@@ -2089,6 +2089,16 @@ export function readNekoMediaSettleSample(requested: NekoMediaSettleSample["requ
   const screen = nekoInstance.state?.screen?.size;
   const mediaEl = getPrimaryNekoMediaElement();
   return {
+    inbound: stats
+      ? {
+          frameHeight: stats.height,
+          framesPerSecond: stats.fps,
+          frameWidth: stats.width,
+          packetsLost: stats.packetLoss,
+          timestampMs: Date.now(),
+        }
+      : null,
+    media: mediaEl ? getMediaIntrinsicSize(mediaEl) : null,
     requested,
     screen:
       screen && screen.width > 0 && screen.height > 0
@@ -2097,16 +2107,6 @@ export function readNekoMediaSettleSample(requested: NekoMediaSettleSample["requ
             width: screen.width,
           }
         : null,
-    media: mediaEl ? getMediaIntrinsicSize(mediaEl) : null,
-    inbound: stats
-      ? {
-          frameHeight: stats.height,
-          frameWidth: stats.width,
-          framesPerSecond: stats.fps,
-          packetsLost: stats.packetLoss,
-          timestampMs: Date.now(),
-        }
-      : null,
   };
 }
 
@@ -2334,9 +2334,9 @@ function applyViewportLayout(): void {
       rect: rectSnapshot(overlayEl),
       tagName: overlayEl.tagName.toLowerCase(),
     })),
+    screenState: screenStateSnapshot(),
     screenStateSource: screenStateSize.source,
     screenStateUpdatesAllowed: viewportLayoutUpdatesScreenState,
-    screenState: screenStateSnapshot(),
   });
   emitNekoDebug("neko.viewport_layout_applied", {
     container: rectSnapshot(container),
@@ -2394,7 +2394,7 @@ export async function startNeko(
 
   try {
     await neko.setUrl?.(config.serverPath);
-    const login = config.login ?? { username: "user", password: "neko" };
+    const login = config.login ?? { password: "neko", username: "user" };
     await neko.login?.(login.username, login.password);
     selectPreferredNekoVideoStream(neko);
     neko.connect?.();

@@ -107,9 +107,9 @@ function errorResponse(err: SearchLexicalRequestError): Response {
   return jsonResponse(
     {
       error: {
-        type,
         code: err.code,
         message: err.message,
+        type,
         ...(err.param ? { param: err.param } : {}),
         request_id: "req_sandbox_search_invalid",
       },

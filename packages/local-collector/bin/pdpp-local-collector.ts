@@ -25,26 +25,29 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md.
  */
 
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/collector-registry.ts";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
 import {
   type BundledConnectorEntry,
   type BundledConnectorRegistry,
+  bundledConnectorIds,
+  bundledConnectorVersions,
   COLLECTOR_PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES,
   type CollectorConnectorSpec,
-  bundledConnectorIds,
-  bundledConnectorVersions,
   createBundledConnectorRegistry,
   deriveLocalCollectorLifecycleState,
-  LocalDeviceOutbox,
+  enrollCollector,
+  getBundledConnectorFrom,
+  isMainModule,
   type LocalCollectorLifecycleState,
   LocalDeviceClient,
   LocalDeviceHttpError,
+  LocalDeviceOutbox,
   type LocalDeviceOutboxCompactResult,
   type LocalDeviceOutboxDeadLetterErrorSummary,
   type LocalDeviceOutboxKind,
@@ -53,12 +56,8 @@ import {
   type LocalDeviceOutboxPruneSentResult,
   type LocalDeviceOutboxSummary,
   LocalDeviceRequestTimeoutError,
-  enrollCollector,
-  getBundledConnectorFrom,
-  isMainModule,
   runCollectorConnector,
 } from "../src/runner.ts";
-import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/collector-registry.ts";
 
 /**
  * The published local collector's connector registry.
@@ -182,19 +181,19 @@ export type LocalCollectorDeploymentKind = "published_package" | "repo_dist_over
 
 export interface LocalCollectorDeploymentPosture {
   /**
-   * How the running collector resolves: a published `node_modules` install, a
-   * monorepo `dist/` (or source) override, or unknown when neither pattern is
-   * conclusive. `unknown` is the conservative default — it never guesses
-   * `published_package`.
-   */
-  kind: LocalCollectorDeploymentKind;
-  /**
    * True when the resolved version is the `0.0.0` placeholder. Independent of
    * `kind`: a real pinned beta is good even though the in-repo manifest is
    * `0.0.0`, and an unpinned `latest` install of the placeholder is bad even if
    * it lives under `node_modules`. See `LOCAL_COLLECTOR_PLACEHOLDER_VERSION`.
    */
   is_placeholder_version: boolean;
+  /**
+   * How the running collector resolves: a published `node_modules` install, a
+   * monorepo `dist/` (or source) override, or unknown when neither pattern is
+   * conclusive. `unknown` is the conservative default — it never guesses
+   * `published_package`.
+   */
+  kind: LocalCollectorDeploymentKind;
   /**
    * Redacted module-location descriptor. Never an absolute home path: for a
    * published install this is `node_modules/@pdpp/local-collector`; for a repo
@@ -247,8 +246,8 @@ export function classifyLocalCollectorDeploymentPosture(
   }
 
   return {
-    kind,
     is_placeholder_version: version === LOCAL_COLLECTOR_PLACEHOLDER_VERSION,
+    kind,
     location_hint: locationHint,
     module_basename: moduleBasename,
     version,
@@ -395,10 +394,10 @@ async function main(): Promise<void> {
 
   if (options.command === "advertise") {
     writeJson({
-      runtime: COLLECTOR_RUNTIME_CAPABILITIES.id,
       bindings: [...COLLECTOR_RUNTIME_CAPABILITIES.bindings],
-      collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
       bundled_connectors: BUNDLED_CONNECTOR_IDS,
+      collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
+      runtime: COLLECTOR_RUNTIME_CAPABILITIES.id,
     });
     return;
   }
@@ -894,7 +893,7 @@ export async function inspectLocalReferenceRoute(
       status: "unknown",
     };
   }
-  if (!deviceId || !deviceToken || !sourceInstanceId) {
+  if (!(deviceId && deviceToken && sourceInstanceId)) {
     throw new Error("reference route config narrowing failed");
   }
 
@@ -1216,9 +1215,9 @@ export interface RecoverLocalCollectorOutput {
     exists: boolean;
     path: string;
   };
-  dry_run: boolean;
   drain_attempts?: number;
   drain_stopped_reason?: "drained" | "max_passes" | "no_progress";
+  dry_run: boolean;
   fully_drained?: boolean;
   note: string;
   object: "local_collector_recovery";
@@ -1629,7 +1628,7 @@ export function pruneSentOutboxRows(options: CliOptions): PruneSentOutput {
   // is explicitly set, always apply it (alone or combined with keepCount).
   const olderThanDays =
     options.olderThanDays ?? (options.keepCount === undefined ? DEFAULT_PRUNE_SENT_OLDER_THAN_DAYS : undefined);
-  const olderThanIso = olderThanDays !== undefined ? daysAgoIso(olderThanDays) : undefined;
+  const olderThanIso = olderThanDays === undefined ? undefined : daysAgoIso(olderThanDays);
   const dbPath = resolveOutboxPath(options);
   const exists = existsSync(dbPath);
   const reportedOlderThanDays = olderThanDays ?? null;
@@ -1663,8 +1662,8 @@ export function pruneSentOutboxRows(options: CliOptions): PruneSentOutput {
 
     const pruneInput: LocalDeviceOutboxPruneSentInput = {
       dryRun,
-      ...(olderThanIso !== undefined ? { olderThanIso } : {}),
-      ...(options.keepCount !== undefined ? { keepCount: options.keepCount } : {}),
+      ...(olderThanIso === undefined ? {} : { olderThanIso }),
+      ...(options.keepCount === undefined ? {} : { keepCount: options.keepCount }),
       ...(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}),
     };
 
@@ -1710,14 +1709,14 @@ function pruneSentNote(
   if (dryRun) {
     return (
       `${result.matched} sent row(s) would be pruned (dry run). ` +
-      `Re-run with --apply to delete (backs up the DB first). ` +
-      `This only removes sent rows — pending, leased, retrying, and dead-letter rows are never touched.`
+      "Re-run with --apply to delete (backs up the DB first). " +
+      "This only removes sent rows — pending, leased, retrying, and dead-letter rows are never touched."
     );
   }
   return (
     `${result.pruned} sent row(s) pruned. ` +
-    `Pending, leased, retrying, and dead-letter rows were not touched. ` +
-    `Run \`pdpp-local-collector status\` to confirm the new outbox size.`
+    "Pending, leased, retrying, and dead-letter rows were not touched. " +
+    "Run `pdpp-local-collector status` to confirm the new outbox size."
   );
 }
 
@@ -1747,12 +1746,12 @@ export interface CompactOutput {
     path: string;
   };
   dry_run: boolean;
-  note: string;
   /**
    * Count of rows that are NOT `succeeded` (ready/leased/dead-letter) across
    * the whole file. A non-zero value blocks an apply unless `--force` is set.
    */
   non_succeeded_rows: number;
+  note: string;
   /** Reclaimable disk before this command ran (`freelist * page_size`). */
   page_stats: LocalDeviceOutboxPageStats | null;
   /** Bytes actually returned to the filesystem (0 on dry-run or refusal). */
@@ -1793,8 +1792,8 @@ export function compactOutbox(options: CliOptions): CompactOutput {
       compacted: null,
       db: { exists: false, path: dbPath },
       dry_run: dryRun,
-      note: "Outbox DB does not exist; nothing to compact.",
       non_succeeded_rows: 0,
+      note: "Outbox DB does not exist; nothing to compact.",
       page_stats: null,
       reclaimed_bytes: 0,
       refused: false,
@@ -1812,8 +1811,8 @@ export function compactOutbox(options: CliOptions): CompactOutput {
         compacted: null,
         db: { exists: true, path: dbPath },
         dry_run: true,
-        note: compactDryRunNote(pageStats, nonSucceeded, Boolean(options.force)),
         non_succeeded_rows: nonSucceeded,
+        note: compactDryRunNote(pageStats, nonSucceeded, Boolean(options.force)),
         page_stats: pageStats,
         reclaimed_bytes: 0,
         refused: false,
@@ -1827,12 +1826,12 @@ export function compactOutbox(options: CliOptions): CompactOutput {
         compacted: null,
         db: { exists: true, path: dbPath },
         dry_run: false,
+        non_succeeded_rows: nonSucceeded,
         note:
           `Refusing to compact: ${nonSucceeded} non-succeeded (ready/leased/dead-letter) row(s) are still in the outbox. ` +
           "Drain the lane first (`pdpp-local-collector recover --source-instance-id <id> --apply` for stalled work), " +
           "or pass --force to compact anyway. VACUUM is lossless — unsent rows are copied, never dropped — but compacting a " +
           "live lane is refused by default so the reclaim runs on a quiet outbox.",
-        non_succeeded_rows: nonSucceeded,
         page_stats: pageStats,
         reclaimed_bytes: 0,
         refused: true,
@@ -1846,8 +1845,8 @@ export function compactOutbox(options: CliOptions): CompactOutput {
       compacted: result.after,
       db: { exists: true, path: dbPath },
       dry_run: false,
-      note: compactAppliedNote(result, nonSucceeded, Boolean(options.force)),
       non_succeeded_rows: nonSucceeded,
+      note: compactAppliedNote(result, nonSucceeded, Boolean(options.force)),
       page_stats: result.before,
       reclaimed_bytes: result.reclaimedBytes,
       refused: false,
@@ -1924,8 +1923,8 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
     connector_id: options.connector,
     streams,
     ...(options.streamsToBackfill ? { streamsToBackfill: options.streamsToBackfill } : {}),
-    command,
     args,
+    command,
     runtime_requirements: { bindings: bundled?.bindings ?? {} },
   };
 }
@@ -1948,7 +1947,7 @@ export function parseArgs(args: string[]): CliOptions {
     command !== "compact"
   ) {
     throw new CollectorUsageError(
-      `usage: pdpp-local-collector <enroll|run|advertise|status|doctor|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]`
+      "usage: pdpp-local-collector <enroll|run|advertise|status|doctor|recover|retry-dead-letters|prune-sent|compact> --base-url <url> [options]"
     );
   }
   const options: CliOptions = {
@@ -2012,14 +2011,23 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     throw new CollectorUsageError(`missing option value: ${arg}`);
   }
   const setters: Record<string, (next: string) => void> = {
-    "--base-url": (next) => {
-      options.baseUrl = next;
+    "--args": (next) => {
+      options.args = next.split(" ").filter(Boolean);
     },
     "--backfill-streams": (next) => {
       options.streamsToBackfill = parseCsv(next);
     },
+    "--base-url": (next) => {
+      options.baseUrl = next;
+    },
     "--code": (next) => {
       options.code = next;
+    },
+    "--command": (next) => {
+      options.entrypointCommand = next;
+    },
+    "--connection-id": (next) => {
+      setExplicitSourceInstanceId(options, arg, next);
     },
     "--connector": (next) => {
       options.connector = next;
@@ -2033,44 +2041,35 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     "--device-token": (next) => {
       options.deviceToken = next;
     },
+    "--keep-count": (next) => {
+      options.keepCount = parseNonNegativeInteger("--keep-count", next);
+    },
     "--kind": (next) => {
       options.deadLetterKind = parseOutboxKind(next);
     },
     "--limit": (next) => {
       options.limit = parsePositiveInteger("--limit", next);
     },
-    "--queue": (next) => {
-      options.queuePath = next;
+    "--max-drain-passes": (next) => {
+      options.maxDrainPasses = parsePositiveInteger("--max-drain-passes", next);
+    },
+    "--older-than-days": (next) => {
+      options.olderThanDays = parseNonNegativeInteger("--older-than-days", next);
     },
     "--profile": (next) => {
       options.profile = next;
     },
+    "--queue": (next) => {
+      options.queuePath = next;
+    },
     "--run-id": (next) => {
       options.runId = next;
-    },
-    "--connection-id": (next) => {
-      setExplicitSourceInstanceId(options, arg, next);
     },
     "--source-instance-id": (next) => {
       setExplicitSourceInstanceId(options, arg, next);
     },
     "--streams": (next) => {
       options.streams = parseCsv(next);
-    },
-    "--command": (next) => {
-      options.entrypointCommand = next;
-    },
-    "--args": (next) => {
-      options.args = next.split(" ").filter(Boolean);
-    },
-    "--older-than-days": (next) => {
-      options.olderThanDays = parseNonNegativeInteger("--older-than-days", next);
-    },
-    "--keep-count": (next) => {
-      options.keepCount = parseNonNegativeInteger("--keep-count", next);
-    },
-    "--max-drain-passes": (next) => {
-      options.maxDrainPasses = parsePositiveInteger("--max-drain-passes", next);
     },
   };
   const set = setters[arg];

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -12,7 +13,7 @@ const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
 const require = createRequire(import.meta.url);
 
 const DEFAULT_TIMEOUT_MS = 90_000;
-const DEBUG_EVENT_BUFFER_MAX = 2_000;
+const DEBUG_EVENT_BUFFER_MAX = 2000;
 const STREAM_FRAME_SELECTOR = '[aria-label="Connector browser stream"]';
 const EVIDENCE_DIR = path.join(repoRoot, "tmp", "stream-smoke");
 const STRICT_SMOKE_TOKEN = "pdpp-smoke";
@@ -32,14 +33,18 @@ function mobileSmokeEnabled() {
 }
 
 function appendEvidence(list, entry) {
-  if (list.length < 50) list.push(entry);
+  if (list.length < 50) {
+    list.push(entry);
+  }
 }
 
 function redactRequestUrl(value) {
   try {
     const url = new URL(value);
     for (const name of ["token", "access_token", "id_token", "code"]) {
-      if (url.searchParams.has(name)) url.searchParams.set(name, "[redacted]");
+      if (url.searchParams.has(name)) {
+        url.searchParams.set(name, "[redacted]");
+      }
     }
     return url.toString();
   } catch {
@@ -76,7 +81,9 @@ export function isKnownBlackFrameFailure(pixels, signature) {
 }
 
 function parseDebugEventsFromPostData(postData) {
-  if (!postData) return [];
+  if (!postData) {
+    return [];
+  }
   try {
     const parsed = JSON.parse(postData);
     return Array.isArray(parsed?.events) ? parsed.events : [];
@@ -104,18 +111,19 @@ function hasEvent(events, predicate) {
 }
 
 function hasEventAfter(events, sequence, predicate) {
-  return hasEvent(events, (event, payload, type) => {
-    return Number(event?.__smokeSequence) > sequence && predicate(event, payload, type);
-  });
+  return hasEvent(
+    events,
+    (event, payload, type) => Number(event?.__smokeSequence) > sequence && predicate(event, payload, type)
+  );
 }
 
 function eventSummary(event) {
   const payload = eventPayload(event);
   return {
+    payload: summarizePayload(payload),
+    receivedAt: typeof event?.receivedAt === "string" ? event.receivedAt : null,
     type: eventType(event),
     viewerId: typeof event?.viewerId === "string" ? event.viewerId : null,
-    receivedAt: typeof event?.receivedAt === "string" ? event.receivedAt : null,
-    payload: summarizePayload(payload),
   };
 }
 
@@ -175,7 +183,9 @@ function summarizePayload(payload) {
 function latestEvent(events, predicate) {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
-    if (predicate(event, eventPayload(event), eventType(event))) return event;
+    if (predicate(event, eventPayload(event), eventType(event))) {
+      return event;
+    }
   }
   return null;
 }
@@ -203,7 +213,7 @@ function latestNekoStatusViewport(events) {
   const viewport = event ? eventPayload(event).viewport : null;
   const width = Number(viewport?.width);
   const height = Number(viewport?.height);
-  return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 ? { width, height } : null;
+  return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 ? { height, width } : null;
 }
 
 function hasHealthyNekoPointerMapping(events) {
@@ -241,10 +251,10 @@ function resolveRemoteControlTarget(events, controlId) {
     remoteHeight > 0
   ) {
     return {
-      sourceType: eventType(layoutEvent),
       controlId,
       remotePoint: { x: centre.x, y: centre.y },
-      remoteViewport: { width: remoteWidth, height: remoteHeight },
+      remoteViewport: { height: remoteHeight, width: remoteWidth },
+      sourceType: eventType(layoutEvent),
     };
   }
   return null;
@@ -259,18 +269,18 @@ function containedStreamRect(imageBox, viewport) {
   if (boxRatio > aspectRatio) {
     const width = imageBox.height * aspectRatio;
     return {
+      height: imageBox.height,
+      width,
       x: imageBox.x + (imageBox.width - width) / 2,
       y: imageBox.y,
-      width,
-      height: imageBox.height,
     };
   }
   const height = imageBox.width / aspectRatio;
   return {
+    height,
+    width: imageBox.width,
     x: imageBox.x,
     y: imageBox.y + (imageBox.height - height) / 2,
-    width: imageBox.width,
-    height,
   };
 }
 
@@ -280,10 +290,10 @@ function mapRemoteRectToLocalClip(contentRect, remoteRect, remoteViewport) {
   const width = (contentRect.width * remoteRect.width) / remoteViewport.width;
   const height = (contentRect.height * remoteRect.height) / remoteViewport.height;
   return {
+    height: Math.max(1, Math.ceil(height)),
+    width: Math.max(1, Math.ceil(width)),
     x: Math.max(0, Math.floor(x)),
     y: Math.max(0, Math.floor(y)),
-    width: Math.max(1, Math.ceil(width)),
-    height: Math.max(1, Math.ceil(height)),
   };
 }
 
@@ -294,20 +304,20 @@ function strictVisualInputTarget(remoteViewport) {
     return {
       clickPoint: { x: remoteViewport.width * 0.51, y: remoteViewport.height * 0.12 },
       cropRect: {
+        height: remoteViewport.height * 0.09,
+        width: remoteViewport.width * 0.36,
         x: remoteViewport.width * 0.34,
         y: remoteViewport.height * 0.075,
-        width: remoteViewport.width * 0.36,
-        height: remoteViewport.height * 0.09,
       },
     };
   }
   return {
     clickPoint: { x: remoteViewport.width * 0.5, y: remoteViewport.height * 0.28 },
     cropRect: {
+      height: remoteViewport.height * 0.095,
+      width: remoteViewport.width * 0.84,
       x: remoteViewport.width * 0.08,
       y: remoteViewport.height * 0.235,
-      width: remoteViewport.width * 0.84,
-      height: remoteViewport.height * 0.095,
     },
   };
 }
@@ -318,10 +328,10 @@ function normalizeClipToViewport(clip, viewportSize) {
   const x = Math.max(0, Math.min(Math.floor(clip.x), Math.max(0, maxWidth - 1)));
   const y = Math.max(0, Math.min(Math.floor(clip.y), Math.max(0, maxHeight - 1)));
   return {
+    height: Math.max(1, Math.min(Math.ceil(clip.height), maxHeight - y)),
+    width: Math.max(1, Math.min(Math.ceil(clip.width), maxWidth - x)),
     x,
     y,
-    width: Math.max(1, Math.min(Math.ceil(clip.width), maxWidth - x)),
-    height: Math.max(1, Math.min(Math.ceil(clip.height), maxHeight - y)),
   };
 }
 
@@ -358,7 +368,9 @@ async function comparePngVisualChange(page, beforePng, afterPng) {
       canvas.width = width;
       canvas.height = height;
       const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) throw new Error("2d canvas unavailable for smoke screenshot diff");
+      if (!context) {
+        throw new Error("2d canvas unavailable for smoke screenshot diff");
+      }
       context.drawImage(before, 0, 0, width, height);
       const a = context.getImageData(0, 0, width, height).data;
       context.clearRect(0, 0, width, height);
@@ -370,19 +382,21 @@ async function comparePngVisualChange(page, beforePng, afterPng) {
       for (let i = 0; i < a.length; i += 4) {
         const delta = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
         totalDelta += delta;
-        if (delta >= 36) changedPixels += 1;
+        if (delta >= 36) {
+          changedPixels += 1;
+        }
       }
       return {
-        width,
-        height,
         changedPixels,
         changedRatio: pixels > 0 ? changedPixels / pixels : 0,
+        height,
         meanRgbDelta: pixels > 0 ? totalDelta / pixels : 0,
+        width,
       };
     },
     {
-      beforeDataUrl: `data:image/png;base64,${beforePng.toString("base64")}`,
       afterDataUrl: `data:image/png;base64,${afterPng.toString("base64")}`,
+      beforeDataUrl: `data:image/png;base64,${beforePng.toString("base64")}`,
     }
   );
 }
@@ -392,29 +406,35 @@ async function streamFrameReport(page) {
   const box = await frame.boundingBox().catch(() => null);
   const attrs = await frame
     .evaluate((node) => ({
-      loading: node.getAttribute("data-pdpp-stream-loading"),
       debug: node.getAttribute("data-pdpp-stream-debug"),
-      width: node.clientWidth,
       height: node.clientHeight,
+      loading: node.getAttribute("data-pdpp-stream-loading"),
+      width: node.clientWidth,
     }))
     .catch((error) => ({ error: error.message }));
-  return { box, attrs };
+  return { attrs, box };
 }
 
 async function streamFramePixelStats(page) {
   const frame = page.locator(STREAM_FRAME_SELECTOR).first();
   const mediaPixels = await frame.evaluate((node) => {
     const media = node.querySelector("video, canvas");
-    if (!media) return { sampled: false };
+    if (!media) {
+      return { sampled: false };
+    }
     const canvas = document.createElement("canvas");
     const sourceWidth = media instanceof HTMLVideoElement ? media.videoWidth : media.width;
     const sourceHeight = media instanceof HTMLVideoElement ? media.videoHeight : media.height;
-    if (!(sourceWidth > 0 && sourceHeight > 0)) return { sampled: false };
+    if (!(sourceWidth > 0 && sourceHeight > 0)) {
+      return { sampled: false };
+    }
     const scale = Math.min(1, 240 / Math.max(sourceWidth, sourceHeight));
     canvas.width = Math.max(1, Math.floor(sourceWidth * scale));
     canvas.height = Math.max(1, Math.floor(sourceHeight * scale));
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) throw new Error("stream pixel probe could not create a 2d context");
+    if (!context) {
+      throw new Error("stream pixel probe could not create a 2d context");
+    }
     context.drawImage(media, 0, 0, canvas.width, canvas.height);
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
     let nearBlack = 0;
@@ -423,8 +443,12 @@ async function streamFramePixelStats(page) {
       const red = pixels[index];
       const green = pixels[index + 1];
       const blue = pixels[index + 2];
-      if (red <= 12 && green <= 12 && blue <= 12) nearBlack += 1;
-      if (red >= 48 || green >= 48 || blue >= 48) bright += 1;
+      if (red <= 12 && green <= 12 && blue <= 12) {
+        nearBlack += 1;
+      }
+      if (red >= 48 || green >= 48 || blue >= 48) {
+        bright += 1;
+      }
     }
     const total = pixels.length / 4;
     return {
@@ -436,7 +460,9 @@ async function streamFramePixelStats(page) {
       total,
     };
   });
-  if (mediaPixels.sampled) return mediaPixels;
+  if (mediaPixels.sampled) {
+    return mediaPixels;
+  }
 
   // The known failure can tear the media node down entirely while leaving the
   // stream rectangle black. Sample its exposed rectangle itself, not arbitrary
@@ -470,7 +496,9 @@ async function streamFramePixelStats(page) {
       canvas.width = Math.max(1, Math.floor(image.naturalWidth * scale));
       canvas.height = Math.max(1, Math.floor(image.naturalHeight * scale));
       const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) throw new Error("stream-frame screenshot pixel probe could not create a 2d context");
+      if (!context) {
+        throw new Error("stream-frame screenshot pixel probe could not create a 2d context");
+      }
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
       const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
       let nearBlack = 0;
@@ -498,8 +526,12 @@ async function streamFramePixelStats(page) {
         const red = pixels[index];
         const green = pixels[index + 1];
         const blue = pixels[index + 2];
-        if (red <= 12 && green <= 12 && blue <= 12) nearBlack += 1;
-        if (red >= 48 || green >= 48 || blue >= 48) bright += 1;
+        if (red <= 12 && green <= 12 && blue <= 12) {
+          nearBlack += 1;
+        }
+        if (red >= 48 || green >= 48 || blue >= 48) {
+          bright += 1;
+        }
         total += 1;
       }
       return {
@@ -572,9 +604,11 @@ async function streamContentRect(page, remoteViewport) {
   const mediaBox = await frame
     .evaluate((node) => {
       const media = node.querySelector("video, img");
-      if (!media) return null;
+      if (!media) {
+        return null;
+      }
       const rect = media.getBoundingClientRect();
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      return { height: rect.height, width: rect.width, x: rect.x, y: rect.y };
     })
     .catch(() => null);
   if (mediaBox) {
@@ -594,8 +628,8 @@ async function assertMobileViewportFits(page, phase) {
       bodyScrollWidth: body?.scrollWidth ?? 0,
       documentClientWidth: documentElement.clientWidth,
       documentScrollWidth: documentElement.scrollWidth,
-      frameRight: frameRect?.right ?? null,
       frameLeft: frameRect?.left ?? null,
+      frameRight: frameRect?.right ?? null,
       visualWidth,
     };
   });
@@ -725,11 +759,11 @@ const CLOSE_BUTTON_SELECTOR = '.pdpp-stream-control-row button[aria-label*="End"
 async function cornerControlsSnapshot(page) {
   return page.evaluate(
     ({ toggleSelector, closeSelector }) => ({
+      closeButtonPresent: Boolean(document.querySelector(closeSelector)),
       dialogPresent: Boolean(document.querySelector(".pdpp-stream-dialog")),
       toggleExpanded: document.querySelector(toggleSelector)?.getAttribute("aria-expanded") ?? null,
-      closeButtonPresent: Boolean(document.querySelector(closeSelector)),
     }),
-    { toggleSelector: CORNER_TOGGLE_SELECTOR, closeSelector: CLOSE_BUTTON_SELECTOR }
+    { closeSelector: CLOSE_BUTTON_SELECTOR, toggleSelector: CORNER_TOGGLE_SELECTOR }
   );
 }
 
@@ -790,7 +824,7 @@ async function captureFailureEvidence(page, debugEvents, requestEvidence, messag
   const screenshotPath = path.join(EVIDENCE_DIR, `manual-action-stream-smoke-${stamp}.png`);
   const frame = await streamFrameReport(page);
   const framePixels = await streamFramePixelStats(page).catch((error) => ({ error: error.message }));
-  await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => undefined);
+  await page.screenshot({ fullPage: true, path: screenshotPath }).catch(() => undefined);
   const recent = debugEvents.slice(-30).map(eventSummary);
   const relevantTypes = [
     "debug.enabled",
@@ -821,19 +855,19 @@ async function captureFailureEvidence(page, debugEvents, requestEvidence, messag
   process.stderr.write(
     `${JSON.stringify(
       {
+        debugEventCount: debugEvents.length,
         failure: message,
         pageUrl: page.url(),
-        screenshotPath,
-        streamFrame: frame,
-        streamFramePixels: framePixels,
+        recent,
+        relevant,
+        remoteLayoutSource: eventType(latestRemoteLayoutEvent(debugEvents)),
         remotePlaygroundReady: Boolean(
           latestEvent(debugEvents, (_event, _payload, type) => type === "playground.ready")
         ),
-        remoteLayoutSource: eventType(latestRemoteLayoutEvent(debugEvents)),
         requestEvidence,
-        debugEventCount: debugEvents.length,
-        recent,
-        relevant,
+        screenshotPath,
+        streamFrame: frame,
+        streamFramePixels: framePixels,
       },
       null,
       2
@@ -847,7 +881,9 @@ async function waitFor(predicate, message, { timeoutMs = DEFAULT_TIMEOUT_MS, int
   while (Date.now() < deadline) {
     try {
       const value = await predicate();
-      if (value) return value;
+      if (value) {
+        return value;
+      }
     } catch (error) {
       lastError = error;
     }
@@ -976,9 +1012,9 @@ async function proveStrictVisualTyping(page, debugEvents, { mobile = false } = {
   if (diff.changedPixels < 12 || diff.changedRatio < 0.001 || diff.meanRgbDelta < 0.15) {
     fail(
       `strict-mode smoke did not observe visual text-input change after typing (${JSON.stringify({
-        diff,
-        beforeClip: before.clip,
         afterClip: after.clip,
+        beforeClip: before.clip,
+        diff,
         remoteViewport,
       })})`
     );
@@ -1022,10 +1058,10 @@ async function run() {
     ...(executablePath ? { executablePath } : {}),
   });
   const page = await browser.newPage({
-    viewport: mobile ? { width: 390, height: 844 } : { width: 430, height: 820 },
     deviceScaleFactor: 1,
-    isMobile: mobile,
     hasTouch: mobile,
+    isMobile: mobile,
+    viewport: mobile ? { height: 844, width: 390 } : { height: 820, width: 430 },
   });
 
   await page.addInitScript(() => {
@@ -1082,7 +1118,9 @@ async function run() {
           .text()
           .then((body) => {
             const errorMatch = body.match(/^event: error\ndata: (.+)$/m);
-            if (!errorMatch) return;
+            if (!errorMatch) {
+              return;
+            }
             try {
               appendEvidence(requestEvidence.eventStreamErrors, JSON.parse(errorMatch[1]));
             } catch {
@@ -1113,13 +1151,13 @@ async function run() {
 
   try {
     const url = smokeUrl(origin);
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+    await page.goto(url, { timeout: DEFAULT_TIMEOUT_MS, waitUntil: "domcontentloaded" });
     await ensureOwnerSession(page);
 
-    await page.goto(new URL("/", origin).toString(), { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+    await page.goto(new URL("/", origin).toString(), { timeout: DEFAULT_TIMEOUT_MS, waitUntil: "domcontentloaded" });
     await ensureOwnerSession(page);
     await assertDocumentHorizontallyFits(page, "console home");
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+    await page.goto(url, { timeout: DEFAULT_TIMEOUT_MS, waitUntil: "domcontentloaded" });
     await ensureOwnerSession(page);
 
     await page.getByRole("button", { name: /open browser/i }).click();
@@ -1184,7 +1222,7 @@ async function run() {
       }
       const visualTyping = await proveStrictVisualTyping(page, debugEvents, { mobile });
       process.stdout.write(
-        `${JSON.stringify({ mode: "strict", pageCdpAvailable: false, mobileTouchPath: mobile, visualTyping })}\n`
+        `${JSON.stringify({ mobileTouchPath: mobile, mode: "strict", pageCdpAvailable: false, visualTyping })}\n`
       );
     } else {
       const counterActionSequence = debugEventSequence;
@@ -1294,7 +1332,7 @@ async function run() {
     }
 
     if (mobile) {
-      await page.setViewportSize({ width: 844, height: 390 });
+      await page.setViewportSize({ height: 390, width: 844 });
       await new Promise((resolve) => setTimeout(resolve, 800));
       await assertMobileViewportFits(page, "landscape");
       await assertDocumentScrollLockedWhileStreamDialogOpen(page);

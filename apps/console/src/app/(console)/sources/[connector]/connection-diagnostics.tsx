@@ -1003,7 +1003,6 @@ function OutboxStallRemediationPanel({
   // fully resolved by the safe CLI builders).
   const steps: { caption: string; command: string | null; label: string }[] = verdictRemediation
     ? verdictRemediation.commands.map((command) => ({
-        label: command.label,
         caption: remediationCommandCaption(command),
         command: substituteCommandTemplate(command.command_template, {
           connectionId,
@@ -1011,23 +1010,24 @@ function OutboxStallRemediationPanel({
           providerUrl: providerOrigin,
           sourceInstanceId,
         }),
+        label: command.label,
       }))
     : [
         {
-          label: "1. Diagnose",
           caption: "See saved upload rows and local upload health.",
           command: pdppLocalCollectorDoctorCommand(scope),
+          label: "1. Diagnose",
         },
         {
-          label: "2. Preview the requeue",
           caption: "Dry run — shows what would be requeued, changes nothing.",
           command: pdppLocalCollectorRetryDeadLettersCommand(scope),
+          label: "2. Preview the requeue",
         },
         {
-          label: "3. Requeue",
           caption:
             "Marks failed uploads for another attempt after backing up the local database first. The next collector run drains them — it does not ingest on its own.",
           command: pdppLocalCollectorRetryDeadLettersCommand({ ...scope, apply: true }),
+          label: "3. Requeue",
         },
       ];
   // Name the host when we know it; otherwise keep the honest generic phrasing.

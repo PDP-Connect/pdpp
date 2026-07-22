@@ -32,13 +32,27 @@
     // Column priority: timestamp first, then text/enum/person/currency/number,
     // then booleans, then anything else.
     const priority = (f) => {
-      if (f.type === "timestamp") return 0;
-      if (f.type === "text" && /title|subject|merchant|name/i.test(f.name)) return 1;
-      if (f.type === "person") return 2;
-      if (f.type === "text") return 3;
-      if (f.type === "enum") return 4;
-      if (f.type === "currency") return 5;
-      if (f.type === "number") return 6;
+      if (f.type === "timestamp") {
+        return 0;
+      }
+      if (f.type === "text" && /title|subject|merchant|name/i.test(f.name)) {
+        return 1;
+      }
+      if (f.type === "person") {
+        return 2;
+      }
+      if (f.type === "text") {
+        return 3;
+      }
+      if (f.type === "enum") {
+        return 4;
+      }
+      if (f.type === "currency") {
+        return 5;
+      }
+      if (f.type === "number") {
+        return 6;
+      }
       return 9;
     };
     const cols = [...visibleFields]
@@ -50,7 +64,9 @@
 
     function renderCell(field, record) {
       const v = record[field.name];
-      if (v == null) return <span className="mono">—</span>;
+      if (v == null) {
+        return <span className="mono">—</span>;
+      }
       if (field.type === "timestamp") {
         return <span className="mono num">{fmtRelative(v)}</span>;
       }
@@ -59,16 +75,21 @@
       }
       if (field.type === "number") {
         let display = v.toLocaleString();
-        if (field.unit === "meters") display = fmtDistance(v);
-        else if (field.unit === "seconds") display = fmtDuration(v);
+        if (field.unit === "meters") {
+          display = fmtDistance(v);
+        } else if (field.unit === "seconds") {
+          display = fmtDuration(v);
+        }
         return <span className="num mono">{display}</span>;
       }
-      if (field.type === "boolean") return <span className="mono">{v ? "yes" : "—"}</span>;
+      if (field.type === "boolean") {
+        return <span className="mono">{v ? "yes" : "—"}</span>;
+      }
       if (field.type === "enum" || field.type === "enum[]") {
         const arr = Array.isArray(v) ? v : [v];
         return <span className="mono">{arr.slice(0, 2).join(", ")}</span>;
       }
-      if (field.type === "person")
+      if (field.type === "person") {
         return (
           <span>
             {String(v)
@@ -76,6 +97,7 @@
               .trim()}
           </span>
         );
+      }
       return (
         <span className="truncate" title={String(v)}>
           {String(v)}
@@ -95,7 +117,7 @@
           </thead>
           <tbody>
             {stream.records.map((r) => (
-              <tr key={r.id} data-selected={selectedId === r.id} onClick={() => onSelect(r)}>
+              <tr data-selected={selectedId === r.id} key={r.id} onClick={() => onSelect(r)}>
                 {cols.map((c) => (
                   <td key={c.name}>{renderCell(c, r)}</td>
                 ))}
@@ -114,7 +136,9 @@
    */
   function TimelineView({ stream, selectedId, onSelect }) {
     const tf = getTimeField(stream);
-    if (!tf) return <div className="exp-empty">No timestamp field in schema.</div>;
+    if (!tf) {
+      return <div className="exp-empty">No timestamp field in schema.</div>;
+    }
     const sorted = [...stream.records].sort((a, b) => new Date(b[tf]) - new Date(a[tf]));
 
     // Group by day
@@ -164,7 +188,7 @@
         </div>
         <div className="exp-tl__scrubber">
           {months.map(([m, count]) => (
-            <span className="exp-tl__scrubber-month" key={m} data-active>
+            <span className="exp-tl__scrubber-month" data-active key={m}>
               {new Date(m + "-15").toLocaleDateString("en-US", { month: "short" })}{" "}
               <span style={{ opacity: 0.6 }}>{count}</span>
             </span>
@@ -195,7 +219,9 @@
     const groups = new Map();
     for (const r of stream.records) {
       const key = r[channelField] ?? r[subjectField] ?? (recipField ? `to:${(r[recipField] ?? []).join(",")}` : "—");
-      if (!groups.has(key)) groups.set(key, []);
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
       groups.get(key).push(r);
     }
     const channels = [...groups.entries()].sort((a, b) => {
@@ -290,5 +316,5 @@
     );
   }
 
-  Object.assign(window, { TableView, TimelineView, ConversationView, ReaderView });
+  Object.assign(window, { ConversationView, ReaderView, TableView, TimelineView });
 })();

@@ -1,17 +1,17 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { defineConfig, defineDocs } from "fumadocs-mdx/config";
 import { metaSchema, pageSchema } from "fumadocs-core/source/schema";
-import { remarkLegacyHeadingIds } from "@/lib/remark-legacy-heading-ids";
+import { defineConfig, defineDocs } from "fumadocs-mdx/config";
+import { remarkLegacyHeadingIds } from "@/lib/remark-legacy-heading-ids.ts";
 
 export const docs = defineDocs({
   dir: "content/docs",
   docs: {
-    schema: pageSchema,
     postprocess: {
       includeProcessedMarkdown: true,
     },
+    schema: pageSchema,
   },
   meta: {
     schema: metaSchema,

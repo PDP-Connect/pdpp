@@ -49,13 +49,17 @@ export interface AxisChip {
 const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], AxisChip> = {
   complete: {
     dimension: "Coverage",
-    value: "complete",
     label: "Coverage · complete",
     title: "All required streams have durable evidence of complete coverage.",
     tone: "success",
+    value: "complete",
   },
   deferred: {
     dimension: "Coverage",
+    label: "Coverage · optional, not collected",
+    title:
+      "The manifest declares this coverage out of scope. This is an accepted, settled state — not a queued task — and does not block connection health.",
+    tone: "neutral",
     // The underlying axis key stays "deferred" (durable manifest/runtime
     // contract — see AcceptedCoveragePolicy in connector-coverage-policy.ts).
     // "Deferred" read as queued/pending work to owners, contradicting the
@@ -63,43 +67,43 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
     // visible value/label now say plainly that this stream is optional and
     // not collected; the manifest-declaration detail moves to the title.
     value: "optional, not collected",
-    label: "Coverage · optional, not collected",
-    title:
-      "The manifest declares this coverage out of scope. This is an accepted, settled state — not a queued task — and does not block connection health.",
-    tone: "neutral",
-  },
-  partial: {
-    dimension: "Coverage",
-    value: "partial",
-    label: "Coverage · partial",
-    title: "Some required streams collected only partial data.",
-    tone: "warning",
   },
   gaps: {
     dimension: "Coverage",
-    value: "gaps",
     label: "Coverage · gaps",
     title: "Required coverage has known retryable or terminal gaps.",
     tone: "warning",
+    value: "gaps",
   },
   inventory_only: {
     dimension: "Coverage",
-    value: "inventory only",
     label: "Coverage · inventory only",
     title:
       "The manifest declares that only inventory/discovery evidence is ever required here, not full detail. This is a settled, complete state for this stream — not partial progress.",
     tone: "neutral",
+    value: "inventory only",
+  },
+  partial: {
+    dimension: "Coverage",
+    label: "Coverage · partial",
+    title: "Some required streams collected only partial data.",
+    tone: "warning",
+    value: "partial",
   },
   retryable_gap: {
     dimension: "Coverage",
-    value: "retryable gap",
     label: "Coverage · retryable gap",
     title:
       "Some required detail is missing, but the runtime expects to fill it on a later run. Records already collected stay valid; no owner action is needed yet.",
     tone: "warning",
+    value: "retryable gap",
   },
   terminal_gap: {
     dimension: "Coverage",
+    label: "Coverage · won't backfill",
+    title:
+      "Some required detail will not backfill on its own — the connector or source cannot recover it without a change. Records already collected stay valid and usable; this is not current data loss. Open the connection's latest run to see which streams are affected and the recovery step.",
+    tone: "danger",
     // "terminal gap" is jargon. The value stays short for the chip; the title
     // carries the three things the owner actually needs (per design-notes/
     // dashboard-health-semantics-and-reliability-2026-06-01.md): what state this
@@ -109,71 +113,59 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
     // noted in the workstream report; the per-stream detail lives in the latest
     // run's known_gaps, which the connection detail page links to.
     value: "won't backfill",
-    label: "Coverage · won't backfill",
-    title:
-      "Some required detail will not backfill on its own — the connector or source cannot recover it without a change. Records already collected stay valid and usable; this is not current data loss. Open the connection's latest run to see which streams are affected and the recovery step.",
-    tone: "danger",
   },
   unavailable: {
     dimension: "Coverage",
-    value: "unavailable",
     label: "Coverage · unavailable",
     title:
       "The manifest accepts that the source does not expose this coverage. This is a settled state, not a temporary gap awaiting a retry.",
     tone: "neutral",
+    value: "unavailable",
   },
   unknown: {
     dimension: "Coverage",
-    value: "unknown",
     label: "Coverage · unknown",
     title: "No durable coverage evidence is available yet.",
     tone: "neutral",
+    value: "unknown",
   },
   unsupported: {
     dimension: "Coverage",
-    value: "unsupported",
     label: "Coverage · unsupported",
     title:
       "The manifest accepts that the connector cannot collect this coverage. This is a settled state, not a temporary gap awaiting a retry.",
     tone: "neutral",
+    value: "unsupported",
   },
 };
 
 const FRESHNESS_LABELS: Record<RefConnectionHealthSnapshot["axes"]["freshness"], AxisChip> = {
   fresh: {
     dimension: "Freshness",
-    value: "fresh",
     label: "Freshness · fresh",
     title: "The last successful run is within policy.",
     tone: "success",
+    value: "fresh",
   },
   stale: {
     dimension: "Freshness",
-    value: "stale",
     label: "Freshness · stale",
     title: "The last successful run is outside the configured freshness window.",
     tone: "warning",
+    value: "stale",
   },
   unknown: {
     dimension: "Freshness",
-    value: "unknown",
     label: "Freshness · unknown",
     title: "Freshness cannot be derived from current evidence.",
     tone: "neutral",
+    value: "unknown",
   },
 };
 
 const OUTBOX_LABELS: Record<RefConnectionHealthSnapshot["axes"]["outbox"], AxisChip> = {
-  idle: {
-    dimension: "Outbox",
-    value: "idle",
-    label: "Outbox · idle",
-    title: "No retryable outbound work is pending.",
-    tone: "success",
-  },
   active: {
     dimension: "Outbox",
-    value: "active",
     label: "Outbox · active",
     title: "Outbound work is making progress.",
     // `active` means the local-device outbox is draining — a healthy,
@@ -184,45 +176,53 @@ const OUTBOX_LABELS: Record<RefConnectionHealthSnapshot["axes"]["outbox"], AxisC
     // ("active" vs "idle") carries the finer distinction, and the row-level
     // pill still escalates an actively-draining outbox to a "Syncing" badge.
     tone: "success",
+    value: "active",
+  },
+  idle: {
+    dimension: "Outbox",
+    label: "Outbox · idle",
+    title: "No retryable outbound work is pending.",
+    tone: "success",
+    value: "idle",
   },
   stalled: {
     dimension: "Outbox",
-    value: "stalled",
     label: "Outbox · stalled",
     title: "Retryable outbound work is stalled and not progressing.",
     tone: "danger",
+    value: "stalled",
   },
   unknown: {
     dimension: "Outbox",
-    value: "unknown",
     label: "Outbox · unknown",
     title: "Outbox state cannot be read from durable evidence.",
     tone: "neutral",
+    value: "unknown",
   },
 };
 
 const ATTENTION_LABELS: Record<RefConnectionHealthSnapshot["axes"]["attention"], AxisChip | null> = {
-  none: null,
-  open: {
-    dimension: "Attention",
-    value: "open",
-    label: "Attention · open",
-    title: "Owner action is open.",
-    tone: "warning",
-  },
   acknowledged: {
     dimension: "Attention",
-    value: "acknowledged",
     label: "Attention · acknowledged",
     title: "Owner action is acknowledged but not yet resolved.",
     tone: "warning",
+    value: "acknowledged",
   },
   in_progress: {
     dimension: "Attention",
-    value: "in progress",
     label: "Attention · in progress",
     title: "Owner action is in progress.",
     tone: "warning",
+    value: "in progress",
+  },
+  none: null,
+  open: {
+    dimension: "Attention",
+    label: "Attention · open",
+    title: "Owner action is open.",
+    tone: "warning",
+    value: "open",
   },
 };
 
@@ -255,10 +255,10 @@ export function formatAttentionAxis(
   }
   return {
     dimension: "Attention",
-    value: "unknown",
     label: "Attention · unknown",
     title: `Unknown attention axis "${axis}" from the reference server.`,
     tone: "neutral",
+    value: "unknown",
   };
 }
 
@@ -278,8 +278,8 @@ function formatKnownAxis<T extends string>(
   return {
     ...fallbackChip,
     dimension: labelPrefix,
-    value: "unknown",
     title: `Unknown ${labelPrefix.toLowerCase()} axis "${axis}" from the reference server.`,
+    value: "unknown",
   };
 }
 
@@ -353,10 +353,10 @@ export function summarizeAxisChips(
     if (axes.outbox === "unknown") {
       out.push({
         ...outbox,
-        value: "evidence unavailable",
         label: "Outbox · evidence unavailable",
         title:
           "This local collector's outbox evidence could not be read right now. It is not a current data-loss signal; retry, or open the connection's diagnostics for the device state.",
+        value: "evidence unavailable",
       });
     } else {
       out.push(outbox);
@@ -394,61 +394,61 @@ export interface ForwardDispositionSummary {
 }
 
 const FORWARD_DISPOSITION_LABELS: Record<RefForwardDisposition, ForwardDispositionSummary> = {
-  complete: {
-    value: "complete",
-    label: "nothing owed",
-    ownerActionNeeded: false,
-    title:
-      "Coverage is established and fresh. A future run re-checks the source but is not expected to collect anything new or fill a gap.",
-    tone: "success",
-  },
-  checking: {
-    value: "checking",
-    label: "checking coverage",
-    ownerActionNeeded: false,
-    title:
-      "Active work is expected to produce coverage evidence. This is a checking state, not an owner-action prompt.",
-    tone: "neutral",
-  },
-  unmeasured: {
-    value: "unmeasured",
-    label: "not measured",
-    ownerActionNeeded: false,
-    title:
-      "Coverage evidence is not available in the latest report. This is not an owner-action prompt and not an active checking state.",
-    tone: "neutral",
-  },
-  resumable: {
-    value: "resumable",
-    label: "resumes collection",
-    ownerActionNeeded: false,
-    title:
-      "There is outstanding work an ordinary future run is expected to pick up — an open boundary or retryable gap. Records already collected stay valid; no owner action is needed.",
-    tone: "warning",
-  },
   awaiting_owner: {
-    value: "awaiting_owner",
     label: "blocked on you",
     ownerActionNeeded: true,
     title:
       "A coverage gap is blocked on open owner attention (such as re-auth or a prompt). A run cannot make progress until you act; open the connection's attention to resolve it.",
     tone: "warning",
+    value: "awaiting_owner",
+  },
+  checking: {
+    label: "checking coverage",
+    ownerActionNeeded: false,
+    title:
+      "Active work is expected to produce coverage evidence. This is a checking state, not an owner-action prompt.",
+    tone: "neutral",
+    value: "checking",
+  },
+  complete: {
+    label: "nothing owed",
+    ownerActionNeeded: false,
+    title:
+      "Coverage is established and fresh. A future run re-checks the source but is not expected to collect anything new or fill a gap.",
+    tone: "success",
+    value: "complete",
   },
   owner_refresh_due: {
-    value: "owner_refresh_due",
     label: "refresh due",
     ownerActionNeeded: true,
     title:
       "Coverage is complete but the retained data has gone stale, and this connection needs an owner-initiated run to refresh — either because it refreshes only when you run it, or because it refreshes on schedule but may need your bounded help to catch up. Start a run on your instance to bring it current. This is aged data, not missing data.",
     tone: "warning",
+    value: "owner_refresh_due",
+  },
+  resumable: {
+    label: "resumes collection",
+    ownerActionNeeded: false,
+    title:
+      "There is outstanding work an ordinary future run is expected to pick up — an open boundary or retryable gap. Records already collected stay valid; no owner action is needed.",
+    tone: "warning",
+    value: "resumable",
   },
   terminal: {
-    value: "terminal",
     label: "won't backfill",
     ownerActionNeeded: false,
     title:
       "An outstanding gap will not backfill on its own — the source or connector cannot recover it without a change. Records already collected stay valid and usable; open the latest run to see which streams are affected.",
     tone: "danger",
+    value: "terminal",
+  },
+  unmeasured: {
+    label: "not measured",
+    ownerActionNeeded: false,
+    title:
+      "Coverage evidence is not available in the latest report. This is not an owner-action prompt and not an active checking state.",
+    tone: "neutral",
+    value: "unmeasured",
   },
 };
 
@@ -469,11 +469,11 @@ export function formatForwardDisposition(
     return FORWARD_DISPOSITION_LABELS[disposition as RefForwardDisposition];
   }
   return {
-    value: disposition as RefForwardDisposition,
     label: "unknown",
     ownerActionNeeded: false,
     title: `The reference reported a forward disposition "${disposition}" this console does not recognize.`,
     tone: "neutral",
+    value: disposition as RefForwardDisposition,
   };
 }
 
@@ -540,13 +540,13 @@ export function formatProjectionFreshness(
 ): ProjectionFreshness {
   const reasons = snapshot?.unknown_reasons ?? [];
   if (reasons.length === 0) {
-    return { unreliable: false, reasons: [], detail: "" };
+    return { detail: "", reasons: [], unreliable: false };
   }
   const humanized = reasons.map(humanizeReason);
   return {
-    unreliable: true,
-    reasons: humanized,
     detail: `Projection evidence missing: ${humanized.join(", ")}.`,
+    reasons: humanized,
+    unreliable: true,
   };
 }
 
@@ -867,31 +867,31 @@ export function formatSourceOutboxState(
     case "dead_letter":
       return {
         dimension: "Outbox",
-        value: "failed uploads",
         label: "Outbox · failed uploads",
         title: counts,
         tone: "danger",
+        value: "failed uploads",
       };
     case "stale":
       return {
         dimension: "Outbox",
-        value: "stale lease",
         label: "Outbox · stale lease",
         title: counts,
         tone: "danger",
+        value: "stale lease",
       };
     case "retrying":
-      return { dimension: "Outbox", value: "retrying", label: "Outbox · retrying", title: counts, tone: "warning" };
+      return { dimension: "Outbox", label: "Outbox · retrying", title: counts, tone: "warning", value: "retrying" };
     case "pending":
-      return { dimension: "Outbox", value: "pending", label: "Outbox · pending", title: counts, tone: "neutral" };
+      return { dimension: "Outbox", label: "Outbox · pending", title: counts, tone: "neutral", value: "pending" };
     case "backlog":
-      return { dimension: "Outbox", value: "backlog", label: "Outbox · backlog", title: counts, tone: "warning" };
+      return { dimension: "Outbox", label: "Outbox · backlog", title: counts, tone: "warning", value: "backlog" };
     case "drained":
-      return { dimension: "Outbox", value: "drained", label: "Outbox · drained", title: counts, tone: "success" };
+      return { dimension: "Outbox", label: "Outbox · drained", title: counts, tone: "success", value: "drained" };
     case "unknown":
-      return { dimension: "Outbox", value: "unknown", label: "Outbox · unknown", title: counts, tone: "neutral" };
+      return { dimension: "Outbox", label: "Outbox · unknown", title: counts, tone: "neutral", value: "unknown" };
     default:
-      return { dimension: "Outbox", value: "unknown", label: "Outbox · unknown", title: counts, tone: "neutral" };
+      return { dimension: "Outbox", label: "Outbox · unknown", title: counts, tone: "neutral", value: "unknown" };
   }
 }
 
@@ -927,11 +927,11 @@ export function summarizeSchedule(schedule: RefSchedule | null | undefined): Sch
     }
   }
   return {
-    enabled: schedule.enabled,
-    nextAttemptLabel: schedule.next_due_at ? `Next attempt ${schedule.next_due_at}` : null,
     backoffLabel,
+    enabled: schedule.enabled,
     ineligibilityReason: schedule.ineligibility_reason,
     mode: schedule.effective_mode,
+    nextAttemptLabel: schedule.next_due_at ? `Next attempt ${schedule.next_due_at}` : null,
   };
 }
 
@@ -1277,17 +1277,17 @@ function staleFreshnessGuidance(supportsOwnerSync: boolean): NextStepGuidance {
   if (supportsOwnerSync) {
     return {
       backlogScale: null,
-      label: "Sync now",
       detail: "The last successful sync is outside the freshness window. Sync now to refresh this connection.",
+      label: "Sync now",
       scale: null,
       tone: "warning",
     };
   }
   return {
     backlogScale: null,
-    label: "Check the collector",
     detail:
       "The last successful sync is outside the freshness window. This connection fills in when its local-collector device pushes — confirm the collector is running on the host.",
+    label: "Check the collector",
     scale: null,
     tone: "warning",
   };
@@ -1318,20 +1318,20 @@ function coolingOffGuidance(health: RefConnectionHealthSnapshot): NextStepGuidan
     const backlogScale = formatSourcePressureBacklogScale(health.detail_gap_backlog);
     return {
       backlogScale,
-      label: "Catching up — cooling off",
       detail: health.next_attempt_at
         ? `The source is throttling this connection, so the scheduler is spacing out automatic attempts; the captured progress is retained and it resumes at ${health.next_attempt_at}.`
         : "The source is throttling this connection, so the scheduler is spacing out automatic attempts. The captured progress is retained and it resumes on the next scheduled attempt.",
+      label: "Catching up — cooling off",
       scale: null,
       tone: "warning",
     };
   }
   return {
     backlogScale: null,
-    label: "Wait for the next retry",
     detail: health.next_attempt_at
       ? `In scheduler backoff after recent failures; the next automatic attempt is at ${health.next_attempt_at}. Open the connection to see the failure detail.`
       : "In scheduler backoff after recent failures. Open the connection to see the failure detail and the next attempt time.",
+    label: "Wait for the next retry",
     scale: null,
     tone: "warning",
   };
@@ -1351,18 +1351,18 @@ function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync
     if (supportsOwnerSync) {
       return {
         backlogScale,
-        label: "Continue the sync",
         detail:
           "Some required detail is still outstanding. The records already collected stay valid; sync this connection when you're ready and an ordinary run fills the rest.",
+        label: "Continue the sync",
         scale: null,
         tone: "warning",
       };
     }
     return {
       backlogScale,
-      label: "Check the collector",
       detail:
         "Some required detail is still outstanding. The records already collected stay valid; this connection fills in when its local-collector device pushes the rest — confirm the collector is running on the host.",
+      label: "Check the collector",
       scale: null,
       tone: "warning",
     };
@@ -1370,9 +1370,9 @@ function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync
   if (health.axes.coverage === "gaps" || health.axes.coverage === "partial") {
     return {
       backlogScale: null,
-      label: "Review partial coverage",
       detail:
         "Useful data exists, but some required streams have gaps. Open the connection's latest run to see which streams are incomplete.",
+      label: "Review partial coverage",
       scale: null,
       tone: "warning",
     };
@@ -1382,8 +1382,8 @@ function degradedGuidance(health: RefConnectionHealthSnapshot, supportsOwnerSync
   }
   return {
     backlogScale: null,
-    label: "Open the connection",
     detail: "Coverage or freshness is incomplete. Open the connection to see which axis is degraded.",
+    label: "Open the connection",
     scale: null,
     tone: "warning",
   };
@@ -1427,9 +1427,9 @@ export function deriveConnectionNextStep(input: {
   if (health.axes.outbox === "stalled") {
     return {
       backlogScale: null,
-      label: "Check the collector host",
       detail:
         "Retryable work on the local collector is not draining. Open the connection for the exact command to run on the host that holds the data.",
+      label: "Check the collector host",
       scale: formatOutboxCountScale(localDeviceProgress?.outbox_counts),
       tone: "danger",
     };
@@ -1443,8 +1443,8 @@ export function deriveConnectionNextStep(input: {
         ? null
         : {
             backlogScale: null,
-            label: "Open the connection",
             detail: "This connection cannot make progress. Open it to read the blocking condition and how to clear it.",
+            label: "Open the connection",
             scale: null,
             tone: "danger",
           };
@@ -1455,8 +1455,8 @@ export function deriveConnectionNextStep(input: {
         ? null
         : {
             backlogScale: null,
-            label: "Open the connection",
             detail: "Owner action is required. Open the connection to see exactly what's needed.",
+            label: "Open the connection",
             scale: null,
             tone: "warning",
           };
@@ -1758,26 +1758,26 @@ export function deriveStreakDots(
   return runs.slice(0, 14).map((r): StreakDot => {
     const s = r.status;
     if (s === "succeeded_with_gaps") {
-      return { symbol: "⚠", tone: "warning", at: r.first_at, statusLabel: "Succeeded with gaps" };
+      return { at: r.first_at, statusLabel: "Succeeded with gaps", symbol: "⚠", tone: "warning" };
     }
     if (s === "succeeded" || s === "success" || s === "completed") {
-      return { symbol: "✓", tone: "success", at: r.first_at, statusLabel: "Succeeded" };
+      return { at: r.first_at, statusLabel: "Succeeded", symbol: "✓", tone: "success" };
     }
     if (s === "failed" || s === "error") {
-      return { symbol: "✕", tone: "danger", at: r.first_at, statusLabel: r.failure_reason ?? "Failed" };
+      return { at: r.first_at, statusLabel: r.failure_reason ?? "Failed", symbol: "✕", tone: "danger" };
     }
     if (s === "cancelled" || s === "canceled") {
-      return { symbol: "⊘", tone: "neutral", at: r.first_at, statusLabel: "Cancelled" };
+      return { at: r.first_at, statusLabel: "Cancelled", symbol: "⊘", tone: "neutral" };
     }
     if (s === "paused" || s === "skipped") {
-      return { symbol: "⏸", tone: "neutral", at: r.first_at, statusLabel: "Skipped" };
+      return { at: r.first_at, statusLabel: "Skipped", symbol: "⏸", tone: "neutral" };
     }
     if (s === "degraded" || s === "partial") {
-      return { symbol: "⚠", tone: "warning", at: r.first_at, statusLabel: "Partial" };
+      return { at: r.first_at, statusLabel: "Partial", symbol: "⚠", tone: "warning" };
     }
     // in_progress / started — not shown in a historical strip but included
     // defensively so the map never throws.
-    return { symbol: "⚠", tone: "neutral", at: r.first_at, statusLabel: s.replace(/_/g, " ") };
+    return { at: r.first_at, statusLabel: s.replace(/_/g, " "), symbol: "⚠", tone: "neutral" };
   });
 }
 
@@ -1838,9 +1838,9 @@ export function deriveAutoPausedBanner(
   }
   return {
     consecutiveFailures: backoff.consecutive_failures,
-    reasonLabel: backoff.reason_class ? backoff.reason_class.replace(/[_-]+/g, " ") : null,
-    nextRunAt: backoff.next_run_at,
     isTerminal: backoff.recommended_health_state === "blocked",
+    nextRunAt: backoff.next_run_at,
+    reasonLabel: backoff.reason_class ? backoff.reason_class.replace(/[_-]+/g, " ") : null,
   };
 }
 
@@ -1853,20 +1853,20 @@ export function derivePrimaryRowAction(input: {
   const { hasLocalDeviceProgress, health } = input;
   if (hasLocalDeviceProgress) {
     return {
-      kind: "device_wait",
-      label: "Waiting for the local device",
       detail:
         "This connection fills in when its local-collector device pushes new data — the dashboard cannot start a run. Confirm the collector is running on the host that holds the data.",
+      kind: "device_wait",
+      label: "Waiting for the local device",
     };
   }
 
   if (health?.state === "cooling_off" && health.reason_code === SOURCE_PRESSURE_REASON_CODE) {
     return {
-      kind: "cooldown_wait",
-      label: "Cooling off",
       detail: health.next_attempt_at
         ? `This source is throttling PDPP, so the next ordinary sync waits until ${health.next_attempt_at}. Captured progress is retained.`
         : "This source is throttling PDPP, so ordinary sync is paused until the next scheduled retry. Captured progress is retained.",
+      kind: "cooldown_wait",
+      label: "Cooling off",
     };
   }
 
@@ -1874,11 +1874,11 @@ export function derivePrimaryRowAction(input: {
   if (sourcePressureBacklog && sourcePressureBacklog.pending > 0) {
     const pending = `${sourcePressureBacklog.pending_is_floor ? "at least " : ""}${sourcePressureBacklog.pending.toLocaleString()}`;
     return {
-      kind: "cooldown_wait",
-      label: "Cooling off",
       detail: `This connection has ${pending} pending provider-pressure gap${
         sourcePressureBacklog.pending === 1 ? "" : "s"
       }, so ordinary sync may be rejected by the provider-pressure cooldown. Captured progress is retained.`,
+      kind: "cooldown_wait",
+      label: "Cooling off",
     };
   }
 
@@ -1911,7 +1911,7 @@ export function formatCollectionRateReadout(
     : null;
   return {
     backoffLabel,
-    currentLabel: `${rate.effective_rate_per_min.toLocaleString()}/min · interval ${rate.current_interval_ms.toLocaleString()}ms`,
     ceilingLabel: `ceiling ${rate.ceiling_rate_per_min.toLocaleString()}/min · interval ${rate.ceiling_interval_ms.toLocaleString()}ms`,
+    currentLabel: `${rate.effective_rate_per_min.toLocaleString()}/min · interval ${rate.current_interval_ms.toLocaleString()}ms`,
   };
 }

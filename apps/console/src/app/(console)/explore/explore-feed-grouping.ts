@@ -16,11 +16,11 @@ import type { ExplorerFeedEntry } from "@pdpp/operator-ui/components/views/explo
 // ─── Day label ───────────────────────────────────────────────────────────────
 
 const DAY_FMT = new Intl.DateTimeFormat("en-US", {
+  day: "numeric",
+  month: "long",
+  timeZone: "UTC",
   weekday: "long",
   year: "numeric",
-  month: "long",
-  day: "numeric",
-  timeZone: "UTC",
 });
 
 export const MS_PER_DAY = 86_400_000;
@@ -167,7 +167,7 @@ function entryLatestAt(e: ExplorerFeedEntry): string | null {
  */
 function sortEntriesNewestFirst(entries: ExplorerFeedEntry[]): ExplorerFeedEntry[] {
   return entries
-    .map((entry, index) => ({ entry, index, at: entryLatestAt(entry) }))
+    .map((entry, index) => ({ at: entryLatestAt(entry), entry, index }))
     .sort((a, b) => {
       if (a.at === b.at) {
         return a.index - b.index;
@@ -193,7 +193,7 @@ function sortEntriesNewestFirst(entries: ExplorerFeedEntry[]): ExplorerFeedEntry
  */
 function orderDayUnits(units: DayRenderUnit[]): DayRenderUnit[] {
   return units
-    .map((unit, index) => ({ unit, index }))
+    .map((unit, index) => ({ index, unit }))
     .sort((a, b) => {
       const aAt = a.unit.latestAt;
       const bAt = b.unit.latestAt;
@@ -246,14 +246,14 @@ function splitDayBursts(day: string, entries: ExplorerFeedEntry[], nowMs: number
         existing.entries.push(e);
       } else {
         // First member of this burst — reserve the burst's slot in feed order.
-        const burst: BurstGroup = { key: pk, entries: [e], preview: [], expanded: false };
+        const burst: BurstGroup = { entries: [e], expanded: false, key: pk, preview: [] };
         burstByKey.set(pk, burst);
         bursts.push(burst);
-        orderedUnits.push({ kind: "burst", burst, latestAt: null });
+        orderedUnits.push({ burst, kind: "burst", latestAt: null });
       }
     } else {
       singles.push(e);
-      orderedUnits.push({ kind: "single", entry: e, latestAt: entryLatestAt(e) });
+      orderedUnits.push({ entry: e, kind: "single", latestAt: entryLatestAt(e) });
     }
   }
 
@@ -271,7 +271,7 @@ function splitDayBursts(day: string, entries: ExplorerFeedEntry[], nowMs: number
     }
   }
 
-  return { day, label: dayLabel(day, nowMs), singles, bursts, units: orderDayUnits(orderedUnits) };
+  return { bursts, day, label: dayLabel(day, nowMs), singles, units: orderDayUnits(orderedUnits) };
 }
 
 /** Group entries into ordered day buckets (insertion order preserved → already-sorted feed). */
@@ -325,11 +325,11 @@ export function groupFeedDaysNoBursts(
     // design — do NOT newest-first re-sort it. Every entry is a flat single, and
     // `units` preserves the incoming order verbatim (no orderDayUnits call).
     const units: DayRenderUnit[] = entries.map((entry) => ({
-      kind: "single",
       entry,
+      kind: "single",
       latestAt: entryLatestAt(entry),
     }));
-    days.push({ day, label: dayLabel(day, nowMs), singles: entries, bursts: [], units });
+    days.push({ bursts: [], day, label: dayLabel(day, nowMs), singles: entries, units });
   }
   return days;
 }
@@ -376,5 +376,5 @@ export function partitionFeedByTime(feed: readonly ExplorerFeedEntry[], nowMs: n
 
   const upcoming = groupDays(upcomingSorted, nowMs);
   const past = groupDays(pastEntries, nowMs);
-  return { upcoming, upcomingCount: futureEntries.length, past };
+  return { past, upcoming, upcomingCount: futureEntries.length };
 }

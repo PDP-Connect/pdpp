@@ -43,7 +43,7 @@
             const st = localRevoked.includes(c.id) ? "revoked" : c.status;
             return (
               <button
-                className={"rr-s-item" + (sel === c.id ? " is-on" : "") + (st === "revoked" ? " is-revoked" : "")}
+                className={"rr-s-item" + (sel === c.id ? "is-on" : "") + (st === "revoked" ? "is-revoked" : "")}
                 key={c.id}
                 onClick={() => {
                   setSel(c.id);
@@ -132,7 +132,7 @@
                     Reauthorize
                   </button>
                 )}
-                {!revoked && !revoking && (
+                {!(revoked || revoking) && (
                   <button
                     className="pdpp-btn pdpp-btn--destructive pdpp-btn--sm"
                     onClick={() => setRevoking(true)}

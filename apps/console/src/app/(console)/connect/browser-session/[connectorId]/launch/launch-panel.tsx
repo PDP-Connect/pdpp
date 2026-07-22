@@ -153,13 +153,13 @@ export function BrowserSessionLaunchPanel({
 
       {state.error ? (
         <div className="flex flex-wrap gap-2">
-          <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={start} type="button">
+          <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={start} type="button">
             Try again
           </button>
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/syncs">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/syncs">
             Open Syncs
           </Link>
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/sources">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/sources">
             Back to Sources
           </Link>
         </div>

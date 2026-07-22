@@ -160,13 +160,13 @@ function buildMcpWebRequestHeaders(req: RouteRequest): Headers {
 
 function buildMcpWebRequestBody(req: RouteRequest, headers: Headers): Buffer | string | undefined {
   if (["GET", "HEAD"].includes(req.method)) {
-    return undefined;
+    return;
   }
   if (Buffer.isBuffer(req.body) || typeof req.body === "string") {
     return req.body as Buffer | string;
   }
   if (req.body === undefined) {
-    return undefined;
+    return;
   }
 
   const body = JSON.stringify(req.body);

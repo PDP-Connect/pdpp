@@ -103,6 +103,10 @@ export const SOURCE_WORK_GROUP_COPY: Record<SourceWorkGroupId, { label: string; 
     label: "Needs you",
     note: "Requires your input before collection can continue.",
   },
+  notMeasured: {
+    label: "Not measured",
+    note: "Evidence is missing and no active check is running.",
+  },
   review: {
     label: "Available actions",
     note: "Optional refreshes and retries you can start.",
@@ -114,10 +118,6 @@ export const SOURCE_WORK_GROUP_COPY: Record<SourceWorkGroupId, { label: string; 
   working: {
     label: "PDPP is working",
     note: "Collection, recovery, or a bounded check is active.",
-  },
-  notMeasured: {
-    label: "Not measured",
-    note: "Evidence is missing and no active check is running.",
   },
 };
 
@@ -141,10 +141,10 @@ export function sourceAttentionHeadline(groups: SourceWorkGroups): SourceAttenti
 const UNDERSCORE_RE = /_/g;
 
 const VERDICT_TONE_STATUS: Record<RefVerdictTone, Pick<SourceStatusFlag, "dot" | "kind" | "tone">> = {
-  green: { kind: "healthy", dot: "●", tone: "success" },
-  amber: { kind: "degraded", dot: "◐", tone: "warning" },
-  red: { kind: "blocked", dot: "⊘", tone: "destructive" },
-  grey: { kind: "unknown", dot: "○", tone: "muted" },
+  amber: { dot: "◐", kind: "degraded", tone: "warning" },
+  green: { dot: "●", kind: "healthy", tone: "success" },
+  grey: { dot: "○", kind: "unknown", tone: "muted" },
+  red: { dot: "⊘", kind: "blocked", tone: "destructive" },
 };
 
 function readableConnectorId(connectorId: string): string {
@@ -232,30 +232,30 @@ export function deriveRenderedSourceStatus(
   pending = false
 ): SourceStatusFlag {
   if (revoked) {
-    return { kind: "revoked", dot: "⊘", tone: "muted", label: "Revoked", freshnessNote: null };
+    return { dot: "⊘", freshnessNote: null, kind: "revoked", label: "Revoked", tone: "muted" };
   }
   // Setup-in-progress overrides any verdict shape, same priority as revoked:
   // a draft has no meaningful health/coverage evidence yet (see
   // `isSetupInProgressConnector`), so its verdict tone (if any) must never be
   // shown as the status.
   if (pending) {
-    return { kind: "pending", dot: "◌", tone: "muted", label: "Setup in progress", freshnessNote: null };
+    return { dot: "◌", freshnessNote: null, kind: "pending", label: "Setup in progress", tone: "muted" };
   }
   if (!verdict) {
     return {
-      kind: "unknown",
       dot: "○",
-      tone: "muted",
-      label: "Verdict unavailable",
       freshnessNote: null,
+      kind: "unknown",
+      label: "Verdict unavailable",
+      tone: "muted",
     };
   }
   const status = VERDICT_TONE_STATUS[verdict.pill.tone];
   const freshnessNote = freshnessNoteFromVerdict(verdict);
   return {
     ...status,
-    label: labelWithFreshness(verdict.pill.label, freshnessNote),
     freshnessNote,
+    label: labelWithFreshness(verdict.pill.label, freshnessNote),
   };
 }
 
@@ -404,15 +404,15 @@ function isNotMeasured(verdict: NonNullable<RefConnectorSummary["rendered_verdic
 
 const RECOVERY_STATUS_LABEL: Partial<Record<RecoveryStep, string>> = {
   active: "is syncing details",
-  queued: "is catching up",
   cooling: "is waiting to retry",
+  queued: "is catching up",
   stalled: "recovery is stalled",
 };
 
 const RECOVERY_WHAT: Partial<Record<RecoveryStep, string>> = {
   active: "Syncing details now.",
-  queued: "Catching up details when it is safe to retry.",
   cooling: "Waiting until it is safe to retry details.",
+  queued: "Catching up details when it is safe to retry.",
   stalled: "Recovery has stopped making progress and needs a look.",
 };
 

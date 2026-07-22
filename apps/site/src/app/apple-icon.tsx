@@ -4,7 +4,7 @@
 import { LAUNCH_COLORS } from "@pdpp/brand/launch-colors";
 import { ImageResponse } from "next/og";
 
-export const size = { width: 180, height: 180 };
+export const size = { height: 180, width: 180 };
 export const contentType = "image/png";
 
 // Apple touch icon — the full split-P on the LIGHT launch background.
@@ -20,12 +20,12 @@ export default function AppleIcon() {
   return new ImageResponse(
     <div
       style={{
-        width: "100%",
-        height: "100%",
-        display: "flex",
         alignItems: "center",
-        justifyContent: "center",
         background: LAUNCH_COLORS.light,
+        display: "flex",
+        height: "100%",
+        justifyContent: "center",
+        width: "100%",
       }}
     >
       <svg aria-label="PDPP split P mark" height="140" role="img" viewBox="0 0 200 200" width="140">

@@ -161,11 +161,11 @@ function containFit(hostWidth: number, hostHeight: number, ratio: number): { hei
 
 test("contain-fit math: the rendered box never exceeds either host dimension and fully uses the binding axis", () => {
   const cases: Array<{ hostHeight: number; hostWidth: number; ratio: number }> = [
-    { hostWidth: 1981, hostHeight: 960, ratio: 1400 / 1005 }, // reported desktop UAT viewport
-    { hostWidth: 1400, hostHeight: 1005, ratio: 1400 / 1005 }, // second desktop size from the prompt
-    { hostWidth: 390, hostHeight: 844, ratio: 390 / 844 }, // phone portrait
-    { hostWidth: 844, hostHeight: 390, ratio: 844 / 390 }, // phone landscape
-    { hostWidth: 1976, hostHeight: 960, ratio: 16 / 10 }, // reproduced live: the exact failing case
+    { hostHeight: 960, hostWidth: 1981, ratio: 1400 / 1005 }, // reported desktop UAT viewport
+    { hostHeight: 1005, hostWidth: 1400, ratio: 1400 / 1005 }, // second desktop size from the prompt
+    { hostHeight: 844, hostWidth: 390, ratio: 390 / 844 }, // phone portrait
+    { hostHeight: 390, hostWidth: 844, ratio: 844 / 390 }, // phone landscape
+    { hostHeight: 960, hostWidth: 1976, ratio: 16 / 10 }, // reproduced live: the exact failing case
   ];
 
   for (const { hostWidth, hostHeight, ratio } of cases) {

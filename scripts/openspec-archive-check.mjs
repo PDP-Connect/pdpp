@@ -38,7 +38,7 @@
 // (shallow clone, fresh repo) it falls back to the working tree and says so.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -112,7 +112,7 @@ export function tallyTasks(body) {
       bucket.total += 1;
     }
   }
-  return { impl, gate, hasTasks: impl.total + gate.total > 0 };
+  return { gate, hasTasks: impl.total + gate.total > 0, impl };
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ function makeExistsOnRef(ref) {
     return existsSync(abs) && statSync(abs).isFile();
   };
 
-  return { usedRef, existsRepoRel };
+  return { existsRepoRel, usedRef };
 }
 
 /**
@@ -233,7 +233,7 @@ export function classifyChange(changeName, { existsRepoRel, readFile = readFileS
   try {
     tasks = tallyTasks(readFile(tasksFile, "utf8"));
   } catch {
-    tasks = { impl: { done: 0, total: 0 }, gate: { done: 0, total: 0 }, hasTasks: false };
+    tasks = { gate: { done: 0, total: 0 }, hasTasks: false, impl: { done: 0, total: 0 } };
   }
 
   const referenced = extractReferencedPaths(changeDir, readFile);
@@ -256,14 +256,14 @@ export function classifyChange(changeName, { existsRepoRel, readFile = readFileS
   const archiveDue = implComplete || codeExists;
 
   return {
-    name: changeName,
     archiveDue,
-    implComplete,
     codeExists,
-    reasons,
-    tasks,
-    referencedPaths: referenced,
+    implComplete,
     landedPaths: codeLanded,
+    name: changeName,
+    reasons,
+    referencedPaths: referenced,
+    tasks,
   };
 }
 
@@ -282,7 +282,7 @@ export function listActiveChanges(dir = changesDir) {
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { json: false, strict: false, ref: "main" };
+  const args = { json: false, ref: "main", strict: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--json") {
@@ -308,7 +308,7 @@ export function runCli(argv, { log = console.log } = {}) {
   const archiveDue = records.filter((r) => r.archiveDue);
 
   if (args.json) {
-    log(JSON.stringify({ ref: usedRef, records, archiveDue: archiveDue.map((r) => r.name) }, null, 2));
+    log(JSON.stringify({ archiveDue: archiveDue.map((r) => r.name), records, ref: usedRef }, null, 2));
     return archiveDue.length;
   }
 

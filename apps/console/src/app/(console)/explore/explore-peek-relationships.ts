@@ -88,7 +88,7 @@ export async function buildPeekRelationships(
   input: PeekRelationshipInput,
   dataSource: DashboardDataSource
 ): Promise<PeekRelationships> {
-  const empty: PeekRelationships = { relatedLinks: [], reverseChildListLinks: [], parentBackLinks: [] };
+  const empty: PeekRelationships = { parentBackLinks: [], relatedLinks: [], reverseChildListLinks: [] };
   const { connectionId, connectorId, stream, recordId, data } = input;
 
   // Resolve the connection's instance id so metadata reads scope to the right
@@ -121,8 +121,8 @@ export async function buildPeekRelationships(
           .getStreamMetadata(connectorId, parentStream, { connectorInstanceId })
           .catch(() => null);
         return {
-          parentStream,
           expandCapabilities: Array.isArray(parentMeta?.expand_capabilities) ? parentMeta.expand_capabilities : [],
+          parentStream,
         };
       })
     );
@@ -142,7 +142,7 @@ export async function buildPeekRelationships(
   );
   const reverseChildListLinks = reverseChildListLinksFromManifest(
     connectorStreams,
-    { connectionId, parentStream: stream, parentRecordKey: recordId },
+    { connectionId, parentRecordKey: recordId, parentStream: stream },
     forwardChildListKeys
   );
   // Child → parent back-links from parent metadata + child's own declared has_one.
@@ -150,5 +150,5 @@ export async function buildPeekRelationships(
   const childHasOneLinks = childHasOneBackLinksFromManifest(childManifestStream, data, { connectionId });
   const parentBackLinks = mergeParentBackLinks(parentBackLinkFromMeta, childHasOneLinks);
 
-  return { relatedLinks, reverseChildListLinks, parentBackLinks };
+  return { parentBackLinks, relatedLinks, reverseChildListLinks };
 }

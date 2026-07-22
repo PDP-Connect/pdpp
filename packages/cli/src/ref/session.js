@@ -28,13 +28,17 @@ function sessionCacheKey(referenceUrl) {
 }
 
 export function writeOwnerSession({ referenceUrl, cookie, cacheRoot } = {}) {
-  if (!referenceUrl) throw new PdppCliError("writeOwnerSession requires referenceUrl");
-  if (!cookie) throw new PdppCliError("writeOwnerSession requires cookie");
+  if (!referenceUrl) {
+    throw new PdppCliError("writeOwnerSession requires referenceUrl");
+  }
+  if (!cookie) {
+    throw new PdppCliError("writeOwnerSession requires cookie");
+  }
 
   const { file } = getOwnerSessionPaths(referenceUrl, { cacheRoot });
   const payload = {
-    reference_url: referenceUrl,
     cookie,
+    reference_url: referenceUrl,
     saved_at: new Date().toISOString(),
   };
   writePdppSecretFile(file, JSON.stringify(payload, null, 2));
@@ -43,13 +47,17 @@ export function writeOwnerSession({ referenceUrl, cookie, cacheRoot } = {}) {
 }
 
 export function readOwnerSession({ referenceUrl, cacheRoot } = {}) {
-  if (!referenceUrl) return null;
+  if (!referenceUrl) {
+    return null;
+  }
   const { file } = getOwnerSessionPaths(referenceUrl, { cacheRoot });
-  if (!existsSync(file)) return null;
+  if (!existsSync(file)) {
+    return null;
+  }
   try {
     const data = JSON.parse(readFileSync(file, "utf8"));
     if (data && typeof data.cookie === "string" && data.cookie.length > 0) {
-      return { cookie: data.cookie, savedAt: data.saved_at || null, file };
+      return { cookie: data.cookie, file, savedAt: data.saved_at || null };
     }
   } catch {
     return null;
@@ -58,9 +66,13 @@ export function readOwnerSession({ referenceUrl, cacheRoot } = {}) {
 }
 
 export function clearOwnerSession({ referenceUrl, cacheRoot } = {}) {
-  if (!referenceUrl) return false;
+  if (!referenceUrl) {
+    return false;
+  }
   const { file } = getOwnerSessionPaths(referenceUrl, { cacheRoot });
-  if (!existsSync(file)) return false;
+  if (!existsSync(file)) {
+    return false;
+  }
   try {
     unlinkSync(file);
     return true;
@@ -71,14 +83,16 @@ export function clearOwnerSession({ referenceUrl, cacheRoot } = {}) {
 
 export function getOwnerSessionFileMode(referenceUrl, opts = {}) {
   const { file } = getOwnerSessionPaths(referenceUrl, opts);
-  if (!existsSync(file)) return null;
+  if (!existsSync(file)) {
+    return null;
+  }
   return statSync(file).mode & 0o777;
 }
 
 function ensureGitignore(cacheRoot) {
   const gi = join(cacheRoot, ".gitignore");
   try {
-    mkdirSync(dirname(gi), { recursive: true, mode: 0o700 });
+    mkdirSync(dirname(gi), { mode: 0o700, recursive: true });
     if (!existsSync(gi)) {
       writeFileSync(gi, "*\n!.gitignore\n", { mode: 0o600 });
     }
@@ -90,20 +104,30 @@ function ensureGitignore(cacheRoot) {
 // Parse a Set-Cookie header value (or array of values) and return the value of
 // the named cookie if present, e.g. "pdpp_owner_session=abc; Path=/; HttpOnly".
 export function extractCookieFromSetCookie(setCookie, cookieName) {
-  if (!setCookie) return null;
+  if (!setCookie) {
+    return null;
+  }
   const headers = Array.isArray(setCookie) ? setCookie : [setCookie];
   for (const raw of headers) {
-    if (typeof raw !== "string") continue;
+    if (typeof raw !== "string") {
+      continue;
+    }
     // Set-Cookie may contain multiple cookies joined by ", " when collapsed.
     // Split conservatively on the first attribute pair only.
     for (const piece of raw.split(/,\s*(?=[^;]+=[^;]+)/)) {
       const [pair] = piece.split(";");
-      if (!pair) continue;
+      if (!pair) {
+        continue;
+      }
       const eq = pair.indexOf("=");
-      if (eq === -1) continue;
+      if (eq === -1) {
+        continue;
+      }
       const name = pair.slice(0, eq).trim();
       const value = pair.slice(eq + 1).trim();
-      if (name === cookieName) return value;
+      if (name === cookieName) {
+        return value;
+      }
     }
   }
   return null;

@@ -35,15 +35,15 @@ const JSON_EXTENSION_RE = /\.json$/;
 // loosely below since their full signatures land with the auth.js
 // migration slice. Until then we narrow the surface used here.
 import { getConnectorManifest, registerConnector } from "./auth.js";
-// records.js is also still JavaScript. The invalidation helper is
-// scoped to the reconciliation flip path; see the design notes under
-// openspec/changes/reconcile-invalidates-stale-records/.
-import { deleteAllRecordsForConnector } from "./records.js";
 // connector-key.js is a small, DB-free, pure module (no auth.js coupling),
 // so it's safe to import directly rather than duplicate. Used to predict
 // the storage-normalized shape of a shipped manifest for comparison; see
 // `normalizeForComparison` below.
 import { canonicalConnectorKeyFromManifest } from "./connector-key.js";
+// records.js is also still JavaScript. The invalidation helper is
+// scoped to the reconciliation flip path; see the design notes under
+// openspec/changes/reconcile-invalidates-stale-records/.
+import { deleteAllRecordsForConnector } from "./records.js";
 
 // Auth.js wires these as untyped JS functions; until that file
 // migrates, we re-declare the narrow shape this module relies on so

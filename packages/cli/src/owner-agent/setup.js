@@ -66,13 +66,13 @@ export async function requestConnectionSetupPlan({ fetchFn, record, connectorId,
   let response;
   try {
     response = await fetchFn(url, {
-      method: "POST",
+      body: JSON.stringify(body),
       headers: {
         Accept: "application/json",
-        "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify(body),
+      method: "POST",
     });
   } catch (error) {
     throw new OwnerAgentError("setup_failed", `Failed to request setup plan from ${url}: ${error.message}.`);

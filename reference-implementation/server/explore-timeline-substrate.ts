@@ -483,14 +483,14 @@ interface TaggedUpcomingRow {
 }
 
 interface SqliteUpcomingQuery {
-  readonly where: string;
   readonly binds: (string | number)[];
+  readonly where: string;
 }
 
 interface UpcomingPartitionFetch {
-  readonly total: number;
-  readonly tagged: readonly TaggedUpcomingRow[];
   readonly overflow: boolean;
+  readonly tagged: readonly TaggedUpcomingRow[];
+  readonly total: number;
 }
 
 function sqliteUpcomingQuery(
@@ -936,8 +936,8 @@ async function postgresFetchUpcoming(input: UpcomingFetchInput): Promise<Upcomin
 }
 
 interface PostgresUpcomingQuery {
-  readonly where: string;
   readonly params: (string | number)[];
+  readonly where: string;
 }
 
 function postgresUpcomingQuery(

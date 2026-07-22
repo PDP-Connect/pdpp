@@ -10,10 +10,10 @@ const FALLBACK = "request failed (409)";
 test("describeError prefers the reference-server envelope error.message", () => {
   const body = {
     error: {
-      type: "about:blank",
       code: "subscription_already_disabled",
       message: "Subscription sub_abc is already disabled.",
       request_id: "req_1",
+      type: "about:blank",
     },
   };
   assert.equal(describeError(body, FALLBACK), "Subscription sub_abc is already disabled.");
@@ -43,7 +43,7 @@ test("describeErrorText parses a JSON envelope string into the friendly message"
   // reference server's error envelope. The operator must see the message,
   // not the stringified blob.
   const raw = JSON.stringify({
-    error: { type: "about:blank", code: "not_found", message: "Subscription not found." },
+    error: { code: "not_found", message: "Subscription not found.", type: "about:blank" },
   });
   assert.equal(
     describeErrorText(raw, "_ref /_ref/event-subscriptions/sub_x/disable failed (404)"),

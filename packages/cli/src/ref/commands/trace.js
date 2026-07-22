@@ -19,7 +19,7 @@ export async function runRefTrace(argv, io = {}, fetchImpl = globalThis.fetch) {
     const cacheRoot = flags["cache-root"];
     const { body } = await fetchJson(
       `${asUrl}/_ref/traces/${encodeURIComponent(traceId)}`,
-      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
+      { headers: { ...ownerSessionHeaders({ cacheRoot, ownerSession, referenceUrl: asUrl }) } },
       fetchImpl
     );
     const format = resolveFormat(flags, "table", "json");

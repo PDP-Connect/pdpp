@@ -249,5 +249,5 @@ test("required bundled fields fail before capture instead of storing incomplete 
     form
   );
 
-  assert.deepEqual(payload, { ok: false, error: "Password is required." });
+  assert.deepEqual(payload, { error: "Password is required.", ok: false });
 });

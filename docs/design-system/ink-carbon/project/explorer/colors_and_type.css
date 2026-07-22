@@ -106,16 +106,17 @@
 /* ─── Base ────────────────────────────────────────────────────── */
 
 html {
-  background: var(--background);
-  color: var(--foreground);
+  scrollbar-gutter: stable;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  color: var(--foreground);
+  background: var(--background);
   text-rendering: optimizeLegibility;
-  scrollbar-gutter: stable;
 }
 
 body {
   margin: 0;
+  color: var(--foreground);
   background:
     radial-gradient(
       circle at top left,
@@ -123,7 +124,6 @@ body {
       transparent 28rem
     ),
     linear-gradient(180deg, oklch(1 0 0) 0%, var(--background) 14rem);
-  color: var(--foreground);
 }
 
 *,
@@ -166,32 +166,32 @@ samp {
 /* ─── Surfaces (the temperature system) ──────────────────────── */
 
 [data-surface="human"] {
-  border-top: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  border-left: 2px solid var(--human);
+  background-color: var(--card);
   background-image: linear-gradient(
     to bottom,
     var(--human-wash),
     transparent 35%
   );
-  background-color: var(--card);
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid var(--human);
   box-shadow:
     0 1px 2px rgb(0 0 0 / 0.04),
     0 1px 3px rgb(0 0 0 / 0.02);
 }
 
 [data-surface="protocol"] {
-  border-top: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  border-left: 2px solid var(--primary);
+  background-color: var(--card);
   background-image: linear-gradient(
     to right,
     oklch(0.58 0.172 253.7 / 0.04),
     transparent 70%
   );
-  background-color: var(--card);
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid var(--primary);
   box-shadow:
     0 1px 2px rgb(0 0 0 / 0.04),
     0 1px 3px rgb(0 0 0 / 0.02);
@@ -271,9 +271,9 @@ samp {
 .pdpp-eyebrow {
   font-family: var(--font-mono);
   font-size: 0.72rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 
 /* ─── Helpers ─────────────────────────────────────────────────── */

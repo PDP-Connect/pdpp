@@ -5,9 +5,9 @@
 // Shows a grant "as issued" in machine terms.
 
 const GrantInspector = ({ grantId = "grt_longview01" }) => (
-  <div className="pdpp-surface-protocol" style={{ overflow: "hidden", maxWidth: 640 }}>
+  <div className="pdpp-surface-protocol" style={{ maxWidth: 640, overflow: "hidden" }}>
     <div style={{ padding: "20px 24px 14px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+      <div style={{ alignItems: "flex-start", display: "flex", justifyContent: "space-between" }}>
         <div>
           <div className="pdpp-eyebrow" style={{ color: "var(--primary)" }}>
             GRANT · ISSUED
@@ -17,8 +17,8 @@ const GrantInspector = ({ grantId = "grt_longview01" }) => (
               fontFamily: "var(--font-mono)",
               fontSize: 18,
               fontWeight: 500,
-              marginTop: 6,
               letterSpacing: "-0.005em",
+              marginTop: 6,
             }}
           >
             {grantId}
@@ -31,7 +31,7 @@ const GrantInspector = ({ grantId = "grt_longview01" }) => (
       </div>
     </div>
     <hr className="pdpp-rule" />
-    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 0 }}>
+    <div style={{ display: "grid", gap: 0, gridTemplateColumns: "120px 1fr" }}>
       {[
         ["purpose", <span style={{ color: "var(--edu-fg)" }}>long_term_financial_planning</span>],
         ["mode", "continuous"],
@@ -44,22 +44,22 @@ const GrantInspector = ({ grantId = "grt_longview01" }) => (
         <React.Fragment key={k}>
           <div
             style={{
-              padding: "9px 24px",
               borderTop: "1px solid var(--border)",
+              color: "var(--muted-foreground)",
               fontFamily: "var(--font-mono)",
               fontSize: 12,
-              color: "var(--muted-foreground)",
+              padding: "9px 24px",
             }}
           >
             {k}
           </div>
           <div
             style={{
-              padding: "9px 24px 9px 0",
               borderTop: "1px solid var(--border)",
+              color: "var(--foreground)",
               fontFamily: "var(--font-mono)",
               fontSize: 12.5,
-              color: "var(--foreground)",
+              padding: "9px 24px 9px 0",
             }}
           >
             {v}
@@ -68,15 +68,15 @@ const GrantInspector = ({ grantId = "grt_longview01" }) => (
       ))}
     </div>
     <hr className="pdpp-rule" />
-    <div style={{ padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+    <div style={{ alignItems: "center", display: "flex", justifyContent: "space-between", padding: "12px 24px" }}>
       <span className="pdpp-caption" style={{ color: "var(--muted-foreground)" }}>
         The grant is the artifact. Collection is a companion mechanism.
       </span>
       <div style={{ display: "flex", gap: 6 }}>
-        <button className="pdpp-btn pdpp-btn-ghost" style={{ height: 30, fontSize: 12 }}>
+        <button className="pdpp-btn pdpp-btn-ghost" style={{ fontSize: 12, height: 30 }}>
           Copy JSON
         </button>
-        <button className="pdpp-btn pdpp-btn-outline" style={{ height: 30, fontSize: 12 }}>
+        <button className="pdpp-btn pdpp-btn-outline" style={{ fontSize: 12, height: 30 }}>
           Revoke ↺
         </button>
       </div>

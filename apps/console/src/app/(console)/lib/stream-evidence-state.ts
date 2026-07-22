@@ -33,29 +33,29 @@ const COUNT_STATE_LABELS: Record<
 > = {
   known: (count) => ({
     text: count === null ? "count unavailable" : `${count.toLocaleString()} records`,
-    tone: "neutral",
     title: "The canonical stable-records snapshot for this stream is current.",
+    tone: "neutral",
   }),
   known_zero: () => ({
     text: "0 records",
-    tone: "neutral",
     title: "The canonical snapshot proves this stream has exactly zero retained records right now.",
-  }),
-  unobserved: () => ({
-    text: "count not yet observed",
     tone: "neutral",
-    title:
-      "No observation has completed for this stream yet; a count will appear once the next read reconciles evidence.",
   }),
   stale: () => ({
     text: "count unavailable",
-    tone: "warning",
     title: "The last known count is stale relative to the live canonical checkpoint.",
+    tone: "warning",
   }),
   unknown: () => ({
     text: "count unavailable",
-    tone: "warning",
     title: "The count could not be determined; evidence collection failed or is otherwise unreliable.",
+    tone: "warning",
+  }),
+  unobserved: () => ({
+    text: "count not yet observed",
+    title:
+      "No observation has completed for this stream yet; a count will appear once the next read reconciles evidence.",
+    tone: "neutral",
   }),
 };
 
@@ -73,8 +73,8 @@ export function streamCountLabel(record: {
   }
   return {
     text: record.record_count === null ? "count unavailable" : `${record.record_count.toLocaleString()} records`,
-    tone: "neutral",
     title: "",
+    tone: "neutral",
   };
 }
 

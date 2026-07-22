@@ -243,15 +243,15 @@ export function buildRecoveryDemoModel(): ConnectorPageModel {
       records_pending: 3,
       source_count: 1,
     },
-    streams,
     streamCount: streams.length,
+    streams,
     totalRecords: 464,
     totalRetainedBytes: null,
   };
   return {
+    activeRunId: null,
     collectionFactsByStream,
     collectionOwnerActionByStream: { messages: true, sessions: true },
-    activeRunId: null,
     connectionHealth,
     connectionId,
     connectionLabelSeed: "Claude Code workstation",
@@ -260,7 +260,6 @@ export function buildRecoveryDemoModel(): ConnectorPageModel {
     connectorId: "claude_code",
     connectorInstanceId: connectionId,
     deviceLabels: ["workstation"],
-    sourceBindingKind: null,
     displayName: "Claude Code workstation",
     headerCount: "464 records, 2 streams",
     manifest: {
@@ -275,6 +274,7 @@ export function buildRecoveryDemoModel(): ConnectorPageModel {
     recentRuns: [run],
     schedule: null,
     scheduleError: null,
+    sourceBindingKind: null,
     sourceInstances,
     sourceInstancesError: null,
     streams,

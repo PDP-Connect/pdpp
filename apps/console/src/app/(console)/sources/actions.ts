@@ -69,12 +69,12 @@ export async function runConnectorNowAction(
     // give a deployment-status / retry hint instead of a raw network string.
     if (err instanceof ReferenceServerUnreachableError) {
       return {
-        ok: false,
-        reason: "error",
-        phase: "before_server",
-        reached_server: false,
         message:
           "Couldn't reach the reference server, so the sync was not started. Check the deployment is running, then retry.",
+        ok: false,
+        phase: "before_server",
+        reached_server: false,
+        reason: "error",
       };
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -83,16 +83,16 @@ export async function runConnectorNowAction(
     if (ALREADY_ACTIVE_RE.test(message) || RUN_ALREADY_ACTIVE_RE.test(message)) {
       const match = message.match(RUN_ID_MATCH_RE);
       return {
+        message: "Sync already in progress.",
         ok: false,
         reason: "already_running",
         run_id: match?.[0],
-        message: "Sync already in progress.",
       };
     }
     // Everything after the transport-failure branch came from the reference
     // server. Keep the server envelope text and mark it separately from a
     // before-server failure so the row can stay local and tell the owner where
     // the failure occurred.
-    return { ok: false, reason: "error", phase: "after_server", reached_server: true, message };
+    return { message, ok: false, phase: "after_server", reached_server: true, reason: "error" };
   }
 }

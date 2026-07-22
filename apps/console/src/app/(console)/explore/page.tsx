@@ -131,11 +131,11 @@ export default async function RecordsExplorerPage({
     if (data.peek && !data.peek.error && data.peek.connectionId) {
       peekRelationships = await buildPeekRelationships(
         {
-          connectorId: data.peek.connectorId,
           connectionId: data.peek.connectionId,
-          stream: data.peek.stream,
-          recordId: data.peek.recordId,
+          connectorId: data.peek.connectorId,
           data: parsePeekData(data.peek.bodyJson),
+          recordId: data.peek.recordId,
+          stream: data.peek.stream,
         },
         liveDashboardDataSource
       );

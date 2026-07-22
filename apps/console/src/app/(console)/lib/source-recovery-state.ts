@@ -149,7 +149,7 @@ function progressCount(value: number, isFloor: boolean | null | undefined): Reco
   if (count === 0) {
     return null;
   }
-  return { value: count, isFloor: Boolean(isFloor) };
+  return { isFloor: Boolean(isFloor), value: count };
 }
 
 /**
@@ -207,8 +207,8 @@ function readEvidence(
     nextAttemptAt,
     ownerRequired,
     recoverableWork: hasRecoverableWork(backlog),
-    systemIssue: Boolean(systemIssue),
     syncing: Boolean(health?.badges.syncing),
+    systemIssue: Boolean(systemIssue),
   };
 }
 
@@ -294,13 +294,13 @@ function isStalled(
 
 const STEP_GROUP: Record<RecoveryStep, RecoveryGroupRouting | null> = {
   active: "working",
-  queued: "working",
   cooling: "working",
   eligible: "review",
-  owner_required: "needsOwner",
-  system_issue: "systemIssue",
-  stalled: "systemIssue",
   none: null,
+  owner_required: "needsOwner",
+  queued: "working",
+  stalled: "systemIssue",
+  system_issue: "systemIssue",
 };
 
 /**
@@ -352,13 +352,13 @@ function progressEvidence(progress: RecoveryProgress): string[] {
 
 const PRIMARY_SENTENCE: Record<RecoveryStep, string> = {
   active: "Syncing details now.",
-  queued: "Catching up details when it is safe to retry.",
   cooling: "Waiting until it is safe to retry details.",
   eligible: "Recoverable details are ready for another run.",
-  owner_required: "Waiting on you before recovery can continue.",
-  system_issue: "This connector needs a fix before it can recover this.",
-  stalled: "Recovery has stopped making progress and needs a look.",
   none: "No recovery work is queued.",
+  owner_required: "Waiting on you before recovery can continue.",
+  queued: "Catching up details when it is safe to retry.",
+  stalled: "Recovery has stopped making progress and needs a look.",
+  system_issue: "This connector needs a fix before it can recover this.",
 };
 
 /**
@@ -382,12 +382,12 @@ export function buildRecoveryPanelViewModel(
   }
 
   return {
-    step,
-    primarySentence: PRIMARY_SENTENCE[step],
-    progress,
-    nextEligibleAt: step === "active" ? null : nextEligibleAt,
     blocker: blockerFor(step, nextEligibleAt),
     evidence,
+    nextEligibleAt: step === "active" ? null : nextEligibleAt,
+    primarySentence: PRIMARY_SENTENCE[step],
+    progress,
+    step,
   };
 }
 

@@ -73,11 +73,11 @@ export function RenameConnection({ connectionId, currentLabel, typeName }: Props
       const res: RenameConnectionResult = await renameConnectionAction(connectionId, value);
       if (res.ok === true) {
         setEditing(false);
-        setToast({ tone: "info", message: `Renamed to "${res.display_name}"` });
+        setToast({ message: `Renamed to "${res.display_name}"`, tone: "info" });
         router.refresh();
         return;
       }
-      setToast({ tone: "error", message: res.message });
+      setToast({ message: res.message, tone: "error" });
     });
   }, [connectionId, router, value]);
 

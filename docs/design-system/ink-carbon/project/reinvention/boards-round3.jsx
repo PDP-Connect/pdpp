@@ -12,7 +12,7 @@
     return (
       <div className={`s3 lite ${t} hc`}>
         <div className="hc-head">
-          <span className="hc-mark"></span>
+          <span className="hc-mark" />
           <span className="hc-word">PDPP</span>
           <span className="hc-prov">Northstar HR · provider</span>
         </div>
@@ -26,7 +26,7 @@
             </p>
           </div>
           <div className="hc-sheetwrap">
-            {(isT1 || isT2) && <div className="hc-carbon"></div>}
+            {(isT1 || isT2) && <div className="hc-carbon" />}
             <div className="hc-sheet">
               <div className="hc-sheet__head">
                 <span className="hc-sheet__client">Longview Planning</span>
@@ -87,33 +87,33 @@
   const GRANTS = [
     {
       client: "Longview Planning",
+      dupe: true,
+      exp: "exp 2026-12-14",
       id: "grt_lngvw_01",
       scopes: "pay_statements.read · employment.read",
-      exp: "exp 2026-12-14",
       st: ["st-ok", "active"],
-      dupe: true,
     },
     {
       client: "Concert Recommendations",
+      exp: "continuous",
       id: "grt_cncrt_02",
       scopes: "listening_history.read",
-      exp: "continuous",
       st: ["st-pro", "continuous"],
     },
     {
       client: "pdpp CLI — owner export",
+      exp: "exp 2026-06-11",
       id: "dev_cli_07",
       scopes: "* (owner device flow)",
-      exp: "exp 2026-06-11",
       st: ["st-warn", "expiring 26h"],
     },
     {
       client: "Crosswise Ads",
-      id: "grt_xwise_09",
-      scopes: "browsing.read",
       exp: "2026-05-02",
-      st: ["st-off", "revoked"],
+      id: "grt_xwise_09",
       revoked: true,
+      scopes: "browsing.read",
+      st: ["st-off", "revoked"],
     },
   ];
 
@@ -136,12 +136,12 @@
       <div className={`s3 dark ${t} oc`}>
         <div className="oc-side">
           <div className="oc-side__brand">
-            <span className="hc-mark" style={{ background: "var(--fg)" }}></span>
+            <span className="hc-mark" style={{ background: "var(--fg)" }} />
             <span className="oc-side__word">PDPP</span>
           </div>
           <nav className="oc-nav">
             {NAV.map(([label, count, on]) => (
-              <span className={"oc-nav__item" + (on ? " is-on" : "")} key={label}>
+              <span className={"oc-nav__item" + (on ? "is-on" : "")} key={label}>
                 <span>{label}</span>
                 {count ? <span className="oc-nav__count">{count}</span> : null}
               </span>
@@ -187,7 +187,7 @@
               {GRANTS.map((g) => (
                 <div
                   className={
-                    "oc-row" + (g.dupe && t === "t1" ? " oc-row--dupe" : "") + (g.revoked ? " oc-row--revoked" : "")
+                    "oc-row" + (g.dupe && t === "t1" ? "oc-row--dupe" : "") + (g.revoked ? "oc-row--revoked" : "")
                   }
                   key={g.id}
                 >
@@ -196,7 +196,7 @@
                     <span className="oc-row__id">{g.id}</span>
                   </span>
                   <span className="oc-row__scopes">{g.scopes}</span>
-                  <span className={"st " + g.st[0]}>{fmt(g.st[1])}</span>
+                  <span className={"st" + g.st[0]}>{fmt(g.st[1])}</span>
                   <span className="oc-row__exp">{g.exp}</span>
                 </div>
               ))}

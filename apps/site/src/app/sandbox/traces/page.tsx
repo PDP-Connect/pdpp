@@ -33,20 +33,38 @@ export default async function SandboxTracesPage({ searchParams }: { searchParams
   const ds = sandboxDashboardDataSource;
   const result = await ds.listTraces({
     cursor: params.cursor,
-    status: params.status,
-    q: params.q,
     limit: 50,
+    q: params.q,
+    status: params.status,
   });
   const peekEnvelope = params.peek ? await ds.getTraceTimeline(params.peek) : null;
 
   const viewParams: ListWithPeekParams<TraceSummary> = {
     active: "traces",
-    routes: sandboxRoutes,
-    subject: "trace",
-    title: "Traces",
+    activeFilterChips: [
+      params.status ? { label: "status", value: params.status } : null,
+      params.q ? { label: "query", value: params.q } : null,
+    ].filter((c): c is { label: string; value: string } => Boolean(c)),
+    buildListHref: (overrides) => listHref(params, overrides),
     description: "Event-spine traces across grants and runs.",
-    result,
-    rowKey: (t) => t.trace_id,
+    emptyHint: "No traces match this filter.",
+    emptyTitle: "No traces",
+    filters: {
+      query: { defaultValue: params.q ?? "", name: "q", placeholder: "id contains…" },
+      status: {
+        defaultValue: params.status ?? "",
+        name: "status",
+        options: [
+          { label: "succeeded", value: "succeeded" },
+          { label: "failed", value: "failed" },
+          { label: "denied", value: "denied" },
+          { label: "revoked", value: "revoked" },
+        ],
+      },
+    },
+    peekCliCommand: (id) => `pdpp ref trace show ${id}`,
+    peekEnvelope,
+    peekId: params.peek,
     renderRow: (trace, { peeked, href, detailHref }) => {
       const rowContent = (
         <>
@@ -83,30 +101,12 @@ export default async function SandboxTracesPage({ searchParams }: { searchParams
         </div>
       );
     },
-    filters: {
-      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
-      status: {
-        name: "status",
-        defaultValue: params.status ?? "",
-        options: [
-          { value: "succeeded", label: "succeeded" },
-          { value: "failed", label: "failed" },
-          { value: "denied", label: "denied" },
-          { value: "revoked", label: "revoked" },
-        ],
-      },
-    },
-    activeFilterChips: [
-      params.status ? { label: "status", value: params.status } : null,
-      params.q ? { label: "query", value: params.q } : null,
-    ].filter((c): c is { label: string; value: string } => Boolean(c)),
     resetHref: "/sandbox/traces",
-    buildListHref: (overrides) => listHref(params, overrides),
-    peekId: params.peek,
-    peekEnvelope,
-    peekCliCommand: (id) => `pdpp ref trace show ${id}`,
-    emptyTitle: "No traces",
-    emptyHint: "No traces match this filter.",
+    result,
+    routes: sandboxRoutes,
+    rowKey: (t) => t.trace_id,
+    subject: "trace",
+    title: "Traces",
   };
 
   return (

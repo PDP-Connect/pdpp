@@ -484,7 +484,7 @@ function buildSyncRows(input: {
   const cadence = describeCadence(schedule);
   const lastRun = connectionRuns.find((r) => isTerminalRunStatus(r.status)) ?? connectionRuns[0] ?? null;
   const lastFailed = lastRun ? FAILED_RUN_STATUSES.has(lastRun.status) : false;
-  const { next, nextAt } = describeNext({ schedule, failing });
+  const { next, nextAt } = describeNext({ failing, schedule });
 
   // Index collection_report by stream name for O(1) per-row lookup.
   const reportByStream: Map<string, RefCollectionReportEntry> = indexCollectionReportByStream(
@@ -495,24 +495,24 @@ function buildSyncRows(input: {
   const rows = streams.map((stream): SyncRow => {
     const reportEntry = reportByStream.get(stream) ?? null;
     return {
-      stream,
+      browseHref: browseStreamHref(connector.connection_id, stream),
       cadence,
-      next,
-      nextAt,
+      // Per-stream facts from collection_report. Null when absent (honest
+      // empty state for pre-Tranche-C references).
+      collectedThisRun: reportEntry !== null && Number.isFinite(reportEntry.collected) ? reportEntry.collected : null,
+      coverageCondition: reportEntry === null ? null : reportEntry.coverage_condition,
       // `failed` is the connection-level last-run outcome, used only as a
       // fallback for streams that have NO per-stream report. When a stream
       // has its own collection_report entry, that per-stream truth governs
       // its display, so the connection-level failure must not override it.
       failed: lastFailed && reportEntry === null,
-      browseHref: browseStreamHref(connector.connection_id, stream),
-      // Per-stream facts from collection_report. Null when absent (honest
-      // empty state for pre-Tranche-C references).
-      collectedThisRun: reportEntry !== null && Number.isFinite(reportEntry.collected) ? reportEntry.collected : null,
-      coverageCondition: reportEntry === null ? null : reportEntry.coverage_condition,
+      next,
+      nextAt,
+      stream,
       streamSkipped: reportEntry !== null && reportEntry.skipped !== null,
     };
   });
-  return { rows, lastFailed, lastRun };
+  return { lastFailed, lastRun, rows };
 }
 
 /**
@@ -539,10 +539,10 @@ function buildHealthBand(input: {
   const needYourHand = sourceAttentionHeadline({ ...EMPTY_SOURCE_WORK_GROUPS, needsOwner }).needsYou;
   const needsReview = input.failureCards.length;
   return {
-    onSchedule,
-    needYourHand,
-    needsReview,
     allClear: needsReview === 0,
+    needsReview,
+    needYourHand,
+    onSchedule,
   };
 }
 
@@ -641,9 +641,9 @@ function collapseDuplicateFallbackProjections(projections: readonly SyncProjecti
 /** Maps a SyncProjection to the FailureCard shape used in the view-model. */
 function toFailureCard(projection: SyncProjection): FailureCard {
   return {
-    name: projection.connector.display_name,
     connectionId: projection.connector.connection_id,
     connectorId: projection.connector.connector_id,
+    name: projection.connector.display_name,
     summary: projection.summary as FailureSummary,
     work: projection.work,
   };
@@ -659,9 +659,9 @@ function toFailureCard(projection: SyncProjection): FailureCard {
 function toPendingSetupCard(connector: RefConnectorSummary): PendingSetupCard {
   const routeId = connector.connection_id ?? connector.connector_instance_id ?? connector.connector_id;
   return {
-    continueHref: `/connect/status/${encodeURIComponent(routeId)}`,
     connectionId: connector.connection_id,
     connectorId: connector.connector_id,
+    continueHref: `/connect/status/${encodeURIComponent(routeId)}`,
     name: connector.display_name,
   };
 }
@@ -697,37 +697,37 @@ function projectSyncProjection(input: {
   const renderedHealth = connector.rendered_verdict ? renderedStatusGroupHealth(actionability.renderedStatus) : null;
   const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
   const connectionRuns = connectionRunHistory({ connector, runs });
-  const { rows, lastFailed, lastRun } = buildSyncRows({ connector, connectionRuns, failing });
+  const { rows, lastFailed, lastRun } = buildSyncRows({ connectionRuns, connector, failing });
   const lastAt = lastRun?.last_at ?? connector.last_run?.last_at ?? connector.last_successful_run?.last_at ?? null;
   const lastAtMs = lastAt ? Date.parse(lastAt) : 0;
   const eventCount = lastRun ? lastRun.event_count : null;
-  const lastRunDelta = lastRun === null ? null : describeDelta({ failed: lastFailed, eventCount });
+  const lastRunDelta = lastRun === null ? null : describeDelta({ eventCount, failed: lastFailed });
   const lastRunDuration = describeDuration(lastRun?.first_at ?? null, lastRun?.last_at ?? null);
   const lastRunRhythm = deriveConnectionRhythm(connectionRuns);
 
   return {
     connector,
     failing,
-    lastAtMs: Number.isNaN(lastAtMs) ? 0 : lastAtMs,
-    summary,
-    work,
     group: {
       activeRunId:
         connector.schedule?.active_run_id ??
         (connector.last_run && isActiveConnectorRunSummaryStatus(connector.last_run.status)
           ? connector.last_run.run_id
           : null),
-      name: connector.display_name,
       connectionId: connector.connection_id,
       connectorId: connector.connector_id,
       health: failing ? "failing" : "ok",
+      lastRunAt: lastAt,
       lastRunDelta,
       lastRunDuration,
-      lastRunAt: lastAt,
       lastRunRhythm,
+      name: connector.display_name,
       streams: rows,
       totalStreamCount: rows.length,
     },
+    lastAtMs: Number.isNaN(lastAtMs) ? 0 : lastAtMs,
+    summary,
+    work,
   };
 }
 
@@ -784,7 +784,7 @@ export function buildSyncsViewModel(input: {
   // duplicate groups that were collapsed away are surfaced separately through
   // the duplicate-group panel, so counting them here would tell the owner to
   // "review the cards below" when no such card is visible.
-  const band = buildHealthBand({ groups: allGroups, failureCards, pendingSetupWork, projections: ordered });
+  const band = buildHealthBand({ failureCards, groups: allGroups, pendingSetupWork, projections: ordered });
   return {
     band,
     duplicateGroups,

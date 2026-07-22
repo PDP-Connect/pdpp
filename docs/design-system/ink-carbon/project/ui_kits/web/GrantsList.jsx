@@ -5,44 +5,44 @@
 
 const GRANTS = [
   {
-    id: "grt_longview01",
     client: "Longview Planning",
+    expires: "Dec 14, 2025",
+    id: "grt_longview01",
+    issued: "Oct 14, 2025",
     monogram: "LV",
     purpose: "long_term_financial_planning",
-    status: "active",
     scopes: ["pay_statements.read", "employment.read"],
-    issued: "Oct 14, 2025",
-    expires: "Dec 14, 2025",
+    status: "active",
   },
   {
-    id: "grt_acme_kyc_02",
     client: "Acme KYC",
+    expires: "Nov 03, 2025",
+    id: "grt_acme_kyc_02",
+    issued: "Nov 02, 2025",
     monogram: "AK",
     purpose: "identity_verification",
-    status: "active",
     scopes: ["identity.read"],
-    issued: "Nov 02, 2025",
-    expires: "Nov 03, 2025",
+    status: "active",
   },
   {
-    id: "grt_forecast_17",
     client: "Forecast Mortgage",
+    expires: "in 2 days",
+    id: "grt_forecast_17",
+    issued: "Sep 28, 2025",
     monogram: "FM",
     purpose: "underwriting_review",
-    status: "expiring",
     scopes: ["pay_statements.read", "tax_docs.read", "employment.read"],
-    issued: "Sep 28, 2025",
-    expires: "in 2 days",
+    status: "expiring",
   },
   {
-    id: "grt_oldmedical",
     client: "Old Medical LLC",
+    expires: "—",
+    id: "grt_oldmedical",
+    issued: "Aug 05, 2025",
     monogram: "OM",
     purpose: "insurance_claim",
-    status: "revoked",
     scopes: ["identity.read"],
-    issued: "Aug 05, 2025",
-    expires: "—",
+    status: "revoked",
   },
 ];
 
@@ -54,7 +54,7 @@ const STATUS_CLASS = {
 
 const GrantsList = ({ onOpen }) => (
   <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+    <div style={{ alignItems: "flex-end", display: "flex", justifyContent: "space-between" }}>
       <div>
         <div className="pdpp-heading">Your grants</div>
         <div className="pdpp-caption" style={{ color: "var(--muted-foreground)" }}>
@@ -62,44 +62,44 @@ const GrantsList = ({ onOpen }) => (
         </div>
       </div>
       <div style={{ display: "flex", gap: 6 }}>
-        <button className="pdpp-btn pdpp-btn-ghost" style={{ height: 30, fontSize: 12 }}>
+        <button className="pdpp-btn pdpp-btn-ghost" style={{ fontSize: 12, height: 30 }}>
           Filter
         </button>
-        <button className="pdpp-btn pdpp-btn-outline" style={{ height: 30, fontSize: 12 }}>
+        <button className="pdpp-btn pdpp-btn-outline" style={{ fontSize: 12, height: 30 }}>
           Export
         </button>
       </div>
     </div>
     {GRANTS.map((g) => (
       <div
+        className={g.status === "revoked" ? "pdpp-surface-neutral" : "pdpp-surface-protocol"}
         key={g.id}
         onClick={() => onOpen && onOpen(g)}
-        className={g.status === "revoked" ? "pdpp-surface-neutral" : "pdpp-surface-protocol"}
-        style={{ padding: "14px 16px", cursor: "pointer", opacity: g.status === "revoked" ? 0.65 : 1 }}
+        style={{ cursor: "pointer", opacity: g.status === "revoked" ? 0.65 : 1, padding: "14px 16px" }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+        <div style={{ alignItems: "center", display: "flex", gap: 14, justifyContent: "space-between" }}>
+          <div style={{ alignItems: "center", display: "flex", gap: 12, minWidth: 0 }}>
             <div
               style={{
-                width: 32,
-                height: 32,
-                borderRadius: 6,
+                alignItems: "center",
                 background: g.status === "revoked" ? "var(--muted)" : "oklch(0.52 0.09 45 / 0.14)",
+                borderRadius: 6,
                 color: g.status === "revoked" ? "var(--muted-foreground)" : "var(--human)",
                 display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
+                flexShrink: 0,
                 fontFamily: "var(--font-mono)",
                 fontSize: 12,
                 fontWeight: 600,
-                flexShrink: 0,
+                height: 32,
+                justifyContent: "center",
+                width: 32,
               }}
             >
               {g.monogram}
             </div>
             <div style={{ minWidth: 0 }}>
               <div className="pdpp-title">{g.client}</div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--edu-fg)" }}>
+              <div style={{ color: "var(--edu-fg)", fontFamily: "var(--font-mono)", fontSize: 11.5 }}>
                 // {g.purpose}
               </div>
             </div>
@@ -109,21 +109,21 @@ const GrantsList = ({ onOpen }) => (
             {g.status}
           </span>
         </div>
-        <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
           {g.scopes.map((sc) => (
-            <span key={sc} className="pdpp-chip" style={{ fontSize: 11, padding: "1px 8px" }}>
+            <span className="pdpp-chip" key={sc} style={{ fontSize: 11, padding: "1px 8px" }}>
               {sc}
             </span>
           ))}
         </div>
         <div
           style={{
+            color: "var(--muted-foreground)",
             display: "flex",
-            gap: 18,
-            marginTop: 10,
             fontFamily: "var(--font-mono)",
             fontSize: 11,
-            color: "var(--muted-foreground)",
+            gap: 18,
+            marginTop: 10,
           }}
         >
           <span>{g.id}</span>

@@ -6,30 +6,30 @@
 const DEFAULT_SCOPES = [
   {
     id: "pay",
-    title: "Pay statements",
-    sub: "Employer, pay period, gross & net pay.",
-    scope: "pay_statements.read",
-    tag: "append only",
-    retention: "2y 1mo",
     on: true,
+    retention: "2y 1mo",
+    scope: "pay_statements.read",
+    sub: "Employer, pay period, gross & net pay.",
+    tag: "append only",
+    title: "Pay statements",
   },
   {
     id: "emp",
-    title: "Employment",
-    sub: "Current and previous employers with dates.",
-    scope: "employment.read",
-    tag: "mutable state",
-    retention: "current + 5y",
     on: true,
+    retention: "current + 5y",
+    scope: "employment.read",
+    sub: "Current and previous employers with dates.",
+    tag: "mutable state",
+    title: "Employment",
   },
   {
     id: "tax",
-    title: "Tax documents",
-    sub: "W-2 and 1099 forms issued to you.",
-    scope: "tax_docs.read",
-    tag: "append only",
-    retention: "3y history",
     on: false,
+    retention: "3y history",
+    scope: "tax_docs.read",
+    sub: "W-2 and 1099 forms issued to you.",
+    tag: "append only",
+    title: "Tax documents",
   },
 ];
 
@@ -38,15 +38,15 @@ const ConsentCard = () => {
   const toggle = (id) => setScopes((s) => s.map((x) => (x.id === id ? { ...x, on: !x.on } : x)));
   const anyOn = scopes.some((s) => s.on);
   return (
-    <div className="pdpp-surface-human" style={{ overflow: "hidden", maxWidth: 640 }}>
+    <div className="pdpp-surface-human" style={{ maxWidth: 640, overflow: "hidden" }}>
       <div style={{ padding: "22px 24px 18px" }}>
         <div className="pdpp-eyebrow" style={{ color: "var(--human)" }}>
           CONSENT · SECTION 3
         </div>
-        <div className="pdpp-heading" style={{ marginTop: 10, fontSize: 22, lineHeight: 1.25 }}>
+        <div className="pdpp-heading" style={{ fontSize: 22, lineHeight: 1.25, marginTop: 10 }}>
           Longview Planning wants access to your data
         </div>
-        <p className="pdpp-body" style={{ margin: "10px 0 0", color: "var(--muted-foreground)" }}>
+        <p className="pdpp-body" style={{ color: "var(--muted-foreground)", margin: "10px 0 0" }}>
           They’ll use it for{" "}
           <span style={{ color: "var(--edu-fg)", fontFamily: "var(--font-mono)", fontSize: 13 }}>
             long-term financial planning
@@ -61,35 +61,35 @@ const ConsentCard = () => {
             key={s.id}
             onClick={() => toggle(s.id)}
             style={{
-              display: "grid",
-              gridTemplateColumns: "24px 1fr auto",
-              gap: 12,
-              padding: "14px 24px",
+              alignItems: "flex-start",
               borderTop: i > 0 ? "1px solid var(--border)" : "none",
               cursor: "pointer",
-              alignItems: "flex-start",
+              display: "grid",
+              gap: 12,
+              gridTemplateColumns: "24px 1fr auto",
+              padding: "14px 24px",
             }}
           >
             <div
               style={{
-                width: 18,
-                height: 18,
-                borderRadius: 4,
-                marginTop: 2,
                 background: s.on ? "var(--foreground)" : "var(--card)",
                 border: s.on ? "1px solid var(--foreground)" : "1px solid var(--input)",
+                borderRadius: 4,
+                height: 18,
+                marginTop: 2,
                 position: "relative",
+                width: 18,
               }}
             >
               {s.on && (
-                <svg viewBox="0 0 18 18" style={{ position: "absolute", inset: 0 }}>
+                <svg style={{ inset: 0, position: "absolute" }} viewBox="0 0 18 18">
                   <path
                     d="M4 9.5 L7.5 13 L14 5.5"
-                    stroke="var(--background)"
-                    strokeWidth="2"
                     fill="none"
+                    stroke="var(--background)"
                     strokeLinecap="round"
                     strokeLinejoin="round"
+                    strokeWidth="2"
                   />
                 </svg>
               )}
@@ -99,18 +99,18 @@ const ConsentCard = () => {
               <div className="pdpp-caption" style={{ color: "var(--muted-foreground)", marginTop: 2 }}>
                 {s.sub}
               </div>
-              <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
+              <div style={{ alignItems: "center", display: "flex", gap: 6, marginTop: 8 }}>
                 <span className="pdpp-badge pdpp-badge-outline">{s.tag}</span>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--muted-foreground)" }}>
+                <span style={{ color: "var(--muted-foreground)", fontFamily: "var(--font-mono)", fontSize: 11.5 }}>
                   {s.scope}
                 </span>
               </div>
             </div>
             <span
               style={{
+                color: "var(--muted-foreground)",
                 fontFamily: "var(--font-mono)",
                 fontSize: 11.5,
-                color: "var(--muted-foreground)",
                 whiteSpace: "nowrap",
               }}
             >
@@ -120,18 +120,18 @@ const ConsentCard = () => {
         ))}
       </div>
       <hr className="pdpp-rule" />
-      <div style={{ padding: "14px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ alignItems: "center", display: "flex", justifyContent: "space-between", padding: "14px 24px" }}>
         <span className="pdpp-caption" style={{ color: "var(--muted-foreground)" }}>
           These are their commitments, not enforced by your server.
         </span>
         <div style={{ display: "flex", gap: 8 }}>
-          <button className="pdpp-btn pdpp-btn-ghost" style={{ height: 34, fontSize: 13 }}>
+          <button className="pdpp-btn pdpp-btn-ghost" style={{ fontSize: 13, height: 34 }}>
             Deny
           </button>
           <button
             className="pdpp-btn pdpp-btn-primary"
-            style={{ height: 34, fontSize: 13, opacity: anyOn ? 1 : 0.5 }}
             disabled={!anyOn}
+            style={{ fontSize: 13, height: 34, opacity: anyOn ? 1 : 0.5 }}
           >
             Grant access
           </button>

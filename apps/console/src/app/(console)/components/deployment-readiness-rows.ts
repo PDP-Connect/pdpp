@@ -68,23 +68,23 @@ export function extractReadinessInputs(report: DeploymentDiagnostics): ServerInp
   const largestRelation = report.database.top_relations?.[0] ?? null;
   const dhEntries = report.disk_headroom ?? [];
   return {
-    ownerPasswordProvenance: owner?.provenance ?? "absent",
-    referenceOriginConfigured: origin?.provenance === "present" ? origin.value : null,
-    embeddingBackendConfigured: report.semantic.backend.configured,
-    embeddingBackendAvailable: report.semantic.backend.available,
-    embeddingModelCachePresent: report.semantic.backend.model_cache_present,
-    embeddingDownloadAllowed: report.semantic.backend.download_allowed,
-    vectorIndexKind: report.semantic.index.kind,
-    vectorIndexState: report.semantic.index.state,
     databasePath: report.database.path,
     diskHeadroom: dhEntries.map((dh) => ({
-      path: dh.path,
       freeBytesOnDataFs: dh.free_bytes,
-      totalBytesOnDataFs: dh.total_bytes,
-      mountLabel: dh.mount_label ?? null,
       largestRelationBytes: largestRelation?.bytes ?? null,
       largestRelationName: largestRelation?.name ?? null,
+      mountLabel: dh.mount_label ?? null,
+      path: dh.path,
+      totalBytesOnDataFs: dh.total_bytes,
     })),
+    embeddingBackendAvailable: report.semantic.backend.available,
+    embeddingBackendConfigured: report.semantic.backend.configured,
+    embeddingDownloadAllowed: report.semantic.backend.download_allowed,
+    embeddingModelCachePresent: report.semantic.backend.model_cache_present,
+    ownerPasswordProvenance: owner?.provenance ?? "absent",
+    referenceOriginConfigured: origin?.provenance === "present" ? origin.value : null,
+    vectorIndexKind: report.semantic.index.kind,
+    vectorIndexState: report.semantic.index.state,
   };
 }
 
@@ -92,15 +92,15 @@ export function ownerPasswordRow(inputs: ServerInputs): ReadinessRow {
   if (inputs.ownerPasswordProvenance === "redacted") {
     return {
       check: "Owner password gate",
-      status: "ok",
       detail: "PDPP_OWNER_PASSWORD is set; owner surfaces require sign-in.",
+      status: "ok",
     };
   }
   return {
     check: "Owner password gate",
-    status: "error",
     detail: "PDPP_OWNER_PASSWORD is not set.",
     hint: "Set `PDPP_OWNER_PASSWORD` in your env and restart; otherwise `/owner`, `/device`, `/consent`, and `/` are reachable without auth.",
+    status: "error",
   };
 }
 
@@ -108,17 +108,17 @@ export function referenceOriginRow(inputs: ServerInputs, browserOrigin: string |
   if (!inputs.referenceOriginConfigured) {
     return {
       check: "Reference origin alignment",
-      status: "warn",
       detail:
         "PDPP_REFERENCE_ORIGIN is not set. The deployment will infer the origin from request headers, which is brittle behind proxies.",
       hint: "Set `PDPP_REFERENCE_ORIGIN` to the URL you are visiting (e.g. `https://<podid>-3002.proxy.runpod.net`). Mismatches break the MCP and OAuth callback flows.",
+      status: "warn",
     };
   }
   if (browserOrigin === null) {
     return {
       check: "Reference origin alignment",
-      status: "unknown",
       detail: `PDPP_REFERENCE_ORIGIN=${inputs.referenceOriginConfigured}. Browser origin not yet observed.`,
+      status: "unknown",
     };
   }
   const configured = stripTrailingSlash(inputs.referenceOriginConfigured);
@@ -126,15 +126,15 @@ export function referenceOriginRow(inputs: ServerInputs, browserOrigin: string |
   if (configured === observed) {
     return {
       check: "Reference origin alignment",
-      status: "ok",
       detail: `Configured origin matches the browser origin (${observed}).`,
+      status: "ok",
     };
   }
   return {
     check: "Reference origin alignment",
-    status: "warn",
     detail: `PDPP_REFERENCE_ORIGIN=${configured}; you are viewing this dashboard from ${observed}.`,
     hint: "Set `PDPP_REFERENCE_ORIGIN` to the URL you are visiting (e.g. `https://<podid>-3002.proxy.runpod.net`). Mismatches break the MCP and OAuth callback flows.",
+    status: "warn",
   };
 }
 
@@ -142,29 +142,29 @@ export function storageBackendRow(inputs: ServerInputs): ReadinessRow {
   if (inputs.vectorIndexKind === null && inputs.vectorIndexState === null) {
     return {
       check: "Storage backend",
-      status: "info",
       detail: `Database at ${inputs.databasePath}. No vector index configured yet.`,
+      status: "info",
     };
   }
   if (inputs.vectorIndexState === "stale") {
     return {
       check: "Storage backend",
-      status: "warn",
       detail: `Database at ${inputs.databasePath}; vector index (${inputs.vectorIndexKind ?? "unknown"}) is stale.`,
       hint: "Storage backend reports unhealthy. See `docs/operator/selfhost-quickstart.md` for storage layout.",
+      status: "warn",
     };
   }
   if (inputs.vectorIndexState === "building") {
     return {
       check: "Storage backend",
-      status: "info",
       detail: `Database at ${inputs.databasePath}; vector index (${inputs.vectorIndexKind ?? "unknown"}) is still building.`,
+      status: "info",
     };
   }
   return {
     check: "Storage backend",
-    status: "ok",
     detail: `Database at ${inputs.databasePath}; vector index (${inputs.vectorIndexKind ?? "n/a"}) is built.`,
+    status: "ok",
   };
 }
 
@@ -172,30 +172,30 @@ export function embeddingCacheRow(inputs: ServerInputs): ReadinessRow {
   if (!inputs.embeddingBackendConfigured) {
     return {
       check: "Embedding cache",
-      status: "info",
       detail: "No semantic embedding backend configured. Lexical retrieval still works.",
+      status: "info",
     };
   }
   if (inputs.embeddingModelCachePresent === true && inputs.embeddingBackendAvailable) {
     return {
       check: "Embedding cache",
-      status: "ok",
       detail: "Embedding model is cached and the backend is available.",
+      status: "ok",
     };
   }
   if (inputs.embeddingModelCachePresent === false && inputs.embeddingDownloadAllowed === false) {
     return {
       check: "Embedding cache",
-      status: "error",
       detail: "Embedding model is not cached and download is disabled.",
       hint: "Embedding cache is still downloading or missing. Wait for first-boot download to finish, or set `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` if you do not need semantic search yet.",
+      status: "error",
     };
   }
   return {
     check: "Embedding cache",
-    status: "warn",
     detail: "Embedding model cache is still warming up or the backend is not yet ready.",
     hint: "Embedding cache is still downloading or missing. Wait for first-boot download to finish, or set `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` if you do not need semantic search yet.",
+    status: "warn",
   };
 }
 
@@ -203,30 +203,30 @@ export function refreshTokenRow(probe: RefreshTokenProbe): ReadinessRow {
   if (probe.state === "loading") {
     return {
       check: "MCP refresh-token advertisement",
-      status: "unknown",
       detail: "Checking the authorization-server metadata…",
+      status: "unknown",
     };
   }
   if (probe.state === "unreachable") {
     return {
       check: "MCP refresh-token advertisement",
-      status: "warn",
       detail: "Could not reach `/.well-known/oauth-authorization-server` from this origin.",
       hint: "If your `AS_ISSUER` is not co-located with the dashboard origin, this check may show `warn` even on a healthy deployment. Confirm `grant_types_supported` includes `refresh_token` on your AS metadata directly.",
+      status: "warn",
     };
   }
   if (probe.refreshTokenSupported) {
     return {
       check: "MCP refresh-token advertisement",
-      status: "ok",
       detail: "Authorization-server metadata advertises `refresh_token`.",
+      status: "ok",
     };
   }
   return {
     check: "MCP refresh-token advertisement",
-    status: "error",
     detail: "Authorization-server metadata does not advertise `refresh_token`.",
     hint: "Reference image is too old to advertise `refresh_token`. `docker compose pull` to the current image.",
+    status: "error",
   };
 }
 
@@ -266,8 +266,8 @@ function diskHeadroomEntryRow(dh: DiskHeadroomInputs): ReadinessRow {
   if (dh.freeBytesOnDataFs === null) {
     return {
       check: checkLabel,
-      status: "info",
       detail: `Disk headroom could not be measured${dh.path ? ` on ${dh.path}` : ""}.`,
+      status: "info",
     };
   }
   const free = dh.freeBytesOnDataFs;
@@ -275,23 +275,23 @@ function diskHeadroomEntryRow(dh: DiskHeadroomInputs): ReadinessRow {
   if (free < DISK_ERROR_BYTES) {
     return {
       check: checkLabel,
-      status: "error",
       detail: `Only ${formatBytes(free)} free${pathLabel}. A restart or image build will very likely fail with "No space left on device".${workloadSuffix(dh, free)}`,
       hint: "Run `docker builder prune` or `docker system prune` to reclaim build cache and stopped containers. Inspect Docker volumes manually before removing any volume data.",
+      status: "error",
     };
   }
   if (free < DISK_WARN_BYTES) {
     return {
       check: checkLabel,
-      status: "warn",
       detail: `${formatBytes(free)} free${pathLabel}. Disk space is running low.${workloadSuffix(dh, free)}`,
       hint: "Consider running `docker system prune` to reclaim build cache before the next restart.",
+      status: "warn",
     };
   }
   return {
     check: checkLabel,
-    status: "ok",
     detail: `${formatBytes(free)} free${pathLabel}.`,
+    status: "ok",
   };
 }
 
@@ -303,8 +303,8 @@ export function diskHeadroomRows(inputs: ServerInputs): ReadinessRow[] {
     return [
       {
         check: "Disk headroom",
-        status: "info",
         detail: "Disk headroom could not be measured on this filesystem.",
+        status: "info",
       },
     ];
   }
@@ -318,8 +318,8 @@ export function diskHeadroomRow(inputs: ServerInputs): ReadinessRow {
   if (inputs.diskHeadroom.length === 0) {
     return {
       check: "Disk headroom",
-      status: "info",
       detail: "Disk headroom could not be measured on this filesystem.",
+      status: "info",
     };
   }
   const first = inputs.diskHeadroom[0];
@@ -328,8 +328,8 @@ export function diskHeadroomRow(inputs: ServerInputs): ReadinessRow {
   if (!first) {
     return {
       check: "Disk headroom",
-      status: "info",
       detail: "Disk headroom could not be measured on this filesystem.",
+      status: "info",
     };
   }
   return diskHeadroomEntryRow(first);

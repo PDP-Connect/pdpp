@@ -8,14 +8,14 @@ const { useState, useEffect, useRef } = React;
 
 // A small deterministic fake record stream
 const RECORD_STREAM = [
-  { e: "Acme Co", p: "2025-09-16→30", g: "$4,812.50", n: "$3,622.18" },
-  { e: "Acme Co", p: "2025-09-01→15", g: "$4,812.50", n: "$3,622.18" },
-  { e: "Acme Co", p: "2025-08-16→31", g: "$4,812.50", n: "$3,624.42" },
-  { e: "Acme Co", p: "2025-08-01→15", g: "$4,812.50", n: "$3,624.42" },
-  { e: "Acme Co", p: "2025-07-16→31", g: "$4,812.50", n: "$3,624.42" },
-  { e: "Acme Co", p: "2025-07-01→15", g: "$4,756.00", n: "$3,580.12" },
-  { e: "Acme Co", p: "2025-06-16→30", g: "$4,756.00", n: "$3,580.12" },
-  { e: "Acme Co", p: "2025-06-01→15", g: "$4,756.00", n: "$3,580.12" },
+  { e: "Acme Co", g: "$4,812.50", n: "$3,622.18", p: "2025-09-16→30" },
+  { e: "Acme Co", g: "$4,812.50", n: "$3,622.18", p: "2025-09-01→15" },
+  { e: "Acme Co", g: "$4,812.50", n: "$3,624.42", p: "2025-08-16→31" },
+  { e: "Acme Co", g: "$4,812.50", n: "$3,624.42", p: "2025-08-01→15" },
+  { e: "Acme Co", g: "$4,812.50", n: "$3,624.42", p: "2025-07-16→31" },
+  { e: "Acme Co", g: "$4,756.00", n: "$3,580.12", p: "2025-07-01→15" },
+  { e: "Acme Co", g: "$4,756.00", n: "$3,580.12", p: "2025-06-16→30" },
+  { e: "Acme Co", g: "$4,756.00", n: "$3,580.12", p: "2025-06-01→15" },
 ];
 
 const LivingGrant = () => {
@@ -24,7 +24,9 @@ const LivingGrant = () => {
   const [thermal, setThermal] = useState(0.62); // 0 = pure human, 1 = pure protocol
 
   useEffect(() => {
-    if (paused) return;
+    if (paused) {
+      return;
+    }
     const t = setInterval(() => setCursor((c) => (c + 1) % RECORD_STREAM.length), 1800);
     return () => clearInterval(t);
   }, [paused]);
@@ -34,38 +36,38 @@ const LivingGrant = () => {
   return (
     <div
       style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: 0,
-        border: "1px solid var(--rule)",
         background: "var(--paper)",
-        position: "relative",
+        border: "1px solid var(--rule)",
+        display: "grid",
+        gap: 0,
+        gridTemplateColumns: "1fr 1fr",
         overflow: "hidden",
+        position: "relative",
       }}
     >
       {/* The thermal rule across the top */}
       <div
         style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 2,
           background: "var(--thermal)",
+          height: 2,
+          left: 0,
           opacity: 0.8,
+          position: "absolute",
+          right: 0,
+          top: 0,
         }}
       />
 
       {/* LEFT: Human side — the holder's view */}
       <div
         style={{
-          padding: "40px 36px",
+          background: "linear-gradient(135deg, var(--human-wash), transparent 65%)",
           borderRight: "1px solid var(--rule)",
+          padding: "40px 36px",
           position: "relative",
-          background: `linear-gradient(135deg, var(--human-wash), transparent 65%)`,
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={{ alignItems: "baseline", display: "flex", justifyContent: "space-between" }}>
           <span className="gutter" style={{ color: "var(--human)" }}>
             §2 · HOLDER
           </span>
@@ -81,16 +83,16 @@ const LivingGrant = () => {
           </span>
           . They see the employer, period, and gross and net pay. They cannot see your bank, address, or anything else.
         </div>
-        <div style={{ marginTop: 24, display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 24 }}>
           {["pay_statements.read", "employment.read"].map((s) => (
-            <div key={s} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div key={s} style={{ alignItems: "center", display: "flex", gap: 10 }}>
               <span
                 style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: 999,
-                  background: "var(--live)",
                   animation: "pulse-dot 1.6s ease-in-out infinite",
+                  background: "var(--live)",
+                  borderRadius: 999,
+                  height: 6,
+                  width: 6,
                 }}
               />
               <span className="t-mono" style={{ color: "var(--ink)" }}>
@@ -102,8 +104,8 @@ const LivingGrant = () => {
             </div>
           ))}
           {["tax_docs.read", "identity.read", "transactions.read"].map((s) => (
-            <div key={s} style={{ display: "flex", alignItems: "center", gap: 10, opacity: 0.35 }}>
-              <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--ink-whisper)" }} />
+            <div key={s} style={{ alignItems: "center", display: "flex", gap: 10, opacity: 0.35 }}>
+              <span style={{ background: "var(--ink-whisper)", borderRadius: 999, height: 6, width: 6 }} />
               <span className="t-mono" style={{ color: "var(--ink-faint)" }}>
                 {s}
               </span>
@@ -113,11 +115,11 @@ const LivingGrant = () => {
             </div>
           ))}
         </div>
-        <div style={{ marginTop: 32, display: "flex", gap: 10 }}>
-          <button className="btn btn-paper" style={{ height: 36, fontSize: 13 }}>
+        <div style={{ display: "flex", gap: 10, marginTop: 32 }}>
+          <button className="btn btn-paper" style={{ fontSize: 13, height: 36 }}>
             Revoke grant
           </button>
-          <button className="btn btn-ghost" style={{ height: 36, fontSize: 13 }}>
+          <button className="btn btn-ghost" style={{ fontSize: 13, height: 36 }}>
             Adjust scope →
           </button>
         </div>
@@ -126,47 +128,47 @@ const LivingGrant = () => {
       {/* RIGHT: Protocol side — the machine's view */}
       <div
         style={{
+          background: "linear-gradient(225deg, var(--protocol-wash), transparent 65%)",
           padding: "40px 36px",
           position: "relative",
-          background: `linear-gradient(225deg, var(--protocol-wash), transparent 65%)`,
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={{ alignItems: "baseline", display: "flex", justifyContent: "space-between" }}>
           <span className="gutter num">grt_longview01</span>
           <span className="gutter" style={{ color: "var(--protocol)" }}>
             ISSUER · §5
           </span>
         </div>
-        <div className="t-section" style={{ marginTop: 18, maxWidth: 340, textAlign: "right", marginLeft: "auto" }}>
+        <div className="t-section" style={{ marginLeft: "auto", marginTop: 18, maxWidth: 340, textAlign: "right" }}>
           <em>Longview</em> holds a <span style={{ color: "var(--protocol)" }}>grant</span>, not a key.
         </div>
 
         {/* The live stream pane */}
         <div
           style={{
-            marginTop: 24,
+            background: "var(--paper-warm)",
             border: "1px solid var(--rule)",
             borderRadius: 2,
+            marginTop: 24,
             overflow: "hidden",
-            background: "var(--paper-warm)",
           }}
         >
           <div
             style={{
+              background: "var(--paper)",
+              borderBottom: "1px solid var(--rule)",
               display: "grid",
               gridTemplateColumns: "1fr 1fr 0.8fr 0.8fr",
               padding: "6px 12px",
-              background: "var(--paper)",
-              borderBottom: "1px solid var(--rule)",
             }}
           >
             {["employer", "pay_period", "gross", "net"].map((h) => (
-              <span key={h} className="gutter" style={{ fontSize: 9.5 }}>
+              <span className="gutter" key={h} style={{ fontSize: 9.5 }}>
                 {h}
               </span>
             ))}
           </div>
-          <div style={{ height: 140, position: "relative", overflow: "hidden" }}>
+          <div style={{ height: 140, overflow: "hidden", position: "relative" }}>
             {RECORD_STREAM.map((r, i) => {
               const offset = (i - cursor + RECORD_STREAM.length) % RECORD_STREAM.length;
               const y = offset * 20 - 10;
@@ -175,14 +177,14 @@ const LivingGrant = () => {
                 <div
                   key={i}
                   style={{
-                    position: "absolute",
-                    top: y,
-                    left: 0,
-                    right: 0,
                     display: "grid",
                     gridTemplateColumns: "1fr 1fr 0.8fr 0.8fr",
-                    padding: "2px 12px",
+                    left: 0,
                     opacity,
+                    padding: "2px 12px",
+                    position: "absolute",
+                    right: 0,
+                    top: y,
                     transition: "top 400ms var(--ease-read), opacity 400ms",
                   }}
                 >
@@ -204,32 +206,32 @@ const LivingGrant = () => {
             {/* Bottom fade */}
             <div
               style={{
-                position: "absolute",
-                bottom: 0,
-                left: 0,
-                right: 0,
-                height: 40,
                 background: "linear-gradient(transparent, var(--paper-warm))",
+                bottom: 0,
+                height: 40,
+                left: 0,
                 pointerEvents: "none",
+                position: "absolute",
+                right: 0,
               }}
             />
           </div>
           <div
             style={{
-              padding: "6px 12px",
+              background: "var(--paper)",
               borderTop: "1px solid var(--rule)",
               display: "flex",
               justifyContent: "space-between",
-              background: "var(--paper)",
+              padding: "6px 12px",
             }}
           >
             <span className="gutter" style={{ fontSize: 9.5 }}>
               cursor: {String(cursor).padStart(3, "0")} / ∞
             </span>
             <button
-              onClick={() => setPaused((p) => !p)}
               className="gutter"
-              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 9.5, color: "var(--protocol)" }}
+              onClick={() => setPaused((p) => !p)}
+              style={{ background: "none", border: "none", color: "var(--protocol)", cursor: "pointer", fontSize: 9.5 }}
             >
               {paused ? "▸ resume" : "‖ pause"}
             </button>
@@ -245,42 +247,42 @@ const LivingGrant = () => {
       {/* The thermal slider across the bottom — the metaphor made interactive */}
       <div
         style={{
-          gridColumn: "1 / -1",
-          padding: "20px 36px",
+          alignItems: "center",
+          background: "var(--paper-warm)",
           borderTop: "1px solid var(--rule)",
           display: "flex",
-          alignItems: "center",
           gap: 20,
-          background: "var(--paper-warm)",
+          gridColumn: "1 / -1",
+          padding: "20px 36px",
         }}
       >
         <span className="gutter">thermal →</span>
         <div
-          style={{
-            flex: 1,
-            position: "relative",
-            height: 2,
-            background: "var(--thermal)",
-            borderRadius: 999,
-            cursor: "pointer",
-          }}
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             setThermal(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)));
           }}
+          style={{
+            background: "var(--thermal)",
+            borderRadius: 999,
+            cursor: "pointer",
+            flex: 1,
+            height: 2,
+            position: "relative",
+          }}
         >
           <div
             style={{
+              background: thermalColor,
+              border: "2px solid var(--paper)",
+              borderRadius: 999,
+              boxShadow: "0 0 0 1px " + thermalColor,
+              height: 14,
+              left: `${thermal * 100}%`,
               position: "absolute",
               top: "50%",
-              left: `${thermal * 100}%`,
-              width: 14,
-              height: 14,
-              borderRadius: 999,
-              background: thermalColor,
               transform: "translate(-50%, -50%)",
-              border: "2px solid var(--paper)",
-              boxShadow: "0 0 0 1px " + thermalColor,
+              width: 14,
             }}
           />
         </div>

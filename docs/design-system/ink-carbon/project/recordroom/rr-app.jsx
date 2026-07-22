@@ -41,9 +41,7 @@
 
   const STREAMS = [
     {
-      id: "pay_statements",
       connector: "Northstar HR",
-      records: "312",
       fields: [
         "employer",
         "period_start",
@@ -54,163 +52,165 @@
         "benefits_detail",
         "bank_routing",
       ],
+      id: "pay_statements",
+      records: "312",
     },
     {
-      id: "employment",
       connector: "Northstar HR",
-      records: "4",
       fields: ["employer", "title", "start_date", "end_date", "manager_contact"],
+      id: "employment",
+      records: "4",
     },
     {
-      id: "transactions",
       connector: "First Meridian",
-      records: "41,203",
       fields: ["date", "amount", "merchant", "category", "account_ref", "memo"],
+      id: "transactions",
+      records: "41,203",
     },
     {
-      id: "listening_history",
       connector: "Tonal",
-      records: "6,597",
       fields: ["track", "artist", "played_at", "device", "playlist_ref"],
+      id: "listening_history",
+      records: "6,597",
     },
     {
-      id: "tax_docs",
       connector: "Northstar HR",
-      records: "12",
       fields: ["doc_type", "tax_year", "employer", "document_blob"],
+      id: "tax_docs",
+      records: "12",
     },
   ];
 
   const BASE_GRANTS = [
     {
-      id: "grt_lngvw_01",
       client: "Longview Planning",
+      declined: ["tax_docs.read"],
+      expiresFull: "2026-12-14 09:22Z",
+      expiry: "exp 2026-12-14",
+      id: "grt_lngvw_01",
+      issued: "2025-10-14 09:22Z",
+      projections: {
+        employment: ["employer", "start_date", "end_date"],
+        pay_statements: ["employer", "period_start", "period_end", "gross_pay", "net_pay"],
+      },
       purpose: "long_term_financial_planning",
       scopes: [
         { name: "pay_statements.read", terms: "append only · 2 yrs" },
         { name: "employment.read", terms: "current + 5 yrs" },
       ],
-      declined: ["tax_docs.read"],
       status: "active",
-      issued: "2025-10-14 09:22Z",
-      expiry: "exp 2026-12-14",
-      expiresFull: "2026-12-14 09:22Z",
-      projections: {
-        pay_statements: ["employer", "period_start", "period_end", "gross_pay", "net_pay"],
-        employment: ["employer", "start_date", "end_date"],
-      },
     },
     {
-      id: "grt_cncrt_02",
       client: "Concert Recommendations",
+      declined: [],
+      expiresFull: "renews monthly · next 2026-07-01",
+      expiry: "continuous",
+      id: "grt_cncrt_02",
+      issued: "2026-01-30 18:04Z",
+      projections: { listening_history: ["track", "artist", "played_at"] },
       purpose: "live_event_suggestions",
       scopes: [{ name: "listening_history.read", terms: "rolling 12 mo" }],
-      declined: [],
       status: "continuous",
-      issued: "2026-01-30 18:04Z",
-      expiry: "continuous",
-      expiresFull: "renews monthly · next 2026-07-01",
-      projections: { listening_history: ["track", "artist", "played_at"] },
     },
     {
-      id: "grt_taxpr_03",
       client: "TaxPrep Co",
+      declined: [],
+      expiresFull: "2026-06-12 11:40Z",
+      expiry: "exp 2026-06-12",
+      hoursLeft: 26,
+      id: "grt_taxpr_03",
+      issued: "2026-06-09 11:40Z",
+      projections: { tax_docs: ["doc_type", "tax_year", "employer"] },
       purpose: "annual_filing_2025",
       scopes: [{ name: "tax_docs.read", terms: "single use" }],
-      declined: [],
       status: "expiring",
-      hoursLeft: 26,
-      issued: "2026-06-09 11:40Z",
-      expiry: "exp 2026-06-12",
-      expiresFull: "2026-06-12 11:40Z",
-      projections: { tax_docs: ["doc_type", "tax_year", "employer"] },
     },
     {
-      id: "grt_xwise_09",
       client: "Crosswise Ads",
-      purpose: "ad_personalization",
-      scopes: [{ name: "transactions.read", terms: "90 d window" }],
       declined: [],
-      status: "revoked",
-      issued: "2026-02-11 08:15Z",
-      revokedOn: "2026-05-02",
-      revokedFull: "2026-05-02 14:40Z · by owner",
-      expiry: "—",
       expiresFull: "—",
+      expiry: "—",
+      id: "grt_xwise_09",
+      issued: "2026-02-11 08:15Z",
       projections: { transactions: ["date", "amount", "merchant"] },
+      purpose: "ad_personalization",
+      revokedFull: "2026-05-02 14:40Z · by owner",
+      revokedOn: "2026-05-02",
+      scopes: [{ name: "transactions.read", terms: "90 d window" }],
+      status: "revoked",
     },
   ];
 
   const BASE_LOG = [
     {
-      t: "2026-06-11 07:58Z",
       kind: "read",
+      ref: "grt_lngvw_01",
+      t: "2026-06-11 07:58Z",
       verb: "read",
       what: "pay_statements · 12 records · 5/8 fields",
-      ref: "grt_lngvw_01",
     },
     {
-      t: "2026-06-11 06:02Z",
       kind: "read",
+      ref: "grt_cncrt_02",
+      t: "2026-06-11 06:02Z",
       verb: "read",
       what: "listening_history · 214 records · 3/5 fields",
-      ref: "grt_cncrt_02",
     },
     {
-      t: "2026-06-10 22:17Z",
       kind: "read",
+      ref: "grt_lngvw_01",
+      t: "2026-06-10 22:17Z",
       verb: "read",
       what: "employment · 4 records · 3/5 fields",
-      ref: "grt_lngvw_01",
     },
     {
-      t: "2026-06-10 22:17Z",
       kind: "deny",
+      ref: "grt_lngvw_01",
+      t: "2026-06-10 22:17Z",
       verb: "deny",
       what: "tax_docs read attempt · scope not granted",
-      ref: "grt_lngvw_01",
     },
     {
-      t: "2026-06-09 11:40Z",
       kind: "consent",
+      ref: "grt_taxpr_03",
+      t: "2026-06-09 11:40Z",
       verb: "grant",
       what: "tax_docs.read · single use · TaxPrep Co",
-      ref: "grt_taxpr_03",
     },
     {
-      t: "2026-05-02 14:40Z",
       kind: "revoke",
+      ref: "grt_xwise_09",
+      t: "2026-05-02 14:40Z",
       verb: "revoke",
       what: "transactions.read · Crosswise Ads · by owner",
-      ref: "grt_xwise_09",
     },
     {
-      t: "2026-05-02 14:39Z",
       kind: "deny",
+      ref: "grt_xwise_09",
+      t: "2026-05-02 14:39Z",
       verb: "deny",
       what: "transactions read attempt · grant suspended",
-      ref: "grt_xwise_09",
     },
   ];
 
   const INCOMING = {
-    id: "req_atlas_7f2k",
     client: "Atlas Mortgage",
+    id: "req_atlas_7f2k",
     purposeHuman: "mortgage pre-approval",
     scopes: [
       {
+        allowed: true,
+        desc: "Employer, pay period, gross and net pay",
         name: "pay_statements.read",
         terms: "append only · 90 d",
-        desc: "Employer, pay period, gross and net pay",
-        allowed: true,
       },
       {
+        allowed: true,
+        desc: "Employers and dates — no salary history",
         name: "employment.read",
         terms: "current + 5 yrs",
-        desc: "Employers and dates — no salary history",
-        allowed: true,
       },
-      { name: "transactions.read", terms: "90 d window", desc: "Spending detail from First Meridian", allowed: false },
+      { allowed: false, desc: "Spending detail from First Meridian", name: "transactions.read", terms: "90 d window" },
     ],
   };
 
@@ -236,9 +236,9 @@
   }
 
   const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/ {
-    theme: "dark",
-    density: "comfortable",
     carbonOffset: 9,
+    density: "comfortable",
+    theme: "dark",
   } /*EDITMODE-END*/;
 
   const NAV = [
@@ -259,16 +259,16 @@
   ];
 
   const HEADS = {
-    overview: ["Overview", "where you stand"],
-    explore: ["Explore", "the reading room · 10 connections · only you see this"],
-    sources: ["Sources", "the loading dock · 10 instances · what arrives, from where, configured how"],
-    traces: ["Traces", "every request, accounted for"],
-    grants: ["Grants", ""],
-    syncs: ["Syncs", "is your data arriving · schedule + result, per stream"],
     connect: ["Connect AI apps", "MCP · reads flow through grants"],
     deployment: ["Deployment", "readiness · endpoints · owner tokens"],
-    exporters: ["Device exporters", "your devices, pushing home"],
     events: ["Event subscriptions", "webhooks on protocol events"],
+    explore: ["Explore", "the reading room · 10 connections · only you see this"],
+    exporters: ["Device exporters", "your devices, pushing home"],
+    grants: ["Grants", ""],
+    overview: ["Overview", "where you stand"],
+    sources: ["Sources", "the loading dock · 10 instances · what arrives, from where, configured how"],
+    syncs: ["Syncs", "is your data arriving · schedule + result, per stream"],
+    traces: ["Traces", "every request, accounted for"],
   };
 
   /* ─── App ─── */
@@ -308,9 +308,13 @@
     }, []);
 
     useEffect(() => {
-      if (!navOpen) return undefined;
+      if (!navOpen) {
+        return;
+      }
       function onKey(e) {
-        if (e.key === "Escape") setNavOpen(false);
+        if (e.key === "Escape") {
+          setNavOpen(false);
+        }
       }
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);
@@ -318,9 +322,13 @@
 
     // Keyboard-first ledger: ↑↓ move selection, Escape backs out of a revoke.
     useEffect(() => {
-      if (view !== "grants" || paletteOpen || requestState === "open") return undefined;
+      if (view !== "grants" || paletteOpen || requestState === "open") {
+        return;
+      }
       function onKey(e) {
-        if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+        if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) {
+          return;
+        }
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
           e.preventDefault();
           setSelected((cur) => {
@@ -345,9 +353,9 @@
         revokedIds.includes(g.id) && g.status !== "revoked"
           ? {
               ...g,
-              status: "revoked",
-              revokedOn: g.revokedOn || "2026-06-11",
               revokedFull: g.revokedFull || nowStamp() + " · by owner",
+              revokedOn: g.revokedOn || "2026-06-11",
+              status: "revoked",
             }
           : g
       );
@@ -370,20 +378,20 @@
       const allowed = reqScopes.filter((s) => s.allowed);
       const declined = reqScopes.filter((s) => !s.allowed).map((s) => s.name);
       const newGrant = {
-        id: "grt_atlas_05",
         client: INCOMING.client,
-        purpose: "mortgage_preapproval",
-        scopes: allowed.map(({ name, terms }) => ({ name, terms })),
         declined,
-        status: "active",
-        issued: nowStamp(),
-        expiry: "exp 2026-09-09",
         expiresFull: "2026-09-09 · 90 d term",
+        expiry: "exp 2026-09-09",
+        id: "grt_atlas_05",
+        issued: nowStamp(),
         justAdded: true,
         projections: {
-          pay_statements: ["employer", "period_start", "period_end", "gross_pay", "net_pay"],
           employment: ["employer", "start_date", "end_date"],
+          pay_statements: ["employer", "period_start", "period_end", "gross_pay", "net_pay"],
         },
+        purpose: "mortgage_preapproval",
+        scopes: allowed.map(({ name, terms }) => ({ name, terms })),
+        status: "active",
       };
       setTimeout(() => {
         setExtraGrants((cur) => {
@@ -392,11 +400,11 @@
           return next;
         });
         addLog({
-          t: nowStamp(),
           kind: "consent",
+          ref: newGrant.id,
+          t: nowStamp(),
           verb: "grant",
           what: `${allowed.length} scopes · ${declined.length} declined · ${INCOMING.client}`,
-          ref: newGrant.id,
         });
         setRequestState("approved");
         setPressing(false);
@@ -409,11 +417,11 @@
       setRequestState("refused");
       saveState({ requestState: "refused" });
       addLog({
-        t: nowStamp(),
         kind: "deny",
+        ref: INCOMING.id,
+        t: nowStamp(),
         verb: "refuse",
         what: `access request refused · ${INCOMING.client}`,
-        ref: INCOMING.id,
       });
     }
 
@@ -428,11 +436,11 @@
         return next;
       });
       addLog({
-        t: nowStamp(),
         kind: "revoke",
+        ref: g.id,
+        t: nowStamp(),
         verb: "revoke",
         what: `${g.scopes.map((s) => s.name).join(" · ")} · ${g.client} · by owner`,
-        ref: g.id,
       });
       setTimeout(() => setStriking(false), 520);
     }
@@ -446,26 +454,26 @@
     }
 
     function browseInExplore(conId, streamName) {
-      setExploreSeed({ con: conId, stream: streamName, n: Date.now() });
+      setExploreSeed({ con: conId, n: Date.now(), stream: streamName });
       setView("explore");
     }
 
     const paletteItems = [
-      ...NAV.filter((n) => n.id).map((n) => ({ label: n.label, kind: "view", run: () => setView(n.id) })),
+      ...NAV.filter((n) => n.id).map((n) => ({ kind: "view", label: n.label, run: () => setView(n.id) })),
       ...grants.map((g) => ({
-        label: g.client + " — " + g.id,
         kind: "grant",
+        label: g.client + " — " + g.id,
         run: () => {
           setView("grants");
           setSelected(g.id);
         },
       })),
-      ...STREAMS.map((s) => ({ label: s.id, kind: "stream", run: () => setView("sources") })),
-      { label: "Reauthorize First Meridian", kind: "action", run: () => setView("syncs") },
+      ...STREAMS.map((s) => ({ kind: "stream", label: s.id, run: () => setView("sources") })),
+      { kind: "action", label: "Reauthorize First Meridian", run: () => setView("syncs") },
       ...(requestState === "pending"
-        ? [{ label: "Review Atlas Mortgage request", kind: "action", run: () => setRequestState("open") }]
+        ? [{ kind: "action", label: "Review Atlas Mortgage request", run: () => setRequestState("open") }]
         : []),
-      { label: "Toggle theme", kind: "action", run: () => setTweak("theme", t.theme === "dark" ? "light" : "dark") },
+      { kind: "action", label: "Toggle theme", run: () => setTweak("theme", t.theme === "dark" ? "light" : "dark") },
     ];
 
     const heads = {
@@ -484,7 +492,7 @@
         <main className="rr-main">
           <header className="rr-head">
             <span className="rr-head__brand">
-              <span className="rr-side__mark"></span>
+              <span className="rr-side__mark" />
               <span>Recordroom</span>
             </span>
             <span className="rr-head__crumb">rs.okafor.recordroom.net · pdpp 0.1.0</span>
@@ -506,7 +514,7 @@
             </div>
           </header>
           <div className="rr-content" data-screen-label={view} key={view}>
-            <div className={"rr-page" + (view === "grants" ? " rr-page--split" : "")}>
+            <div className={"rr-page" + (view === "grants" ? "rr-page--split" : "")}>
               <div className="rr-page-head">
                 <h1 className="rr-page-head__t">{heads[view][0]}</h1>
                 <span className="rr-page-head__s">{heads[view][1]}</span>
@@ -547,7 +555,7 @@
                   )}
                   <div className="pdpp-table rr-cols-grants">
                     <div className="pdpp-table__hrow">
-                      <span className="pdpp-table__h"></span>
+                      <span className="pdpp-table__h" />
                       <span className="pdpp-table__h">client</span>
                       <span className="pdpp-table__h">scopes</span>
                       <span className="pdpp-table__h">status</span>
@@ -594,7 +602,7 @@
           <div className="rr-drawer-overlay" onClick={() => setNavOpen(false)}>
             <nav className="rr-drawer" onClick={(e) => e.stopPropagation()}>
               <div className="rr-side__brand">
-                <span className="rr-side__mark"></span>
+                <span className="rr-side__mark" />
                 <span className="rr-side__name">Recordroom</span>
               </div>
               <div className="rr-drawer__nav">
@@ -605,7 +613,7 @@
                     </div>
                   ) : (
                     <button
-                      className={"rr-nav-item" + (view === item.id ? " is-active" : "")}
+                      className={"rr-nav-item" + (view === item.id ? "is-active" : "")}
                       key={item.id}
                       onClick={() => {
                         setView(item.id);
@@ -630,7 +638,9 @@
           <RRCeremony
             onApprove={approve}
             onDismiss={() => {
-              if (!pressing) setRequestState("pending");
+              if (!pressing) {
+                setRequestState("pending");
+              }
             }}
             onRefuse={refuse}
             onToggle={(i) => setReqScopes((cur) => cur.map((s, j) => (j === i ? { ...s, allowed: !s.allowed } : s)))}

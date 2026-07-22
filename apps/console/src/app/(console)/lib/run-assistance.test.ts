@@ -149,8 +149,8 @@ test("active browser-surface events keep stream fallback in the browser-preparin
     }),
     event("run.browser_surface_ready", {
       browser_surface: {
-        browser_surface_status: "leased",
         browser_surface_lease_id: "lease_1",
+        browser_surface_status: "leased",
       },
     }),
     event("run.started", {

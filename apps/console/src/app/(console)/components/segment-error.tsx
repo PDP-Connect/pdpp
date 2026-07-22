@@ -54,10 +54,10 @@ export function SegmentError({
       <h1 className="pdpp-heading text-foreground">{title}</h1>
       <p className="pdpp-body max-w-prose text-muted-foreground">{description}</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button className={buttonVariants({ variant: "default", size: "sm" })} onClick={() => reset()} type="button">
+        <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={() => reset()} type="button">
           Try again
         </button>
-        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href={backHref}>
+        <a className={buttonVariants({ size: "sm", variant: "ghost" })} href={backHref}>
           {backLabel}
         </a>
       </div>

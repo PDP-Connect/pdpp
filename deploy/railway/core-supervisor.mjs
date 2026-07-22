@@ -65,18 +65,18 @@ const referenceEnv = {
   ...process.env,
   ...firstBoot.env,
   AS_PORT: "7662",
-  RS_PORT: "7663",
   PDPP_AS_URL: "http://127.0.0.1:7662",
   PDPP_RS_URL: "http://127.0.0.1:7663",
+  RS_PORT: "7663",
 };
 
 const consoleEnv = {
   ...process.env,
   ...firstBoot.env,
   HOSTNAME: process.env.HOSTNAME || "0.0.0.0",
-  PORT: process.env.PORT || "3000",
   PDPP_AS_URL: "http://127.0.0.1:7662",
   PDPP_RS_URL: "http://127.0.0.1:7663",
+  PORT: process.env.PORT || "3000",
 };
 
 for (const line of firstBoot.bannerLines) {

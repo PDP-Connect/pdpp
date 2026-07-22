@@ -102,8 +102,8 @@ export default function DesignSystemPage() {
       <header
         className="sticky top-0 z-40 flex h-12 items-center gap-3 px-5 md:px-6"
         style={{
-          backgroundColor: "var(--background)",
           backdropFilter: "blur(8px)",
+          backgroundColor: "var(--background)",
           borderBottom: "1px solid var(--border)",
         }}
       >
@@ -125,9 +125,9 @@ export default function DesignSystemPage() {
                 className="rounded px-2 py-0.5 font-mono text-[10px]"
                 key={t}
                 style={{
-                  color: "var(--muted-foreground)",
-                  border: "1px solid var(--border)",
                   backgroundColor: "var(--muted)",
+                  border: "1px solid var(--border)",
+                  color: "var(--muted-foreground)",
                 }}
               >
                 {t}
@@ -146,7 +146,7 @@ export default function DesignSystemPage() {
         {/* Bottom-left quadrant — sticky nav */}
         <aside
           className="sticky top-12 hidden h-[calc(100vh-3rem)] shrink-0 flex-col overflow-y-auto md:flex"
-          style={{ width: "var(--pdpp-sidebar-width)", borderRight: "1px solid var(--border)" }}
+          style={{ borderRight: "1px solid var(--border)", width: "var(--pdpp-sidebar-width)" }}
         >
           <div className="px-3 py-6">
             <div
@@ -162,10 +162,10 @@ export default function DesignSystemPage() {
                   key={id}
                   onClick={() => scrollTo(id)}
                   style={{
-                    fontSize: "0.8125rem",
-                    color: active === id ? "var(--foreground)" : "var(--muted-foreground)",
-                    fontWeight: active === id ? 500 : 400,
                     backgroundColor: active === id ? "var(--muted)" : "transparent",
+                    color: active === id ? "var(--foreground)" : "var(--muted-foreground)",
+                    fontSize: "0.8125rem",
+                    fontWeight: active === id ? 500 : 400,
                   }}
                   type="button"
                 >
@@ -211,9 +211,9 @@ function MobileNav({ active, scrollTo }: { active: string; scrollTo: (id: string
     <div
       className="sticky top-12 z-30 flex w-full items-center gap-0 overflow-x-auto px-2 md:hidden"
       style={{
-        borderBottom: "1px solid var(--border)",
-        backgroundColor: "var(--background)",
         backdropFilter: "blur(8px)",
+        backgroundColor: "var(--background)",
+        borderBottom: "1px solid var(--border)",
         scrollbarWidth: "none",
       }}
     >
@@ -223,8 +223,8 @@ function MobileNav({ active, scrollTo }: { active: string; scrollTo: (id: string
           key={id}
           onClick={() => scrollTo(id)}
           style={{
-            color: active === id ? "var(--foreground)" : "var(--muted-foreground)",
             borderBottom: active === id ? "2px solid var(--foreground)" : "2px solid transparent",
+            color: active === id ? "var(--foreground)" : "var(--muted-foreground)",
             marginBottom: "-1px",
           }}
           type="button"
@@ -243,7 +243,7 @@ function SectionWrap({ id, children }: { id: string; children: React.ReactNode }
     <section
       className="scroll-mt-[96px] px-5 py-10 md:scroll-mt-11 md:px-12 md:py-14"
       id={id}
-      style={{ maxWidth: "860px", borderTop: "1px solid var(--border)" }}
+      style={{ borderTop: "1px solid var(--border)", maxWidth: "860px" }}
     >
       {children}
     </section>
@@ -259,7 +259,7 @@ function SectionHeader({ title, description }: { title: string; description?: st
       {description && (
         <p
           className="mt-1 text-sm leading-relaxed md:text-sm"
-          style={{ color: "var(--muted-foreground)", maxWidth: "56ch", fontSize: "clamp(0.875rem, 2.5vw, 0.9375rem)" }}
+          style={{ color: "var(--muted-foreground)", fontSize: "clamp(0.875rem, 2.5vw, 0.9375rem)", maxWidth: "56ch" }}
         >
           {description}
         </p>
@@ -326,7 +326,7 @@ function BrandSection() {
       {/* Construction + rules */}
       <div
         className="mb-10 grid grid-cols-1 gap-6 p-5 md:grid-cols-[220px_1fr_1fr]"
-        style={{ border: "1px solid var(--border)", background: "var(--muted)" }}
+        style={{ background: "var(--muted)", border: "1px solid var(--border)" }}
       >
         <ConstructionDiagram />
         <div>
@@ -369,7 +369,7 @@ function BrandSection() {
               <PdppLogo size={44} title="" variant="mark" />
               <span
                 className="font-semibold tracking-tight"
-                style={{ fontSize: "32px", letterSpacing: "-0.02em", color: "var(--foreground)" }}
+                style={{ color: "var(--foreground)", fontSize: "32px", letterSpacing: "-0.02em" }}
               >
                 PDPP
               </span>
@@ -385,12 +385,12 @@ function BrandSection() {
         <BrandPlate caption="II.2 — technical lockup" meta="mono · ruled · versioned">
           <div
             className="inline-flex items-center gap-3 py-2"
-            style={{ borderTop: "1px solid var(--foreground)", borderBottom: "1px solid var(--foreground)" }}
+            style={{ borderBottom: "1px solid var(--foreground)", borderTop: "1px solid var(--foreground)" }}
           >
             <PdppLogo size={44} title="" variant="mark" />
             <span
               className="font-mono"
-              style={{ fontSize: "22px", letterSpacing: "-0.02em", fontWeight: 500, color: "var(--foreground)" }}
+              style={{ color: "var(--foreground)", fontSize: "22px", fontWeight: 500, letterSpacing: "-0.02em" }}
             >
               PDPP <span style={{ color: "var(--muted-foreground)", fontWeight: 400 }}>v0.1</span>
             </span>
@@ -420,7 +420,7 @@ function BrandSection() {
           <div className="w-full max-w-xs">
             <div
               className="flex items-center gap-2 rounded-md px-2.5 py-1.5"
-              style={{ border: "1px solid var(--border)", background: "var(--card)" }}
+              style={{ background: "var(--card)", border: "1px solid var(--border)" }}
             >
               <PdppLogo size={14} title="" variant="mark" />
               <span className="font-mono text-[11px]" style={{ color: "var(--muted-foreground)" }}>
@@ -431,7 +431,7 @@ function BrandSection() {
               <PdppLogo size={22} title="" variant="mark" />
               <span
                 className="font-semibold tracking-tight"
-                style={{ fontSize: 18, letterSpacing: "-0.015em", color: "var(--foreground)" }}
+                style={{ color: "var(--foreground)", fontSize: 18, letterSpacing: "-0.015em" }}
               >
                 PDPP
               </span>
@@ -474,8 +474,8 @@ function MarkPlate({ surface, caption, meta }: { surface: "light" | "dark"; capt
     <div
       className="grid grid-rows-[1fr_auto]"
       style={{
-        border: `1px solid ${isDark ? "oklch(0.16 0.01 60)" : "var(--border)"}`,
         background: isDark ? "oklch(0.16 0.01 60)" : "var(--card)",
+        border: `1px solid ${isDark ? "oklch(0.16 0.01 60)" : "var(--border)"}`,
         color: isDark ? "oklch(0.985 0.005 85)" : "var(--foreground)",
         minHeight: 300,
       }}
@@ -508,7 +508,7 @@ function BrandPlate({
   return (
     <div
       className="grid grid-rows-[1fr_auto]"
-      style={{ border: "1px solid var(--border)", background: "var(--card)", minHeight: 220 }}
+      style={{ background: "var(--card)", border: "1px solid var(--border)", minHeight: 220 }}
     >
       <div
         className="flex items-center justify-center p-10"
@@ -582,31 +582,31 @@ const COLOR_GROUPS = [
     label: "Surfaces",
     tokens: [
       {
-        token: "--background",
-        value: "oklch(0.99 0.002 95)",
         label: "Page background",
+        token: "--background",
         usage: "Root page, panel backgrounds",
+        value: "oklch(0.99 0.002 95)",
       },
-      { token: "--card", value: "oklch(1 0 0)", label: "Card surface", usage: "Cards, elevated panels" },
-      { token: "--muted", value: "oklch(0.96 0 0)", label: "Muted fill", usage: "Input backgrounds, secondary rows" },
-      { token: "--popover", value: "oklch(1 0 0)", label: "Floating surface", usage: "Dropdowns, tooltips, popovers" },
+      { label: "Card surface", token: "--card", usage: "Cards, elevated panels", value: "oklch(1 0 0)" },
+      { label: "Muted fill", token: "--muted", usage: "Input backgrounds, secondary rows", value: "oklch(0.96 0 0)" },
+      { label: "Floating surface", token: "--popover", usage: "Dropdowns, tooltips, popovers", value: "oklch(1 0 0)" },
     ],
   },
   {
     label: "Text",
     tokens: [
-      { token: "--foreground", value: "oklch(0.13 0 0)", label: "Primary text", usage: "Body copy, headings, labels" },
+      { label: "Primary text", token: "--foreground", usage: "Body copy, headings, labels", value: "oklch(0.13 0 0)" },
       {
-        token: "--muted-foreground",
-        value: "oklch(0.50 0 0)",
         label: "Secondary text",
+        token: "--muted-foreground",
         usage: "Captions, helper text, placeholders",
+        value: "oklch(0.50 0 0)",
       },
       {
-        token: "--primary-foreground",
-        value: "oklch(0.99 0 0)",
         label: "On-primary text",
+        token: "--primary-foreground",
         usage: "Text on primary-colored backgrounds",
+        value: "oklch(0.99 0 0)",
       },
     ],
   },
@@ -614,17 +614,17 @@ const COLOR_GROUPS = [
     label: "Interactive",
     tokens: [
       {
-        token: "--primary",
-        value: "oklch(0.580 0.172 253.7)",
         label: "Signature blue (#187adc)",
+        token: "--primary",
         usage: "CTAs, links, focus rings, progress",
+        value: "oklch(0.580 0.172 253.7)",
       },
-      { token: "--secondary", value: "oklch(0.96 0 0)", label: "Secondary action", usage: "Secondary buttons, chips" },
+      { label: "Secondary action", token: "--secondary", usage: "Secondary buttons, chips", value: "oklch(0.96 0 0)" },
       {
-        token: "--destructive",
-        value: "oklch(0.55 0.20 27)",
         label: "Destructive",
+        token: "--destructive",
         usage: "Delete actions, error states",
+        value: "oklch(0.55 0.20 27)",
       },
     ],
   },
@@ -632,30 +632,30 @@ const COLOR_GROUPS = [
     label: "Borders",
     tokens: [
       {
-        token: "--border",
-        value: "oklch(0.94 0 0)",
         label: "Default border",
+        token: "--border",
         usage: "Cards, dividers, all structural borders",
+        value: "oklch(0.94 0 0)",
       },
       {
-        token: "--input",
-        value: "oklch(0.91 0 0)",
         label: "Input border",
+        token: "--input",
         usage: "Form field borders at rest — higher contrast for accessibility",
+        value: "oklch(0.91 0 0)",
       },
-      { token: "--ring", value: "oklch(0.580 0.172 253.7)", label: "Focus ring", usage: "Keyboard focus indicator" },
+      { label: "Focus ring", token: "--ring", usage: "Keyboard focus indicator", value: "oklch(0.580 0.172 253.7)" },
     ],
   },
   {
     label: "Status",
     tokens: [
-      { token: "--success", value: "oklch(0.52 0.15 150)", label: "Success", usage: "Granted, confirmed, synced" },
-      { token: "--warning", value: "oklch(0.62 0.15 70)", label: "Warning", usage: "Pending, caution states" },
+      { label: "Success", token: "--success", usage: "Granted, confirmed, synced", value: "oklch(0.52 0.15 150)" },
+      { label: "Warning", token: "--warning", usage: "Pending, caution states", value: "oklch(0.62 0.15 70)" },
       {
-        token: "--edu-fg",
-        value: "oklch(0.55 0.08 270)",
         label: "Spec citation (§)",
+        token: "--edu-fg",
         usage: "Protocol spec references only",
+        value: "oklch(0.55 0.08 270)",
       },
     ],
   },
@@ -663,16 +663,16 @@ const COLOR_GROUPS = [
     label: "Surface Temperature",
     tokens: [
       {
-        token: "--human",
-        value: "oklch(0.52 0.09 45)",
         label: "Human — copper-deep",
+        token: "--human",
         usage: "Identity, ownership, consent surfaces",
+        value: "oklch(0.52 0.09 45)",
       },
       {
-        token: "--human-wash",
-        value: "oklch(0.52 0.09 45 / 0.07)",
         label: "Human wash",
+        token: "--human-wash",
         usage: "Warm background tint on human surfaces",
+        value: "oklch(0.52 0.09 45 / 0.07)",
       },
     ],
   },
@@ -739,10 +739,10 @@ function ColorSection() {
               className="rounded px-3 py-1.5 text-xs"
               readOnly
               style={{
+                backgroundColor: "var(--background)",
                 border: "1px solid var(--border)",
                 outline: "2px solid var(--ring)",
                 outlineOffset: "2px",
-                backgroundColor: "var(--background)",
                 width: "80%",
               }}
               value="focused input"
@@ -774,7 +774,7 @@ function ColorSection() {
 
       {/* Token table */}
       <div className="w-full overflow-x-auto" style={{ borderTop: "1px solid var(--border)" }}>
-        <table className="w-full text-sm" style={{ tableLayout: "fixed", minWidth: "480px" }}>
+        <table className="w-full text-sm" style={{ minWidth: "480px", tableLayout: "fixed" }}>
           <colgroup>
             <col style={{ width: "40px" }} />
             <col style={{ width: "180px" }} />
@@ -865,7 +865,7 @@ function TypographySection() {
         <div>
           <SubLabel>Geist Sans — interface copy</SubLabel>
           <div className="overflow-x-auto">
-            <table className="w-full" style={{ borderCollapse: "collapse", tableLayout: "auto", minWidth: "300px" }}>
+            <table className="w-full" style={{ borderCollapse: "collapse", minWidth: "300px", tableLayout: "auto" }}>
               <colgroup>
                 <col style={{ width: "64px" }} />
                 <col />
@@ -890,57 +890,57 @@ function TypographySection() {
                   {
                     className: "pdpp-display-lg",
                     label: "display-lg",
-                    spec: "60/600/-0.03em",
                     sample: "Personal Data",
+                    spec: "60/600/-0.03em",
                     usage: "Splash heroes — the landing page only",
                   },
                   {
                     className: "pdpp-display",
                     label: "display",
-                    spec: "40/600/-0.025em",
                     sample: "Design System",
+                    spec: "40/600/-0.025em",
                     usage: "Page heroes — docs, design system",
                   },
                   {
                     className: "pdpp-heading",
                     label: "heading",
-                    spec: "20/600/-0.01em",
                     sample: "Grant request",
+                    spec: "20/600/-0.01em",
                     usage: "Section headers",
                   },
                   {
                     className: "pdpp-title",
                     label: "title",
-                    spec: "14/600",
                     sample: "Longview",
+                    spec: "14/600",
                     usage: "Card titles, entity names",
                   },
                   {
                     className: "pdpp-body-lg",
                     label: "body-lg",
-                    spec: "18/400",
                     sample: "An authorization and disclosure protocol.",
+                    spec: "18/400",
                     usage: "Hero lead copy",
                   },
                   {
                     className: "pdpp-body",
                     label: "body",
-                    spec: "14/400",
                     sample: "Comparing salary, equity, benefits, and tax tradeoffs.",
+                    spec: "14/400",
                     usage: "Descriptions, prose",
                   },
                   {
                     className: "pdpp-label",
                     label: "label",
-                    spec: "12/500",
                     sample: "What they can access",
+                    spec: "12/500",
                     usage: "Field labels, section labels",
                   },
                   {
                     className: "pdpp-caption",
                     label: "caption",
-                    spec: "12/400",
                     sample: "No live scraping required.",
+                    spec: "12/400",
                     usage: "Helper text, footnotes",
                   },
                 ].map(({ className, label, spec, sample, usage }) => (
@@ -950,15 +950,15 @@ function TypographySection() {
                         .{className}
                       </span>
                     </td>
-                    <td className="py-3 pr-4" style={{ verticalAlign: "baseline", overflow: "hidden", maxWidth: 0 }}>
+                    <td className="py-3 pr-4" style={{ maxWidth: 0, overflow: "hidden", verticalAlign: "baseline" }}>
                       <span
                         className={className}
                         style={{
                           display: "block",
+                          lineHeight: 1,
                           overflow: "hidden",
                           textOverflow: "ellipsis",
                           whiteSpace: "nowrap",
-                          lineHeight: 1,
                         }}
                       >
                         {sample}
@@ -1016,46 +1016,46 @@ function TypographySection() {
               <tbody>
                 {[
                   {
-                    step: "heading",
-                    utility: "text-pdpp-heading font-semibold tracking-[-0.01em]",
                     className: "pdpp-heading",
                     sample: "Grant request",
                     spec: "20/600",
+                    step: "heading",
+                    utility: "text-pdpp-heading font-semibold tracking-[-0.01em]",
                   },
                   {
-                    step: "title",
-                    utility: "text-pdpp-title font-semibold",
                     className: "pdpp-title",
                     sample: "Longview",
                     spec: "14/600",
+                    step: "title",
+                    utility: "text-pdpp-title font-semibold",
                   },
                   {
-                    step: "body-lg",
-                    utility: "text-pdpp-body-lg",
                     className: "pdpp-body-lg",
                     sample: "An authorization and disclosure protocol.",
                     spec: "18/400",
+                    step: "body-lg",
+                    utility: "text-pdpp-body-lg",
                   },
                   {
-                    step: "body",
-                    utility: "text-pdpp-body",
                     className: "pdpp-body",
                     sample: "Comparing salary, equity, benefits, and tax tradeoffs.",
                     spec: "14/400",
+                    step: "body",
+                    utility: "text-pdpp-body",
                   },
                   {
-                    step: "label",
-                    utility: "text-pdpp-label font-medium",
                     className: "pdpp-label",
                     sample: "What they can access",
                     spec: "12/500",
+                    step: "label",
+                    utility: "text-pdpp-label font-medium",
                   },
                   {
-                    step: "caption",
-                    utility: "text-pdpp-caption",
                     className: "pdpp-caption",
                     sample: "Helper copy.",
                     spec: "12/400",
+                    step: "caption",
+                    utility: "text-pdpp-caption",
                   },
                 ].map(({ step, className, utility, sample, spec }) => (
                   <tr key={step}>
@@ -1064,7 +1064,7 @@ function TypographySection() {
                         {step}
                       </span>
                     </td>
-                    <td className="py-3 pr-4" style={{ verticalAlign: "baseline", overflow: "hidden", maxWidth: 0 }}>
+                    <td className="py-3 pr-4" style={{ maxWidth: 0, overflow: "hidden", verticalAlign: "baseline" }}>
                       <span
                         className={className}
                         style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -1073,12 +1073,12 @@ function TypographySection() {
                       </span>
                       <span
                         className="mt-0.5 font-mono text-[10px]"
-                        style={{ color: "var(--muted-foreground)", opacity: 0.6, display: "block" }}
+                        style={{ color: "var(--muted-foreground)", display: "block", opacity: 0.6 }}
                       >
                         .{className}
                       </span>
                     </td>
-                    <td className="py-3 pr-4" style={{ verticalAlign: "baseline", overflow: "hidden", maxWidth: 0 }}>
+                    <td className="py-3 pr-4" style={{ maxWidth: 0, overflow: "hidden", verticalAlign: "baseline" }}>
                       <span
                         className={utility}
                         style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -1087,7 +1087,7 @@ function TypographySection() {
                       </span>
                       <span
                         className="mt-0.5 font-mono text-[10px]"
-                        style={{ color: "var(--muted-foreground)", opacity: 0.6, display: "block" }}
+                        style={{ color: "var(--muted-foreground)", display: "block", opacity: 0.6 }}
                       >
                         {utility}
                       </span>
@@ -1117,8 +1117,8 @@ function TypographySection() {
           <div
             className="grid gap-0 pb-2"
             style={{
-              gridTemplateColumns: "72px 1fr",
               borderBottom: "1px solid var(--border)",
+              gridTemplateColumns: "72px 1fr",
             }}
           >
             {["Role", "Specimen"].map((h) => (
@@ -1129,30 +1129,30 @@ function TypographySection() {
           </div>
           {[
             {
+              color: "var(--foreground)",
               label: "id",
               sample: "grt_8f3a2b1c4d5e6f7a8b9c0d1e2f3a4b5c",
               usage: "Grant IDs, resource identifiers",
-              color: "var(--foreground)",
             },
             {
+              color: "var(--foreground)",
               label: "code",
               sample: "pay_statements · summary · continuous",
               usage: "Stream names, field names, enum values",
-              color: "var(--foreground)",
             },
             {
+              color: "var(--edu-fg)",
               label: "spec-ref",
               sample: "§4.2 Selection Request · §6.1 Stream Metadata",
               usage: "Protocol spec citations only",
-              color: "var(--edu-fg)",
             },
           ].map(({ label, sample, color }) => (
             <div
               className="grid items-baseline gap-0 py-3"
               key={label}
               style={{
-                gridTemplateColumns: "72px 1fr",
                 borderBottom: "1px solid color-mix(in oklch, var(--border) 50%, transparent)",
+                gridTemplateColumns: "72px 1fr",
               }}
             >
               <span className="pt-px text-xs" style={{ color: "var(--muted-foreground)" }}>
@@ -1190,10 +1190,10 @@ function SpacingSection() {
             <div
               className="rounded-sm"
               style={{
-                width: `${n * 4}px`,
-                height: `${n * 4}px`,
                 backgroundColor: "color-mix(in oklch, var(--primary) 18%, transparent)",
                 border: "1px solid color-mix(in oklch, var(--primary) 30%, transparent)",
+                height: `${n * 4}px`,
+                width: `${n * 4}px`,
               }}
             />
             <div
@@ -1209,7 +1209,7 @@ function SpacingSection() {
       </div>
 
       <div className="overflow-x-auto" style={{ borderTop: "1px solid var(--border)" }}>
-        <table className="w-full" style={{ borderCollapse: "collapse", tableLayout: "fixed", minWidth: "360px" }}>
+        <table className="w-full" style={{ borderCollapse: "collapse", minWidth: "360px", tableLayout: "fixed" }}>
           <colgroup>
             <col style={{ width: "160px" }} />
             <col style={{ width: "110px" }} />
@@ -1230,11 +1230,11 @@ function SpacingSection() {
           </thead>
           <tbody>
             {[
-              { pattern: "px-4 py-2", value: "16px 8px", usage: "Panel headers, toolbar rows" },
-              { pattern: "p-4 / p-5", value: "16px / 20px", usage: "Card content, form sections" },
-              { pattern: "gap-2 / gap-3", value: "8px / 12px", usage: "Tight list items, inline groups" },
-              { pattern: "gap-6 / gap-8", value: "24px / 32px", usage: "Section-level spacing" },
-              { pattern: "px-6 py-8", value: "24px 32px", usage: "Stage / centered empty states" },
+              { pattern: "px-4 py-2", usage: "Panel headers, toolbar rows", value: "16px 8px" },
+              { pattern: "p-4 / p-5", usage: "Card content, form sections", value: "16px / 20px" },
+              { pattern: "gap-2 / gap-3", usage: "Tight list items, inline groups", value: "8px / 12px" },
+              { pattern: "gap-6 / gap-8", usage: "Section-level spacing", value: "24px / 32px" },
+              { pattern: "px-6 py-8", usage: "Stage / centered empty states", value: "24px 32px" },
             ].map(({ pattern, value, usage }) => (
               <tr key={pattern}>
                 <td className="py-3 pr-6" style={{ verticalAlign: "baseline" }}>
@@ -1269,24 +1269,24 @@ function SpacingSection() {
 // ─── 04 Elevation ─────────────────────────────────────────────────────────────
 
 const ELEVATION_LEVELS = [
-  { level: 0, label: "Flat", shadow: "none", desc: "Page surface, rows, default panels" },
+  { desc: "Page surface, rows, default panels", label: "Flat", level: 0, shadow: "none" },
   {
-    level: 1,
-    label: "Raised",
-    shadow: "0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.02)",
     desc: "Cards, form fields",
+    label: "Raised",
+    level: 1,
+    shadow: "0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.02)",
   },
   {
-    level: 2,
-    label: "Float",
-    shadow: "0 4px 6px rgba(0,0,0,0.04), 0 10px 15px rgba(0,0,0,0.08)",
     desc: "Dropdowns, command palette",
+    label: "Float",
+    level: 2,
+    shadow: "0 4px 6px rgba(0,0,0,0.04), 0 10px 15px rgba(0,0,0,0.08)",
   },
   {
-    level: 3,
-    label: "Modal",
-    shadow: "0 10px 15px rgba(0,0,0,0.05), 0 20px 25px rgba(0,0,0,0.10), 0 0 0 1px rgba(0,0,0,0.05)",
     desc: "Modals, overlays",
+    label: "Modal",
+    level: 3,
+    shadow: "0 10px 15px rgba(0,0,0,0.05), 0 20px 25px rgba(0,0,0,0.10), 0 0 0 1px rgba(0,0,0,0.05)",
   },
 ];
 
@@ -1359,20 +1359,20 @@ function MotionSection() {
           <SubLabel>Semantic aliases</SubLabel>
           <div style={{ borderTop: "1px solid var(--border)" }}>
             {[
-              { token: "--motion-enter", composes: "300ms ease-enter", usage: "Modals, drawers, toasts arriving" },
+              { composes: "300ms ease-enter", token: "--motion-enter", usage: "Modals, drawers, toasts arriving" },
               {
-                token: "--motion-exit",
                 composes: "100ms ease-exit",
+                token: "--motion-exit",
                 usage: "Any element leaving — exits are faster than enters",
               },
               {
-                token: "--motion-state",
                 composes: "200ms ease-standard",
+                token: "--motion-state",
                 usage: "Button hover, checkbox, toggle, tab switch",
               },
               {
-                token: "--motion-feedback",
                 composes: "100ms ease-spring",
+                token: "--motion-feedback",
                 usage: "Success flash, error indication, confirm action",
               },
             ].map(({ token, composes, usage }) => (
@@ -1411,8 +1411,8 @@ function MotionSection() {
           <pre
             className="overflow-auto rounded-lg border p-5 font-mono text-xs leading-relaxed"
             style={{
-              borderColor: "var(--border)",
               backgroundColor: "var(--muted)",
+              borderColor: "var(--border)",
               color: "var(--muted-foreground)",
             }}
           >{`@media (prefers-reduced-motion: reduce) {
@@ -1445,10 +1445,10 @@ function MotionSection() {
 function DurationDemo() {
   const [playing, setPlaying] = useState<string | null>(null);
   const tiers = [
-    { name: "fast", ms: 100, cssVar: "--duration-fast" },
-    { name: "base", ms: 200, cssVar: "--duration-base" },
-    { name: "moderate", ms: 300, cssVar: "--duration-moderate" },
-    { name: "slow", ms: 500, cssVar: "--duration-slow" },
+    { cssVar: "--duration-fast", ms: 100, name: "fast" },
+    { cssVar: "--duration-base", ms: 200, name: "base" },
+    { cssVar: "--duration-moderate", ms: 300, name: "moderate" },
+    { cssVar: "--duration-slow", ms: 500, name: "slow" },
   ];
 
   const play = (name: string, ms: number) => {
@@ -1474,11 +1474,11 @@ function DurationDemo() {
             <div
               className="absolute top-0 left-0 h-full rounded-full"
               style={{
-                width: playing === name ? "100%" : "0%",
                 backgroundColor: "var(--primary)",
-                transitionProperty: playing === name ? "width" : "none",
                 transitionDuration: playing === name ? `${ms}ms` : "0ms",
+                transitionProperty: playing === name ? "width" : "none",
                 transitionTimingFunction: "var(--ease-standard)",
+                width: playing === name ? "100%" : "0%",
               }}
             />
           </div>
@@ -1494,10 +1494,10 @@ function DurationDemo() {
 function EasingDemo() {
   const [active, setActive] = useState<string | null>(null);
   const curves = [
-    { name: "enter", cssVar: "--ease-enter", desc: "Decelerate — arrivals" },
-    { name: "exit", cssVar: "--ease-exit", desc: "Accelerate — departures" },
-    { name: "standard", cssVar: "--ease-standard", desc: "Full arc — state changes" },
-    { name: "spring", cssVar: "--ease-spring", desc: "Overshoot — feedback" },
+    { cssVar: "--ease-enter", desc: "Decelerate — arrivals", name: "enter" },
+    { cssVar: "--ease-exit", desc: "Accelerate — departures", name: "exit" },
+    { cssVar: "--ease-standard", desc: "Full arc — state changes", name: "standard" },
+    { cssVar: "--ease-spring", desc: "Overshoot — feedback", name: "spring" },
   ];
 
   const play = (name: string) => {
@@ -1517,10 +1517,10 @@ function EasingDemo() {
             <div
               className="absolute top-0.5 h-4 w-8 rounded-sm"
               style={{
-                left: active === name ? "calc(100% - 2.25rem)" : "4px",
                 backgroundColor: "var(--primary)",
-                transitionProperty: active === name ? "left" : "none",
+                left: active === name ? "calc(100% - 2.25rem)" : "4px",
                 transitionDuration: active === name ? "400ms" : "0ms",
+                transitionProperty: active === name ? "left" : "none",
                 transitionTimingFunction: active === name ? `var(${cssVar})` : "linear",
               }}
             />
@@ -1557,10 +1557,10 @@ function StaggerDemo() {
               border: "1px solid var(--border)",
               opacity: visible ? 1 : 0,
               transform: visible ? "translateY(0)" : "translateY(6px)",
-              transitionProperty: phase === "playing" ? "opacity, transform" : "none",
-              transitionDuration: "var(--duration-moderate)",
-              transitionTimingFunction: "var(--ease-enter)",
               transitionDelay: phase === "playing" ? `${i * 50}ms` : "0ms",
+              transitionDuration: "var(--duration-moderate)",
+              transitionProperty: phase === "playing" ? "opacity, transform" : "none",
+              transitionTimingFunction: "var(--ease-enter)",
             }}
           >
             <span className="font-medium text-xs" style={{ color: "var(--success)" }}>
@@ -1587,7 +1587,7 @@ function SkeletonDemo() {
     <div className="flex flex-col gap-3">
       <div
         className="flex flex-col gap-2.5 rounded-lg border p-5"
-        style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}
+        style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
       >
         <div className="flex items-center gap-3">
           <div className="shimmer-bone h-9 w-9 rounded" />
@@ -1672,11 +1672,11 @@ function SurfacesSection() {
             {/* Human row */}
             <div
               style={{
-                borderLeft: "1px solid var(--human)",
                 background: "linear-gradient(to right, var(--human-wash), transparent 70%)",
+                borderLeft: "1px solid var(--human)",
+                paddingBottom: "10px",
                 paddingLeft: "14px",
                 paddingTop: "10px",
-                paddingBottom: "10px",
               }}
             >
               <div className="font-medium text-sm">Alex Rivera</div>
@@ -1687,11 +1687,11 @@ function SurfacesSection() {
             {/* Protocol row */}
             <div
               style={{
-                borderLeft: "2px solid var(--primary)",
                 background: "linear-gradient(to right, oklch(0.580 0.172 253.7 / 0.04), transparent 70%)",
+                borderLeft: "2px solid var(--primary)",
+                paddingBottom: "10px",
                 paddingLeft: "14px",
                 paddingTop: "10px",
-                paddingBottom: "10px",
               }}
             >
               <div className="font-mono text-[11px]" style={{ color: "var(--muted-foreground)" }}>
@@ -1699,7 +1699,7 @@ function SurfacesSection() {
               </div>
               <div
                 className="font-mono text-[10px]"
-                style={{ color: "var(--muted-foreground)", opacity: 0.55, marginTop: "2px" }}
+                style={{ color: "var(--muted-foreground)", marginTop: "2px", opacity: 0.55 }}
               >
                 expires 24h · PDPP v0.1.0
               </div>
@@ -1711,18 +1711,18 @@ function SurfacesSection() {
             {[
               {
                 attr: "--human",
-                value: "oklch(0.52 0.09 45)",
                 desc: "2px left border on human surfaces (identity, ownership, consent)",
+                value: "oklch(0.52 0.09 45)",
               },
               {
                 attr: "--human-wash",
-                value: "oklch(0.52 0.09 45 / 0.07)",
                 desc: "Gradient wash tint — linear-gradient to right, fades to transparent",
+                value: "oklch(0.52 0.09 45 / 0.07)",
               },
               {
                 attr: "--primary",
-                value: "oklch(0.580 0.172 253.7)",
                 desc: "2px left border on protocol surfaces (tokens, grants, spec data)",
+                value: "oklch(0.580 0.172 253.7)",
               },
             ].map(({ attr, value, desc }) => (
               <div
@@ -1758,12 +1758,12 @@ function SurfacesSection() {
                   {/* Human row inside the card */}
                   <div
                     style={{
-                      borderLeft: "1px solid var(--human)",
                       background: "linear-gradient(to right, var(--human-wash), transparent 70%)",
+                      borderLeft: "1px solid var(--human)",
+                      marginBottom: "2px",
+                      paddingBottom: "8px",
                       paddingLeft: "10px",
                       paddingTop: "8px",
-                      paddingBottom: "8px",
-                      marginBottom: "2px",
                     }}
                   >
                     <div className="font-medium text-sm">Alex Rivera</div>
@@ -1777,11 +1777,11 @@ function SurfacesSection() {
                   {/* Protocol row inside the card */}
                   <div
                     style={{
-                      borderLeft: "2px solid var(--primary)",
                       background: "linear-gradient(to right, oklch(0.580 0.172 253.7 / 0.04), transparent 70%)",
+                      borderLeft: "2px solid var(--primary)",
+                      paddingBottom: "8px",
                       paddingLeft: "10px",
                       paddingTop: "8px",
-                      paddingBottom: "8px",
                     }}
                   >
                     <div className="font-mono text-[10px]" style={{ color: "var(--muted-foreground)" }}>
@@ -1789,7 +1789,7 @@ function SurfacesSection() {
                     </div>
                     <div
                       className="font-mono text-[10px]"
-                      style={{ color: "var(--muted-foreground)", opacity: 0.55, marginTop: "1px" }}
+                      style={{ color: "var(--muted-foreground)", marginTop: "1px", opacity: 0.55 }}
                     >
                       expires 24h · PDPP v0.1.0
                     </div>
@@ -2048,7 +2048,7 @@ function DashboardPrimitivesSection() {
           </p>
           <div className="rounded-lg border border-border/80 bg-background p-6">
             <PageHeader
-              breadcrumbs={[{ label: "Runs", href: "#" }, { label: "Run" }]}
+              breadcrumbs={[{ href: "#", label: "Runs" }, { label: "Run" }]}
               count="page 1"
               description="connector github · 1,159 events"
               meta={
@@ -2416,12 +2416,12 @@ interface CanonicalExampleWorld {
 }
 
 const COMPENSATION_STREAM_DETAILS = {
-  payStatements:
-    "Employer, pay period, gross pay, net pay, and withholding summary. No bank account details or tax ID fragments.",
-  equityGrants:
-    "Grant type, quantity, vesting schedule, and strike price. No brokerage account numbers or beneficiary details.",
   benefits:
     "Plan name, coverage tier, employer contribution, and effective date. No dependent data, claims, or provider notes.",
+  equityGrants:
+    "Grant type, quantity, vesting schedule, and strike price. No brokerage account numbers or beneficiary details.",
+  payStatements:
+    "Employer, pay period, gross pay, net pay, and withholding summary. No bank account details or tax ID fragments.",
 } as const;
 
 function createCompensationWorld({
@@ -2470,114 +2470,114 @@ function createCompensationWorld({
   commitments: string[];
 }): CanonicalExampleWorld {
   return {
-    name,
-    monogram,
-    descriptor,
-    summary,
-    anchorStream,
-    whyCare,
-    whyPdpp,
     aiPosture,
-    risk,
-    sources,
-    fit,
-    rolloutCopy,
+    anchorStream,
     consent: {
-      requester: { name, monogram, verified: true, logoSrc, uri, policyUri, tosUri },
-      purpose,
+      accessMode: "continuous",
       commitments,
-      streams: [
-        { key: "pay_statements", label: "Pay statements", detail: COMPENSATION_STREAM_DETAILS.payStatements },
-        { key: "equity_grants", label: "Equity grants", detail: COMPENSATION_STREAM_DETAILS.equityGrants },
-      ],
       optional: {
+        consequenceOff: "Leaves the rest of the compensation analysis intact.",
+        consequenceOn: "Improves the plan comparison and exposes coverage tradeoffs.",
+        detail: COMPENSATION_STREAM_DETAILS.benefits,
         key: "benefits_enrollments",
         label: "Benefits enrollments",
-        detail: COMPENSATION_STREAM_DETAILS.benefits,
-        consequenceOn: "Improves the plan comparison and exposes coverage tradeoffs.",
-        consequenceOff: "Leaves the rest of the compensation analysis intact.",
       },
-      accessMode: "continuous",
-      technical: { clientId, purposeCode, grantExpires: "Apr 15, 2027" },
+      purpose,
+      requester: { logoSrc, monogram, name, policyUri, tosUri, uri, verified: true },
+      streams: [
+        { detail: COMPENSATION_STREAM_DETAILS.payStatements, key: "pay_statements", label: "Pay statements" },
+        { detail: COMPENSATION_STREAM_DETAILS.equityGrants, key: "equity_grants", label: "Equity grants" },
+      ],
+      technical: { clientId, grantExpires: "Apr 15, 2027", purposeCode },
     },
+    descriptor,
+    fit,
     grant: {
+      accessMode: "continuous",
+      client: { clientId, name },
+      expiresAt: "Apr 15, 2027",
       grantId: `grt_${clientId.replace(/[^a-z0-9]/gi, "").slice(0, 10)}`,
       issuedAt: "Apr 15, 2026",
-      status: "active",
-      client: { clientId, name },
       purposeCode,
       purposeDescription,
-      accessMode: "continuous",
-      expiresAt: "Apr 15, 2027",
       retention: { duration: "90 days", onExpiry: "delete" },
+      status: "active",
       streams: [
         {
-          name: "pay_statements",
-          label: "Pay statements",
           detail: COMPENSATION_STREAM_DETAILS.payStatements,
-          view: "summary",
           fields: ["employer", "pay_period", "gross_pay", "net_pay"],
+          label: "Pay statements",
+          name: "pay_statements",
           timeRange: { since: "Jan 1, 2025" },
+          view: "summary",
         },
         {
-          name: "equity_grants",
-          label: "Equity grants",
           detail: COMPENSATION_STREAM_DETAILS.equityGrants,
-          view: "vesting_summary",
           fields: ["grant_type", "quantity", "vesting_start", "vesting_schedule"],
+          label: "Equity grants",
+          name: "equity_grants",
+          view: "vesting_summary",
         },
       ],
     },
+    monogram,
+    name,
     projection: {
+      granted: ["employer", "pay_period", "gross_pay", "net_pay"],
       streamLabel: "Pay statements",
       summary:
         "The proof moment stays legible: the app gets the comparability fields and leaves the identity-heavy payroll fields behind.",
-      granted: ["employer", "pay_period", "gross_pay", "net_pay"],
       withheld: ["employee_id", "home_address", "bank_account_last4", "tax_id_fragment"],
     },
+    risk,
+    rolloutCopy,
+    sources,
+    summary,
+    whyCare,
+    whyPdpp,
   };
 }
 
 const CANONICAL_EXAMPLE_WORLD: CanonicalExampleWorld = createCompensationWorld({
-  name: "Longview",
-  monogram: "LV",
-  descriptor: "Compensation planning",
-  summary: "Compares salary, equity, benefits, and tax tradeoffs before a career move.",
-  uri: LONGVIEW_CLIENT_URI,
-  policyUri: LONGVIEW_POLICY_URI,
-  tosUri: LONGVIEW_TOS_URI,
+  aiPosture:
+    "Normalizes offer letters, pay statements, vesting schedules, and benefit summaries into comparable scenarios.",
   anchorStream: {
-    name: "pay_statements",
     cadence: "Append-only, every payroll cycle",
+    name: "pay_statements",
     syncStory:
       "Each pay cycle adds one new pay statement. Longview syncs the new record instead of re-downloading the entire compensation history.",
   },
-  whyCare: "A person has an offer in hand and wants a serious, document-backed read on what actually changes.",
-  whyPdpp:
-    "The decision spans payroll, equity, and benefits systems. The useful fields are narrower than the raw records, and no single bank-style aggregator covers the set.",
-  aiPosture:
-    "Normalizes offer letters, pay statements, vesting schedules, and benefit summaries into comparable scenarios.",
-  risk: "The identity is strongest when it stays wordmark-led. The standalone symbol is still in review until it earns its keep at small sizes.",
-  sources: ["Payroll portal", "Equity administrator", "Benefits portal"],
-  fit: ["Legible to non-experts", "Premium enough to feel paid", "Clearly beyond Plaid", "Strong sync story"],
-  rolloutCopy: {
-    heroLine: "Longview compares salary, equity, benefits, and tax tradeoffs before a career move.",
-    consentPurpose:
-      "Longview is requesting compensation records to compare salary, equity, benefits, and tax tradeoffs before a career move.",
-    proofLine: "The app gets the comparability fields and leaves the identity-heavy payroll fields behind.",
-    docsBlurb:
-      "A compensation-planning client that needs payroll, equity, and benefits records under one enforceable consent boundary.",
-    syncLine: "Each payroll cycle adds one new pay statement, so sync returns only the new record.",
-  },
   clientId: "longview_planning_v1",
-  purposeCode: "planning",
-  purposeDescription: "Career-move compensation planning",
-  purpose:
-    "Longview is requesting compensation records to compare salary, equity, benefits, and tax tradeoffs before a career move.",
   commitments: [
     "Analysis remains private to this planning workspace",
     "No employer outreach or document sharing without separate approval",
   ],
+  descriptor: "Compensation planning",
+  fit: ["Legible to non-experts", "Premium enough to feel paid", "Clearly beyond Plaid", "Strong sync story"],
+  monogram: "LV",
+  name: "Longview",
+  policyUri: LONGVIEW_POLICY_URI,
+  purpose:
+    "Longview is requesting compensation records to compare salary, equity, benefits, and tax tradeoffs before a career move.",
+  purposeCode: "planning",
+  purposeDescription: "Career-move compensation planning",
+  risk: "The identity is strongest when it stays wordmark-led. The standalone symbol is still in review until it earns its keep at small sizes.",
+  rolloutCopy: {
+    consentPurpose:
+      "Longview is requesting compensation records to compare salary, equity, benefits, and tax tradeoffs before a career move.",
+    docsBlurb:
+      "A compensation-planning client that needs payroll, equity, and benefits records under one enforceable consent boundary.",
+    heroLine: "Longview compares salary, equity, benefits, and tax tradeoffs before a career move.",
+    proofLine: "The app gets the comparability fields and leaves the identity-heavy payroll fields behind.",
+    syncLine: "Each payroll cycle adds one new pay statement, so sync returns only the new record.",
+  },
+  sources: ["Payroll portal", "Equity administrator", "Benefits portal"],
+  summary: "Compares salary, equity, benefits, and tax tradeoffs before a career move.",
+  tosUri: LONGVIEW_TOS_URI,
+  uri: LONGVIEW_CLIENT_URI,
+  whyCare: "A person has an offer in hand and wants a serious, document-backed read on what actually changes.",
+  whyPdpp:
+    "The decision spans payroll, equity, and benefits systems. The useful fields are narrower than the raw records, and no single bank-style aggregator covers the set.",
 });
 
 type LongviewLogoVariant = "aperture_span" | "horizon_tile" | "frame_lane";
@@ -2595,26 +2595,26 @@ const LONGVIEW_LOGO_CANDIDATES: LongviewLogoCandidate[] = [
   {
     id: "aperture_span",
     name: "Aperture wordmark",
-    verdict: "recommended",
-    summary: "Wordmark-led system with a restrained open-span mark beside it.",
-    strength: "Feels closest to a premium software or advisory product instead of a generated fintech icon.",
     risk: "The standalone symbol still needs one more reduction pass before it earns favicon-scale use by itself.",
+    strength: "Feels closest to a premium software or advisory product instead of a generated fintech icon.",
+    summary: "Wordmark-led system with a restrained open-span mark beside it.",
+    verdict: "recommended",
   },
   {
     id: "horizon_tile",
     name: "Horizon tile",
-    verdict: "alternative",
-    summary: "Contained tile mark with a panoramic cut running through the center.",
-    strength: "Most credible as an app icon or sidebar avatar once the interior cut gets more ownable.",
     risk: "Still risks feeling generic if the slit reads as UI chrome instead of brand geometry.",
+    strength: "Most credible as an app icon or sidebar avatar once the interior cut gets more ownable.",
+    summary: "Contained tile mark with a panoramic cut running through the center.",
+    verdict: "alternative",
   },
   {
     id: "frame_lane",
     name: "Frame lane",
-    verdict: "discard",
-    summary: "Open frame with an internal lane carrying the view line.",
-    strength: "Keeps the horizon idea without becoming a literal monogram.",
     risk: "Still reads more like product UI chrome than something a world-class brand would own.",
+    strength: "Keeps the horizon idea without becoming a literal monogram.",
+    summary: "Open frame with an internal lane carrying the view line.",
+    verdict: "discard",
   },
 ];
 
@@ -2725,23 +2725,23 @@ const LONGVIEW_VERDICT_TONES: Record<
   LongviewLogoCandidate["verdict"],
   { color: string; backgroundColor: string; border: string; label: string }
 > = {
-  recommended: {
-    color: "var(--primary)",
-    backgroundColor: "color-mix(in oklab, var(--primary) 8%, var(--surface-tint))",
-    border: "1px solid color-mix(in oklab, var(--primary) 18%, var(--border))",
-    label: "Recommended",
-  },
   alternative: {
-    color: "var(--foreground)",
     backgroundColor: "color-mix(in oklab, var(--human-wash) 82%, var(--surface-tint))",
     border: "1px solid color-mix(in oklab, var(--human) 18%, var(--border))",
+    color: "var(--foreground)",
     label: "Alternative",
   },
   discard: {
-    color: "var(--muted-foreground)",
     backgroundColor: "var(--muted)",
     border: "1px solid var(--border)",
+    color: "var(--muted-foreground)",
     label: "Discard",
+  },
+  recommended: {
+    backgroundColor: "color-mix(in oklab, var(--primary) 8%, var(--surface-tint))",
+    border: "1px solid color-mix(in oklab, var(--primary) 18%, var(--border))",
+    color: "var(--primary)",
+    label: "Recommended",
   },
 };
 
@@ -2934,9 +2934,9 @@ function ExampleWorldsSection() {
                     className="rounded-full px-2.5 py-1.5 text-xs"
                     key={name}
                     style={{
-                      color: "var(--foreground)",
                       backgroundColor: "color-mix(in oklab, var(--muted) 44%, var(--surface-tint))",
                       border: "1px solid var(--border)",
+                      color: "var(--foreground)",
                     }}
                   >
                     {name}
@@ -3038,9 +3038,9 @@ function ExampleWorldsSection() {
                 <code
                   className="rounded-full px-2.5 py-1 text-xs"
                   style={{
-                    color: "var(--foreground)",
                     backgroundColor: "color-mix(in oklab, var(--muted) 42%, var(--surface-tint))",
                     border: "1px solid var(--border)",
+                    color: "var(--foreground)",
                   }}
                 >
                   {world.anchorStream.name}
@@ -3048,9 +3048,9 @@ function ExampleWorldsSection() {
                 <span
                   className="rounded-full px-2.5 py-1 text-xs"
                   style={{
-                    color: "var(--foreground)",
                     backgroundColor: "color-mix(in oklab, var(--muted) 42%, var(--surface-tint))",
                     border: "1px solid var(--border)",
+                    color: "var(--foreground)",
                   }}
                 >
                   {world.anchorStream.cadence}
@@ -3078,9 +3078,9 @@ function ExampleWorldsSection() {
                       className="rounded-full px-2.5 py-1.5 text-xs"
                       key={source}
                       style={{
-                        color: "var(--foreground)",
                         backgroundColor: "color-mix(in oklab, var(--muted) 42%, var(--surface-tint))",
                         border: "1px solid var(--border)",
+                        color: "var(--foreground)",
                       }}
                     >
                       {source}
@@ -3102,9 +3102,9 @@ function ExampleWorldsSection() {
                       className="rounded-full px-2.5 py-1.5 text-xs"
                       key={item}
                       style={{
-                        color: "var(--foreground)",
                         backgroundColor: "color-mix(in oklab, var(--background) 75%, var(--human-wash))",
                         border: "1px solid color-mix(in oklab, var(--human) 18%, var(--border))",
+                        color: "var(--foreground)",
                       }}
                     >
                       {item}
@@ -3236,9 +3236,9 @@ function ExampleWorldsSection() {
                         className="rounded-full px-2.5 py-1 text-xs"
                         key={field}
                         style={{
-                          color: "var(--foreground)",
                           backgroundColor: "color-mix(in oklab, var(--primary) 10%, var(--surface-tint))",
                           border: "1px solid color-mix(in oklab, var(--primary) 16%, var(--border))",
+                          color: "var(--foreground)",
                         }}
                       >
                         {field}
@@ -3260,9 +3260,9 @@ function ExampleWorldsSection() {
                         className="rounded-full px-2.5 py-1 text-xs"
                         key={field}
                         style={{
-                          color: "var(--muted-foreground)",
                           backgroundColor: "var(--muted)",
                           border: "1px solid var(--border)",
+                          color: "var(--muted-foreground)",
                         }}
                       >
                         {field}
@@ -3304,14 +3304,14 @@ function DocsSection() {
           <SubLabel>Docs shell — masthead, sidebar, TOC</SubLabel>
           <div
             className="overflow-hidden rounded-xl"
-            style={{ border: "1px solid var(--border)", backgroundColor: "var(--background)" }}
+            style={{ backgroundColor: "var(--background)", border: "1px solid var(--border)" }}
           >
             <div
               className="flex items-center gap-3 px-5 md:px-6"
               style={{
-                height: "2.75rem",
-                borderBottom: "1px solid var(--border)",
                 backgroundColor: "var(--background)",
+                borderBottom: "1px solid var(--border)",
+                height: "2.75rem",
               }}
             >
               <div className="flex items-center gap-2">
@@ -3337,10 +3337,10 @@ function DocsSection() {
               <aside
                 className="hidden shrink-0 md:block"
                 style={{
-                  width: "var(--pdpp-sidebar-width)",
-                  borderRight: "1px solid var(--border)",
                   background:
                     "linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, var(--surface-tint)), transparent 18%), color-mix(in oklab, var(--background) 97%, var(--surface-tint))",
+                  borderRight: "1px solid var(--border)",
+                  width: "var(--pdpp-sidebar-width)",
                 }}
               >
                 <div className="px-3 py-5">
@@ -3352,10 +3352,10 @@ function DocsSection() {
                   </div>
                   <nav className="flex flex-col gap-0.5">
                     {[
-                      { label: "Overview", active: false },
-                      { label: "Core Protocol", active: true },
-                      { label: "Collection Profile", active: false },
-                      { label: "Architecture", active: false },
+                      { active: false, label: "Overview" },
+                      { active: true, label: "Core Protocol" },
+                      { active: false, label: "Collection Profile" },
+                      { active: false, label: "Architecture" },
                     ].map((item) => (
                       <div
                         className="relative rounded-lg px-2 py-2 text-[13px]"
@@ -3383,18 +3383,18 @@ function DocsSection() {
               <div className="min-w-0 flex-1">
                 <div
                   style={{
+                    background: "linear-gradient(to right, var(--human-wash), transparent 70%)",
+                    borderBottom: "1px solid var(--border)",
+                    borderLeft: "1px solid var(--human)",
                     marginLeft: "-1.5rem",
                     marginRight: "-1.5rem",
-                    borderLeft: "1px solid var(--human)",
-                    borderBottom: "1px solid var(--border)",
-                    background: "linear-gradient(to right, var(--human-wash), transparent 70%)",
                   }}
                 >
                   <div className="px-6 py-7 md:px-8">
                     <div className="pdpp-eyebrow">Protocol Spec</div>
                     <h3
                       className="mt-2 font-semibold tracking-tight"
-                      style={{ fontSize: "clamp(1.9rem, 4vw, 2.75rem)", lineHeight: 1.02, letterSpacing: "-0.05em" }}
+                      style={{ fontSize: "clamp(1.9rem, 4vw, 2.75rem)", letterSpacing: "-0.05em", lineHeight: 1.02 }}
                     >
                       Personal Data Portability Protocol
                     </h3>
@@ -3416,8 +3416,8 @@ function DocsSection() {
                       <button
                         className="rounded-full border px-3 py-1.5 font-medium text-xs"
                         style={{
-                          borderColor: "var(--border)",
                           backgroundColor: "var(--card)",
+                          borderColor: "var(--border)",
                           color: "var(--foreground)",
                         }}
                         type="button"
@@ -3461,8 +3461,8 @@ function DocsSection() {
               <code
                 className="rounded-full px-1.5 py-0.5 font-mono text-xs"
                 style={{
-                  border: "1px solid var(--border)",
                   backgroundColor: "color-mix(in oklab, var(--muted) 84%, var(--surface-tint))",
+                  border: "1px solid var(--border)",
                 }}
               >
                 authorization_details
@@ -3471,8 +3471,8 @@ function DocsSection() {
               <code
                 className="rounded-full px-1.5 py-0.5 font-mono text-xs"
                 style={{
-                  border: "1px solid var(--border)",
                   backgroundColor: "color-mix(in oklab, var(--muted) 84%, var(--surface-tint))",
+                  border: "1px solid var(--border)",
                 }}
               >
                 grant
@@ -3483,10 +3483,10 @@ function DocsSection() {
             <pre
               className="overflow-auto rounded-2xl border p-5 text-xs leading-relaxed"
               style={{
-                borderColor: "var(--border)",
                 backgroundColor: "var(--muted)",
-                color: "var(--muted-foreground)",
+                borderColor: "var(--border)",
                 boxShadow: "0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.02)",
+                color: "var(--muted-foreground)",
               }}
             >{`{
   "stream": "following_accounts",
@@ -3523,7 +3523,7 @@ function DocsSection() {
                   ].map(([field, meaning, usage]) => (
                     <tr
                       key={field}
-                      style={{ borderBottom: "1px solid var(--border)", backgroundColor: "var(--background)" }}
+                      style={{ backgroundColor: "var(--background)", borderBottom: "1px solid var(--border)" }}
                     >
                       <td className="px-4 py-3 align-top">
                         <code className="font-mono text-xs">{field}</code>
@@ -3543,8 +3543,8 @@ function DocsSection() {
             <blockquote
               className="m-0 border-l-2 px-4 py-4 text-sm leading-relaxed"
               style={{
-                borderColor: "var(--human)",
                 backgroundColor: "color-mix(in oklab, var(--human-wash) 82%, var(--surface-tint))",
+                borderColor: "var(--human)",
                 color: "var(--foreground)",
               }}
             >
@@ -3674,150 +3674,171 @@ function SpecimenSwitcher<T>({
 
 const CONSENT_SPECIMENS: { label: string; axes: string; data: ConsentCardProps }[] = [
   {
-    // Axes: 1=continuous, 2=research, 4=delete, 5=present, 6=date, 7=mixed, 13=verified, 15=present, 16=present, 17=multiple
-    label: "Planning (baseline)",
     axes: "continuous, planning, verified, retention:delete, expiry, optional stream, commitments",
     data: {
-      requester: { name: "Longview", monogram: "LV", verified: true },
-      purpose:
-        "Longview is requesting compensation records to compare salary, equity, benefits, and tax tradeoffs before a career move.",
+      accessMode: "continuous",
       commitments: [
         "Analysis stays inside this planning workspace",
         "No employer outreach or document sharing without separate approval",
       ],
-      streams: [
-        {
-          key: "pay_statements",
-          label: "Pay statements",
-          detail:
-            "Employer, pay period, gross pay, and net pay. No bank account details, home address, or tax ID fragments.",
-        },
-        {
-          key: "equity_grants",
-          label: "Equity grants",
-          detail:
-            "Grant type, quantity, vesting start, and vesting schedule. No brokerage account numbers or beneficiary details.",
-        },
-      ],
       optional: {
+        consequenceOff: "Turned off. The rest of the grant is unaffected.",
+        consequenceOn: "Improves plan comparison and exposes coverage tradeoffs.",
+        detail: "Plan name, coverage tier, and employer contribution. No dependent details, claims, or provider notes.",
         key: "benefits_enrollments",
         label: "Benefits enrollments",
-        detail: "Plan name, coverage tier, and employer contribution. No dependent details, claims, or provider notes.",
-        consequenceOn: "Improves plan comparison and exposes coverage tradeoffs.",
-        consequenceOff: "Turned off. The rest of the grant is unaffected.",
       },
-      accessMode: "continuous",
-      technical: { clientId: "longview_planning_v1", purposeCode: "planning", grantExpires: "Apr 15, 2027" },
+      purpose:
+        "Longview is requesting compensation records to compare salary, equity, benefits, and tax tradeoffs before a career move.",
+      requester: { monogram: "LV", name: "Longview", verified: true },
+      streams: [
+        {
+          detail:
+            "Employer, pay period, gross pay, and net pay. No bank account details, home address, or tax ID fragments.",
+          key: "pay_statements",
+          label: "Pay statements",
+        },
+        {
+          detail:
+            "Grant type, quantity, vesting start, and vesting schedule. No brokerage account numbers or beneficiary details.",
+          key: "equity_grants",
+          label: "Equity grants",
+        },
+      ],
+      technical: { clientId: "longview_planning_v1", grantExpires: "Apr 15, 2027", purposeCode: "planning" },
     },
+    // Axes: 1=continuous, 2=research, 4=delete, 5=present, 6=date, 7=mixed, 13=verified, 15=present, 16=present, 17=multiple
+    label: "Planning (baseline)",
   },
   {
-    // Axes: 1=single_use, 2=personalization, 6=null(no expiry), 7=all required, 8=time_range, 15=absent, 17=single stream
-    label: "Single use, no expiry",
     axes: "single_use, personalization, no expiry, no optional, time_range, no commitments, single stream",
     data: {
-      requester: { name: "Concert Finder", monogram: "CF", verified: true },
-      purpose: "Concert Finder wants your top artists to recommend upcoming shows near you.",
+      accessMode: "single_use",
       commitments: [],
+      purpose: "Concert Finder wants your top artists to recommend upcoming shows near you.",
+      requester: { monogram: "CF", name: "Concert Finder", verified: true },
       streams: [
         {
-          key: "top_artists",
-          label: "Your top artists",
           detail:
             "Artist names, genres, and popularity scores from the last 6 months. No listening timestamps or play counts.",
+          key: "top_artists",
+          label: "Your top artists",
         },
       ],
-      accessMode: "single_use",
-      technical: { clientId: "concert_finder", purposeCode: "personalization", grantExpires: "No expiry" },
+      technical: { clientId: "concert_finder", grantExpires: "No expiry", purposeCode: "personalization" },
     },
+    // Axes: 1=single_use, 2=personalization, 6=null(no expiry), 7=all required, 8=time_range, 15=absent, 17=single stream
+    label: "Single use, no expiry",
   },
   {
-    // Axes: 2=ai_training(#3), 4=anonymize, 12=present, 13=unverified, 14=logo suppressed
-    label: "AI training, unverified",
     axes: "ai_training (explicit consent), unverified client, retention:anonymize, continuous",
     data: {
-      requester: { name: "DataCo ML Pipeline", monogram: "DC", verified: false },
-      purpose: "DataCo ML Pipeline wants to use your social media data to train recommendation models.",
+      accessMode: "continuous",
       commitments: ["Model weights only, raw data not retained"],
+      purpose: "DataCo ML Pipeline wants to use your social media data to train recommendation models.",
+      requester: { monogram: "DC", name: "DataCo ML Pipeline", verified: false },
       streams: [
         {
+          detail: "Post captions, dates, and engagement metrics. No private messages or stories.",
           key: "posts",
           label: "Your posts",
-          detail: "Post captions, dates, and engagement metrics. No private messages or stories.",
         },
-        { key: "following", label: "Who you follow", detail: "Account IDs and usernames. No DMs or profile details." },
+        { detail: "Account IDs and usernames. No DMs or profile details.", key: "following", label: "Who you follow" },
       ],
-      accessMode: "continuous",
-      technical: { clientId: "dataco_ml_v2", purposeCode: "ai_training", grantExpires: "Jan 1, 2028" },
+      technical: { clientId: "dataco_ml_v2", grantExpires: "Jan 1, 2028", purposeCode: "ai_training" },
     },
+    // Axes: 2=ai_training(#3), 4=anonymize, 12=present, 13=unverified, 14=logo suppressed
+    label: "AI training, unverified",
   },
   {
-    // Axes: 2=export, 4=absent(no retention), 5=absent, 15=absent, 16=absent(no purpose_description)
-    label: "Self-export, minimal",
     axes: "export, single_use, no retention, no commitments, no purpose_description fallback",
     data: {
-      requester: { name: "PDPP Export Tool", monogram: "PE", verified: true },
-      purpose: "Export your data for personal use.",
+      accessMode: "single_use",
       commitments: [],
+      purpose: "Export your data for personal use.",
+      requester: { monogram: "PE", name: "PDPP Export Tool", verified: true },
       streams: [
         {
+          detail: "Complete following list with account IDs and usernames.",
           key: "following",
           label: "Who you follow",
-          detail: "Complete following list with account IDs and usernames.",
         },
         {
+          detail: "All post data including captions, dates, media types, and locations.",
           key: "posts",
           label: "Your posts",
-          detail: "All post data including captions, dates, media types, and locations.",
         },
         {
+          detail: "Full ad targeting profile with categories, sources, and confidence scores.",
           key: "ad_targeting",
           label: "Ad interest categories",
-          detail: "Full ad targeting profile with categories, sources, and confidence scores.",
         },
       ],
-      accessMode: "single_use",
-      technical: { clientId: "pdpp_export", purposeCode: "export", grantExpires: "24 hours" },
+      technical: { clientId: "pdpp_export", grantExpires: "24 hours", purposeCode: "export" },
     },
+    // Axes: 2=export, 4=absent(no retention), 5=absent, 15=absent, 16=absent(no purpose_description)
+    label: "Self-export, minimal",
   },
   {
-    // Axes: 2=agent_context, 1=continuous, 6=null, 17=single, 12=absent(client_display missing, fall back to client_id)
-    label: "AI agent, no display",
     axes: "agent_context, continuous, no expiry, no client_display (client_id fallback)",
     data: {
-      requester: { name: "agt_personal_v3", monogram: "AG", verified: false },
-      purpose: "Requesting ongoing access to provide personalized context to your AI agent.",
+      accessMode: "continuous",
       commitments: ["Data processed locally, never sent to external servers"],
+      purpose: "Requesting ongoing access to provide personalized context to your AI agent.",
+      requester: { monogram: "AG", name: "agt_personal_v3", verified: false },
       streams: [
         {
+          detail: "Message content, timestamps, and participants. Includes DMs.",
           key: "messages",
           label: "Your messages",
-          detail: "Message content, timestamps, and participants. Includes DMs.",
         },
       ],
-      accessMode: "continuous",
-      technical: { clientId: "agt_personal_v3", purposeCode: "agent_context", grantExpires: "No expiry" },
+      technical: { clientId: "agt_personal_v3", grantExpires: "No expiry", purposeCode: "agent_context" },
     },
+    // Axes: 2=agent_context, 1=continuous, 6=null, 17=single, 12=absent(client_display missing, fall back to client_id)
+    label: "AI agent, no display",
   },
   {
-    // Axes: 2=analytics, 8=since+until, 18=profile used
-    label: "Analytics, scoped time window",
     axes: "analytics, single_use, time_range with since+until, profile-based",
     data: {
-      requester: { name: "Sleep Insights", monogram: "SI", verified: true },
-      purpose: "Sleep Insights wants to analyze your sleep data from Q1 2026 to identify patterns.",
+      accessMode: "single_use",
       commitments: ["Analysis results shared back with you", "Raw data deleted after analysis completes"],
+      purpose: "Sleep Insights wants to analyze your sleep data from Q1 2026 to identify patterns.",
+      requester: { monogram: "SI", name: "Sleep Insights", verified: true },
       streams: [
         {
+          detail: "Sleep duration, scores, and stage breakdowns for Jan-Mar 2026. No heart rate or HRV data.",
           key: "sleep_sessions",
           label: "Sleep sessions",
-          detail: "Sleep duration, scores, and stage breakdowns for Jan-Mar 2026. No heart rate or HRV data.",
         },
       ],
-      accessMode: "single_use",
-      technical: { clientId: "sleep_insights_v1", purposeCode: "analytics", grantExpires: "7 days" },
+      technical: { clientId: "sleep_insights_v1", grantExpires: "7 days", purposeCode: "analytics" },
     },
+    // Axes: 2=analytics, 8=since+until, 18=profile used
+    label: "Analytics, scoped time window",
   },
   {
+    axes: "continuous, agent_context, two connections of one connector, owner-meaningful default label",
+    data: {
+      accessMode: "continuous",
+      commitments: ["Drafts stay local until you send them"],
+      purpose: "Inbox Assistant wants to triage messages across both of your connected Gmail accounts.",
+      requester: { monogram: "IA", name: "Inbox Assistant", verified: true },
+      streams: [
+        {
+          connections: buildConsentCardConnections("gmail", [
+            { connectionId: "cin_gmail_personal", displayName: "Personal Gmail" },
+            // No owner label yet — mapper derives `Gmail · account 2`, never
+            // the registry URL it carries in storage.
+            { connectionId: "cin_gmail_work", displayName: "https://registry.pdpp.org/connectors/gmail" },
+          ]),
+          detail: "Subject, sender, and snippet across the granted accounts. No attachments.",
+          key: "messages",
+          label: "Your messages",
+        },
+      ],
+      technical: { clientId: "inbox_assistant_v1", grantExpires: "No expiry", purposeCode: "agent_context" },
+    },
     // Axis 17 (multiple connections): a grant covering two Gmail accounts of
     // the same connector type. The per-connection sub-rows are built through
     // `buildConsentCardConnections`, so the never-renamed connection renders
@@ -3825,27 +3846,6 @@ const CONSENT_SPECIMENS: { label: string; axes: string; data: ConsentCardProps }
     // storage placeholder. Proves the no-placeholder consent invariant
     // (openspec/changes/expose-connection-identity-on-public-read).
     label: "Multi-connection (same connector)",
-    axes: "continuous, agent_context, two connections of one connector, owner-meaningful default label",
-    data: {
-      requester: { name: "Inbox Assistant", monogram: "IA", verified: true },
-      purpose: "Inbox Assistant wants to triage messages across both of your connected Gmail accounts.",
-      commitments: ["Drafts stay local until you send them"],
-      streams: [
-        {
-          key: "messages",
-          label: "Your messages",
-          detail: "Subject, sender, and snippet across the granted accounts. No attachments.",
-          connections: buildConsentCardConnections("gmail", [
-            { connectionId: "cin_gmail_personal", displayName: "Personal Gmail" },
-            // No owner label yet — mapper derives `Gmail · account 2`, never
-            // the registry URL it carries in storage.
-            { connectionId: "cin_gmail_work", displayName: "https://registry.pdpp.org/connectors/gmail" },
-          ]),
-        },
-      ],
-      accessMode: "continuous",
-      technical: { clientId: "inbox_assistant_v1", purposeCode: "agent_context", grantExpires: "No expiry" },
-    },
   },
 ];
 
@@ -3854,97 +3854,97 @@ const CONSENT_SPECIMENS: { label: string; axes: string; data: ConsentCardProps }
 
 const GRANT_SPECIMENS: { label: string; axes: string; data: GrantInspectorProps }[] = [
   {
-    label: "Active, continuous",
     axes: "active, continuous, retention:delete, view + fields, time_range",
     data: {
+      accessMode: "continuous",
+      client: { clientId: "longview_planning_v1", name: "Longview" },
+      expiresAt: "Apr 15, 2027",
       grantId: "grt_8f3a2b1c",
       issuedAt: "Apr 6, 2026",
-      status: "active",
-      client: { clientId: "longview_planning_v1", name: "Longview" },
       purposeCode: "planning",
       purposeDescription: "Career-move compensation planning",
-      accessMode: "continuous",
-      expiresAt: "Apr 15, 2027",
       retention: { duration: "90 days", onExpiry: "delete" },
+      status: "active",
       streams: [
         {
-          name: "pay_statements",
-          label: "Pay statements",
           detail:
             "Employer, pay period, gross pay, and net pay. No bank account details, home address, or tax ID fragments.",
-          view: "summary",
           fields: ["employer", "pay_period", "gross_pay", "net_pay"],
+          label: "Pay statements",
+          name: "pay_statements",
           timeRange: { since: "Jan 1, 2025" },
+          view: "summary",
         },
         {
-          name: "equity_grants",
-          label: "Equity grants",
           detail:
             "Grant type, quantity, vesting start, and vesting schedule. No brokerage account numbers or beneficiary details.",
-          view: "vesting_summary",
           fields: ["grant_type", "quantity", "vesting_start", "vesting_schedule"],
+          label: "Equity grants",
+          name: "equity_grants",
+          view: "vesting_summary",
         },
       ],
     },
+    label: "Active, continuous",
   },
   {
-    label: "Expired",
     axes: "expired, single_use, no retention, no view (all fields)",
     data: {
+      accessMode: "single_use",
+      client: { clientId: "concert_finder", name: "Concert Finder" },
+      expiresAt: "Mar 2, 2026",
       grantId: "grt_a1b2c3d4",
       issuedAt: "Mar 1, 2026",
-      status: "expired",
-      client: { clientId: "concert_finder", name: "Concert Finder" },
       purposeCode: "personalization",
       purposeDescription: "Concert recommendations",
-      accessMode: "single_use",
-      expiresAt: "Mar 2, 2026",
+      status: "expired",
       streams: [
-        { name: "top_artists", label: "Your top artists", detail: "Artist names, genres, and popularity scores." },
+        { detail: "Artist names, genres, and popularity scores.", label: "Your top artists", name: "top_artists" },
       ],
     },
+    label: "Expired",
   },
   {
-    label: "Revoked",
     axes: "revoked, continuous, retention:anonymize, no expiry",
     data: {
+      accessMode: "continuous",
+      client: { clientId: "dataco_ml_v2", name: "DataCo ML Pipeline" },
+      expiresAt: null,
       grantId: "grt_rev0ked1",
       issuedAt: "Jan 15, 2026",
-      status: "revoked",
-      client: { clientId: "dataco_ml_v2", name: "DataCo ML Pipeline" },
       purposeCode: "ai_training",
       purposeDescription: "Recommendation model training",
-      accessMode: "continuous",
-      expiresAt: null,
       retention: { duration: "6 months", onExpiry: "anonymize" },
+      status: "revoked",
       streams: [
-        { name: "posts", label: "Your posts", fields: ["id", "caption", "taken_at", "media_type"] },
-        { name: "following_accounts", label: "Who you follow", fields: ["id", "username"] },
+        { fields: ["id", "caption", "taken_at", "media_type"], label: "Your posts", name: "posts" },
+        { fields: ["id", "username"], label: "Who you follow", name: "following_accounts" },
       ],
     },
+    label: "Revoked",
   },
   {
-    label: "Single use, all fields",
     axes: "active, single_use, no fields (all authorized), time_range since+until",
     data: {
+      accessMode: "single_use",
+      client: { clientId: "sleep_insights_v1", name: "Sleep Insights" },
+      expiresAt: "Apr 8, 2026",
       grantId: "grt_sleep001",
       issuedAt: "Apr 1, 2026",
-      status: "active",
-      client: { clientId: "sleep_insights_v1", name: "Sleep Insights" },
       purposeCode: "analytics",
       purposeDescription: "Q1 2026 sleep pattern analysis",
-      accessMode: "single_use",
-      expiresAt: "Apr 8, 2026",
       retention: { duration: "30 days", onExpiry: "delete" },
+      status: "active",
       streams: [
         {
-          name: "sleep_sessions",
-          label: "Sleep sessions",
           detail: "Sleep duration, scores, and stage breakdowns.",
+          label: "Sleep sessions",
+          name: "sleep_sessions",
           timeRange: { since: "Jan 1, 2026", until: "Apr 1, 2026" },
         },
       ],
     },
+    label: "Single use, all fields",
   },
 ];
 
@@ -3953,88 +3953,88 @@ const GRANT_SPECIMENS: { label: string; axes: string; data: GrantInspectorProps 
 
 const INVENTORY_SPECIMENS: { label: string; axes: string; data: StreamInventoryProps }[] = [
   {
-    label: "Instagram (populated)",
     axes: "mutable_state + append_only, all synced, nonzero counts",
     data: {
       connectorName: "Instagram",
       connectorVersion: "1.2.0",
       streams: [
         {
-          name: "following_accounts",
-          label: "Who you follow",
           detail: "Usernames and account IDs of accounts you follow. No DMs, profile details, or follower lists.",
-          semantics: "mutable_state",
+          label: "Who you follow",
+          lastSynced: "Apr 6, 2026",
+          name: "following_accounts",
           recordCount: 106,
-          lastSynced: "Apr 6, 2026",
-        },
-        {
-          name: "posts",
-          label: "Your posts",
-          detail: "Post captions, dates, and media types. No comments, likes, or private messages.",
-          semantics: "append_only",
-          recordCount: 22,
-          lastSynced: "Apr 6, 2026",
-        },
-        {
-          name: "ad_targeting",
-          label: "Ad interest categories",
-          detail: "Ad categories, sources, and confidence scores. No browsing history or purchase data.",
           semantics: "mutable_state",
-          recordCount: 47,
+        },
+        {
+          detail: "Post captions, dates, and media types. No comments, likes, or private messages.",
+          label: "Your posts",
           lastSynced: "Apr 6, 2026",
+          name: "posts",
+          recordCount: 22,
+          semantics: "append_only",
+        },
+        {
+          detail: "Ad categories, sources, and confidence scores. No browsing history or purchase data.",
+          label: "Ad interest categories",
+          lastSynced: "Apr 6, 2026",
+          name: "ad_targeting",
+          recordCount: 47,
+          semantics: "mutable_state",
         },
       ],
     },
+    label: "Instagram (populated)",
   },
   {
-    label: "Spotify (fresh)",
     axes: "append_only dominant, one never synced, zero count stream",
     data: {
       connectorName: "Spotify",
       connectorVersion: "2.0.0",
       streams: [
         {
-          name: "top_artists",
-          label: "Your top artists",
           detail: "Artist names, genres, and popularity scores. No listening timestamps or play counts.",
-          semantics: "mutable_state",
+          label: "Your top artists",
+          lastSynced: "Apr 5, 2026",
+          name: "top_artists",
           recordCount: 48,
-          lastSynced: "Apr 5, 2026",
-        },
-        {
-          name: "play_events",
-          label: "Play history",
-          detail: "Track plays with timestamps and durations. No skip or repeat data.",
-          semantics: "append_only",
-          recordCount: 1243,
-          lastSynced: "Apr 5, 2026",
-        },
-        {
-          name: "saved_tracks",
-          label: "Saved tracks",
-          detail: "Tracks in your library with save dates.",
           semantics: "mutable_state",
+        },
+        {
+          detail: "Track plays with timestamps and durations. No skip or repeat data.",
+          label: "Play history",
+          lastSynced: "Apr 5, 2026",
+          name: "play_events",
+          recordCount: 1243,
+          semantics: "append_only",
+        },
+        {
+          detail: "Tracks in your library with save dates.",
+          label: "Saved tracks",
+          name: "saved_tracks",
           recordCount: 0,
+          semantics: "mutable_state",
         },
       ],
     },
+    label: "Spotify (fresh)",
   },
   {
-    label: "Oura (single stream)",
     axes: "single stream, append_only only, never synced",
     data: {
       connectorName: "Oura Ring",
       connectorVersion: "1.0.0",
       streams: [
         {
-          name: "sleep_sessions",
-          label: "Sleep sessions",
           detail: "Sleep duration, scores, and stage breakdowns. No heart rate or HRV data.",
-          semantics: "append_only",
+          label: "Sleep sessions",
+          name: "sleep_sessions",
           recordCount: 0,
+          semantics: "append_only",
         },
       ],
     },
+    label: "Oura (single stream)",
   },
 ];
 
@@ -4044,16 +4044,14 @@ const INVENTORY_SPECIMENS: { label: string; axes: string; data: StreamInventoryP
 
 const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardProps }[] = [
   {
-    label: "Instagram (full)",
     axes: "multiple streams, mixed semantics, fields+time_range, views, no profiles",
     data: {
       connectorId: "https://registry.pdpp.org/connectors/instagram",
       displayName: "Instagram",
-      version: "1.2.0",
       streams: [
         {
-          name: "following_accounts",
           label: "Who you follow",
+          name: "following_accounts",
           semantics: "mutable_state",
           supportsFields: true,
           supportsResources: false,
@@ -4061,8 +4059,8 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
           viewCount: 2,
         },
         {
-          name: "posts",
           label: "Your posts",
+          name: "posts",
           semantics: "append_only",
           supportsFields: true,
           supportsResources: false,
@@ -4070,8 +4068,8 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
           viewCount: 2,
         },
         {
-          name: "ad_targeting",
           label: "Ad interest categories",
+          name: "ad_targeting",
           semantics: "mutable_state",
           supportsFields: true,
           supportsResources: false,
@@ -4079,19 +4077,23 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
           viewCount: 1,
         },
       ],
+      version: "1.2.0",
     },
+    label: "Instagram (full)",
   },
   {
-    label: "Spotify (with profiles)",
     axes: "profiles present, resources supported, many views",
     data: {
       connectorId: "https://registry.pdpp.org/connectors/spotify",
       displayName: "Spotify",
-      version: "2.0.0",
+      profiles: [
+        { id: "listening_history", label: "Listening history", streamCount: 2 },
+        { id: "library", label: "Full library", streamCount: 3 },
+      ],
       streams: [
         {
-          name: "top_artists",
           label: "Your top artists",
+          name: "top_artists",
           semantics: "mutable_state",
           supportsFields: true,
           supportsResources: false,
@@ -4099,8 +4101,8 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
           viewCount: 2,
         },
         {
-          name: "play_events",
           label: "Play history",
+          name: "play_events",
           semantics: "append_only",
           supportsFields: true,
           supportsResources: false,
@@ -4108,8 +4110,8 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
           viewCount: 0,
         },
         {
-          name: "saved_tracks",
           label: "Saved tracks",
+          name: "saved_tracks",
           semantics: "mutable_state",
           supportsFields: true,
           supportsResources: true,
@@ -4117,8 +4119,8 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
           viewCount: 1,
         },
         {
-          name: "playlists",
           label: "Playlists",
+          name: "playlists",
           semantics: "mutable_state",
           supportsFields: true,
           supportsResources: true,
@@ -4126,23 +4128,19 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
           viewCount: 2,
         },
       ],
-      profiles: [
-        { id: "listening_history", label: "Listening history", streamCount: 2 },
-        { id: "library", label: "Full library", streamCount: 3 },
-      ],
+      version: "2.0.0",
     },
+    label: "Spotify (with profiles)",
   },
   {
-    label: "Oura (minimal)",
     axes: "single stream, no views, no profiles, no resources, append_only only",
     data: {
       connectorId: "https://registry.pdpp.org/connectors/oura",
       displayName: "Oura Ring",
-      version: "1.0.0",
       streams: [
         {
-          name: "sleep_sessions",
           label: "Sleep sessions",
+          name: "sleep_sessions",
           semantics: "append_only",
           supportsFields: true,
           supportsResources: false,
@@ -4150,15 +4148,15 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
           viewCount: 0,
         },
       ],
+      version: "1.0.0",
     },
+    label: "Oura (minimal)",
   },
   {
-    label: "Gmail (no labels)",
     axes: "no display.label (falls back to stream name), mixed capabilities",
     data: {
       connectorId: "https://registry.pdpp.org/connectors/gmail",
       displayName: "Gmail",
-      version: "1.0.0",
       streams: [
         {
           name: "messages",
@@ -4185,7 +4183,9 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
           viewCount: 0,
         },
       ],
+      version: "1.0.0",
     },
+    label: "Gmail (no labels)",
   },
 ];
 
@@ -4194,48 +4194,48 @@ const CONNECTOR_SPECIMENS: { label: string; axes: string; data: ConnectorCardPro
 
 const CITATION_SPECIMENS: { label: string; axes: string; data: { citations: SpecCitationProps[] } }[] = [
   {
-    label: "Single citation",
     axes: "single, no href",
-    data: { citations: [{ section: "5", label: "Selection Request" }] },
+    data: { citations: [{ label: "Selection Request", section: "5" }] },
+    label: "Single citation",
   },
   {
-    label: "Citation with link",
     axes: "single, with href",
-    data: { citations: [{ section: "6", label: "Grant", href: "/spec-core#grant" }] },
+    data: { citations: [{ href: "/spec-core#grant", label: "Grant", section: "6" }] },
+    label: "Citation with link",
   },
   {
-    label: "Citation group",
     axes: "multiple citations, mixed href",
     data: {
       citations: [
-        { section: "5", label: "Selection Request", href: "/spec-core#selection-request" },
-        { section: "6", label: "Grant" },
-        { section: "7", label: "Manifest Format", href: "/spec-core#manifest-format" },
+        { href: "/spec-core#selection-request", label: "Selection Request", section: "5" },
+        { label: "Grant", section: "6" },
+        { href: "/spec-core#manifest-format", label: "Manifest Format", section: "7" },
       ],
     },
+    label: "Citation group",
   },
   {
-    label: "Deep section refs",
     axes: "subsection numbers, Appendix",
     data: {
       citations: [
-        { section: "5.1", label: "Client Display" },
-        { section: "5.2", label: "Client Claims" },
-        { section: "7.1", label: "Stream Display" },
-        { section: "A", label: "Purpose Codes" },
+        { label: "Client Display", section: "5.1" },
+        { label: "Client Claims", section: "5.2" },
+        { label: "Stream Display", section: "7.1" },
+        { label: "Purpose Codes", section: "A" },
       ],
     },
+    label: "Deep section refs",
   },
   {
-    label: "Consent flow citations",
     axes: "realistic grouping for consent card context",
     data: {
       citations: [
-        { section: "5", label: "Selection Request" },
-        { section: "6", label: "Grant" },
-        { section: "A", label: "Purpose Codes" },
+        { label: "Selection Request", section: "5" },
+        { label: "Grant", section: "6" },
+        { label: "Purpose Codes", section: "A" },
       ],
     },
+    label: "Consent flow citations",
   },
 ];
 
@@ -4255,7 +4255,7 @@ function StatusSection() {
           <div className="overflow-x-auto" style={{ borderTop: "1px solid var(--border)" }}>
             <table
               className="w-full"
-              style={{ borderCollapse: "collapse", tableLayout: "fixed", minWidth: "320px", maxWidth: "600px" }}
+              style={{ borderCollapse: "collapse", maxWidth: "600px", minWidth: "320px", tableLayout: "fixed" }}
             >
               <colgroup>
                 <col style={{ width: "28px" }} />
@@ -4279,33 +4279,33 @@ function StatusSection() {
               <tbody>
                 {[
                   {
-                    tokenVal: "--border",
                     label: "Offline / idle",
                     token: "--border",
+                    tokenVal: "--border",
                     usage: "Uninitiated, not started",
                   },
                   {
-                    tokenVal: "--primary",
                     label: "Active / in progress",
                     token: "--primary",
+                    tokenVal: "--primary",
                     usage: "Running, loading, processing",
                   },
                   {
-                    tokenVal: "--success",
                     label: "Success / complete",
                     token: "--success",
+                    tokenVal: "--success",
                     usage: "Done, granted, synced",
                   },
                   {
-                    tokenVal: "--warning",
                     label: "Warning / pending",
                     token: "--warning",
+                    tokenVal: "--warning",
                     usage: "Pending review, attention needed",
                   },
                   {
-                    tokenVal: "--destructive",
                     label: "Error",
                     token: "--destructive",
+                    tokenVal: "--destructive",
                     usage: "Failed, rejected, revoked",
                   },
                 ].map(({ tokenVal, label, token, usage }) => (
@@ -4339,10 +4339,10 @@ function StatusSection() {
             <span
               className="h-4 w-4 shrink-0 rounded-full"
               style={{
+                animation: "spin 0.8s linear infinite",
                 border: "2px solid var(--border)",
                 borderTopColor: "var(--primary)",
                 display: "inline-block",
-                animation: "spin 0.8s linear infinite",
               }}
             />
             <code className="font-mono text-xs" style={{ color: "var(--muted-foreground)" }}>

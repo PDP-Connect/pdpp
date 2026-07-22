@@ -24,22 +24,22 @@ function asSourceKind(value: FormDataEntryValue | null): "connector" | "provider
 
 function readDraft(formData: FormData) {
   return {
-    initialAccessToken: asString(formData.get("initial_access_token")),
+    accessMode: asString(formData.get("access_mode")),
     clientId: asString(formData.get("client_id")),
     clientName: asString(formData.get("client_name")),
     clientUri: asString(formData.get("client_uri")),
-    redirectUri: asString(formData.get("redirect_uri")),
-    sourceKind: asSourceKind(formData.get("source_kind")),
-    sourceId: asString(formData.get("source_id")),
-    purposeCode: asString(formData.get("purpose_code")),
-    purposeDescription: asString(formData.get("purpose_description")),
-    accessMode: asString(formData.get("access_mode")),
-    retention: asString(formData.get("retention")),
-    streamName: asString(formData.get("stream_name")),
     connectionId: asString(formData.get("connection_id")),
     fields: asString(formData.get("fields")),
-    view: asString(formData.get("view")),
+    initialAccessToken: asString(formData.get("initial_access_token")),
+    purposeCode: asString(formData.get("purpose_code")),
+    purposeDescription: asString(formData.get("purpose_description")),
+    redirectUri: asString(formData.get("redirect_uri")),
+    retention: asString(formData.get("retention")),
+    sourceId: asString(formData.get("source_id")),
+    sourceKind: asSourceKind(formData.get("source_kind")),
+    streamName: asString(formData.get("stream_name")),
     subjectId: asString(formData.get("subject_id")),
+    view: asString(formData.get("view")),
   };
 }
 

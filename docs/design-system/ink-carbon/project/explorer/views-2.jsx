@@ -105,8 +105,12 @@
     const buckets = new Map();
     for (const r of records) {
       const k = r[timeField]?.slice(0, 7);
-      if (!k) continue;
-      if (!buckets.has(k)) buckets.set(k, { key: k, net: 0, count: 0 });
+      if (!k) {
+        continue;
+      }
+      if (!buckets.has(k)) {
+        buckets.set(k, { count: 0, key: k, net: 0 });
+      }
       buckets.get(k).net += r.amount ?? 0;
       buckets.get(k).count += 1;
     }
@@ -156,10 +160,14 @@
     const labelField = fields.find((f) => /title|caption|subject/i.test(f.name))?.name;
     const timeField = getTimeField(stream);
 
-    if (!latField || !lngField) return <div className="exp-empty">Stream carries no usable geo fields.</div>;
+    if (!(latField && lngField)) {
+      return <div className="exp-empty">Stream carries no usable geo fields.</div>;
+    }
 
     const pts = stream.records.filter((r) => r[latField] != null && r[lngField] != null);
-    if (!pts.length) return <div className="exp-empty">No records carry coordinates in this window.</div>;
+    if (!pts.length) {
+      return <div className="exp-empty">No records carry coordinates in this window.</div>;
+    }
 
     const lats = pts.map((p) => p[latField]);
     const lngs = pts.map((p) => p[lngField]);
@@ -231,9 +239,13 @@
 
     const byDate = new Map();
     for (const r of stream.records) {
-      if (!r[startField]) continue;
+      if (!r[startField]) {
+        continue;
+      }
       const key = r[startField].slice(0, 10);
-      if (!byDate.has(key)) byDate.set(key, []);
+      if (!byDate.has(key)) {
+        byDate.set(key, []);
+      }
       byDate.get(key).push(r);
     }
 
@@ -243,10 +255,10 @@
       <>
         <div
           style={{
-            marginBottom: "0.75rem",
+            color: "var(--muted-foreground)",
             fontFamily: "var(--font-mono)",
             fontSize: "0.78rem",
-            color: "var(--muted-foreground)",
+            marginBottom: "0.75rem",
           }}
         >
           {today.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
@@ -300,10 +312,12 @@
     const dayCounts = new Map();
     for (const r of stream.records) {
       const d = r[timeField]?.slice(0, 10);
-      if (!d) continue;
+      if (!d) {
+        continue;
+      }
       dayCounts.set(d, (dayCounts.get(d) ?? 0) + 1);
     }
-    const heatValues = [...dayCounts.entries()].map(([date, count]) => ({ date, count }));
+    const heatValues = [...dayCounts.entries()].map(([date, count]) => ({ count, date }));
 
     // Sparklines: for each measure, sort by time and take last 30 values
     function valuesForMeasure(f) {
@@ -326,7 +340,9 @@
         </div>
         {measures.map((f) => {
           const values = valuesForMeasure(f);
-          if (!values.length) return null;
+          if (!values.length) {
+            return null;
+          }
           const avg = values.reduce((s, v) => s + v, 0) / values.length;
           const latest = values[values.length - 1];
           return (
@@ -347,11 +363,17 @@
   }
 
   function formatMeasure(f, v) {
-    if (f.unit === "meters") return fmtDistance(v);
-    if (f.unit === "seconds") return fmtDuration(v);
-    if (typeof v === "number") return v.toFixed(v % 1 === 0 ? 0 : 1);
+    if (f.unit === "meters") {
+      return fmtDistance(v);
+    }
+    if (f.unit === "seconds") {
+      return fmtDuration(v);
+    }
+    if (typeof v === "number") {
+      return v.toFixed(v % 1 === 0 ? 0 : 1);
+    }
     return String(v);
   }
 
-  Object.assign(window, { LedgerView, GalleryView, MapView, CalendarView, ChartView });
+  Object.assign(window, { CalendarView, ChartView, GalleryView, LedgerView, MapView });
 })();

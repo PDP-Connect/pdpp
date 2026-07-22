@@ -151,9 +151,9 @@ function TracesHeader() {
       </h1>
       <p
         style={{
+          color: "var(--muted-foreground)",
           fontFamily: "var(--font-mono)",
           fontSize: 11,
-          color: "var(--muted-foreground)",
           margin: 0,
         }}
       >
@@ -221,7 +221,7 @@ function TraceFilterBand({ params, hasFilters }: { params: Params; hasFilters: b
         Apply
       </IcButton>
       {hasFilters ? (
-        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href="/audit">
+        <a className={buttonVariants({ size: "sm", variant: "ghost" })} href="/audit">
           Reset
         </a>
       ) : null}
@@ -263,7 +263,7 @@ function TracesDesktopTable({ traces, params }: { traces: TraceSummary[]; params
         </TableHeaderRow>
         {traces.map((trace) => {
           const peeked = params.peek === trace.trace_id;
-          const peekHref = listHref(params, { peek: peeked ? undefined : trace.trace_id, cursor: undefined });
+          const peekHref = listHref(params, { cursor: undefined, peek: peeked ? undefined : trace.trace_id });
           const label = traceRowLabel(trace);
           const kinds = trace.kinds.slice(0, 3).join(", ");
           return (
@@ -298,6 +298,7 @@ function TraceSubjectLink({ href, label, traceId }: { href: string; label: strin
     <Link href={href} scroll={false} style={{ display: "block", textDecoration: "none" }}>
       <span
         style={{
+          color: "var(--foreground)",
           display: "block",
           fontFamily: "var(--font-sans)",
           fontSize: "0.875rem",
@@ -305,7 +306,6 @@ function TraceSubjectLink({ href, label, traceId }: { href: string; label: strin
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
-          color: "var(--foreground)",
         }}
       >
         {label}
@@ -313,10 +313,10 @@ function TraceSubjectLink({ href, label, traceId }: { href: string; label: strin
       <TypedSm
         style={{
           display: "block",
+          marginTop: 1,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
-          marginTop: 1,
         }}
       >
         {traceId}
@@ -361,6 +361,7 @@ function TraceMobileCard({
       <Link href={detailHref} style={{ display: "block", textDecoration: "none" }}>
         <span
           style={{
+            color: "var(--foreground)",
             display: "block",
             fontFamily: "var(--font-sans)",
             fontSize: "0.875rem",
@@ -368,28 +369,27 @@ function TraceMobileCard({
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
-            color: "var(--foreground)",
           }}
         >
           {label}
         </span>
         <TypedSm
           style={{
+            color: "var(--muted-foreground)",
             display: "block",
+            marginTop: 1,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
-            marginTop: 1,
-            color: "var(--muted-foreground)",
           }}
         >
           {trace.trace_id}
         </TypedSm>
         <div
           style={{
+            alignItems: "center",
             display: "flex",
             flexWrap: "wrap",
-            alignItems: "center",
             gap: "5px 10px",
             marginTop: 6,
           }}
@@ -414,22 +414,22 @@ function TracePagination({ result, params }: { result: ListResponse<TraceSummary
   return (
     <div
       style={{
+        borderTop: "1px solid var(--border)",
         display: "flex",
         gap: 8,
         justifyContent: "flex-end",
         marginTop: 16,
         paddingTop: 12,
-        borderTop: "1px solid var(--border)",
       }}
     >
       {params.cursor ? (
-        <a className={buttonVariants({ variant: "ghost", size: "sm" })} href={listHref(params, { cursor: undefined })}>
+        <a className={buttonVariants({ size: "sm", variant: "ghost" })} href={listHref(params, { cursor: undefined })}>
           ← First page
         </a>
       ) : null}
       {result.has_more && result.next_cursor ? (
         <a
-          className={buttonVariants({ variant: "ghost", size: "sm" })}
+          className={buttonVariants({ size: "sm", variant: "ghost" })}
           href={listHref(params, { cursor: result.next_cursor })}
         >
           Next →
@@ -470,18 +470,18 @@ function TracesEmptyState({ hasFilters }: { hasFilters: boolean }) {
   return (
     <div
       style={{
+        borderBottom: "1px solid var(--border)",
+        borderTop: "1px solid var(--border-strong)",
         padding: "40px 0",
         textAlign: "center",
-        borderTop: "1px solid var(--border-strong)",
-        borderBottom: "1px solid var(--border)",
       }}
     >
       <p
         style={{
+          color: "var(--foreground)",
           fontFamily: "var(--font-sans)",
           fontSize: "0.875rem",
           fontWeight: 600,
-          color: "var(--foreground)",
           margin: "0 0 6px",
         }}
       >
@@ -489,9 +489,9 @@ function TracesEmptyState({ hasFilters }: { hasFilters: boolean }) {
       </p>
       <p
         style={{
+          color: "var(--muted-foreground)",
           fontFamily: "var(--font-mono)",
           fontSize: 11,
-          color: "var(--muted-foreground)",
           margin: 0,
         }}
       >
@@ -518,12 +518,12 @@ function TracesPeekPanel({ traceId, envelope, cliCommand, listParams }: PeekPane
   return (
     <Sheet>
       <SheetHead>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ alignItems: "flex-start", display: "flex", gap: 8, justifyContent: "space-between" }}>
           <div style={{ minWidth: 0 }}>
             <SheetTitle as="h2">Trace</SheetTitle>
             <SheetSerial>{traceId}</SheetSerial>
           </div>
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href={closeHref} scroll={false}>
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href={closeHref} scroll={false}>
             ✕
           </Link>
         </div>
@@ -532,19 +532,19 @@ function TracesPeekPanel({ traceId, envelope, cliCommand, listParams }: PeekPane
         {/* Summary meta */}
         <div
           style={{
+            borderBottom: "1px solid var(--border)",
             display: "flex",
             flexWrap: "wrap",
             gap: "6px 16px",
             marginBottom: 16,
             paddingBottom: 12,
-            borderBottom: "1px solid var(--border)",
           }}
         >
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted-foreground)" }}>
+          <span style={{ color: "var(--muted-foreground)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
             {envelope.events.length} events
           </span>
           {firstEvent ? (
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted-foreground)" }}>
+            <span style={{ color: "var(--muted-foreground)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
               actor{" "}
               <span style={{ color: "var(--foreground)" }}>
                 {firstEvent.actor_type}/{firstEvent.actor_id}
@@ -559,19 +559,19 @@ function TracesPeekPanel({ traceId, envelope, cliCommand, listParams }: PeekPane
             <div
               key={event.event_id}
               style={{
-                padding: "6px 0",
                 borderBottom: "1px solid var(--border)",
+                padding: "6px 0",
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+              <div style={{ alignItems: "baseline", display: "flex", gap: 8, justifyContent: "space-between" }}>
                 <Typed
                   style={{
+                    flex: 1,
                     fontSize: "0.7rem",
+                    minWidth: 0,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
-                    flex: 1,
-                    minWidth: 0,
                   }}
                 >
                   {event.event_type}
@@ -584,8 +584,8 @@ function TracesPeekPanel({ traceId, envelope, cliCommand, listParams }: PeekPane
                 <TypedSm
                   style={{
                     color: "var(--muted-foreground)",
-                    marginTop: 2,
                     display: "block",
+                    marginTop: 2,
                   }}
                 >
                   {event.status}
@@ -603,20 +603,20 @@ function TracesPeekPanel({ traceId, envelope, cliCommand, listParams }: PeekPane
         {/* CLI command */}
         <div
           style={{
+            borderTop: "1px solid var(--border)",
             marginTop: 16,
             paddingTop: 12,
-            borderTop: "1px solid var(--border)",
           }}
         >
           <p
             style={{
+              color: "var(--muted-foreground)",
               fontFamily: "var(--font-mono)",
               fontSize: "0.625rem",
               fontWeight: 500,
               letterSpacing: "0.1em",
-              textTransform: "uppercase",
-              color: "var(--muted-foreground)",
               margin: "0 0 4px",
+              textTransform: "uppercase",
             }}
           >
             CLI

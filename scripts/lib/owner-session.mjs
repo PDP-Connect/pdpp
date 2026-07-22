@@ -80,28 +80,28 @@ export async function loginWithOwnerPassword({ base, password, fetchImpl }) {
   const csrfCookie = findSetCookiePair(getSetCookieList(loginPage), "pdpp_owner_csrf");
   const csrfField = extractCsrfFieldValue(await loginPage.text());
   if (!(csrfCookie && csrfField)) {
-    return { header: {}, mode: "password-session", error: "owner login did not return a CSRF cookie and field" };
+    return { error: "owner login did not return a CSRF cookie and field", header: {}, mode: "password-session" };
   }
 
   const resp = await fetchImpl(`${base}/owner/login`, {
-    method: "POST",
+    body: new URLSearchParams({ _csrf: csrfField, password, return_to: OWNER_LANDING_RETURN_TO }).toString(),
     headers: {
       accept: "text/html",
       "content-type": "application/x-www-form-urlencoded",
       cookie: csrfCookie,
     },
+    method: "POST",
     redirect: "manual",
-    body: new URLSearchParams({ password, return_to: OWNER_LANDING_RETURN_TO, _csrf: csrfField }).toString(),
   });
   const sessionCookie = findSetCookiePair(getSetCookieList(resp), "pdpp_owner_session");
   if (!sessionCookie) {
     return {
+      error: `owner login did not issue a session cookie (status ${resp.status})`,
       header: {},
       mode: "password-session",
-      error: `owner login did not issue a session cookie (status ${resp.status})`,
     };
   }
-  return { header: { cookie: sessionCookie }, mode: "password-session", error: null };
+  return { error: null, header: { cookie: sessionCookie }, mode: "password-session" };
 }
 
 /**
@@ -118,15 +118,15 @@ export async function loginWithOwnerPassword({ base, password, fetchImpl }) {
 export async function resolveOwnerAuthForLive({ base, env, fetchImpl }) {
   const cookie = env.PDPP_OWNER_SESSION_COOKIE?.trim();
   if (cookie) {
-    return { header: { cookie }, mode: "cookie", error: null };
+    return { error: null, header: { cookie }, mode: "cookie" };
   }
 
   const password = env.PDPP_OWNER_PASSWORD?.trim();
   if (password) {
-    return loginWithOwnerPassword({ base, password, fetchImpl });
+    return loginWithOwnerPassword({ base, fetchImpl, password });
   }
 
-  return { header: {}, mode: "none", error: null };
+  return { error: null, header: {}, mode: "none" };
 }
 
 /**
@@ -145,7 +145,7 @@ export async function resolveOwnerAuthForLive({ base, env, fetchImpl }) {
  * @returns {Promise<string>} the `Cookie` header value, e.g. `pdpp_owner_session=...`
  */
 export async function establishOwnerSessionCookie({ origin, ownerPassword, fetchImpl = fetch }) {
-  const result = await loginWithOwnerPassword({ base: origin, password: ownerPassword, fetchImpl });
+  const result = await loginWithOwnerPassword({ base: origin, fetchImpl, password: ownerPassword });
   if (result.error) {
     throw new Error(`owner login failed: ${result.error}`);
   }

@@ -89,13 +89,13 @@ export async function discoverOwnerAgentProfile(entrypointUrl, options = {}) {
     : null;
 
   const profile = buildProfile({
-    resource,
+    authorizationMetadata,
     authorizationServerUrl,
     onboarding,
-    authorizationMetadata,
+    resource,
   });
 
-  if (!profile.deviceAuthorizationEndpoint || !profile.tokenEndpoint) {
+  if (!(profile.deviceAuthorizationEndpoint && profile.tokenEndpoint)) {
     throw new OwnerAgentError(
       "onboarding_unavailable",
       "This deployment does not advertise a trusted owner-agent onboarding flow. " +
@@ -144,20 +144,20 @@ function buildProfile({ resource, authorizationServerUrl, onboarding, authorizat
     typeof onboarding?.revocation_path_template === "string" ? onboarding.revocation_path_template : null;
 
   return {
-    profile: onboarding?.profile ?? "trusted_owner_agent",
     advisory: Boolean(onboarding),
-    resource,
+    approvalUrl,
     authorizationServer: issuer,
     deviceAuthorizationEndpoint,
-    tokenEndpoint,
     introspectionEndpoint,
-    registrationEndpoint,
-    revocationPathTemplate,
-    approvalUrl,
-    schemaEndpoint,
-    schemaCompactEndpoint,
-    streamsEndpoint,
     mcpRejectsOwnerBearer: onboarding?.mcp_owner_bearer_rejected ?? onboarding?.mcp_rejects_owner_bearer ?? true,
+    profile: onboarding?.profile ?? "trusted_owner_agent",
+    registrationEndpoint,
+    resource,
+    revocationPathTemplate,
+    schemaCompactEndpoint,
+    schemaEndpoint,
+    streamsEndpoint,
+    tokenEndpoint,
   };
 }
 

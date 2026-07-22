@@ -22,15 +22,15 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1px 12px;
+  min-width: 0;
   padding: 10px 0 11px;
-  background: none;
-  border: 0;
-  border-bottom: 1px solid var(--border);
   color: inherit;
   text-align: left;
   cursor: pointer;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
   transition: background var(--motion-state);
-  min-width: 0;
 }
 .rr-s-item:hover {
   background: var(--muted);
@@ -40,32 +40,32 @@
   box-shadow: inset 0 0 0 1px var(--carbon-outline);
 }
 .rr-s-item__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 0.875rem;
   font-weight: 600;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rr-s-item.is-revoked .rr-s-item__name {
+  color: var(--muted-foreground);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
-  color: var(--muted-foreground);
 }
 .rr-s-item__kind {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--muted-foreground);
-  white-space: nowrap;
   text-align: right;
+  white-space: nowrap;
 }
 .rr-s-item__line {
+  grid-column: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--muted-foreground);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  grid-column: 1;
 }
 .rr-s-item__flag {
   grid-row: 2;
@@ -73,8 +73,8 @@
   justify-self: end;
 }
 .rr-s-item__ok {
-  color: var(--success);
   font-size: 9px;
+  color: var(--success);
 }
 
 /* ── Detail column ── */
@@ -86,20 +86,20 @@
 }
 .rr-s-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  flex-wrap: wrap;
 }
 .rr-s-cols {
   --cols: minmax(0, 1.1fr) 76px 110px 56px minmax(0, 1fr);
 }
 .rr-s-stream {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   font-weight: 500;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rr-s-cursor {
   font-family: var(--font-mono);
@@ -108,89 +108,89 @@
   white-space: nowrap;
 }
 .rr-s-readby {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 0.75rem;
   color: var(--muted-foreground);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rr-s-note {
+  max-width: 62ch;
   margin: 10px 0 0;
   font-size: 11.5px;
   line-height: 1.55;
   color: var(--muted-foreground);
-  max-width: 62ch;
 }
 
 /* Facet caption note (Explore) */
 .rr-x-facets__note {
-  font-size: 10.5px;
-  color: var(--muted-foreground);
   padding: 4px 0 2px;
+  font-size: 10.5px;
   line-height: 1.4;
+  color: var(--muted-foreground);
 }
 
 /* Compiled query line (Explore) */
 .rr-x-compiled {
   display: flex;
-  align-items: baseline;
   gap: 10px;
+  align-items: baseline;
   min-width: 0;
 }
 .rr-x-compiled__label {
   font-family: var(--font-mono);
   font-size: 9.5px;
-  letter-spacing: 0.04em;
   color: var(--muted-foreground);
+  letter-spacing: 0.04em;
   white-space: nowrap;
 }
 .rr-x-compiled .rr-copyid {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--primary);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 
 /* Connected records (Explore sheet) */
 .rr-x-rel {
-  margin-top: 10px;
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
 }
 .rr-x-rel__row {
   display: grid;
   grid-template-columns: 110px minmax(0, 1fr);
   gap: 10px;
+  align-items: baseline;
+  min-width: 0;
   padding: 4px 0;
-  background: none;
-  border: 0;
   color: inherit;
   text-align: left;
   cursor: pointer;
-  align-items: baseline;
-  min-width: 0;
+  background: none;
+  border: 0;
 }
 .rr-x-rel__k {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--muted-foreground);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rr-x-rel__v {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12px;
   font-weight: 500;
   color: var(--primary);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .rr-x-rel__row:hover .rr-x-rel__v {
   text-decoration: underline;

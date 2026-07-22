@@ -38,22 +38,22 @@ export const LONGVIEW_PAY_STATEMENT_ALL_FIELDS = [
 export const LONGVIEW_PAY_STATEMENT_GRANTED_FIELDS = ["employer", "pay_period", "gross_pay", "net_pay"] as const;
 
 export const LONGVIEW_STREAM_DETAILS = {
-  payStatements:
-    "Employer, pay period, gross pay, and net pay from each payroll cycle. No bank account details, home address, or tax ID fragments.",
-  equityGrants:
-    "Grant type, quantity, vesting start, and vesting schedule. No brokerage account numbers or beneficiary details.",
   benefitsEnrollments:
     "Plan name, coverage tier, and employer contribution. No dependent details, claims, or provider notes.",
+  equityGrants:
+    "Grant type, quantity, vesting start, and vesting schedule. No brokerage account numbers or beneficiary details.",
+  payStatements:
+    "Employer, pay period, gross pay, and net pay from each payroll cycle. No bank account details, home address, or tax ID fragments.",
 } as const;
 
 export const LONGVIEW_CONNECTOR_SPECIMEN: ConnectorCardProps = {
   connectorId: "https://registry.pdpp.org/profiles/compensation-v1",
   displayName: "Compensation profile",
-  version: "1.0.0",
+  profiles: [{ id: "career-move", label: "Career move planning", streamCount: 3 }],
   streams: [
     {
-      name: "pay_statements",
       label: "Pay statements",
+      name: "pay_statements",
       semantics: "append_only",
       supportsFields: true,
       supportsResources: false,
@@ -61,8 +61,8 @@ export const LONGVIEW_CONNECTOR_SPECIMEN: ConnectorCardProps = {
       viewCount: 2,
     },
     {
-      name: "equity_grants",
       label: "Equity grants",
+      name: "equity_grants",
       semantics: "mutable_state",
       supportsFields: true,
       supportsResources: false,
@@ -70,8 +70,8 @@ export const LONGVIEW_CONNECTOR_SPECIMEN: ConnectorCardProps = {
       viewCount: 2,
     },
     {
-      name: "benefits_enrollments",
       label: "Benefits enrollments",
+      name: "benefits_enrollments",
       semantics: "mutable_state",
       supportsFields: true,
       supportsResources: false,
@@ -79,7 +79,7 @@ export const LONGVIEW_CONNECTOR_SPECIMEN: ConnectorCardProps = {
       viewCount: 1,
     },
   ],
-  profiles: [{ id: "career-move", label: "Career move planning", streamCount: 3 }],
+  version: "1.0.0",
 };
 
 export const LONGVIEW_INVENTORY_SPECIMEN: StreamInventoryProps = {
@@ -87,103 +87,103 @@ export const LONGVIEW_INVENTORY_SPECIMEN: StreamInventoryProps = {
   connectorVersion: "1.0.0",
   streams: [
     {
-      name: "pay_statements",
-      label: "Pay statements",
       detail: LONGVIEW_STREAM_DETAILS.payStatements,
-      semantics: "append_only",
+      label: "Pay statements",
+      lastSynced: "Apr 15, 2026",
+      name: "pay_statements",
       recordCount: 24,
-      lastSynced: "Apr 15, 2026",
+      semantics: "append_only",
     },
     {
-      name: "equity_grants",
-      label: "Equity grants",
       detail: LONGVIEW_STREAM_DETAILS.equityGrants,
-      semantics: "mutable_state",
-      recordCount: 3,
+      label: "Equity grants",
       lastSynced: "Apr 15, 2026",
+      name: "equity_grants",
+      recordCount: 3,
+      semantics: "mutable_state",
     },
     {
-      name: "benefits_enrollments",
-      label: "Benefits enrollments",
       detail: LONGVIEW_STREAM_DETAILS.benefitsEnrollments,
-      semantics: "mutable_state",
-      recordCount: 1,
+      label: "Benefits enrollments",
       lastSynced: "Apr 15, 2026",
+      name: "benefits_enrollments",
+      recordCount: 1,
+      semantics: "mutable_state",
     },
   ],
 };
 
 export const LONGVIEW_CONSENT_SPECIMEN: ConsentCardProps = {
-  requester: {
-    name: LONGVIEW_CLIENT_NAME,
-    monogram: LONGVIEW_CLIENT_MONOGRAM,
-    verified: true,
-    uri: LONGVIEW_CLIENT_URI,
-    policyUri: LONGVIEW_POLICY_URI,
-    tosUri: LONGVIEW_TOS_URI,
-  },
-  purpose: LONGVIEW_PURPOSE,
+  accessMode: "continuous",
   commitments: [...LONGVIEW_COMMITMENTS],
-  streams: [
-    {
-      key: "pay_statements",
-      label: "Pay statements",
-      detail: LONGVIEW_STREAM_DETAILS.payStatements,
-    },
-    {
-      key: "equity_grants",
-      label: "Equity grants",
-      detail: LONGVIEW_STREAM_DETAILS.equityGrants,
-    },
-  ],
   optional: {
+    consequenceOff: "Leaves the rest of the compensation analysis intact.",
+    consequenceOn: "Improves plan comparison and exposes coverage tradeoffs.",
+    detail: LONGVIEW_STREAM_DETAILS.benefitsEnrollments,
     key: "benefits_enrollments",
     label: "Benefits enrollments",
-    detail: LONGVIEW_STREAM_DETAILS.benefitsEnrollments,
-    consequenceOn: "Improves plan comparison and exposes coverage tradeoffs.",
-    consequenceOff: "Leaves the rest of the compensation analysis intact.",
   },
-  accessMode: "continuous",
+  purpose: LONGVIEW_PURPOSE,
+  requester: {
+    monogram: LONGVIEW_CLIENT_MONOGRAM,
+    name: LONGVIEW_CLIENT_NAME,
+    policyUri: LONGVIEW_POLICY_URI,
+    tosUri: LONGVIEW_TOS_URI,
+    uri: LONGVIEW_CLIENT_URI,
+    verified: true,
+  },
+  streams: [
+    {
+      detail: LONGVIEW_STREAM_DETAILS.payStatements,
+      key: "pay_statements",
+      label: "Pay statements",
+    },
+    {
+      detail: LONGVIEW_STREAM_DETAILS.equityGrants,
+      key: "equity_grants",
+      label: "Equity grants",
+    },
+  ],
   technical: {
     clientId: LONGVIEW_CLIENT_ID,
-    purposeCode: LONGVIEW_PURPOSE_CODE,
     grantExpires: "Apr 15, 2027",
+    purposeCode: LONGVIEW_PURPOSE_CODE,
   },
 };
 
 export const LONGVIEW_GRANT_SPECIMEN: GrantInspectorProps = {
+  accessMode: "continuous",
+  client: { clientId: LONGVIEW_CLIENT_ID, name: LONGVIEW_CLIENT_NAME },
+  expiresAt: "Apr 15, 2027",
   grantId: "grt_longview01",
   issuedAt: "Apr 15, 2026",
-  status: "active",
-  client: { clientId: LONGVIEW_CLIENT_ID, name: LONGVIEW_CLIENT_NAME },
   purposeCode: LONGVIEW_PURPOSE_CODE,
   purposeDescription: LONGVIEW_PURPOSE_DESCRIPTION,
-  accessMode: "continuous",
-  expiresAt: "Apr 15, 2027",
   retention: { duration: "90 days", onExpiry: "delete" },
+  status: "active",
   streams: [
     {
-      name: "pay_statements",
-      label: "Pay statements",
       detail: LONGVIEW_STREAM_DETAILS.payStatements,
-      view: "summary",
       fields: [...LONGVIEW_PAY_STATEMENT_GRANTED_FIELDS],
+      label: "Pay statements",
+      name: "pay_statements",
       timeRange: { since: "Jan 1, 2025" },
+      view: "summary",
     },
     {
-      name: "equity_grants",
-      label: "Equity grants",
       detail: LONGVIEW_STREAM_DETAILS.equityGrants,
-      view: "vesting_summary",
       fields: ["grant_type", "quantity", "vesting_start", "vesting_schedule"],
+      label: "Equity grants",
+      name: "equity_grants",
+      view: "vesting_summary",
     },
   ],
 };
 
 export const LONGVIEW_ROLLOUT_COPY = {
-  heroLine: LONGVIEW_SUMMARY,
-  proofLine: "The app gets the comparison fields and leaves the identity-heavy payroll fields behind.",
   docsBlurb:
     "A compensation-planning client that needs payroll, equity, and benefits records under one enforceable consent boundary.",
+  heroLine: LONGVIEW_SUMMARY,
+  proofLine: "The app gets the comparison fields and leaves the identity-heavy payroll fields behind.",
   syncLine: "Each payroll cycle adds one new pay statement, so sync returns only the new record.",
 } as const;

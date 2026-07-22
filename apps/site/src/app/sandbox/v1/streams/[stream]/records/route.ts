@@ -26,8 +26,8 @@ export async function GET(request: Request, ctx: { params: Promise<{ stream: str
     const out = await executeRecordsList(
       {
         actor: { kind: "owner", subject_id: null },
-        streamName: stream,
         requestParams,
+        streamName: stream,
       },
       createSandboxRecordsListDependencies({
         streamName: stream,

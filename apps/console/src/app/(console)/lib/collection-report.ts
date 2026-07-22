@@ -241,9 +241,9 @@ function buildSkipLabel(skip: RefCollectionReportEntry["skipped"]): string | nul
 
 const TONE_RANK: Record<EvidenceTone, number> = {
   danger: 3,
-  warning: 2,
-  success: 1,
   neutral: 0,
+  success: 1,
+  warning: 2,
 };
 
 /** The stronger of two tones (danger > warning > success > neutral). */
@@ -285,15 +285,15 @@ export function formatStreamCollectionFacts(entry: RefCollectionReportEntry): St
   }
 
   return {
-    stream: entry.stream,
-    coverage,
-    disposition,
     countsLabel: counts.label,
     countsTitle: counts.title,
+    coverage,
+    disposition,
     pendingDetailGaps,
     pendingDetailGapsIsFloor,
     pendingDetailGapsLabel: formatPendingDetailGapsLabel(pendingDetailGaps, pendingDetailGapsIsFloor),
     skipLabel,
+    stream: entry.stream,
     tone,
   };
 }

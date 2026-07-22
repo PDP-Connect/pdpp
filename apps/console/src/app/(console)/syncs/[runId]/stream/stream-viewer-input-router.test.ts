@@ -61,7 +61,7 @@ function createMountedAdapter(mapPointerToRemote = (x: number, y: number) => ({ 
       calls.push({ type: "move", ...pos });
     },
     scroll(step) {
-      calls.push({ controlKey: step.controlKey ?? false, type: "scroll", deltaX: step.deltaX, deltaY: step.deltaY });
+      calls.push({ controlKey: step.controlKey ?? false, deltaX: step.deltaX, deltaY: step.deltaY, type: "scroll" });
     },
   };
   const client: NekoClientApi = {
@@ -316,11 +316,11 @@ test("console-dispatched input stays held until the viewer router settles and fl
   let settled = false;
   const router = createNekoViewerInputRouter({
     adapter: {
-      copyRemoteSelection() {
-        return Promise.resolve(false);
-      },
       blurTextInput() {
         // Unused by this input-router fixture.
+      },
+      copyRemoteSelection() {
+        return Promise.resolve(false);
       },
       focusTextInput() {
         // Unused by this input-router fixture.
@@ -330,6 +330,9 @@ test("console-dispatched input stays held until the viewer router settles and fl
       },
       pasteText() {
         return Promise.resolve(false);
+      },
+      sendKeysym() {
+        return Promise.resolve();
       },
       sendPointer(intent) {
         dispatched.push({
@@ -341,14 +344,11 @@ test("console-dispatched input stays held until the viewer router settles and fl
         });
         return Promise.resolve();
       },
-      sendKeysym() {
+      sendText() {
         return Promise.resolve();
       },
       sendWheel(intent) {
         dispatched.push({ action: "wheel", pointerType: "mouse", type: "pointer", x: intent.x, y: intent.y });
-        return Promise.resolve();
-      },
-      sendText() {
         return Promise.resolve();
       },
       setRemoteInputFocused() {

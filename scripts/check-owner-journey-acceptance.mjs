@@ -26,13 +26,13 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { checkCleanShellFreshness } from "./owner-journey-acceptance/clean-shell.mjs";
-import { runLocalAcceptance, REPO_ROOT } from "./owner-journey-acceptance/harness.mjs";
+import { REPO_ROOT, runLocalAcceptance } from "./owner-journey-acceptance/harness.mjs";
 import { runLiveAcceptance } from "./owner-journey-acceptance/live.mjs";
 import { renderReport } from "./owner-journey-acceptance/report.mjs";
 import { PUBLISHED_PACKAGES } from "./owner-journey-acceptance/surface-manifest.mjs";
 
 function parseArgs(argv) {
-  const args = { json: false, report: true, origin: null, cleanShell: false };
+  const args = { cleanShell: false, json: false, origin: null, report: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--json") {
@@ -73,14 +73,14 @@ async function main() {
   let cleanShell = null;
   if (args.cleanShell) {
     cleanShell = await checkCleanShellFreshness({
-      renderedCommands: local.renderedCommands,
       publishedPackages: PUBLISHED_PACKAGES,
+      renderedCommands: local.renderedCommands,
     });
     local.findings.push(...cleanShell.findings);
     local.ok = local.findings.length === 0;
   }
 
-  const markdown = renderReport({ local, live, cleanShell, timestamp });
+  const markdown = renderReport({ cleanShell, live, local, timestamp });
   const overallOk = local.ok && (live ? live.ok : true);
 
   let reportPath = null;
@@ -95,11 +95,11 @@ async function main() {
     process.stdout.write(
       `${JSON.stringify(
         {
-          ok: overallOk,
           findingCount: local.findings.length + (live ? live.findings.length : 0),
+          live: live ? { authMode: live.authMode, findings: live.findings, ok: live.ok } : null,
+          local: { findings: local.findings, ok: local.ok },
+          ok: overallOk,
           reportPath: reportPath ? path.relative(REPO_ROOT, reportPath) : null,
-          local: { ok: local.ok, findings: local.findings },
-          live: live ? { ok: live.ok, authMode: live.authMode, findings: live.findings } : null,
         },
         null,
         2

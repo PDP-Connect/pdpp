@@ -120,8 +120,8 @@ test("recovery: an active retry floor makes the step cooling", () => {
   const step = deriveRecoveryStep(
     verdict(),
     health({
+      detail_gap_backlog: backlog({ next_attempt_at: "2026-07-06T15:40:00Z", pending: 2093 }),
       state: "cooling_off",
-      detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T15:40:00Z" }),
     })
   );
   assert.equal(step, "cooling");
@@ -136,7 +136,7 @@ test("recovery: an owner-satisfiable non-attention action makes recovery eligibl
         action({ audience: "owner", cta: "Retry now", kind: "retry_gap", satisfied_when: { kind: "gap_recovered" } }),
       ],
     }),
-    health({ state: "degraded", detail_gap_backlog: backlog({ pending: 12 }) })
+    health({ detail_gap_backlog: backlog({ pending: 12 }), state: "degraded" })
   );
   assert.equal(step, "eligible");
   assert.equal(recoveryStateGroup(step), "review");
@@ -157,7 +157,7 @@ test("recovery: an attention-channel owner action is owner-required, not passive
         }),
       ],
     }),
-    health({ state: "blocked", detail_gap_backlog: backlog({ pending: 12 }) })
+    health({ detail_gap_backlog: backlog({ pending: 12 }), state: "blocked" })
   );
   assert.equal(step, "owner_required");
   assert.equal(recoveryStateGroup(step), "needsOwner");
@@ -172,7 +172,7 @@ test("recovery: a connector-defect code_fix verdict is a system issue with no re
         action({ audience: "maintainer", cta: "Connector code needs a fix", kind: "code_fix", terminal: true }),
       ],
     }),
-    health({ state: "degraded", detail_gap_backlog: backlog({ pending: 12 }) })
+    health({ detail_gap_backlog: backlog({ pending: 12 }), state: "degraded" })
   );
   assert.equal(step, "system_issue");
   assert.equal(recoveryStateGroup(step), "systemIssue");
@@ -181,8 +181,8 @@ test("recovery: a connector-defect code_fix verdict is a system issue with no re
 test("recovery: eligible work with a stale attempt floor beyond cadence is stalled, not queued", () => {
   const step = deriveRecoveryStep(
     verdict(),
-    health({ detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T10:00:00Z" }) }),
-    { now: "2026-07-06T14:00:00Z", cadenceWindowMs: 60 * 60 * 1000 }
+    health({ detail_gap_backlog: backlog({ next_attempt_at: "2026-07-06T10:00:00Z", pending: 2093 }) }),
+    { cadenceWindowMs: 60 * 60 * 1000, now: "2026-07-06T14:00:00Z" }
   );
   assert.equal(step, "stalled");
   assert.equal(recoveryStateGroup(step), "systemIssue");
@@ -192,10 +192,10 @@ test("recovery: a future retry floor is a live cooldown, never a stall", () => {
   const step = deriveRecoveryStep(
     verdict(),
     health({
+      detail_gap_backlog: backlog({ next_attempt_at: "2026-07-06T15:40:00Z", pending: 2093 }),
       state: "cooling_off",
-      detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T15:40:00Z" }),
     }),
-    { now: "2026-07-06T14:00:00Z", cadenceWindowMs: 60 * 60 * 1000 }
+    { cadenceWindowMs: 60 * 60 * 1000, now: "2026-07-06T14:00:00Z" }
   );
   assert.equal(step, "cooling");
 });
@@ -223,10 +223,10 @@ test("panel: queued recovery carries progress floor counts and a next eligible a
     verdict(),
     health({
       detail_gap_backlog: backlog({
+        next_attempt_at: "2026-07-06T15:40:00Z",
         pending: 2093,
         pending_is_floor: true,
         recovered: 396,
-        next_attempt_at: "2026-07-06T15:40:00Z",
       }),
     })
   );
@@ -241,8 +241,8 @@ test("panel: a cooldown blocker shows a wait/next-attempt line and no normal ret
   const model = buildRecoveryPanelViewModel(
     verdict(),
     health({
+      detail_gap_backlog: backlog({ next_attempt_at: "2026-07-06T15:40:00Z", pending: 2093 }),
       state: "cooling_off",
-      detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T15:40:00Z" }),
     })
   );
   assert.equal(model.step, "cooling");
@@ -270,8 +270,8 @@ const RAW_INTERNAL_LABEL_RE = /pending_is_floor|detail_gap|reason_code|upstream_
 test("panel: eligible work with no attempt beyond the cadence window renders as a system condition, not passive progress", () => {
   const model = buildRecoveryPanelViewModel(
     verdict(),
-    health({ detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T10:00:00Z" }) }),
-    { now: "2026-07-06T18:00:00Z", cadenceWindowMs: 6 * 60 * 60 * 1000 }
+    health({ detail_gap_backlog: backlog({ next_attempt_at: "2026-07-06T10:00:00Z", pending: 2093 }) }),
+    { cadenceWindowMs: 6 * 60 * 60 * 1000, now: "2026-07-06T18:00:00Z" }
   );
   // A stale attempt floor beyond the cadence window is a stall — a system
   // condition surfaced with evidence, never an owner retry prompt.
@@ -288,10 +288,10 @@ test("panel: a fresh attempt floor within the cadence window stays queued/coolin
   const model = buildRecoveryPanelViewModel(
     verdict(),
     health({
+      detail_gap_backlog: backlog({ next_attempt_at: "2026-07-06T17:30:00Z", pending: 2093 }),
       state: "cooling_off",
-      detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T17:30:00Z" }),
     }),
-    { now: "2026-07-06T18:00:00Z", cadenceWindowMs: 6 * 60 * 60 * 1000 }
+    { cadenceWindowMs: 6 * 60 * 60 * 1000, now: "2026-07-06T18:00:00Z" }
   );
   assert.notEqual(model.step, "stalled");
 });
@@ -309,15 +309,15 @@ test("panel: every recovery step exposes exactly one primary sentence, evidence 
     buildRecoveryPanelViewModel(
       verdict(),
       health({
+        detail_gap_backlog: backlog({ next_attempt_at: "2026-07-06T20:00:00Z", pending: 2093 }),
         state: "cooling_off",
-        detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T20:00:00Z" }),
       })
     ),
     // stalled
     buildRecoveryPanelViewModel(
       verdict(),
-      health({ detail_gap_backlog: backlog({ pending: 2093, next_attempt_at: "2026-07-06T10:00:00Z" }) }),
-      { now: "2026-07-06T18:00:00Z", cadenceWindowMs: 6 * 60 * 60 * 1000 }
+      health({ detail_gap_backlog: backlog({ next_attempt_at: "2026-07-06T10:00:00Z", pending: 2093 }) }),
+      { cadenceWindowMs: 6 * 60 * 60 * 1000, now: "2026-07-06T18:00:00Z" }
     ),
   ];
   for (const model of cases) {

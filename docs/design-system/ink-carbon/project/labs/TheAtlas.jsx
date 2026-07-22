@@ -4,21 +4,21 @@
 // TheAtlas — the spec as a visual index. Purposes, scopes, and temperatures laid out as a map.
 
 const SCOPES_MAP = [
-  { s: "pay_statements", fields: 6, reads: 48, axis: 0.35 },
-  { s: "employment", fields: 4, reads: 12, axis: 0.45 },
-  { s: "tax_documents", fields: 5, reads: 6, axis: 0.4 },
-  { s: "identity", fields: 3, reads: 23, axis: 0.7 },
-  { s: "transactions", fields: 8, reads: 94, axis: 0.55 },
-  { s: "health_records", fields: 12, reads: 2, axis: 0.25 },
-  { s: "location", fields: 2, reads: 156, axis: 0.85 },
+  { axis: 0.35, fields: 6, reads: 48, s: "pay_statements" },
+  { axis: 0.45, fields: 4, reads: 12, s: "employment" },
+  { axis: 0.4, fields: 5, reads: 6, s: "tax_documents" },
+  { axis: 0.7, fields: 3, reads: 23, s: "identity" },
+  { axis: 0.55, fields: 8, reads: 94, s: "transactions" },
+  { axis: 0.25, fields: 12, reads: 2, s: "health_records" },
+  { axis: 0.85, fields: 2, reads: 156, s: "location" },
 ];
 
 const TheAtlas = () => {
   const maxReads = Math.max(...SCOPES_MAP.map((s) => s.reads));
   return (
-    <section style={{ padding: "96px 64px", borderBottom: "1px solid var(--rule)" }}>
-      <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 40 }}>
+    <section style={{ borderBottom: "1px solid var(--rule)", padding: "96px 64px" }}>
+      <div style={{ margin: "0 auto", maxWidth: 1200 }}>
+        <div style={{ alignItems: "baseline", display: "flex", justifyContent: "space-between", marginBottom: 40 }}>
           <div>
             <div className="gutter">§4 · THE ATLAS</div>
             <h2 className="t-section" style={{ margin: "12px 0 0" }}>
@@ -36,12 +36,12 @@ const TheAtlas = () => {
         <div style={{ border: "1px solid var(--rule)", borderRadius: 2, overflow: "hidden" }}>
           <div
             style={{
-              padding: "10px 20px",
               background: "var(--paper-warm)",
               borderBottom: "1px solid var(--rule)",
               display: "grid",
-              gridTemplateColumns: "200px 80px 1fr 80px",
               gap: 16,
+              gridTemplateColumns: "200px 80px 1fr 80px",
+              padding: "10px 20px",
             }}
           >
             <span className="gutter">stream</span>
@@ -57,12 +57,12 @@ const TheAtlas = () => {
               <div
                 key={s.s}
                 style={{
-                  padding: "16px 20px",
-                  display: "grid",
-                  gridTemplateColumns: "200px 80px 1fr 80px",
-                  gap: 16,
                   alignItems: "center",
                   borderTop: i > 0 ? "1px solid var(--rule)" : "none",
+                  display: "grid",
+                  gap: 16,
+                  gridTemplateColumns: "200px 80px 1fr 80px",
+                  padding: "16px 20px",
                 }}
               >
                 <div>
@@ -73,26 +73,26 @@ const TheAtlas = () => {
                 <span className="t-mono num" style={{ color: "var(--ink-soft)" }}>
                   {s.fields}
                 </span>
-                <div style={{ position: "relative", height: 24, display: "flex", alignItems: "center" }}>
+                <div style={{ alignItems: "center", display: "flex", height: 24, position: "relative" }}>
                   <div
                     style={{
-                      position: "absolute",
-                      inset: 0,
                       background: "var(--thermal)",
-                      opacity: 0.08,
                       borderRadius: 2,
+                      inset: 0,
+                      opacity: 0.08,
+                      position: "absolute",
                     }}
                   />
                   <div
                     style={{
-                      position: "absolute",
-                      left: `${s.axis * 100}%`,
-                      top: 0,
-                      bottom: 0,
-                      width: 3,
                       background: color,
-                      transform: "translateX(-50%)",
+                      bottom: 0,
                       boxShadow: `0 0 0 3px color-mix(in oklch, ${color} 25%, transparent)`,
+                      left: `${s.axis * 100}%`,
+                      position: "absolute",
+                      top: 0,
+                      transform: "translateX(-50%)",
+                      width: 3,
                     }}
                   />
                   {/* tick marks */}
@@ -100,42 +100,42 @@ const TheAtlas = () => {
                     <div
                       key={t}
                       style={{
-                        position: "absolute",
-                        left: `${t * 100}%`,
-                        top: "50%",
-                        width: 1,
-                        height: 4,
                         background: "var(--rule-deep)",
+                        height: 4,
+                        left: `${t * 100}%`,
+                        position: "absolute",
+                        top: "50%",
                         transform: "translate(-50%, -50%)",
+                        width: 1,
                       }}
                     />
                   ))}
                 </div>
                 <div
                   style={{
-                    textAlign: "right",
-                    display: "flex",
                     alignItems: "center",
-                    justifyContent: "flex-end",
+                    display: "flex",
                     gap: 8,
+                    justifyContent: "flex-end",
+                    textAlign: "right",
                   }}
                 >
                   <div
                     style={{
-                      width: 40,
-                      height: 2,
                       background: "var(--rule-deep)",
                       borderRadius: 999,
+                      height: 2,
                       overflow: "hidden",
                       position: "relative",
+                      width: 40,
                     }}
                   >
                     <div
                       style={{
-                        position: "absolute",
-                        inset: 0,
-                        right: `${(1 - s.reads / maxReads) * 100}%`,
                         background: color,
+                        inset: 0,
+                        position: "absolute",
+                        right: `${(1 - s.reads / maxReads) * 100}%`,
                       }}
                     />
                   </div>
@@ -152,13 +152,13 @@ const TheAtlas = () => {
         </div>
 
         {/* Footnote */}
-        <div style={{ marginTop: 24, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 24 }}>
+        <div style={{ display: "grid", gap: 24, gridTemplateColumns: "1fr 1fr 1fr", marginTop: 24 }}>
           <div
             className="t-small"
             style={{
-              fontStyle: "italic",
-              fontFamily: "var(--font-serif)",
               borderLeft: "2px solid var(--human)",
+              fontFamily: "var(--font-serif)",
+              fontStyle: "italic",
               paddingLeft: 14,
             }}
           >
@@ -170,7 +170,7 @@ const TheAtlas = () => {
           </div>
           <div style={{ textAlign: "right" }}>
             <div className="gutter">also see</div>
-            <div className="t-mono" style={{ marginTop: 6, color: "var(--protocol)" }}>
+            <div className="t-mono" style={{ color: "var(--protocol)", marginTop: 6 }}>
               §4.2 field projection
             </div>
             <div className="t-mono" style={{ color: "var(--protocol)" }}>

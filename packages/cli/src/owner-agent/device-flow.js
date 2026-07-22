@@ -24,7 +24,7 @@ export async function initiateDeviceAuthorization({ fetchFn, endpoint, clientId 
   }
   const result = await postForm(fetchFn, endpoint, body);
   const verificationUri = result.verification_uri_complete ?? result.verification_uri;
-  if (!result.device_code || !verificationUri) {
+  if (!(result.device_code && verificationUri)) {
     throw new OwnerAgentError(
       "device_authorization_invalid",
       "Device authorization response did not include a device_code and verification URI."
@@ -32,13 +32,13 @@ export async function initiateDeviceAuthorization({ fetchFn, endpoint, clientId 
   }
   return {
     deviceCode: result.device_code,
-    userCode: result.user_code ?? null,
-    verificationUri,
-    verificationUriComplete: result.verification_uri_complete ?? null,
-    intervalMs: Number.isFinite(Number(result.interval)) ? Number(result.interval) * 1000 : DEFAULT_POLL_INTERVAL_MS,
     expiresInMs: Number.isFinite(Number(result.expires_in))
       ? Number(result.expires_in) * 1000
       : DEFAULT_POLL_TIMEOUT_MS,
+    intervalMs: Number.isFinite(Number(result.interval)) ? Number(result.interval) * 1000 : DEFAULT_POLL_INTERVAL_MS,
+    userCode: result.user_code ?? null,
+    verificationUri,
+    verificationUriComplete: result.verification_uri_complete ?? null,
   };
 }
 
@@ -75,10 +75,10 @@ export async function pollForOwnerAgentToken({
     if (status >= 200 && status < 300 && json?.access_token) {
       return {
         access_token: json.access_token,
-        token_type: json.token_type ?? "Bearer",
         expires_at: expiresAt(json.expires_in, now),
-        scope: json.scope ?? null,
         registration_client_uri: json.registration_client_uri ?? null,
+        scope: json.scope ?? null,
+        token_type: json.token_type ?? "Bearer",
       };
     }
 
@@ -136,12 +136,12 @@ async function postFormRaw(fetchFn, url, body) {
   let response;
   try {
     response = await fetchFn(url, {
-      method: "POST",
+      body: body.toString(),
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: body.toString(),
+      method: "POST",
     });
   } catch (error) {
     throw new OwnerAgentError("request_failed", `Request to ${url} failed: ${error.message}.`);
@@ -152,5 +152,5 @@ async function postFormRaw(fetchFn, url, body) {
   } catch {
     json = null;
   }
-  return { status: response.status, json };
+  return { json, status: response.status };
 }

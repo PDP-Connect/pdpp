@@ -25,13 +25,13 @@ export class RsClient {
   async getJson(path, { query, headers } = {}) {
     const url = this.buildUrl(path, query);
     const response = await this.fetch(url, {
-      method: "GET",
       headers: {
         Accept: "application/json",
         Authorization: `Bearer ${this.accessToken}`,
         "User-Agent": this.userAgent,
         ...(headers ?? {}),
       },
+      method: "GET",
     });
     return parseRsResponse(response, { expectJson: true });
   }
@@ -39,33 +39,32 @@ export class RsClient {
   async getRaw(path, { query, headers } = {}) {
     const url = this.buildUrl(path, query);
     const response = await this.fetch(url, {
-      method: "GET",
       headers: {
         Authorization: `Bearer ${this.accessToken}`,
         "User-Agent": this.userAgent,
         ...(headers ?? {}),
       },
+      method: "GET",
     });
     return parseRsResponse(response, { expectJson: false });
   }
 
   async postJson(path, { body, query, headers } = {}) {
-    return this.sendJson("POST", path, { body, query, headers });
+    return this.sendJson("POST", path, { body, headers, query });
   }
 
   async patchJson(path, { body, query, headers } = {}) {
-    return this.sendJson("PATCH", path, { body, query, headers });
+    return this.sendJson("PATCH", path, { body, headers, query });
   }
 
   async deleteJson(path, { query, headers } = {}) {
-    return this.sendJson("DELETE", path, { body: undefined, query, headers });
+    return this.sendJson("DELETE", path, { body: undefined, headers, query });
   }
 
   async sendJson(method, path, { body, query, headers } = {}) {
     const url = this.buildUrl(path, query);
     const hasBody = body !== undefined && body !== null;
     const init = {
-      method,
       headers: {
         Accept: "application/json",
         Authorization: `Bearer ${this.accessToken}`,
@@ -73,6 +72,7 @@ export class RsClient {
         ...(hasBody ? { "Content-Type": "application/json" } : {}),
         ...(headers ?? {}),
       },
+      method,
     };
     if (hasBody) {
       init.body = typeof body === "string" ? body : JSON.stringify(body);
@@ -98,7 +98,9 @@ function appendQuery(url, key, value) {
   }
   if (Array.isArray(value)) {
     for (const entry of value) {
-      if (entry === undefined || entry === null) continue;
+      if (entry === undefined || entry === null) {
+        continue;
+      }
       url.searchParams.append(key, String(entry));
     }
     return;
@@ -119,13 +121,13 @@ async function parseRsResponse(response, { expectJson }) {
   if (status >= 200 && status < 300) {
     if (expectJson) {
       if (status === 204) {
-        return { ok: true, status, body: null, requestId, contentType };
+        return { body: null, contentType, ok: true, requestId, status };
       }
       const body = contentType.includes("application/json") ? await response.json() : await response.text();
-      return { ok: true, status, body, requestId, contentType };
+      return { body, contentType, ok: true, requestId, status };
     }
     const buffer = Buffer.from(await response.arrayBuffer());
-    return { ok: true, status, body: buffer, requestId, contentType };
+    return { body: buffer, contentType, ok: true, requestId, status };
   }
 
   let errorBody = null;
@@ -144,7 +146,7 @@ async function parseRsResponse(response, { expectJson }) {
     envelope.request_id = requestId;
   }
 
-  return { ok: false, status, error: envelope, requestId, contentType };
+  return { contentType, error: envelope, ok: false, requestId, status };
 }
 
 function normalizeErrorEnvelope(body, status) {
@@ -154,17 +156,17 @@ function normalizeErrorEnvelope(body, status) {
     }
     if (typeof body.error === "string") {
       return {
-        type: body.error,
         code: body.error,
         message: body.error_description ?? body.message ?? body.error,
+        type: body.error,
       };
     }
     return body;
   }
 
   return {
-    type: "rs_error",
     code: `http_${status}`,
     message: typeof body === "string" && body.length > 0 ? body : `Resource server returned HTTP ${status}`,
+    type: "rs_error",
   };
 }

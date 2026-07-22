@@ -23,18 +23,6 @@ const manualUploadBodyLimit = "1024mb";
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
-  output: "standalone",
-  outputFileTracingRoot: path.join(__dirname, "../.."),
-  outputFileTracingIncludes: {
-    "/well-known/skills/**": [
-      "../../docs/agent-skills/**/*.md",
-      "../../openspec/README.md",
-      "../../pnpm-workspace.yaml",
-    ],
-    "/llms-full.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
-    "/llms.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
-  },
-  reactStrictMode: true,
   experimental: {
     cpus: buildWorkers,
     proxyClientMaxBodySize: manualUploadBodyLimit,
@@ -42,44 +30,56 @@ const nextConfig = {
       bodySizeLimit: manualUploadBodyLimit,
     },
   },
-  // Transpile the reference-implementation workspace package so Next can
-  // consume its TypeScript sources directly once shim pairs (.js + .d.ts)
-  // collapse into single .ts exports. Without this, Next's bundler would
-  // reject .ts entries from a node_modules-resolved workspace package.
-  transpilePackages: ["pdpp-reference-implementation", "@pdpp/brand", "@pdpp/brand-react", "@pdpp/operator-ui"],
+  output: "standalone",
+  outputFileTracingIncludes: {
+    "/llms-full.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
+    "/llms.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
+    "/well-known/skills/**": [
+      "../../docs/agent-skills/**/*.md",
+      "../../openspec/README.md",
+      "../../pnpm-workspace.yaml",
+    ],
+  },
+  outputFileTracingRoot: path.join(__dirname, "../.."),
+  reactStrictMode: true,
   async redirects() {
     return [
       {
-        source: "/favicon.ico",
         destination: "/brand/pdpp-favicon.svg",
         permanent: false,
+        source: "/favicon.ico",
       },
     ];
   },
   async rewrites() {
     return [
       {
-        source: "/.well-known/oauth-authorization-server",
         destination: "/well-known/oauth-authorization-server",
+        source: "/.well-known/oauth-authorization-server",
       },
       {
-        source: "/.well-known/oauth-protected-resource/:path*",
         destination: "/well-known/oauth-protected-resource/:path*",
+        source: "/.well-known/oauth-protected-resource/:path*",
       },
       {
-        source: "/.well-known/oauth-protected-resource",
         destination: "/well-known/oauth-protected-resource",
+        source: "/.well-known/oauth-protected-resource",
       },
       {
-        source: "/.well-known/skills/:path*",
         destination: "/well-known/skills/:path*",
+        source: "/.well-known/skills/:path*",
       },
       {
-        source: "/.well-known/llms.txt",
         destination: "/llms.txt",
+        source: "/.well-known/llms.txt",
       },
     ];
   },
+  // Transpile the reference-implementation workspace package so Next can
+  // consume its TypeScript sources directly once shim pairs (.js + .d.ts)
+  // collapse into single .ts exports. Without this, Next's bundler would
+  // reject .ts entries from a node_modules-resolved workspace package.
+  transpilePackages: ["pdpp-reference-implementation", "@pdpp/brand", "@pdpp/brand-react", "@pdpp/operator-ui"],
   webpack(config) {
     config.resolve.alias = {
       ...config.resolve.alias,

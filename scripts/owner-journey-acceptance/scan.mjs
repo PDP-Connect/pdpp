@@ -128,12 +128,12 @@ export function scanForbiddenStrings({ path, src, tier, rules }) {
       continue;
     }
     findings.push({
-      ruleId: rule.id,
       class: rule.class,
-      path,
-      line: lineOf(cleaned, match.index ?? 0),
       excerpt: excerptAround(cleaned, match.index ?? 0),
+      line: lineOf(cleaned, match.index ?? 0),
+      path,
       rationale: rule.rationale,
+      ruleId: rule.id,
     });
   }
   return findings;
@@ -180,12 +180,12 @@ export function scanRenderedHelperReachability({ path, src, forbiddenHelpers }) 
       const match = cleaned.match(re);
       if (match) {
         findings.push({
-          ruleId: helper.id,
           class: helper.class,
-          path,
-          line: lineOf(cleaned, match.index ?? 0),
           excerpt: `rendered page references ${symbol}()`,
+          line: lineOf(cleaned, match.index ?? 0),
+          path,
           rationale: helper.rationale,
+          ruleId: helper.id,
         });
       }
     }
@@ -227,7 +227,7 @@ export function extractRenderedCommands(src, options = {}) {
     const normalized = resolved.trim();
     const parsed = parseCommand(normalized);
     if (parsed) {
-      commands.push({ ...parsed, raw: normalized, line: lineOf(cleaned, m.index) });
+      commands.push({ ...parsed, line: lineOf(cleaned, m.index), raw: normalized });
     }
   }
 
@@ -242,7 +242,7 @@ export function extractRenderedCommands(src, options = {}) {
     if (tokens.length > 0 && tokens[0] === "npx") {
       const parsed = parseCommand(tokens.join(" "));
       if (parsed) {
-        commands.push({ ...parsed, raw: tokens.join(" "), line: lineOf(cleaned, am.index) });
+        commands.push({ ...parsed, line: lineOf(cleaned, am.index), raw: tokens.join(" ") });
       }
     }
   }
@@ -342,21 +342,21 @@ export function parseCommand(normalized) {
       idx += 1;
     }
     const specifier = tokens[idx] ?? null;
-    if (!specifier || !specifier.startsWith("@")) {
+    if (!(specifier && specifier.startsWith("@"))) {
       return null;
     }
     const packageName = specifier.split("@").slice(0, -1).join("@") || specifier;
     const subcommand = tokens[idx + 1] ?? null;
-    return { head, packageSpecifier: specifier, packageName, subcommand: cleanSub(subcommand) };
+    return { head, packageName, packageSpecifier: specifier, subcommand: cleanSub(subcommand) };
   }
   if (head === "pdpp" || head === "pdpp-local-collector") {
     const packageName = head === "pdpp" ? "@pdpp/cli" : "@pdpp/local-collector";
-    return { head, packageSpecifier: null, packageName, subcommand: cleanSub(tokens[1] ?? null) };
+    return { head, packageName, packageSpecifier: null, subcommand: cleanSub(tokens[1] ?? null) };
   }
   // External host CLIs and bare node/pnpm: capture head + subcommand for the
   // report; freshness for these is out of PDPP package scope (node/pnpm caught
   // by forbidden-string rules instead).
-  return { head, packageSpecifier: null, packageName: null, subcommand: cleanSub(tokens[1] ?? null) };
+  return { head, packageName: null, packageSpecifier: null, subcommand: cleanSub(tokens[1] ?? null) };
 }
 
 function cleanSub(sub) {
@@ -420,7 +420,7 @@ export function checkCommandFreshness({ commands, surfaceByPackage, publishedPac
   for (const cmd of commands) {
     const pkgName = cmd.packageName;
     // External host CLIs (claude/codex) and non-package heads: record, do not gate.
-    if (!pkgName || !publishedPackages[pkgName]) {
+    if (!(pkgName && publishedPackages[pkgName])) {
       rendered.push({ ...cmd, verified: cmd.head === "claude" || cmd.head === "codex" ? "external-host" : "n/a" });
       continue;
     }
@@ -429,12 +429,12 @@ export function checkCommandFreshness({ commands, surfaceByPackage, publishedPac
     let verified = "package-known";
     if (cmd.subcommand && surface && !surface.has(cmd.subcommand)) {
       findings.push({
-        ruleId: "command-freshness",
         class: "unpublished-command",
-        path: cmd.path,
-        line: cmd.line,
         excerpt: cmd.raw,
+        line: cmd.line,
+        path: cmd.path,
         rationale: `Rendered command '${cmd.head} ${cmd.subcommand}' is not a published subcommand of ${pkgName}. Published subcommands: ${[...(surface ?? [])].sort().join(", ") || "(none derived)"}.`,
+        ruleId: "command-freshness",
       });
       verified = "MISSING";
     } else if (cmd.subcommand) {
@@ -442,7 +442,7 @@ export function checkCommandFreshness({ commands, surfaceByPackage, publishedPac
     }
     rendered.push({ ...cmd, verificationMode: meta.verificationMode, verified });
   }
-  return { rendered, findings };
+  return { findings, rendered };
 }
 
 /**
@@ -467,14 +467,14 @@ export function checkHelpLinkTargets({ path, src }) {
     }
     const opensNewTab = /target=\{?["'`]?_blank/.test(tag);
     const safeRel = /rel=\{?["'`]?(?:[^"'`]*\b)?(?:noreferrer|noopener)/.test(tag);
-    if (!opensNewTab || !safeRel) {
+    if (!(opensNewTab && safeRel)) {
       findings.push({
-        ruleId: "static-secret-help-link-new-tab",
         class: "help-link-same-tab",
-        path,
-        line: lineOf(cleaned, m.index),
         excerpt: tag.slice(0, 120),
+        line: lineOf(cleaned, m.index),
+        path,
         rationale: `External help link must set target="_blank" and rel="noreferrer"/"noopener" (opensNewTab=${opensNewTab}, safeRel=${safeRel}).`,
+        ruleId: "static-secret-help-link-new-tab",
       });
     }
   }
@@ -500,12 +500,12 @@ export function checkPostSubmitDurability({ path, src, rule }) {
   }
   return [
     {
-      ruleId: rule.id,
       class: rule.class,
-      path,
-      line: 0,
       excerpt: `missing durable signal(s): ${missing.map((s) => s.id).join(", ")}`,
+      line: 0,
+      path,
       rationale: rule.rationale,
+      ruleId: rule.id,
     },
   ];
 }
@@ -531,13 +531,13 @@ export function checkSharedShellNavContract({ path, src, requiredItems }) {
     );
     if (!itemRe.test(cleaned)) {
       findings.push({
-        ruleId: "shared-shell-missing-nav-item",
         class: "shell-navigation-contract",
-        path,
-        line: 0,
         excerpt: `${item.label} -> ${item.href}`,
+        line: 0,
+        path,
         rationale:
           "The owner console shell must expose the primary route map as durable navigation links. Missing or remapped route labels can recreate the confusing top-nav/button state from the owner walkthrough.",
+        ruleId: "shared-shell-missing-nav-item",
       });
     }
   }
@@ -545,37 +545,37 @@ export function checkSharedShellNavContract({ path, src, requiredItems }) {
   const linkUsesRouteHref = /<Link\b[\s\S]*?href=\{item\.href\}/.test(cleaned);
   if (!linkUsesRouteHref) {
     findings.push({
-      ruleId: "shared-shell-nav-not-links",
       class: "shell-navigation-contract",
-      path,
-      line: 0,
       excerpt: "NavList must render Link href={item.href}",
+      line: 0,
+      path,
       rationale:
         "Primary navigation must be real route links. It must not regress into vague buttons that obscure route changes.",
+      ruleId: "shared-shell-nav-not-links",
     });
   }
 
   if (!/aria-current=\{active \? "page" : undefined\}/.test(cleaned)) {
     findings.push({
-      ruleId: "shared-shell-missing-active-page",
       class: "shell-navigation-contract",
-      path,
-      line: 0,
       excerpt: "aria-current active page marker",
+      line: 0,
+      path,
       rationale: "The shared shell must mark the current route with aria-current so the owner can tell where they are.",
+      ruleId: "shared-shell-missing-active-page",
     });
   }
 
   const jumpButton = cleaned.match(/<button\b[^>]*className="rr-chrome-btn"[\s\S]*?<\/button>/)?.[0] ?? "";
   if (!/\bJump\b/.test(jumpButton) || /\bExplore\b/.test(jumpButton)) {
     findings.push({
-      ruleId: "shared-shell-jump-not-explore-button",
       class: "shell-navigation-contract",
-      path,
-      line: jumpButton ? lineOf(cleaned, cleaned.indexOf(jumpButton)) : 0,
       excerpt: excerptAround(jumpButton, 0, 80) || "missing Jump button",
+      line: jumpButton ? lineOf(cleaned, cleaned.indexOf(jumpButton)) : 0,
+      path,
       rationale:
         "Header chrome may open the command palette, but it must not present Explore as an ambiguous button. Explore belongs in route navigation.",
+      ruleId: "shared-shell-jump-not-explore-button",
     });
   }
 
@@ -606,13 +606,13 @@ export function checkDashboardRouteShellContract({ files, fullScreenExceptions =
 
     if (/\bDashboardShell\b/.test(cleaned)) {
       findings.push({
-        ruleId: "legacy-dashboard-shell-route",
         class: "shell-navigation-contract",
-        path: file.path,
-        line: lineOf(cleaned, cleaned.search(/\bDashboardShell\b/)),
         excerpt: "DashboardShell",
+        line: lineOf(cleaned, cleaned.search(/\bDashboardShell\b/)),
+        path: file.path,
         rationale:
           "Normal console routes must not reintroduce the legacy dashboard shell/top-nav path. Use RecordroomShellWithPalette for shared navigation.",
+        ruleId: "legacy-dashboard-shell-route",
       });
     }
 
@@ -622,13 +622,13 @@ export function checkDashboardRouteShellContract({ files, fullScreenExceptions =
 
     if (!/\bRecordroomShellWithPalette\b/.test(cleaned)) {
       findings.push({
-        ruleId: "dashboard-route-missing-recordroom-shell",
         class: "shell-navigation-contract",
-        path: file.path,
-        line: 0,
         excerpt: "RecordroomShellWithPalette missing",
+        line: 0,
+        path: file.path,
         rationale:
           "Normal dashboard pages and loading states must render inside the shared Recordroom shell so navigation and chrome stay consistent across the owner journey.",
+        ruleId: "dashboard-route-missing-recordroom-shell",
       });
     }
   }

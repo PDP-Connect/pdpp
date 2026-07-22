@@ -85,9 +85,9 @@ export function humanizeReasonCode(code: string | null | undefined): string | nu
 }
 
 const OWNER_ACTION_VERB: Record<NonNullable<RefNextAction["owner_action"]>, string> = {
-  provide_value: "Provide input",
   act_elsewhere: "Continue on the provider",
   operate_attachment: "Open the linked tool",
+  provide_value: "Provide input",
 };
 
 const REASON_LABELS: Record<string, string> = {
@@ -133,11 +133,11 @@ export function formatNextAction(action: RefNextAction | null | undefined): Form
     action.source === "schedule_fallback" ? "Details unavailable — open the connection to see what's needed." : null;
 
   return {
-    label,
-    caveat,
     actionTarget: action.action_target ?? null,
-    variant: action.source === "schedule_fallback" ? "schedule_fallback" : "structured",
+    caveat,
+    label,
     notificationHint: formatNotificationHint(action.notification_state ?? null),
+    variant: action.source === "schedule_fallback" ? "schedule_fallback" : "structured",
   };
 }
 

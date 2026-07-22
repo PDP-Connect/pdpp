@@ -51,10 +51,16 @@ function normalizePath(path) {
     // fall through; treat as a path
   }
   const q = p.indexOf("?");
-  if (q !== -1) p = p.slice(0, q);
+  if (q !== -1) {
+    p = p.slice(0, q);
+  }
   const h = p.indexOf("#");
-  if (h !== -1) p = p.slice(0, h);
-  if (!p.startsWith("/")) p = `/${p}`;
+  if (h !== -1) {
+    p = p.slice(0, h);
+  }
+  if (!p.startsWith("/")) {
+    p = `/${p}`;
+  }
   return p;
 }
 
@@ -107,9 +113,9 @@ function mismatchMessage(path, inferred, chosen) {
 export async function buildAuthHeaders({ mode, referenceUrl, flags, io, env = process.env }) {
   if (mode === AUTH_COOKIE) {
     const headers = ownerSessionHeaders({
+      cacheRoot: flags["cache-root"],
       ownerSession: flags["owner-session"] || "",
       referenceUrl,
-      cacheRoot: flags["cache-root"],
     });
     if (!headers.Cookie) {
       throw new PdppUsageError(

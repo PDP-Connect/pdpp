@@ -43,7 +43,7 @@ function validateReason(raw: string): { ok: true; value: string | null } | { ok:
   // (an `email-loop_suspected_…` reason that becomes `email-l…` is worse
   // than no reason at all).
   if (Buffer.byteLength(raw, "utf8") > MAX_REASON_BYTES) {
-    return { ok: false, message: reasonOverflowMessage() };
+    return { message: reasonOverflowMessage(), ok: false };
   }
   return { ok: true, value: raw };
 }

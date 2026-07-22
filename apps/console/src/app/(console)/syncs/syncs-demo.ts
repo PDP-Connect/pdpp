@@ -27,11 +27,11 @@ const COOLING_RHYTHM: SyncRhythmTick[] = ["ok", "ok", "ok", "ok", "ok"];
 
 function row(partial: Partial<SyncRow> & Pick<SyncRow, "stream" | "cadence" | "browseHref">): SyncRow {
   return {
-    next: "—",
-    nextAt: null,
-    failed: false,
     collectedThisRun: null,
     coverageCondition: null,
+    failed: false,
+    next: "—",
+    nextAt: null,
     streamSkipped: false,
     ...partial,
   };
@@ -57,11 +57,6 @@ const BLOCKED_HEALTH: RefConnectionHealthSnapshot = {
 const COOLING_HEALTH: RefConnectionHealthSnapshot = {
   axes: { attention: "none", coverage: "partial", freshness: "fresh", outbox: "idle" },
   badges: { stale: false, syncing: false },
-  last_success_at: "2026-06-13T04:10:00Z",
-  next_action: null,
-  next_attempt_at: "2026-06-13T09:00:00Z",
-  reason_code: "source_pressure",
-  state: "cooling_off",
   detail_gap_backlog: {
     max_attempt_count: 5,
     next_attempt_at: "2026-06-13T09:00:00Z",
@@ -69,6 +64,11 @@ const COOLING_HEALTH: RefConnectionHealthSnapshot = {
     pending_is_floor: true,
     recovered: 4200,
   },
+  last_success_at: "2026-06-13T04:10:00Z",
+  next_action: null,
+  next_attempt_at: "2026-06-13T09:00:00Z",
+  reason_code: "source_pressure",
+  state: "cooling_off",
   unknown_reasons: [],
 } as RefConnectionHealthSnapshot;
 
@@ -82,136 +82,136 @@ function demoCard(input: {
   if (!summary) {
     throw new Error(`demo health for ${input.name} did not produce a failure summary`);
   }
-  return { name: input.name, connectionId: input.connectionId, connectorId: input.connectorId, summary, work: null };
+  return { connectionId: input.connectionId, connectorId: input.connectorId, name: input.name, summary, work: null };
 }
 
 const FIRST_MERIDIAN = demoCard({
-  name: "First Meridian — checking",
   connectionId: "cin_fm_206b11",
   connectorId: "first_meridian",
   health: BLOCKED_HEALTH,
+  name: "First Meridian — checking",
 });
 
 const CHATGPT = demoCard({
-  name: "ChatGPT — personal",
   connectionId: "cin_cg_91a0fe",
   connectorId: "chatgpt",
   health: COOLING_HEALTH,
+  name: "ChatGPT — personal",
 });
 
 export const DEMO_SYNCS_MODEL: SyncsViewModel = {
-  band: { onSchedule: 6, needYourHand: 1, needsReview: 2, allClear: false },
+  band: { allClear: false, needsReview: 2, needYourHand: 1, onSchedule: 6 },
   duplicateGroups: [],
   failureCards: [FIRST_MERIDIAN, CHATGPT],
-  pendingSetupCards: [],
   groups: [
     {
-      name: "Northstar HR",
-      connectionId: "cin_nh_e3391c",
       activeRunId: null,
+      connectionId: "cin_nh_e3391c",
       connectorId: "northstar_hr",
       health: "ok",
+      lastRunAt: "2026-06-13T06:00:00Z",
       lastRunDelta: "+2 records",
       lastRunDuration: "18 s",
-      lastRunAt: "2026-06-13T06:00:00Z",
       lastRunRhythm: OK_RHYTHM,
+      name: "Northstar HR",
       streams: [
         row({
-          stream: "pay_statements",
+          browseHref: "/explore?connection=cin_nh_e3391c&stream=pay_statements",
           cadence: "with payroll",
           collectedThisRun: 2,
           coverageCondition: "complete",
           next: "Jun 14 · 06:00Z",
           nextAt: "2026-06-14T06:00:00Z",
-          browseHref: "/explore?connection=cin_nh_e3391c&stream=pay_statements",
+          stream: "pay_statements",
         }),
         row({
-          stream: "employment",
+          browseHref: "/explore?connection=cin_nh_e3391c&stream=employment",
           cadence: "daily",
           collectedThisRun: 0,
           coverageCondition: "complete",
           next: "Jun 14 · 06:00Z",
           nextAt: "2026-06-14T06:00:00Z",
-          browseHref: "/explore?connection=cin_nh_e3391c&stream=employment",
+          stream: "employment",
         }),
       ],
       totalStreamCount: 2,
     },
     {
-      name: "ChatGPT — personal",
-      connectionId: "cin_cg_91a0fe",
       activeRunId: null,
+      connectionId: "cin_cg_91a0fe",
       connectorId: "chatgpt",
       health: "failing",
+      lastRunAt: "2026-06-13T04:10:00Z",
       lastRunDelta: "+34 records",
       lastRunDuration: "41 s",
-      lastRunAt: "2026-06-13T04:10:00Z",
       lastRunRhythm: COOLING_RHYTHM,
+      name: "ChatGPT — personal",
       streams: [
         row({
-          stream: "conversations",
+          browseHref: "/explore?connection=cin_cg_91a0fe&stream=conversations",
           cadence: "daily",
           collectedThisRun: 34,
           coverageCondition: "partial",
           next: "2026-06-13T09:00:00Z",
           nextAt: "2026-06-13T09:00:00Z",
-          browseHref: "/explore?connection=cin_cg_91a0fe&stream=conversations",
+          stream: "conversations",
         }),
       ],
       totalStreamCount: 1,
     },
     {
-      name: "First Meridian — checking",
-      connectionId: "cin_fm_206b11",
       activeRunId: null,
+      connectionId: "cin_fm_206b11",
       connectorId: "first_meridian",
       health: "failing",
+      lastRunAt: "2026-06-11T05:00:00Z",
       lastRunDelta: "sync failed",
       lastRunDuration: "2 s",
-      lastRunAt: "2026-06-11T05:00:00Z",
       lastRunRhythm: FAIL_RHYTHM,
+      name: "First Meridian — checking",
       streams: [
         row({
-          stream: "transactions",
+          browseHref: "/explore?connection=cin_fm_206b11&stream=transactions",
           cadence: "daily",
           failed: true,
           next: "held",
-          browseHref: "/explore?connection=cin_fm_206b11&stream=transactions",
+          stream: "transactions",
         }),
         row({
-          stream: "balances",
+          browseHref: "/explore?connection=cin_fm_206b11&stream=balances",
           cadence: "daily",
           failed: true,
           next: "held",
-          browseHref: "/explore?connection=cin_fm_206b11&stream=balances",
+          stream: "balances",
         }),
       ],
       totalStreamCount: 2,
     },
     {
-      name: "Gmail — personal",
-      connectionId: "cin_gm_410c2b",
       activeRunId: null,
+      connectionId: "cin_gm_410c2b",
       connectorId: "gmail",
       health: "ok",
+      lastRunAt: "2026-06-13T05:00:00Z",
       lastRunDelta: "+38 records",
       lastRunDuration: "6 s",
-      lastRunAt: "2026-06-13T05:00:00Z",
       lastRunRhythm: OK_RHYTHM,
+      name: "Gmail — personal",
       streams: [
         row({
-          stream: "messages",
+          browseHref: "/explore?connection=cin_gm_410c2b&stream=messages",
           cadence: "every 15 min",
           collectedThisRun: 38,
           coverageCondition: "complete",
           next: "2026-06-13T05:45:00Z",
           nextAt: "2026-06-13T05:45:00Z",
-          browseHref: "/explore?connection=cin_gm_410c2b&stream=messages",
+          stream: "messages",
         }),
       ],
       totalStreamCount: 1,
     },
   ],
+  pendingSetupCards: [],
   totalGroupCount: 4,
   totalReviewCardCount: 2,
   totalStreamCount: 6,

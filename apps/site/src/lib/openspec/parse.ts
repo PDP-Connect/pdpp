@@ -71,7 +71,7 @@ function readParagraph(lines: string[], from: number): { paragraph: string[]; ne
     paragraph.push((lines[i] ?? "").trim());
     i++;
   }
-  return { paragraph, next: i };
+  return { next: i, paragraph };
 }
 
 export function extractExcerpt(markdown: string): string | null {

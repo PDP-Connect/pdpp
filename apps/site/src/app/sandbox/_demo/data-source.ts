@@ -119,13 +119,13 @@ function connectorRunRef(runId: string | undefined): ConnectorRunRef | null {
     return null;
   }
   return {
-    run_id: run.run_id,
-    first_at: run.first_at,
-    last_at: run.last_at,
     event_count: run.events.length,
-    status: run.status,
     failure_reason: run.failure_reason,
+    first_at: run.first_at,
     known_gaps: [],
+    last_at: run.last_at,
+    run_id: run.run_id,
+    status: run.status,
   };
 }
 
@@ -138,54 +138,54 @@ function refConnectorRunSummary(runId: string | undefined): RefConnectorRunSumma
     return null;
   }
   return {
-    run_id: run.run_id,
-    first_at: run.first_at,
-    last_at: run.last_at,
-    started_at: run.started_at,
-    finished_at: run.finished_at,
     event_count: run.events.length,
-    status: run.status,
     failure_reason: run.failure_reason,
+    finished_at: run.finished_at,
+    first_at: run.first_at,
     known_gaps: [],
+    last_at: run.last_at,
+    run_id: run.run_id,
+    started_at: run.started_at,
+    status: run.status,
   };
 }
 
 const SCHEDULE_INTERVAL: Record<string, number> = {
   daily: 86_400,
-  weekly: 604_800,
   manual: 86_400,
+  weekly: 604_800,
 };
 
 function buildDemoSchedule(connectorId: string, kind: string): RefSchedule {
   const interval = SCHEDULE_INTERVAL[kind] ?? 86_400;
   const now = new Date().toISOString();
   return {
-    object: "schedule",
-    connector_id: connectorId,
+    active_run_id: null,
     automation_mode: kind === "manual" ? "manual_only" : "unattended",
     automation_summary:
       kind === "manual"
         ? "Starts only from an owner gesture."
         : "Can refresh in the background without expected owner action.",
-    interval_seconds: interval,
-    jitter_seconds: 0,
-    enabled: kind !== "manual",
+    connector_id: connectorId,
     created_at: now,
-    updated_at: now,
-    next_due_at: null,
-    active_run_id: null,
-    last_started_at: null,
-    last_finished_at: null,
-    last_error_code: null,
-    last_successful_at: null,
     effective_mode: kind === "manual" ? "manual" : "automatic",
+    enabled: kind !== "manual",
     human_attention_needed: false,
     ineligibility_reason: null,
+    interval_seconds: interval,
+    jitter_seconds: 0,
+    last_error_code: null,
+    last_finished_at: null,
+    last_started_at: null,
+    last_successful_at: null,
+    minimum_interval_warning: null,
+    next_due_at: null,
     notification_posture: "none",
+    object: "schedule",
     recommended_policy: null,
     scheduler_backoff: null,
-    minimum_interval_warning: null,
     trigger_kind: "scheduled",
+    updated_at: now,
   };
 }
 
@@ -198,7 +198,6 @@ function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
   const lastRun = refConnectorRunSummary(lastRunId);
   const lastSuccessfulRun = refConnectorRunSummary(lastSuccessId);
   return {
-    connection_id: connectorId,
     connection_health: {
       axes: {
         attention: "none",
@@ -214,13 +213,14 @@ function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
       state: lastSuccessfulRun ? "healthy" : "idle",
       unknown_reasons: [],
     },
-    next_action: null,
+    connection_id: connectorId,
     connector_id: connectorId,
     display_name: connector?.display_name ?? connectorId,
     freshness: {},
     last_run: lastRun,
     last_successful_run: lastSuccessfulRun,
     manifest_version: "1.0.0-demo",
+    next_action: null,
     schedule: connector?.schedule ? buildDemoSchedule(connectorId, connector.schedule) : null,
     streams: streams.map((s) => s.key),
     total_records: totalRecordsForConnector(connectorId),
@@ -236,8 +236,8 @@ function buildConnectorManifest(connectorId: string): ConnectorManifest {
     name: connector?.display_name ?? connectorId,
     provider_id: connector?.provider_id,
     streams: streams.map((s) => ({
-      name: s.key,
       consent_time_field: s.consent_time_field,
+      name: s.key,
       preview_fields: s.fields.slice(0, 4).map((f) => f.name),
       // The demo fields carry a declared presentation type (timestamp,
       // currency_minor_units, …). Surface it on the JSON Schema extension
@@ -259,31 +259,29 @@ function buildConnectorManifest(connectorId: string): ConnectorManifest {
 function buildStreamSummary(streamKey: string): StreamSummary {
   const stream = getDemoStreams().find((s) => s.key === streamKey);
   return {
-    object: "stream",
-    name: streamKey,
-    record_count: streamRecordCount(streamKey),
     last_updated: latestRecordTimeForStream(streamKey) ?? stream?.latest_record_time ?? null,
+    name: streamKey,
+    object: "stream",
+    record_count: streamRecordCount(streamKey),
   };
 }
 
 function recordToStreamRecord(record: DemoRecord): StreamRecord {
   return {
-    object: "record",
-    id: record.record_id,
-    stream: record.stream,
-    emitted_at: record.ingested_at,
     data: { ...record.fields },
+    emitted_at: record.ingested_at,
+    id: record.record_id,
+    object: "record",
+    stream: record.stream,
   };
 }
 
 function buildSandboxStreamMetadata(connectorId: string, streamKey: string): StreamMetadata {
   const stream = streamsForConnector(connectorId).find((s) => s.key === streamKey);
   if (!stream) {
-    return { object: "stream_metadata", name: streamKey, field_capabilities: {} };
+    return { field_capabilities: {}, name: streamKey, object: "stream_metadata" };
   }
   return {
-    object: "stream_metadata",
-    name: stream.key,
     field_capabilities: Object.fromEntries(
       stream.fields.map((field) => {
         // Deterministic projection fixture for Explorer honesty tests: the
@@ -294,14 +292,16 @@ function buildSandboxStreamMetadata(connectorId: string, streamKey: string): Str
         return [
           field.name,
           {
-            type: field.type,
-            schema: { type: field.type === "blob" ? "object" : "string" },
             granted,
+            schema: { type: field.type === "blob" ? "object" : "string" },
+            type: field.type,
             usable: granted,
           },
         ];
       })
     ),
+    name: stream.key,
+    object: "stream_metadata",
   };
 }
 
@@ -325,9 +325,9 @@ function sandboxWindowMeta(connectorId: string, streamKey: string): RecordsPage[
     .sort();
   return {
     window: {
-      total: streamRecords(streamKey).filter((record) => record.connector_id === connectorId).length,
       earliest_at: times[0] ?? null,
       latest_at: times.at(-1) ?? null,
+      total: streamRecords(streamKey).filter((record) => record.connector_id === connectorId).length,
     },
   };
 }
@@ -336,12 +336,12 @@ function sandboxWindowMeta(connectorId: string, streamKey: string): RecordsPage[
 
 function actorFor(event: DemoTimelineEvent): { actor_type: string | null; actor_id: string | null } {
   if (event.run_id) {
-    return { actor_type: "runtime", actor_id: deriveRunConnector(event.run_id) ?? "demo" };
+    return { actor_id: deriveRunConnector(event.run_id) ?? "demo", actor_type: "runtime" };
   }
   if (event.client_id) {
-    return { actor_type: "client", actor_id: event.client_id };
+    return { actor_id: event.client_id, actor_type: "client" };
   }
-  return { actor_type: "owner", actor_id: "demo-owner" };
+  return { actor_id: "demo-owner", actor_type: "owner" };
 }
 
 function deriveRunConnector(runId: string): string | null {
@@ -391,10 +391,10 @@ function adaptTimeline(envelope: ReturnType<typeof buildGrantTimeline>): Timelin
   }
   const events = envelope.events.map(eventToSpineEvent);
   return {
-    object: envelope.object,
-    trace_id: envelope.trace_id,
     event_count: events.length,
     events,
+    object: envelope.object,
+    trace_id: envelope.trace_id,
   };
 }
 
@@ -411,9 +411,9 @@ function paginate<T>(rows: readonly T[], opts: { limit?: number; cursor?: string
   const next = start + limit;
   const hasMore = next < rows.length;
   return {
-    object: "list",
     data: slice as T[],
     has_more: hasMore,
+    object: "list",
     ...(hasMore ? { next_cursor: String(next) } : {}),
   };
 }
@@ -426,54 +426,54 @@ function adaptGrantSummary(g: ReturnType<typeof getDemoGrants>[number]): LiveGra
     failure = { event_type: "grant.revoked", reason: "grant_revoked" };
   }
   return {
-    object: "grant_summary",
-    grant_id: g.grant_id,
     client_id: g.client_id,
     connector_id: g.connector_id,
+    event_count: g.events.length,
+    failure,
+    first_at: g.first_at,
+    grant_id: g.grant_id,
+    kinds: g.events.map((e) => e.event_type),
+    last_at: g.last_at,
+    object: "grant_summary",
     provider_id: null,
     status: g.status,
-    kinds: g.events.map((e) => e.event_type),
-    event_count: g.events.length,
-    first_at: g.first_at,
-    last_at: g.last_at,
-    failure,
   };
 }
 
 function adaptRunSummary(r: ReturnType<typeof getDemoRuns>[number]): LiveRunSummary {
   return {
-    object: "run_summary",
-    run_id: r.run_id,
     connector_id: r.connector_id,
-    grant_id: r.grant_id,
-    provider_id: null,
-    status: r.status,
-    needs_input: r.needs_input,
-    failure_reason: r.failure_reason,
-    kinds: r.events.map((e) => e.event_type),
     event_count: r.events.length,
+    failure_reason: r.failure_reason,
     first_at: r.first_at,
+    grant_id: r.grant_id,
+    kinds: r.events.map((e) => e.event_type),
     last_at: r.last_at,
+    needs_input: r.needs_input,
+    object: "run_summary",
+    provider_id: null,
+    run_id: r.run_id,
+    status: r.status,
   };
 }
 
 function adaptTraceSummary(t: ReturnType<typeof getDemoTraces>[number]): LiveTraceSummary {
   return {
-    object: "trace_summary",
-    trace_id: t.trace_id,
     actor_id: t.client_id ?? null,
     actor_type: t.client_id ? "client" : "runtime",
     client_id: t.client_id,
+    event_count: t.kinds.length,
+    failure: t.failure_reason ? { event_type: "trace", reason: t.failure_reason } : null,
+    first_at: t.first_at,
     grant_id: t.grant_id,
+    kinds: [...t.kinds],
+    last_at: t.last_at,
+    object: "trace_summary",
     provider_id: null,
     request_id: null,
     run_id: t.run_id,
     status: t.status,
-    kinds: [...t.kinds],
-    event_count: t.kinds.length,
-    first_at: t.first_at,
-    last_at: t.last_at,
-    failure: t.failure_reason ? { event_type: "trace", reason: t.failure_reason } : null,
+    trace_id: t.trace_id,
   };
 }
 
@@ -481,10 +481,10 @@ function adaptTraceSummary(t: ReturnType<typeof getDemoTraces>[number]): LiveTra
 
 function searchHitToLiveHit(hit: ReturnType<typeof buildSearchResponse>["data"][number]): SearchResultHit {
   return {
-    object: "search_result",
     connector_id: hit.connector_id,
     emitted_at: hit.emitted_at,
     matched_fields: hit.matched_fields,
+    object: "search_result",
     record_key: hit.record_key,
     record_url: hit.record_url,
     snippet: hit.snippet,
@@ -500,22 +500,15 @@ function buildSandboxDeploymentDiagnostics(): DeploymentDiagnostics {
   const semanticCapability = DEMO_CAPABILITIES.find((c) => c.capability === "semantic_search");
   return {
     database: { path: "(sandbox: in-memory deterministic dataset)" },
-    runtime_capabilities: {
-      bindings: { browser: false, filesystem: false, local_device: false, network: true },
-      accepted_collector_protocol_versions: ["1"],
-      collector_pairing: null,
-      collector_paired: false,
-      in_container: false,
-    },
     environment: [
-      { name: "PDPP_REFERENCE_MODE", value: "sandbox", provenance: "present", secret: false },
-      { name: "PDPP_DB_PATH", value: null, provenance: "absent", secret: false },
-      { name: "PDPP_ALLOW_MODEL_DOWNLOAD", value: null, provenance: "absent", secret: false },
+      { name: "PDPP_REFERENCE_MODE", provenance: "present", secret: false, value: "sandbox" },
+      { name: "PDPP_DB_PATH", provenance: "absent", secret: false, value: null },
+      { name: "PDPP_ALLOW_MODEL_DOWNLOAD", provenance: "absent", secret: false, value: null },
     ],
     lexical: {
       index: {
-        state: "built",
         backfill_progress: null,
+        state: "built",
       },
     },
     manifests: connectors.map((c) => ({
@@ -524,29 +517,36 @@ function buildSandboxDeploymentDiagnostics(): DeploymentDiagnostics {
       provenance: c.provenance,
       semantic_stream_count: 0,
     })),
+    runtime_capabilities: {
+      accepted_collector_protocol_versions: ["1"],
+      bindings: { browser: false, filesystem: false, local_device: false, network: true },
+      collector_paired: false,
+      collector_pairing: null,
+      in_container: false,
+    },
     semantic: {
       backend: {
-        configured: false,
         available: Boolean(semanticCapability?.implemented),
-        profile_id: null,
-        model: null,
-        dtype: null,
+        configured: false,
         dimensions: null,
         distance_metric: null,
+        download_allowed: null,
+        dtype: null,
         language_bias: null,
+        model: null,
         model_cache_path: null,
         model_cache_present: null,
-        download_allowed: null,
+        profile_id: null,
       },
       index: {
+        backfill_progress: null,
         kind: null,
         state: null,
-        backfill_progress: null,
       },
       participation: {
         connector_count: 0,
-        stream_count: 0,
         field_count: 0,
+        stream_count: 0,
         tuples: [],
       },
     },
@@ -608,30 +608,6 @@ function sandboxBucketKey(recordTime: string, granularity: TimeBucketGranularity
 // ─── DashboardDataSource implementation ───────────────────────────────────
 
 export const sandboxDashboardDataSource: DashboardDataSource = {
-  kind: "sandbox",
-  supportsExploreTimelineDirection: async () => true,
-
-  async listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {
-    const connectors = getDemoConnectors();
-    return {
-      object: "list",
-      has_more: false,
-      data: connectors.map((c) => buildRefConnectorSummary(c.connector_id)),
-    };
-  },
-
-  async listConnectorManifests(): Promise<ConnectorManifest[]> {
-    return getDemoConnectors().map((c) => buildConnectorManifest(c.connector_id));
-  },
-
-  async listStreams(connectorId: string): Promise<StreamSummary[]> {
-    return streamsForConnector(connectorId).map((s) => buildStreamSummary(s.key));
-  },
-
-  async getStreamMetadata(connectorId: string, stream: string): Promise<StreamMetadata> {
-    return buildSandboxStreamMetadata(connectorId, stream);
-  },
-
   async aggregateRecordsByTime(
     connectorId: string,
     stream: string,
@@ -658,7 +634,7 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
     const groups: AggregateTimeBucket[] = [...counts.entries()]
-      .map(([key, count]) => ({ key: key === "__null__" ? null : key, count }))
+      .map(([key, count]) => ({ count, key: key === "__null__" ? null : key }))
       .sort((a, b) => {
         if (a.key == null) {
           return b.key == null ? 0 : 1;
@@ -669,15 +645,102 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
         return a.key.localeCompare(b.key);
       });
     return {
-      object: "aggregation",
-      stream,
-      metric: "count",
-      group_by_time: opts.groupByTime,
-      granularity: opts.granularity,
-      time_zone: opts.timeZone ?? "UTC",
       approximate: false,
       filtered_record_count: filtered,
+      granularity: opts.granularity,
+      group_by_time: opts.groupByTime,
       groups,
+      metric: "count",
+      object: "aggregation",
+      stream,
+      time_zone: opts.timeZone ?? "UTC",
+    };
+  },
+
+  async getConnectorOverview(connector: ConnectorManifest): Promise<ConnectorOverview> {
+    const streams = await this.listStreams(connector.connector_id);
+    const lastRun = connectorRunRef(connectorRecentRunIds(connector.connector_id)[0]);
+    const lastSuccessfulRunId = getDemoRuns().find(
+      (r) => r.connector_id === connector.connector_id && r.status === "succeeded"
+    )?.run_id;
+    const lastSuccessfulRun = connectorRunRef(lastSuccessfulRunId);
+    return {
+      connector,
+      isRunning: lastRun != null && new Set(["started", "in_progress"]).has(lastRun.status),
+      lastRun,
+      lastSuccessfulRun,
+      streams,
+      totalRecords: streams.reduce((sum, s) => sum + (s.record_count ?? 0), 0),
+    };
+  },
+
+  async getDatasetSummary(): Promise<LiveDatasetSummary> {
+    // Mount the canonical `ref.dataset.summary` operation with sandbox
+    // fixture dependencies so the dashboard data source returns the same
+    // envelope the public `/sandbox/_ref/dataset/summary` route returns.
+    // The operation owns envelope assembly (object, total_retained_bytes,
+    // top-connector sort/limit/wrap, empty-corpus collapse, ingest-vs-
+    // record-time distinction) — the previous local mapping silently drifted
+    // (`record_json_bytes` was mapped from the demo `blob_bytes`, and the
+    // `*_ingested_at` bounds were sourced from record-time fields rather
+    // than the substrate's ingest-time bounds). Routing through the
+    // operation removes that drift class for the dashboard surface.
+    return await executeRefDatasetSummary(createSandboxRefDatasetSummaryDependencies());
+  },
+
+  async getDeploymentDiagnostics(): Promise<DeploymentDiagnostics> {
+    return buildSandboxDeploymentDiagnostics();
+  },
+
+  async getGrantTimeline(grantId: string): Promise<TimelineEnvelope | null> {
+    return adaptTimeline(buildGrantTimeline(grantId));
+  },
+
+  async getRecord(
+    _connectorId: string,
+    stream: string,
+    recordId: string,
+    _opts?: { connectorInstanceId?: string | null }
+  ): Promise<StreamRecord> {
+    const record = DEMO_RECORDS.find((r) => r.stream === stream && r.record_id === recordId);
+    if (!record) {
+      // Match the live RS error shape so the existing 404 detection works.
+      throw new Error(`RS /v1/streams/${stream}/records/${recordId} failed (404): not found`);
+    }
+    return recordToStreamRecord(record);
+  },
+
+  async getRunTimeline(runId: string): Promise<TimelineEnvelope | null> {
+    return adaptTimeline(buildRunTimeline(runId));
+  },
+
+  async getStreamMetadata(connectorId: string, stream: string): Promise<StreamMetadata> {
+    return buildSandboxStreamMetadata(connectorId, stream);
+  },
+
+  async getTraceTimeline(traceId: string): Promise<TimelineEnvelope | null> {
+    return adaptTimeline(buildTraceTimeline(traceId));
+  },
+
+  async isHybridRetrievalAdvertised(): Promise<boolean> {
+    return false;
+  },
+
+  async isSemanticRetrievalAdvertised(): Promise<boolean> {
+    return false;
+  },
+  kind: "sandbox",
+
+  async listConnectorManifests(): Promise<ConnectorManifest[]> {
+    return getDemoConnectors().map((c) => buildConnectorManifest(c.connector_id));
+  },
+
+  async listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {
+    const connectors = getDemoConnectors();
+    return {
+      data: connectors.map((c) => buildRefConnectorSummary(c.connector_id)),
+      has_more: false,
+      object: "list",
     };
   },
 
@@ -727,11 +790,11 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     // `minMs` means no in-scope record had a parseable time → an empty series.
     if (!Number.isFinite(minMs)) {
       return {
-        object: "explore_record_buckets",
-        granularity: "day",
-        time_zone: opts.timeZone ?? "UTC",
-        extent: { start: null, end: null, count: 0 },
         buckets: [],
+        extent: { count: 0, end: null, start: null },
+        granularity: "day",
+        object: "explore_record_buckets",
+        time_zone: opts.timeZone ?? "UTC",
       };
     }
 
@@ -743,22 +806,22 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
       const start = new Date(cursor).toISOString();
       const dayKey = start.slice(0, 10);
       buckets.push({
-        start,
-        end: new Date(cursor + MS_PER_DAY).toISOString(),
         count: dayCounts.get(dayKey) ?? 0,
+        end: new Date(cursor + MS_PER_DAY).toISOString(),
+        start,
       });
     }
 
     return {
-      object: "explore_record_buckets",
-      granularity: "day",
-      time_zone: opts.timeZone ?? "UTC",
-      extent: {
-        start: new Date(minMs).toISOString(),
-        end: new Date(maxMs).toISOString(),
-        count: inScope.length,
-      },
       buckets,
+      extent: {
+        count: inScope.length,
+        end: new Date(maxMs).toISOString(),
+        start: new Date(minMs).toISOString(),
+      },
+      granularity: "day",
+      object: "explore_record_buckets",
+      time_zone: opts.timeZone ?? "UTC",
     };
   },
 
@@ -786,43 +849,63 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
         ascending ? a.record_time.localeCompare(b.record_time) : b.record_time.localeCompare(a.record_time)
       )
       .map((r) => ({
-        object: "timeline_record" as const,
         connector_id: r.connector_id,
         connector_instance_id: r.connector_id,
-        stream: r.stream,
-        record_key: r.record_id,
-        emitted_at: r.record_time,
         data: r.fields,
+        emitted_at: r.record_time,
+        object: "timeline_record" as const,
+        record_key: r.record_id,
+        stream: r.stream,
       }));
     // REWIND: the demo has no snapshot drift (fixed corpus), so re-rendering page 1
     // means paginating from the start. Honor it by ignoring the cursor offset.
     const cursorForPage = opts.rewindToFirstPage ? undefined : (opts.cursor ?? undefined);
     const page = paginate(merged, { cursor: cursorForPage, limit: opts.limit });
     return {
-      object: "list",
       data: page.data,
       has_more: page.has_more,
-      next_cursor: page.next_cursor ?? null,
-      snapshot_at: merged[0]?.emitted_at ?? new Date(0).toISOString(),
       new_since_snapshot: 0,
+      next_cursor: page.next_cursor ?? null,
+      object: "list",
+      snapshot_at: merged[0]?.emitted_at ?? new Date(0).toISOString(),
     };
   },
 
-  async getConnectorOverview(connector: ConnectorManifest): Promise<ConnectorOverview> {
-    const streams = await this.listStreams(connector.connector_id);
-    const lastRun = connectorRunRef(connectorRecentRunIds(connector.connector_id)[0]);
-    const lastSuccessfulRunId = getDemoRuns().find(
-      (r) => r.connector_id === connector.connector_id && r.status === "succeeded"
-    )?.run_id;
-    const lastSuccessfulRun = connectorRunRef(lastSuccessfulRunId);
-    return {
-      connector,
-      streams,
-      totalRecords: streams.reduce((sum, s) => sum + (s.record_count ?? 0), 0),
-      lastRun,
-      lastSuccessfulRun,
-      isRunning: lastRun != null && new Set(["started", "in_progress"]).has(lastRun.status),
-    };
+  async listGrants(opts: ListQuery = {}): Promise<ListResponse<LiveGrantSummary>> {
+    const all = getDemoGrants()
+      .filter((g) => statusFilterMatches(opts.status, g.status))
+      .filter((g) => !opts.client_id || g.client_id === opts.client_id)
+      .filter((g) => !opts.q || g.grant_id.toLowerCase().includes(opts.q.toLowerCase()))
+      .map(adaptGrantSummary);
+    return paginate(all, opts);
+  },
+
+  async listPendingApprovals(): Promise<ListResponse<PendingApproval>> {
+    // The sandbox is read-only; there are never live device-flow or
+    // consent approvals waiting for an owner. Always empty.
+    return { data: [], has_more: false, object: "list" };
+  },
+
+  async listRuns(opts: ListQuery = {}): Promise<ListResponse<LiveRunSummary>> {
+    const all = getDemoRuns()
+      .filter((r) => statusFilterMatches(opts.status, r.status))
+      .filter((r) => !opts.connector_id || r.connector_id === opts.connector_id)
+      .filter((r) => !opts.q || r.run_id.toLowerCase().includes(opts.q.toLowerCase()))
+      .map(adaptRunSummary);
+    return paginate(all, opts);
+  },
+
+  async listStreams(connectorId: string): Promise<StreamSummary[]> {
+    return streamsForConnector(connectorId).map((s) => buildStreamSummary(s.key));
+  },
+
+  async listTraces(opts: ListQuery = {}): Promise<ListResponse<LiveTraceSummary>> {
+    const all = getDemoTraces()
+      .filter((t) => statusFilterMatches(opts.status, t.status))
+      .filter((t) => !opts.client_id || t.client_id === opts.client_id)
+      .filter((t) => !opts.q || t.trace_id.toLowerCase().includes(opts.q.toLowerCase()))
+      .map(adaptTraceSummary);
+    return paginate(all, opts);
   },
 
   async queryRecords(
@@ -838,44 +921,30 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
   ): Promise<RecordsPage> {
     const built = buildRecordsList({
       connector_id: connectorId,
-      stream,
-      limit: opts.limit ?? 50,
       cursor: opts.cursor ?? null,
+      limit: opts.limit ?? 50,
+      stream,
     });
     if (!built) {
-      return { object: "list", data: [], has_more: false };
+      return { data: [], has_more: false, object: "list" };
     }
     const records = built.data
       .map((summary) => DEMO_RECORDS.find((r) => r.record_id === summary.record_id))
       .filter((r): r is DemoRecord => Boolean(r))
       .map(recordToStreamRecord);
     return {
-      object: "list",
       data: records,
       has_more: built.has_more,
+      object: "list",
       ...(opts.window === "exact" ? { meta: sandboxWindowMeta(connectorId, stream) } : {}),
       ...(built.next_cursor ? { next_cursor: built.next_cursor } : {}),
     };
   },
 
-  async getRecord(
-    _connectorId: string,
-    stream: string,
-    recordId: string,
-    _opts?: { connectorInstanceId?: string | null }
-  ): Promise<StreamRecord> {
-    const record = DEMO_RECORDS.find((r) => r.stream === stream && r.record_id === recordId);
-    if (!record) {
-      // Match the live RS error shape so the existing 404 detection works.
-      throw new Error(`RS /v1/streams/${stream}/records/${recordId} failed (404): not found`);
-    }
-    return recordToStreamRecord(record);
-  },
-
   async refSearch(query: string) {
     const trimmed = query.trim().toLowerCase();
     if (!trimmed) {
-      return { object: "search_result", traces: [], grants: [], runs: [], exact: null };
+      return { exact: null, grants: [], object: "search_result", runs: [], traces: [] };
     }
     const grants = getDemoGrants()
       .filter((g) => g.grant_id.toLowerCase().includes(trimmed) || g.client_id.toLowerCase().includes(trimmed))
@@ -889,17 +958,23 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     let exact: { kind: "trace" | "grant" | "run"; id: string } | null = null;
     const exactGrant = getDemoGrants().find((g) => g.grant_id === query);
     if (exactGrant) {
-      exact = { kind: "grant", id: exactGrant.grant_id };
+      exact = { id: exactGrant.grant_id, kind: "grant" };
     }
     const exactRun = getDemoRuns().find((r) => r.run_id === query);
     if (exactRun) {
-      exact = { kind: "run", id: exactRun.run_id };
+      exact = { id: exactRun.run_id, kind: "run" };
     }
     const exactTrace = getDemoTraces().find((t) => t.trace_id === query);
     if (exactTrace) {
-      exact = { kind: "trace", id: exactTrace.trace_id };
+      exact = { id: exactTrace.trace_id, kind: "trace" };
     }
-    return { object: "search_result", traces, grants, runs, exact };
+    return { exact, grants, object: "search_result", runs, traces };
+  },
+
+  async searchRecordsHybrid(): Promise<SearchResultPage> {
+    // Sandbox does not advertise hybrid retrieval. This method should never
+    // be reached because isHybridRetrievalAdvertised() returns false.
+    return { data: [], has_more: false, object: "list" };
   },
 
   async searchRecordsLexical(query: string, opts: { limit?: number; cursor?: string } = {}): Promise<SearchResultPage> {
@@ -910,9 +985,9 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     const next = start + limit;
     const hasMore = next < built.data.length;
     return {
-      object: "list",
       data: slice,
       has_more: hasMore,
+      object: "list",
       ...(hasMore ? { next_cursor: String(next) } : {}),
     };
   },
@@ -922,83 +997,7 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     // listed in capabilities as "implemented but not demonstrated in demo".
     // Returning an empty page keeps the dashboard search view's "blend"
     // logic intact without claiming semantic results.
-    return { object: "list", data: [], has_more: false };
+    return { data: [], has_more: false, object: "list" };
   },
-
-  async isSemanticRetrievalAdvertised(): Promise<boolean> {
-    return false;
-  },
-
-  async searchRecordsHybrid(): Promise<SearchResultPage> {
-    // Sandbox does not advertise hybrid retrieval. This method should never
-    // be reached because isHybridRetrievalAdvertised() returns false.
-    return { object: "list", data: [], has_more: false };
-  },
-
-  async isHybridRetrievalAdvertised(): Promise<boolean> {
-    return false;
-  },
-
-  async listGrants(opts: ListQuery = {}): Promise<ListResponse<LiveGrantSummary>> {
-    const all = getDemoGrants()
-      .filter((g) => statusFilterMatches(opts.status, g.status))
-      .filter((g) => !opts.client_id || g.client_id === opts.client_id)
-      .filter((g) => !opts.q || g.grant_id.toLowerCase().includes(opts.q.toLowerCase()))
-      .map(adaptGrantSummary);
-    return paginate(all, opts);
-  },
-
-  async listRuns(opts: ListQuery = {}): Promise<ListResponse<LiveRunSummary>> {
-    const all = getDemoRuns()
-      .filter((r) => statusFilterMatches(opts.status, r.status))
-      .filter((r) => !opts.connector_id || r.connector_id === opts.connector_id)
-      .filter((r) => !opts.q || r.run_id.toLowerCase().includes(opts.q.toLowerCase()))
-      .map(adaptRunSummary);
-    return paginate(all, opts);
-  },
-
-  async listTraces(opts: ListQuery = {}): Promise<ListResponse<LiveTraceSummary>> {
-    const all = getDemoTraces()
-      .filter((t) => statusFilterMatches(opts.status, t.status))
-      .filter((t) => !opts.client_id || t.client_id === opts.client_id)
-      .filter((t) => !opts.q || t.trace_id.toLowerCase().includes(opts.q.toLowerCase()))
-      .map(adaptTraceSummary);
-    return paginate(all, opts);
-  },
-
-  async getGrantTimeline(grantId: string): Promise<TimelineEnvelope | null> {
-    return adaptTimeline(buildGrantTimeline(grantId));
-  },
-
-  async getRunTimeline(runId: string): Promise<TimelineEnvelope | null> {
-    return adaptTimeline(buildRunTimeline(runId));
-  },
-
-  async getTraceTimeline(traceId: string): Promise<TimelineEnvelope | null> {
-    return adaptTimeline(buildTraceTimeline(traceId));
-  },
-
-  async getDatasetSummary(): Promise<LiveDatasetSummary> {
-    // Mount the canonical `ref.dataset.summary` operation with sandbox
-    // fixture dependencies so the dashboard data source returns the same
-    // envelope the public `/sandbox/_ref/dataset/summary` route returns.
-    // The operation owns envelope assembly (object, total_retained_bytes,
-    // top-connector sort/limit/wrap, empty-corpus collapse, ingest-vs-
-    // record-time distinction) — the previous local mapping silently drifted
-    // (`record_json_bytes` was mapped from the demo `blob_bytes`, and the
-    // `*_ingested_at` bounds were sourced from record-time fields rather
-    // than the substrate's ingest-time bounds). Routing through the
-    // operation removes that drift class for the dashboard surface.
-    return await executeRefDatasetSummary(createSandboxRefDatasetSummaryDependencies());
-  },
-
-  async listPendingApprovals(): Promise<ListResponse<PendingApproval>> {
-    // The sandbox is read-only; there are never live device-flow or
-    // consent approvals waiting for an owner. Always empty.
-    return { object: "list", data: [], has_more: false };
-  },
-
-  async getDeploymentDiagnostics(): Promise<DeploymentDiagnostics> {
-    return buildSandboxDeploymentDiagnostics();
-  },
+  supportsExploreTimelineDirection: async () => true,
 };

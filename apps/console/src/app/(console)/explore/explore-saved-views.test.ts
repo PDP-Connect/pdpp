@@ -20,7 +20,7 @@ import {
   sameView,
 } from "./explore-saved-views.ts";
 
-const view = (id: string, name: string, href: string): SavedView => ({ id, name, href });
+const view = (id: string, name: string, href: string): SavedView => ({ href, id, name });
 
 test("canonicalViewIdentity ignores volatile params (peek/cursor/anchor) and param order", () => {
   const a = "/explore?q=deploy&connection=con_1&peek=p1&cursor=c1&anchor=a1";
@@ -60,13 +60,13 @@ test("parseSavedViews drops malformed entries, never throws", () => {
   assert.deepEqual(parseSavedViews("not json"), []);
   assert.deepEqual(parseSavedViews(JSON.stringify({ not: "an array" })), []);
   const raw = JSON.stringify([
-    { id: "1", name: "Finance", href: "/explore?q=x" },
-    { id: "2", name: "", href: "/explore?q=y" }, // empty name → dropped
-    { id: "3", href: "/explore?q=z" }, // missing name → dropped
-    { name: "no id", href: "/x" }, // missing id → dropped
+    { href: "/explore?q=x", id: "1", name: "Finance" },
+    { href: "/explore?q=y", id: "2", name: "" }, // empty name → dropped
+    { href: "/explore?q=z", id: "3" }, // missing name → dropped
+    { href: "/x", name: "no id" }, // missing id → dropped
     "garbage",
   ]);
-  assert.deepEqual(parseSavedViews(raw), [{ id: "1", name: "Finance", href: "/explore?q=x" }]);
+  assert.deepEqual(parseSavedViews(raw), [{ href: "/explore?q=x", id: "1", name: "Finance" }]);
 });
 
 test("addSavedView never saves the All (no-filter) view as a tab", () => {

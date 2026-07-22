@@ -5,9 +5,9 @@
 // This is the brand's most opinionated page: purpose as a taxonomy of intent.
 
 const ThePurposes = () => (
-  <section style={{ padding: "96px 64px", borderBottom: "1px solid var(--rule)" }}>
-    <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 64, alignItems: "end", marginBottom: 48 }}>
+  <section style={{ borderBottom: "1px solid var(--rule)", padding: "96px 64px" }}>
+    <div style={{ margin: "0 auto", maxWidth: 1200 }}>
+      <div style={{ alignItems: "end", display: "grid", gap: 64, gridTemplateColumns: "1fr 1fr", marginBottom: 48 }}>
         <div>
           <div className="gutter">§3 · PURPOSES</div>
           <h2 className="t-section" style={{ margin: "12px 0 0" }}>
@@ -22,7 +22,7 @@ const ThePurposes = () => (
 
       <PurposeTaxonomy />
 
-      <div style={{ marginTop: 48, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 48, alignItems: "start" }}>
+      <div style={{ alignItems: "start", display: "grid", gap: 48, gridTemplateColumns: "1fr 1fr", marginTop: 48 }}>
         <SpecRow num="3.1" t="Purpose is declared, not enforced." tone="protocol">
           The protocol does not police downstream use — it records the commitment. Policing is the job of courts,
           auditors, and reputation markets. The record is what makes those possible.

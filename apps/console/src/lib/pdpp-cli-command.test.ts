@@ -149,7 +149,7 @@ test("pdppLocalCollectorRetryDeadLettersCommand scopes to a connection id and or
     "npx -y @pdpp/local-collector retry-dead-letters --connection-id claude_code:laptop"
   );
   assert.equal(
-    pdppLocalCollectorRetryDeadLettersCommand({ connectionId: "claude_code:laptop", apply: true }),
+    pdppLocalCollectorRetryDeadLettersCommand({ apply: true, connectionId: "claude_code:laptop" }),
     "npx -y @pdpp/local-collector retry-dead-letters --connection-id claude_code:laptop --apply"
   );
 });
@@ -174,7 +174,7 @@ test("local collector diagnostic commands never leak a filesystem path or base-u
     pdppLocalCollectorDoctorCommand({ connectionId: "claude_code:laptop" }),
     pdppLocalCollectorStatusCommand({ connectionId: "claude_code:laptop" }),
     pdppLocalCollectorRetryDeadLettersCommand({ connectionId: "claude_code:laptop" }),
-    pdppLocalCollectorRetryDeadLettersCommand({ connectionId: "claude_code:laptop", apply: true }),
+    pdppLocalCollectorRetryDeadLettersCommand({ apply: true, connectionId: "claude_code:laptop" }),
   ]) {
     assert.doesNotMatch(command, QUEUE_FLAG);
     assert.doesNotMatch(command, BASE_URL_FLAG);
@@ -200,7 +200,7 @@ test("pdppCliMonorepoCommand returns null for non-pdpp commands", () => {
 test("substituteCommandTemplate resolves all three non-secret placeholders", () => {
   const resolved = substituteCommandTemplate(
     "npx -y @pdpp/local-collector run --base-url <provider-url> --connector <connector-id>",
-    { providerUrl: "https://pdpp.example.com", connectorId: "claude-code", connectionId: "cin_x" }
+    { connectionId: "cin_x", connectorId: "claude-code", providerUrl: "https://pdpp.example.com" }
   );
   assert.equal(
     resolved,
@@ -212,7 +212,7 @@ test("substituteCommandTemplate resolves all three non-secret placeholders", () 
 test("substituteCommandTemplate resolves the connection-id placeholder", () => {
   const resolved = substituteCommandTemplate(
     "npx -y @pdpp/local-collector retry-dead-letters --connection-id <connection-id>",
-    { providerUrl: null, connectorId: null, connectionId: "cin_laptop" }
+    { connectionId: "cin_laptop", connectorId: null, providerUrl: null }
   );
   assert.equal(resolved, "npx -y @pdpp/local-collector retry-dead-letters --connection-id cin_laptop");
 });
@@ -220,7 +220,7 @@ test("substituteCommandTemplate resolves the connection-id placeholder", () => {
 test("substituteCommandTemplate resolves the source-instance-id placeholder", () => {
   const resolved = substituteCommandTemplate(
     "npx -y @pdpp/local-collector recover --source-instance-id <source-instance-id> --apply",
-    { providerUrl: null, connectorId: null, connectionId: "cin_laptop", sourceInstanceId: "dsrc_laptop" }
+    { connectionId: "cin_laptop", connectorId: null, providerUrl: null, sourceInstanceId: "dsrc_laptop" }
   );
   assert.equal(resolved, "npx -y @pdpp/local-collector recover --source-instance-id dsrc_laptop --apply");
 });
@@ -231,25 +231,25 @@ test("substituteCommandTemplate FAILS CLOSED when a placeholder is unresolved", 
   // explicit "unavailable" state instead of a broken command.
   assert.equal(
     substituteCommandTemplate("... --connection-id <connection-id>", {
-      providerUrl: null,
-      connectorId: null,
       connectionId: null,
+      connectorId: null,
+      providerUrl: null,
     }),
     null
   );
   assert.equal(
     substituteCommandTemplate("run --base-url <provider-url> --connector <connector-id>", {
-      providerUrl: "https://x",
-      connectorId: null,
       connectionId: "cin_x",
+      connectorId: null,
+      providerUrl: "https://x",
     }),
     null
   );
   assert.equal(
     substituteCommandTemplate("recover --source-instance-id <source-instance-id>", {
-      providerUrl: null,
-      connectorId: null,
       connectionId: "cin_x",
+      connectorId: null,
+      providerUrl: null,
       sourceInstanceId: null,
     }),
     null

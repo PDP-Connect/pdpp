@@ -29,12 +29,12 @@
  *       "Exact reset-safe record checkpoint"
  */
 
-import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { allowUnboundedReadAcknowledged, getOne, referenceQueries } from "../lib/db.ts";
+import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 
 export interface RecordSourceCheckpointStream {
-  readonly stream: string;
   readonly max_version: string;
+  readonly stream: string;
 }
 
 export interface RecordSourceCheckpoint {
@@ -99,7 +99,7 @@ export function recordSourceCheckpointsEqual(a: RecordSourceCheckpoint, b: Recor
   for (let i = 0; i < a.streams.length; i += 1) {
     const streamA = a.streams[i];
     const streamB = b.streams[i];
-    if (!streamA || !streamB || streamA.stream !== streamB.stream || streamA.max_version !== streamB.max_version) {
+    if (!(streamA && streamB) || streamA.stream !== streamB.stream || streamA.max_version !== streamB.max_version) {
       return false;
     }
   }
@@ -112,7 +112,7 @@ interface Row {
 
 function readSqliteCheckpoint(connectorInstanceId: string): RecordSourceCheckpoint {
   const generationRow = getOne<Row>(referenceQueries.recordsDeleteGetRecordResetGeneration, [connectorInstanceId]);
-  const resetGeneration = generationRow?.reset_generation != null ? String(generationRow.reset_generation) : "0";
+  const resetGeneration = generationRow?.reset_generation == null ? "0" : String(generationRow.reset_generation);
   const streamRows = allowUnboundedReadAcknowledged<Row>(referenceQueries.recordsIngestListVersionCountersByInstance, [
     connectorInstanceId,
   ]);
@@ -131,7 +131,7 @@ async function readPostgresCheckpoint(connectorInstanceId: string): Promise<Reco
     [connectorInstanceId]
   );
   const resetGeneration =
-    generationResult.rows[0]?.reset_generation != null ? String(generationResult.rows[0].reset_generation) : "0";
+    generationResult.rows[0]?.reset_generation == null ? "0" : String(generationResult.rows[0].reset_generation);
   const streamsResult = await postgresQuery(
     "SELECT stream, max_version::text AS max_version FROM version_counter WHERE connector_instance_id = $1",
     [connectorInstanceId]

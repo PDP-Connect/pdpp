@@ -31,17 +31,34 @@ function listHref(params: Params, overrides: Record<string, string | undefined>)
 export default async function SandboxGrantsPage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams;
   const ds = sandboxDashboardDataSource;
-  const result = await ds.listGrants({ cursor: params.cursor, status: params.status, q: params.q, limit: 50 });
+  const result = await ds.listGrants({ cursor: params.cursor, limit: 50, q: params.q, status: params.status });
   const peekEnvelope = params.peek ? await ds.getGrantTimeline(params.peek) : null;
 
   const viewParams: ListWithPeekParams<GrantSummary> = {
     active: "grants",
-    routes: sandboxRoutes,
-    subject: "grant",
-    title: "Grants",
+    activeFilterChips: [
+      params.status ? { label: "state", value: params.status } : null,
+      params.q ? { label: "query", value: params.q } : null,
+    ].filter((c): c is { label: string; value: string } => Boolean(c)),
+    buildListHref: (overrides) => listHref(params, overrides),
     description: "Issued, revoked, and denied grant decisions.",
-    result,
-    rowKey: (g) => g.grant_id,
+    emptyHint: "No grants match this filter.",
+    emptyTitle: "No grants",
+    filters: {
+      query: { defaultValue: params.q ?? "", name: "q", placeholder: "id contains…" },
+      status: {
+        defaultValue: params.status ?? "",
+        name: "status",
+        options: [
+          { label: "issued", value: "issued" },
+          { label: "revoked", value: "revoked" },
+          { label: "denied", value: "denied" },
+        ],
+      },
+    },
+    peekCliCommand: (id) => `pdpp ref grant timeline ${id}`,
+    peekEnvelope,
+    peekId: params.peek,
     renderRow: (grant, { peeked, href, detailHref }) => {
       const rowContent = (
         <>
@@ -77,29 +94,12 @@ export default async function SandboxGrantsPage({ searchParams }: { searchParams
         </div>
       );
     },
-    filters: {
-      query: { name: "q", placeholder: "id contains…", defaultValue: params.q ?? "" },
-      status: {
-        name: "status",
-        defaultValue: params.status ?? "",
-        options: [
-          { value: "issued", label: "issued" },
-          { value: "revoked", label: "revoked" },
-          { value: "denied", label: "denied" },
-        ],
-      },
-    },
-    activeFilterChips: [
-      params.status ? { label: "state", value: params.status } : null,
-      params.q ? { label: "query", value: params.q } : null,
-    ].filter((c): c is { label: string; value: string } => Boolean(c)),
     resetHref: "/sandbox/grants",
-    buildListHref: (overrides) => listHref(params, overrides),
-    peekId: params.peek,
-    peekEnvelope,
-    peekCliCommand: (id) => `pdpp ref grant timeline ${id}`,
-    emptyTitle: "No grants",
-    emptyHint: "No grants match this filter.",
+    result,
+    routes: sandboxRoutes,
+    rowKey: (g) => g.grant_id,
+    subject: "grant",
+    title: "Grants",
   };
 
   return (

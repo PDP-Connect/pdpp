@@ -65,8 +65,8 @@ test("revoke on an unexpected status throws a described error", () => {
 
 test("delete 200 maps to deleted and carries the record count", () => {
   assert.deepEqual(classifyDeleteConnectionResponse(200, { deleted: true, deleted_record_count: 42 }, null), {
-    status: "deleted",
     deletedRecordCount: 42,
+    status: "deleted",
   });
 });
 

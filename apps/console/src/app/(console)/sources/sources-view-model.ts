@@ -542,13 +542,6 @@ export function toSourceInstanceView(
     const facts = collectionFactsByStream.get(name) ?? null;
     const retained = streamRecordsByStream.get(name) ?? null;
     return {
-      name,
-      recordCount: retained ? retained.record_count : null,
-      // The index summary exposes no cursor or searchable flag per stream;
-      // render them as unknown rather than guessing. Collection-report facts
-      // are server-owned and safe to show here without another read.
-      cursor: null,
-      searchable: null,
       collection: facts
         ? {
             countsLabel: facts.countsLabel,
@@ -564,18 +557,26 @@ export function toSourceInstanceView(
             tone: facts.tone,
           }
         : null,
+      // The index summary exposes no cursor or searchable flag per stream;
+      // render them as unknown rather than guessing. Collection-report facts
+      // are server-owned and safe to show here without another read.
+      cursor: null,
       exploreHref: exploreHrefFor(routeId, name),
+      name,
+      recordCount: retained ? retained.record_count : null,
+      searchable: null,
     };
   });
 
   const passportFields: SourcePassportField[] = [
-    ...(listKind ? [{ k: "type", value: kind, mono: false } satisfies SourcePassportField] : []),
-    { k: "config", value: `${sourceStreamNames.length} streams`, mono: true },
+    ...(listKind ? [{ k: "type", mono: false, value: kind } satisfies SourcePassportField] : []),
+    { k: "config", mono: true, value: `${sourceStreamNames.length} streams` },
     { k: "auth", value: deriveAuthLine(primaryVerdictAction, isLocalDevicePush, manualUploadHref) },
-    { k: "schedule", value: formatSchedule(summary.schedule), mono: true },
-    { k: "last run", value: formatLastRun(summary.last_run), mono: true },
+    { k: "schedule", mono: true, value: formatSchedule(summary.schedule) },
+    { k: "last run", mono: true, value: formatLastRun(summary.last_run) },
     {
       k: "records",
+      mono: true,
       // Sol fourth-verdict P1.3: the passport independently rendered the
       // raw number, bypassing `total_records_state` entirely — the second
       // of the two concrete authoritative-zero-rendering sites the verdict
@@ -583,34 +584,33 @@ export function toSourceInstanceView(
       value: isTotalRecordsAuthoritative(summary.total_records_state)
         ? summary.total_records.toLocaleString()
         : formatTotalRecordsLabel(summary.total_records, summary.total_records_state, "records"),
-      mono: true,
     },
-    { k: "added", value: summary.last_successful_run?.first_at ?? null, mono: true },
+    { k: "added", mono: true, value: summary.last_successful_run?.first_at ?? null },
   ];
 
   return {
-    id: routeId,
-    connectorId,
+    accountLine,
     connectionId,
+    connectorId,
     connectorInstanceId,
     detailHref: sourceDetailHrefFor(routeId, summary),
     displayName,
-    kind,
-    listKind,
-    accountLine,
-    revoked,
+    id: routeId,
     isLocalDevicePush,
     isRunning,
+    kind,
+    listKind,
     manualUploadHref,
     needsOwnerLabel: hasFallbackLabel,
-    status,
     nextAction,
     ownerActionCue,
+    passportFields,
     primaryVerdictAction,
+    revoked,
+    status,
     streams,
     totalRecords: summary.total_records,
     totalRecordsState: summary.total_records_state,
-    passportFields,
   };
 }
 

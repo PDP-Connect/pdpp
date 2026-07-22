@@ -55,7 +55,7 @@
         </div>
         {rows.map((tr) => (
           <button
-            className={"rr-trace-row" + (selected === tr.id ? " is-selected" : "")}
+            className={"rr-trace-row" + (selected === tr.id ? "is-selected" : "")}
             key={tr.id}
             onClick={() => onSelect && onSelect(tr.id)}
             type="button"
@@ -75,7 +75,9 @@
   }
 
   function TraceDetail({ trace }) {
-    if (!trace) return null;
+    if (!trace) {
+      return null;
+    }
     return (
       <div className="pdpp-sheet rr-inspector">
         <div className="pdpp-sheet__head">
@@ -87,7 +89,7 @@
         <div className="pdpp-sheet__body">
           <div className="rr-steps">
             {trace.steps.map(([k, v], i) => (
-              <div className={"rr-step" + (k === "deny" ? " rr-step--deny" : "")} key={i}>
+              <div className={"rr-step" + (k === "deny" ? "rr-step--deny" : "")} key={i}>
                 <span className="rr-step__k">{k}</span>
                 <span className="rr-step__v">{v}</span>
               </div>
@@ -337,7 +339,7 @@
           <MiniHead title="Readiness" />
           <div>
             {RR2.checks.map((c) => (
-              <div className={"rr-check " + (c.ok ? "rr-check--ok" : "rr-check--warn")} key={c.name}>
+              <div className={"rr-check" + (c.ok ? "rr-check--ok" : "rr-check--warn")} key={c.name}>
                 <span className="rr-check__glyph">{c.ok ? "ok" : "check"}</span>
                 <span className="rr-check__name">{c.name}</span>
                 <span className="rr-check__detail">{c.detail}</span>
@@ -438,30 +440,36 @@
         setTimeout(() => inputRef.current && inputRef.current.focus(), 30);
       }
     }, [open]);
-    if (!open) return null;
+    if (!open) {
+      return null;
+    }
     const ql = q.toLowerCase();
     function score(it) {
       const hay = (it.label + " " + it.kind).toLowerCase();
-      if (!hay.includes(ql)) return -1;
+      if (!hay.includes(ql)) {
+        return -1;
+      }
       let s = it.label.toLowerCase().startsWith(ql) ? 3 : 1;
-      if (it.kind === "action") s += 0.5;
+      if (it.kind === "action") {
+        s += 0.5;
+      }
       return s;
     }
     let filtered;
-    if (!q) {
-      const rec = recents
-        .map((l) => items.find((i) => i.label === l))
-        .filter(Boolean)
-        .map((i) => ({ ...i, kind: "recent" }));
-      const rest = items.filter((i) => !recents.includes(i.label));
-      filtered = [...rec, ...rest].slice(0, 9);
-    } else {
+    if (q) {
       filtered = items
         .map((i) => [score(i), i])
         .filter(([s]) => s >= 0)
         .sort((a, b) => b[0] - a[0])
         .map(([, i]) => i)
         .slice(0, 9);
+    } else {
+      const rec = recents
+        .map((l) => items.find((i) => i.label === l))
+        .filter(Boolean)
+        .map((i) => ({ ...i, kind: "recent" }));
+      const rest = items.filter((i) => !recents.includes(i.label));
+      filtered = [...rec, ...rest].slice(0, 9);
     }
     function choose(it) {
       it.run();
@@ -469,7 +477,9 @@
       onClose();
     }
     function onKey(e) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+      }
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setHl((h) => Math.min(h + 1, filtered.length - 1));
@@ -478,7 +488,9 @@
         e.preventDefault();
         setHl((h) => Math.max(h - 1, 0));
       }
-      if (e.key === "Enter" && filtered[hl]) choose(filtered[hl]);
+      if (e.key === "Enter" && filtered[hl]) {
+        choose(filtered[hl]);
+      }
     }
     return (
       <div className="rr-palette-overlay" onClick={onClose}>
@@ -500,7 +512,7 @@
             )}
             {filtered.map((it, i) => (
               <button
-                className={"rr-palette__item" + (i === hl ? " is-hl" : "")}
+                className={"rr-palette__item" + (i === hl ? "is-hl" : "")}
                 key={it.kind + it.label}
                 onClick={() => choose(it)}
                 onMouseEnter={() => setHl(i)}
@@ -517,15 +529,15 @@
   }
 
   Object.assign(window, {
-    RRTracesView: TracesView,
-    RROverviewView: OverviewView,
-    RRSourcesView: SourcesView,
-    RRRunsView: RunsView,
-    RRSchedulesView: SchedulesView,
+    RRCommandPalette: CommandPalette,
     RRConnectView: ConnectView,
     RRDeploymentView: DeploymentView,
     RRExportersView: ExportersView,
+    RROverviewView: OverviewView,
+    RRRunsView: RunsView,
+    RRSchedulesView: SchedulesView,
+    RRSourcesView: SourcesView,
     RRSubscriptionsView: SubscriptionsView,
-    RRCommandPalette: CommandPalette,
+    RRTracesView: TracesView,
   });
 })();

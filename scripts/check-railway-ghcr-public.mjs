@@ -55,15 +55,15 @@ export const TEMPLATE_IMAGES = [{ image: "pdp-connect/pdpp/railway-core", servic
 // unclassified transport result we refuse to treat as "public".
 export function classifyTokenStatus(status) {
   if (status === 200) {
-    return { visibility: "public", tokenGranted: true };
+    return { tokenGranted: true, visibility: "public" };
   }
   if (status === 401) {
-    return { visibility: "private", tokenGranted: false };
+    return { tokenGranted: false, visibility: "private" };
   }
   if (status === 403) {
-    return { visibility: "absent", tokenGranted: false };
+    return { tokenGranted: false, visibility: "absent" };
   }
-  return { visibility: "unknown", tokenGranted: false };
+  return { tokenGranted: false, visibility: "unknown" };
 }
 
 // Collapse a token verdict (+ optional tags/list outcome, a required tag pin,
@@ -117,7 +117,7 @@ export function classifyProbeResult({
     reason = "public (anonymously pullable)";
   }
 
-  return { image, service, stage, visibility, ok, reason, tags: tagList, manifestStatus };
+  return { image, manifestStatus, ok, reason, service, stage, tags: tagList, visibility };
 }
 
 // The gate is clear only when every image is ok. Returns a verdict plus the
@@ -127,16 +127,16 @@ export function summarizePublishReadiness(results) {
   const blocked = results.filter((r) => !r.ok);
   const ready = blocked.length === 0;
   return {
-    ready,
     blocked,
     ownerAction: ready
       ? null
       : "Flip each blocked package to Public: GitHub -> org pdp-connect -> Packages -> the package -> Change visibility -> Public, then re-run this probe.",
+    ready,
   };
 }
 
 export function parseArgs(argv) {
-  const args = { json: false, tag: undefined, help: false };
+  const args = { help: false, json: false, tag: undefined };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
@@ -163,7 +163,7 @@ Exit codes: 0 = public (publish gate clear); 1 = blocked; 2 = bad usage.`;
 
 async function ghcrGet(url, headers) {
   const response = await fetch(url, { headers: headers ?? {} });
-  return { status: response.status, response };
+  return { response, status: response.status };
 }
 
 // Live probe of one image: anonymous token, then (if granted) tags/list.
@@ -178,8 +178,8 @@ async function probeImage({ image, service, stage }, requiredTag) {
     if (tokenStatus === 200) {
       const body = await tokenResult.response.json();
       const headers = {
-        Authorization: `Bearer ${body.token}`,
         Accept: "application/json",
+        Authorization: `Bearer ${body.token}`,
       };
       const tagsResult = await ghcrGet(`https://ghcr.io/v2/${image}/tags/list`, {
         ...headers,
@@ -205,23 +205,23 @@ async function probeImage({ image, service, stage }, requiredTag) {
   } catch (error) {
     return {
       image,
-      service,
-      stage,
-      visibility: "unknown",
       ok: false,
       reason: `probe failed: ${error.message}`,
+      service,
+      stage,
       tags: [],
+      visibility: "unknown",
     };
   }
   return classifyProbeResult({
     image,
+    manifestStatus,
+    requiredTag,
     service,
     stage,
-    tokenStatus,
-    tagsStatus,
     tags,
-    requiredTag,
-    manifestStatus,
+    tagsStatus,
+    tokenStatus,
   });
 }
 

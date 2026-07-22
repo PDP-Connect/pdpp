@@ -187,7 +187,7 @@ export function parentRelationsForChild(
       if (!childParentKeyField) {
         continue;
       }
-      out.push({ parentStream: parent.parentStream, capability });
+      out.push({ capability, parentStream: parent.parentStream });
     }
   }
   return out;
@@ -234,11 +234,11 @@ export function buildRelatedLinks(
     const cardinality: "has_one" | "has_many" = cap.cardinality === "has_one" ? "has_one" : "has_many";
 
     const link: RelatedLink = {
-      relation: cap.name,
-      targetStream,
       cardinality,
       childParentKeyField,
       navigable: false,
+      relation: cap.name,
+      targetStream,
     };
 
     if (cap.usable !== true) {
@@ -257,8 +257,8 @@ export function buildRelatedLinks(
       // Child list filtered by the parent's key. The parent key is NOT a child
       // record key, so this is the only correct target.
       link.href = filteredChildListHref({
-        connectionId: args.connectionId,
         childStream: targetStream,
+        connectionId: args.connectionId,
         foreignKey: childParentKeyField,
         parentKey: args.parentRecordKey,
       });
@@ -309,8 +309,8 @@ export function childHasOneBackLinksFromManifest(
     }
     out.push({
       childParentKeyField: rel.foreign_key,
-      parentStream: rel.stream,
       href: `${base}/${encodeURIComponent(rel.stream)}/${encodeURIComponent(value)}`,
+      parentStream: rel.stream,
     });
   }
   return out;
@@ -415,8 +415,8 @@ export function reverseChildListLinksFromManifest(
         childStream: childStream.name,
         foreignKey: rel.foreign_key,
         href: filteredChildListHref({
-          connectionId: args.connectionId,
           childStream: childStream.name,
+          connectionId: args.connectionId,
           foreignKey: rel.foreign_key,
           parentKey: args.parentRecordKey,
         }),
@@ -563,8 +563,8 @@ export function findParentBackLink(
     }
     return {
       childParentKeyField,
-      parentStream,
       href: `${base}/${encodeURIComponent(parentStream)}/${encodeURIComponent(value)}`,
+      parentStream,
     };
   }
   return null;

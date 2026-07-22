@@ -158,7 +158,7 @@ function ClientIdentityList({
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Link
-                className={buttonVariants({ variant: selected ? "default" : "ghost", size: "sm" })}
+                className={buttonVariants({ size: "sm", variant: selected ? "default" : "ghost" })}
                 href={`/connect?client_identity=${encodeURIComponent(identity.document_id)}`}
               >
                 {selected ? "Selected" : "Use"}
@@ -192,27 +192,27 @@ function SelectedIdentityCommands({
   const cimd = buildCimdCommands(mcpUrl, selected.client_id);
   const entries: SetupEntry[] = [
     {
-      title: "Claude Code",
       body: "Default discovery; use this unless the client asks for an explicit client_id.",
       label: "Claude Code default command",
+      title: "Claude Code",
       value: targets.claudeCodeCommand,
     },
     {
-      title: "Claude Code + CIMD",
       body: "Pins this local client to the selected stable metadata URL.",
       label: "Claude Code CIMD command",
+      title: "Claude Code + CIMD",
       value: cimd.claudeCodeCimdCommand,
     },
     {
-      title: "Codex",
       body: "Default discovery for the hosted MCP endpoint.",
       label: "Codex default command",
+      title: "Codex",
       value: targets.codexCommand,
     },
     {
-      title: "Codex + CIMD",
       body: "Pins Codex to the selected stable metadata URL.",
       label: "Codex CIMD command",
+      title: "Codex + CIMD",
       value: cimd.codexCimdCommand,
     },
   ];
@@ -277,35 +277,35 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
   const notice = noticeText(params.notice);
   const primaryEntries: SetupEntry[] = [
     {
-      title: "MCP URL",
       body: "Use this for ChatGPT, Claude.ai, and remote MCP clients. Browser clients use PKCE; sandboxed clients can use the advertised device-code flow.",
       label: "MCP server URL",
+      title: "MCP URL",
       value: targets.mcpUrl,
     },
     {
-      title: "Claude Code",
       body: "Adds the remote Streamable HTTP MCP server.",
       label: "Claude Code command",
+      title: "Claude Code",
       value: targets.claudeCodeCommand,
     },
     {
-      title: "Codex",
       body: "Adds the same remote MCP endpoint without a bearer-token env var.",
       label: "Codex command",
+      title: "Codex",
       value: targets.codexCommand,
     },
   ];
   const secondaryEntries: SetupEntry[] = [
     {
-      title: "PDPP CLI",
       body: "For a shell agent that will use scoped REST reads instead of hosted MCP.",
       label: "PDPP CLI connect command",
+      title: "PDPP CLI",
       value: targets.pdppCliCommand,
     },
     {
-      title: "Agent skill",
       body: "For agents that discover instructions before choosing MCP or CLI.",
       label: "agent-readable entrypoint URL",
+      title: "Agent skill",
       value: targets.agentEntrypoint,
     },
   ];
@@ -314,7 +314,7 @@ export default async function ConnectPage({ searchParams }: { searchParams: Prom
     <RecordroomShellWithPalette build="pdpp 0.1.0" host="this server">
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/deployment">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment">
             Deployment readiness
           </Link>
         }

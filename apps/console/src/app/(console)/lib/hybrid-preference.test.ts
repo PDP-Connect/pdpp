@@ -36,19 +36,19 @@ function shouldAttemptHybrid(input: HybridPreferenceInput): boolean {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 test("hybrid is preferred when advertised on first page", () => {
-  assert.equal(shouldAttemptHybrid({ hybridAdvertised: true, cursor: null }), true);
+  assert.equal(shouldAttemptHybrid({ cursor: null, hybridAdvertised: true }), true);
 });
 
 test("hybrid is skipped when not advertised", () => {
-  assert.equal(shouldAttemptHybrid({ hybridAdvertised: false, cursor: null }), false);
+  assert.equal(shouldAttemptHybrid({ cursor: null, hybridAdvertised: false }), false);
 });
 
 test("hybrid is skipped on subsequent pages even when advertised", () => {
-  assert.equal(shouldAttemptHybrid({ hybridAdvertised: true, cursor: "some-cursor" }), false);
+  assert.equal(shouldAttemptHybrid({ cursor: "some-cursor", hybridAdvertised: true }), false);
 });
 
 test("hybrid is skipped on subsequent pages when not advertised", () => {
-  assert.equal(shouldAttemptHybrid({ hybridAdvertised: false, cursor: "some-cursor" }), false);
+  assert.equal(shouldAttemptHybrid({ cursor: "some-cursor", hybridAdvertised: false }), false);
 });
 
 // ─── Decision gate: semantic uplift fallback ──────────────────────────────────
@@ -77,7 +77,7 @@ test("semantic uplift is blocked when both advertised is false and participation
 test("when hybrid is advertised, semantic gate result does not matter for hybrid path", () => {
   // If hybrid is available, semantic should not be attempted regardless of gate.
   // This is enforced by searchRecords() returning early when hybrid succeeds.
-  const hybridWouldRun = shouldAttemptHybrid({ hybridAdvertised: true, cursor: null });
+  const hybridWouldRun = shouldAttemptHybrid({ cursor: null, hybridAdvertised: true });
   const semanticWouldRun = shouldAttemptSemanticUplift({ advertised: true, participationFieldCount: 3 });
   // Both gates are open, but the code path that reaches semantic uplift is
   // only entered when hybrid is NOT advertised or NOT on page 1. The test
@@ -87,7 +87,7 @@ test("when hybrid is advertised, semantic gate result does not matter for hybrid
 });
 
 test("when hybrid is not advertised, semantic uplift can activate independently", () => {
-  const hybridWouldRun = shouldAttemptHybrid({ hybridAdvertised: false, cursor: null });
+  const hybridWouldRun = shouldAttemptHybrid({ cursor: null, hybridAdvertised: false });
   const semanticWouldRun = shouldAttemptSemanticUplift({ advertised: true, participationFieldCount: 3 });
   assert.equal(hybridWouldRun, false);
   assert.equal(semanticWouldRun, true);

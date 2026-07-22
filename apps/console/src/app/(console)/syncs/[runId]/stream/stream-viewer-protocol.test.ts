@@ -22,7 +22,7 @@ test("parseAttachedMessage validates scope and viewport shape", () => {
         browser_session_id: "browser-1",
         interaction_id: "interaction-1",
         run_id: "run-1",
-        viewport: { width: 390.9, height: 844.2 },
+        viewport: { height: 844.2, width: 390.9 },
       })
     ),
     {
@@ -31,15 +31,15 @@ test("parseAttachedMessage validates scope and viewport shape", () => {
         browser_session_id: "browser-1",
         interaction_id: "interaction-1",
         run_id: "run-1",
-        viewport: { width: 390, height: 844 },
+        viewport: { height: 844, width: 390 },
       },
     }
   );
 
   assert.deepEqual(parseAttachedMessage("{"), { error: "payload_invalid_json", ok: false });
   for (const viewport of [
-    { width: 0, height: 844 },
-    { width: 0.9, height: 844 },
+    { height: 844, width: 0 },
+    { height: 844, width: 0.9 },
   ]) {
     assert.deepEqual(
       parseAttachedMessage(
@@ -60,7 +60,7 @@ test("parseFrameMessage validates non-empty frame payload and sanitizes metadata
     parseFrameMessage(
       JSON.stringify({
         data_base64: "abc",
-        metadata: { device_width: 800, device_height: 600, ignored: true },
+        metadata: { device_height: 600, device_width: 800, ignored: true },
         session_id: 7,
       })
     ),
@@ -68,7 +68,7 @@ test("parseFrameMessage validates non-empty frame payload and sanitizes metadata
       ok: true,
       value: {
         data_base64: "abc",
-        metadata: { device_width: 800, device_height: 600 },
+        metadata: { device_height: 600, device_width: 800 },
         session_id: 7,
       },
     }
@@ -110,9 +110,9 @@ test("parseBackendReadyMessage keeps backend extensible while validating paths",
 });
 
 test("parse small SSE payload variants", () => {
-  assert.deepEqual(parseUrlChangedMessage(JSON.stringify({ url: "https://example.test/a", title: "Example" })), {
+  assert.deepEqual(parseUrlChangedMessage(JSON.stringify({ title: "Example", url: "https://example.test/a" })), {
     ok: true,
-    value: { url: "https://example.test/a", title: "Example" },
+    value: { title: "Example", url: "https://example.test/a" },
   });
   assert.deepEqual(parsePopupOpenedMessage(JSON.stringify({ targetId: "target-1", url: "about:blank" })), {
     ok: true,

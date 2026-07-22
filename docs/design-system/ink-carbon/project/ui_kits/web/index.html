@@ -4,17 +4,17 @@
   <head>
     <meta charset="utf-8">
     <title>PDPP · Web UI Kit</title>
-    <meta name="viewport" content="width=1200, initial-scale=1">
-    <link rel="stylesheet" href="../../colors_and_type.css">
-    <link rel="stylesheet" href="kit.css">
+    <meta content="width=1200, initial-scale=1" name="viewport">
+    <link href="../../colors_and_type.css" rel="stylesheet">
+    <link href="kit.css" rel="stylesheet">
     <style>
     .page {
       min-height: 100vh;
     }
     .section {
       max-width: var(--content-wide-width);
-      margin: 0 auto;
       padding: 0 48px;
+      margin: 0 auto;
     }
     .dash-grid {
       display: grid;
@@ -24,37 +24,37 @@
       padding-bottom: 96px;
     }
     .side {
-      border-right: 1px solid var(--border);
-      padding-right: 32px;
+      position: sticky;
+      top: 72px;
       display: flex;
       flex-direction: column;
       gap: 14px;
-      position: sticky;
-      top: 72px;
       align-self: start;
+      padding-right: 32px;
+      border-right: 1px solid var(--border);
     }
     .side-h {
+      margin-bottom: 4px;
       font-family: var(--font-mono);
       font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
       color: var(--muted-foreground);
-      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
     }
     .side-link {
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
       padding: 6px 10px;
-      border-radius: 6px;
       font-size: 13.5px;
       color: var(--muted-foreground);
       cursor: pointer;
+      border-radius: 6px;
     }
     .side-link.on {
-      background: var(--muted);
-      color: var(--foreground);
       font-weight: 500;
+      color: var(--foreground);
+      background: var(--muted);
     }
     .side-link small {
       font-family: var(--font-mono);
@@ -67,12 +67,12 @@
       gap: 20px;
     }
     .sec-title {
+      margin: 40px 0 14px;
       font-family: var(--font-mono);
       font-size: 11.5px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
       color: var(--muted-foreground);
-      margin: 40px 0 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
     }
     .spec-row {
       display: grid;
@@ -92,40 +92,40 @@
       font-weight: 600;
     }
     .spec-row .b {
-      font-size: 14px;
-      color: var(--muted-foreground);
-      line-height: 1.55;
-      margin-top: 2px;
       max-width: 620px;
+      margin-top: 2px;
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--muted-foreground);
     }
     </style>
   </head>
   <body>
-    <div id="root" class="page"></div>
+    <div class="page" id="root"></div>
 
     <script
-      src="https://unpkg.com/react@18.3.1/umd/react.development.js"
+      crossorigin="anonymous"
       integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L"
-      crossorigin="anonymous"
+      src="https://unpkg.com/react@18.3.1/umd/react.development.js"
     ></script>
     <script
-      src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"
+      crossorigin="anonymous"
       integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm"
-      crossorigin="anonymous"
+      src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"
     ></script>
     <script
-      src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"
-      integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y"
       crossorigin="anonymous"
+      integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y"
+      src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"
     ></script>
 
-    <script type="text/babel" src="SiteHeader.jsx"></script>
-    <script type="text/babel" src="Hero.jsx"></script>
-    <script type="text/babel" src="ConsentCard.jsx"></script>
-    <script type="text/babel" src="GrantInspector.jsx"></script>
-    <script type="text/babel" src="StreamInventory.jsx"></script>
-    <script type="text/babel" src="GrantsList.jsx"></script>
-    <script type="text/babel" src="Teaching.jsx"></script>
+    <script src="SiteHeader.jsx" type="text/babel"></script>
+    <script src="Hero.jsx" type="text/babel"></script>
+    <script src="ConsentCard.jsx" type="text/babel"></script>
+    <script src="GrantInspector.jsx" type="text/babel"></script>
+    <script src="StreamInventory.jsx" type="text/babel"></script>
+    <script src="GrantsList.jsx" type="text/babel"></script>
+    <script src="Teaching.jsx" type="text/babel"></script>
 
     <script type="text/babel">
 const NAV_SIDE = [

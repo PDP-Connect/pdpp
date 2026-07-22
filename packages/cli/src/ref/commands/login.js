@@ -42,12 +42,12 @@ export async function runRefLogin(argv, io = {}, fetchImpl = globalThis.fetch) {
   let resp;
   try {
     resp = await fetchImpl(loginUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
       body: JSON.stringify({ password }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
       redirect: "manual",
     });
   } catch (e) {
@@ -85,9 +85,9 @@ export async function runRefLogin(argv, io = {}, fetchImpl = globalThis.fetch) {
 
   const cacheRoot = flags["cache-root"] || ".pdpp";
   const file = writeOwnerSession({
-    referenceUrl,
-    cookie: `${OWNER_SESSION_COOKIE_NAME}=${cookieValue}`,
     cacheRoot,
+    cookie: `${OWNER_SESSION_COOKIE_NAME}=${cookieValue}`,
+    referenceUrl,
   });
 
   // Never print the cookie value. Confirm location only.
@@ -144,10 +144,14 @@ function readFirstLine(stream) {
 
 function readSetCookie(resp) {
   const headers = resp.headers;
-  if (!headers) return null;
+  if (!headers) {
+    return null;
+  }
   if (typeof headers.getSetCookie === "function") {
     const arr = headers.getSetCookie();
-    if (arr && arr.length) return arr;
+    if (arr && arr.length) {
+      return arr;
+    }
   }
   if (typeof headers.get === "function") {
     return headers.get("set-cookie") || headers.get("Set-Cookie");

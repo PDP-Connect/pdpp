@@ -57,33 +57,33 @@ const EMPTY_AXES = {
 
 function health(state: RefConnectionHealthSnapshot["state"]): RefConnectionHealthSnapshot {
   return {
-    state,
-    reason_code: null,
-    last_success_at: null,
-    next_attempt_at: null,
-    badges: { stale: false, syncing: false },
     axes: EMPTY_AXES,
+    badges: { stale: false, syncing: false },
+    last_success_at: null,
     next_action: null,
+    next_attempt_at: null,
+    reason_code: null,
+    state,
     unknown_reasons: [],
   };
 }
 
 function summary(partial: Partial<RefConnectorSummary> = {}): RefConnectorSummary {
   return {
-    connector_id: "gmail",
+    connection_health: health("healthy"),
     connection_id: "conn_1",
+    connector_display_name: "Gmail",
+    connector_id: "gmail",
     connector_instance_id: "conn_1",
     display_name: "Gmail",
-    connector_display_name: "Gmail",
     freshness: {},
-    manifest_version: "1.0.0",
     last_run: null,
     last_successful_run: null,
-    schedule: null,
+    manifest_version: "1.0.0",
     next_action: null,
-    connection_health: health("healthy"),
-    streams: ["messages", "threads"],
+    schedule: null,
     stream_count: 2,
+    streams: ["messages", "threads"],
     total_records: 100,
     ...partial,
   };
@@ -129,11 +129,11 @@ function manualUploadManifest(connectorId = "whatsapp") {
     connector_id: connectorId,
     connector_key: connectorId,
     setup: {
-      modality: "manual_or_upload",
       manual_or_upload: {
-        import_dir_env_var: "WHATSAPP_EXPORT_DIR",
         accepted_file_extensions: [".zip"],
+        import_dir_env_var: "WHATSAPP_EXPORT_DIR",
       },
+      modality: "manual_or_upload",
     },
   };
 }
@@ -176,13 +176,12 @@ test("toSourceInstanceView reads status from rendered_verdict when present", () 
 test("toSourceInstanceView derives local-device modality from persisted source_kind, not heartbeat presence", () => {
   const localWithoutHeartbeat = toSourceInstanceView(
     summary({
-      source_kind: "local_device",
       local_device_progress: null,
+      source_kind: "local_device",
     })
   );
   const remoteWithHeartbeatShapedProgress = toSourceInstanceView(
     summary({
-      source_kind: "account",
       local_device_progress: {
         last_heartbeat_at: "2026-06-03T11:59:00.000Z",
         last_heartbeat_status: "healthy",
@@ -190,6 +189,7 @@ test("toSourceInstanceView derives local-device modality from persisted source_k
         records_pending: 0,
         source_count: 1,
       },
+      source_kind: "account",
     })
   );
   assert.equal(localWithoutHeartbeat.isLocalDevicePush, true);
@@ -251,13 +251,13 @@ test("toSourceInstanceView reads owner CTA from rendered_verdict required action
 test("toSourceInstanceView surfaces owner-runnable advisory action cues for source rows", () => {
   const view = toSourceInstanceView(
     summary({
-      connector_id: "reddit",
       connector_display_name: "Reddit",
+      connector_id: "reddit",
       display_name: "Reddit",
       rendered_verdict: renderedVerdict({
         channel: "advisory",
-        pill: { label: "Healthy", tone: "green" },
         forward_statement: "Run a refresh when you want the latest saved posts.",
+        pill: { label: "Healthy", tone: "green" },
         required_actions: [
           {
             affects: [],
@@ -365,8 +365,8 @@ test("toSourceInstanceView does not render maintainer or wait actions as owner C
 test("toSourceInstanceView renders calibrated live-journey verdict copy without inspection counts", () => {
   const chatgpt = toSourceInstanceView(
     summary({
-      connector_id: "chatgpt",
       connector_display_name: "ChatGPT",
+      connector_id: "chatgpt",
       display_name: "ChatGPT",
       rendered_verdict: renderedVerdict({
         annotations: [{ kind: "freshness", text: "Fresh today." }],
@@ -389,8 +389,8 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
 
   const amazon = toSourceInstanceView(
     summary({
-      connector_id: "amazon",
       connector_display_name: "Amazon",
+      connector_id: "amazon",
       display_name: "Amazon",
       rendered_verdict: renderedVerdict({
         annotations: [{ kind: "freshness", text: "Last refreshed 31 days ago." }],
@@ -415,8 +415,8 @@ test("toSourceInstanceView renders calibrated live-journey verdict copy without 
 
   const chase = toSourceInstanceView(
     summary({
-      connector_id: "chase",
       connector_display_name: "Chase",
+      connector_id: "chase",
       display_name: "Chase",
       rendered_verdict: renderedVerdict({
         annotations: [{ kind: "freshness", text: "Transactions stuck since Apr 22." }],
@@ -507,8 +507,8 @@ test("toSourceInstanceView uses the same stream count for config and stream tabl
   const view = toSourceInstanceView(
     summary({
       stream_count: 5,
+      stream_records: [{ last_updated: "2026-07-01T17:58:46.531Z", record_count: 133_848, stream: "messages" }],
       streams: ["conversations", "messages", "memories", "custom_gpts", "custom_instructions", "shared_conversations"],
-      stream_records: [{ stream: "messages", record_count: 133_848, last_updated: "2026-07-01T17:58:46.531Z" }],
     })
   );
 
@@ -519,21 +519,21 @@ test("toSourceInstanceView uses the same stream count for config and stream tabl
 test("buildSourcesRuntimeAdvisory renders one global runtime fault and ignores healthy runtime", () => {
   assert.equal(
     buildSourcesRuntimeAdvisory({
+      label: "Collection runtime ready",
+      message: null,
       object: "ref_runtime_status",
       ok: true,
       reason: null,
-      label: "Collection runtime ready",
-      message: null,
     }),
     null
   );
   assert.deepEqual(
     buildSourcesRuntimeAdvisory({
+      label: "Collection runtime unavailable",
+      message: null,
       object: "ref_runtime_status",
       ok: false,
       reason: "controller_unavailable",
-      label: "Collection runtime unavailable",
-      message: null,
     }),
     {
       headline: "Collection runtime unavailable",
@@ -545,11 +545,11 @@ test("buildSourcesRuntimeAdvisory renders one global runtime fault and ignores h
 test("formatSchedule is honest about no schedule, paused, and policy-ineligible", () => {
   assert.equal(formatSchedule(null), "manual — no schedule");
   const base: RefSchedule = {
-    object: "schedule",
-    connector_id: "gmail",
-    trigger_kind: "scheduled",
+    active_run_id: null,
     automation_mode: "unattended",
     automation_summary: "",
+    connector_id: "gmail",
+    created_at: "",
     effective_mode: "automatic",
     enabled: true,
     human_attention_needed: false,
@@ -563,10 +563,10 @@ test("formatSchedule is honest about no schedule, paused, and policy-ineligible"
     minimum_interval_warning: null,
     next_due_at: null,
     notification_posture: "none",
+    object: "schedule",
     recommended_policy: null,
     scheduler_backoff: null,
-    active_run_id: null,
-    created_at: "",
+    trigger_kind: "scheduled",
     updated_at: "",
   };
   assert.equal(formatSchedule(base), "every 1d · automatic");
@@ -626,22 +626,22 @@ test("toSourceInstanceView surfaces server-owned collection report facts per str
 test("toSourceInstanceView surfaces retained stream counts without conflating them with latest collection", () => {
   const view = toSourceInstanceView(
     summary({
-      stream_records: [
-        { stream: "messages", record_count: 42, last_updated: "2026-06-17T11:00:00.000Z" },
-        { stream: "archived", record_count: 3, last_updated: "2026-06-16T11:00:00.000Z" },
-      ],
       collection_report: [
         {
-          stream: "messages",
+          checkpoint: "committed",
           collected: 8,
           considered: 10,
-          checkpoint: "committed",
+          coverage_condition: "retryable_gap",
           covered: 8,
+          forward_disposition: "resumable",
           pending_detail_gaps: 0,
           skipped: null,
-          coverage_condition: "retryable_gap",
-          forward_disposition: "resumable",
+          stream: "messages",
         },
+      ],
+      stream_records: [
+        { last_updated: "2026-06-17T11:00:00.000Z", record_count: 42, stream: "messages" },
+        { last_updated: "2026-06-16T11:00:00.000Z", record_count: 3, stream: "archived" },
       ],
     })
   );
@@ -693,7 +693,7 @@ test("toSourceInstanceView drops blank stream names", () => {
 });
 
 test("toSourceInstanceView surfaces a revoked instance with a struck status", () => {
-  const view = toSourceInstanceView(summary({ status: "revoked", revoked_at: "2026-06-01T00:00:00Z" }));
+  const view = toSourceInstanceView(summary({ revoked_at: "2026-06-01T00:00:00Z", status: "revoked" }));
   assert.equal(view.revoked, true);
   assert.equal(view.status.kind, "revoked");
 });
@@ -701,8 +701,8 @@ test("toSourceInstanceView surfaces a revoked instance with a struck status", ()
 test("toSourceInstanceView omits passport identity rows that duplicate the source title", () => {
   const view = toSourceInstanceView(
     summary({
-      connector_id: "amazon",
       connector_display_name: "Amazon",
+      connector_id: "amazon",
       display_name: "Amazon - Personal",
     })
   );
@@ -727,15 +727,15 @@ test("toSourceInstanceView omits passport identity rows that duplicate the sourc
 test("toSourceInstanceView keeps connector type when the source title does not identify it", () => {
   const view = toSourceInstanceView(
     summary({
-      connector_id: "amazon",
       connector_display_name: "Amazon",
+      connector_id: "amazon",
       display_name: "Personal",
     })
   );
 
   assert.equal(view.displayName, "Personal");
   assert.equal(view.listKind, "Amazon");
-  assert.deepEqual(view.passportFields[0], { k: "type", value: "Amazon", mono: false });
+  assert.deepEqual(view.passportFields[0], { k: "type", mono: false, value: "Amazon" });
 });
 
 test("toSourceInstanceView links the detail page, never a raw action target", () => {
@@ -793,7 +793,7 @@ test("toSourceInstanceView: a revoked-and-draft row (should not arise in practic
   // the href does NOT independently re-check revoked. On real data these two
   // signals never disagree; if that guarantee ever breaks, this test is the
   // one that will start failing instead of silently drifting.
-  const view = toSourceInstanceView(draftSummary({ status: "revoked", revoked_at: "2026-07-10T00:00:00Z" }));
+  const view = toSourceInstanceView(draftSummary({ revoked_at: "2026-07-10T00:00:00Z", status: "revoked" }));
   assert.equal(view.revoked, true);
   assert.equal(view.status.kind, "revoked");
   assert.equal(view.detailHref, "/connect/status/conn_1");
@@ -802,22 +802,22 @@ test("toSourceInstanceView: a revoked-and-draft row (should not arise in practic
 test("toSourcesView disambiguates duplicate unnamed connections without exposing ids", () => {
   const views = toSourcesView([
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
-      display_name: "Amazon",
       connection_id: "cin_a",
-    }),
-    summary({
-      connector_id: "amazon",
       connector_display_name: "Amazon",
+      connector_id: "amazon",
       display_name: "Amazon",
-      connection_id: "cin_b",
     }),
     summary({
-      connector_id: "amazon",
+      connection_id: "cin_b",
       connector_display_name: "Amazon",
-      display_name: "Amazon - Personal",
+      connector_id: "amazon",
+      display_name: "Amazon",
+    }),
+    summary({
       connection_id: "cin_named",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
+      display_name: "Amazon - Personal",
     }),
   ]);
 
@@ -832,23 +832,23 @@ test("toSourcesView disambiguates duplicate unnamed connections without exposing
 test("duplicate source review flags same-type unnamed active sources without hiding them", () => {
   const views = toSourcesView([
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_named",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_named",
       display_name: "Amazon - Personal",
     }),
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_a",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_a",
       display_name: "Amazon",
     }),
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_b",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_b",
       display_name: "Amazon",
     }),
@@ -882,16 +882,16 @@ test("duplicate source review flags same-type unnamed active sources without hid
 test("duplicate source review ignores revoked fallback sources", () => {
   const views = toSourcesView([
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_active",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_active",
       display_name: "Amazon",
     }),
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_revoked",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_revoked",
       display_name: "Amazon",
       revoked_at: "2026-06-17T00:00:00Z",
@@ -905,37 +905,37 @@ test("duplicate source review ignores revoked fallback sources", () => {
 test("duplicate fallback collapse keeps named sources visible and groups 3+ unnamed active sources", () => {
   const views = toSourcesView([
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_named",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_named",
       display_name: "Amazon - Personal",
     }),
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_a",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_a",
       display_name: "Amazon",
     }),
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_b",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_b",
       display_name: "Amazon",
     }),
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_c",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_c",
       display_name: "Amazon",
     }),
     summary({
-      connector_id: "gmail",
-      connector_display_name: "Gmail",
       connection_id: "cin_gmail",
+      connector_display_name: "Gmail",
+      connector_id: "gmail",
       connector_instance_id: "cin_gmail",
       display_name: "Gmail",
     }),
@@ -958,16 +958,16 @@ test("duplicate fallback collapse keeps named sources visible and groups 3+ unna
 test("duplicate fallback collapse leaves small duplicate sets visible", () => {
   const views = toSourcesView([
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_a",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_a",
       display_name: "Amazon",
     }),
     summary({
-      connector_id: "amazon",
-      connector_display_name: "Amazon",
       connection_id: "cin_b",
+      connector_display_name: "Amazon",
+      connector_id: "amazon",
       connector_instance_id: "cin_b",
       display_name: "Amazon",
     }),
@@ -982,7 +982,7 @@ test("duplicate fallback collapse leaves small duplicate sets visible", () => {
 });
 
 test("manual/upload sources link to importing another file into the same source", () => {
-  const view = toSourceInstanceView(summary({ connector_id: "whatsapp", connection_id: "cin_whatsapp_1" }), {
+  const view = toSourceInstanceView(summary({ connection_id: "cin_whatsapp_1", connector_id: "whatsapp" }), {
     manifests: [manualUploadManifest()],
   });
   assert.equal(view.manualUploadHref, "/connect/manual-upload/whatsapp?connection_id=cin_whatsapp_1");
@@ -993,12 +993,12 @@ test("manual/upload sources link to importing another file into the same source"
 });
 
 test("manual/upload source href is absent when the connector has no packaged import binding", () => {
-  const href = manualUploadHrefForSource(summary({ connector_id: "whatsapp", connection_id: "cin_whatsapp_1" }), [
+  const href = manualUploadHrefForSource(summary({ connection_id: "cin_whatsapp_1", connector_id: "whatsapp" }), [
     {
       connector_id: "whatsapp",
       setup: {
-        modality: "manual_or_upload",
         manual_or_upload: { accepted_file_extensions: [".zip"] },
+        modality: "manual_or_upload",
       },
     },
   ]);

@@ -85,11 +85,10 @@ const MULTI_CONNECTORS: ConnectorCardProps[] = [
   {
     connectorId: "https://registry.pdpp.org/connectors/spotify",
     displayName: "Spotify",
-    version: "2.0.0",
     streams: [
       {
-        name: "top_artists",
         label: "Top artists",
+        name: "top_artists",
         semantics: "mutable_state",
         supportsFields: true,
         supportsResources: false,
@@ -97,8 +96,8 @@ const MULTI_CONNECTORS: ConnectorCardProps[] = [
         viewCount: 2,
       },
       {
-        name: "play_events",
         label: "Play history",
+        name: "play_events",
         semantics: "append_only",
         supportsFields: true,
         supportsResources: false,
@@ -106,15 +105,15 @@ const MULTI_CONNECTORS: ConnectorCardProps[] = [
         viewCount: 0,
       },
     ],
+    version: "2.0.0",
   },
   {
     connectorId: "https://registry.pdpp.org/connectors/oura",
     displayName: "Oura Ring",
-    version: "1.0.0",
     streams: [
       {
-        name: "sleep_sessions",
         label: "Sleep sessions",
+        name: "sleep_sessions",
         semantics: "append_only",
         supportsFields: true,
         supportsResources: false,
@@ -122,6 +121,7 @@ const MULTI_CONNECTORS: ConnectorCardProps[] = [
         viewCount: 0,
       },
     ],
+    version: "1.0.0",
   },
 ];
 
@@ -139,73 +139,73 @@ interface SectionConfig {
 // under `noUncheckedIndexedAccess`.
 const SECTION_CONTENT = [
   {
-    id: "ingest",
     headline: "Native where possible, connector-backed where needed",
+    id: "ingest",
     narrative:
       "Platforms can implement PDPP directly. Native endpoints, browser automation, and imports can all feed the same compensation records into one grant and enforcement model.",
     surface: "protocol",
   },
   {
-    id: "inventory",
     headline: "Records make access exact",
+    id: "inventory",
     narrative:
       "Pay statements, equity grants, and benefits enrollments become records the server can match, project, and revoke. Once the data has shape, access can become exact.",
     surface: "protocol",
   },
   {
-    id: "request",
     headline: "A client app requests access",
+    id: "request",
     narrative: `${LONGVIEW_CLIENT_NAME} is the client app. It requests pay statements and equity grants for career-move compensation planning. The request names the client, the purpose, and the exact streams.`,
     surface: "protocol",
   },
   {
-    id: "consent",
     headline: "Consent fixes the boundary",
+    id: "consent",
     narrative: "The consent surface shows the client, streams, and enforced boundary before approval.",
     surface: "human",
   },
   {
-    id: "grant",
     headline: "The grant makes it durable",
+    id: "grant",
     narrative: "Approval becomes a grant with exact streams, fields, access mode, and time window.",
     surface: "protocol",
   },
   {
-    id: "enforce",
     headline: "Only the granted fields come back",
+    id: "enforce",
     narrative: `${LONGVIEW_CLIENT_NAME} queries pay statements. The server returns the four granted comparison fields and leaves the identity-heavy payroll fields behind.`,
     surface: "protocol",
   },
   {
-    id: "sync",
     headline: "Only what changed",
+    id: "sync",
     narrative:
       "On the next payroll cycle, one new pay statement lands. Longview syncs again and gets only the new record.",
     surface: "protocol",
   },
   {
-    id: "revoke",
     headline: "Access is revocable",
+    id: "revoke",
     narrative: `One click revokes the grant. The next query from ${LONGVIEW_CLIENT_NAME} receives a refusal within 60 seconds.`,
     surface: "human",
   },
   {
-    id: "export",
     headline: "Self-export remains full-fidelity",
+    id: "export",
     narrative:
       "Owner access can retrieve full records at any time. Every field, every stream, no third-party grant required.",
     surface: "human",
   },
   {
-    id: "multi",
     headline: "One protocol across platforms",
+    id: "multi",
     narrative:
       "Compensation planning is one reference world. Subscription review, travel reimbursement, and benefits disputes can use the same grant-and-enforcement model across different platforms and deployment paths.",
     surface: "neutral",
   },
   {
-    id: "spec",
     headline: "Built on an open specification",
+    id: "spec",
     narrative:
       "Every component on this page implements a section of the PDPP specification. Published, versioned, and open for review.",
     surface: "neutral",
@@ -215,17 +215,17 @@ const SECTION_CONTENT = [
 // ─── Stepper navigation ─────────────────────────────────────────────────────
 
 const SECTION_TEMPERATURE: Record<SectionId, "human" | "protocol" | "neutral"> = {
+  consent: "human",
+  enforce: "protocol",
+  export: "human",
+  grant: "protocol",
   ingest: "protocol",
   inventory: "protocol",
-  request: "protocol",
-  consent: "human",
-  grant: "protocol",
-  enforce: "protocol",
-  sync: "protocol",
-  revoke: "human",
-  export: "human",
   multi: "neutral",
+  request: "protocol",
+  revoke: "human",
   spec: "neutral",
+  sync: "protocol",
 };
 
 function Stepper({
@@ -284,7 +284,7 @@ function GrantStatusRow({ phase }: { phase: ProtocolPhase }) {
     <div
       aria-live="polite"
       className="mt-1 flex items-center gap-2 rounded-md border px-2 py-1 text-right"
-      style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}
+      style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
     >
       <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: dotColor }} />
       <span className="font-medium text-muted-foreground text-xs">Grant: {grantLabel}</span>
@@ -428,9 +428,9 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
                     backgroundColor: granted ? "var(--success-wash)" : "var(--muted)",
                     color: granted ? "var(--success)" : "var(--muted-foreground)",
                     opacity,
+                    textDecoration: dimmedByFilter ? "line-through" : "none",
                     transform,
                     transition: `opacity ${dur}ms ${easeOut} ${phase === "hidden" ? i * stagger : stagger * 4}ms, transform ${dur}ms ${easeOut} ${phase === "hidden" ? i * stagger : stagger * 4}ms`,
-                    textDecoration: dimmedByFilter ? "line-through" : "none",
                   }}
                 >
                   {f}
@@ -447,11 +447,11 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             style={{
               backgroundColor:
                 phase === "filter" || phase === "result" ? "var(--authorship-protocol-accent)" : "var(--border)",
-              opacity: phase === "hidden" ? 0 : 1,
               boxShadow:
                 phase === "filter" || phase === "result"
                   ? "0 0 8px color-mix(in oklab, var(--authorship-protocol-accent) 55%, transparent)"
                   : "none",
+              opacity: phase === "hidden" ? 0 : 1,
               transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, background-color ${dur}ms ${easeOut}, box-shadow ${dur}ms ${easeOut}`,
             }}
           />
@@ -473,11 +473,11 @@ function FieldProjection({ grantedFields, allFields }: { grantedFields: string[]
             style={{
               backgroundColor:
                 phase === "filter" || phase === "result" ? "var(--authorship-protocol-accent)" : "var(--border)",
-              opacity: phase === "hidden" ? 0 : 1,
               boxShadow:
                 phase === "filter" || phase === "result"
                   ? "0 0 8px color-mix(in oklab, var(--authorship-protocol-accent) 55%, transparent)"
                   : "none",
+              opacity: phase === "hidden" ? 0 : 1,
               transition: `opacity ${dur}ms ${easeOut} ${stagger * 9}ms, background-color ${dur}ms ${easeOut}, box-shadow ${dur}ms ${easeOut}`,
             }}
           />
@@ -568,8 +568,8 @@ function IncrementalSync() {
                   backgroundColor: "var(--primary)",
                   opacity: phase === "hidden" ? 0 : 0.6,
                   transform: phase === "hidden" ? "scaleY(0)" : "scaleY(1)",
-                  transition: `opacity 200ms ${i * 30}ms, transform 200ms ${i * 30}ms`,
                   transformOrigin: "bottom",
+                  transition: `opacity 200ms ${i * 30}ms, transform 200ms ${i * 30}ms`,
                 }}
               />
             ))}
@@ -630,8 +630,8 @@ function IncrementalSync() {
                   backgroundColor: "var(--success)",
                   opacity: phase === "delta" ? 1 : 0,
                   transform: phase === "delta" ? "scaleY(1)" : "scaleY(0)",
-                  transition: `opacity 220ms ${420 + i * 80}ms, transform 220ms ${420 + i * 80}ms`,
                   transformOrigin: "bottom",
+                  transition: `opacity 220ms ${420 + i * 80}ms, transform 220ms ${420 + i * 80}ms`,
                 }}
               />
             ))}
@@ -698,7 +698,7 @@ function TokenIntrospection({ introspection }: { introspection: ClientIntrospect
             RS reads first
           </span>
         </div>
-        <pre className="overflow-x-auto font-mono text-xs" style={{ margin: 0, color: "var(--muted-foreground)" }}>
+        <pre className="overflow-x-auto font-mono text-xs" style={{ color: "var(--muted-foreground)", margin: 0 }}>
           {"token=<client_token>"}
         </pre>
       </div>
@@ -742,7 +742,7 @@ function OutcomeCard({
     <div className="flex w-full flex-col items-center gap-3">
       <div
         className="flex w-full flex-col items-center gap-3 rounded-xl px-6 py-8 text-center"
-        style={{ border: "1px solid var(--border)", backgroundColor: "var(--card)" }}
+        style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
       >
         <div
           className="flex h-8 w-8 items-center justify-center rounded-full text-sm"
@@ -857,13 +857,13 @@ function CollectionConvergence() {
               <span
                 className="pdpp-label shrink-0"
                 style={{
-                  fontFamily: "var(--font-mono)",
-                  color: visible ? "var(--primary)" : "var(--muted-foreground)",
-                  transition: `color var(--duration-moderate) ${ease} ${240 + i * 60}ms`,
-                  padding: "0.375rem 0.75rem",
                   border: "1px solid",
                   borderColor: visible ? "var(--primary)" : "var(--border)",
                   borderRadius: "var(--radius)",
+                  color: visible ? "var(--primary)" : "var(--muted-foreground)",
+                  fontFamily: "var(--font-mono)",
+                  padding: "0.375rem 0.75rem",
+                  transition: `color var(--duration-moderate) ${ease} ${240 + i * 60}ms`,
                   whiteSpace: "nowrap",
                 }}
               >
@@ -872,10 +872,10 @@ function CollectionConvergence() {
               {/* Connecting line */}
               <div
                 style={{
-                  height: "1px",
-                  flex: "1 1 0",
-                  minWidth: "1.5rem",
                   backgroundColor: visible ? "var(--primary)" : "var(--border)",
+                  flex: "1 1 0",
+                  height: "1px",
+                  minWidth: "1.5rem",
                   opacity: visible ? 0.35 : 0,
                   transition: `opacity var(--duration-moderate) ${ease} ${200 + i * 60}ms, background-color var(--duration-moderate) ${ease} ${200 + i * 60}ms`,
                 }}
@@ -888,12 +888,12 @@ function CollectionConvergence() {
         <div
           className="shrink-0"
           style={{
-            width: "6px",
-            height: "6px",
-            borderRadius: "50%",
             backgroundColor: visible ? "var(--primary)" : "var(--border)",
+            borderRadius: "50%",
+            height: "6px",
             opacity: visible ? 1 : 0,
             transition: `opacity var(--duration-moderate) ${ease} 350ms, background-color var(--duration-moderate) ${ease} 350ms`,
+            width: "6px",
           }}
         />
 
@@ -907,10 +907,10 @@ function CollectionConvergence() {
         >
           <div
             style={{
-              height: "1px",
-              flex: "1 1 0",
-              minWidth: "1.5rem",
               backgroundColor: "var(--primary)",
+              flex: "1 1 0",
+              height: "1px",
+              minWidth: "1.5rem",
               opacity: 0.35,
             }}
           />
@@ -919,8 +919,8 @@ function CollectionConvergence() {
             style={{
               color: "var(--foreground)",
               fontWeight: 600,
-              whiteSpace: "nowrap",
               paddingLeft: "0.75rem",
+              whiteSpace: "nowrap",
             }}
           >
             Structured records
@@ -932,8 +932,8 @@ function CollectionConvergence() {
       <p
         className="pdpp-caption"
         style={{
-          marginTop: "1rem",
           color: "var(--muted-foreground)",
+          marginTop: "1rem",
           opacity: visible ? 1 : 0,
           transition: `opacity var(--duration-slow) ${ease} 550ms`,
         }}
@@ -1020,9 +1020,9 @@ function FeaturedSection({
       className="py-28 md:py-40"
       id={config.id}
       style={{
+        background: config.surface === "human" ? FEATURED_SECTION_WASH.human : FEATURED_SECTION_WASH.protocol,
         borderLeft: `2px solid ${borderColor}`,
         order: SECTION_DISPLAY_ORDER[config.id],
-        background: config.surface === "human" ? FEATURED_SECTION_WASH.human : FEATURED_SECTION_WASH.protocol,
       }}
     >
       <div className="mx-auto w-full max-w-3xl px-6 md:px-12">
@@ -1076,8 +1076,8 @@ function DefaultReferenceHero() {
               className="rounded px-2 py-0.5 font-mono text-xs"
               style={{
                 backgroundColor: "var(--primary-wash)",
-                color: "var(--primary)",
                 border: "1px solid color-mix(in oklab, var(--primary) 34%, var(--border))",
+                color: "var(--primary)",
               }}
             >
               PDPP
@@ -1088,7 +1088,7 @@ function DefaultReferenceHero() {
         <Reveal delay={50}>
           <h1
             className="mb-6 font-semibold text-4xl md:text-5xl lg:text-6xl"
-            style={{ color: "var(--foreground)", lineHeight: 1.05, letterSpacing: "-0.03em" }}
+            style={{ color: "var(--foreground)", letterSpacing: "-0.03em", lineHeight: 1.05 }}
           >
             Granular access
             <br />
@@ -1203,24 +1203,24 @@ function deriveGrantInspectorProps(
   protocolGrant: NonNullable<ReturnType<typeof useProtocol>["grant"]>
 ): GrantInspectorProps {
   return {
+    accessMode: protocolGrant.access_mode,
+    client: { clientId: protocolGrant.client_id, name: LONGVIEW_CLIENT_NAME },
+    expiresAt: protocolGrant.expires_at ?? null,
     grantId: protocolGrant.grant_id,
     issuedAt: protocolGrant.issued_at,
-    status: protocolGrant.status,
-    client: { clientId: protocolGrant.client_id, name: LONGVIEW_CLIENT_NAME },
     purposeCode: protocolGrant.purpose_code,
     purposeDescription: protocolGrant.purpose_description,
-    accessMode: protocolGrant.access_mode,
-    expiresAt: protocolGrant.expires_at ?? null,
     retention: protocolGrant.retention
       ? { duration: "90 days", onExpiry: protocolGrant.retention.on_expiry }
       : undefined,
+    status: protocolGrant.status,
     streams: protocolGrant.streams.map((s) => ({
-      name: s.name,
-      label: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.label || s.name,
       detail: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.detail,
       fields: s.fields || undefined,
-      view: s.view || undefined,
+      label: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.label || s.name,
+      name: s.name,
       timeRange: s.time_range || undefined,
+      view: s.view || undefined,
     })),
   };
 }
@@ -1242,8 +1242,8 @@ function StickyHeader({
     <header
       className="sticky top-0 z-40 flex h-12 items-center gap-2 px-4 md:gap-3 md:px-6"
       style={{
-        backgroundColor: "var(--background)",
         backdropFilter: "blur(8px)",
+        backgroundColor: "var(--background)",
         borderBottom: "1px solid var(--border)",
       }}
     >
@@ -1275,7 +1275,7 @@ function StickyHeader({
         <div
           aria-live="polite"
           className="flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 lg:hidden"
-          style={{ borderColor: "var(--border)", backgroundColor: "var(--card)" }}
+          style={{ backgroundColor: "var(--card)", borderColor: "var(--border)" }}
         >
           <div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: dotColor }} />
           <span className="font-medium text-muted-foreground text-xs">Grant: {grantLabel}</span>
@@ -1456,52 +1456,52 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
               <div className="mt-2 flex flex-col gap-0">
                 {[
                   {
+                    color: "var(--primary)",
+                    detail: "{ collection_mode, state, bindings }",
                     dir: "→",
                     from: "Runtime",
-                    to: "Connector",
                     msg: "START",
-                    detail: "{ collection_mode, state, bindings }",
-                    color: "var(--primary)",
+                    to: "Connector",
                   },
                   {
-                    dir: "←",
-                    from: "Connector",
-                    to: "Runtime",
-                    msg: "RECORD",
+                    color: "var(--success)",
                     detail: '{ stream: "pay_statements", key: "pay_0", data: {...} }',
-                    color: "var(--success)",
-                  },
-                  {
                     dir: "←",
                     from: "Connector",
-                    to: "Runtime",
                     msg: "RECORD",
+                    to: "Runtime",
+                  },
+                  {
+                    color: "var(--success)",
                     detail: '{ stream: "pay_statements", key: "pay_1", data: {...} }',
-                    color: "var(--success)",
-                  },
-                  {
                     dir: "←",
                     from: "Connector",
-                    to: "Runtime",
-                    msg: "STATE",
-                    detail: '{ cursor: "..." }',
-                    color: "var(--warning)",
-                  },
-                  {
-                    dir: "←",
-                    from: "Connector",
-                    to: "Runtime",
                     msg: "RECORD",
-                    detail: "...24 records total",
-                    color: "var(--success)",
+                    to: "Runtime",
                   },
                   {
+                    color: "var(--warning)",
+                    detail: '{ cursor: "..." }',
                     dir: "←",
                     from: "Connector",
+                    msg: "STATE",
                     to: "Runtime",
-                    msg: "DONE",
-                    detail: '{ status: "succeeded", records_emitted: 24 }',
+                  },
+                  {
+                    color: "var(--success)",
+                    detail: "...24 records total",
+                    dir: "←",
+                    from: "Connector",
+                    msg: "RECORD",
+                    to: "Runtime",
+                  },
+                  {
                     color: "var(--primary)",
+                    detail: '{ status: "succeeded", records_emitted: 24 }',
+                    dir: "←",
+                    from: "Connector",
+                    msg: "DONE",
+                    to: "Runtime",
                   },
                 ].map((m, i, arr) => (
                   <div
@@ -1597,13 +1597,13 @@ export function ReferenceApp({ hero, currentLabel = "Reference" }: ReferenceAppP
             connectorName={INVENTORY_SPECIMEN.connectorName}
             connectorVersion={INVENTORY_SPECIMEN.connectorVersion}
             streams={protocol.serverStats.map((s) => ({
-              name: s.name,
-              label: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.label || s.name,
               detail: INVENTORY_SPECIMEN.streams.find((is) => is.name === s.name)?.detail || "",
+              label: INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.label || s.name,
+              lastSynced: "Apr 15, 2026",
+              name: s.name,
+              recordCount: s.recordCount,
               semantics:
                 INVENTORY_SPECIMEN.streams.find((stream) => stream.name === s.name)?.semantics || "append_only",
-              recordCount: s.recordCount,
-              lastSynced: "Apr 15, 2026",
             }))}
           />
         </Section>
@@ -1747,46 +1747,46 @@ Content-Type: application/json
               <div className="mt-1 flex flex-col gap-0">
                 {[
                   {
+                    color: "var(--primary)",
                     element: '"Pay statements", "Equity grants"',
                     source: "Manifest display.label (manifest-authored)",
                     trust: "Data description",
-                    color: "var(--primary)",
                   },
                   {
+                    color: "var(--primary)",
                     element: '"Employer, pay period, gross pay..."',
                     source: "Manifest display.detail (manifest-authored, never client)",
                     trust: "Data description",
-                    color: "var(--primary)",
                   },
                   {
+                    color: "var(--success)",
                     element: "Streams · fields · access_mode",
                     source: "grant constraints (AS/RS enforce)",
                     trust: "Protocol-enforced",
-                    color: "var(--success)",
                   },
                   {
+                    color: "var(--success)",
                     element: '"Ongoing access until revocation" / "One-time"',
                     source: "grant.access_mode (server-derived)",
                     trust: "Protocol-enforced",
-                    color: "var(--success)",
                   },
                   {
+                    color: "var(--warning)",
                     element: "Purpose · retention",
                     source: "purpose_code, purpose_description, retention",
                     trust: "Policy declaration",
-                    color: "var(--warning)",
                   },
                   {
+                    color: "var(--human)",
                     element: `"${LONGVIEW_CLIENT_NAME} says: Workspace only..."`,
                     source: "client_claims.commitments (request-scoped)",
                     trust: "Attributed client claim",
-                    color: "var(--human)",
                   },
                   {
+                    color: "var(--primary)",
                     element: `"${LONGVIEW_CLIENT_NAME}" + CLIENT APP + VERIFIED badge`,
                     source: "client_display (entity-scoped) resolved under AS policy",
                     trust: "Identity metadata",
-                    color: "var(--primary)",
                   },
                 ].map((row, i, arr) => (
                   <div
@@ -1873,19 +1873,19 @@ Content-Type: application/json
                 >
                   {JSON.stringify(
                     {
+                      access_mode: protocol.grant.access_mode,
+                      client: { client_id: protocol.grant.client_id },
+                      expires_at: protocol.grant.expires_at,
                       grant_id: protocol.grant.grant_id,
                       issued_at: protocol.grant.issued_at,
-                      status: protocol.grant.status,
-                      client: { client_id: protocol.grant.client_id },
                       purpose_code: protocol.grant.purpose_code,
-                      access_mode: protocol.grant.access_mode,
+                      retention: protocol.grant.retention,
+                      status: protocol.grant.status,
                       streams: protocol.grant.streams.map((s) => ({
-                        name: s.name,
                         fields: s.fields,
+                        name: s.name,
                         view: s.view,
                       })),
-                      retention: protocol.grant.retention,
-                      expires_at: protocol.grant.expires_at,
                     },
                     null,
                     2
@@ -2318,18 +2318,18 @@ Authorization: Bearer <owner_token>
             <div className="flex flex-col gap-2">
               {[
                 {
+                  desc: "Token introspection, field projection, effective filter composition",
                   ref: "Enforce",
                   spec: "§8 Resource Server",
-                  desc: "Token introspection, field projection, effective filter composition",
                 },
-                { ref: "Request", spec: "§5 Selection Request", desc: "RFC 9396 authorization_details envelope" },
-                { ref: "Consent", spec: "§5.1, §5.2", desc: "Client display, client claims, attribution" },
-                { ref: "Grant", spec: "§6 Grant", desc: "Immutable consent artifact with three time axes" },
-                { ref: "Sync", spec: "§4.1 Incremental", desc: "Projection-aware deltas via changes_since" },
-                { ref: "Revoke", spec: "§6.5 Revocation", desc: "60s propagation window, retention governs past data" },
-                { ref: "Export", spec: "§8.3 Owner Tokens", desc: "Self-export via owner token, no grant required" },
-                { ref: "Inventory", spec: "§4 Record Model", desc: "Flat relational streams with primary keys" },
-                { ref: "Ingest", spec: "§7 Manifest", desc: "Connector manifest declares the consent surface" },
+                { desc: "RFC 9396 authorization_details envelope", ref: "Request", spec: "§5 Selection Request" },
+                { desc: "Client display, client claims, attribution", ref: "Consent", spec: "§5.1, §5.2" },
+                { desc: "Immutable consent artifact with three time axes", ref: "Grant", spec: "§6 Grant" },
+                { desc: "Projection-aware deltas via changes_since", ref: "Sync", spec: "§4.1 Incremental" },
+                { desc: "60s propagation window, retention governs past data", ref: "Revoke", spec: "§6.5 Revocation" },
+                { desc: "Self-export via owner token, no grant required", ref: "Export", spec: "§8.3 Owner Tokens" },
+                { desc: "Flat relational streams with primary keys", ref: "Inventory", spec: "§4 Record Model" },
+                { desc: "Connector manifest declares the consent surface", ref: "Ingest", spec: "§7 Manifest" },
               ].map(({ ref, spec, desc }) => (
                 <div
                   className="flex items-baseline gap-3 py-1.5"

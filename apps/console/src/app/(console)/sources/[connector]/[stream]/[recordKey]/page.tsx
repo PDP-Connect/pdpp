@@ -106,8 +106,8 @@ export default async function RecordDetailPage({
           connectorInstanceId,
         }).catch(() => null);
         return {
-          parentStream,
           expandCapabilities: Array.isArray(metadata?.expand_capabilities) ? metadata.expand_capabilities : [],
+          parentStream,
         };
       })
     );
@@ -209,7 +209,7 @@ export default async function RecordDetailPage({
   );
   const reverseChildListLinks = reverseChildListLinksFromManifest(
     connectorStreams,
-    { connectionId, parentStream: streamName, parentRecordKey: record.id },
+    { connectionId, parentRecordKey: record.id, parentStream: streamName },
     forwardChildListKeys
   );
   // Child → parent back-links from two sources:
@@ -228,9 +228,9 @@ export default async function RecordDetailPage({
     <RecordroomShellWithPalette>
       <PageHeader
         breadcrumbs={[
-          { label: "Sources", href: "/sources" },
-          { label: sourceLabel, href: connectorHref },
-          { label: streamName, href: streamHref },
+          { href: "/sources", label: "Sources" },
+          { href: connectorHref, label: sourceLabel },
+          { href: streamHref, label: streamName },
           { label: recordId },
         ]}
         description={

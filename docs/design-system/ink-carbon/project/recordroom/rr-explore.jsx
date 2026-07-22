@@ -51,16 +51,16 @@
    <date>  field:value (matches any field key~value). Everything composes. */
   function parseQuery(q) {
     const out = {
-      text: [],
+      after: null,
+      before: null,
       con: null,
-      stream: null,
-      role: null,
+      fields: [],
+      folded: false,
       hasImage: false,
       hasLink: false,
-      folded: false,
-      before: null,
-      after: null,
-      fields: [],
+      role: null,
+      stream: null,
+      text: [],
       tokens: [],
     };
     q.trim()
@@ -70,7 +70,7 @@
         const m = tok.match(/^([a-z_]+):(.+)$/i);
         if (!m) {
           out.text.push(tok.toLowerCase());
-          out.tokens.push({ raw: tok, label: tok });
+          out.tokens.push({ label: tok, raw: tok });
           return;
         }
         const k = m[1].toLowerCase(),
@@ -78,31 +78,31 @@
           kv = v.toLowerCase();
         if (k === "con") {
           out.con = kv;
-          out.tokens.push({ raw: tok, label: "in " + v });
+          out.tokens.push({ label: "in " + v, raw: tok });
         } else if (k === "stream") {
           out.stream = kv;
-          out.tokens.push({ raw: tok, label: "stream: " + v });
+          out.tokens.push({ label: "stream: " + v, raw: tok });
         } else if (k === "role") {
           out.role = kv;
-          out.tokens.push({ raw: tok, label: "role: " + v });
+          out.tokens.push({ label: "role: " + v, raw: tok });
         } else if (k === "has" && kv === "image") {
           out.hasImage = true;
-          out.tokens.push({ raw: tok, label: "has image" });
+          out.tokens.push({ label: "has image", raw: tok });
         } else if (k === "has" && kv === "link") {
           out.hasLink = true;
-          out.tokens.push({ raw: tok, label: "has link" });
+          out.tokens.push({ label: "has link", raw: tok });
         } else if (k === "is" && kv === "folded") {
           out.folded = true;
-          out.tokens.push({ raw: tok, label: "folded" });
+          out.tokens.push({ label: "folded", raw: tok });
         } else if (k === "before") {
           out.before = v;
-          out.tokens.push({ raw: tok, label: "before " + v });
+          out.tokens.push({ label: "before " + v, raw: tok });
         } else if (k === "after") {
           out.after = v;
-          out.tokens.push({ raw: tok, label: "after " + v });
+          out.tokens.push({ label: "after " + v, raw: tok });
         } else {
           out.fields.push([k, kv]);
-          out.tokens.push({ raw: tok, label: k + ": " + v });
+          out.tokens.push({ label: k + ": " + v, raw: tok });
         }
       });
     return out;
@@ -119,7 +119,9 @@
 
     /* Sources hands off here with a preselected instance/stream. */
     useEffect(() => {
-      if (!seed) return;
+      if (!seed) {
+        return;
+      }
       setConSel(seed.con || null);
       setStreamSel(seed.stream || null);
       setQ("");
@@ -132,39 +134,70 @@
     function passes(r, opts) {
       opts = opts || {};
       const con = conById[r.con];
-      if (!opts.ignoreCon && conSel && r.con !== conSel) return false;
-      if (!opts.ignoreStream && streamSel && r.stream !== streamSel) return false;
-      if (range === "today" && r.day !== RRX.now) return false;
-      if (range === "7d" && r.day < "2026-06-06") return false;
-      if (range === "30d" && r.day < "2026-05-13") return false;
-      if (parsed.con && !(con.name.toLowerCase().includes(parsed.con) || r.con === parsed.con)) return false;
-      if (parsed.stream && r.stream !== parsed.stream) return false;
-      if (parsed.role && r.role !== parsed.role) return false;
-      if (parsed.hasImage && !r.image) return false;
-      if (parsed.hasLink && !(r.links && r.links.length)) return false;
-      if (parsed.folded && !r.fold) return false;
-      if (parsed.before && !(r.day < parsed.before)) return false;
-      if (parsed.after && !(r.day > parsed.after)) return false;
+      if (!opts.ignoreCon && conSel && r.con !== conSel) {
+        return false;
+      }
+      if (!opts.ignoreStream && streamSel && r.stream !== streamSel) {
+        return false;
+      }
+      if (range === "today" && r.day !== RRX.now) {
+        return false;
+      }
+      if (range === "7d" && r.day < "2026-06-06") {
+        return false;
+      }
+      if (range === "30d" && r.day < "2026-05-13") {
+        return false;
+      }
+      if (parsed.con && !(con.name.toLowerCase().includes(parsed.con) || r.con === parsed.con)) {
+        return false;
+      }
+      if (parsed.stream && r.stream !== parsed.stream) {
+        return false;
+      }
+      if (parsed.role && r.role !== parsed.role) {
+        return false;
+      }
+      if (parsed.hasImage && !r.image) {
+        return false;
+      }
+      if (parsed.hasLink && !(r.links && r.links.length)) {
+        return false;
+      }
+      if (parsed.folded && !r.fold) {
+        return false;
+      }
+      if (parsed.before && !(r.day < parsed.before)) {
+        return false;
+      }
+      if (parsed.after && !(r.day > parsed.after)) {
+        return false;
+      }
       if (parsed.fields.length) {
         const fm = r.fields || [];
         if (
           !parsed.fields.every(([k, v]) =>
             fm.some(([fk, fv]) => fk.toLowerCase().includes(k) && String(fv).toLowerCase().includes(v))
           )
-        )
+        ) {
           return false;
+        }
       }
       if (parsed.text.length) {
         const ft = (r.fields || []).map((f) => f[0] + " " + f[1]).join(" ");
         const hay = (r.title + " " + (r.snippet || "") + " " + r.stream + " " + con.name + " " + ft).toLowerCase();
-        if (!parsed.text.every((t) => hay.includes(t))) return false;
+        if (!parsed.text.every((t) => hay.includes(t))) {
+          return false;
+        }
       }
       return true;
     }
 
     const rows = useMemo(() => {
       let list = RRX.records.filter((r) => passes(r));
-      if (sort === "oldest") list = [...list].reverse();
+      if (sort === "oldest") {
+        list = [...list].reverse();
+      }
       return list;
     }, [parsed, range, conSel, streamSel, sort]);
 
@@ -173,19 +206,41 @@
     /* The machine-parity line: the exact call this view is making. */
     const compiled = useMemo(() => {
       const parts = [];
-      if (conSel || parsed.con) parts.push("connection=" + (conSel ? conById[conSel].cin : parsed.con));
-      if (streamSel || parsed.stream) parts.push("stream=" + (streamSel || parsed.stream));
-      if (parsed.role) parts.push("role=" + parsed.role);
-      if (parsed.hasImage) parts.push("content_type=image/*");
-      if (parsed.hasLink) parts.push("has=link");
-      if (parsed.folded) parts.push("folded=true");
-      if (parsed.before) parts.push("before=" + parsed.before);
-      if (parsed.after) parts.push("after=" + parsed.after);
+      if (conSel || parsed.con) {
+        parts.push("connection=" + (conSel ? conById[conSel].cin : parsed.con));
+      }
+      if (streamSel || parsed.stream) {
+        parts.push("stream=" + (streamSel || parsed.stream));
+      }
+      if (parsed.role) {
+        parts.push("role=" + parsed.role);
+      }
+      if (parsed.hasImage) {
+        parts.push("content_type=image/*");
+      }
+      if (parsed.hasLink) {
+        parts.push("has=link");
+      }
+      if (parsed.folded) {
+        parts.push("folded=true");
+      }
+      if (parsed.before) {
+        parts.push("before=" + parsed.before);
+      }
+      if (parsed.after) {
+        parts.push("after=" + parsed.after);
+      }
       parsed.fields.forEach(([k, v]) => parts.push(k + "~" + v));
-      if (range === "today") parts.push("since=" + RRX.now);
-      else if (range === "7d") parts.push("since=2026-06-06");
-      else if (range === "30d") parts.push("since=2026-05-13");
-      if (parsed.text.length) parts.push("match=" + parsed.text.join("+"));
+      if (range === "today") {
+        parts.push("since=" + RRX.now);
+      } else if (range === "7d") {
+        parts.push("since=2026-06-06");
+      } else if (range === "30d") {
+        parts.push("since=2026-05-13");
+      }
+      if (parsed.text.length) {
+        parts.push("match=" + parsed.text.join("+"));
+      }
       parts.push("order=" + sort, "limit=50");
       return "GET /v1/records?" + parts.join("&");
     }, [parsed, range, conSel, streamSel, sort]);
@@ -193,7 +248,9 @@
     /* Streams facet: instance-true when a connection is selected;
      otherwise an explicit NAME-match filter (overlap is incidental). */
     const streamFacets = useMemo(() => {
-      if (conSel) return conById[conSel].streams.map((s) => [s.name, s.records]);
+      if (conSel) {
+        return conById[conSel].streams.map((s) => [s.name, s.records]);
+      }
       const m = {};
       RRX.connections.forEach((c) =>
         c.streams.forEach((s) => {
@@ -223,13 +280,21 @@
 
     useEffect(() => {
       function onKey(e) {
-        if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
-        if (document.querySelector(".rr-overlay, .rr-palette-overlay")) return;
-        if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+        if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) {
+          return;
+        }
+        if (document.querySelector(".rr-overlay, .rr-palette-overlay")) {
+          return;
+        }
+        if (e.key !== "ArrowDown" && e.key !== "ArrowUp") {
+          return;
+        }
         e.preventDefault();
         const i = rows.findIndex((r) => r.id === sel);
         const n = e.key === "ArrowDown" ? Math.min(i + 1, rows.length - 1) : Math.max(i - 1, 0);
-        if (rows[n]) setSel(rows[n].id);
+        if (rows[n]) {
+          setSel(rows[n].id);
+        }
       }
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);
@@ -239,13 +304,17 @@
     const partialCon = conById[RRX.partial.con];
 
     const activeChips = [];
-    if (conSel) activeChips.push({ id: "con", label: conById[conSel].name, clear: () => setConSel(null) });
-    if (streamSel) activeChips.push({ id: "stream", label: "stream: " + streamSel, clear: () => setStreamSel(null) });
-    if (range !== "all") activeChips.push({ id: "range", label: range, clear: () => setRange("all") });
+    if (conSel) {
+      activeChips.push({ clear: () => setConSel(null), id: "con", label: conById[conSel].name });
+    }
+    if (streamSel) {
+      activeChips.push({ clear: () => setStreamSel(null), id: "stream", label: "stream: " + streamSel });
+    }
+    if (range !== "all") {
+      activeChips.push({ clear: () => setRange("all"), id: "range", label: range });
+    }
     parsed.tokens.forEach((tk, i) =>
       activeChips.push({
-        id: "tok" + i,
-        label: tk.label,
         clear: () =>
           setQ(
             q
@@ -253,6 +322,8 @@
               .filter((x) => x !== tk.raw)
               .join(" ")
           ),
+        id: "tok" + i,
+        label: tk.label,
       })
     );
     const clearAll = () => {
@@ -273,7 +344,7 @@
               return (
                 <button
                   className={
-                    "rr-x-facet" + (conSel === c.id ? " is-on" : "") + (c.status === "revoked" ? " is-revoked" : "")
+                    "rr-x-facet" + (conSel === c.id ? "is-on" : "") + (c.status === "revoked" ? "is-revoked" : "")
                   }
                   key={c.id}
                   onClick={() => {
@@ -297,7 +368,7 @@
             )}
             {streamFacets.map(([s, n]) => (
               <button
-                className={"rr-x-facet" + (streamSel === s ? " is-on" : "")}
+                className={"rr-x-facet" + (streamSel === s ? "is-on" : "")}
                 key={s}
                 onClick={() => setStreamSel(streamSel === s ? null : s)}
                 type="button"
@@ -323,14 +394,14 @@
               <div className="rr-x-sort">
                 <span className="rr-x-sort__label">sort</span>
                 <button
-                  className={"rr-lens" + (sort === "newest" ? " is-on" : "")}
+                  className={"rr-lens" + (sort === "newest" ? "is-on" : "")}
                   onClick={() => setSort("newest")}
                   type="button"
                 >
                   newest
                 </button>
                 <button
-                  className={"rr-lens" + (sort === "oldest" ? " is-on" : "")}
+                  className={"rr-lens" + (sort === "oldest" ? "is-on" : "")}
                   onClick={() => setSort("oldest")}
                   type="button"
                 >
@@ -346,7 +417,7 @@
                 ["all", "all"],
               ].map(([v, label]) => (
                 <button
-                  className={"rr-lens" + (range === v ? " is-on" : "")}
+                  className={"rr-lens" + (range === v ? "is-on" : "")}
                   key={v}
                   onClick={() => setRange(v)}
                   type="button"
@@ -415,7 +486,9 @@
 
           {RRX.days.map(([day, label]) => {
             const dayRows = rows.filter((r) => r.day === day);
-            if (dayRows.length === 0) return null;
+            if (dayRows.length === 0) {
+              return null;
+            }
             return (
               <div className="rr-x-day" key={day}>
                 <div className="rr-x-day__head">
@@ -424,7 +497,7 @@
                 </div>
                 {dayRows.map((r) => (
                   <button
-                    className={"rr-x-row" + (sel === r.id ? " is-selected" : "") + (r.fold ? " is-fold" : "")}
+                    className={"rr-x-row" + (sel === r.id ? "is-selected" : "") + (r.fold ? "is-fold" : "")}
                     key={r.id}
                     onClick={() => setSel(r.id)}
                     type="button"
@@ -434,7 +507,7 @@
                       <span className="rr-x-row__con">{conById[r.con].name}</span>
                       <span className="rr-x-row__rel">{r.rel}</span>
                     </span>
-                    <span className={"rr-x-row__title" + (r.degraded ? " is-derived" : "")}>
+                    <span className={"rr-x-row__title" + (r.degraded ? "is-derived" : "")}>
                       {r.fold ? <span className="rr-x-mark">folded</span> : null}
                       {r.image ? <span className="rr-x-mark">image</span> : null}
                       {(() => {
@@ -504,12 +577,12 @@
               {watchers.length > 0 && (
                 <div className="rr-ex-lens">
                   <span className="rr-ex-lens__label">read it as</span>
-                  <button className={"rr-lens" + (!lens ? " is-on" : "")} onClick={() => setLens(null)} type="button">
+                  <button className={"rr-lens" + (lens ? "" : "is-on")} onClick={() => setLens(null)} type="button">
                     you
                   </button>
                   {watchers.map((g) => (
                     <button
-                      className={"rr-lens" + (lens === g.id ? " is-on" : "")}
+                      className={"rr-lens" + (lens === g.id ? "is-on" : "")}
                       key={g.id}
                       onClick={() => setLens(lens === g.id ? null : g.id)}
                       type="button"

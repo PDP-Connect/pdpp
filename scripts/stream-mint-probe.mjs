@@ -74,8 +74,12 @@ for (const file of TEST_FILES) {
     for (const line of output.split("\n")) {
       const passMatch = line.match(/^\u2139 pass (\d+)/);
       const failMatch = line.match(/^\u2139 fail (\d+)/);
-      if (passMatch) passed = parseInt(passMatch[1], 10);
-      if (failMatch) failed = parseInt(failMatch[1], 10);
+      if (passMatch) {
+        passed = Number.parseInt(passMatch[1], 10);
+      }
+      if (failMatch) {
+        failed = Number.parseInt(failMatch[1], 10);
+      }
     }
     if (failed > 0) {
       status = "fail";
@@ -92,19 +96,19 @@ for (const file of TEST_FILES) {
   }
 
   const record = {
-    probe: "stream-mint",
-    file: label,
-    status,
-    passed,
-    failed,
-    durationMs: Date.now() - startMs,
     capturedAt: new Date().toISOString(),
+    durationMs: Date.now() - startMs,
+    failed,
+    file: label,
     // Trim verbose pino log lines from output before persisting
     output: output
       .split("\n")
       .filter((l) => !l.match(/^\[ntfy\]|\bINFO\b|\bDEBUG\b/))
       .join("\n")
       .trim(),
+    passed,
+    probe: "stream-mint",
+    status,
   };
   results.push(record);
   appendFileSync(FIXTURE_PATH, JSON.stringify(record) + "\n", "utf8");

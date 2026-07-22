@@ -18,41 +18,41 @@ import { resolveFormat, writeData, writeEnvelopeWarnings } from "../output.js";
 
 function projectListRow(row) {
   return {
-    subscription_id: row.subscription_id,
     authority: row.authority_kind || "client_grant",
-    client_id: row.client_id,
-    grant_id: row.grant_id || "",
-    status: row.status,
     callback_host: row.callback_host,
+    client_id: row.client_id,
     disabled_reason: row.disabled_reason ?? "",
-    pending: row.pending_queue_count ?? 0,
     final_failures: row.final_failure_count ?? 0,
+    grant_id: row.grant_id || "",
     last_attempt_at: row.last_attempted_at ?? "",
+    last_attempt_code: row.last_attempt_status_code ?? "",
     last_attempt_ok:
       row.last_attempt_ok === null || row.last_attempt_ok === undefined ? "" : row.last_attempt_ok ? "ok" : "fail",
-    last_attempt_code: row.last_attempt_status_code ?? "",
+    pending: row.pending_queue_count ?? 0,
+    status: row.status,
+    subscription_id: row.subscription_id,
     updated_at: row.updated_at,
   };
 }
 
 function projectDetail(detail) {
   return {
-    subscription_id: detail.subscription_id,
     authority: detail.authority_kind || "client_grant",
-    client_id: detail.client_id,
-    grant_id: detail.grant_id || "",
-    status: detail.status,
-    disabled_reason: detail.disabled_reason ?? "",
     callback_url: detail.callback_url,
+    client_id: detail.client_id,
     created_at: detail.created_at,
-    updated_at: detail.updated_at,
     disabled_at: detail.disabled_at ?? "",
-    pending_queue_count: detail.pending_queue_count,
+    disabled_reason: detail.disabled_reason ?? "",
     final_failure_count: detail.final_failure_count,
+    grant_id: detail.grant_id || "",
     last_attempt_at: detail.last_attempted_at ?? "",
-    last_attempt_ok: detail.last_attempt_ok ?? "",
     last_attempt_code: detail.last_attempt_status_code ?? "",
+    last_attempt_ok: detail.last_attempt_ok ?? "",
+    pending_queue_count: detail.pending_queue_count,
     recent_attempts: (detail.recent_attempts || []).length,
+    status: detail.status,
+    subscription_id: detail.subscription_id,
+    updated_at: detail.updated_at,
   };
 }
 
@@ -108,14 +108,20 @@ export async function runRefEventSubscriptions(argv, io = {}, fetchImpl = global
     const ownerSession = flags["owner-session"] || "";
     const cacheRoot = flags["cache-root"];
     const query = new URLSearchParams();
-    if (flags["client-id"]) query.set("client_id", String(flags["client-id"]));
-    if (flags["grant-id"]) query.set("grant_id", String(flags["grant-id"]));
-    if (flags.status) query.set("status", String(flags.status));
+    if (flags["client-id"]) {
+      query.set("client_id", String(flags["client-id"]));
+    }
+    if (flags["grant-id"]) {
+      query.set("grant_id", String(flags["grant-id"]));
+    }
+    if (flags.status) {
+      query.set("status", String(flags.status));
+    }
     const queryString = query.toString();
     const url = `${asUrl}/_ref/event-subscriptions${queryString ? `?${queryString}` : ""}`;
     const { body } = await fetchJson(
       url,
-      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
+      { headers: { ...ownerSessionHeaders({ cacheRoot, ownerSession, referenceUrl: asUrl }) } },
       fetchImpl
     );
     const format = resolveFormat(flags, "table", "json");
@@ -136,7 +142,7 @@ export async function runRefEventSubscriptions(argv, io = {}, fetchImpl = global
     const cacheRoot = flags["cache-root"];
     const { body } = await fetchJson(
       `${asUrl}/_ref/event-subscriptions/${encodeURIComponent(subscriptionId)}`,
-      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
+      { headers: { ...ownerSessionHeaders({ cacheRoot, ownerSession, referenceUrl: asUrl }) } },
       fetchImpl
     );
     const format = resolveFormat(flags, "table", "json");
@@ -158,7 +164,7 @@ export async function runRefEventSubscriptions(argv, io = {}, fetchImpl = global
     const explicitYes = flags.yes === true || flags.yes === "true";
 
     if (!explicitYes) {
-      const headers = { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) };
+      const headers = { ...ownerSessionHeaders({ cacheRoot, ownerSession, referenceUrl: asUrl }) };
       const { body } = await fetchJson(
         `${asUrl}/_ref/event-subscriptions/${encodeURIComponent(subscriptionId)}`,
         { headers },
@@ -182,12 +188,12 @@ export async function runRefEventSubscriptions(argv, io = {}, fetchImpl = global
     const { body: detail } = await fetchJson(
       `${asUrl}/_ref/event-subscriptions/${encodeURIComponent(subscriptionId)}/disable`,
       {
-        method: "POST",
+        body: JSON.stringify(body),
         headers: {
           "Content-Type": "application/json",
-          ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }),
+          ...ownerSessionHeaders({ cacheRoot, ownerSession, referenceUrl: asUrl }),
         },
-        body: JSON.stringify(body),
+        method: "POST",
       },
       fetchImpl
     );

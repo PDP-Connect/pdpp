@@ -77,14 +77,16 @@
   let loadP = null;
 
   function load() {
-    if (loadP) return loadP;
+    if (loadP) {
+      return loadP;
+    }
     loadP = fetch(STATE_FILE)
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         // Merge: sidecar loses to any in-memory change that raced ahead of
         // the fetch (drop or clear) so neither is clobbered by hydration.
         if (j && typeof j === "object") {
-          const merged = Object.assign({}, j, slots);
+          const merged = { ...j, ...slots };
           // A framing-only write that raced ahead of hydration must not
           // drop a user image that's only on disk — inherit u from the
           // sidecar for any in-memory entry that lacks one.
@@ -93,7 +95,9 @@
               merged[k].u = typeof j[k] === "string" ? j[k] : j[k].u;
             }
           }
-          for (const id of tombstones) delete merged[id];
+          for (const id of tombstones) {
+            delete merged[id];
+          }
           slots = merged;
         }
         tombstones.clear();
@@ -118,7 +122,9 @@
       return;
     }
     const w = window.omelette && window.omelette.writeFile;
-    if (!w) return;
+    if (!w) {
+      return;
+    }
     saving = true;
     Promise.resolve(w(STATE_FILE, JSON.stringify(slots)))
       .catch(() => {})
@@ -138,25 +144,34 @@
   // data-URL string; newer ones store {u, s, x, y}. Either shape is valid.
   function getSlot(id) {
     const v = slots[id];
-    if (!v) return null;
-    return typeof v === "string" ? { u: v, s: 1, x: 0, y: 0 } : v;
+    if (!v) {
+      return null;
+    }
+    return typeof v === "string" ? { s: 1, u: v, x: 0, y: 0 } : v;
   }
 
   function setSlot(id, val) {
-    if (!id) return;
+    if (!id) {
+      return;
+    }
     if (val) {
       slots[id] = val;
       tombstones.delete(id);
     } else {
       delete slots[id];
-      if (!loaded) tombstones.add(id);
+      if (!loaded) {
+        tombstones.add(id);
+      }
     }
     subs.forEach((fn) => fn());
     // A drop is rare + high-value — write immediately so nav-away can't lose
     // it. Gate on the initial read so we don't overwrite a sidecar we haven't
     // merged yet; the merge in load() keeps this change once the read lands.
-    if (loaded) save();
-    else load().then(save);
+    if (loaded) {
+      save();
+    } else {
+      load().then(save);
+    }
   }
 
   // ── Image downscale ─────────────────────────────────────────────────────
@@ -305,13 +320,18 @@
           this._exitReframe(false);
           this._gen++;
           this._local = null;
-          if (this.id) setSlot(this.id, null);
-          else this._render();
+          if (this.id) {
+            setSlot(this.id, null);
+          } else {
+            this._render();
+          }
         }
       });
       this._input.addEventListener("change", () => {
         const f = this._input.files && this._input.files[0];
-        if (f) this._ingest(f);
+        if (f) {
+          this._ingest(f);
+        }
         this._input.value = "";
       });
       // naturalWidth/Height aren't known until load — re-apply so the cover
@@ -320,17 +340,24 @@
       // Gated on editable + fit=cover so share links and contain/fill slots
       // stay static.
       this.addEventListener("dblclick", (e) => {
-        if (!this.hasAttribute("data-editable") || !this._reframes()) return;
+        if (!(this.hasAttribute("data-editable") && this._reframes())) {
+          return;
+        }
         e.preventDefault();
-        if (this.hasAttribute("data-reframe")) this._exitReframe(true);
-        else this._enterReframe();
+        if (this.hasAttribute("data-reframe")) {
+          this._exitReframe(true);
+        } else {
+          this._enterReframe();
+        }
       });
       // Pan + resize both originate on the spill layer. A handle pointerdown
       // drives an aspect-locked resize anchored at the opposite corner; any
       // other pointerdown on the spill pans. Offsets are frame-% so a
       // reframed slot survives responsive resize / PPTX export.
       this._spill.addEventListener("pointerdown", (e) => {
-        if (e.button !== 0 || !this.hasAttribute("data-reframe")) return;
+        if (e.button !== 0 || !this.hasAttribute("data-reframe")) {
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         this._spill.setPointerCapture(e.pointerId);
@@ -400,14 +427,18 @@
       this.addEventListener(
         "wheel",
         (e) => {
-          if (!this.hasAttribute("data-reframe")) return;
+          if (!this.hasAttribute("data-reframe")) {
+            return;
+          }
           e.preventDefault();
           const r = this.getBoundingClientRect();
           const cx = ((e.clientX - r.left) / r.width) * 100 - 50;
           const cy = ((e.clientY - r.top) / r.height) * 100 - 50;
           const prev = this._view.s;
-          const next = clampS(prev * Math.pow(1.0015, -e.deltaY));
-          if (next === prev) return;
+          const next = clampS(prev * 1.0015 ** -e.deltaY);
+          if (next === prev) {
+            return;
+          }
           const k = next / prev;
           this._view.s = next;
           this._view.x = cx * (1 - k) + this._view.x * k;
@@ -422,7 +453,7 @@
     connectedCallback() {
       // Warn once per page — an id-less slot works for the session but
       // cannot persist, and two id-less slots would share nothing.
-      if (!this.id && !ImageSlot._warned) {
+      if (!(this.id || ImageSlot._warned)) {
         ImageSlot._warned = true;
         console.warn("<image-slot> without an id will not persist its dropped image.");
       }
@@ -457,7 +488,9 @@
     }
 
     _enterReframe() {
-      if (this.hasAttribute("data-reframe")) return;
+      if (this.hasAttribute("data-reframe")) {
+        return;
+      }
       this.setAttribute("data-reframe", "");
       this._applyView();
       // Close on click outside (the spill handler stopPropagation()s so
@@ -465,29 +498,45 @@
       // on the instance so _exitReframe / disconnectedCallback can detach
       // exactly what was attached.
       this._outside = (e) => {
-        if (e.composedPath && e.composedPath().includes(this)) return;
+        if (e.composedPath && e.composedPath().includes(this)) {
+          return;
+        }
         this._exitReframe(true);
       };
       this._esc = (e) => {
-        if (e.key === "Escape") this._exitReframe(true);
+        if (e.key === "Escape") {
+          this._exitReframe(true);
+        }
       };
       document.addEventListener("pointerdown", this._outside, true);
       document.addEventListener("keydown", this._esc, true);
     }
 
     _exitReframe(commit) {
-      if (!this.hasAttribute("data-reframe")) return;
-      if (this._dragUp) this._dragUp();
+      if (!this.hasAttribute("data-reframe")) {
+        return;
+      }
+      if (this._dragUp) {
+        this._dragUp();
+      }
       this.removeAttribute("data-reframe");
       this.removeAttribute("data-panning");
-      if (this._outside) document.removeEventListener("pointerdown", this._outside, true);
-      if (this._esc) document.removeEventListener("keydown", this._esc, true);
+      if (this._outside) {
+        document.removeEventListener("pointerdown", this._outside, true);
+      }
+      if (this._esc) {
+        document.removeEventListener("keydown", this._esc, true);
+      }
       this._outside = this._esc = null;
-      if (commit) this._commitView();
+      if (commit) {
+        this._commitView();
+      }
     }
 
     attributeChangedCallback() {
-      if (this.shadowRoot) this._render();
+      if (this.shadowRoot) {
+        this._render();
+      }
     }
 
     // handleEvent — one listener object for all four drag events keeps the
@@ -497,8 +546,12 @@
         // Without preventDefault the browser never fires 'drop'.
         e.preventDefault();
         e.stopPropagation();
-        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
-        if (e.type === "dragenter") this._depth++;
+        if (e.dataTransfer) {
+          e.dataTransfer.dropEffect = "copy";
+        }
+        if (e.type === "dragenter") {
+          this._depth++;
+        }
         this.setAttribute("data-over", "");
       } else if (e.type === "dragleave") {
         // dragenter/leave fire for every descendant crossing — count depth
@@ -513,7 +566,9 @@
         this._depth = 0;
         this.removeAttribute("data-over");
         const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-        if (f) this._ingest(f);
+        if (f) {
+          this._ingest(f);
+        }
       }
     }
 
@@ -530,11 +585,13 @@
       try {
         const w = this.clientWidth || this.offsetWidth || MAX_DIM;
         const url = await toDataUrl(file, w);
-        if (gen !== this._gen) return;
+        if (gen !== this._gen) {
+          return;
+        }
         // Only exit reframe once the new image is in hand — a rejected type
         // or decode failure leaves the in-progress crop untouched.
         this._exitReframe(false);
-        const val = { u: url, s: 1, x: 0, y: 0 };
+        const val = { s: 1, u: url, x: 0, y: 0 };
         setSlot(this.id || "", val);
         // Keep a session-local copy for id-less slots so the drop still
         // shows, even though it cannot persist.
@@ -543,7 +600,9 @@
           this._render();
         }
       } catch (err) {
-        if (gen !== this._gen) return;
+        if (gen !== this._gen) {
+          return;
+        }
         this._setError("Could not read that image.");
         console.warn("<image-slot> ingest failed:", err);
       }
@@ -554,7 +613,9 @@
         this._err.remove();
         this._err = null;
       }
-      if (!msg) return;
+      if (!msg) {
+        return;
+      }
       const d = document.createElement("div");
       d.className = "err";
       d.textContent = msg;
@@ -584,14 +645,18 @@
         ih = this._img.naturalHeight;
       const fw = this.clientWidth,
         fh = this.clientHeight;
-      if (!iw || !ih || !fw || !fh) return null;
-      return { iw, ih, fw, fh, base: Math.max(fw / iw, fh / ih) };
+      if (!(iw && ih && fw && fh)) {
+        return null;
+      }
+      return { base: Math.max(fw / iw, fh / ih), fh, fw, ih, iw };
     }
 
     _clampView() {
       // Pan range on each axis is half the overflow past the frame edge.
       const g = this._geom();
-      if (!g) return;
+      if (!g) {
+        return;
+      }
       const mx = Math.max(0, ((g.iw * g.base * this._view.s) / g.fw - 1) * 50);
       const my = Math.max(0, ((g.ih * g.base * this._view.s) / g.fh - 1) * 50);
       this._view.x = Math.max(-mx, Math.min(mx, this._view.x));
@@ -634,11 +699,14 @@
 
     _commitView() {
       const v = { s: this._view.s, x: this._view.x, y: this._view.y };
-      if (this._userUrl) v.u = this._userUrl;
+      if (this._userUrl) {
+        v.u = this._userUrl;
+      }
       // Framing-only (no u) persists too so an author-src slot remembers its
       // crop; clearing the sidecar still falls through to src=.
-      if (this.id) setSlot(this.id, v);
-      else {
+      if (this.id) {
+        setSlot(this.id, v);
+      } else {
         this._local = v;
       }
     }
@@ -651,10 +719,12 @@
       const mask = this.getAttribute("mask");
       const shape = (this.getAttribute("shape") || "rounded").toLowerCase();
       let radius = "";
-      if (shape === "circle") radius = "50%";
-      else if (shape === "pill") radius = "9999px";
-      else if (shape === "rounded") {
-        const n = parseFloat(this.getAttribute("radius"));
+      if (shape === "circle") {
+        radius = "50%";
+      } else if (shape === "pill") {
+        radius = "9999px";
+      } else if (shape === "rounded") {
+        const n = Number.parseFloat(this.getAttribute("radius"));
         radius = (Number.isFinite(n) ? n : 12) + "px";
       }
       this._frame.style.borderRadius = mask ? "" : radius;
@@ -672,7 +742,9 @@
       // data:image/ URLs from it. The `src` attribute is author-controlled
       // (the author wrote it into the HTML) so it passes through unchanged.
       let stored = this.id ? getSlot(this.id) : this._local;
-      if (stored && stored.u && !/^data:image\//i.test(stored.u)) stored = null;
+      if (stored && stored.u && !/^data:image\//i.test(stored.u)) {
+        stored = null;
+      }
       const srcAttr = this.getAttribute("src") || "";
       this._userUrl = (stored && stored.u) || null;
       const url = this._userUrl || srcAttr;

@@ -1,14 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
-  <rect width="80" height="80" rx="16" fill="oklch(0.580 0.172 253.7)"></rect>
+<svg height="80" viewBox="0 0 80 80" width="80" xmlns="http://www.w3.org/2000/svg">
+  <rect fill="oklch(0.580 0.172 253.7)" height="80" rx="16" width="80"></rect>
   <text
+    fill="#fbfcfe"
+    font-family="Geist, system-ui, sans-serif"
+    font-size="40"
+    font-weight="700"
+    letter-spacing="-0.03em"
+    text-anchor="middle"
     x="40"
     y="54"
-    text-anchor="middle"
-    font-family="Geist, system-ui, sans-serif"
-    font-weight="700"
-    font-size="40"
-    fill="#fbfcfe"
-    letter-spacing="-0.03em"
   >
     P
   </text>

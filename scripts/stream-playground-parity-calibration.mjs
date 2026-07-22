@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import process from "node:process";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const referenceUrl = process.argv[2] || process.env.PDPP_STREAM_PARITY_REFERENCE_URL;
@@ -28,9 +29,9 @@ function runLocalOracle() {
       cwd: repositoryRoot,
       stdio: "ignore",
     });
-    child.once("error", (error) => resolveLocal({ status: "unavailable", reason: error.message }));
+    child.once("error", (error) => resolveLocal({ reason: error.message, status: "unavailable" }));
     child.once("exit", (code, signal) => {
-      resolveLocal(code === 0 ? { status: "passed" } : { status: "failed", exitCode: code, signal });
+      resolveLocal(code === 0 ? { status: "passed" } : { exitCode: code, signal, status: "failed" });
     });
   });
 }
@@ -47,7 +48,7 @@ async function probe() {
     });
   } catch (error) {
     report({
-      external: { referenceUrl, status: "unavailable", reason: error instanceof Error ? error.message : String(error) },
+      external: { reason: error instanceof Error ? error.message : String(error), referenceUrl, status: "unavailable" },
       localOracle,
     });
   } finally {

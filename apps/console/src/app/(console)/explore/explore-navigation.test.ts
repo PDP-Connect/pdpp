@@ -41,7 +41,6 @@ function accumulatingState(overrides: Partial<NavigateState> = {}): NavigateStat
     cursorTrail: ["cursor-p2"],
     excludeConnectionIds: [],
     excludeStreams: [],
-    upcomingTrail: ["ucursor-u1"],
     order: "newest",
     query: "",
     searchSort: "relevance",
@@ -49,6 +48,7 @@ function accumulatingState(overrides: Partial<NavigateState> = {}): NavigateStat
     snapshotAnchor: "2026-06-20T00:00:00Z",
     streams: ["orders"],
     until: "",
+    upcomingTrail: ["ucursor-u1"],
     ...overrides,
   };
 }

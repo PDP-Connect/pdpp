@@ -133,7 +133,7 @@ export function OverTimeChart({ series, since, until, descriptorKind, onSelectRa
         return;
       }
       draggingRef.current = true;
-      setDrag({ start: i, end: i });
+      setDrag({ end: i, start: i });
     },
     [brushable]
   );
@@ -141,7 +141,7 @@ export function OverTimeChart({ series, since, until, descriptorKind, onSelectRa
   const onPointerEnterBar = useCallback((i: number) => {
     setHovered(i);
     if (draggingRef.current) {
-      setDrag((d) => (d ? { ...d, end: i } : { start: i, end: i }));
+      setDrag((d) => (d ? { ...d, end: i } : { end: i, start: i }));
     }
   }, []);
 

@@ -301,6 +301,15 @@ interface StreamProjection {
 }
 
 export interface StreamRecordSummary {
+  readonly count_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
+  /**
+   * Orthogonal declaration/count state pair from the maintained
+   * connector-summary evidence (design.md "Explicit stream evidence").
+   * Optional so existing non-evidence-backed callers of this shape are
+   * unaffected; `projectConnectorSummaryForInstance` always populates it
+   * when the observation barrier produced an evidence row.
+   */
+  readonly declaration_state?: "declared" | "dormant" | "unexpected" | "unavailable";
   readonly last_updated: string | null;
   /**
    * `null` when the count is genuinely unknown/unavailable
@@ -313,17 +322,8 @@ export interface StreamRecordSummary {
    * "we once knew N, unverified since" from "we have never known."
    */
   readonly record_count: number | null;
-  readonly stream: string;
-  /**
-   * Orthogonal declaration/count state pair from the maintained
-   * connector-summary evidence (design.md "Explicit stream evidence").
-   * Optional so existing non-evidence-backed callers of this shape are
-   * unaffected; `projectConnectorSummaryForInstance` always populates it
-   * when the observation barrier produced an evidence row.
-   */
-  readonly declaration_state?: "declared" | "dormant" | "unexpected" | "unavailable";
-  readonly count_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
   readonly retained_record_count?: number | null;
+  readonly stream: string;
 }
 
 interface RecordProjectionRow {
@@ -377,12 +377,6 @@ interface ManifestExcerpt {
 }
 
 interface StreamSummary {
-  readonly freshness: Freshness;
-  readonly last_updated: string | null;
-  readonly name: string;
-  readonly object: "stream";
-  /** `null` when the count is genuinely unknown/unavailable — never coerced to a fabricated `0`. */
-  readonly record_count: number | null;
   /**
    * Orthogonal state for `record_count` — the same contract
    * `StreamRecordSummary.count_state` already applies on the list surface
@@ -394,6 +388,12 @@ interface StreamSummary {
    * entirely (see `buildUnresolvedConnectorDetail`).
    */
   readonly count_state?: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
+  readonly freshness: Freshness;
+  readonly last_updated: string | null;
+  readonly name: string;
+  readonly object: "stream";
+  /** `null` when the count is genuinely unknown/unavailable — never coerced to a fabricated `0`. */
+  readonly record_count: number | null;
   readonly semantics: string | null;
 }
 
@@ -654,34 +654,6 @@ export interface ConnectorSummary {
   };
   readonly manifest_version: string | null;
   /**
-   * The record-snapshot evidence component from the maintained
-   * connector-summary evidence row (design.md "Orthogonal projection
-   * evidence"): `current` once the canonical-records checkpoint this row's
-   * stream_records/total_records were computed against matches the live
-   * checkpoint. Feeds `ProjectionReliable` when non-current.
-   * Spec: openspec/changes/reconcile-active-summary-evidence.
-   */
-  readonly record_snapshot: {
-    readonly state: "current" | "unobserved" | "stale" | "failed";
-    readonly as_of: string | null;
-    readonly reason_code: string | null;
-  };
-  /**
-   * The terminal-facts evidence component from the maintained
-   * connector-summary evidence row (design.md "Orthogonal projection
-   * evidence"): `unobserved` before any completed fold pass;
-   * `current` once checkpointed, including an honestly-empty terminal
-   * history (never conflated with "never observed"). Feeds
-   * `ProjectionReliable` when non-current.
-   * Spec: openspec/changes/reconcile-active-summary-evidence.
-   */
-  readonly terminal_facts: {
-    readonly state: "current" | "unobserved" | "stale" | "failed";
-    readonly event_seq: number | null;
-    readonly as_of: string | null;
-    readonly reason_code: string | null;
-  };
-  /**
    * Top-level mirror of `connection_health.next_action`. Mirrored at the
    * row level so the dashboard list view does not have to peer inside
    * the health snapshot to render a CTA chip. `null` when the
@@ -696,6 +668,19 @@ export interface ConnectorSummary {
    * `resolver` is a closed server-side contract, never owner-facing copy.
    */
   readonly owner_state: OwnerState;
+  /**
+   * The record-snapshot evidence component from the maintained
+   * connector-summary evidence row (design.md "Orthogonal projection
+   * evidence"): `current` once the canonical-records checkpoint this row's
+   * stream_records/total_records were computed against matches the live
+   * checkpoint. Feeds `ProjectionReliable` when non-current.
+   * Spec: openspec/changes/reconcile-active-summary-evidence.
+   */
+  readonly record_snapshot: {
+    readonly state: "current" | "unobserved" | "stale" | "failed";
+    readonly as_of: string | null;
+    readonly reason_code: string | null;
+  };
   readonly refresh_policy: unknown;
   /**
    * Synthesized owner verdict — the single object every owner-facing surface
@@ -750,6 +735,21 @@ export interface ConnectorSummary {
    */
   readonly stream_records: readonly StreamRecordSummary[];
   readonly streams: string[];
+  /**
+   * The terminal-facts evidence component from the maintained
+   * connector-summary evidence row (design.md "Orthogonal projection
+   * evidence"): `unobserved` before any completed fold pass;
+   * `current` once checkpointed, including an honestly-empty terminal
+   * history (never conflated with "never observed"). Feeds
+   * `ProjectionReliable` when non-current.
+   * Spec: openspec/changes/reconcile-active-summary-evidence.
+   */
+  readonly terminal_facts: {
+    readonly state: "current" | "unobserved" | "stale" | "failed";
+    readonly event_seq: number | null;
+    readonly as_of: string | null;
+    readonly reason_code: string | null;
+  };
   readonly total_records: number;
   /**
    * Orthogonal state for `total_records`, the same `count_state` contract
@@ -973,8 +973,8 @@ function parseManifest(raw: string, connectorId: string): ConnectorManifest {
  * axis, including whether the connection is otherwise visible).
  */
 interface SummaryManifestResolution {
-  readonly manifest: ConnectorManifest;
   readonly declarationState: "current" | "unavailable";
+  readonly manifest: ConnectorManifest;
   readonly reasonCode: string | null;
 }
 
@@ -3075,12 +3075,12 @@ interface LocalCoverageDiagnosticRow {
 
 interface LocalCoverageDiagnosticAxis {
   readonly axis: CoverageAxis;
+  readonly evidenceAsOf: string | null;
+  readonly reliable: boolean;
   /** Safe per-store triples from `coverage_diagnostics`, used to project stream rows. */
   readonly rows?: readonly LocalCoverageDiagnosticRow[];
   /** Stores the collector discovered but could not account for. */
   readonly unaccountedStores: readonly string[];
-  readonly evidenceAsOf: string | null;
-  readonly reliable: boolean;
 }
 
 const LOCAL_COVERAGE_ACCOUNTED_STATUSES = new Set([
@@ -4263,17 +4263,6 @@ function refreshConnectorSummariesCache(
 interface ConnectorSummaryProjectionDeps {
   readonly activeRunsByInstanceId: ReadonlyMap<string, ActiveRunRecord>;
   readonly controller?: ControllerLike | null | undefined;
-  readonly getLatestRunHistoryForConnection: (
-    connectorInstanceId: string,
-    status?: string | null
-  ) => Promise<SchedulerRunHistoryRecord | null>;
-  readonly includeRunSummaries: ConnectorRunSummaryInclusion;
-  /**
-   * Durable per-stream latest-attempt evidence per connection, read from the
-   * connector-summary read model in ONE batched query for the whole list
-   * render — never per-connection history walking on the hot path.
-   */
-  readonly latestStreamFactsByInstanceId: ReadonlyMap<string, ReadonlyMap<string, LatestStreamFactRecord>>;
   /**
    * The maintained connector-summary evidence row per connection, read AFTER
    * the observation barrier reconciles it (see `loadConnectorSummaryProjectionDeps`).
@@ -4292,11 +4281,21 @@ interface ConnectorSummaryProjectionDeps {
    * identically to "no evidence row exists yet" (design.md task 5.4).
    */
   readonly evidenceReadFailed: boolean;
+  readonly getLatestRunHistoryForConnection: (
+    connectorInstanceId: string,
+    status?: string | null
+  ) => Promise<SchedulerRunHistoryRecord | null>;
+  readonly includeRunSummaries: ConnectorRunSummaryInclusion;
+  /**
+   * Durable per-stream latest-attempt evidence per connection, read from the
+   * connector-summary read model in ONE batched query for the whole list
+   * render — never per-connection history walking on the hot path.
+   */
+  readonly latestStreamFactsByInstanceId: ReadonlyMap<string, ReadonlyMap<string, LatestStreamFactRecord>>;
   readonly listRunSummariesForConnector: (
     connectorId: string,
     status?: string | null
   ) => Promise<readonly SpineSummary[]>;
-  readonly manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>;
   /**
    * The parse-layer result for each connector's manifest (design.md
    * "Orthogonal projection evidence" — manifest_declaration is independent
@@ -4310,6 +4309,7 @@ interface ConnectorSummaryProjectionDeps {
     string,
     { readonly state: "current" | "unavailable"; readonly reasonCode: string | null }
   >;
+  readonly manifestsByConnectorId: ReadonlyMap<string, ConnectorManifest>;
   readonly retainedSizeSnapshot?: RetainedSizeProjectionSnapshot;
   /** One dynamic allocator inventory for this entire connection-summary refresh. */
   readonly runtimeInventory: BrowserSurfaceRuntimeInventorySnapshot | null;
@@ -4553,6 +4553,7 @@ interface ConnectorSummarySynthesisInput {
    */
   readonly credential: ConnectionCredentialEvidence | null;
   readonly detailGaps: Awaited<ReturnType<typeof getConnectorDetailGapProjection>>;
+  readonly ephemeralBrowserRuntime: EphemeralBrowserRuntimeProjection | null;
   /**
    * The maintained connector-summary evidence row for THIS connection, read
    * AFTER the central observation barrier reconciled it, or `null` when the
@@ -4568,7 +4569,6 @@ interface ConnectorSummarySynthesisInput {
    * `summary_evidence_read_failed` reason code (design.md task 5.4).
    */
   readonly evidenceReadFailed: boolean;
-  readonly ephemeralBrowserRuntime: EphemeralBrowserRuntimeProjection | null;
   readonly instance: ConnectorInstanceRow;
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
@@ -4799,13 +4799,13 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // distinct from `stale` (an evidence row exists but its snapshot is not
   // current) — both are non-authoritative, but `stale` additionally implies
   // "we once knew a real value, unverified since."
-  const totalRecordsState: ConnectorSummary["total_records_state"] = !evidence
-    ? "unobserved"
-    : recordSnapshotCurrent
+  const totalRecordsState: ConnectorSummary["total_records_state"] = evidence
+    ? recordSnapshotCurrent
       ? totalRecords > 0
         ? "known"
         : "known_zero"
-      : "stale";
+      : "stale"
+    : "unobserved";
   const retainedBytes = evidence ? evidence.retained_bytes : live.retainedBytes;
   const totalRetainedBytes = evidence ? evidence.total_retained_bytes : (live.retainedBytes?.total_bytes ?? null);
   return {
@@ -5348,35 +5348,20 @@ type Row = Record<string, unknown>;
  * never re-derived from a live source here.
  */
 export interface ConnectorSummaryEvidenceRow {
-  readonly manifest_generation?: number;
-  readonly total_records: number;
-  /** Count of streams with at least one live canonical record — NOT the exhaustive declared+observed stream_records set size. */
-  readonly stream_count: number;
-  readonly stream_records: readonly {
-    readonly stream: string;
-    readonly declaration_state: "declared" | "dormant" | "unexpected" | "unavailable";
-    readonly count_state: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
-    readonly record_count: number | null;
-    readonly retained_record_count: number | null;
-  }[];
-  readonly retained_bytes: RetainedBytesBreakdown | null;
-  readonly total_retained_bytes: number;
-  readonly record_snapshot: {
-    readonly state: "current" | "unobserved" | "stale" | "failed";
-    readonly as_of: string | null;
-    readonly reason_code: string | null;
-  };
-  readonly terminal_facts: {
-    readonly state: "current" | "unobserved" | "stale" | "failed";
-    readonly event_seq: number | null;
-    readonly as_of: string | null;
-    readonly reason_code: string | null;
-  };
+  readonly dirty: boolean;
+  readonly last_error: string | null;
   readonly manifest_declaration: {
     readonly state: "current" | "unavailable" | "failed";
     readonly as_of: string | null;
     readonly reason_code: string | null;
   };
+  readonly manifest_generation?: number;
+  readonly record_snapshot: {
+    readonly state: "current" | "unobserved" | "stale" | "failed";
+    readonly as_of: string | null;
+    readonly reason_code: string | null;
+  };
+  readonly retained_bytes: RetainedBytesBreakdown | null;
   /**
    * The retained-bytes evidence component's typed envelope (design.md
    * "Orthogonal projection evidence"), distinct from `retained_bytes` above
@@ -5389,9 +5374,24 @@ export interface ConnectorSummaryEvidenceRow {
     readonly as_of: string | null;
     readonly reason_code: string | null;
   };
-  readonly dirty: boolean;
   readonly state: string;
-  readonly last_error: string | null;
+  /** Count of streams with at least one live canonical record — NOT the exhaustive declared+observed stream_records set size. */
+  readonly stream_count: number;
+  readonly stream_records: readonly {
+    readonly stream: string;
+    readonly declaration_state: "declared" | "dormant" | "unexpected" | "unavailable";
+    readonly count_state: "known" | "known_zero" | "unobserved" | "stale" | "unknown";
+    readonly record_count: number | null;
+    readonly retained_record_count: number | null;
+  }[];
+  readonly terminal_facts: {
+    readonly state: "current" | "unobserved" | "stale" | "failed";
+    readonly event_seq: number | null;
+    readonly as_of: string | null;
+    readonly reason_code: string | null;
+  };
+  readonly total_records: number;
+  readonly total_retained_bytes: number;
 }
 
 /**

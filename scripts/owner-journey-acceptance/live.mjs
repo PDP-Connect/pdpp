@@ -13,9 +13,9 @@
 // owner session cookie or bearer through to the fetch and reports only whether
 // auth was supplied, never its value.
 
-import { FORBIDDEN_STRING_RULES } from "./surface-manifest.mjs";
-import { lineOf, scanForbiddenStrings } from "./scan.mjs";
 import { loginWithOwnerPassword } from "../lib/owner-session.mjs";
+import { lineOf, scanForbiddenStrings } from "./scan.mjs";
+import { FORBIDDEN_STRING_RULES } from "./surface-manifest.mjs";
 
 /**
  * Owner setup surfaces to probe on a live origin. Path + tier; the forbidden
@@ -61,12 +61,12 @@ export function resolveOwnerAuthFromEnv(env = process.env) {
 async function resolveOwnerAuthForLive({ base, env, fetchImpl }) {
   const cookie = env.PDPP_OWNER_SESSION_COOKIE?.trim();
   if (cookie) {
-    return { header: { cookie }, mode: "cookie", error: null };
+    return { error: null, header: { cookie }, mode: "cookie" };
   }
 
   const password = env.PDPP_OWNER_PASSWORD?.trim();
   if (password) {
-    return loginWithOwnerPassword({ base, password, fetchImpl });
+    return loginWithOwnerPassword({ base, fetchImpl, password });
   }
 
   // `_ref` owner-session routes do not generally accept owner bearer tokens on
@@ -74,10 +74,10 @@ async function resolveOwnerAuthForLive({ base, env, fetchImpl }) {
   // older/local references that did.
   const token = env.PDPP_OWNER_TOKEN?.trim();
   if (token) {
-    return { header: { authorization: `Bearer ${token}` }, mode: "bearer", error: null };
+    return { error: null, header: { authorization: `Bearer ${token}` }, mode: "bearer" };
   }
 
-  return { header: {}, mode: "none", error: null };
+  return { error: null, header: {}, mode: "none" };
 }
 
 function htmlToText(html) {
@@ -196,7 +196,7 @@ function sourceCountPhrase(connector) {
   const rawStreamCount =
     connector?.stream_count ?? (Array.isArray(connector?.streams) ? connector.streams.length : null);
   const streams = Number(rawStreamCount);
-  if (!Number.isFinite(records) || !Number.isFinite(streams)) {
+  if (!(Number.isFinite(records) && Number.isFinite(streams))) {
     return null;
   }
   const recordCount = Math.max(0, Math.floor(records));
@@ -318,23 +318,23 @@ function runLiveGrantCaptionChecks({ htmlByPath }) {
 
   if (rawClientCaption) {
     findings.push({
-      ruleId: "grants-raw-client-caption",
       class: "dashboard-trust-claim",
-      path: "live:/grants",
-      line: 0,
       excerpt: rawClientCaption,
+      line: 0,
+      path: "live:/grants",
       rationale:
         "The grants list must not lead with raw technical client ids in visible row copy. Preserve ids as details, but render registered client names or a human fallback caption.",
+      ruleId: "grants-raw-client-caption",
     });
   }
 
   checks.push({
+    detail: rawClientCaption ? "raw technical client caption visible" : "no raw technical client caption visible",
     id: "grants-client-caption-humanized",
     status: rawClientCaption ? "fail" : "pass",
-    detail: rawClientCaption ? "raw technical client caption visible" : "no raw technical client caption visible",
   });
 
-  return { findings, checks };
+  return { checks, findings };
 }
 
 async function fetchJsonOrFinding({ base, header, fetchImpl, path }) {
@@ -349,13 +349,13 @@ async function fetchJsonOrFinding({ base, header, fetchImpl, path }) {
       return {
         data: null,
         finding: {
-          ruleId: "live-ref-surface-not-reached",
           class: "live-probe-inconclusive",
-          path: `live:${path}`,
-          line: 0,
           excerpt: `status ${status}`,
+          line: 0,
+          path: `live:${path}`,
           rationale:
             "The live semantic probe could not reach the reference JSON surface. Owner-journey trust checks are inconclusive until the data source behind the rendered page is observed.",
+          ruleId: "live-ref-surface-not-reached",
         },
       };
     }
@@ -364,13 +364,13 @@ async function fetchJsonOrFinding({ base, header, fetchImpl, path }) {
     return {
       data: null,
       finding: {
-        ruleId: "live-ref-surface-fetch-failed",
         class: "live-probe-inconclusive",
-        path: `live:${path}`,
-        line: 0,
         excerpt: err instanceof Error ? err.message : String(err),
+        line: 0,
+        path: `live:${path}`,
         rationale:
           "The live semantic probe could not fetch or parse the reference JSON surface. Owner-journey trust checks are inconclusive until the rendered page can be compared with its source data.",
+        ruleId: "live-ref-surface-fetch-failed",
       },
     };
   }
@@ -382,28 +382,28 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
 
   const connectorsResult = await fetchJsonOrFinding({
     base,
-    header,
     fetchImpl,
+    header,
     path: "/_ref/connectors?limit=200",
   });
   if (connectorsResult.finding) {
     findings.push(connectorsResult.finding);
     checks.push({
+      detail: "connectors JSON unavailable",
       id: "dashboard-source-issue-all-clear",
       status: "inconclusive",
-      detail: "connectors JSON unavailable",
     });
-    return { findings, checks };
+    return { checks, findings };
   }
 
   const connectors = asArrayList(connectorsResult.data);
   const sourceIssues = connectors.filter(isMaterialSourceIssue).map((connector) => ({
-    label: connectorLabel(connector),
     forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
+    label: connectorLabel(connector),
   }));
   const healthyRefreshAdvisories = connectors.filter(isHealthyRefreshAdvisory).map((connector) => ({
-    label: connectorLabel(connector),
     forwardStatement: String(renderedVerdict(connector)?.forward_statement ?? ""),
+    label: connectorLabel(connector),
   }));
   const rawSourceIssues = connectors.filter(isRawMaterialSourceIssue).map((connector) => ({
     label: connectorLabel(connector),
@@ -417,24 +417,24 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     null;
   if (unsupportedAllClearClaim) {
     findings.push({
-      ruleId: "dashboard-unsupported-all-clear-claim",
       class: "dashboard-trust-claim",
-      path: "live:/",
-      line: 0,
       excerpt: unsupportedAllClearClaim,
+      line: 0,
+      path: "live:/",
       rationale:
         "The dashboard all-clear must only state facts backed by the overview inputs. It must not claim backup state or grant-limit health unless those facts are actually derived.",
+      ruleId: "dashboard-unsupported-all-clear-claim",
     });
   }
   if (dashboardVisibleMonograms.length > 0) {
     findings.push({
-      ruleId: "dashboard-monogram-not-decorative",
       class: "dashboard-accessibility",
-      path: "live:/",
-      line: 0,
       excerpt: dashboardVisibleMonograms.slice(0, 5).join(", "),
+      line: 0,
+      path: "live:/",
       rationale:
         "Dashboard client monograms are visual marks. If their initials remain in the text/accessibility tree, owner-facing labels collapse into strings like CLCLaude instead of Claude.",
+      ruleId: "dashboard-monogram-not-decorative",
     });
   }
 
@@ -443,13 +443,13 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       /No source issues to review here|Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
     if (allClearRe.test(dashboardText)) {
       findings.push({
-        ruleId: "dashboard-source-issue-all-clear",
         class: "dashboard-trust-claim",
-        path: "live:/",
-        line: 0,
         excerpt: dashboardText.match(allClearRe)?.[0] ?? "all-clear copy",
+        line: 0,
+        path: "live:/",
         rationale:
           "The dashboard must not claim sources are syncing when the reference connector summary contains material non-owner source issues. The hero may stay calm, but the Anything wrong panel must disclose the issue.",
+        ruleId: "dashboard-source-issue-all-clear",
       });
     }
   }
@@ -465,16 +465,16 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   });
   if (overstatedHealthyAdvisories.length > 0) {
     findings.push({
-      ruleId: "dashboard-healthy-advisory-overstated",
       class: "dashboard-trust-claim",
-      path: "live:/",
-      line: 0,
       excerpt: overstatedHealthyAdvisories
         .map((issue) => issue.label)
         .slice(0, 5)
         .join(", "),
+      line: 0,
+      path: "live:/",
       rationale:
         "A healthy source with a refresh-available advisory must not appear in the dashboard issue list as degraded or broken. The source detail may offer Refresh now, but the dashboard must not manufacture urgency.",
+      ruleId: "dashboard-healthy-advisory-overstated",
     });
   }
 
@@ -482,16 +482,16 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     const representedIssue = sourceIssues.some((issue) => dashboardText.includes(issue.label));
     if (!representedIssue) {
       findings.push({
-        ruleId: "dashboard-source-issue-missing",
         class: "dashboard-trust-claim",
-        path: "live:/",
-        line: 0,
         excerpt: sourceIssues
           .map((issue) => issue.label)
           .slice(0, 5)
           .join(", "),
+        line: 0,
+        path: "live:/",
         rationale:
           "The dashboard reference data contains material source issues, but none of their source labels appear on the rendered dashboard. The owner needs a visible issue row, not a silent calm state.",
+        ruleId: "dashboard-source-issue-missing",
       });
     }
   }
@@ -500,21 +500,22 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     const representedRawIssue = rawSourceIssues.some((issue) => dashboardText.includes(issue.label));
     if (!representedRawIssue) {
       findings.push({
-        ruleId: "dashboard-raw-source-issue-missing",
         class: "dashboard-trust-claim",
-        path: "live:/",
-        line: 0,
         excerpt: rawSourceIssues
           .map((issue) => `${issue.label}:${issue.reason}`)
           .slice(0, 5)
           .join(", "),
+        line: 0,
+        path: "live:/",
         rationale:
           "Raw connection-health evidence contains a material source issue, but none of those source labels appear on the rendered dashboard. The dashboard must disclose broken-source facts even if a rendered verdict projection regresses.",
+        ruleId: "dashboard-raw-source-issue-missing",
       });
     }
   }
 
   checks.push({
+    detail: `${sourceIssues.length} rendered material source issue(s), ${rawSourceIssues.length} raw material source issue(s) in /_ref/connectors`,
     id: "dashboard-source-issue-all-clear",
     status: findings.some(
       (f) =>
@@ -526,15 +527,14 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     )
       ? "fail"
       : "pass",
-    detail: `${sourceIssues.length} rendered material source issue(s), ${rawSourceIssues.length} raw material source issue(s) in /_ref/connectors`,
   });
   checks.push({
-    id: "dashboard-decorative-monograms",
-    status: dashboardVisibleMonograms.length > 0 ? "fail" : "pass",
     detail:
       dashboardVisibleMonograms.length > 0
         ? `${dashboardVisibleMonograms.length} visible monogram initial(s) leaked into dashboard text`
         : "dashboard monogram initials are decorative",
+    id: "dashboard-decorative-monograms",
+    status: dashboardVisibleMonograms.length > 0 ? "fail" : "pass",
   });
 
   const browserSessionPath = "/connect/browser-session/amazon";
@@ -545,38 +545,37 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     /\/connect\/browser-session\/amazon\/start/.test(browserSessionHtml);
   if (exposesDirectNewBrowserSource) {
     findings.push({
-      ruleId: "browser-session-direct-new-source",
       class: "dashboard-setup-integrity",
-      path: `live:${browserSessionPath}`,
-      line: 0,
       excerpt: "Start session",
+      line: 0,
+      path: `live:${browserSessionPath}`,
       rationale:
         "A direct browser-session setup URL must not expose a new-source start control. Without an explicit add-another flow, it can silently create duplicate unnamed browser-backed sources.",
+      ruleId: "browser-session-direct-new-source",
     });
   }
   checks.push({
-    id: "browser-session-direct-new-source",
-    status: exposesDirectNewBrowserSource ? "fail" : "pass",
     detail: exposesDirectNewBrowserSource
       ? "direct browser-session page can start a new source"
       : "direct browser-session page does not expose a new-source start control",
+    id: "browser-session-direct-new-source",
+    status: exposesDirectNewBrowserSource ? "fail" : "pass",
   });
 
   const contentExpectations = [
     {
       id: "schedules-content-rendered",
       path: "/schedules",
-      title: "Schedules",
       required: [
         { label: "Schedules title", pattern: /\bSchedules\b/i },
         { label: "schedule section", pattern: /\bScheduled connections\b|\bNo scheduled connections yet\b/i },
         { label: "scheduled/unscheduled counts", pattern: /\bscheduled\b.*\bunscheduled\b/i },
       ],
+      title: "Schedules",
     },
     {
       id: "explore-content-rendered",
       path: "/explore",
-      title: "Explore",
       required: [
         { label: "Explore title", pattern: /\bExplore\b/i },
         {
@@ -587,6 +586,7 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         { label: "record filters", pattern: /\bFilters\b/i },
         { label: "record sort controls", pattern: /\bnewest\b.*\boldest\b/i },
       ],
+      title: "Explore",
     },
   ];
   for (const expectation of contentExpectations) {
@@ -594,21 +594,21 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     const missing = expectation.required.filter((item) => !item.pattern.test(pageText));
     if (missing.length > 0) {
       findings.push({
-        ruleId: expectation.id,
         class: "dashboard-content-missing",
-        path: `live:${expectation.path}`,
-        line: 0,
         excerpt: missing.map((item) => item.label).join(", "),
+        line: 0,
+        path: `live:${expectation.path}`,
         rationale: `${expectation.title} must render its core owner controls on the live surface. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
+        ruleId: expectation.id,
       });
     }
     checks.push({
-      id: expectation.id,
-      status: missing.length > 0 ? "fail" : "pass",
       detail:
         missing.length > 0
           ? `missing ${missing.map((item) => item.label).join(", ")}`
           : `${expectation.title} rendered core owner controls`,
+      id: expectation.id,
+      status: missing.length > 0 ? "fail" : "pass",
     });
   }
 
@@ -630,13 +630,13 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
     checkedSourceCounts += 1;
     if (!recordsText.includes(expectedCountPhrase)) {
       const finding = {
-        ruleId: "records-source-count-mismatch",
         class: "dashboard-data-claim",
-        path: "live:/sources",
-        line: 0,
         excerpt: `${label} expected ${expectedCountPhrase}`,
+        line: 0,
+        path: "live:/sources",
         rationale:
           "The Sources page must render source record and stream counts that match the reference connector summary. Wrong visible counts break the owner's ability to know what data they have.",
+        ruleId: "records-source-count-mismatch",
       };
       recordsCountFindings.push(finding);
       findings.push(finding);
@@ -644,24 +644,24 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   }
   if (connectors.length > 0 && checkedSourceCounts === 0 && /\bSources\b/i.test(recordsText)) {
     const finding = {
-      ruleId: "records-source-counts-missing",
       class: "dashboard-data-claim",
-      path: "live:/sources",
-      line: 0,
       excerpt: "no configured source labels with counts found",
+      line: 0,
+      path: "live:/sources",
       rationale:
         "The Sources page looked like the owner source list but none of the configured source labels from the reference summary appeared with counts. The owner cannot verify what data they have.",
+      ruleId: "records-source-counts-missing",
     };
     recordsCountFindings.push(finding);
     findings.push(finding);
   }
   checks.push({
-    id: "records-counts-match-reality",
-    status: recordsCountFindings.length > 0 ? "fail" : "pass",
     detail:
       checkedSourceCounts === 0
         ? "no rendered configured source count claims to compare"
         : `${checkedSourceCounts} rendered source count claim(s) matched /_ref/connectors`,
+    id: "records-counts-match-reality",
+    status: recordsCountFindings.length > 0 ? "fail" : "pass",
   });
 
   const nextActionFindings = [];
@@ -688,15 +688,15 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const dashboardHasAction = ["See what to do", "See recovery steps", ...entry.textCandidates].some((candidate) =>
         dashboardText.includes(candidate)
       );
-      if (!dashboardHasSource || !dashboardHasAction) {
+      if (!(dashboardHasSource && dashboardHasAction)) {
         const finding = {
-          ruleId: "dashboard-next-action-missing",
           class: "source-next-action",
-          path: "live:/",
-          line: 0,
           excerpt: `${entry.label}: ${entry.textCandidates[0]}`,
+          line: 0,
+          path: "live:/",
           rationale:
             "When the reference connector summary says an owner-satisfiable attention action exists, the dashboard must point the owner to that exact source and next step instead of leaving the action discoverable only by spelunking.",
+          ruleId: "dashboard-next-action-missing",
         };
         nextActionFindings.push(finding);
         findings.push(finding);
@@ -713,13 +713,13 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const html = await res.text();
       if (status < 200 || status >= 300) {
         const finding = {
-          ruleId: "source-next-action-detail-not-reached",
           class: "source-next-action",
-          path: `live:${path}`,
-          line: 0,
           excerpt: `status ${status}`,
+          line: 0,
+          path: `live:${path}`,
           rationale:
             "The live probe could not reach the exact source detail route for an owner-satisfiable action. The owner cannot know what to do next if the action destination does not render.",
+          ruleId: "source-next-action-detail-not-reached",
         };
         nextActionFindings.push(finding);
         findings.push(finding);
@@ -729,26 +729,26 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const detailHasAction = entry.textCandidates.some((candidate) => detailText.includes(candidate));
       if (!detailHasAction) {
         const finding = {
-          ruleId: "source-next-action-copy-missing",
           class: "source-next-action",
-          path: `live:${path}`,
-          line: 0,
           excerpt: `${entry.label}: ${entry.textCandidates[0]}`,
+          line: 0,
+          path: `live:${path}`,
           rationale:
             "The exact source detail route must render the owner-facing action from the reference verdict. A hidden or missing action breaks the owner's ability to decide the next step.",
+          ruleId: "source-next-action-copy-missing",
         };
         nextActionFindings.push(finding);
         findings.push(finding);
       }
     } catch (err) {
       const finding = {
-        ruleId: "source-next-action-detail-fetch-failed",
         class: "source-next-action",
-        path: `live:${path}`,
-        line: 0,
         excerpt: err instanceof Error ? err.message : String(err),
+        line: 0,
+        path: `live:${path}`,
         rationale:
           "The live probe could not fetch the exact source detail route for an owner-satisfiable action. The owner next-step check is inconclusive until the route is observable.",
+        ruleId: "source-next-action-detail-fetch-failed",
       };
       nextActionFindings.push(finding);
       findings.push(finding);
@@ -775,13 +775,13 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const html = await res.text();
       if (status < 200 || status >= 300) {
         const finding = {
-          ruleId: "raw-next-action-detail-not-reached",
           class: "source-next-action",
-          path: `live:${path}`,
-          line: 0,
           excerpt: `status ${status}`,
+          line: 0,
+          path: `live:${path}`,
           rationale:
             "Raw connection evidence says this source needs an owner next step, but the exact source route did not render. The owner cannot know what to do next from a dead destination.",
+          ruleId: "raw-next-action-detail-not-reached",
         };
         nextActionFindings.push(finding);
         findings.push(finding);
@@ -790,38 +790,38 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const detailText = htmlToText(html);
       if (!detailHasOwnerActionVerb(detailText)) {
         const finding = {
-          ruleId: "raw-next-action-affordance-missing",
           class: "source-next-action",
-          path: `live:${path}`,
-          line: 0,
           excerpt: entry.label,
+          line: 0,
+          path: `live:${path}`,
           rationale:
             "Raw connection evidence says this source needs an owner next step, but the exact source route did not render an owner-actionable verb such as Refresh now, Recover, Retry, or Reconnect.",
+          ruleId: "raw-next-action-affordance-missing",
         };
         nextActionFindings.push(finding);
         findings.push(finding);
       }
     } catch (err) {
       const finding = {
-        ruleId: "raw-next-action-detail-fetch-failed",
         class: "source-next-action",
-        path: `live:${path}`,
-        line: 0,
         excerpt: err instanceof Error ? err.message : String(err),
+        line: 0,
+        path: `live:${path}`,
         rationale:
           "The live probe could not fetch the exact source route for a raw owner next-step condition. The owner next-step check is inconclusive until the route is observable.",
+        ruleId: "raw-next-action-detail-fetch-failed",
       };
       nextActionFindings.push(finding);
       findings.push(finding);
     }
   }
   checks.push({
-    id: "whats-next-actionable",
-    status: nextActionFindings.length > 0 ? "fail" : "pass",
     detail:
       nextActionConnectors.length === 0 && rawNextStepConnectors.length === 0
         ? "no rendered or raw owner next-step conditions to probe"
         : `${nextActionConnectors.length} rendered action route(s) and ${rawNextStepConnectors.length} raw owner next-step route(s) rendered their next step`,
+    id: "whats-next-actionable",
+    status: nextActionFindings.length > 0 ? "fail" : "pass",
   });
 
   const singleTokenDenialCodes = new Set([
@@ -845,19 +845,19 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       : null;
   if (rawDenialReason) {
     findings.push({
-      ruleId: "dashboard-raw-denial-reason",
       class: "dashboard-trust-claim",
-      path: "live:/",
-      line: 0,
       excerpt: rawDenialReason,
+      line: 0,
+      path: "live:/",
       rationale:
         "The dashboard's recent-read summary must not render raw diagnostic denial reason codes. Overview copy should explain the denial in owner language and leave exact codes to trace detail surfaces.",
+      ruleId: "dashboard-raw-denial-reason",
     });
   }
   checks.push({
+    detail: rawDenialReason ? `raw denial reason visible: ${rawDenialReason}` : "no raw denial reason visible",
     id: "dashboard-denial-reasons-humanized",
     status: rawDenialReason ? "fail" : "pass",
-    detail: rawDenialReason ? `raw denial reason visible: ${rawDenialReason}` : "no raw denial reason visible",
   });
 
   const recoveryRouteIds = Array.from(
@@ -880,13 +880,13 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const html = await res.text();
       if (status < 200 || status >= 300) {
         findings.push({
-          ruleId: "source-detail-not-reached",
           class: "live-probe-inconclusive",
-          path: `live:${path}`,
-          line: 0,
           excerpt: `status ${status}`,
+          line: 0,
+          path: `live:${path}`,
           rationale:
             "The live semantic probe could not reach a source recovery detail page. Owner recovery copy is inconclusive until the exact source route renders.",
+          ruleId: "source-detail-not-reached",
         });
         continue;
       }
@@ -894,38 +894,38 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const rawRecoveryTerm = detailText.match(/\bdead-letter(?:ed)?\b/i)?.[0] ?? null;
       if (rawRecoveryTerm) {
         const finding = {
-          ruleId: "source-detail-raw-recovery-jargon",
           class: "source-recovery-copy",
-          path: `live:${path}`,
-          line: 0,
           excerpt: rawRecoveryTerm,
+          line: 0,
+          path: `live:${path}`,
           rationale:
             "Owner-facing recovery copy must not use durable-outbox jargon such as dead-letter. Use owner-language like failed uploads while preserving exact technical terms only in commands or engineering traces.",
+          ruleId: "source-detail-raw-recovery-jargon",
         };
         rawRecoveryTermFindings.push(finding);
         findings.push(finding);
       }
     } catch (err) {
       findings.push({
-        ruleId: "source-detail-fetch-failed",
         class: "live-probe-inconclusive",
-        path: `live:/sources/${routeId}`,
-        line: 0,
         excerpt: err instanceof Error ? err.message : String(err),
+        line: 0,
+        path: `live:/sources/${routeId}`,
         rationale:
           "The live semantic probe could not fetch a source recovery detail page. Owner recovery copy is inconclusive until the exact source route renders.",
+        ruleId: "source-detail-fetch-failed",
       });
     }
   }
   checks.push({
-    id: "source-detail-recovery-copy-humanized",
-    status: rawRecoveryTermFindings.length > 0 ? "fail" : "pass",
     detail:
       recoveryRouteIds.length === 0
         ? "no source recovery detail routes to probe"
         : rawRecoveryTermFindings.length > 0
           ? `${rawRecoveryTermFindings.length} detail page(s) render raw recovery jargon`
           : `${recoveryRouteIds.length} source recovery detail route(s) render human recovery copy`,
+    id: "source-detail-recovery-copy-humanized",
+    status: rawRecoveryTermFindings.length > 0 ? "fail" : "pass",
   });
 
   const runGapRouteIds = Array.from(
@@ -948,13 +948,13 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const html = await res.text();
       if (status < 200 || status >= 300) {
         findings.push({
-          ruleId: "source-detail-run-gap-not-reached",
           class: "live-probe-inconclusive",
-          path: `live:${path}`,
-          line: 0,
           excerpt: `status ${status}`,
+          line: 0,
+          path: `live:${path}`,
           rationale:
             "The live semantic probe could not reach a source detail page that has a successful latest run with unresolved collection gaps. Run-status honesty is inconclusive until the exact source route renders.",
+          ruleId: "source-detail-run-gap-not-reached",
         });
         continue;
       }
@@ -963,40 +963,40 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       const rendersGapStatus = /\bwith gaps\b/i.test(detailText) || /\bpartial\b/i.test(detailText);
       if (cleanSuccessClaim || !rendersGapStatus) {
         const finding = {
-          ruleId: "source-detail-clean-success-with-open-gaps",
           class: "source-run-honesty",
-          path: `live:${path}`,
-          line: 0,
           excerpt: cleanSuccessClaim ?? "missing partial/with gaps status",
+          line: 0,
+          path: `live:${path}`,
           rationale:
             "A source detail page whose latest successful run has unresolved collection gaps must not render as a clean success. It must show a partial/with-gaps status so the owner can trust the run summary.",
+          ruleId: "source-detail-clean-success-with-open-gaps",
         };
         runGapFindings.push(finding);
         findings.push(finding);
       }
     } catch (err) {
       findings.push({
-        ruleId: "source-detail-run-gap-fetch-failed",
         class: "live-probe-inconclusive",
-        path: `live:/sources/${routeId}`,
-        line: 0,
         excerpt: err instanceof Error ? err.message : String(err),
+        line: 0,
+        path: `live:/sources/${routeId}`,
         rationale:
           "The live semantic probe could not fetch a source detail page with unresolved collection gaps. Run-status honesty is inconclusive until the exact source route renders.",
+        ruleId: "source-detail-run-gap-fetch-failed",
       });
     }
   }
   checks.push({
-    id: "source-detail-run-gap-honesty",
-    status: runGapFindings.length > 0 ? "fail" : "pass",
     detail:
       runGapRouteIds.length === 0
         ? "no successful source runs with unresolved gaps to probe"
         : runGapFindings.length > 0
           ? `${runGapFindings.length} detail page(s) render clean success despite open gaps`
           : `${runGapRouteIds.length} source detail route(s) render partial/with-gaps status`,
+    id: "source-detail-run-gap-honesty",
+    status: runGapFindings.length > 0 ? "fail" : "pass",
   });
-  return { findings, checks };
+  return { checks, findings };
 }
 
 /**
@@ -1018,13 +1018,13 @@ export async function runLiveAcceptance({ origin, env = process.env, fetchImpl =
 
   if (authError) {
     findings.push({
-      ruleId: "live-owner-auth-failed",
       class: "live-probe-inconclusive",
-      path: "live:owner-auth",
-      line: 0,
       excerpt: authError,
+      line: 0,
+      path: "live:owner-auth",
       rationale:
         "The live acceptance gate must inspect authenticated owner renders. Login/auth failure makes the live probe inconclusive, not passing.",
+      ruleId: "live-owner-auth-failed",
     });
   }
 
@@ -1043,10 +1043,10 @@ export async function runLiveAcceptance({ origin, env = process.env, fetchImpl =
       const surfaceFindings = reachedOwnerSurface
         ? scanForbiddenStrings({
             path: `live:${surface.path}`,
+            rules: FORBIDDEN_STRING_RULES,
             src: html,
             tier: surface.tier,
-            rules: FORBIDDEN_STRING_RULES,
-          }).map((f) => ({ ...f, live: true, line: f.line || lineOf(html, 0) }))
+          }).map((f) => ({ ...f, line: f.line || lineOf(html, 0), live: true }))
         : [];
       if (reachedOwnerSurface) {
         htmlByPath.set(surface.path, html);
@@ -1054,54 +1054,54 @@ export async function runLiveAcceptance({ origin, env = process.env, fetchImpl =
       findings.push(...surfaceFindings);
       if (!reachedOwnerSurface) {
         findings.push({
-          ruleId: "live-owner-surface-not-reached",
           class: "live-probe-inconclusive",
-          path: `live:${surface.path}`,
-          line: 0,
           excerpt: `status ${status}`,
+          line: 0,
+          path: `live:${surface.path}`,
           rationale:
             "The live probe did not reach the authenticated owner surface. A login redirect, 401, 404, or server error cannot prove the rendered journey is clean.",
+          ruleId: "live-owner-surface-not-reached",
         });
       }
       surfaces.push({
-        path: surface.path,
-        tier: surface.tier,
-        status,
-        reachedOwnerSurface,
         bytes: html.length,
         findingCount: surfaceFindings.length,
+        path: surface.path,
+        reachedOwnerSurface,
+        status,
+        tier: surface.tier,
       });
     } catch (err) {
       surfaces.push({
-        path: surface.path,
-        tier: surface.tier,
-        status: null,
-        reachedOwnerSurface: false,
         error: err instanceof Error ? err.message : String(err),
+        path: surface.path,
+        reachedOwnerSurface: false,
+        status: null,
+        tier: surface.tier,
       });
       findings.push({
-        ruleId: "live-owner-surface-fetch-failed",
         class: "live-probe-inconclusive",
-        path: `live:${surface.path}`,
-        line: 0,
         excerpt: err instanceof Error ? err.message : String(err),
+        line: 0,
+        path: `live:${surface.path}`,
         rationale:
           "The live probe could not fetch the owner surface. Network or runtime failures are acceptance failures until the rendered journey is observed.",
+        ruleId: "live-owner-surface-fetch-failed",
       });
     }
   }
 
-  const semantic = await runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath });
+  const semantic = await runLiveSemanticChecks({ base, fetchImpl, header, htmlByPath });
   const grantCaptions = runLiveGrantCaptionChecks({ htmlByPath });
   findings.push(...semantic.findings);
   findings.push(...grantCaptions.findings);
 
   return {
-    origin: base,
     authMode: mode,
-    surfaces,
-    semanticChecks: [...semantic.checks, ...grantCaptions.checks],
     findings,
     ok: findings.length === 0,
+    origin: base,
+    semanticChecks: [...semantic.checks, ...grantCaptions.checks],
+    surfaces,
   };
 }

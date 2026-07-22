@@ -52,15 +52,15 @@ const STRATEGY_NUMERATOR_COPY = /not the coverage numerator/i;
 
 function entry(overrides: Partial<RefCollectionReportEntry>): RefCollectionReportEntry {
   return {
-    stream: "items",
+    checkpoint: "unknown",
     collected: 0,
     considered: "unknown",
-    covered: "unknown",
-    checkpoint: "unknown",
     coverage_condition: "unknown",
+    covered: "unknown",
     forward_disposition: "resumable",
     pending_detail_gaps: 0,
     skipped: null,
+    stream: "items",
     ...overrides,
   };
 }
@@ -71,8 +71,8 @@ test("indexCollectionReportByStream tolerates absence and indexes by stream name
   assert.equal(indexCollectionReportByStream([]).size, 0);
 
   const byStream = indexCollectionReportByStream([
-    entry({ stream: "items", collected: 3 }),
-    entry({ stream: "other_items", collected: 1 }),
+    entry({ collected: 3, stream: "items" }),
+    entry({ collected: 1, stream: "other_items" }),
   ]);
   assert.equal(byStream.size, 2);
   assert.equal(byStream.get("items")?.collected, 3);
@@ -81,8 +81,8 @@ test("indexCollectionReportByStream tolerates absence and indexes by stream name
 
 test("a duplicate stream name keeps the first entry", () => {
   const byStream = indexCollectionReportByStream([
-    entry({ stream: "items", collected: 5 }),
-    entry({ stream: "items", collected: 9 }),
+    entry({ collected: 5, stream: "items" }),
+    entry({ collected: 9, stream: "items" }),
   ]);
   assert.equal(byStream.size, 1);
   assert.equal(byStream.get("items")?.collected, 5);
@@ -92,9 +92,9 @@ test("collectionReportHasOpenGaps distinguishes clean completion from unresolved
   assert.equal(
     collectionReportHasOpenGaps([
       entry({
-        coverage_condition: "complete",
-        considered: 1,
         collected: 0,
+        considered: 1,
+        coverage_condition: "complete",
         covered: 1,
         forward_disposition: "owner_refresh_due",
       }),
@@ -121,7 +121,7 @@ test("runStatusWithCollectionReportGaps promotes only clean success statuses whe
   assert.equal(runStatusWithCollectionReportGaps("failed", gapReport), "failed");
   assert.equal(
     runStatusWithCollectionReportGaps("succeeded", [
-      entry({ coverage_condition: "complete", considered: 1, collected: 0, covered: 1 }),
+      entry({ collected: 0, considered: 1, coverage_condition: "complete", covered: 1 }),
     ]),
     "succeeded"
   );
@@ -129,7 +129,7 @@ test("runStatusWithCollectionReportGaps promotes only clean success statuses whe
 
 test("THE HONESTY GATE: collected records with an unknown considered denominator never imply completeness", () => {
   const facts = formatStreamCollectionFacts(
-    entry({ stream: "items", collected: 42, considered: "unknown", coverage_condition: "unknown" })
+    entry({ collected: 42, considered: "unknown", coverage_condition: "unknown", stream: "items" })
   );
   // The coverage chip stays unknown, never complete.
   assert.equal(facts.coverage.value, "unknown");
@@ -144,7 +144,7 @@ test("THE HONESTY GATE: collected records with an unknown considered denominator
 
 test("a known considered denominator renders collected / considered", () => {
   const facts = formatStreamCollectionFacts(
-    entry({ stream: "items", collected: 7, considered: 10, coverage_condition: "partial" })
+    entry({ collected: 7, considered: 10, coverage_condition: "partial", stream: "items" })
   );
   assert.equal(facts.countsLabel, "7 / 10 collected");
   assert.equal(facts.coverage.value, "partial");
@@ -153,13 +153,13 @@ test("a known considered denominator renders collected / considered", () => {
 test("strategy-backed complete streams do not render collected / considered as a partial-looking fraction", () => {
   const facts = formatStreamCollectionFacts(
     entry({
-      stream: "pull_requests",
       checkpoint: "committed",
       collected: 9,
       considered: 52,
       coverage_condition: "complete",
       coverage_strategy: "checkpoint_window",
       forward_disposition: "complete",
+      stream: "pull_requests",
     })
   );
   assert.equal(facts.countsLabel, "checkpoint covered · 9 collected");
@@ -172,13 +172,13 @@ test("strategy-backed complete streams do not render collected / considered as a
 test("full-inventory complete streams name the inventory proof instead of implying missing records", () => {
   const facts = formatStreamCollectionFacts(
     entry({
-      stream: "repositories",
       checkpoint: "committed",
       collected: 5,
       considered: 100,
       coverage_condition: "complete",
       coverage_strategy: "full_inventory",
       forward_disposition: "complete",
+      stream: "repositories",
     })
   );
   assert.equal(facts.countsLabel, "inventory covered · 5 collected");
@@ -190,13 +190,13 @@ test("full-inventory complete streams name the inventory proof instead of implyi
 test("zero-emission singleton proofs still show the proof instead of collection count unavailable", () => {
   const facts = formatStreamCollectionFacts(
     entry({
-      stream: "user",
       checkpoint: "committed",
       collected: 0,
       considered: "unknown",
       coverage_condition: "complete",
       coverage_strategy: "singleton_presence",
       forward_disposition: "complete",
+      stream: "user",
     })
   );
   assert.equal(facts.countsLabel, "presence checked");
@@ -208,7 +208,7 @@ test("THE CLAMP: collected > considered never renders an impossible fraction (ph
   // render "3 / 2 collected" — an impossible tuple. The displayed numerator is
   // clamped to the denominator; the raw count is disclosed in the title.
   const facts = formatStreamCollectionFacts(
-    entry({ stream: "items", collected: 3, considered: 2, coverage_condition: "complete" })
+    entry({ collected: 3, considered: 2, coverage_condition: "complete", stream: "items" })
   );
   assert.equal(facts.countsLabel, "2 / 2 collected");
   assert.doesNotMatch(facts.countsLabel ?? "", IMPOSSIBLE_COLLECTED_FRACTION);
@@ -219,7 +219,7 @@ test("THE CLAMP: collected > considered never renders an impossible fraction (ph
 
 test("THE CLAMP: covered > considered is clamped too, raw covered preserved in the title", () => {
   const facts = formatStreamCollectionFacts(
-    entry({ stream: "items", collected: 5, considered: 4, covered: 6, coverage_condition: "complete" })
+    entry({ collected: 5, considered: 4, coverage_condition: "complete", covered: 6, stream: "items" })
   );
   assert.equal(facts.countsLabel, "4 / 4 covered · 5 collected");
   assert.doesNotMatch(facts.countsLabel ?? "", IMPOSSIBLE_COVERED_FRACTION);
@@ -228,7 +228,7 @@ test("THE CLAMP: covered > considered is clamped too, raw covered preserved in t
 
 test("THE CLAMP: collected over-report does not imply covered exceeded the denominator", () => {
   const facts = formatStreamCollectionFacts(
-    entry({ stream: "items", collected: 5, considered: 4, covered: 3, coverage_condition: "partial" })
+    entry({ collected: 5, considered: 4, coverage_condition: "partial", covered: 3, stream: "items" })
   );
   assert.equal(facts.countsLabel, "3 / 4 covered · 5 collected");
   assert.doesNotMatch(facts.countsTitle, COVERED_EXCEEDED_DENOMINATOR_COPY);
@@ -238,12 +238,12 @@ test("THE CLAMP: collected over-report does not imply covered exceeded the denom
 test("a known covered numerator renders covered / considered without hiding the collected count", () => {
   const facts = formatStreamCollectionFacts(
     entry({
-      stream: "items",
       collected: 0,
       considered: 10,
-      covered: 10,
       coverage_condition: "complete",
+      covered: 10,
       forward_disposition: "complete",
+      stream: "items",
     })
   );
   assert.equal(facts.countsLabel, "10 / 10 covered · 0 collected");
@@ -255,11 +255,11 @@ test("a known covered numerator renders covered / considered without hiding the 
 test("a satisfied known denominator can read complete (the reference's verdict, not ours)", () => {
   const facts = formatStreamCollectionFacts(
     entry({
-      stream: "items",
       collected: 10,
       considered: 10,
       coverage_condition: "complete",
       forward_disposition: "complete",
+      stream: "items",
     })
   );
   assert.equal(facts.countsLabel, "10 / 10 collected");
@@ -271,7 +271,7 @@ test("a satisfied known denominator can read complete (the reference's verdict, 
 });
 
 test("zero collected with no considered denominator shows no fabricated progress number", () => {
-  const facts = formatStreamCollectionFacts(entry({ stream: "items", collected: 0, considered: "unknown" }));
+  const facts = formatStreamCollectionFacts(entry({ collected: 0, considered: "unknown", stream: "items" }));
   assert.equal(facts.countsLabel, null);
 });
 
@@ -385,7 +385,7 @@ test("an accepted-absence coverage axis never degrades a stream's coverage tone"
   // the coverage axis specifically, which is the signal that must not degrade.)
   for (const axis of ["deferred", "inventory_only", "unavailable", "unsupported"] as const) {
     const facts = formatStreamCollectionFacts(
-      entry({ coverage_condition: axis, forward_disposition: "unmeasured", collected: 0, considered: "unknown" })
+      entry({ collected: 0, considered: "unknown", coverage_condition: axis, forward_disposition: "unmeasured" })
     );
     assert.equal(facts.coverage.tone, "neutral", `${axis} coverage tone must stay neutral`);
     assert.notEqual(facts.tone, "warning");
@@ -398,7 +398,7 @@ test("the stream-row deferred pill reads optional/not-collected, not policy jarg
   // per-stream row must pick up the same visible fix as the connection-level
   // chip — the owner reads this exact value on the source detail page.
   const facts = formatStreamCollectionFacts(
-    entry({ coverage_condition: "deferred", forward_disposition: "unmeasured", collected: 0, considered: "unknown" })
+    entry({ collected: 0, considered: "unknown", coverage_condition: "deferred", forward_disposition: "unmeasured" })
   );
   assert.doesNotMatch(facts.coverage.value, /\bdeferre?s?\b/i);
   assert.match(facts.coverage.value, /optional/i);
@@ -411,7 +411,7 @@ test("required missing evidence (unknown coverage) stays distinct from accepted 
   // evidence, never as a settled accepted-absence policy, so the two states
   // remain distinguishable on the stream row after the copy-only fix.
   const unmeasured = formatStreamCollectionFacts(
-    entry({ coverage_condition: "unknown", forward_disposition: "unmeasured", collected: 0, considered: "unknown" })
+    entry({ collected: 0, considered: "unknown", coverage_condition: "unknown", forward_disposition: "unmeasured" })
   );
   assert.equal(unmeasured.coverage.value, "unknown");
   assert.notEqual(
@@ -428,7 +428,7 @@ test("active pending work (checking) stays distinct from accepted absence", () =
   // A stream mid-run reads `checking`, which is a different signal than a
   // settled accepted-absence policy — neither implies the other.
   const checking = formatStreamCollectionFacts(
-    entry({ coverage_condition: "unknown", forward_disposition: "checking", collected: 0, considered: "unknown" })
+    entry({ collected: 0, considered: "unknown", coverage_condition: "unknown", forward_disposition: "checking" })
   );
   assert.equal(checking.disposition?.value, "checking");
   for (const axis of ["deferred", "inventory_only", "unavailable", "unsupported"] as const) {

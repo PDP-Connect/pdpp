@@ -100,9 +100,9 @@ test("agent skill .well-known route serves only allowlisted files", async () => 
   const traversalBody = await jsonOf(traversal);
   assert.deepEqual(traversalBody, {
     error: {
-      type: "not_found_error",
       code: "not_found",
       message: "Skill file not found",
+      type: "not_found_error",
     },
   });
 });

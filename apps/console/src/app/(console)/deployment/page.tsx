@@ -68,7 +68,7 @@ export default async function DeploymentPage() {
       <LivePoller enabled={isDeploymentIndexing(report)} />
       <DeploymentDiagnosticsView
         actions={
-          <Link className={buttonVariants({ variant: "ghost", size: "sm" })} href="/deployment/tokens">
+          <Link className={buttonVariants({ size: "sm", variant: "ghost" })} href="/deployment/tokens">
             Tokens
           </Link>
         }
