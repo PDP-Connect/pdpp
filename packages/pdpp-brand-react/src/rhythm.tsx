@@ -26,14 +26,18 @@ interface RhythmProps {
 export function Rhythm({ ticks, label }: RhythmProps) {
   const failures = ticks.filter((t) => t === "fail").length;
   const resolvedLabel = label ?? `last ${ticks.length} runs: ${ticks.length - failures} ok, ${failures} failed`;
+  const keyedTicks = ticks.reduce<{ key: string; tick: string }[]>((items, tick) => {
+    const occurrence = items.filter(({ tick: previousTick }) => previousTick === tick).length;
+    items.push({ key: `${tick}-${occurrence}`, tick });
+    return items;
+  }, []);
   return (
     <span aria-label={resolvedLabel} className="rr-rhythm" role="img">
-      {ticks.map((tick, i) => (
+      {keyedTicks.map(({ key, tick }) => (
         <span
-          // ticks are positional and have no stable id; index is the identity.
+          // Repeated tick values get occurrence-qualified keys for stable reconciliation.
           className={["rr-rhythm__tick", tick === "fail" ? "is-fail" : undefined].filter(Boolean).join(" ")}
-          // biome-ignore lint/suspicious/noArrayIndexKey: positional sparkline ticks have no other identity.
-          key={i}
+          key={key}
         />
       ))}
     </span>

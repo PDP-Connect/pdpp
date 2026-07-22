@@ -1450,8 +1450,7 @@ function StreakStrip({ dots }: { dots: StreakDot[] }) {
           <span
             aria-hidden
             className={["font-mono text-sm tabular-nums", streakDotToneClass(d.tone)].join(" ")}
-            // biome-ignore lint/suspicious/noArrayIndexKey: positional streak dots have no stable id
-            key={i}
+            key={`${d.at}-${d.statusLabel}`}
             title={`${d.statusLabel} · ${d.at}`}
           >
             {d.symbol}

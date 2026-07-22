@@ -1925,13 +1925,11 @@ function FeedRow({
                 {entry.snippetSegments && entry.snippetSegments.length > 0
                   ? entry.snippetSegments.map((seg, i) =>
                       seg.marked ? (
-                        // biome-ignore lint/suspicious/noArrayIndexKey: ordered immutable segment list
-                        <strong className="rr-x-snippet-hit" key={i}>
+                        <strong className="rr-x-snippet-hit" key={`segment-marked-${seg.text}`}>
                           {seg.text}
                         </strong>
                       ) : (
-                        // biome-ignore lint/suspicious/noArrayIndexKey: ordered immutable segment list
-                        <span key={i}>{seg.text}</span>
+                        <span key={`segment-plain-${seg.text}`}>{seg.text}</span>
                       )
                     )
                   : matchExcerpt}
