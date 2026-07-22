@@ -34,6 +34,18 @@
       "!!**/*.html"
     ]
   },
+  "linter": {
+    "rules": {
+      "correctness": {
+        // Biome 2.5.5 cannot resolve valid pnpm package exports (including
+        // @opendatalabs/remote-surface/{leases,server}); Node resolves them
+        // from the owning workspaces. No resolver option exposes package
+        // exports to Biome, so waive only this known false-positive rule until
+        // upstream resolver support lands.
+        "noUnresolvedImports": "off"
+      }
+    }
+  },
   "overrides": [
     {
       // This is an authored design exploration archive (HTML/CSS/JS prototypes),
