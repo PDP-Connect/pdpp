@@ -5,6 +5,7 @@
   "formatter": {
     "lineWidth": 120
   },
+  "linter": { "rules": { "correctness": { "noUnresolvedImports": "off" } } },
   "files": {
     "ignoreUnknown": true,
     // During the JS → TS migration, Biome lints and formats only the

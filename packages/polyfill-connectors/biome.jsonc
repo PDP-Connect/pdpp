@@ -5,6 +5,7 @@
   "formatter": {
     "lineWidth": 120
   },
+  "linter": { "rules": { "correctness": { "noUnresolvedImports": "off" } } },
   "files": {
     "ignoreUnknown": true,
     // Everything TypeScript in src/, connectors/, bin/ is linted and

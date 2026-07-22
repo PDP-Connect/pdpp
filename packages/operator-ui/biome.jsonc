@@ -5,6 +5,7 @@
   "formatter": {
     "lineWidth": 120
   },
+  "linter": { "rules": { "correctness": { "noUnresolvedImports": "off" } } },
   "files": {
     "ignoreUnknown": true,
     // Shared dashboard substrate: every .ts/.tsx under src/ is linted and

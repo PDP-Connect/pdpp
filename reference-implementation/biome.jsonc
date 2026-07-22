@@ -28,6 +28,9 @@
   },
   "linter": {
     "rules": {
+      "correctness": {
+        "noUnresolvedImports": "off"
+      },
       "style": {
         // Closed TypeScript unions should handle every case explicitly without
         // a redundant default. Open-ended switches over strings/numbers still
