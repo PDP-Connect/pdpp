@@ -44,6 +44,7 @@ const nextConfig = {
   },
   reactStrictMode: true,
   experimental: {
+    useTypeScriptCli: true,
     cpus: buildWorkers,
     proxyClientMaxBodySize: manualUploadBodyLimit,
     serverActions: {

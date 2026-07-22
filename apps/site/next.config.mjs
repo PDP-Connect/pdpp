@@ -52,6 +52,7 @@ const nextConfig = {
   },
   reactStrictMode: true,
   experimental: {
+    useTypeScriptCli: true,
     // The default is host CPU count minus one (23 on the owner workstation),
     // which repeatedly trips native SIGSEGV / SIGTRAP during production
     // builds on Next 16.2.x. Keep the canonical build stable by default while
