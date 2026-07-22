@@ -27,6 +27,22 @@
   },
   "overrides": [
     {
+      // This is an authored design exploration archive (HTML/CSS/JS prototypes),
+      // not product source. It has no TypeScript project or runtime test surface;
+      // linting it under the repository's strict application rules produces
+      // undeclared-global false positives rather than actionable code findings.
+      "includes": ["docs/design-system/ink-carbon/project/**"],
+      "assist": {
+        "enabled": false
+      },
+      "formatter": {
+        "enabled": false
+      },
+      "linter": {
+        "enabled": false
+      }
+    },
+    {
       // Remote-surface was previously outside the workspace check set, so
       // `pnpm --filter @opendatalabs/remote-surface check` was a false green. Keep
       // the package under Biome analysis now, but waive the pre-existing
