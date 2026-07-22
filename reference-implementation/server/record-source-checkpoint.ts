@@ -32,6 +32,8 @@
 import { allowUnboundedReadAcknowledged, getOne, referenceQueries } from "../lib/db.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 
+const LEADING_ZERO_RE = /^0+(?=\d)/;
+
 export interface RecordSourceCheckpointStream {
   readonly max_version: string;
   readonly stream: string;
@@ -44,7 +46,7 @@ export interface RecordSourceCheckpoint {
 
 /** Strips leading zeros from an unsigned base-10 digit string; "0" for all-zero input. */
 function stripLeadingZeros(digits: string): string {
-  const stripped = digits.replace(/^0+(?=\d)/, "");
+  const stripped = digits.replace(LEADING_ZERO_RE, "");
   return stripped.length > 0 ? stripped : "0";
 }
 

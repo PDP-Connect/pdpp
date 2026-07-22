@@ -41,6 +41,7 @@ const MOUNTED_FALLBACK_TAP_RE =
 const REMOUNT_CANCEL_RE =
   /cancelActiveViewerPresses\(activeViewerPressesRef\.current, \(intent\) => mountedViewer\.dispatchInput\(intent\)\)/;
 const VIEWER_INPUT_DIAGNOSTIC_RE = /onInputDiagnostic:\s*\(event\)[\s\S]{0,400}remote_surface_viewer\.input/;
+const DIRECT_FALLBACK_TAP_RE = /clickNekoAt\(/;
 
 interface TouchGesture {
   end: { clientX: number; clientY: number };
@@ -183,7 +184,7 @@ test("console capture targets the viewer router while preserving the host-owned 
   assert.match(client, FALLBACK_TAP_DELIVERY_RE);
   assert.match(client, MOUNTED_FALLBACK_TAP_RE);
   const touchEnd = client.slice(client.indexOf("const onTouchEnd"), client.indexOf("const onTouchCancel"));
-  assert.doesNotMatch(touchEnd, /clickNekoAt\(/, "mounted fallback tap must not bypass viewer.dispatchInput");
+  assert.doesNotMatch(touchEnd, DIRECT_FALLBACK_TAP_RE, "mounted fallback tap must not bypass viewer.dispatchInput");
   assert.match(viewer, VIEWER_INPUT_DIAGNOSTIC_RE);
   assert.match(viewer, REMOUNT_CANCEL_RE);
 });

@@ -31,6 +31,10 @@ import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/collector-registry.ts";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
+const PROFILE_ENV_LINE_RE = /\r?\n/;
+const PROFILE_ENV_KEY_RE = /^[A-Z0-9_]+$/;
+const PROFILE_FILE_NAME_RE = /^[A-Za-z0-9._-]+$/;
+const PROFILE_ENV_EXTENSION_RE = /\.env$/;
 import {
   type BundledConnectorEntry,
   type BundledConnectorRegistry,
@@ -1246,7 +1250,7 @@ function defaultCollectorProfileDir(): string {
 
 export function parseCollectorProfileEnv(contents: string): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const rawLine of contents.split(/\r?\n/)) {
+  for (const rawLine of contents.split(PROFILE_ENV_LINE_RE)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) {
       continue;
@@ -1258,7 +1262,7 @@ export function parseCollectorProfileEnv(contents: string): Record<string, strin
     }
     const key = assignment.slice(0, eq).trim();
     const rawValue = assignment.slice(eq + 1).trim();
-    if (!/^[A-Z0-9_]+$/.test(key)) {
+    if (!PROFILE_ENV_KEY_RE.test(key)) {
       continue;
     }
     env[key] = unquoteProfileEnvValue(rawValue);
@@ -1283,7 +1287,7 @@ function profileSourceInstanceId(env: Record<string, string>): string | null {
 
 function safeProfileFileName(name: string): string {
   const trimmed = name.trim();
-  if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+  if (!PROFILE_FILE_NAME_RE.test(trimmed)) {
     throw new CollectorUsageError("--profile must be a simple profile file name");
   }
   return trimmed.endsWith(".env") ? trimmed : `${trimmed}.env`;
@@ -1324,7 +1328,7 @@ export function findLocalCollectorProfiles(input: {
     }
     matches.push({
       env,
-      name: file.replace(/\.env$/, ""),
+      name: file.replace(PROFILE_ENV_EXTENSION_RE, ""),
       path,
       source_instance_id: profileSource,
     });

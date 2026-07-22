@@ -3,8 +3,10 @@
 
 import { CopyButton } from "./copy-button.tsx";
 
+const TRAILING_SLASH_RE = /\/+$/;
+
 function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, "");
+  return value.replace(TRAILING_SLASH_RE, "");
 }
 
 function mcpUrlFor(providerUrl?: string): string {

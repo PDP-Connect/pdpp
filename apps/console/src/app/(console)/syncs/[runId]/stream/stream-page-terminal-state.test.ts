@@ -42,6 +42,8 @@ const DEFERRED_BROWSER_SLOT_COPY_RE = /Secure browser slot unavailable\./;
 const DEFERRED_BROWSER_SLOT_NOT_DANGER_RE = /terminalStatus === "deferred"[\s\S]{0,600}border border-border bg-card/;
 const RESOLVED_SURFACE_ACCEPTS_RUN_ID_RE = /export function ResolvedSurface\(\{ connector, runId \}/;
 const RESOLVED_SURFACE_RUN_LINK_RE = /href=\{`\/syncs\/\$\{encodeURIComponent\(runId\)\}`\}/;
+const WINDOW_CLOSE_RE = /window\.close\(\)/;
+const CLOSE_TAB_COPY_RE = />\s*Close this tab\s*</;
 
 test("no-assistance stream state distinguishes success, terminal failure, and active runs", () => {
   assert.equal(selectNoAssistanceStreamState({ terminalStatus: "completed" }), "resolved");
@@ -129,6 +131,6 @@ test("no-assistance poller explicitly transitions into current browser assistanc
 test("resolved browser stream offers reliable navigation instead of blocked tab close", () => {
   assert.match(streamViewerSource, RESOLVED_SURFACE_ACCEPTS_RUN_ID_RE);
   assert.match(streamViewerSource, RESOLVED_SURFACE_RUN_LINK_RE);
-  assert.doesNotMatch(streamViewerSource, /window\.close\(\)/);
-  assert.doesNotMatch(streamViewerSource, />\s*Close this tab\s*</);
+  assert.doesNotMatch(streamViewerSource, WINDOW_CLOSE_RE);
+  assert.doesNotMatch(streamViewerSource, CLOSE_TAB_COPY_RE);
 });
