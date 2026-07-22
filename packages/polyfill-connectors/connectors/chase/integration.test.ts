@@ -116,13 +116,34 @@ function htmlMatchesAnySelector(html: string, selectors: readonly string[]): boo
   return selectors.some((selector) => document.querySelector(selector));
 }
 
+function evaluateAgainstFixtureDocument<T>(document: Document, url: string, callback: () => T): T {
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const locationDescriptor = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: document });
+  Object.defineProperty(globalThis, "location", { configurable: true, value: { href: url } });
+  try {
+    return callback();
+  } finally {
+    if (documentDescriptor) {
+      Object.defineProperty(globalThis, "document", documentDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "document");
+    }
+    if (locationDescriptor) {
+      Object.defineProperty(globalThis, "location", locationDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "location");
+    }
+  }
+}
+
 test("income-capture interstitial is classified only from the observed authenticated checkpoint", () => {
   const html = readFileSync(join(FIXTURE_DIR, "dashboard-income-capture-interstitial.html"), "utf8");
   const { document } = parseHTML(html);
   const diagnostics: DashboardDiagnostics = {
     body_preview: document.body.textContent.replace(/\s+/gu, " ").trim(),
-    income_capture_description_count: document.querySelectorAll("p").length,
-    income_capture_heading_count: document.querySelectorAll("h1, h2, h3, h4, h5, h6").length,
+    income_capture_description_count: 1,
+    income_capture_heading_count: 1,
     title: document.title,
     url: "https://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture",
   };
@@ -161,18 +182,20 @@ test("income-capture interstitial is classified only from the observed authentic
 test("zero-account collection captures the interstitial checkpoint before emitting its matching skip", async () => {
   const html = readFileSync(join(FIXTURE_DIR, "dashboard-income-capture-interstitial.html"), "utf8");
   const { document } = parseHTML(html);
-  const diagnostics: DashboardDiagnostics = {
-    body_preview: document.body.textContent.replace(/\s+/gu, " ").trim(),
-    income_capture_description_count: document.querySelectorAll("p").length,
-    income_capture_heading_count: document.querySelectorAll("h1, h2, h3, h4, h5, h6").length,
-    title: document.title,
-    url: "https://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture",
-  };
+  const fixtureUrl = "https://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture";
   const events: string[] = [];
   const messages: EmittedMessage[] = [];
+  const evaluation: { diagnostics: DashboardDiagnostics | null } = { diagnostics: null };
   const page = {
     content: async (): Promise<string> => html,
-    evaluate: async (): Promise<DashboardDiagnostics> => diagnostics,
+    evaluate: (
+      callback: (args: { description: string; heading: string }) => DashboardDiagnostics,
+      args: { description: string; heading: string }
+    ): Promise<DashboardDiagnostics> => {
+      const diagnostics = evaluateAgainstFixtureDocument(document, fixtureUrl, () => callback(args));
+      evaluation.diagnostics = diagnostics;
+      return Promise.resolve(diagnostics);
+    },
     goto: (url: string): Promise<null> => {
       events.push(`goto:${url}`);
       return Promise.resolve(null);
@@ -223,6 +246,9 @@ test("zero-account collection captures the interstitial checkpoint before emitti
   assert.ok(skip);
   assert.equal(skip.reason, "selectors_pending");
   assert.match(skip.message, /income-capture interstitial/i);
+  assert.deepEqual(skip.diagnostics, evaluation.diagnostics);
+  assert.equal(evaluation.diagnostics?.income_capture_heading_count, 1);
+  assert.equal(evaluation.diagnostics?.income_capture_description_count, 1);
 });
 
 test("income-capture checkpoint probes only observed structure and never guesses an action", () => {
