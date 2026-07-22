@@ -18,7 +18,7 @@ ARG NEKO_BASE_IMAGE=ghcr.io/m1k1o/neko/chromium:3.0@sha256:13264ee217ecccda06b07
 # Pinned to patchright@1.59.4 (matching the reference container) so the
 # revision (Chromium 1217, "Chrome for Testing 147.0.7727.15") stays in
 # lockstep with what the driver expects to see in Browser.getVersion.
-FROM node:24-slim AS patchright-chromium
+FROM node:26-slim AS patchright-chromium
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl unzip \
   && rm -rf /var/lib/apt/lists/* \
