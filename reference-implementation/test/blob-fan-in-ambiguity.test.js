@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Route-level regression for `GET /v1/blobs/:blob_id` under multi-binding
  * (multi-connection) deployments. Pins the owner-review revision

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // `pdpp ref call` — a generic owner-authenticated HTTP caller for the long tail
 // of owner-only reference routes (dataset reconcile, run cancel, schedule
 // pause/resume, and any other /_ref/* or /v1/owner/* route).

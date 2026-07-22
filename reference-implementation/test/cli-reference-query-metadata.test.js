@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the UNTESTED CLI request/response read-model shapers:
  *   - appendQuery (`cli/lib/common.js`): builds a URL with query params, SKIPPING

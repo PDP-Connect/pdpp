@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression for the timeline DISPLAY-TIME bug: every timeline row's displayAt
  * silently fell back to emitted_at (ingest time), so day-group headers and row

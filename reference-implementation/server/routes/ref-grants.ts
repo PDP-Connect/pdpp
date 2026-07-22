@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the reference-only `/_ref/grant-packages` and
 // `/_ref/event-subscriptions` route families.
 //

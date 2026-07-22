@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for runtime/attention-writer.ts — the production writer that
  * closes the `complete-ri-operator-console-reliability` task 5.3 gap by

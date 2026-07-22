@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
 
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";

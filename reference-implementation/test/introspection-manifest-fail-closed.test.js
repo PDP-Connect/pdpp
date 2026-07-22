@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Introspection MUST fail closed on an unexpected manifest-store / storage fault.
  *

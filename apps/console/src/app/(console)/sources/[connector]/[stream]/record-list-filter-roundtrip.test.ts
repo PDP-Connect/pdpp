@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Relationship-navigation filter round-trip pin — proves the stream LIST page is
  * the working RECEIVING end of a relationship link. When a user follows an

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for parseHybridSearchParams (server/search-hybrid.js), the
 // server-side wrapper the GET /v1/search/hybrid route uses. It delegates param
 // validation to parseSearchHybridParams and translates the typed

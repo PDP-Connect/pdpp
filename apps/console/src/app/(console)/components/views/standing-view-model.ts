@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Standing (Overview) view-model — pure mapping from the REAL dashboard data
  * shapes to the calm, person-first "Standing" presentation.

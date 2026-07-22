@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit coverage for the pure helpers in
  * `server/record-expand-helpers.js`, excluding `assertRecordIdentity`

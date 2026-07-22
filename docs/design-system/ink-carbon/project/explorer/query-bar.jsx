@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* PDPP Explorer — Query bar
  *
  * One bar. Chips + free text input + lex/sem/hybrid mode pill.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Explicit allowlist of query affordances that a first-party connector stream
  * intentionally does NOT declare, even though the field looks useful for

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { StreamViewport } from "@opendatalabs/remote-surface/client";
 import type { ProtocolParseResult } from "@opendatalabs/remote-surface/protocol";
 

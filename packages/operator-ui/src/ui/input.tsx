@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { type ComponentProps, forwardRef } from "react";
 
 import { cn } from "./utils.ts";

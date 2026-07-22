@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the Chase connector. Kept free of Playwright / Node
 // I/O (except sha256 + fs path helpers that are purely computational)
 // so they can be unit-tested in isolation.

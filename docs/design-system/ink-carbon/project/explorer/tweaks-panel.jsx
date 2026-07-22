@@ -1,3 +1,5 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
 
 // tweaks-panel.jsx
 // Reusable Tweaks shell + form-control helpers.

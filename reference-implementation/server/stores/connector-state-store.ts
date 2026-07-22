@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // ConnectorStateStore — production storage interface for owner- and
 // grant-scoped connector sync state.
 //

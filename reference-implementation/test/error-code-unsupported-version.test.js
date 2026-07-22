@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing coverage for the public `unsupported_version` typed-error
  * code (server/routes/ref-error-status.ts: `unsupported_version: 400`).

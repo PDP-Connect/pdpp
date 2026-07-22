@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Exhaustive mutation-killing pin of the public code -> HTTP-status contract in
  * server/routes/ref-error-status.ts.

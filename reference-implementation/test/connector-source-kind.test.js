@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the manifest-derived connector-instance source-kind resolver
 // shared by the device-exporter enroll routes. Pins the four decision-table
 // rows from add-browser-collector-enrollment-primitive design Decision 2:

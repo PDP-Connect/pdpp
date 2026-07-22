@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Typed wrappers around the Resource Server endpoints used by the dashboard.
  * All calls go through the standard PDPP `/v1/streams` surface as an owner-

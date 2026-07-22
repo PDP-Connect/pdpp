@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // SLVP-ideal §4.3 invariant: a source-pressure cooldown MUST NOT make a run
 // ineligible when non-source-pressure pending gaps exist.
 //

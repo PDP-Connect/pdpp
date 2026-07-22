@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Guard the connection-health owner surfaces against raw health re-derivation.
 //
 // The reference owns the raw evidence -> RenderedVerdict synthesis. Console

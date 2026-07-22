@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the schema-capability PROJECTION functions in
 // server/schema-capabilities.js. No test imports this module by name today; all
 // three exports (buildFieldCapabilities, buildExpandCapabilities,

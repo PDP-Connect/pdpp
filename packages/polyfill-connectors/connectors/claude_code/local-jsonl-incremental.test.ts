@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rename, rm, truncate, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for isLocalOrPrivateRequestOrigin in server/metadata.ts.
 // No test imports it by name. This SECURITY-relevant classifier decides whether an
 // inbound request originates from a local/private network — it gates local-only

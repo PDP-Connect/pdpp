@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pure row-derivation logic for the deployment readiness panel. Lives in a
  * .ts (not .tsx) sibling so the row computations are importable from

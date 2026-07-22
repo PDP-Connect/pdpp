@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Native Fastify transport.
 //
 // `createApp()` returns a small factory with the API that the PDPP reference

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Poll cadence for the records dashboard, factored out of the React effect so
  * the load-bearing decision ("how often does a quiet page reconcile with the

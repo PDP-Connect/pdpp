@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Redaction policy for connector-authored stderr diagnostics.
 //
 // Mirrors the reference diagnostic redaction policy used in

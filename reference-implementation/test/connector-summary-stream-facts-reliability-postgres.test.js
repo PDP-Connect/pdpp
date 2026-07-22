@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Real-PostgreSQL counterpart to `connector-summary-stream-facts-reliability.test.js`:
  * proves the SAME bounded-replay reliability invariants (an incomplete pass

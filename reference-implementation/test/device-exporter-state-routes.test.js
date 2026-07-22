@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Tests for the device-scoped local collector state routes defined under
 // OpenSpec `design-local-collector-state-sync`:
 //

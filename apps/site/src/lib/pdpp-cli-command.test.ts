@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for the dashboard CLI invocation helpers. The dashboard
  * advertises a canonical `pdpp ref ...` command next to a zero-install

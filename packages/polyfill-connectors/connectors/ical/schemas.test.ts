@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Schema tests for the iCal connector. Parsing lives in parsers.ts; these
  * assert the schema against records shaped exactly as `buildEventRecord`

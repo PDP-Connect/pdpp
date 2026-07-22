@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * SQLite-backed driver for the connector-state / schedule / active-run
  * conformance harness.

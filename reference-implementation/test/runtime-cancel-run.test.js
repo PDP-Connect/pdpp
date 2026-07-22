@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Runtime-level tests for the owner-cancel cooperative-termination path added by
 // openspec/changes/add-owner-run-cancellation-control.
 //

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Server-only helpers for acting on pending approvals through the existing
  * public approval routes.

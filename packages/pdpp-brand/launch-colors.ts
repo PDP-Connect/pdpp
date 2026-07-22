@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Single source of truth for the FIRST-PAINT / launch background colors.
 //
 // These are the sRGB hex equivalents of the `--background` design tokens in

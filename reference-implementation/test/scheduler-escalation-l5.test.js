@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * L5 tests for §10-B (no-progress escalation) and §10-C (auth class).
  *

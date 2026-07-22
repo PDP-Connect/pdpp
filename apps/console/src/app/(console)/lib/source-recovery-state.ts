@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Typed owner-facing recovery state, derived PURELY from evidence the connection
  * summary already carries on the wire: the server-owned `RefRenderedVerdict` and

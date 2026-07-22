@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Structural assertions for the stream-health page's graceful handling of a
  * 404/410 from the resource server.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Orphan cleanup: complete-census vs scoped point-delete
  * (openspec/changes/reconcile-active-summary-evidence/design.md

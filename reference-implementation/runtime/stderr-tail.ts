@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Bounded UTF-8 stderr tail buffer for connector child processes.
 //
 // The reference runtime previously accumulated all stderr chunks for the

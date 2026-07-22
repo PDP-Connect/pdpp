@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Per-item recovery quarantine (OpenSpec
  * `add-connector-neutral-recovery-governor`, design.md D9/D10, tasks 1.6 / 2.5 /

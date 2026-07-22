@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing completeness test for the `codeToStatus` error-code ->
  * HTTP-status table in `server/routes/ref-error-status.ts`.

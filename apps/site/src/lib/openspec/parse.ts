@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 const METADATA_LINE_RE = /^\*\*[^*]+:\*\*/;
 const SLUG_SEPARATOR_RE = /[-_]/;
 const LIST_ITEM_RE = /^\s*(?:[-*+]|\d+\.)\s+/;

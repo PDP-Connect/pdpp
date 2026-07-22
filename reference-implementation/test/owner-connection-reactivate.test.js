@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration suite for the owner-agent connection-reactivate control routes
  * (bearer: `server/routes/owner-connection-reactivate.ts`) and the owner-session

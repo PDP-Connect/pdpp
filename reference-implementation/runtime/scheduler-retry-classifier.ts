@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ConnectorError, TerminalGrantFailureReason, TerminalReason } from "./scheduler-domain-types.ts";
 
 export type {

@@ -1,5 +1,8 @@
 "use server";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Server action for the operator-revoke affordance on
  * `/grants/packages/[packageId]`.

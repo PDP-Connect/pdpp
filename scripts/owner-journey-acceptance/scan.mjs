@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure scanner core for the owner-journey acceptance harness.
 //
 // Every function here is pure over its inputs (source text + manifest) so the

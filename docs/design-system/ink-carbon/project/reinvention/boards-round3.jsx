@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* PDPP round 3 — console + consent, written once, themed three ways */
 ;(() => {
 

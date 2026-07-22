@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // First-boot credential bootstrap for the standalone Core image
 // (Dockerfile targets `railway-core` / `platform-core`).
 //

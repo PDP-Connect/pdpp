@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Runtime run contracts.
 //
 // Type-only leaf holding the pure contract shapes shared across the runtime

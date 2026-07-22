@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Tests for the read-only batch dry-run wrapper
  * `compact-record-history-dry-run-all.mjs`.

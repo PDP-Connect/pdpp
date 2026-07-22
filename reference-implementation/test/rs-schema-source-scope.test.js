@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the two UNTESTED pure exports of
  * `operations/rs-schema-get/compact-view.ts`:

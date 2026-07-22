@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Formats a stream's orthogonal `declaration_state`/`count_state` pair
  * (`reconcile-active-summary-evidence` design.md "Explicit stream evidence")

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Contributor-only routes (component galleries, palette samplers) that exist
 // to support development. They are not part of the public surface topology.
 // Hidden on hosted (Vercel) builds unless explicitly opted in, mirroring the

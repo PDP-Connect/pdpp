@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the pure request-filter helpers (server/record-filters.js).
 //
 // Covered: field-schema lookup, non-null schema-type extraction, comparable-

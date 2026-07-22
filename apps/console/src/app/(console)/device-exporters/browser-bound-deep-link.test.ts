@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Pins the honest handling of browser-bound connector deep-links on the
  * device-exporters enrollment page.

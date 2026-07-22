@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Asserts that dashboard and doc copy advertises canonical `pdpp ref ...`
  * commands rather than the legacy bare aliases (`pdpp run`, `pdpp grant`,

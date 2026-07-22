@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The persisted surface table retains history. A completed replacement can be
  * current only when a surface independently observed as current during this

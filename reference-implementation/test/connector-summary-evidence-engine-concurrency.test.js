@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Concurrency and cross-axis conformance
  * (openspec/changes/reconcile-active-summary-evidence design.md

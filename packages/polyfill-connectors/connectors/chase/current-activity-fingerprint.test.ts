@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Per-row fingerprint behavior for the Chase `current_activity` stream.
  *

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Owner-action auth resolution for `pdpp ref call`.
 //
 // The reference server exposes two owner surfaces with two different auth

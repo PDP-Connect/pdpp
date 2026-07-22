@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the consent-exchange code-redemption operation in
 // operations/as-consent-exchange/index.ts. No test imports it by name. It maps a
 // consent-exchange code redemption into a typed success or a reason-specific

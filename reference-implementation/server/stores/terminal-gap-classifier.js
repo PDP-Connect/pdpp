@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Terminal gap classifier — §10-A of the SLVP whole-system spec.
  *

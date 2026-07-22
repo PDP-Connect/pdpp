@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the shared owner-connection route helpers in
 // server/routes/_owner-connection-helpers.ts. No test imports this module by name.
 // These are the audit/label/error-mapping helpers shared by every owner-connection

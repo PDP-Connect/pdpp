@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Source-regex guard for ConnectAgentCard's MCP URL substitution.
  *

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export function isOwnerSessionRequiredBody(body: string): boolean {
   try {
     const parsed = JSON.parse(body) as { error?: { code?: string; type?: string } };

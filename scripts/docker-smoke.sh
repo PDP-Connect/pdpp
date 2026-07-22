@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright The PDP-Connect Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-pdpp-docker-smoke}"

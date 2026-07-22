@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export type RunTriggerKind = "manual" | "retry" | "scheduled" | "webhook";
 export type RunAutomationMode = "ask_before_run" | "assisted" | "manual_only" | "unattended";
 

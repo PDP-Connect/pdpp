@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright The PDP-Connect Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Static validation: the docker compose stack wires `web` to wait for
 # `reference` to be healthy. Without this, `web` answers dashboard requests
 # before the AS/RS listeners are ready, surfacing as ECONNREFUSED on the

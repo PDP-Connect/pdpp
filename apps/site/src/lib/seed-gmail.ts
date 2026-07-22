@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Seed data for the Gmail connector reference fixture.
  * Simulates realistic email metadata without scraping or real credentials.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the pure acquisition-batch id builder
 // (server/stores/acquisition-batch-store.ts).
 //

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Dashboard command registry — re-exported from the shared source of truth in
  * `@pdpp/operator-ui` so the console and the public sandbox share ONE registry

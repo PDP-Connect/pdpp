@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the bearer-authed owner-agent connection-diagnostics read:
 //
 //   GET /v1/owner/connections/:connectionId/diagnostics

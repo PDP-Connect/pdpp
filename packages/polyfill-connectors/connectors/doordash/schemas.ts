@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Zod schemas for DoorDash stream records. Shape-check-before-emit per
  * docs/reference/connector-authoring-guide.md §3.

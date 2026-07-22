@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // GrantInspector — the protocol-temperature companion to ConsentCard.
 // Shows a grant "as issued" in machine terms.
 

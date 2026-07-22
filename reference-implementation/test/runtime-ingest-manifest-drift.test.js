@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression coverage for OpenSpec change
 // `harden-ingest-against-transient-manifest-drift`.
 //

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Token-based public read-surface smoke for a live PDPP origin.
 //
 // This is the reusable counterpart to railway-mcp-query-smoke.mjs: it does not

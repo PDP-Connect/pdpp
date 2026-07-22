@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * DashboardPaletteProvider — layout-level client wrapper that mounts the
  * command palette context + the palette UI itself over the entire dashboard.

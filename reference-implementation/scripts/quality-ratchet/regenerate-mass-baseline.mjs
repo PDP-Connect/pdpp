@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { pathToFileURL } from "node:url";
 import { BASELINE_PATH, resolveCurrentFingerprint, writeBaselineFile } from "./check-mass-ratchet.mjs";
 import { measureMass } from "./measure-mass.mjs";

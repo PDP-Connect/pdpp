@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pin the `limit_clamped` warning contract at the pure parse layer of the
 // lexical search operation.
 //

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Grep guard: search-record-timestamps must not contain URL-shaped fallback
  * logic. connector_id metadata is always keyed by canonical connector key.

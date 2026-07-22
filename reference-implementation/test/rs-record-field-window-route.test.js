@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * HTTP route coverage for the bounded field-window read:
  *   GET /v1/streams/:stream/records/:id/field-window

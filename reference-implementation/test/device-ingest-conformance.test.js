@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { setImmediate as yieldImmediate } from 'node:timers/promises';

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Scheduler duty-cycle overrun — durable admission boundary
 // (revised after independent review rejected an earlier candidate fix).
 //

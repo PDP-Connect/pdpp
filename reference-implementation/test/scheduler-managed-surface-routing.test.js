@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Scheduler managed-browser-surface routing tests.
 //
 // These exercises drive the scheduler directly (no AS/RS/neko) so they

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Manifest-derived connector-instance source-kind resolver, shared by the
 // device-exporter enrollment-code and enroll routes (and available to the
 // owner-connection-intent route, which classifies the same binding signal into

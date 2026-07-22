@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LongviewWordmark } from "@/components/longview-wordmark.tsx";

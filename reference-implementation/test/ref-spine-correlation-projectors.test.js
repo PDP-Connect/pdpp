@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the three UNTESTED per-kind correlation-summary
  * projectors exported by `operations/ref-spine-correlations-list/index.ts`:

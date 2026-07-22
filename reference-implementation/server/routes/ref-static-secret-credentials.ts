@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Reference-only owner-session static-secret credential capture.
 //
 // This is the owner-trusted surface for sealing one connector-declared provider

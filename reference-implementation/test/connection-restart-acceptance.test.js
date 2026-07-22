@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Milestone acceptance test for `complete-ri-operator-console-reliability`
  * task 7.4: restart acceptance proving the four owner-visible "currently

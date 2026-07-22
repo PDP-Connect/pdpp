@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* RECORDROOM — "Standing": the home as the product's point of view.
    Person-first language, one hero truth, the owner's three questions,
    calm↔alarm emotional center, a deliberate warm reassurance moment. */

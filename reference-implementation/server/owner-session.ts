@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import crypto from "node:crypto";
 
 export const OWNER_SESSION_COOKIE_NAME = "pdpp_owner_session";

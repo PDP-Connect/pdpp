@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /** biome-ignore-all lint/a11y/noNoninteractiveElementInteractions: ARIA application surface forwards
  * pointer/keyboard input to the streamed browser session — there is no underlying interactive
  * semantic to fall back to. */

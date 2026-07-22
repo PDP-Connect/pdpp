@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Stable major version of the local-collector ↔ reference-server
  * device-exporter ingest contract.

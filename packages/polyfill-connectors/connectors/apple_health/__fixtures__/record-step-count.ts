@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Synthetic HKRecord attrs for a StepCount sample. Extracted from a real
 // Apple Health export and trimmed to the fields `buildHealthRecord`
 // consumes, so parsers.test.ts can table-drive record shape checks

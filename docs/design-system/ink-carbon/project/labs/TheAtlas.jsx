@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // TheAtlas — the spec as a visual index. Purposes, scopes, and temperatures laid out as a map.
 
 const SCOPES_MAP = [

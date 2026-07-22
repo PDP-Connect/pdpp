@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Constants shared between the run-interaction streaming server action and
  * the streaming viewer client component. This module deliberately has no

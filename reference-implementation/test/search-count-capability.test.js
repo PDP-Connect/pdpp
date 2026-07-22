@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Search-mode count and pagination capability metadata — task 4.3 of
  * `canonicalize-public-read-contract`.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration tests for the Amazon connector's `collect()` layer —
  * specifically the per-order emit orchestration.

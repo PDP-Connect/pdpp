@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure builders for the AS / RS metadata documents that the reference
 // implementation publishes. These functions take in the runtime-derived
 // fields (resolved URLs, capability flags, supported types, etc.) and

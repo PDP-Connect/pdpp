@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Owner-session static-secret capture route: synchronous credential probe.
 //
 // Proves the owner-journey flow-design B1 validation moment end-to-end through

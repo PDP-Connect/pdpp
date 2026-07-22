@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The shared bucket-response → BucketSeries mapping (reused by the deferred
  * `loadExploreBuckets` action AND the assembler tests). It must map the server

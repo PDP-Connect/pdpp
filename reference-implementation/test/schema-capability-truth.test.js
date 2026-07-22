@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Schema-capability truth conformance — tasks 3.5 / 4.2 of
  * `canonicalize-public-read-contract`.

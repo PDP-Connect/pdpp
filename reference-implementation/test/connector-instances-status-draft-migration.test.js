@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * connector_instances.status `draft` CHECK-widening migration — SQLite.
  *

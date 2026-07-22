@@ -1,5 +1,8 @@
 "use server";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { revalidatePath } from "next/cache";
 import { runConnectionNow, runConnectorNow } from "../lib/operator-runs.ts";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";

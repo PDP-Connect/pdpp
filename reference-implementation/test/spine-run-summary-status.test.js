@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression: `summarizeEvents` (exposed via `listSpineCorrelations` for the
  * `run` correlation key) must reflect the run's lifecycle status — i.e. the

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure readers over the scheduler's persisted `schedule` / `scheduler_backoff`
 // records, used by the connection-health projection in `ref-control.ts` to
 // decide whether a later successful run supersedes a stale scheduler backoff.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * A backend/session transition (e.g. n.eko's `backend_ready`) can request an
  * immediate viewport measurement. `backend_ready` fires on EVERY SSE `/events`

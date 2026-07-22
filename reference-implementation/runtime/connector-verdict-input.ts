@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Maps the existing control-plane connection-health evidence onto the pure
  * {@link synthesizeRenderedVerdict} inputs.

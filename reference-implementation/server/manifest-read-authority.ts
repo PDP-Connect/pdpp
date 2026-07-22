@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /** Current-manifest authority for all read boundaries. */
 export class ManifestReadAuthorityError extends Error {
   readonly code = "stream_not_declared";

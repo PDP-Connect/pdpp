@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for server/record-query-helpers.ts. NO test imports
 // this module by name; all 12 exports were unpinned. These are the shared
 // query-validation + response-envelope helpers used by both the SQLite and

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Explore acceptance invariants — P1 escape ramps, P2 Option D escape, P3 cursor.
  *

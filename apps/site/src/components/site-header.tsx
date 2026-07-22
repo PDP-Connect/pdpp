@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { siteNav } from "@pdpp/brand/chrome";
 import Link from "next/link";
 import { usePathname } from "next/navigation";

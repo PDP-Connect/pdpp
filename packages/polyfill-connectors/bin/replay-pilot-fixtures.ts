@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Replay every committed pilot-real-shape fixture through its connector's
  * `validateRecord`. Fails fast on schema drift. Used as a one-shot

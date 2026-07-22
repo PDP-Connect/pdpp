@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the run-status envelope builders in
 // server/routes/ref-run-status.ts. Neither is imported by name. They build the
 // `run_status` object returned by GET /_ref/runs/:id/status; the active-vs-terminal

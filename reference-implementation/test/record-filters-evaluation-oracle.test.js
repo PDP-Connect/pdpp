@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for the query_records in-memory filter-evaluation contract
 // (server/record-filters.js). parseDateValue, coerceComparableValue,
 // passesRequestFilters, and passesTimeRange decide which records a

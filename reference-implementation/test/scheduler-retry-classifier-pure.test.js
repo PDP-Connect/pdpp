@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the scheduler RETRY CLASSIFIER in
 // runtime/scheduler-retry-classifier.ts. No test imports this module by name.
 // This classifier decides whether a failed connector run is retried or left

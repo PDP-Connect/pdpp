@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 const DEFAULT_RECORD_PREVIEW_LIMIT = 5;
 const DEFAULT_RECORD_PREVIEW_CHAR_LIMIT = 1792;
 const DEFAULT_RECORD_PREVIEW_FOOTER_RESERVE = 96;

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Markdown reference-docs generator.
 //
 // Emits a concise route index and a query cookbook, driven from the same

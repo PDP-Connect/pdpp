@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the Claude Code connector. Kept free of Node I/O so
 // they can be unit-tested in isolation (see parsers.test.ts). The file
 // walker and JSONL iterator live in index.ts.

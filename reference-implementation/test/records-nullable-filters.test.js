@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression coverage for filter validation/coercion on nullable scalar
  * schemas (`["string","null"]`, `["integer","null"]`, `["number","null"]`,

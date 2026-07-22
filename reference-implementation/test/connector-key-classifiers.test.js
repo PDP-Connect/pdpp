@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the UNTESTED connector-key normalization + catalog
  * classification helpers in `server/connection-setup-plan.ts`. These shape how

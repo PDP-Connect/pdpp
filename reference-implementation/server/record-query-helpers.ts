@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Storage-agnostic query-validation and response-shape helpers shared by
  * the SQLite record path (records.js) and the Postgres record path

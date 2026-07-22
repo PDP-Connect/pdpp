@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * `GET /v1/streams/:stream` declared presentation `type` on field_capabilities.
  *

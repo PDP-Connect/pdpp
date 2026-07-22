@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Public-tree hygiene gate: catch operator-private residue before it ships in
 // a public squash (github.com/PDP-Connect/pdpp).
 //

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for `makeRecordingEmit` — the shared test harness every
  * connector integration test uses to fake emit/emitRecord.

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Shared types for the Twitter archive connector. Kept out of index.ts so
 // the pure parsers in parsers.ts can import them without pulling in the
 // runtime entry point or fs.

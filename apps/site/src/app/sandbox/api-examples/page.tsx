@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import Link from "next/link";
 import { CodeBlock, InlineCode } from "../_demo/components/code-block.tsx";
 import { SandboxEducationalShell } from "../_demo/components/shell.tsx";

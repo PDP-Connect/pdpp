@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure urgency ranking over structured attention records, used by the
 // connection-health projection in `ref-control.ts` to pick the single
 // most-urgent open attention record for a connection. A leaf module: it reads

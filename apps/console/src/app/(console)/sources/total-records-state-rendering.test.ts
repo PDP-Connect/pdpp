@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * A failed/never-observed record snapshot must never render as an
  * authoritative numeric zero or a confident exact count anywhere the

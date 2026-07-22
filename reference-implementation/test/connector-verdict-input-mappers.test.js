@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit coverage for the pure evidence-mapping helpers in
  * `runtime/connector-verdict-input.ts`. `streamPriority`, `buildStreamRollups`,

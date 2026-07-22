@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Runtime controller service.
 //
 // Owns long-lived local operator actions against the reference runtime:

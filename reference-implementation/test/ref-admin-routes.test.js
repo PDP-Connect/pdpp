@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Route regression tests for the `_ref/approvals`, `_ref/records/timeline`,
  * `_ref/schedules`, `_ref/deployment`, `_ref/clients`, and `_ref/search`

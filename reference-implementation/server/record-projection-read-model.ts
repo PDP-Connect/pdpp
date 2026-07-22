@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Read model: retained-bytes / record-projection cluster.
 //
 // Owns the 5 projection functions, 4 private interfaces, 2 exported types

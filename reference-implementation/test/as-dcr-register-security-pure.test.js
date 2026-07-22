@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the DCR register operation's security logic in
 // operations/as-dcr-register/index.ts. Only the summary helper was pinned before;
 // the execute path's auth-token validation, registration_access derivation, and the

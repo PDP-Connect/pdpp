@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Node ESM loader hook that stubs `.css` side-effect imports during tests.
  *

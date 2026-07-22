@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Supplementary mutation-killing coverage for the edge branches of
  * `expiredEnrollmentShellIds` in

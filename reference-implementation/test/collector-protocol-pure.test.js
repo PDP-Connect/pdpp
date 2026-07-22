@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the collector-protocol compatibility helpers in
 // server/collector-protocol.ts. The VERSION constant is referenced by HTTP tests,
 // but the three pure functions had zero by-name coverage. These decide whether a

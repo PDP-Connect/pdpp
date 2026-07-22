@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* RECORDROOM — data + state + app shell (full console surface). */
 ;(() => {
 

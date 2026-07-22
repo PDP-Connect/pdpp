@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the shared owner-session acquisition helper
 // (scripts/lib/owner-session.mjs) — the one place that drives the
 // CSRF-protected /owner/login form. Every consumer (stream-health-audit,

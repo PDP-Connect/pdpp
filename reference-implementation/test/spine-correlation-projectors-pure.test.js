@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the per-kind spine-correlation projectors in
 // operations/ref-spine-correlations-list/index.ts. No test imports these by name.
 // They project a raw spine summary into the operator-console trace/grant/run

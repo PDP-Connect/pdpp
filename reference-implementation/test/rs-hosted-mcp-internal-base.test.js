@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // F1 wiring regression — the hosted-MCP package adapter must forward its
 // child-grant self-calls to the configured INTERNAL resource-server base,
 // while the advertised `resource`, discovery metadata, and

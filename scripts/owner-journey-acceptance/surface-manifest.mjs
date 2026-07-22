@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Surface manifest for the owner-journey acceptance harness.
 //
 // This is the single source of truth for the harness. It declares:

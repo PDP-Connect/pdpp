@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { connectorRetainsSurfaceProcess as policyRetainsSurfaceProcess } from "../../../packages/polyfill-connectors/src/browser-surface-policy.ts";
 import { canonicalConnectorKey } from "../../server/connector-key.js";
 

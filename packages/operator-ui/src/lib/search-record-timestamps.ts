@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export interface SearchTimestampMetadata {
   consent_time_field?: string | null;
   cursor_field?: string | null;

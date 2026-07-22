@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { InferPageType } from "fumadocs-core/source";
 import type { source } from "@/lib/docs-source.ts";
 

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export function normalizeProjectionFields(value: unknown): string[] | null {
   const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
   const fields = raw

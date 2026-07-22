@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { useEffect, useState } from "react";
 import { Button } from "../../ui/button.tsx";
 import { useTheme } from "./theme-provider.tsx";

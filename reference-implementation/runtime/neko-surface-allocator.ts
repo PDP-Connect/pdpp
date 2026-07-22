@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // biome-ignore lint/performance/noBarrelFile: intentional compatibility shim — re-exports the neko surface allocator client from @opendatalabs/remote-surface so existing runtime import paths keep working.
 export {
   createNekoSurfaceAllocatorClient,

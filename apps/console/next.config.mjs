@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { collectAllowedDevOrigins } from './scripts/dev-origins.mjs';

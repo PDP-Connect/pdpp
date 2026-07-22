@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Per-thread fingerprint behavior for the Gmail connector. These tests
  * pin the contract the threads-stream churn fix depends on:

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Synthetic Twitter archive samples for parsers.test.ts. Shapes mirror
 // what Twitter's Data Download ships in data/tweets.js and
 // data/direct-messages.js after `window.YTD.*.partN = ` is stripped.

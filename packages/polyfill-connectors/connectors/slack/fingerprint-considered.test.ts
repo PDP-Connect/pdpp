@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for the steady-state `considered` + `covered` declaration on Slack's
  * fingerprint-suppressed full-sync streams (OpenSpec

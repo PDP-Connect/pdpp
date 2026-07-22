@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Offline unit tests for the pure core of railway-mcp-query-smoke.mjs.
 //
 // These run with zero dependencies and no network/Docker (node --test), exactly

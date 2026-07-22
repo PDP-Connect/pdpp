@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the connector-state PUT validation in
 // operations/rs-connector-state-put/index.ts. No test imports it by name. It
 // validates each stream in the submitted state map against the connector manifest

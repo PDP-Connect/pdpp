@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the reference-only `/_ref/device-exporters` route family —
 // enrollment-codes, enroll, list, source-instances, diagnostics, revoke,
 // heartbeat, ingest-batches, source-instance state, and local-collector-gaps.

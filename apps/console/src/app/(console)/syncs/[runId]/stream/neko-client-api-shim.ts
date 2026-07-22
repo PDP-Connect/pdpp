@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // NekoClientApi shim — adapts the file-level neko-client.ts module exports
 // into the structural `NekoClientApi` interface the @opendatalabs/remote-surface
 // NekoSurfaceAdapter expects.

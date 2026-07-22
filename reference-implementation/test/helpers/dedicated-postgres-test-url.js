@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Returns the caller-supplied URL only when it targets the dedicated,
  * loopback-only PostgreSQL test listener. Credentials stay in the process

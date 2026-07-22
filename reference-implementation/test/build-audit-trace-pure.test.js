@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for buildAuditTrace in
 // server/routes/_owner-connection-helpers.ts. No test imports it by name. It builds
 // and attaches the trace context embedded in every owner-connection mutation

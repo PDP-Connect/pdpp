@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Presentation geometry belongs to one remote browser session. A new browser
  * session may reuse the same n.eko client-config URL, so URL equality is not

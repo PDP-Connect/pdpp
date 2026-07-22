@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 interface IngestFailureDetails {
   batch_size: number;
   http_status: number;

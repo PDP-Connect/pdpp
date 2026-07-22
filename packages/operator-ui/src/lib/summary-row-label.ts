@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Derive the human-readable PRIMARY label for a run / trace / grant list row.
  *

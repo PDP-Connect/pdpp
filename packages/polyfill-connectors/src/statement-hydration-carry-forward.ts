@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Carry-forward of prior hydrated statement PDF pointers across runs.
 //
 // Both statement connectors (chase, usaa) emit one `statements` record per

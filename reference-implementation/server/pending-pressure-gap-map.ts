@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure mapping of pending detail-gap summaries onto the source-pressure
 // cooldown governor's `PendingPressureGap` shape, used by the connection-health
 // projection in `ref-control.ts`. A leaf module: it reads only the gap-summary

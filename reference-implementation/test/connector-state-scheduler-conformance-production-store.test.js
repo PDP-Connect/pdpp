@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Connector state, schedule, and active-run conformance — production
  * SQLite store driver.

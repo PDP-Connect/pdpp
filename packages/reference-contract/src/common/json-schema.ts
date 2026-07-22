@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Structural JSON-Schema type shared by every schema in this package.
 //
 // Hand-authored to keep the dependency footprint narrow: AJV consumes any

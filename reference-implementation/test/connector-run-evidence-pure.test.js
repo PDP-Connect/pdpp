@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the pure exports of server/connector-run-evidence.ts.
 // No test imports this module by name. These extract the connector-run evidence
 // source id and the manifest refresh-policy / staleness bound used by schema +

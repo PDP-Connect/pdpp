@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Deterministic offline tests for the standalone Core image's first-boot
 // credential bootstrap (deploy/railway/core-first-boot.mjs).
 //

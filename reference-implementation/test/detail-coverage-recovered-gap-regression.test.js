@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression for run_1780695286180 (ChatGPT terminal connector_protocol_violation
 // after the capped-tail gap materialization fix on main 37f8fcac).
 //

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { readFileSync } from "node:fs";
 import { exec, referenceQueries } from "../lib/db.ts";
 import { registerConnector } from "./auth.js";

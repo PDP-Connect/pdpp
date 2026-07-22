@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Thin client over the PDPP resource server. Every request attaches the configured
  * scoped client bearer token; no token rotation or owner fallback happens here.

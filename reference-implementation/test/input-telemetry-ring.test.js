@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the streaming input-telemetry ring buffer in
 // server/streaming/input-telemetry.ts. No test imports this module by name.
 // It is an in-process, bounded, per-session ring used by the streaming companion

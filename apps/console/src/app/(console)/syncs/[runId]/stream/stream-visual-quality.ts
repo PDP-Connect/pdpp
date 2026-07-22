@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { computeSharpnessTelemetryFromLuma, type SharpnessTelemetry } from "@opendatalabs/remote-surface/diagnostics";
 
 const DEFAULT_SHARPNESS_SAMPLE_WIDTH = 160;

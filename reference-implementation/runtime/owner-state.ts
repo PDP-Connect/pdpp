@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The one server-derived, closed owner state per source (Wave 10a — 2026-07-09
  * studio review / state-model convergence).

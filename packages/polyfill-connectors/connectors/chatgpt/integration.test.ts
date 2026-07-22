@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration tests for the ChatGPT connector's `collect()` emit path —
  * specifically the per-conversation orchestration in

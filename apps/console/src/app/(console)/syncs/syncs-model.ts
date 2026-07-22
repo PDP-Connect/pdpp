@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Syncs view-model — the pure mapping from real reference data to the
  * Recordroom "Syncs" surface (the reskin of the Runs route).

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for runtime/browser-surface/profile-key.ts. No test
 // imports this module by name. readBrowserSurfaceProfileKey derives the remote-
 // browser profile key shared by runtime leasing AND operator health projection;

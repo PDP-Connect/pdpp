@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * ProviderProfile — the single declared home for every provider-specific
  * safety- / pressure- / terminal-shaped quantity (SLVP-ideal spec §3, §9-C5).

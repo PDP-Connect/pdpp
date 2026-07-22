@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for three untested helpers in server/record-expand-helpers.js:
 //   - normalizePrimaryKey: normalizes a manifest primary_key to a clean string[]
 //     (filters non-string/empty array members, wraps a scalar, [] otherwise);

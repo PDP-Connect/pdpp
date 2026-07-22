@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * PDPP H-E-B Connector (heb.com) — list-then-detail order scraper.
  *

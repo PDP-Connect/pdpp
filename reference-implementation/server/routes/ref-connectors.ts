@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the reference-only `/_ref/connectors`,
 // `/_ref/connections`, and `/_ref/connector-instances` route family —
 // connector-summary list/detail, schedule read, connection list/detail, connection

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Hermetic guard for scripts/check-public-tree-hygiene.mjs.
 //
 // Pins the four narrow residue-class patterns against both hazard and

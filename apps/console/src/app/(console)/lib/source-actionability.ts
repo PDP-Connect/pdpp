@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { deriveFailureSummary, type FailureSummary } from "./connection-evidence.ts";
 import type { FormattedNextAction } from "./next-action.ts";
 import type {

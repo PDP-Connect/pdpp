@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* RECORDROOM — the record type system. One sheet chrome, kind-aware bodies.
    Wire keys never leak alone: every field shows a human label AND its
    wire key (what a client literally receives). Long text gets a reading

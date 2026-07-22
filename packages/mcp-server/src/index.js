@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { CredentialError, loadScopedCredential } from './credentials.js';
 import {
   DEFAULT_SERVER_NAME,

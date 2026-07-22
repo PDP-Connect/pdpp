@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Black-box regression tests for the gate-ref-reads-when-owner-auth-enabled
 // change.
 //

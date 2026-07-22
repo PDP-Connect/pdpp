@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Authorship-classification guard for the consent card — the surface where the
  * three-class TRUST MODEL is made visible (design-direction decision 1).

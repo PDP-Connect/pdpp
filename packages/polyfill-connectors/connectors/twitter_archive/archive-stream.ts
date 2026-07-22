@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Streaming reader for Twitter/X archive `.js` files. The archive ships a
 // JavaScript assignment — `window.YTD.tweets.part0 = [ ... ];` — not plain
 // JSON, and a heavy archive can be hundreds of MB. Reading the whole file

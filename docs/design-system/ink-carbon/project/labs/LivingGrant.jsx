@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // LivingGrant — the centerpiece. A grant as a breathing thermal object,
 // with real records flowing through it in real time.
 

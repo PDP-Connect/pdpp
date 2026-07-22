@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Vendored snapshot of the IANA IPv4 and IPv6 Special-Purpose Address
  * Registries, used as the policy authority for `isGlobalUnicastAddress` in

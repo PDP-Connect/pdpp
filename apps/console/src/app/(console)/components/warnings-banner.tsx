@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { CanonicalReadWarning } from "../lib/read-envelope.ts";
 
 function warningKey(warning: CanonicalReadWarning): string {

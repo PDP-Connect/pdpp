@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Post-run verification: reads the persistent pdpp.sqlite and prints
  * record counts per (connector, stream). Also checks DB spine for completed

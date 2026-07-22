@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression: the Express-compat `res` shim in `server/transport.js` must
  * expose `header()` and `set()` as chainable aliases of `setHeader()`.

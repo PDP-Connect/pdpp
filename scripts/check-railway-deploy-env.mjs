@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Deterministic preflight check for the Railway Core deploy target env contract.
 //
 // This is the small, offline "doctor" the first-live-test gate runs BEFORE any

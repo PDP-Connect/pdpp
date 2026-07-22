@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { Section } from "@pdpp/operator-ui/components/primitives";
 import { useEffect, useState } from "react";
 import {

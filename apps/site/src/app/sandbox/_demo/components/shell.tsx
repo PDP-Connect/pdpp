@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Standalone shell for sandbox support pages that should not inherit the
  * dashboard sidebar. Primary `/sandbox/**` pages use `DashboardShell`.

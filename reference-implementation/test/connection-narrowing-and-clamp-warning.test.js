@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the two connection-id-request.js exports that had
 // ZERO by-name coverage: enforceConnectionNarrowing (connection_not_found gate)
 // and buildLimitClampedWarning (structured limit_clamped warning).

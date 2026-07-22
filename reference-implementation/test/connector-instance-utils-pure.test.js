@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for server/connector-instance-utils.ts. No test imports
 // this module by name (spine-source-boot-backfill.test.js drives deriveSpineSource
 // through a DB boot backfill, not the pure functions directly). These id-derivation

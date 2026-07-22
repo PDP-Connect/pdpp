@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* RECORDROOM — Explore/Sources fixtures. Models the real shape of a
    personal server: connection INSTANCES are the unit of identity (two
    Gmails with different configs, two Claude Codes on different machines),

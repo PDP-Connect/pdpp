@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Zod schemas for GitHub stream records. Used for shape-check-before-emit.
  * Ground truth: parsers.ts record builders and local/samples/github.json.

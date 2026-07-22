@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * SQLite busy-retry cluster — self-contained, no db.js dependency.
  *

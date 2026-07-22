@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Branch coverage for `formatFieldCapabilityFlags`
  * (`operations/rs-schema-get/compact-view.ts`) — the terse per-field capability

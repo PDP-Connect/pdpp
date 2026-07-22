@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration suite for the bearer-authed owner-agent control entrypoint
  * `GET /v1/owner/control` (mounted from `server/routes/owner-control.ts`) and

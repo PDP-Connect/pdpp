@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Shared SSRF primitives: global-unicast address allow policy and send-time
  * address binding.

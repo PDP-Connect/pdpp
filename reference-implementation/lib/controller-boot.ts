@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Boot-epoch reconciliation: the boot-time function that emits
  * `controller.booted` as the first spine event of every process

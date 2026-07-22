@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * biome-ignore-all lint/performance/useTopLevelRegex: This copy-heavy test
  * suite uses local regex assertions intentionally.

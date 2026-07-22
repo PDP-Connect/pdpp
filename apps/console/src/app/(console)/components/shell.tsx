@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
 import { MobileDrawer, MobileDrawerProvider, MobileDrawerTrigger } from "@pdpp/operator-ui/components/mobile-drawer";
 import { dashboardRoutes, type Routes, sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";

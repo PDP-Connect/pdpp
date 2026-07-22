@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../ui/button.tsx";
 import { Dialog, DialogBackdrop, DialogPopup, DialogPortal } from "../ui/dialog.tsx";

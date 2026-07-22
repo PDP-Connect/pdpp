@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import Link from "next/link";
 import { Hero } from "@/components/hero.tsx";
 import { ReferenceApp } from "@/components/reference-app.tsx";

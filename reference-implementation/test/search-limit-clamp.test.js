@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression: an over-cap `limit` on the direct-REST search surface SHALL
  * surface a structured `limit_clamped` warning via the canonical

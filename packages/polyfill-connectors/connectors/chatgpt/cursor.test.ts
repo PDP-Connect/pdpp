@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Proof at the orchestration boundary that chatgpt's parent-first emit
  * reorder (Tranche C 2026-04-23) did NOT introduce a cursor/state race.

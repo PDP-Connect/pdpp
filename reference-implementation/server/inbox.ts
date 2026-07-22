@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Lightweight Express-like accessors. Following the convention in
 // metadata.ts / owner-auth.ts, we do NOT import express's type tree; the
 // structural duck types below capture exactly the members this module

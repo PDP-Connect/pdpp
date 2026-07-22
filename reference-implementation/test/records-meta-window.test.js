@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * `meta.window` bounded record-list aggregate — section 2 of
  * `complete-explorer-slvp-ideal`.

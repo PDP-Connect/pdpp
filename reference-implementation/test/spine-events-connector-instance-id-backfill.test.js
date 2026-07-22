@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Migration-safe scoped terminal history (Sol fourth-verdict P1.1 /
  * minimum-closure item 1): "Backfill only terminal spine_events rows whose

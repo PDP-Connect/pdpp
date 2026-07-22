@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* PDPP — Vibe studies round 2: six personalities, same content */
 ;(() => {
 

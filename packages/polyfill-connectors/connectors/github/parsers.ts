@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the GitHub connector. Kept free of fetch / Node I/O so
 // they can be unit-tested in isolation (see parsers.test.ts). The HTTP
 // client and pagination loops live in index.ts.

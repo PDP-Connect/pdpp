@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright The PDP-Connect Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 #
 # Launch the browser that n.eko streams to the user. The reference-side
 # adapter (server/streaming/neko-adapter.js) attaches to it via

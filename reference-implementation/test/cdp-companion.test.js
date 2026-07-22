@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the pure CDP input-event translator and screencast-param
 // builder (server/streaming/cdp-companion.ts).
 //

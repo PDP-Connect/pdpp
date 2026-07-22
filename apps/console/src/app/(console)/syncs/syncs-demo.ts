@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Seeded demo Syncs model — for screenshot review of the honesty-critical
  * states without a live throttled connection.

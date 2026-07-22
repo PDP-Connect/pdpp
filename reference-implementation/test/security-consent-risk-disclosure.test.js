@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression tests for the harden-reference-auth-surfaces P1 follow-up
 // "consent-risk disclosure invariants" (§8). Pins:
 //

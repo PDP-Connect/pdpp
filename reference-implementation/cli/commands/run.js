@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { parseArgs, requirePositional } from '../lib/args.js';
 import { PdppUsageError } from '../lib/errors.js';
 import { fetchJson, ownerSessionHeaders } from '../lib/fetch.js';

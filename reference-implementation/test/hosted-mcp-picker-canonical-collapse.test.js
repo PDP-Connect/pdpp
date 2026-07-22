@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Hosted MCP picker — legacy-alias suppression is enforced by canonical
  * connector identity at the registration layer.

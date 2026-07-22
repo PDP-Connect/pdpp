@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * CLI for the manifest-vs-schema-vs-emit reconciler. Iterates every
  * first-party manifest, finds the matching connector source, and prints

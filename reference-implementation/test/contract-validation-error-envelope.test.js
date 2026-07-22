@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the two contract-validation.ts exports that had NO
 // by-name coverage: buildResponseContractErrorBody (the 500 /
 // internal_contract_error server-side envelope) and applyResponseValidation's

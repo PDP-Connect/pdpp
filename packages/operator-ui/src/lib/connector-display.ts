@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 const LOCAL_DEVICE_PREFIX = "local-device:";
 const REGISTRY_CONNECTOR_HOST = "registry.pdpp.org";
 const REGISTRY_CONNECTOR_PATH_PREFIX = "/connectors/";

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for the per-source connection grouping used by the Sources page's
  * "Your sources" summary. These prove the rollup keeps existing-data facts and

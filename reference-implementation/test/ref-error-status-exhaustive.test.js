@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Exhaustive lock on the typed-error status/type tables in
 // server/routes/ref-error-status.ts.
 //

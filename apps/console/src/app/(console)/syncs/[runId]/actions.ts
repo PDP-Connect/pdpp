@@ -1,5 +1,8 @@
 "use server";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { revalidatePath } from "next/cache";
 import { requireDashboardAccess } from "../../lib/dashboard-access.ts";
 import { type CancelRunOutcome, cancelRun, submitRunInteraction } from "../../lib/operator-runs.ts";

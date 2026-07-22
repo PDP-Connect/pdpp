@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * PDPP ChatGPT Connector (v0.2.0)
  * Change note: conversation detail hydration prefers ChatGPT's capped batch

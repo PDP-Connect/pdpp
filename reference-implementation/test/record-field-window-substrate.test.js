@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Dual-backend conformance for the bounded field-window substrate.
 //
 // `getRecordFieldWindow` dispatches to the SQLite store or the real

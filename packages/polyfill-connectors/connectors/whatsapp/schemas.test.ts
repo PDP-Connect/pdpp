@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Schema tests for the WhatsApp connector. Parser output lives in parsers.ts;
  * these tests assert the stream schemas against literal records shaped exactly

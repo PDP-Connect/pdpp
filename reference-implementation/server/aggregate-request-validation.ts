@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { AggregateGranularity } from "./aggregate-time-buckets.ts";
 import { resolveAggregateTimeZone, SUPPORTED_AGGREGATE_GRANULARITIES } from "./aggregate-time-buckets.ts";
 import { validateConnectionAlias as validateConnectionAliasShared } from "./connection-id-request.js";

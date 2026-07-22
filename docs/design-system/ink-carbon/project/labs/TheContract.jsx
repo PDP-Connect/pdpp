@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // TheContract — a typographic manifesto. Big serif, set like a declaration, with mono annotations in the margin.
 
 const TheContract = () => (

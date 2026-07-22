@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the RFC 8628 device-code token-exchange operation in
 // operations/as-device-token-exchange/index.ts. No test imports it by name. It
 // governs the polling token exchange: grant-type validation, the client-fault vs

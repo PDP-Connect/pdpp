@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // SchedulerStore — production storage interface for the connector
 // schedule registry and the controller-managed active-run registry.
 //

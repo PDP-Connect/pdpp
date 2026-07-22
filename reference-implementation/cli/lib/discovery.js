@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { resolveRsUrl } from './common.js';
 import { PdppCliError } from './errors.js';
 import { fetchJson } from './fetch.js';

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * `total_records`/`total_records_state` propagation for a failed record
  * snapshot (Sol third-verdict P1.3 / minimum-closure item 4): "Propagate

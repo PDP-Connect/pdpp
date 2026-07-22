@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright The PDP-Connect Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 if [[ "${PDPP_DOCKER_NEKO_NETWORK_DURABILITY_SMOKE:-}" != "1" ]]; then

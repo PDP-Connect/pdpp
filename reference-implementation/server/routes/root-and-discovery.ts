@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapters for the reference server's content-negotiated root
 // landing pages and the public OAuth/RS metadata endpoints.
 //

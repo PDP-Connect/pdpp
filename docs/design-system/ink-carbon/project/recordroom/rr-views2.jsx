@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* RECORDROOM — full-surface views: Overview, Explore, Traces, Runs,
    Schedules, Sources, Connect, Deployment, Exporters, Subscriptions,
    plus the command palette. Data from window.RR2. */

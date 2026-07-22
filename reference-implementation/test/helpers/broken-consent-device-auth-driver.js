@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Deliberately broken in-memory driver for the consent + owner-device-auth
  * conformance harness. Used to prove falsifiability — i.e. that the harness

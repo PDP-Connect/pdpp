@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { buttonVariants } from "@pdpp/brand-react";
 import { useEffect, useState } from "react";
 import { readLastRecordsReadAt } from "./last-known-read.ts";

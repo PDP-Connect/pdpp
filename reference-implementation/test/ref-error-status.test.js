@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the typed-error status/type tables extracted from
 // server/index.js into server/routes/ref-error-status.ts. These pin the
 // HTTP-status ↔ error-`type`/`code` contract that the typed-error envelopes

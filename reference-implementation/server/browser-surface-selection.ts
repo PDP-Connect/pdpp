@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure ranking / selection over browser-surface leases and surfaces, used by the
 // connection remote-surface projection in `ref-control.ts`. A leaf module: it
 // reads only the lease/surface status and timestamp fields (types owned by the

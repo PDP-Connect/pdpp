@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Owner-auth env vars exported by the host shell (e.g. ~/.shell_secrets) will
 // silently activate the production owner-auth placeholder inside
 // startServer()'s resolveOwnerAuthPlaceholderConfig, which then 401s every test

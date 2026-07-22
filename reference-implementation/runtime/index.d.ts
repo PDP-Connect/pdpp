@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Ambient declarations for the runtime entrypoint. `runtime/index.js` is
  * still JS and will migrate to TS in a later slice (tranche 3/4). Until

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Scheduler attention-suppression tests for
 // `define-schedule-manual-attention-policy`.
 //

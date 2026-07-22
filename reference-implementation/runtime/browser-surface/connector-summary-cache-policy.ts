@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { EphemeralBrowserRuntimeProjection } from "./ephemeral-health-projection.ts";
 
 export interface ConnectorSummaryCacheValue {

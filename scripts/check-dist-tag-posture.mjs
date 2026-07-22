@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Network-aware release-readiness check for publishable PDPP npm packages.
 //
 // This is intentionally NOT part of the hermetic `release:policy-check` that

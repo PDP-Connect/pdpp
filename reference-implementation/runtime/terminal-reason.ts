@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure helper that decides the terminal_reason for a connector run from
 // the four inputs the close handler observes. Extracted so the
 // run-terminal contract can be unit-tested without spawning a child.

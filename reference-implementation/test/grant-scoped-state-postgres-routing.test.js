@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression test for grant-scoped state grant resolution under
  * `PDPP_STORAGE_BACKEND=postgres`.

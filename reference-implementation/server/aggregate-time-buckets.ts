@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Calendar-aware instant-bucketing cluster extracted from records.ts.
 // Owns the pure time-math stack for group_by_time aggregation.
 // See openspec/changes/add-aggregate-time-buckets-and-distinct.

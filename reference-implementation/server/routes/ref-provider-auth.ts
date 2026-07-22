@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Reference-only owner-session provider-authorization lifecycle.
 //
 // This module implements task 6.3 of the `complete-self-service-connection-onboarding`

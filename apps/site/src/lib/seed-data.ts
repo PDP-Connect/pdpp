@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Realistic seed data for the PDPP reference personal server.
  * Represents a seeded local account whose personal server

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing coverage for the `manual_upload_artifact_not_found` typed-
  * error code (server/routes/ref-manual-upload-draft-connection.ts).

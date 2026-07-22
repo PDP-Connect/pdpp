@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // HTTP adapter for the bearer-authed owner-agent connection-intent route
 // `POST /v1/owner/connections/intents`.
 //

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Canonical public read contract primitives.
 //
 // These schemas back the canonical envelope, warnings vocabulary, count

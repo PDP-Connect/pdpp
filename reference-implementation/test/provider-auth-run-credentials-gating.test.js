@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit tests for the connector/binding GATING and typed
  * error paths of `resolveProviderAuthRunEnv` in

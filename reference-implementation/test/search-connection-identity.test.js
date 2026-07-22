@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression: search hits across lexical / semantic / hybrid all carry
  * `connection_id` and the deprecated `connector_instance_id` alias on the

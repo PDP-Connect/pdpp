@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for two UNTESTED helpers in
  * `server/routes/as-consent-ui-helpers.ts`:

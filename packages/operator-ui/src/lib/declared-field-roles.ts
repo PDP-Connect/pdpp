@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Declared presentation-ROLE seam (design.md §5.2, §5.3).
  *

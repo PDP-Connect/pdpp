@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ConnectorCardProps } from "@/components/pdpp/connector-card.tsx";
 import type { ConsentCardProps } from "@/components/pdpp/consent-card.tsx";
 import type { GrantInspectorProps } from "@/components/pdpp/grant-inspector.tsx";

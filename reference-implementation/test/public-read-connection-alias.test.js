@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression suite for the canonical `(connection_id, connector_instance_id)`
  * alias contract on public read operations.

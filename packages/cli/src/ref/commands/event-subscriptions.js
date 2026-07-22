@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * `pdpp ref event-subscriptions` — operator oversight of client event
  * subscriptions. Mirrors the `_ref/event-subscriptions*` HTTP routes

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for the pure stream-health machine audit
  * (scripts/stream-health-audit/audit.mjs) and its live auth preflight.

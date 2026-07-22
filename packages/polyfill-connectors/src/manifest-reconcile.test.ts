@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for manifest-reconcile. No FS, no DB, no globbing — every
  * input is a string the test owns, so the tests run in any environment.

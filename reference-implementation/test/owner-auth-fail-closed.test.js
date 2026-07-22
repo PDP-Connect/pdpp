@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * requireOwnerSession fail-closed behavior (security audit S-1, lane A1).
  *

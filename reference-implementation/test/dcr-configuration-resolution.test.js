@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit tests for the DCR enable/initial-access-token
  * RESOLUTION helpers in `server/dcr-configuration.js` (the sibling

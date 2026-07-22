@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure parsers for the Amazon connector. Kept free of Playwright / Node
 // I/O so they can be unit-tested in isolation.
 

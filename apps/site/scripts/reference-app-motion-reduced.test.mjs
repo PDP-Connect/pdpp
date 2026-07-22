@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Guard tests for the landing field-projection set-piece (UI design-direction
  * decision 5: "the one motion set-piece").

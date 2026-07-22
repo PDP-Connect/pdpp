@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the source-webhook ingestion validation in
 // operations/ref-source-webhook-ingest/index.ts. No test imports it by name. This
 // is a security-critical ingress: it enforces required headers, an HMAC signature,

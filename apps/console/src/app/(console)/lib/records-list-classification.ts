@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ConnectorOverview } from "./rs-client.ts";
 
 const PRIMARY_NO_DATA_HEALTH_STATES = new Set(["blocked", "cooling_off", "degraded", "needs_attention"]);

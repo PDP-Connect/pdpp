@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Genuine two-process interleaving oracle for `repairCandidateSqlite`'s
  * BEGIN IMMEDIATE fence (openspec/changes/reconcile-active-summary-evidence

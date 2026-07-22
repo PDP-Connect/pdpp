@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* RECORDROOM — view components. Data lives in rr-app.jsx; these render it. */
 ;(() => {
 

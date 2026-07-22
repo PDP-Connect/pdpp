@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure-logic oracle for the ERROR-TRANSLATION contract of parseSearchParams
 // (server/search.js), the /v1/search wrapper. It delegates to
 // parseSearchLexicalParams and translates the internal typed

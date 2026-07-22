@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Supplementary mutation-killing coverage for the input-normalization and
  * precedence branches of `resolveActivationRefreshContract` in

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Closed, structural browser-surface evidence. This module intentionally
  * accepts no text, URL, selector, DOM, fixture, or account-derived fields.

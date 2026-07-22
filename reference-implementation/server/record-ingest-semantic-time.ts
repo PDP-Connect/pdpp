@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * SQLite-path manifest-resolved semantic-time coercion + record-identity
  * validation for ingest. (The Postgres backend has its OWN parallel

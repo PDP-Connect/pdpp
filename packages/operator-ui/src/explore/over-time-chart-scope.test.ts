@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Over-time chart SCOPE honesty — through the real `assembleExplorerData` path.
  *

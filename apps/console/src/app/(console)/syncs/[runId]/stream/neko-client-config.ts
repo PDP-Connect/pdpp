@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export const NEKO_CLIENT_CONFIG_UNAVAILABLE_MESSAGE =
   "The browser stream could not finish loading. Check your network connection and try again.";
 

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { createHash } from "node:crypto";
 import { type Dirent, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";

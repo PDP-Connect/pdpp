@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Explore "Load more" ACCUMULATES, and pins page 1 to the ORIGINAL snapshot via
  * server-side REWIND (reproduce-the-bug regression).

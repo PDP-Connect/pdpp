@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Reconciles two independently-verified fail-open defects
  * (openspec/changes/reconcile-active-summary-evidence design.md "Health

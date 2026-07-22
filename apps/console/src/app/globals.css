@@ -1,3 +1,8 @@
+/*
+ * Copyright The PDP-Connect Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /* ─────────────────────────────────────────────────────────────────────────────
    IMPORT ORDER MATTERS. CSS requires every @import to precede all other rules
    (Lightning CSS / Tailwind v4 DROP any @import that follows a non-@import rule

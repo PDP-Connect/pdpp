@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Chase served-gap recovery: DETAIL_GAP_RECOVERED for reached account gaps.
  *

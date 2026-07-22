@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * rs.explore.timeline — the `order=oldest` ASCENDING re-page (sort cell §2/§3).
  *

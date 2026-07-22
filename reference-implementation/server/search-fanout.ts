@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 const DEFAULT_POSTGRES_SEARCH_FANOUT_CONCURRENCY = 8;
 
 interface FanoutOptions {

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Startup actually SCHEDULES a follow-up sweep using the cursor it returns
  * (Sol third-verdict P2.1 / minimum-closure item 3): "startup exposes a

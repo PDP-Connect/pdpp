@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for the pure /_ref record helpers (server/ref-record-utils.ts).
 //
 // These functions are deterministic (no I/O, no clock) and carry dense

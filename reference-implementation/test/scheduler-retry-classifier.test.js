@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit coverage for `runtime/scheduler-retry-classifier.ts`,
  * which had no test importing it. This module decides whether a failed

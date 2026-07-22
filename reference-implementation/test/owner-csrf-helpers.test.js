@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the UNTESTED owner-CSRF substrate helpers in
  * `server/owner-csrf.ts`. These issue/verify the double-submit CSRF token and

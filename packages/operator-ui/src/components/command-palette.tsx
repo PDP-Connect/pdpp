@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Command palette — the SINGLE unified ⌘K/Jump surface, shared by the operator
  * console (`apps/console`, `mode="live"`) and the public sandbox (`apps/site`,

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Supplementary mutation-killing coverage for the edge branches of
  * `server/routes/connector-source-kind.ts` the main test leaves open:

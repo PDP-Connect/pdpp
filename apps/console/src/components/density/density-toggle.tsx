@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { Rows3, Rows4 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { useDensity } from "./density-provider.tsx";

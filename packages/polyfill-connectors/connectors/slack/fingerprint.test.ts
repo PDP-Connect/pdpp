@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Slack-level integration of the shared per-record fingerprint cursor. The
  * generic cursor behavior is covered exhaustively in

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the explore-timeline composite + upcoming CURSOR
 // CODECS in operations/rs-explore-timeline/index.ts. None are imported by name.
 // These encode/decode the pagination cursors for the explore feed; a codec

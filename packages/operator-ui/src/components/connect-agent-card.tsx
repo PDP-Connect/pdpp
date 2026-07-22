@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { CopyButton } from "./copy-button.tsx";
 
 function trimTrailingSlash(value: string): string {

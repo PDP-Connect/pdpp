@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the polyfill connector detail + register operations
 // in operations/as-polyfill-connector-detail/index.ts and
 // operations/as-polyfill-connector-register/index.ts. Neither is imported by name.

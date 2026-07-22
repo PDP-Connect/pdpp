@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration tests for the USAA connector's `collect()` emit path —
  * the per-stream helpers in index.ts (emitAccountsStream,

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the consent decision (approve/deny) operation in
 // operations/as-consent-decision/index.ts. No test imports it by name. It resolves
 // a pending consent from request_uri OR approval_id, then approves (minting a grant

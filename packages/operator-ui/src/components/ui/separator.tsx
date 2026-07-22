@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { Separator as SeparatorPrimitive } from "@base-ui/react/separator";
 
 import { cn } from "../../ui/utils.ts";

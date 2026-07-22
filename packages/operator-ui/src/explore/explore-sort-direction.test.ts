@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Explore SORT direction wiring (sort cell §1/§2 — T12).
  *

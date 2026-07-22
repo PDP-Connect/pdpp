@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 
 const GITHUB_BLOB_BASE = "https://github.com/PDP-Connect/pdpp/blob/main";

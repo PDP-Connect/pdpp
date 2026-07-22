@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for server/dcr-configuration.js — DCR (Dynamic Client
 // Registration) policy config + the public-DCR per-IP rate limiter + AS public
 // client metadata projection. No test imports this module by name; all 6 exports

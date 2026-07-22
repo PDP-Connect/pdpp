@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for two UNTESTED record-version-stats read-model input shapers
  * in `server/record-version-stats.ts` (the sibling test covers

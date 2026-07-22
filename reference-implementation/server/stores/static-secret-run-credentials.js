@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { ConnectorInstanceCredentialError } from './connector-instance-credential-store.js';
 
 /**

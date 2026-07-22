@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Fold-write reliability invariants (owner review, 2026-07-18 revision of
  * the monotonic-coverage-guard candidate):

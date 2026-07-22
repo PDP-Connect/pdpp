@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Schema tests for the Pocket connector. The connector is DEPRECATED (API gone)
  * but still declares the `items` stream and wires `validateRecord`; parsing is

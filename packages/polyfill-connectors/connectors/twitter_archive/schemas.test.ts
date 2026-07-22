@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Schema tests for the Twitter/X archive connector. These prove the emit-time
  * schemas in schemas.ts accept the records the parsers actually build (using

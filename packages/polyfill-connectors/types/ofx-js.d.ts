@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // ofx-js (0.2.x) ships no declaration file. Its shape has shifted across
 // versions: sometimes top-level `OFX`, sometimes nested under `default`,
 // sometimes a bare `parse`. We still import it as `unknown` and narrow

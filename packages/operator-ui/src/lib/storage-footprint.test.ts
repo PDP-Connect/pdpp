@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * storage-footprint render-model — unit coverage for the operator console's
  * database-footprint comparison.

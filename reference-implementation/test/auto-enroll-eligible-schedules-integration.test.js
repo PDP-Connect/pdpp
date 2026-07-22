@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Integration coverage for the auto-enrollment helper against the real
  * reference controller and scheduler store.

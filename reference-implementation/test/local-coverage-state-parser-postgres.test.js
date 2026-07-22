@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Real-PostgreSQL state-store proof for the coverage STATE trust boundary.
  * It persists hostile JSON through the production Postgres state store, then

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Dual-backend parity for the record-list `window` and `count` aggregates.
 //
 // `queryRecords` dispatches to the SQLite store or the real `postgresQueryRecords`

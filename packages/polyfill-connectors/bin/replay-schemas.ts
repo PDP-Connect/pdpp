@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Replay every committed record in the local pdpp.sqlite through the
  * matching connector's `validateRecord`. Reports pass/skip counts per

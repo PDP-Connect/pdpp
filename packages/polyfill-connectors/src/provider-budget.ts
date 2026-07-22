@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { type PacingOptions, type PacingSnapshot, ProviderPacing, type ThrottleSignal } from "./provider-pacing.js";
 import { RunBudget, type RunBudgetOptions, type RunBudgetTrip } from "./run-budget.js";
 import type { SendDelayHint } from "./send-governor.js";

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Per-run detail-coverage evidence for the USAA `statements` stream.
 //
 // `statements` is a list-plus-detail stream: the /my/documents index page is

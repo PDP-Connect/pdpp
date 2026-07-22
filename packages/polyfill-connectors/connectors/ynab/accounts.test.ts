@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * YNAB account-balance observation-stream split. Pins the wiring added by the
  * `split-ynab-account-balance-observation-stream` OpenSpec change:

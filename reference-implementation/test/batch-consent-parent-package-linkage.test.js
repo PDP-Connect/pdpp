@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Incremental add-source linkage (`parent_package_id`) for the
  * reference-experimental batch consent ceremony.

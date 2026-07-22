@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Whole Foods orders are fulfilled by Amazon and require the Amazon session.
  * Effectively a sub-query of the Amazon connector; piggy-backs on the shared

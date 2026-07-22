@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Shared owner-session acquisition for live-origin operator scripts.
 //
 // This is the ONE place that knows how to turn owner credentials from the

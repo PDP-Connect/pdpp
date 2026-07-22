@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { GrantSummary, ListResponse, PendingApproval } from "../lib/ref-client.ts";
 
 export function buildGrantsDemoData(): {

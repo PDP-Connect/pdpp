@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Status-badge vocabularies live in this sibling module (not primitives.tsx) so
  * that primitives.tsx exports *only* components — a requirement for React Fast

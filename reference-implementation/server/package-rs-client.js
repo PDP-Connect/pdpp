@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * PackageRsClient — package-aware RS client for the hosted MCP adapter.
  *

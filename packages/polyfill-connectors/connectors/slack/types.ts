@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Shapes for the Slack connector. Extracted from index.ts so parsers.ts
 // and tests can import them without pulling in the slackdump subprocess
 // runtime entry.

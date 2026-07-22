@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Shapes for the Google Takeout connector. Extracted from index.ts so
 // parsers.ts and tests can import them without pulling in runtime entry.
 

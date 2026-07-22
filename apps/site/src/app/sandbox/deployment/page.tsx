@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Sandbox deployment page. Uses the shared live deployment diagnostics view
  * with deterministic demo data, then appends sandbox-only metadata sections.

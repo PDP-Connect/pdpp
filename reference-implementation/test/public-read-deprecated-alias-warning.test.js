@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression: deprecated `connector_instance_id` alias usage SHALL surface
  * a structured `deprecated_alias_used` warning via the canonical

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for validateRuntimeRequirements + validateRefreshPolicyCapability
 // in server/connector-manifest-validation.ts. Both were unpinned by name.
 //

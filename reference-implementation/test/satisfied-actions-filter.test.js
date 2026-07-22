@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the UNTESTED `satisfiedActions` dispatch/filter wrapper in
  * `runtime/satisfaction-watcher.ts`.

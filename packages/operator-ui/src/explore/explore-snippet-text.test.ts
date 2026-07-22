@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Lexical search-hit snippets carry `<mark>…</mark>` highlight markup. The feed
  * renders the snippet as plain React text (dangerouslySetInnerHTML is guarded),

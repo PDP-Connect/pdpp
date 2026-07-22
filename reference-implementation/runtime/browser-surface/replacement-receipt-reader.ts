@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { CurrentReplacementReceipt } from "./ephemeral-health-projection.ts";
 
 /** Luna owns this store and its current-generation selection semantics. */

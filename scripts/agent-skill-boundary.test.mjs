@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Guard: the two agent-skill profiles must keep a clear trust boundary.
 //
 //   pdpp-data-access  — default. Ordinary third-party / coding / task-scoped agents.

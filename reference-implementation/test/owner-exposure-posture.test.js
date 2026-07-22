@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Owner-exposure posture — pure unit coverage (security audit S-1 / S-2, lane A1).
  *

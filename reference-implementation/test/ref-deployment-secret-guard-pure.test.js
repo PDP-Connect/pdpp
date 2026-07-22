@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the deployment-report secret-leak guard in
 // operations/ref-deployment/index.ts. No test imports it by name. This operation
 // re-asserts, at the public-surface boundary, that a regressed dependency cannot

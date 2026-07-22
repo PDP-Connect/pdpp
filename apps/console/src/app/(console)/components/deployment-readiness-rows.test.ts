@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * biome-ignore-all lint/performance/useTopLevelRegex: These tests use one-off
  * regex assertions for copy contracts; hoisting each literal would make the test

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * YNAB-level integration of the shared per-record fingerprint cursor for
  * `payee_locations`. Exhaustive helper behavior is covered in

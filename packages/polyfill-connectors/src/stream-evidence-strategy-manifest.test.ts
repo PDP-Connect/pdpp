@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Build-time guardrail: every top-level connector manifest stream declares how
  * coverage and freshness evidence are established. These fields are strategy

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright The PDP-Connect Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 if [[ "${PDPP_DOCKER_DYNAMIC_NEKO_ALLOCATOR_SMOKE:-}" != "1" ]]; then

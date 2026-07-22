@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Find the Amazon Privacy Central data-request URL by navigating from
 // Account & Lists → Privacy.
 

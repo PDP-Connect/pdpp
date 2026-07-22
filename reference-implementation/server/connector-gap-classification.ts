@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure known-gap classification predicates and run-level gap rollups shared by
 // the connection-health coverage projection in `ref-control.ts`. The per-gap
 // predicates take an opaque gap value (the runtime stamps these on terminal

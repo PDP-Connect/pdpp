@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* PDPP Explorer v2 — root app
  *
  * Single-canvas, query-driven. The query is the URL is the navigation.

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Owner-journey acceptance harness — CLI entry.
 //
 // Scans the normal owner setup surfaces for the failure classes that broke the

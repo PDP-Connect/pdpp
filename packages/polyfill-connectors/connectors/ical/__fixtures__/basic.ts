@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Synthetic .ics fixtures for parsers.test.ts. Strings are what a real
 // `export.ics` would look like on disk (CRLF + line folding), since
 // parsers consume that directly.

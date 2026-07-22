@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Command palette — re-exported from the single unified implementation in
  * `@pdpp/operator-ui`. There is exactly ONE palette component and ONE

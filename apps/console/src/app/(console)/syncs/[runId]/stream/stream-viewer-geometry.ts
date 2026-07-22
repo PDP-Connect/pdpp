@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Console-side geometry glue. Every value below is computed by calling the
  * remote-surface library's own geometry authority (`@opendatalabs/remote-surface/client`)

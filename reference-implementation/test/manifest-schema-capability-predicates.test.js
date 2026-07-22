@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit coverage for the pure JSON-Schema capability-classification predicates in
  * `server/connector-manifest-validation.ts`. These decide which query / cursor /

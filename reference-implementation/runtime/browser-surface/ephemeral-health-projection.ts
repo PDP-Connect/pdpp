@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Current runtime capability is deliberately independent from connection
  * health.  In particular, a dynamic allocator may be callable while it has no

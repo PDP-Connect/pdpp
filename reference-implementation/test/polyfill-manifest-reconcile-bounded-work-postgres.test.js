@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Bounded-work oracle for polyfill manifest reconciliation — Postgres driver
  * (env-gated on `PDPP_TEST_POSTGRES_URL`).

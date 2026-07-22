@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Synthetic, real-SHAPED fixture records for the Explorer live-fidelity UAT.
  *

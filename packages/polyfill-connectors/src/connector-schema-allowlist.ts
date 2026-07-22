@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Explicit allowlist of connectors that declare manifest streams but do NOT yet
  * wire emit-time record validation (`validateRecord` / `makeValidateRecord`).

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Real-PostgreSQL counterpart to `reconcile-summary-evidence-failure-
  * persistence.test.js`'s probe 3 / probe 4 (Sol third-verdict P1.1 minimum-

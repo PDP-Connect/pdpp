@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import type { RecordsExplorerData } from "@pdpp/operator-ui/components/views/records-explorer-view";
 
 const SNAPSHOT = "2026-07-01T12:10:00.000Z";

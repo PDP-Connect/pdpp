@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export interface HttpRetryResponse {
   headers?: Record<string, string | undefined>;
   status: number;

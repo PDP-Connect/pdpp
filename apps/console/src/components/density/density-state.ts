@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export const DENSITY_KEY = "pdpp-density";
 
 export const DENSITY_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;

@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Route regression tests for the `_ref/dataset/*` and
  * `_ref/records/version-stats` route family.

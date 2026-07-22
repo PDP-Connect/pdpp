@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * OpenSpec task 2.2 / 6.1 residual (openspec/changes/reconcile-active-summary-evidence
  * design.md "Acceptance Strategy"): `connector-summary-evidence-no-op-and-

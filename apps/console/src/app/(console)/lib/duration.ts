@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 export function formatDurationCompact(seconds: number | null | undefined): string {
   if (!seconds || seconds <= 0) {
     return "";

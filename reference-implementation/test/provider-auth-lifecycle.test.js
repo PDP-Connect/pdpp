@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Deterministic integration tests for the provider-authorization lifecycle
  * (task 6.3: complete-self-service-connection-onboarding).

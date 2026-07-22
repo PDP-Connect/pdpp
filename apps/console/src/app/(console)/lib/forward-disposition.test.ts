@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Unit tests for `formatForwardDisposition` — the console's owner-facing copy
  * for the connection-level forward disposition ("what is the next run expected

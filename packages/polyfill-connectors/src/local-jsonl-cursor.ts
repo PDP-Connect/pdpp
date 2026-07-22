@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { createHash, type Hash } from "node:crypto";
 import type { FileHandle } from "node:fs/promises";
 import { open, stat } from "node:fs/promises";

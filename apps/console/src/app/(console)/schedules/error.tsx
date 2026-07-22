@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { SegmentError } from "../components/segment-error.tsx";
 
 export default function SchedulesError(props: { error: Error & { digest?: string }; reset: () => void }) {

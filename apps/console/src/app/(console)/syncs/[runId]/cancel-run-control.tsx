@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 import { IcButton } from "@pdpp/brand-react";
 import { Callout } from "@pdpp/operator-ui/components/primitives";
 import { useRouter } from "next/navigation";

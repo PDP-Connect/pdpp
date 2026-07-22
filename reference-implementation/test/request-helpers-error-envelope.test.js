@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure(ish), no-DB unit tests for the PDPP error-envelope + response helpers in
 // server/request-helpers.ts, driven with a fake Express-shaped `res`. The envelope
 // builder pdppError() is passed as a route dependency by 8 integration tests, and

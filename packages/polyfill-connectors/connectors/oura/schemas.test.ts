@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Schema tests for the Oura connector. Parsing is inline in index.ts (no
  * parsers.ts), so these assert the schema against literal records shaped

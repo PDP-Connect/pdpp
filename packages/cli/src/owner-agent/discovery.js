@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Discovery for the trusted owner-agent onboarding profile.
 //
 // A trusted local owner agent (e.g. Daisy) starts from an entrypoint URL and

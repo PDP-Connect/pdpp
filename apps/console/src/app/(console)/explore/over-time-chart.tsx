@@ -1,5 +1,8 @@
 "use client";
 
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * OverTimeChart — a quiet Grafana-style VOLUME BAND above the feed (design
  * over-time-chart §1/§5). Records-per-time-bucket of the SAME filtered set the

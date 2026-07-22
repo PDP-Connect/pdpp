@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * §10-B "impossible by construction" — the cooldown escalation profile is
  * required, not a silent no-op.

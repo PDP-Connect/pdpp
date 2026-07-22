@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit tests for `drainPromisesWithDeadline`, the graceful-shutdown drain
 // primitive exported from runtime/controller.ts.
 //

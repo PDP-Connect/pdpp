@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /* RECORDROOM — Syncs (merged Runs+Schedules) + de-souped ops rows for
    Connect / Exporters / Subscriptions + the Overview attention list.
    Health-first: the failure is a card with an action, not a row.

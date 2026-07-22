@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The narrow slice of public `pdpp` CLI command helpers that the SHARED
  * dashboard feature components need (`ConnectAgentCard`, `Peek`,

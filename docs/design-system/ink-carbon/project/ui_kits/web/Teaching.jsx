@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // CodeBlock + FlowDiagram — teaching units used throughout the site/docs.
 
 const CodeBlock = ({ children, caption }) => (

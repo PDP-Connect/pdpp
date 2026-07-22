@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * `_ref/grant-packages` operator visibility surface — owner-session-gated
  * list, detail, and revoke endpoints introduced by the OpenSpec change

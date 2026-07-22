@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Pure, no-DB unit tests for the device-authorization decision (approve/deny)
 // operation in operations/as-device-decision/index.ts. No test imports it by name.
 // It resolves a device authorization from user_code OR approval_id, then approves

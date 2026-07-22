@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Mutation-killing unit tests for the pure `buildStreamMetadataEntry`
  * composer in `server/connector-schema-builder.js`. No test imports it by

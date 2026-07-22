@@ -1,3 +1,6 @@
+// Copyright The PDP-Connect Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // ThePurposes — a typographic bestiary of purpose codes, each with its own voice.
 // This is the brand's most opinionated page: purpose as a taxonomy of intent.
 
