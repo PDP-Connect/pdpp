@@ -175,6 +175,10 @@ export interface EmitDeps {
     page: Page;
     sendInteraction: BrowserCollectContext["sendInteraction"];
   }) => Promise<void>;
+  /** Pending USAA account transaction gaps served by the runtime this run.
+   * A reached account emits recovery for its supplied gap id; this prevents a
+   * successful later export from leaving the durable gap pending forever. */
+  servedAccountTransactionGaps?: ReadonlyMap<string, string>;
 }
 
 /** Aggregate shape from the PDF hydration pass. Exposed so the emit-
@@ -1798,6 +1802,74 @@ export function buildAccountTransactionDetailGap(outcome: {
 }
 
 /**
+ * Keep only USAA account-level transaction gaps the runtime actually served
+ * this run. The connector may recover only these supplied ids: synthesizing
+ * one, or accepting a foreign/malformed locator, could close unrelated work.
+ */
+export function buildServedAccountTransactionGapLookup(
+  detailGaps: readonly BrowserCollectContext["detailGaps"][number][]
+): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const gap of detailGaps) {
+    if (gap.stream !== "transactions" || gap.status !== "pending") {
+      continue;
+    }
+    const locator = gap.detail_locator;
+    if (locator?.kind !== "usaa.account") {
+      continue;
+    }
+    const accountId = locator.account_id;
+    const recordKey = gap.record_key;
+    if (
+      typeof accountId !== "string" ||
+      accountId.length === 0 ||
+      typeof recordKey !== "string" ||
+      recordKey.length === 0 ||
+      recordKey !== accountId ||
+      typeof gap.gap_id !== "string" ||
+      !gap.gap_id
+    ) {
+      continue;
+    }
+    if (!lookup.has(accountId)) {
+      lookup.set(accountId, gap.gap_id);
+    }
+  }
+  return lookup;
+}
+
+/**
+ * A served account gap is recovered only after this run reaches that same
+ * account. `hydrated` and source-limited `no_activity` are both complete
+ * account coverage; a fresh `gap` is deliberately re-deferred instead.
+ */
+export async function recoverServedAccountTransactionGaps(
+  deps: EmitDeps,
+  outcomes: readonly AccountTransactionOutcome[]
+): Promise<void> {
+  const served = deps.servedAccountTransactionGaps;
+  if (!served || served.size === 0) {
+    return;
+  }
+  for (const outcome of outcomes) {
+    if (outcome.kind !== "hydrated" && outcome.kind !== "no_activity") {
+      continue;
+    }
+    const gapId = served.get(outcome.accountId);
+    if (!gapId) {
+      continue;
+    }
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gapId,
+      stream: "transactions",
+      record_key: outcome.accountId,
+    });
+  }
+}
+
+/**
  * Emit the per-run DETAIL_COVERAGE for the account -> transactions detail
  * fan-out, mirroring chase's `emitTransactionsDetailCoverage`. `outcomes` is
  * built from the accounts this run actually attempted (session-dead
@@ -2046,6 +2118,7 @@ async function runTransactionsStream(
   // one means every transaction-eligible account was attempted (including
   // the zero-eligible-accounts case, where the loop body never ran at all),
   // so the denominator this run enumerated is genuinely complete.
+  await recoverServedAccountTransactionGaps(deps, outcomes);
   await emitTransactionsDetailCoverage(deps, outcomes, !streamState.sessionDeadMidRun);
   return transactionsCursor;
 }
@@ -2627,6 +2700,7 @@ if (isMainModule(import.meta.url)) {
         capture,
         emit,
         emitRecord,
+        servedAccountTransactionGaps: buildServedAccountTransactionGapLookup(ctx.detailGaps),
       };
 
       // ACCOUNTS — extract from dashboard; emit optionally based on requested.
