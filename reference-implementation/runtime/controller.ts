@@ -3022,6 +3022,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     });
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: recovery continuation keeps controller ownership, progress evidence, and terminal transitions together.
   async function maybeContinueRecoveryAfterProgress(input: {
     readonly connectorId: string;
     readonly connectorInstanceId: string;
@@ -3424,6 +3425,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           cancelSignal: cancellation.signal,
         })
       )
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: managed-run completion handles the result, readiness regression, and cleanup precedence together.
       .then(async (result) => {
         runResult = result;
         // A managed dynamic surface can pass pre-flight readiness and still

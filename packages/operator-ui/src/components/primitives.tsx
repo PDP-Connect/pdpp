@@ -311,6 +311,7 @@ export function StatusBadge({
 // for the styling — callers migrating from faked inline warm callouts should
 // switch to `tone="info"` or `tone="warning"`.
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Callout keeps its tone, icon, action, and accessibility variants in one visible presentation matrix.
 export function Callout({
   title,
   description,

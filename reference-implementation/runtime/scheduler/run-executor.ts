@@ -898,6 +898,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
     };
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: scheduled managed runs coordinate leases, controller routing, and terminal accounting in order.
   async function routeScheduledManagedRun(
     via: RunManagedConnectorViaController,
     connectorId: string,

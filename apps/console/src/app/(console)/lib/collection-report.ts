@@ -157,7 +157,9 @@ export function runStatusWithCollectionReportGaps(
  * nothing and has no denominator returns `null` — there is no honest progress
  * number to show.
  */
-function buildCountsLine(entry: RefCollectionReportEntry): { label: string | null; title: string } {
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: collection status combinations map to one owner-facing count and title at this presentation boundary.
+function  buildCountsLine(entry: RefCollectionReportEntry): { label: string | null; title: string } {
   const collected = Number.isFinite(entry.collected) ? entry.collected : 0;
   const collectedText = collected.toLocaleString();
   const proofLabel =

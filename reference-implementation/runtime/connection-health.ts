@@ -1986,6 +1986,7 @@ function browserSessionRepairCapabilityUnknownCondition(reason: string): Connect
   });
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: credential health is an ordered precedence table over shared connection evidence.
 function credentialsValidCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
   const reason = firstReasonCode(input);
   const credential = input.credential ?? null;

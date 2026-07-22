@@ -3801,6 +3801,7 @@ function buildLocalDeviceCollectionEvidence(input: {
   return null;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: connection health projection is a precedence table over run, credential, and attention states.
 export function projectConnectorSummaryConnectionHealth(input: {
   readonly activeRun?: ActiveRunRecord | null;
   /**
@@ -4598,6 +4599,7 @@ interface ConnectorSummarySynthesisInput {
   readonly schedule: Awaited<ReturnType<typeof getScheduleFrom>>;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: summary synthesis joins durable state, coverage, and current activity into one response contract.
 function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): ConnectorSummary {
   const {
     acquisitionCoverage,
@@ -4994,6 +4996,7 @@ function deriveCredentialEvidence(
 // This is the single source of truth for a connection-summary item: both
 // `listConnectorSummaries` (mapped over all instances) and
 // `getConnectorSummaryForRoute` (one resolved instance) call it.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: per-instance projection coordinates the shared summary read model and route-specific resolution.
 async function projectConnectorSummaryForInstance(
   instance: ConnectorInstanceRow,
   deps: ConnectorSummaryProjectionDeps,

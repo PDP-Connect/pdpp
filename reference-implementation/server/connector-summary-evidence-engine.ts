@@ -237,7 +237,9 @@ interface DiscoveryInput {
  * about its state — only whether its stored facts still match the
  * authorities.
  */
-function classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null {
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: candidate classification is the complete precedence table for retained discovery evidence.
+function  classifyCandidate(input: DiscoveryInput): RepairCandidateReason | null {
   const { instance, existingEvidence, manifest, currentCheckpoint, retainedByteRow } = input;
 
   if (!existingEvidence) {
@@ -1126,7 +1128,9 @@ interface RepairInputs {
  * never launder a failed terminal fold, matching design.md's "components
  * are independent").
  */
-function buildRepairedRow(inputs: RepairInputs): Row {
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: repaired rows must combine checkpoint, manifest, retained, and unexpected-stream evidence atomically.
+function  buildRepairedRow(inputs: RepairInputs): Row {
   const { instance, manifest, checkpoint, canonicalByStream, retainedByteRow, retainedByStream, unexpectedStreams } =
     inputs;
   const as_of = nowIso();

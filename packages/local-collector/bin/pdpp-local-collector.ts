@@ -1498,6 +1498,7 @@ function recoverAppliedNote(input: {
   return `The collector ran ${attempts} drain pass(es) and ${remaining} queued row(s) remain. It stopped because another pass did not reduce the backlog.`;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: recovery owns the ordered run, outbox inspection, and stop-reason transition loop.
 export async function recoverLocalCollector(
   options: CliOptions,
   deps: RecoverLocalCollectorDeps = {}

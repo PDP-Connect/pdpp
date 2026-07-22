@@ -592,6 +592,7 @@ async function probeSemanticPageTarget(
       }
     };
 
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: browser readiness message handling must keep settlement, timeout, and protocol validation together.
     const onMessage = (event: { readonly data?: unknown }) => {
       if (settled) {
         return;

@@ -1751,6 +1751,7 @@ function mostRelevantSearchResult(args: {
   };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: search-feed pagination, sorting, and result normalization share one query boundary.
 async function loadSearchFeed(
   query: string,
   searchSort: "relevance" | "recent",

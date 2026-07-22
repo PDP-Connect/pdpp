@@ -1574,6 +1574,7 @@ export async function foldConnectorSummaryStreamFacts(
   return result as FoldStreamFactsResult;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one stream fold owns event limits, duration limits, and accumulated summary facts.
 async function foldConnectorSummaryStreamFactsOnce(
   connectorInstanceIds: readonly string[] | null,
   options: { readonly maxDurationMs?: number; readonly maxEvents?: number }
