@@ -65,6 +65,10 @@ export PDPP_NEKO_WEBRTC_HOST_PORT_END="$HOST_PORT_END"
 export PDPP_NEKO_ALLOCATOR_PORT="${PDPP_NEKO_ALLOCATOR_PORT:-7332}"
 export NEKO_PASSWORD="${NEKO_PASSWORD:-pdpp-net-durability-smoke}"
 export NEKO_USERNAME="${NEKO_USERNAME:-operator}"
+# Compose's ordinary local tags are shared with a real deployment. A smoke
+# build must never retag either one, even when the caller supplied overrides.
+export NEKO_IMAGE="${PROJECT_NAME}-neko:local"
+export NEKO_ALLOCATOR_IMAGE="${PROJECT_NAME}-neko-allocator:local"
 
 DC=(docker compose -f docker-compose.yml -f docker-compose.neko.yml --profile neko-dynamic)
 
@@ -126,13 +130,18 @@ docker network create --driver bridge "$DYNAMIC_NETWORK" >/dev/null
 "${DC[@]}" build neko neko-allocator
 "${DC[@]}" up -d neko-allocator
 
-deadline=$((SECONDS + 90))
-until "${DC[@]}" exec -T neko-allocator node -e "fetch('http://127.0.0.1:${PDPP_NEKO_ALLOCATOR_PORT}/surfaces').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; do
-  if (( SECONDS >= deadline )); then
-    fail "allocator did not become reachable"
-  fi
-  sleep 2
-done
+wait_for_allocator() {
+  local phase="$1" deadline
+  deadline=$((SECONDS + 90))
+  until "${DC[@]}" exec -T neko-allocator node -e "fetch('http://127.0.0.1:${PDPP_NEKO_ALLOCATOR_PORT}/surfaces').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; do
+    if (( SECONDS >= deadline )); then
+      fail "allocator did not become reachable ${phase}"
+    fi
+    sleep 2
+  done
+}
+
+wait_for_allocator "at startup"
 
 acquire_container_id() {
   "${DC[@]}" exec -T neko-allocator node --input-type=module - <<NODE
@@ -173,28 +182,38 @@ before_id="$(acquire_container_id | tail -n1)"
 
 before_started_at="$(docker inspect -f '{{.State.StartedAt}}' "$before_id")"
 
-# The core falsification: an ordinary redeploy shape, no special flags.
-"${DC[@]}" down
-"${DC[@]}" up -d neko-allocator
+chromium_epoch() {
+  docker exec "$before_id" sh -ec '
+    pid="$(supervisorctl pid chromium)"
+    test -n "$pid" && test "$pid" -gt 0
+    # Strip the parenthesized name before counting: starttime is field 22,
+    # or field 20 after the `pid (comm) state` prefix has been removed.
+    starttime="$(sed -E "s/^.*\\) //" "/proc/$pid/stat" | cut -d " " -f 20)"
+    test -n "$starttime"
+    printf "%s:%s\\n" "$pid" "$starttime"
+  '
+}
 
-deadline=$((SECONDS + 90))
-until "${DC[@]}" exec -T neko-allocator node -e "fetch('http://127.0.0.1:${PDPP_NEKO_ALLOCATOR_PORT}/surfaces').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; do
-  if (( SECONDS >= deadline )); then
-    fail "allocator did not become reachable after compose down/up"
-  fi
-  sleep 2
-done
+before_chromium_epoch="$(chromium_epoch)" \
+  || fail "could not read the initial Chromium process epoch from $before_id"
 
-after_state="$(docker inspect -f '{{.State.Running}} {{.State.StartedAt}}' "$before_id" 2>&1)" \
-  || fail "the pre-redeploy container id ($before_id) no longer exists after compose down/up"
-after_running="$(awk '{print $1}' <<<"$after_state")"
-after_started_at="$(awk '{print $2}' <<<"$after_state")"
+assert_surface_continuity() {
+  local phase="$1" after_state after_running after_started_at after_chromium_epoch reachable_after
+  after_state="$(docker inspect -f '{{.State.Running}} {{.State.StartedAt}}' "$before_id" 2>&1)" \
+    || fail "the pre-redeploy container id ($before_id) no longer exists ${phase}"
+  after_running="$(awk '{print $1}' <<<"$after_state")"
+  after_started_at="$(awk '{print $2}' <<<"$after_state")"
 
-[[ "$after_running" == "true" ]] || fail "container $before_id is no longer running after compose down/up"
-[[ "$after_started_at" == "$before_started_at" ]] \
-  || fail "container $before_id restarted (StartedAt changed from $before_started_at to $after_started_at) — process identity was not preserved"
+  [[ "$after_running" == "true" ]] || fail "container $before_id is no longer running ${phase}"
+  [[ "$after_started_at" == "$before_started_at" ]] \
+    || fail "container $before_id restarted (StartedAt changed from $before_started_at to $after_started_at) ${phase} — process identity was not preserved"
 
-reachable_after="$("${DC[@]}" exec -T neko-allocator node --input-type=module - <<NODE
+  after_chromium_epoch="$(chromium_epoch)" \
+    || fail "could not read the Chromium process epoch ${phase}"
+  [[ "$after_chromium_epoch" == "$before_chromium_epoch" ]] \
+    || fail "Chromium restarted inside container $before_id ${phase} (epoch changed from $before_chromium_epoch to $after_chromium_epoch)"
+
+  reachable_after="$("${DC[@]}" exec -T neko-allocator node --input-type=module - <<NODE
 const baseUrl = "http://127.0.0.1:${PDPP_NEKO_ALLOCATOR_PORT}";
 const response = await fetch(new URL("/surfaces/${SMOKE_SURFACE}", baseUrl));
 if (!response.ok) {
@@ -205,7 +224,25 @@ const body = await response.json();
 console.log(body.surface?.container_id === "${before_id}" && body.surface?.health === "ready" ? "reachable" : "unreachable");
 NODE
 )"
-[[ "$(tail -n1 <<<"$reachable_after")" == "reachable" ]] \
-  || fail "surface is not reachable/ready through the allocator after compose down/up"
+  [[ "$(tail -n1 <<<"$reachable_after")" == "reachable" ]] \
+    || fail "surface is not reachable/ready through the allocator ${phase}"
+}
 
-echo "n.eko network durability Docker smoke passed: container $before_id survived 'docker compose down' + 'up -d' with unchanged StartedAt and remains reachable, for project $PROJECT_NAME."
+# Canonical stack convergence recreates this control-plane service. It MUST NOT
+# recreate the allocator-owned Chromium container that holds live auth state.
+before_allocator_id="$("${DC[@]}" ps -q neko-allocator)"
+[[ -n "$before_allocator_id" ]] || fail "could not identify the initial allocator container"
+"${DC[@]}" up -d --force-recreate --no-deps neko-allocator
+wait_for_allocator "after forced allocator recreation"
+after_allocator_id="$("${DC[@]}" ps -q neko-allocator)"
+[[ -n "$after_allocator_id" && "$after_allocator_id" != "$before_allocator_id" ]] \
+  || fail "forced allocator recreation did not replace its control-plane container"
+assert_surface_continuity "after forced allocator recreation"
+
+# The broader ordinary redeploy shape remains covered too.
+"${DC[@]}" down
+"${DC[@]}" up -d neko-allocator
+wait_for_allocator "after compose down/up"
+assert_surface_continuity "after compose down/up"
+
+echo "n.eko network durability Docker smoke passed: container $before_id and Chromium epoch $before_chromium_epoch survived forced allocator recreation and 'docker compose down' + 'up -d'; the allocator was replaced and the surface remains reachable, for project $PROJECT_NAME."
