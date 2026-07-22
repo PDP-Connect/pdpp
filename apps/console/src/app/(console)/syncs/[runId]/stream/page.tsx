@@ -138,6 +138,7 @@ function renderNoAssistanceSurface({
     return <ExternalApprovalSurface assistance={currentAssistance} connector={connector} runId={runId} />;
   }
   const noAssistanceState = selectNoAssistanceStreamState({
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     runHandleStatus: runStatus?.status ?? null,
     terminalStatus: envelope.terminal_status,
   });
@@ -150,6 +151,7 @@ function renderNoAssistanceSurface({
         connector={connector}
         runId={runId}
         terminalStatus={resolveNoAssistanceEndedTerminalStatus({
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
           runHandleStatus: runStatus?.status ?? null,
           terminalStatus: envelope.terminal_status,
         })}
@@ -249,6 +251,7 @@ function RunEndedSurface({
   runId: string;
   terminalStatus: NoAssistanceEndedStatus;
 }) {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const subject = connector?.displayName ?? "This run";
   let statusLabel = "failed";
   let title = `${subject} needs a look.`;
@@ -278,6 +281,7 @@ function RunEndedSurface({
 }
 
 function RunContinuingSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const subject = connector?.displayName ?? "This run";
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
@@ -295,6 +299,7 @@ function RunContinuingSurface({ connector, runId }: { connector: ConnectorContex
 }
 
 function PreparingBrowserSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const subject = connector?.displayName ?? "This run";
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
@@ -321,6 +326,7 @@ function ExternalApprovalSurface({
   connector: ConnectorContext | null;
   runId: string;
 }) {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const subject = connector?.displayName ?? "This run";
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">

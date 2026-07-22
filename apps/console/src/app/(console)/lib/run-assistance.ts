@@ -193,6 +193,7 @@ function isStreamableBrowserSurfaceAssistance(assistance: CurrentRunAssistance):
 }
 
 function assistanceFromEvent(event: SpineEvent, id: string): CurrentRunAssistance {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const data = event.data ?? {};
   return {
     attachments: parseAttachments(data.attachments),
@@ -209,6 +210,7 @@ function assistanceFromEvent(event: SpineEvent, id: string): CurrentRunAssistanc
 }
 
 function assistanceFromLegacyInteraction(event: SpineEvent, id: string): CurrentRunAssistance {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const data = event.data ?? {};
   const kind = stringField(data.kind) ?? "interaction";
   const isManualAction = kind === "manual_action";
@@ -228,14 +230,18 @@ function assistanceFromLegacyInteraction(event: SpineEvent, id: string): Current
 
 function getEventAssistanceId(event: SpineEvent): string | null {
   return (
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     stringField(event.data?.assistance_request_id) ??
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     stringField(event.data?.assistance_id) ??
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     stringField(event.data?.interaction_id) ??
     stringField(event.interaction_id)
   );
 }
 
 function readBrowserSurfaceStatus(event: SpineEvent): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const browserSurface = event.data?.browser_surface;
   if (browserSurface && typeof browserSurface === "object" && !Array.isArray(browserSurface)) {
     return stringField((browserSurface as Record<string, unknown>).browser_surface_status) ?? stringField(event.status);

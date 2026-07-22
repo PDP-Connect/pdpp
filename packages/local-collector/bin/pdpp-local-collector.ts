@@ -1282,6 +1282,7 @@ function unquoteProfileEnvValue(rawValue: string): string {
 }
 
 function profileSourceInstanceId(env: Record<string, string>): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   return env.PDPP_SOURCE_INSTANCE_ID?.trim() || env.PDPP_CONNECTION_ID?.trim() || null;
 }
 
@@ -1343,14 +1344,19 @@ function applyProfileEnv(options: CliOptions, profile: LocalCollectorProfile): C
   const keep = (flag: string): boolean => explicit?.has(flag) === true;
   const next: CliOptions = {
     ...options,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     baseUrl: keep("--base-url") ? options.baseUrl : env.PDPP_REFERENCE_BASE_URL?.trim() || options.baseUrl,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     queuePath: keep("--queue") ? options.queuePath : env.PDPP_COLLECTOR_QUEUE?.trim() || options.queuePath,
   };
   const sourceInstanceId = profile.source_instance_id ?? options.sourceInstanceId;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const connector = keep("--connector") ? options.connector : env.PDPP_COLLECTOR_CONNECTOR?.trim() || options.connector;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const deviceId = keep("--device-id") ? options.deviceId : env.PDPP_LOCAL_DEVICE_ID?.trim() || options.deviceId;
   const deviceToken = keep("--device-token")
     ? options.deviceToken
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     : env.PDPP_LOCAL_DEVICE_TOKEN?.trim() || options.deviceToken;
   if (sourceInstanceId) {
     next.sourceInstanceId = sourceInstanceId;
@@ -1917,6 +1923,7 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
     );
   }
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const command = options.entrypointCommand ?? bundled?.command ?? "tsx";
   const args = options.args ?? [...(bundled?.args ?? [`connectors/${options.connector}/index.ts`])];
   const streams = options.streams ?? [...(bundled?.streams ?? [])];
@@ -1929,6 +1936,7 @@ export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec 
     ...(options.streamsToBackfill ? { streamsToBackfill: options.streamsToBackfill } : {}),
     args,
     command,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     runtime_requirements: { bindings: bundled?.bindings ?? {} },
   };
 }

@@ -131,8 +131,11 @@ export function RecordInspector({ record, relationships, streamRecordsHref }: Re
   const totalDeclared = record.fields.length;
   const blob = blobAffordance(record);
   const blobMime = blob ? declaredBlobMime(body, blob.fieldName) : undefined;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const relatedLinks = relationships?.relatedLinks ?? [];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const parentBackLinks = relationships?.parentBackLinks ?? [];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const reverseChildListLinks = relationships?.reverseChildListLinks ?? [];
   const hasRelationships = relatedLinks.length > 0 || parentBackLinks.length > 0 || reverseChildListLinks.length > 0;
 

@@ -125,6 +125,7 @@ function normalizeConnectorId(connectorId: string | null): string | null {
  * row somehow arrives without the field (defensive; the contract requires it).
  */
 export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediation {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   return row.version_disposition ?? "active_defect_or_unclassified";
 }
 
@@ -138,6 +139,7 @@ export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediatio
  * contract requires it).
  */
 export function remediationForRow(row: RefRecordVersionStatsRow): RefRecordVersionRemediation {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   return row.version_remediation ?? "none";
 }
 

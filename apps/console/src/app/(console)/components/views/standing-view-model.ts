@@ -1118,7 +1118,8 @@ function buildAdvisoryHero(actions: AdvisoryOwnerActionConnection[], hrefs: Stan
   if (actions.length === 1 && only) {
     // Lead with the CONCRETE action the owner can run ("Refresh now" / "Retry
     // now"), not the "ready for review" taxonomy phrasing.
-    const action = only.actionLabel ?? "Run the available action";
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
+            const action = only.actionLabel ?? "Run the available action";
     return {
       cta: { href: hrefs.connection(only.routeId), human: true, label: action },
       kicker: "One optional action is available",
@@ -1143,6 +1144,7 @@ function buildCalmHero(input: StandingInputs): StandingHero {
   const activeTokenCount = activeOwnerTokenCount(activeClients);
   const liveGrants = input.grants.filter(isLiveGrant);
   const records = summary ? fmtInt(summary.record_count) : "0";
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const sources = summary?.connector_count ?? 0;
   const sourceWord = sources === 1 ? "source" : "sources";
   const grantWord = liveGrants.length === 1 ? "app reads" : "apps read";

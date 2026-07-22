@@ -197,6 +197,7 @@ function readEvidence(
   // action or a red terminal verdict with no owner path is a system issue.
   const systemIssue =
     primary?.kind === "code_fix" ||
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     (verdict?.pill.tone === "red" && !ownerSatisfiable && verdict.channel !== "attention");
   const backlogFloor = backlog?.next_attempt_at ?? null;
   const nextAttemptAt = backlogFloor ?? health?.next_attempt_at ?? null;
@@ -207,6 +208,7 @@ function readEvidence(
     nextAttemptAt,
     ownerRequired,
     recoverableWork: hasRecoverableWork(backlog),
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     syncing: Boolean(health?.badges.syncing),
     systemIssue: Boolean(systemIssue),
   };

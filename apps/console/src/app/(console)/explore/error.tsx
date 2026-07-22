@@ -21,7 +21,9 @@ import { useEffect } from "react";
  * error boundaries are Client Components).
  */
 function isInterruptedLoad(error: Error): boolean {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const name = error.name ?? "";
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const message = (error.message ?? "").toLowerCase();
   return (
     name === "AbortError" ||

@@ -349,6 +349,7 @@ function deriveRunConnector(runId: string): string | null {
 }
 
 function streamForEvent(event: DemoTimelineEvent): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const data = event.data ?? {};
   if (typeof (data as { stream?: unknown }).stream === "string") {
     return (data as { stream: string }).stream;

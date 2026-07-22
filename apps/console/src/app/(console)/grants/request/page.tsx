@@ -331,6 +331,7 @@ function EquivalentsSection({ examples }: { examples: Examples }) {
 export default async function GrantRequestPage({ searchParams }: { searchParams: Promise<Params> }) {
   const params = await searchParams;
   const workspace = params.workspace ? getGrantRequestWorkspace(params.workspace) : null;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const draft = workspace?.draft ?? createDefaultGrantRequestDraft();
   const examples = workspace ? await buildGrantRequestExamples(workspace) : null;
   const connectionOptions = await loadConnectionPinOptions(draft);

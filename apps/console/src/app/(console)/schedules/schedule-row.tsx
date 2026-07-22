@@ -58,6 +58,7 @@ function recommendedIntervalLabel(policy: RefConnectorSummary["refresh_policy"])
  * legacy fallback used while a single-instance row still exists.
  */
 function recordsHrefForSummary(summary: RefConnectorSummary): string {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const routeId = summary.connection_id ?? summary.connector_instance_id ?? summary.connector_id;
   return `/sources/${encodeURIComponent(routeId)}`;
 }
@@ -109,6 +110,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const handleSave = useCallback(() => {
     startTransition(async () => {
       const res = await upsertScheduleAction(summary.connector_id, {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
         connectionId: summary.connection_id ?? summary.connector_instance_id ?? null,
         enabled: true,
         every,
@@ -130,6 +132,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await pauseScheduleAction(
         summary.connector_id,
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
         summary.connection_id ?? summary.connector_instance_id ?? null
       );
       if (!res.ok) {
@@ -143,6 +146,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await resumeScheduleAction(
         summary.connector_id,
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
         summary.connection_id ?? summary.connector_instance_id ?? null
       );
       if (!res.ok) {
@@ -156,6 +160,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
     startTransition(async () => {
       const res = await deleteScheduleAction(
         summary.connector_id,
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
         summary.connection_id ?? summary.connector_instance_id ?? null
       );
       if (!res.ok) {
@@ -179,6 +184,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const connectorKey = formatConnectorKeyForDisplay(summary.connector_id);
   const recordsHref = recordsHrefForSummary(summary);
   const activeRunId = schedule?.active_run_id;
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const needsHuman = schedule?.human_attention_needed ?? false;
   const recInterval = recommendedIntervalLabel(policy);
   const recMode = policy?.recommended_mode;

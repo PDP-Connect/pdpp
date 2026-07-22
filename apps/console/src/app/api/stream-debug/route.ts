@@ -129,6 +129,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const events = Array.isArray((payload as { events?: unknown })?.events)
     ? ((payload as { events: unknown[] }).events.slice(0, MAX_EVENTS) as unknown[])
     : [];

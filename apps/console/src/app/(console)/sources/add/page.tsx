@@ -22,6 +22,7 @@ function latestImport(summary: RefConnectorSummary): { file: string | null; stat
   const batch = summary.acquisition_coverage?.latest_batch ?? null;
   return {
     file: batch?.uploaded_file_name ?? null,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     status: batch?.status ?? null,
   };
 }

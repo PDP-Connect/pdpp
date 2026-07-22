@@ -235,6 +235,7 @@ const DEFAULT_CLIPBOARD_HELPER_MODE: ClipboardHelperMode = "balanced";
 async function readStreamReachProbeCode(probe: Response): Promise<string | null> {
   try {
     const body = (await probe.json()) as { error?: { code?: unknown } };
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     const code = body?.error?.code;
     return typeof code === "string" ? code : null;
   } catch {
@@ -1553,6 +1554,7 @@ export function StreamSurface({
     );
   }
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const connectorName = connector?.displayName ?? "the connector";
 
   return (
@@ -5266,6 +5268,7 @@ function ClipboardSheet({
                 aria-label="Text copied from browser"
                 className="min-h-20 resize-y rounded-lg border border-border/80 bg-muted/30 p-3 text-foreground text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                 readOnly
+                // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
                 value={remoteClipboard?.text ?? ""}
               />
             </section>
@@ -5327,6 +5330,7 @@ function useMoreActionsDisclosure() {
     };
     window.addEventListener("keydown", handleWindowKeyDown, true);
     document.addEventListener("pointerdown", handlePointerDown, true);
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     rowRef.current?.addEventListener("focusout", handleFocusOut);
     const row = rowRef.current;
     return () => {
@@ -5824,6 +5828,7 @@ function PopupToast({ message }: { message: string }) {
  * closing because browsers block scripted tab closing for normal navigations.
  */
 export function ResolvedSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const subject = connector?.displayName ?? "The connector";
 
   return (

@@ -293,6 +293,7 @@ function RecoveryPanel({ model }: { model: RecoveryPanelViewModel }) {
 }
 
 function SuppressedEvidenceDiagnostics({ renderedVerdict }: { renderedVerdict: RefRenderedVerdict | null }) {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const suppressed = renderedVerdict?.detail.suppressed ?? [];
   if (suppressed.length === 0) {
     return null;
@@ -489,6 +490,7 @@ function ProjectedStateDiagnostics({
   ) : (
     <StatusBadge status="unknown" vocabulary={CONNECTION_HEALTH_VOCABULARY} />
   );
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const badgeTitle = renderedVerdict?.forward_statement ?? "Verdict unavailable.";
   return (
     <div className="flex flex-col gap-2">
@@ -1044,6 +1046,7 @@ function OutboxStallRemediationPanel({
       data-testid="diagnostics-outbox-remediation"
     >
       <p className="pdpp-caption font-medium text-foreground" data-testid="diagnostics-outbox-remediation-label">
+        {/** biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic */}
         {verdictRemediation?.label ?? remediation.label}
       </p>
       {hostLabels.length > 0 ? (

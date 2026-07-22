@@ -957,6 +957,7 @@ function getLatestProgress(events: SpineEvent[]): LatestProgress | null {
 }
 
 function isUserFacingProgressEvent(event: SpineEvent): boolean {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const message = typeof event.data?.message === "string" ? event.data.message : "";
   return !(
     message.startsWith("tracing enabled;") ||

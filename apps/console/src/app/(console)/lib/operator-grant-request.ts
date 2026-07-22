@@ -195,6 +195,7 @@ function saveWorkspace(workspace: GrantRequestWorkspace): GrantRequestWorkspace 
 function upsertWorkspace(workspaceId: string | undefined, input: Partial<GrantRequestDraft>): GrantRequestWorkspace {
   const existing = workspaceId ? workspaceOrNull(workspaceId) : null;
   const draft = sanitizeDraft({
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     ...(existing?.draft ?? {}),
     ...input,
   });

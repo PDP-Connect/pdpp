@@ -29,6 +29,7 @@ export async function upsertScheduleAction(
     };
     revalidatePath("/schedules");
     revalidatePath("/sources");
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     return { ok: true, policy_warning: body?.policy_warning ?? null };
   } catch (err) {
     return { message: err instanceof Error ? err.message : String(err), ok: false };

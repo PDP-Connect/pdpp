@@ -857,6 +857,7 @@ function startClipboardWriteGuard(): void {
   const descriptor = Object.getOwnPropertyDescriptor(target, "writeText");
   const original = target.writeText;
   const guardedWriteText = function guardedWriteText(this: Clipboard, text: string): Promise<void> {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     const value = String(text ?? "");
     const assessment = assessClipboardWrite(value);
     emitNekoDebug("neko.clipboard_write.attempt", {

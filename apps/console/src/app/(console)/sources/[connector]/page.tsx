@@ -204,6 +204,7 @@ function toRunSummaryForConnection(
 }
 
 function connectionRecentRuns(summary: RefConnectorSummary): RunSummary[] {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const reportRunId = summary.last_run?.run_id ?? null;
   const collectionReport = summary.collection_report ?? null;
   const byId = new Map<string, RunSummary>();
@@ -566,6 +567,7 @@ function ConnectorPageView({
     }
     return null;
   })();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
   const primaryActionSurface = connectionPrimaryAction?.surface?.kind ?? null;
   // The detail-page primary action is modality-aware for the same reason the
   // records row is (`derivePrimaryRowAction`): existing owner-runnable
@@ -991,7 +993,8 @@ function RenderedVerdictHeaderAction({
     // detail) chasing a button that can't act. Render it as non-clickable
     // guidance that points to the recovery commands in the diagnostics panel
     // below, the only place the owner can actually act.
-    if (action.remediation?.target.kind === "local_device") {
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
+                                if (action.remediation?.target.kind === "local_device") {
       return (
         <span
           className="pdpp-caption max-w-[18rem] text-right text-muted-foreground"

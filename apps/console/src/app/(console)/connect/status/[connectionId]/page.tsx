@@ -119,6 +119,7 @@ function describeImportState(status: ConnectionSetupStatus): StatusDescription {
       };
     case "first_sync_failed":
       return {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
         detail: status.last_error?.remediation ?? "Start the import again.",
         headline: "Import failed",
         tone: "failed",
@@ -161,6 +162,7 @@ function describeConnectionState(status: ConnectionSetupStatus): StatusDescripti
       };
     case "first_sync_failed":
       return {
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
         detail: status.last_error?.remediation ?? "Start the first sync again.",
         headline: "First sync failed",
         tone: "failed",

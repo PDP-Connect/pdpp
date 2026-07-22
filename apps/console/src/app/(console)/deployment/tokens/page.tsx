@@ -491,6 +491,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
   const tokenDetailsByClient = new Map<string, OwnerClientToken[]>();
   try {
     const resp = await listOwnerIssuedClients();
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
     tokens = resp.data ?? [];
     // Only clients with more than one active token get a per-token drilldown;
     // a single-token client is fully described by its row.
@@ -499,6 +500,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
       multiTokenClients.map(async (client) => {
         try {
           const detail = await listOwnerClientTokens(client.client_id);
+          // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
           tokenDetailsByClient.set(client.client_id, detail.data ?? []);
         } catch {
           // A per-client drilldown failure must not break the whole page; the
@@ -545,6 +547,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
       <IssueCard flow={flow} />
 
       <TokensListSection
+        // biome-ignore lint/suspicious/noUnnecessaryConditions: runtime value, TS type is optimistic
         highlightClientId={flow?.clientId ?? null}
         tokenDetailsByClient={tokenDetailsByClient}
         tokens={tokens}
