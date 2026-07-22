@@ -186,13 +186,19 @@ export function classifyChaseAccountsSurface(diagnostics: DashboardDiagnostics |
   }
   try {
     const url = new URL(diagnostics.url);
-    const body = diagnostics.body_preview.replace(/\s+/gu, " ").trim();
-    return url.hostname === "secure.chase.com" &&
+    return url.protocol === "https:" &&
+      url.hostname === "secure.chase.com" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
       url.pathname === CHASE_DASHBOARD_OVERVIEW_PATH &&
       url.hash === CHASE_INCOME_CAPTURE_HASH &&
-      diagnostics.title.trim() === CHASE_INCOME_CAPTURE_TITLE &&
-      body.includes(CHASE_INCOME_CAPTURE_HEADING) &&
-      body.includes(CHASE_INCOME_CAPTURE_DESCRIPTION)
+      url.search === "" &&
+      diagnostics.title === CHASE_INCOME_CAPTURE_TITLE &&
+      Number.isSafeInteger(diagnostics.income_capture_heading_count) &&
+      diagnostics.income_capture_heading_count > 0 &&
+      Number.isSafeInteger(diagnostics.income_capture_description_count) &&
+      diagnostics.income_capture_description_count > 0
       ? "income_capture_interstitial"
       : "unknown";
   } catch {
@@ -1751,14 +1757,22 @@ export async function emitNoActivityProgress(
 
 function readDashboardDiagnostics(page: Page): Promise<DashboardDiagnostics | null> {
   return page
-    .evaluate((): DashboardDiagnostics => {
-      const WS = /\s+/g;
-      return {
-        url: location.href,
-        title: document.title,
-        body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 500),
-      };
-    })
+    .evaluate(
+      ({ description, heading }): DashboardDiagnostics => {
+        const WS = /\s+/g;
+        const text = (element: Element): string => (element.textContent ?? "").replace(WS, " ").trim();
+        const countExactText = (selector: string, expected: string): number =>
+          Array.from(document.querySelectorAll(selector)).filter((element) => text(element) === expected).length;
+        return {
+          url: location.href,
+          title: document.title,
+          body_preview: (document.body?.innerText || "").replace(WS, " ").slice(0, 500),
+          income_capture_heading_count: countExactText("h1, h2, h3, h4, h5, h6", heading),
+          income_capture_description_count: countExactText("p", description),
+        };
+      },
+      { description: CHASE_INCOME_CAPTURE_DESCRIPTION, heading: CHASE_INCOME_CAPTURE_HEADING }
+    )
     .catch((): DashboardDiagnostics | null => null);
 }
 
@@ -1771,6 +1785,27 @@ async function emitNoAccountsDiagnostic(diagnostics: DashboardDiagnostics | null
     message: chaseNoAccountsDiagnosticMessage(surface),
     diagnostics,
   });
+}
+
+export async function collectChaseAccountInventory({
+  capture,
+  emit,
+  page,
+}: Pick<BrowserCollectContext, "capture" | "emit" | "page">): Promise<ChaseAccount[]> {
+  const accounts = await discoverAccounts(page);
+  if (accounts.length === 0) {
+    const diagnostics = await readDashboardDiagnostics(page);
+    const surface = classifyChaseAccountsSurface(diagnostics);
+    await capturePageCheckpoint(
+      capture,
+      page,
+      surface === "income_capture_interstitial" ? "dashboard-income-capture-interstitial" : "dashboard-accounts"
+    );
+    await emitNoAccountsDiagnostic(diagnostics, emit);
+    return accounts;
+  }
+  await capturePageCheckpoint(capture, page, "dashboard-accounts");
+  return accounts;
 }
 
 function accountProgressLabel(accountProgress?: { index: number; total: number }): string {
@@ -2519,19 +2554,10 @@ if (isMainModule(import.meta.url)) {
       try {
         await progress("Chase session verified; enumerating accounts");
 
-        const accounts = await discoverAccounts(page);
+        const accounts = await collectChaseAccountInventory({ capture, emit, page });
         if (accounts.length === 0) {
-          const diagnostics = await readDashboardDiagnostics(page);
-          const surface = classifyChaseAccountsSurface(diagnostics);
-          await capturePageCheckpoint(
-            capture,
-            page,
-            surface === "income_capture_interstitial" ? "dashboard-income-capture-interstitial" : "dashboard-accounts"
-          );
-          await emitNoAccountsDiagnostic(diagnostics, emit);
           return; // runtime emits DONE succeeded
         }
-        await capturePageCheckpoint(capture, page, "dashboard-accounts");
 
         // Snapshot the dashboard overview DOM now while the page is still on
         // it — the MDS recent-activity table (tr.mds-activity-table__row

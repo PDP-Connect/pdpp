@@ -50,6 +50,7 @@ import { fileURLToPath } from "node:url";
 import { parseHTML } from "linkedom";
 import { buildBrowserSurfaceDiagnostic } from "../../src/browser-surface-diagnostic.ts";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
+import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
@@ -62,6 +63,7 @@ import {
   chaseNoAccountsDiagnosticMessage,
   chaseTimeRangeField,
   classifyChaseAccountsSurface,
+  collectChaseAccountInventory,
   type EmitDeps,
   emitAccountsStream,
   emitCurrentActivityForAccount,
@@ -77,7 +79,14 @@ import {
   statementRowOutsideTimeRange,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
-import type { ChaseAccount, QfxTransaction, StatementRow, TransactionCursor, TransactionsStateShape } from "./types.ts";
+import type {
+  ChaseAccount,
+  DashboardDiagnostics,
+  QfxTransaction,
+  StatementRow,
+  TransactionCursor,
+  TransactionsStateShape,
+} from "./types.ts";
 
 interface RecordingHarness {
   deps: EmitDeps;
@@ -110,8 +119,10 @@ function htmlMatchesAnySelector(html: string, selectors: readonly string[]): boo
 test("income-capture interstitial is classified only from the observed authenticated checkpoint", () => {
   const html = readFileSync(join(FIXTURE_DIR, "dashboard-income-capture-interstitial.html"), "utf8");
   const { document } = parseHTML(html);
-  const diagnostics = {
+  const diagnostics: DashboardDiagnostics = {
     body_preview: document.body.textContent.replace(/\s+/gu, " ").trim(),
+    income_capture_description_count: document.querySelectorAll("p").length,
+    income_capture_heading_count: document.querySelectorAll("h1, h2, h3, h4, h5, h6").length,
     title: document.title,
     url: "https://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture",
   };
@@ -130,10 +141,88 @@ test("income-capture interstitial is classified only from the observed authentic
     "the income text alone must not classify the accounts overview"
   );
   assert.equal(
-    classifyChaseAccountsSurface({ ...diagnostics, body_preview: "Update Income" }),
+    classifyChaseAccountsSurface({
+      ...diagnostics,
+      income_capture_description_count: 0,
+      body_preview: "Update Income Confirm or update your income",
+    }),
     "unknown",
-    "the route alone must not invent an interstitial classification"
+    "phrase-substring body text must not substitute for paragraph structure"
   );
+  for (const url of [
+    "http://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture",
+    "https://secure.chase.com:8443/web/auth/dashboard#/dashboard/interstitial/income-capture",
+    "https://secure.chase.com/web/auth/dashboard?surface=income#/dashboard/interstitial/income-capture",
+  ]) {
+    assert.equal(classifyChaseAccountsSurface({ ...diagnostics, url }), "unknown", `must reject ${url}`);
+  }
+});
+
+test("zero-account collection captures the interstitial checkpoint before emitting its matching skip", async () => {
+  const html = readFileSync(join(FIXTURE_DIR, "dashboard-income-capture-interstitial.html"), "utf8");
+  const { document } = parseHTML(html);
+  const diagnostics: DashboardDiagnostics = {
+    body_preview: document.body.textContent.replace(/\s+/gu, " ").trim(),
+    income_capture_description_count: document.querySelectorAll("p").length,
+    income_capture_heading_count: document.querySelectorAll("h1, h2, h3, h4, h5, h6").length,
+    title: document.title,
+    url: "https://secure.chase.com/web/auth/dashboard#/dashboard/interstitial/income-capture",
+  };
+  const events: string[] = [];
+  const messages: EmittedMessage[] = [];
+  const page = {
+    content: async (): Promise<string> => html,
+    evaluate: async (): Promise<DashboardDiagnostics> => diagnostics,
+    goto: (url: string): Promise<null> => {
+      events.push(`goto:${url}`);
+      return Promise.resolve(null);
+    },
+    locator: (): { first: () => { waitFor: () => Promise<never> } } => ({
+      first: () => ({ waitFor: async (): Promise<never> => Promise.reject(new Error("account selector absent")) }),
+    }),
+  };
+  const capture: CaptureSession = {
+    baseDir: "/tmp/chase-income-capture-test",
+    captureDom: (_page, label): Promise<void> => {
+      events.push(`capture:${label}`);
+      return Promise.resolve();
+    },
+    captureHttp: (): void => undefined,
+    captureLocatorProbe: (_page, label, _probes): Promise<void> => {
+      events.push(`probe:${label}`);
+      return Promise.resolve();
+    },
+    finalize: (): void => undefined,
+    keepOnSuccess: true,
+    markSucceeded: (): void => undefined,
+    recordRecord: (): void => undefined,
+    runId: "test-income-capture",
+  };
+
+  const accounts = await collectChaseAccountInventory({
+    capture,
+    emit: (message): Promise<void> => {
+      events.push(`emit:${message.type}`);
+      messages.push(message);
+      return Promise.resolve();
+    },
+    page: page as never,
+  });
+
+  assert.deepEqual(accounts, []);
+  assert.deepEqual(events, [
+    "goto:https://secure.chase.com/web/auth/dashboard#/dashboard/overview",
+    "capture:dashboard-income-capture-interstitial",
+    "probe:dashboard-income-capture-interstitial",
+    "emit:SKIP_RESULT",
+  ]);
+  const skip = messages.find(
+    (message): message is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      message.type === "SKIP_RESULT" && message.stream === "accounts"
+  );
+  assert.ok(skip);
+  assert.equal(skip.reason, "selectors_pending");
+  assert.match(skip.message, /income-capture interstitial/i);
 });
 
 test("income-capture checkpoint probes only observed structure and never guesses an action", () => {
