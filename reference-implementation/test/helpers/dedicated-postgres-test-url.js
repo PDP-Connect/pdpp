@@ -26,6 +26,11 @@ export function dedicatedPostgresTestUrl(candidate) {
       parsed.hostname !== '127.0.0.1' ||
       parsed.port !== '55447' ||
       decodeURIComponent(parsed.username) !== 'postgres' ||
+      // `pg` applies query-string connection options after parsing authority
+      // and the path. Reject them entirely so they cannot redirect the
+      // effective host, port, user, or database for a real-Postgres lane.
+      parsed.search ||
+      parsed.hash ||
       !isDedicatedPostgresTestDatabaseName(decodeURIComponent(parsed.pathname.slice(1)))
     ) {
       return null;

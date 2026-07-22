@@ -8,7 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import pg from 'pg';
 import { buildScrubbedTestEnv } from './test-env.js';
-import { isDedicatedPostgresTestDatabaseName } from '../test/helpers/dedicated-postgres-test-url.js';
+import {
+  dedicatedPostgresTestUrl,
+  isDedicatedPostgresTestDatabaseName,
+} from '../test/helpers/dedicated-postgres-test-url.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
@@ -18,6 +21,19 @@ const effectiveArgs = forwardedArgs.includes('--test-force-exit')
   ? forwardedArgs
   : ['--test-force-exit', ...forwardedArgs];
 const requestedConcurrency = Number.parseInt(process.env.PDPP_TEST_CONCURRENCY || '', 10);
+const configuredPostgresTestUrl = process.env.PDPP_TEST_POSTGRES_URL;
+const dedicatedBasePostgresTestUrl = configuredPostgresTestUrl
+  ? dedicatedPostgresTestUrl(configuredPostgresTestUrl)
+  : undefined;
+
+// Validate before the runner derives its admin URL or opens a connection.
+// `pg` lets query parameters override connection-string authority and path,
+// so only the narrow helper contract may enter the real-Postgres lane.
+if (configuredPostgresTestUrl && !dedicatedBasePostgresTestUrl) {
+  throw new Error(
+    'PDPP_TEST_POSTGRES_URL must be a query- and fragment-free dedicated loopback PostgreSQL test URL',
+  );
+}
 
 // --- Per-file Postgres database isolation ---
 //
@@ -134,7 +150,7 @@ async function allocateTestDb(filePath, baseUrl) {
 }
 
 async function runNodeTest(filePath, extraArgs) {
-  const baseUrl = process.env.PDPP_TEST_POSTGRES_URL;
+  const baseUrl = dedicatedBasePostgresTestUrl;
   const baseEnv = buildScrubbedTestEnv(process.env);
 
   // Allocate a per-file DB when a base Postgres URL is configured.

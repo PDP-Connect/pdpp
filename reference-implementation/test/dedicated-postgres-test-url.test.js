@@ -24,3 +24,16 @@ test("dedicated Postgres URL rejects non-dedicated databases and non-loopback ta
     assert.equal(dedicatedPostgresTestUrl(candidate), null, candidate);
   }
 });
+
+test("dedicated Postgres URL rejects query and fragment connection overrides", () => {
+  for (const candidate of [
+    `${LOOPBACK_PREFIX}pdpp_test?host=192.0.2.1`,
+    `${LOOPBACK_PREFIX}pdpp_test?host=%2Fvar%2Frun%2Fpostgresql`,
+    `${LOOPBACK_PREFIX}pdpp_test?port=5432`,
+    `${LOOPBACK_PREFIX}pdpp_test?user=not_postgres`,
+    `${LOOPBACK_PREFIX}pdpp_test?database=not_pdpp_test`,
+    `${LOOPBACK_PREFIX}pdpp_test#not-a-dedicated-target`,
+  ]) {
+    assert.equal(dedicatedPostgresTestUrl(candidate), null, candidate);
+  }
+});
