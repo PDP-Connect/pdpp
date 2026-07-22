@@ -1,0 +1,9 @@
+#!/bin/sh
+# Opt-in AI-assistance trailer. Off unless PDPP_AI_ASSISTED=1.
+# Install: git config core.hooksPath .github/hooks
+
+[ "${PDPP_AI_ASSISTED:-0}" = "1" ] || exit 0
+MSG_FILE="$1"
+grep -qi '^Assisted-by:' "$MSG_FILE" && exit 0
+case "$2" in merge|squash) exit 0 ;; esac
+printf '\nAssisted-by: AI\n' >> "$MSG_FILE"
