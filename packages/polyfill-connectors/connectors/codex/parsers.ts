@@ -70,7 +70,7 @@ function parseFrontmatterLine(line: string, meta: Record<string, string>): void 
   if (!kv) {
     return;
   }
-  const key = kv[1];
+  const [, key] = kv;
   if (!key) {
     return;
   }

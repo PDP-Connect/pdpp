@@ -53,7 +53,7 @@ export function applyScrubRules(content: string, rules: readonly ScrubRule[], fi
     if (typeof rule.replacement === "string") {
       out = out.replace(rule.pattern, rule.replacement);
     } else {
-      const replacement = rule.replacement;
+      const { replacement } = rule;
       out = out.replace(rule.pattern, (substring: string, ...args: string[]) => replacement(substring, ...args));
     }
   }

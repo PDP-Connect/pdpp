@@ -205,7 +205,7 @@ export function createConnectorHttpGovernor(options: ConnectorHttpGovernorOption
   // shared fallback (spec §3). A missing profile is a compile-time error on the
   // options type, so by the time we are here `pacingMinIntervalMs` is always a
   // declared, per-provider value.
-  const pacingMinIntervalMs = options.profile.pacingMinIntervalMs;
+  const { pacingMinIntervalMs } = options.profile;
   const pacingEnabled = pacingInitialIntervalMs > 0;
   // Warm-start: seed from the prior run's learned interval when the connector
   // restored one (already staleness-guarded by readPersistedPacingInterval).

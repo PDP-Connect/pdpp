@@ -12,7 +12,7 @@ export async function resolveRepoRoot(): Promise<string> {
   }
 
   let dir = process.cwd();
-  const root = path.parse(dir).root;
+  const { root } = path.parse(dir);
 
   while (true) {
     const hasWorkspace = await fileExists(path.join(dir, "pnpm-workspace.yaml"));

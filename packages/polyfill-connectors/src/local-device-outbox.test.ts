@@ -685,7 +685,7 @@ test("LocalDeviceOutbox preserves gap rows durably with source-instance scoping 
     assert.equal(claimedOther[0]?.id, "src-1:gap:policy-budget");
 
     // Retryable transition: a gap row can be failed retryable like any other kind.
-    const firstClaim = claimedOther[0];
+    const [firstClaim] = claimedOther;
     assert.ok(firstClaim, "expected claimed gap row");
     outbox.failRetryable({
       error: "destination not ready",
@@ -702,7 +702,7 @@ test("LocalDeviceOutbox preserves gap rows durably with source-instance scoping 
     // Dead-letter transition is reachable when terminal (e.g. malformed gap).
     now = new Date("2026-05-19T12:01:01.000Z");
     const reclaimed = outbox.claimReady({ holder: "worker-a", leaseMs: 30_000, sourceInstanceId: "src-1" });
-    const reclaim = reclaimed[0];
+    const [reclaim] = reclaimed;
     assert.ok(reclaim, "expected reclaim of the gap row");
     assert.equal(reclaim.kind, "gap");
     outbox.deadLetter({

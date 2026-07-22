@@ -246,7 +246,7 @@ async function main(): Promise<void> {
 
   process.stdout.write("\n=== claude_code two-pass bench ===\n");
   process.stdout.write(`Corpus: ${baseDir}\n`);
-  const firstTwoPass = twoPassRuns[0];
+  const [firstTwoPass] = twoPassRuns;
   if (firstTwoPass) {
     process.stdout.write(
       `Records per run: ~${firstTwoPass.records.toLocaleString()} (sessions=${firstTwoPass.sessions}, messages=${firstTwoPass.messages}, attachments=${firstTwoPass.attachments})\n\n`

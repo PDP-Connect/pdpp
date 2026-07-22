@@ -413,7 +413,7 @@ function parseCaptureBody(
   body: unknown
 ): { credentialKind: string | null; secret: string } | null {
   const objectBody = (body as Record<string, unknown> | null) || {};
-  const secret = objectBody.secret;
+  const { secret } = objectBody;
   if (typeof secret !== "string" || secret.length === 0 || Buffer.byteLength(secret, "utf8") > MAX_SECRET_LENGTH) {
     ctx.pdppError(
       res,
@@ -632,7 +632,7 @@ export function mountRefStaticSecretCredentialCapture(app: AppLike, ctx: MountRe
           });
           return;
         }
-        credentialKind = capture.credentialKind;
+        ({ credentialKind: credentialKind } = capture);
         namespace = await ctx.resolveOwnerConnectorNamespace(req, null, {
           ownerSubjectId,
           allowDefaultAccount: false,

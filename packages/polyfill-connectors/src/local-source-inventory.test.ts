@@ -53,7 +53,7 @@ function coverageState(overrides: Record<string, unknown> = {}): Record<string, 
 }
 
 function coverageStores(): Record<string, unknown>[] {
-  const stores = coverageState().stores;
+  const { stores } = coverageState();
   assert.ok(Array.isArray(stores));
   return stores as Record<string, unknown>[];
 }

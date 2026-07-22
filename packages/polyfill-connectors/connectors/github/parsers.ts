@@ -157,7 +157,7 @@ export function repoRecord(r: GitHubRepo): Record<string, unknown> {
 }
 
 export function starredRecord(entry: GitHubStarredEntry): Record<string, unknown> | null {
-  const repo = entry.repo;
+  const { repo } = entry;
   if (!repo) {
     return null;
   }

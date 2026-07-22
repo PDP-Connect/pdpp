@@ -620,7 +620,7 @@ function buildFilterChips(args: {
     // raw shapes: "stream:messages", "-con:abc", "has:link", "before:2026-01-01", or a
     // bare word (free-text search). A leading "-" is the exclude operator. A bare word
     // (no colon) is a free-text search term → property "search".
-    const raw = tk.raw;
+    const { raw } = tk;
     const negated = raw.startsWith("-");
     const body = negated ? raw.slice(1) : raw;
     const colon = body.indexOf(":");
@@ -809,7 +809,7 @@ function QueryInput(props: QueryInputProps) {
         return;
       }
       // At this point kind is "has-image" | "has-link" | "date" — all handled by suggestionToken.
-      const kind = s.kind;
+      const { kind } = s;
       if (kind === "has-image" || kind === "has-link" || kind === "date") {
         props.onDraftChange(appendOperatorToken(props.draft, suggestionToken(kind)));
       }
@@ -1495,7 +1495,7 @@ function SearchHeader({
   query: string;
   recordsBasePath: string;
 }) {
-  const descriptor = data.descriptor;
+  const { descriptor } = data;
   // Exhaustive recall is provable only when the descriptor itself pages to the
   // end (keyword_pageable / complete_chronological). A relevance_bounded set is
   // a ranked SAMPLE — never label its escape "all matching records".
@@ -2071,7 +2071,7 @@ function BurstRow({
   recordsBasePath: string;
   selectedPeekParam: string | null;
 }) {
-  const rep = burst.entries[0];
+  const [rep] = burst.entries;
   const loaded = burst.entries.length;
   const streamLabel = `${rep?.connectionDisplayName ?? rep?.connectorId ?? ""}${rep?.stream ? ` / ${rep.stream}` : ""}`;
   // SLVP preview-content-by-default (review-gated 2026-06-22): a burst is NEVER
@@ -3110,8 +3110,8 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   );
   const selectedConnectionIds = optimisticSelection.connectionIds;
   const selectedStreams = optimisticSelection.streams;
-  const excludeConnectionIds = optimisticSelection.excludeConnectionIds;
-  const excludeStreams = optimisticSelection.excludeStreams;
+  const { excludeConnectionIds } = optimisticSelection;
+  const { excludeStreams } = optimisticSelection;
 
   const parsed = useMemo(() => parseQuery(draft), [draft]);
   const committedParsed = useMemo(() => parseQuery(data.query), [data.query]);

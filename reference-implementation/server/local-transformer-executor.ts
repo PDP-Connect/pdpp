@@ -264,7 +264,7 @@ export class LocalTransformerExecutor {
     });
 
     try {
-      const stdin = session.child.stdin;
+      const { stdin } = session.child;
       if (!stdin) {
         throw new Error("transformer child stdin is unavailable");
       }

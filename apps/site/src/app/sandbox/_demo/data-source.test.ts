@@ -132,7 +132,7 @@ test("queryRecords returns dashboard StreamRecord envelope shape", async () => {
   const page = await ds.queryRecords("acme_payroll_demo", "pay_statements", { limit: 2 });
   assert.equal(page.object, "list");
   assert.ok(page.data.length >= 1);
-  const first = page.data[0];
+  const [first] = page.data;
   if (!first) {
     throw new Error("expected first record");
   }
@@ -176,7 +176,7 @@ test("timeline envelopes use spine event shape with live field set", async () =>
     throw new Error("expected envelope");
   }
   assert.ok(env.events.length > 0);
-  const first = env.events[0];
+  const [first] = env.events;
   if (!first) {
     throw new Error("expected first event");
   }

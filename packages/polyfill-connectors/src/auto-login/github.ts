@@ -138,7 +138,7 @@ async function handleTotpIfAsked(page: Page, { sendInteraction }: HandlerArgs): 
   if (resp.status !== "success" || !resp.data?.code) {
     throw new Error("github_totp_not_provided");
   }
-  const code = resp.data.code;
+  const { code } = resp.data;
 
   await totpField.fill(code);
   await page.locator('button[type="submit"], input[type="submit"]').first().click();

@@ -199,7 +199,7 @@ function parseCoverageDiagnosticStateEntry(rawEntry: unknown): {
     return null;
   }
   const store = typeof entry.store === "string" && entry.store ? entry.store : null;
-  const status = entry.status;
+  const { status } = entry;
   if (
     !store ||
     (typeof entry.stream !== "string" && entry.stream !== null) ||
@@ -245,7 +245,7 @@ export function parseCoverageDiagnosticsStateSnapshot(
   ) {
     return { ...empty, malformed: true };
   }
-  const stores = rawState.stores;
+  const { stores } = rawState;
 
   const expectedByStore = new Map(expected.map((entry) => [entry.store, entry]));
   const rows: SafeCoverageDiagnosticStore[] = [];

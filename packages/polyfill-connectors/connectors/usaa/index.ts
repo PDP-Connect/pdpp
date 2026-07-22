@@ -558,7 +558,7 @@ function sanitizeDiagnosticInfo(diag: DiagnosticInfo): DiagnosticInfo {
 }
 
 function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
-  const artifact = diag.artifact;
+  const { artifact } = diag;
   if (!artifact) {
     return null;
   }
@@ -571,7 +571,7 @@ function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
   if (artifact.cdpError) {
     parts.push(`cdpError=${artifact.cdpError.slice(0, ID_TEXT_SNIP)}`);
   }
-  const firstCandidate = artifact.candidates[0];
+  const [firstCandidate] = artifact.candidates;
   if (firstCandidate) {
     const firstParts = [
       firstCandidate.source,
@@ -897,7 +897,7 @@ async function extractAccounts(page: Page): Promise<DashboardAccount[]> {
       const amounts = [...text.matchAll(DOLLAR_RE)]
         .map((m) => (m[1] ? m[1] : null))
         .filter((v): v is string => Boolean(v));
-      const firstAmount = amounts[0];
+      const [firstAmount] = amounts;
       const balanceCents = firstAmount ? Math.round(Number(firstAmount.replace(COMMA_RE_LOCAL, "")) * 100) : null;
       out.push({
         account_id_raw: accountId,
@@ -1285,7 +1285,7 @@ async function waitForCsvArtifact(
   if (result.kind === "response") {
     return { buffer: result.response.body, suggestedFilename: result.response.suggestedFilename };
   }
-  const download = result.download;
+  const { download } = result;
   try {
     const { buffer, outcome } = await readPlaywrightDownloadBufferDetailed(download);
     if (buffer.length > 0) {
@@ -2087,9 +2087,9 @@ function scrapeStatementsIndex(page: Page): Promise<DocRow[]> {
     }
     return [...t.querySelectorAll("tbody tr")].map((tr: El, rowIndex: number) => {
       const cells = [...tr.querySelectorAll("td")] as El[];
-      const c0 = cells[0];
-      const c1 = cells[1];
-      const c2 = cells[2];
+      const [c0] = cells;
+      const [, c1] = cells;
+      const [, , c2] = cells;
       return {
         rowIndex,
         title: (c0?.innerText || "").replace(WS_RE, " ").trim(),
@@ -2326,9 +2326,9 @@ function scrapeInboxRows(page: Page): Promise<InboxRow[]> {
     }
     return [...t.querySelectorAll("tbody tr")].map((tr: El) => {
       const cells = [...tr.querySelectorAll("td")] as El[];
-      const c0 = cells[0];
-      const c1 = cells[1];
-      const c2 = cells[2];
+      const [c0] = cells;
+      const [, c1] = cells;
+      const [, , c2] = cells;
       return {
         status: (c0?.innerText || "").replace(WS_RE, " ").trim(),
         date_short: (c1?.innerText || "").replace(WS_RE, " ").trim(),

@@ -183,7 +183,7 @@ function parseShippingAddress(shipEl: Element | null): { recipient_name: string 
       return normText(span ?? li);
     })
     .filter(Boolean);
-  const first = lines[0];
+  const [first] = lines;
   const recipient_name = first && first.length < RECIPIENT_MAX_LEN ? first : null;
   const summary = lines.length ? lines.join(", ").slice(0, ADDRESS_MAX_LEN) : null;
   return { recipient_name, summary };

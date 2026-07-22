@@ -214,11 +214,11 @@ function readNextDataPageProps(html: string): StructuredPageProps | null {
   if (typeof parsed !== "object" || parsed === null) {
     return null;
   }
-  const props = (parsed as { props?: unknown }).props;
+  const { props } = parsed as { props?: unknown };
   if (typeof props !== "object" || props === null) {
     return null;
   }
-  const pageProps = (props as { pageProps?: unknown }).pageProps;
+  const { pageProps } = props as { pageProps?: unknown };
   if (typeof pageProps !== "object" || pageProps === null) {
     return null;
   }
@@ -392,7 +392,7 @@ export function resolveStructuredMaxPage(
     if (typeof entry !== "object" || entry === null) {
       continue;
     }
-    const to = (entry as { to?: unknown }).to;
+    const { to } = entry as { to?: unknown };
     if (typeof to !== "string") {
       continue;
     }
@@ -664,7 +664,7 @@ export function parseOrderDetailDom(html: string): OrderDetail | null {
 
 export function isIncapsulaBlocked(html: string): boolean {
   const { document } = parseHTML(html);
-  const body = document.body;
+  const { body } = document;
   if (!body) {
     return false;
   }

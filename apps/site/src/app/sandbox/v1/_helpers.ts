@@ -90,7 +90,7 @@ function reassembleHost(hostname: string, suffix: string): string {
 }
 
 export function sandboxIssuerFromRequest(request: Request): string {
-  const headers = request.headers;
+  const { headers } = request;
   const forwardedHost = firstHeaderValue(headers.get("x-forwarded-host"));
   const forwardedProto = firstHeaderValue(headers.get("x-forwarded-proto"));
   const hostHeader = firstHeaderValue(headers.get("host"));

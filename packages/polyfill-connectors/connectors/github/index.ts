@@ -332,7 +332,7 @@ export async function collectRepositories(ctx: StreamCtx): Promise<void> {
     });
     const result = await emitRepositoriesPage(ctx, page.data, priorPushed, latestPushed);
     latestPushed = result.latest;
-    stop = result.stop;
+    ({ stop: stop } = result);
     path = page.nextUrl;
     pageIndex++;
   }
@@ -421,7 +421,7 @@ export async function collectStarred(ctx: StreamCtx): Promise<void> {
     });
     const result = await emitStarredPage(ctx, page.data, priorStarred, latestStarred);
     latestStarred = result.latest;
-    stop = result.stop;
+    ({ stop: stop } = result);
     droppedTotal += result.dropped;
     path = page.nextUrl;
     pageIndex++;
@@ -681,7 +681,7 @@ async function emitPullRequestPage(
       continue;
     }
     const item = await emitPullRequestItem(ctx, it, latest);
-    latest = item.latest;
+    ({ latest: latest } = item);
     emitted++;
     if (item.detailFailed) {
       detailFailed++;
@@ -735,8 +735,8 @@ async function drainPrSearchWindow(
     }
     const items = page.data.items || [];
     const result = await emitPullRequestPage(ctx, items, sinceParam, until, latest);
-    latest = result.latest;
-    stop = result.stop;
+    ({ latest: latest } = result);
+    ({ stop: stop } = result);
     detailFailed += result.detailFailed;
     emitted += result.emitted;
     fetchedCount += items.length;

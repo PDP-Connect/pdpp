@@ -51,7 +51,7 @@ export function createStderrTailBuffer({ capBytes = DEFAULT_CAP_BYTES }: { capBy
     chunks.push(buf);
     kept += buf.length;
     while (kept > capBytes && chunks.length > 0) {
-      const head = chunks[0];
+      const [head] = chunks;
       if (head === undefined) {
         break;
       }

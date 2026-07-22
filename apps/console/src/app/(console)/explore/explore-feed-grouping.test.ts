@@ -501,7 +501,7 @@ test("burst latestAt = NEWEST member even when burst members arrive shuffled (no
   const groups = groupFeedWithBursts(feed, NOW_MS);
   const units = groups[0]?.units ?? [];
   assert.equal(units.length, 1, "one burst unit");
-  const unit = units[0];
+  const [unit] = units;
   assert.ok(unit && unit.kind === "burst", "the unit is a burst");
   // latestAt is the NEWEST member, not the first array member.
   assert.equal(unit.latestAt, "2026-06-19T14:41:00Z", "latestAt = newest member, not entries[0] of input");

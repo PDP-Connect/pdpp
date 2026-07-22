@@ -336,7 +336,7 @@ function appendSqlitePartitionPageCursor(
   if (!cursorValues) {
     return;
   }
-  const seek = PARTITION_PAGE_DIRECTION_SQL[direction].seek;
+  const { seek } = PARTITION_PAGE_DIRECTION_SQL[direction];
   whereParts.push(`(${semanticExpression} ${seek} ? OR (${semanticExpression} = ? AND record_key ${seek} ?))`);
   binds.push(...cursorValues);
 }
@@ -782,7 +782,7 @@ async function postgresFetchSnapshotAnchor(): Promise<{ snapshotSeq: number; sna
     `SELECT MAX(id) AS "maxSeq", MAX(emitted_at) AS "maxAt" FROM records WHERE deleted = FALSE`,
     []
   );
-  const row = result.rows[0];
+  const [row] = result.rows;
   if (!row || row.maxSeq === null || row.maxSeq === undefined) {
     return null;
   }
@@ -815,7 +815,7 @@ function postgresPartitionPageCursorClause(
     return "";
   }
   params.push(...cursorValues);
-  const seek = PARTITION_PAGE_DIRECTION_SQL[direction].seek;
+  const { seek } = PARTITION_PAGE_DIRECTION_SQL[direction];
   return `AND (${semanticExpression} ${seek} $${params.length - 2} OR (${semanticExpression} = $${params.length - 1} AND record_key ${seek} $${params.length}))`;
 }
 

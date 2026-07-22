@@ -93,7 +93,7 @@ export default async function RunDetailPage({
     notFound();
   }
 
-  const events = envelope.events;
+  const { events } = envelope;
   const connectorId = events.find((e) => e.actor_type === "runtime")?.actor_id ?? null;
 
   const checkpoints = summarizeCheckpoints(events);
@@ -589,7 +589,7 @@ function extractViolation(failure: SpineEvent | undefined): ViolationShape | nul
   if (!raw || typeof raw !== "object") {
     return null;
   }
-  const subtype = (raw as { subtype?: unknown }).subtype;
+  const { subtype } = (raw as { subtype?: unknown });
   if (typeof subtype !== "string" || subtype.length === 0) {
     return null;
   }

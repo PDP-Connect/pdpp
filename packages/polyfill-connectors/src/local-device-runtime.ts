@@ -267,7 +267,7 @@ async function sendQueueItem(
   client: Pick<LocalDeviceClient, "ingestBatch">,
   item: LocalDeviceQueueItem
 ): Promise<void> {
-  const firstRecord = item.records[0];
+  const [firstRecord] = item.records;
   if (!firstRecord) {
     throw new Error(`local device batch has no records: ${item.batch_id}`);
   }

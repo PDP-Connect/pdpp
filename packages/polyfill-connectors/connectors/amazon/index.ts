@@ -991,7 +991,7 @@ export async function processListOrder(
   if (!deps.skipDetail) {
     const result = await resolveOrderDetail(page, flags, listOrder.orderId);
     if (result.status === "hydrated") {
-      detail = result.detail;
+      ({ detail: detail } = result);
     } else {
       detailGapReason = result.reason;
       detailFailureKind = result.failureKind;

@@ -611,7 +611,7 @@ export function mountRefConnectionSetDisplayName(app: AppLike, ctx: MountRefConn
 // ─── Action routes (run / schedule put / pause / resume / delete) ───────
 
 function readExplicitRunForce(req: RouteRequest): boolean {
-  const body = req.body;
+  const { body } = req;
   return Boolean(
     body && typeof body === "object" && !Array.isArray(body) && (body as { force?: unknown }).force === true
   );
@@ -640,7 +640,7 @@ function isStringArray(values: unknown): values is string[] {
 }
 
 function readRunResourcesObject(req: RouteRequest): Record<string, unknown> | undefined {
-  const body = req.body;
+  const { body } = req;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
     return;
   }

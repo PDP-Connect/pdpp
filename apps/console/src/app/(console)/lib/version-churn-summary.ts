@@ -322,7 +322,7 @@ export function summarizeVersionChurn(rows: readonly RefRecordVersionStatsRow[])
   /** Per-disposition counts, for the view's section framing. */
   dispositions: ChurnDispositionCounts;
 } | null {
-  const strongest = rows[0];
+  const [strongest] = rows;
   if (!strongest) {
     return null;
   }

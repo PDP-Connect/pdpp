@@ -533,9 +533,9 @@ export function toSourceInstanceView(
   } else {
     accountLine = formatSourceListFacts(summary, sourceStreamNames.length);
   }
-  const primaryVerdictAction = actionability.primaryVerdictAction;
+  const { primaryVerdictAction } = actionability;
   const nextAction = primaryVerdictAction?.ownerRunnable ? null : actionability.nextAction;
-  const ownerActionCue = actionability.ownerActionCue;
+  const { ownerActionCue } = actionability;
   const status = actionability.renderedStatus;
 
   const streams: SourceStreamManifestRow[] = sourceStreamNames.map((name) => {

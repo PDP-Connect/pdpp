@@ -342,7 +342,7 @@ export function buildMessageRecord(parsed: ParsedMessage): RecordData {
 
 /** Flatten a parsed message's reactions into one record per (emoji, user). */
 export function buildReactionRecords(parsed: ParsedMessage): RecordData[] {
-  const reactions = parsed.blob.reactions;
+  const { reactions } = parsed.blob;
   if (!Array.isArray(reactions)) {
     return [];
   }

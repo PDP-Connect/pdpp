@@ -676,7 +676,7 @@ function timelineRecordToEntry(
   // generic "Id:" card. The role no longer round-trips through capabilities.)
   // Undeclared streams resolve to EMPTY_DECLARED_FIELD_ROLES → the honest generic card.
   const droles = declaredFieldRoles.get(metaKey) ?? EMPTY_DECLARED_FIELD_ROLES;
-  const kind = classifyRecordKind(rec.stream, data, dtypes, undefined, droles).kind;
+  const { kind } = classifyRecordKind(rec.stream, data, dtypes, undefined, droles);
   // Prefer the server's authoritative SEMANTIC time — the exact value the timeline
   // is ORDERED by — so display == sort by construction. Re-deriving from manifest
   // metadata is the seam that silently showed emitted_at when the per-connector
@@ -1233,7 +1233,7 @@ function toTimeRangeEntry({
   }
   // Declared roles seam (empty default; see declaredRolesFromCapabilities).
   const declaredFieldRoles = declaredRolesFromCapabilities(fieldCapabilities);
-  const kind = classifyRecordKind(streamName, data, declaredFieldTypes, undefined, declaredFieldRoles).kind;
+  const { kind } = classifyRecordKind(streamName, data, declaredFieldTypes, undefined, declaredFieldRoles);
   return {
     blobAffordance: buildBlobAffordance(data, fieldCapabilities) ?? undefined,
     connectorId: summary.connector_id,
@@ -1521,7 +1521,7 @@ function detectSingleStreamDoor(
   if (filtered.length === 0) {
     return null;
   }
-  const first = filtered[0];
+  const [first] = filtered;
   if (!first) {
     return null;
   }
@@ -1536,7 +1536,7 @@ function detectSingleStreamDoor(
   if (matchingSummaries.length !== 1 || !matchingSummaries[0]) {
     return null;
   }
-  const summary = matchingSummaries[0];
+  const [summary] = matchingSummaries;
   return {
     connectorId: sharedConnector,
     connectionId: summary.connection_id,
@@ -1589,13 +1589,13 @@ async function loadMostRecentSingleStream(
       emittedAt: hit.emitted_at,
       metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
     });
-    const kind = classifyRecordKind(
+    const { kind } = classifyRecordKind(
       streamName,
       null,
       metadata.declaredFieldTypes,
       metadata.fieldNames,
       declaredFieldRoles.get(metaKey)
-    ).kind;
+    );
     return {
       blobAffordance: undefined,
       connectorId: summary.connector_id,
@@ -1825,11 +1825,11 @@ async function loadSearchFeed(
   }
   if (!hybridUsed) {
     const probe = await probeLexical(query, searchSort, searchCursor, dataSource);
-    hits = probe.hits;
-    lexicalRecallExhaustive = probe.lexicalRecallExhaustive;
-    hasMoreRecords = probe.hasMoreRecords;
-    lexicalNextCursor = probe.lexicalNextCursor;
-    lexicalHasMore = probe.lexicalHasMore;
+    ({ hits: hits } = probe);
+    ({ lexicalRecallExhaustive: lexicalRecallExhaustive } = probe);
+    ({ hasMoreRecords: hasMoreRecords } = probe);
+    ({ lexicalNextCursor: lexicalNextCursor } = probe);
+    ({ lexicalHasMore: lexicalHasMore } = probe);
     if (probe.warning) {
       warnings.push(probe.warning);
     }

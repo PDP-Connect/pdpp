@@ -271,7 +271,7 @@ function deriveSetupState(
   hasSetupMaterial: boolean,
   running: boolean
 ): StaticSecretSetupState {
-  const status = input.instance.status;
+  const { status } = input.instance;
   if (status === "active") {
     return "active";
   }

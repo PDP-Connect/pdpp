@@ -115,7 +115,7 @@ test("local transformer executor accepts only an exact current-generation reply"
   const children: FakeChild[] = [];
   const executor = executorFor(children);
   const work = executor.embed("private input", "backend-a", { modelId: "model" });
-  const child = children[0];
+  const [child] = children;
   assert.ok(child);
   const job = child.job();
 
@@ -147,7 +147,7 @@ test("local transformer executor bounds parent admission before writing and reco
   const first = executor.embed("first", "backend-a", {});
   const second = executor.embed("second", "backend-a", {});
   await assert.rejects(executor.embed("third private input", "backend-a", {}), assertCode("transformer_work_busy"));
-  const child = children[0];
+  const [child] = children;
   assert.ok(child);
   assert.equal(child.writes.length, 2, "saturated admission must not write a third job");
   assert.equal(children.length, 1, "saturated admission must not spawn another child");
@@ -190,7 +190,7 @@ test("deadline fences immediately, then rejects only after confirmed TERM exit",
   const children: FakeChild[] = [];
   const executor = executorFor(children, { deadlineMs: 5, termGraceMs: 30 });
   const work = executor.embed("input", "backend-a", {});
-  const child = children[0];
+  const [child] = children;
   assert.ok(child);
   await delay(7);
   assert.deepEqual(child.signals, ["SIGTERM"]);
@@ -208,7 +208,7 @@ test("TERM-ignore uses KILL and still waits for confirmed exit before cleanup", 
   const children: FakeChild[] = [];
   const executor = executorFor(children, { deadlineMs: 5, termGraceMs: 5, killGraceMs: 15 });
   const work = executor.embed("input", "backend-a", {});
-  const child = children[0];
+  const [child] = children;
   assert.ok(child);
   child.onKill = (signal) => {
     if (signal === "SIGKILL") {
@@ -225,7 +225,7 @@ test("termination rejects new admission and cannot replace before the old child 
   const children: FakeChild[] = [];
   const executor = executorFor(children, { deadlineMs: 5, termGraceMs: 40, killGraceMs: 40 });
   const first = executor.embed("input", "backend-a", {});
-  const firstChild = children[0];
+  const [firstChild] = children;
   assert.ok(firstChild);
   await delay(10);
   await assert.rejects(executor.embed("new input", "backend-a", {}), assertCode("transformer_terminating"));
@@ -235,7 +235,7 @@ test("termination rejects new admission and cannot replace before the old child 
   await assert.rejects(first, assertCode("transformer_deadline"));
   const second = executor.embed("new input", "backend-a", {});
   assert.equal(children.length, 2, "replacement starts only after confirmed old exit");
-  const secondChild = children[1];
+  const [, secondChild] = children;
   assert.ok(secondChild);
   secondChild.reply({ ...secondChild.job(), vector: [2] });
   await assert.doesNotReject(second);
@@ -270,7 +270,7 @@ test("local backend keeps semantic preflight available across a confirmed deadli
     }
   );
   const first = backend.embedDocument("first");
-  const firstChild = children[0];
+  const [firstChild] = children;
   assert.ok(firstChild);
   firstChild.onKill = (signal) => {
     if (signal === "SIGTERM") {
@@ -281,7 +281,7 @@ test("local backend keeps semantic preflight available across a confirmed deadli
   assert.equal(backend.available(), true, "a confirmed lifecycle failure must not deadlock preflight");
 
   const second = backend.embedDocument("second");
-  const secondChild = children[1];
+  const [, secondChild] = children;
   assert.ok(secondChild, "the confirmed old exit permits a replacement generation");
   secondChild.reply({ ...secondChild.job(), vector: [0.1, 0.2, 0.3] });
   assert.deepEqual(
@@ -333,7 +333,7 @@ test("spawn and stdin failure fence safely without exposing source input", async
   const asyncErrorChildren: FakeChild[] = [];
   const asyncErrorExecutor = executorFor(asyncErrorChildren);
   const asyncErrorWork = asyncErrorExecutor.embed("secret input", "backend-a", {});
-  const asyncErrorChild = asyncErrorChildren[0];
+  const [asyncErrorChild] = asyncErrorChildren;
   assert.ok(asyncErrorChild);
   asyncErrorChild.onKill = (signal) => {
     if (signal === "SIGTERM") {
@@ -369,7 +369,7 @@ test("close handles an already-exited child without waiting a full grace period"
   const children: FakeChild[] = [];
   const executor = executorFor(children, { termGraceMs: 80 });
   const work = executor.embed("input", "backend-a", {});
-  const child = children[0];
+  const [child] = children;
   assert.ok(child);
   child.onEnd = () => child.exit();
   const started = performance.now();

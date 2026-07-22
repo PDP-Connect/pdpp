@@ -65,7 +65,7 @@ function isScalarAggregateSchema(fieldSchema: FieldSchema | null | undefined): b
   if (types.size !== 1) {
     return false;
   }
-  const only = [...types][0];
+  const [only] = [...types];
   return only !== undefined && AGGREGATE_SCALAR_SCHEMA_TYPES.has(only);
 }
 

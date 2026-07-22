@@ -177,7 +177,7 @@ export function sanitizeForJsonl(v: unknown): unknown {
 // ─── BODYSTRUCTURE walking ──────────────────────────────────────────────
 
 function isAttachmentLikeBodystructureLeaf(node: MessageStructureObject): boolean {
-  const disposition = node.disposition;
+  const { disposition } = node;
   const filename = node.dispositionParameters?.filename ?? node.parameters?.name ?? null;
   const contentId = node.id || null;
   const isTextLeaf = typeof node.type === "string" && node.type.startsWith("text/");
@@ -452,7 +452,7 @@ export function parseReferencesHeader(rawHeaders: Buffer | string | null | undef
   if (!match?.[1]) {
     return [];
   }
-  const value = match[1];
+  const [, value] = match;
   const ids: string[] = [];
   let m: RegExpExecArray | null = ANGLE_ID_RE.exec(value);
   while (m !== null) {

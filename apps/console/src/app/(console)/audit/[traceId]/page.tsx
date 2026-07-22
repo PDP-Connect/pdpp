@@ -239,7 +239,7 @@ function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
 }
 
 function ProgressGroupTableRow({ events, startIndex }: { events: SpineEvent[]; startIndex: number }) {
-  const first = events[0];
+  const [first] = events;
   const last = events.at(-1);
   if (!(first && last)) {
     return null;
@@ -315,7 +315,7 @@ export default async function TraceDetailPage({
     notFound();
   }
 
-  const events = envelope.events;
+  const { events } = envelope;
   const first = events[0] ?? null;
   const actorLabel = first ? `${first.actor_type}/${first.actor_id}` : null;
 

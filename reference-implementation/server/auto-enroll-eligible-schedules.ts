@@ -154,7 +154,7 @@ function getListingFacts(caps: ManifestCapabilities): ListingFacts {
 }
 
 function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | null {
-  const auth = caps.auth;
+  const { auth } = caps;
   if (!auth || typeof auth !== "object" || Array.isArray(auth)) {
     return null;
   }
@@ -162,7 +162,7 @@ function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | 
   if (a.kind !== "env") {
     return null;
   }
-  const required = a.required;
+  const { required } = a;
   if (!Array.isArray(required) || required.length === 0) {
     return null;
   }
@@ -442,7 +442,7 @@ export async function autoEnrollEligibleSchedules(opts: AutoEnrollOptions): Prom
 
 function errorMessage(err: unknown): string {
   if (err instanceof Error) {
-    const code = (err as { code?: unknown }).code;
+    const { code } = (err as { code?: unknown });
     if (typeof code === "string" && code.length > 0) {
       return `${code}: ${err.message}`;
     }

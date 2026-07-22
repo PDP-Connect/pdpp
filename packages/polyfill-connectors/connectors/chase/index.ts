@@ -2116,7 +2116,7 @@ export async function runCurrentActivity(
     return;
   }
 
-  const account = filteredAccounts[0];
+  const [account] = filteredAccounts;
   if (!account) {
     return;
   }

@@ -146,7 +146,7 @@ function readCollectionFactsFromTerminalData(data: Record<string, unknown> | nul
   if (!block || typeof block !== "object" || Array.isArray(block)) {
     return null;
   }
-  const streams = (block as { streams?: unknown }).streams;
+  const { streams } = (block as { streams?: unknown });
   if (!Array.isArray(streams)) {
     return null;
   }

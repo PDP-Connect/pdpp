@@ -309,7 +309,7 @@ test("decodeBodystructureForAttachments: keeps inline non-text leaves with Conte
   } as MessageStructureObject;
   const items = decodeBodystructureForAttachments(tree, "msg-cid-image", "2024-01-15T12:00:00.000Z");
   assert.equal(items.length, 1, "cid-referenced inline images are real attachments");
-  const item = items[0];
+  const [item] = items;
   assert.ok(item, "expected one item");
   assert.equal(item.part_index, "2");
   assert.equal(item.content_type, "image/png");
@@ -625,7 +625,7 @@ test("buildThreadRecord: serializes ThreadAggregate to the emit shape", () => {
   assert.equal(rec.message_count, 3);
   assert.equal(rec.first_message_date, "2024-01-10T00:00:00.000Z");
   assert.equal(rec.last_message_date, "2024-01-20T00:00:00.000Z");
-  const labels = rec.labels;
+  const { labels } = rec;
   assert.ok(Array.isArray(labels));
   assert.deepEqual([...labels].sort(), ["INBOX", "Work"]);
   assert.equal(rec.unread_count, 1);

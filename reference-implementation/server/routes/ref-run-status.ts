@@ -162,7 +162,7 @@ function readConnectorId(event: RunStatusLifecycleEvent | null): string | null {
   }
   const source = event.data?.source;
   if (source && typeof source === "object" && !Array.isArray(source)) {
-    const id = (source as Record<string, unknown>).id;
+    const { id } = (source as Record<string, unknown>);
     if (typeof id === "string" && id) {
       return id;
     }

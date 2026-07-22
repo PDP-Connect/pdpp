@@ -1334,7 +1334,7 @@ if (isMainModule(import.meta.url)) {
         phase: "fetch",
         cursor_present: false,
       });
-      const budgets = budgetsRes.data.budgets;
+      const { budgets } = budgetsRes.data;
       const budgetIds = budgets.map((b) => b.id);
       await progressWithCounters("Fetched budgets", {
         stream: "budgets",

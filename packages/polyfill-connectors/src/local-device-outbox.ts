@@ -944,7 +944,7 @@ export class LocalDeviceOutbox {
       if (!isRecord(rowLike)) {
         continue;
       }
-      const status = rowLike.status;
+      const { status } = rowLike;
       const total = numberFrom(rowLike.total);
       summary.total += total;
       if (status === "ready") {
@@ -1474,8 +1474,8 @@ function asOutboxRow(row: unknown): LocalDeviceOutboxRow {
   if (!isRecord(row)) {
     throw new Error("local outbox query returned a non-object row");
   }
-  const kind = row.kind;
-  const status = row.status;
+  const { kind } = row;
+  const { status } = row;
   if (typeof row.acknowledged_at !== "string" && row.acknowledged_at !== null) {
     throw new Error("local outbox row has invalid acknowledged_at");
   }

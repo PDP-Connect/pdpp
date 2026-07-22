@@ -54,7 +54,7 @@ export function isAcceptedCollectorProtocolVersion(
 export function readCollectorProtocolHeader(headers: Record<string, string | string[] | undefined>): string | null {
   const raw = headers[COLLECTOR_PROTOCOL_HEADER];
   if (Array.isArray(raw)) {
-    const first = raw[0];
+    const [first] = raw;
     return typeof first === "string" && first.trim() ? first.trim() : null;
   }
   if (typeof raw === "string" && raw.trim()) {

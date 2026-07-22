@@ -124,7 +124,7 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
   };
   let events: SpineEvent[] = [];
   if (Array.isArray(r.events)) {
-    events = r.events;
+    ({ events: events } = r);
   } else if (Array.isArray(r.data)) {
     events = r.data;
   }

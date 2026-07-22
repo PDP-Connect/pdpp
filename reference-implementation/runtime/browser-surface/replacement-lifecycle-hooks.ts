@@ -138,8 +138,8 @@ async function recordBrowserGeneration(input: {
   if (!(input.result.ok && input.result.browserGenerationHash)) {
     return;
   }
-  const leaseStore = input.leaseStore;
-  const surface = input.surface;
+  const { leaseStore } = input;
+  const { surface } = input;
   const generationHash = input.result.browserGenerationHash;
   const persistedSurface = await leaseStore.getSurface(surface.surface_id);
   const pending = await pendingForReadiness(input.receiptStore, surface);

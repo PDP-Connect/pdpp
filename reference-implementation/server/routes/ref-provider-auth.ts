@@ -667,8 +667,8 @@ function validateCallbackStateAndCode(
     return rejectWithStateInvalid(ctx, res);
   }
 
-  const connectorId = pending.connectorId;
-  const ownerSubjectId = pending.ownerSubjectId;
+  const { connectorId } = pending;
+  const { ownerSubjectId } = pending;
   const now = ctx.now ? ctx.now() : new Date().toISOString();
 
   if (now > pending.expiresAt) {

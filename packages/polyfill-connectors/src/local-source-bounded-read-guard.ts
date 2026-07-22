@@ -136,11 +136,11 @@ function declaresFilesystemBinding(manifest: unknown): boolean {
   if (typeof runtimeRequirements !== "object" || runtimeRequirements === null) {
     return false;
   }
-  const bindings = (runtimeRequirements as { bindings?: unknown }).bindings;
+  const { bindings } = runtimeRequirements as { bindings?: unknown };
   if (typeof bindings !== "object" || bindings === null) {
     return false;
   }
-  const filesystem = (bindings as { filesystem?: unknown }).filesystem;
+  const { filesystem } = bindings as { filesystem?: unknown };
   return (
     typeof filesystem === "object" && filesystem !== null && (filesystem as { required?: unknown }).required === true
   );

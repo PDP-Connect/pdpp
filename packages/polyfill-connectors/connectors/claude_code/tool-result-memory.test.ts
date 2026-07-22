@@ -68,7 +68,7 @@ test("small tool-result: preview + full byte count", async () => {
   await mkdir(join(dir, "tool-results"), { recursive: true });
   const emitted = await emitFor("r.txt", "small output");
   assert.equal(emitted.length, 1);
-  const rec = emitted[0];
+  const [rec] = emitted;
   assert.ok(rec);
   assert.equal(rec.stream, "attachments");
   assert.equal(rec.data.event_type, "tool_result_file");
@@ -86,7 +86,7 @@ test("huge tool-result: preview is bounded, content_bytes is the FULL size", asy
   const body = "L".repeat(fullSize);
   const emitted = await emitFor("big.txt", body);
   assert.equal(emitted.length, 1);
-  const rec = emitted[0];
+  const [rec] = emitted;
   assert.ok(rec);
   // content_bytes is the WHOLE file, not the bounded prefix.
   assert.equal(rec.data.content_bytes, fullSize);
@@ -102,7 +102,7 @@ test("binary tool-result: preview null + binary reason set", async () => {
   await mkdir(join(dir, "tool-results"), { recursive: true });
   const emitted = await emitFor("bin.txt", Buffer.from([0x61, 0x00, 0x62]));
   assert.equal(emitted.length, 1);
-  const rec = emitted[0];
+  const [rec] = emitted;
   assert.ok(rec);
   assert.equal(rec.data.content_preview, null);
   assert.ok(typeof rec.data.content_binary_reason === "string");

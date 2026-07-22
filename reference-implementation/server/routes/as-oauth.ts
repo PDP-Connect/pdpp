@@ -335,7 +335,7 @@ export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
   // refresh_token branches delegate to `auth.js` capabilities injected
   // via context.
   const handler: RouteHandler = async (req, res) => {
-    const body = req.body;
+    const { body } = req;
     if (body?.grant_type === "authorization_code") {
       return handleAuthCodeExchange(req, body, res, ctx);
     }

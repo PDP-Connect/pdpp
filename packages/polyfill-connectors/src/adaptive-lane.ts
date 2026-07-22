@@ -240,7 +240,7 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     minDelayMs = options.minDelayMs,
     maxDelayMs = options.maxDelayMs
   ): number => {
-    const retryAfterMs = outcome.retryAfterMs;
+    const { retryAfterMs } = outcome;
     if (retryAfterMs != null) {
       return clampInt(retryAfterMs, minDelayMs, maxDelayMs);
     }
@@ -483,7 +483,7 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     task: (context: AdaptiveLaneRunContext) => T | Promise<T>,
     runOptions: AdaptiveLaneRunOptions = {}
   ): Promise<T> => {
-    const signal = runOptions.signal;
+    const { signal } = runOptions;
     ensureNotCancelled(signal);
     if (options.maxQueueSize >= 0 && queue.size + queue.pending >= options.maxQueueSize) {
       const error = new AdaptiveLaneQueueFullError(options.name, options.maxQueueSize);

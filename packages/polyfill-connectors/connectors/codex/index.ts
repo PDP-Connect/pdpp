@@ -632,7 +632,7 @@ function emitMessageRecord(
   ts: string | null,
   emitRecord: (stream: string, data: RecordData) => void
 ): void {
-  const sessionId = state.sessionId;
+  const { sessionId } = state;
   if (!sessionId) {
     return;
   }
@@ -653,7 +653,7 @@ function registerFunctionCall(
   ts: string | null,
   emitRecord: (stream: string, data: RecordData) => void
 ): void {
-  const sessionId = state.sessionId;
+  const { sessionId } = state;
   if (!sessionId) {
     return;
   }
@@ -684,7 +684,7 @@ function applyFunctionCallOutput(
   ts: string | null,
   emitRecord: (stream: string, data: RecordData) => void
 ): void {
-  const sessionId = state.sessionId;
+  const { sessionId } = state;
   if (!sessionId) {
     return;
   }
@@ -1189,7 +1189,7 @@ async function buildFileCursorAfterParse(path: string, result: ParseRolloutFileR
   // record a size that disagrees with what we committed.
   let mtimeMs = 0;
   try {
-    mtimeMs = statSync(path).mtimeMs;
+    ({ mtimeMs: mtimeMs } = statSync(path));
   } catch {
     mtimeMs = 0;
   }
@@ -1585,7 +1585,7 @@ function emitStateCursors({
 
 function readPriorSessionsSourceMtimeMs(startMsg: StartMessage): number | null {
   const state = startMsg.state || {};
-  const sessions = state.sessions;
+  const { sessions } = state;
   const value =
     sessions && typeof sessions === "object" && !Array.isArray(sessions)
       ? (sessions as Record<string, unknown>).source_mtime_ms
@@ -1613,11 +1613,11 @@ function rawFingerprintMap(startMsg: unknown): Record<string, unknown> | null {
   if (!startMsg || typeof startMsg !== "object") {
     return null;
   }
-  const state = (startMsg as Record<string, unknown>).state;
+  const { state } = startMsg as Record<string, unknown>;
   if (!state || typeof state !== "object") {
     return null;
   }
-  const sessions = (state as Record<string, unknown>).sessions;
+  const { sessions } = state as Record<string, unknown>;
   if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) {
     return null;
   }

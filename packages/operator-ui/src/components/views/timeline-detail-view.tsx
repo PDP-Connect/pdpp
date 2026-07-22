@@ -32,7 +32,7 @@ function exploreWindowFromEnvelope(envelope: TimelineEnvelope): { since: string;
     return null;
   }
   const sorted = timestamps.slice().sort();
-  const firstTimestamp = sorted[0];
+  const [firstTimestamp] = sorted;
   const lastTimestamp = sorted.at(-1);
   if (!(firstTimestamp && lastTimestamp)) {
     return null;

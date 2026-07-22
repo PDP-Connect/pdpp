@@ -66,7 +66,7 @@ function extractMeta(value: unknown): CanonicalEnvelopeMeta {
     : [];
   let count: CanonicalCountMeta | null = null;
   if (isPlainObject(meta.count)) {
-    const kind = (meta.count as { kind?: unknown }).kind;
+    const { kind } = (meta.count as { kind?: unknown });
     const rawValue = (meta.count as { value?: unknown }).value;
     if (kind === "exact" || kind === "estimated" || kind === "none") {
       count = {

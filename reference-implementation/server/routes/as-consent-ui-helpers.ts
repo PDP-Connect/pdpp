@@ -896,7 +896,7 @@ function buildSourceNarrowingControls(card: PendingConsentCard, ui: ConsentUiRen
   if (streams.length === 0) {
     return "";
   }
-  const index = card.index;
+  const { index } = card;
   const streamRows = streams
     .map((stream) => {
       const encoded = encodeStreamKey(stream.name);
@@ -990,7 +990,7 @@ function renderBatchConsentHtml(
   providerName: string,
   ui: ConsentUiRenderer
 ): string {
-  const request = pending.request;
+  const { request } = pending;
   const client = request.client || {};
   const clientDisplay = buildConsentClientDisplay(client, ui);
   const cards = Array.isArray(pending.cards) ? pending.cards : [];
@@ -1097,7 +1097,7 @@ export function renderPendingGrantConsentHtml(
     return renderBatchConsentHtml(pending, requestUri, csrfToken, csrfFieldName, providerName, ui);
   }
 
-  const request = pending.request;
+  const { request } = pending;
   const client = request.client || {};
   const selection = request.selection || {};
   const sourceBinding = request.source_binding;

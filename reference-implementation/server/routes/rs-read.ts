@@ -443,7 +443,7 @@ async function runWithVisibilityRejection<T>(
   } catch (err) {
     if (err instanceof errorType) {
       const mapped = new Error((err as Error).message) as Error & { code?: string };
-      const code = (err as Error & { code?: string }).code;
+      const { code } = (err as Error & { code?: string });
       if (code !== undefined) {
         mapped.code = code;
       }
@@ -711,7 +711,7 @@ export function mountRsConnectors(app: AppLike, ctx: MountRsReadContext): void {
           // Eagerly resolve the grant so the rejected-query path has the
           // correct source descriptor even if connector-item assembly throws.
           const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
-          const source = grantResolved.source;
+          const { source } = grantResolved;
           queryContext.sourceDescriptor = source;
           dependencies = {
             getSourceDescriptor: () => source,
@@ -892,7 +892,7 @@ async function buildClientSchemaGetPlan(
     },
   };
   const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
-  const source = grantResolved.source;
+  const { source } = grantResolved;
   queryContext.sourceDescriptor = source;
   const ownerSubjectId = ctx.ownerSubjectIdForBindings(tokenInfo);
   return {
@@ -1297,7 +1297,7 @@ async function buildStreamsListClientPlan(
   queryContext: QueryContext,
   tokenInfo: TokenInfo
 ): Promise<StreamsListPlan> {
-  const grant = tokenInfo.grant;
+  const { grant } = tokenInfo;
   const grantResolved = await ctx.resolveGrantManifest(tokenInfo, ctx.opts);
   const streamListFreshnessEvidence = await ctx.getConnectorFreshnessEvidence({
     source: grantResolved.source,
@@ -1646,7 +1646,7 @@ export function mountRsStreamAggregate(app: AppLike, ctx: MountRsReadContext): v
 
         const scope = await resolveReadScope(ctx, req, tokenInfo, queryContext);
         const { storageBinding, manifest } = scope;
-        const sourceDescriptor = scope.sourceDescriptor;
+        const { sourceDescriptor } = scope;
         // Owner aggregate runs against a synthetic single-stream read grant;
         // client aggregate uses the bearer's grant.
         const grant: GrantLike | null = isOwner ? ctx.buildOwnerReadGrant(streamName) : (tokenInfo.grant ?? null);
@@ -1679,7 +1679,7 @@ export function mountRsStreamAggregate(app: AppLike, ctx: MountRsReadContext): v
         if (outcome.rejected) {
           return;
         }
-        const result = outcome.result;
+        const { result } = outcome;
 
         await emitDisclosureServed(ctx, {
           req,
@@ -2556,7 +2556,7 @@ async function serveResolvedBlob(
     }
     throw opErr;
   }
-  const blob = output.blob;
+  const { blob } = output;
   res.setHeader("Content-Type", blob.mime_type);
   res.setHeader("Content-Length", String(blob.size_bytes));
   res.setHeader("Cache-Control", "private, no-store");

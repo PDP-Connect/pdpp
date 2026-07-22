@@ -236,7 +236,7 @@ function maybeApplyPostSubmitOutcome(): void {
   if (state.postSubmitOutcomes.length === 0) {
     return;
   }
-  const outcome = state.postSubmitOutcomes[0];
+  const [outcome] = state.postSubmitOutcomes;
   if (!outcome) {
     return;
   }
@@ -449,7 +449,7 @@ function formsLocator(): Locator {
 }
 
 function makePage(initial: FakePageInit = {}): Page {
-  let forms = initial.forms;
+  let { forms } = initial;
   if (!forms) {
     if (initial.view === "login") {
       forms = defaultLoginForms();

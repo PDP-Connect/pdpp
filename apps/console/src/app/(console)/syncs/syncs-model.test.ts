@@ -196,7 +196,7 @@ test("source-pressure cooldown produces a WAIT card, never a reconnect prompt", 
   });
 
   assert.equal(model.failureCards.length, 1, "a cooling connection still gets an honest card");
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
   if (!card) {
     throw new Error("expected a failure card");
   }
@@ -242,7 +242,7 @@ test("a genuine blocked connection (no backlog, no next attempt) DOES prompt rec
     connectors: [connector({ connection_health: reallyBlocked })],
     runs: [],
   });
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
   assert.equal(card?.summary.cta, "reconnect", "genuine credential failure keeps the reconnect CTA");
   assert.equal(model.band.needYourHand, 1, "a genuine block counts under need-your-hand");
 });
@@ -538,7 +538,7 @@ test("a draft connection produces a PendingSetupCard, not a SyncGroup or Failure
   assert.equal(model.groups.length, 0, "a draft has no run/schedule/stream evidence to form a SyncGroup");
   assert.equal(model.failureCards.length, 0, "a draft is not a rendered-verdict-derived defect");
   assert.equal(model.pendingSetupCards.length, 1);
-  const card = model.pendingSetupCards[0];
+  const [card] = model.pendingSetupCards;
   assert.ok(card);
   assert.equal(card.connectionId, "cin_draft");
   assert.equal(card.connectorId, "gmail");
@@ -648,7 +648,7 @@ test("a failing connection holds its next and marks rows failed", () => {
     connectors: [connector({ connection_health: failHealth, schedule: schedule() })],
     runs: [run({ connection_id: "cin_test", status: "failed" })],
   });
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.equal(group?.health, "failing");
   assert.equal(group?.streams[0]?.failed, true);
   assert.equal(group?.streams[0]?.next, "held");
@@ -686,7 +686,7 @@ test("a broken connector does not rewrite a successful last run into sync failed
     runs: [],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.equal(group?.health, "failing", "the group still shows the current connector state");
   assert.equal(group?.lastRunDelta, "+52 records", "last result remains the successful run fact");
   assert.equal(
@@ -730,7 +730,7 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
   assert.equal(card?.summary.prose, "This connector needs a code fix before it can collect again.");
   assert.equal(card?.summary.cta, "wait");
   assert.equal(card?.summary.actionLabel, "Connector code needs a fix");
@@ -762,7 +762,7 @@ test("failure cards bind retryable gaps to the rendered Retry now action", () =>
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
   assert.equal(card?.summary.prose, "Retry now to give the recoverable gap another run.");
   assert.equal(card?.summary.cta, "connection_detail");
   assert.equal(card?.summary.actionLabel, "Retry now");
@@ -801,7 +801,7 @@ test("failure cards bind stale manual refresh to Refresh now without marking hea
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
   assert.equal(card?.summary.prose, "Run a refresh to bring this up to date.");
   assert.equal(card?.summary.actionLabel, "Refresh now");
   assert.equal(card?.summary.ownerActionRequired, false);
@@ -839,7 +839,7 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
   assert.equal(card?.summary.prose, "Check the collector before this source can make progress.");
   assert.equal(card?.summary.cta, "connection_detail");
   assert.equal(card?.summary.actionLabel, "Check the collector");
@@ -885,7 +885,7 @@ test("device-local recovery counts as need-your-hand while navigating to recover
     runs: [],
   });
 
-  const card = model.failureCards[0];
+  const [card] = model.failureCards;
   assert.equal(card?.summary.cta, "connection_detail");
   assert.equal(card?.summary.actionLabel, "See recovery steps");
   assert.equal(card?.summary.ownerActionRequired, true);
@@ -1388,7 +1388,7 @@ test("per-stream collectedThisRun is populated from collection_report when prese
     runs: [],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.ok(group, "group must exist");
   const byStream = new Map(group.streams.map((r) => [r.stream, r]));
 
@@ -1419,7 +1419,7 @@ test("two streams with different collection_report entries show DIFFERENT values
     runs: [run({ connection_id: "cin_multi", event_count: 42, status: "succeeded" })],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.ok(group, "group must exist");
   const byStream = new Map(group.streams.map((r) => [r.stream, r]));
 
@@ -1452,7 +1452,7 @@ test("connection-level last-run facts live on the group, not on each stream row"
     runs: [],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.ok(group, "group must exist");
 
   // Connection-level facts on the group header.
@@ -1527,7 +1527,7 @@ test("streamSkipped is true only when collection_report entry has a skip", () =>
     runs: [],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   assert.ok(group);
   const byStream = new Map(group.streams.map((r) => [r.stream, r]));
   assert.equal(byStream.get("transactions")?.streamSkipped, true, "skipped stream is marked");
@@ -1564,7 +1564,7 @@ test("a stream with a real collected count keeps its per-stream truth when the c
     ],
   });
 
-  const group = model.groups[0];
+  const [group] = model.groups;
   const byStream = new Map((group?.streams ?? []).map((r) => [r.stream, r]));
 
   // The core assertion: a stream with its own collection_report entry shows

@@ -247,14 +247,14 @@ test("injection refuses an empty recovered secret", () => {
 
 test("registry is frozen so the env var ground truth cannot be mutated at runtime", () => {
   assert.ok(Object.isFrozen(STATIC_SECRET_CONNECTOR_REGISTRY));
-  const amazon = STATIC_SECRET_CONNECTOR_REGISTRY.amazon;
-  const chase = STATIC_SECRET_CONNECTOR_REGISTRY.chase;
-  const gmail = STATIC_SECRET_CONNECTOR_REGISTRY.gmail;
-  const github = STATIC_SECRET_CONNECTOR_REGISTRY.github;
-  const slack = STATIC_SECRET_CONNECTOR_REGISTRY.slack;
-  const reddit = STATIC_SECRET_CONNECTOR_REGISTRY.reddit;
-  const chatgpt = STATIC_SECRET_CONNECTOR_REGISTRY.chatgpt;
-  const usaa = STATIC_SECRET_CONNECTOR_REGISTRY.usaa;
+  const { amazon } = STATIC_SECRET_CONNECTOR_REGISTRY;
+  const { chase } = STATIC_SECRET_CONNECTOR_REGISTRY;
+  const { gmail } = STATIC_SECRET_CONNECTOR_REGISTRY;
+  const { github } = STATIC_SECRET_CONNECTOR_REGISTRY;
+  const { slack } = STATIC_SECRET_CONNECTOR_REGISTRY;
+  const { reddit } = STATIC_SECRET_CONNECTOR_REGISTRY;
+  const { chatgpt } = STATIC_SECRET_CONNECTOR_REGISTRY;
+  const { usaa } = STATIC_SECRET_CONNECTOR_REGISTRY;
   assert.ok(amazon);
   assert.ok(chase);
   assert.ok(chatgpt);

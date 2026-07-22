@@ -521,7 +521,7 @@ function assertRunStartedIsStamped(input: SpineEventInput): void {
   }
   const data = (input.data ?? {}) as Record<string, unknown>;
   const epoch = data.boot_epoch;
-  const seq = data.seq;
+  const { seq } = data;
   if (typeof epoch !== "string" || epoch.length === 0) {
     throw new Error(
       "emitSpineEvent: run.started requires data.boot_epoch (string uuid); controller singleton not initialized? " +
@@ -909,7 +909,7 @@ function connectorIdFromEvent(ev: SpineEventRecord): string | null {
       return id;
     }
   }
-  const source = d.source;
+  const { source } = d;
   if (source && typeof source === "object") {
     const normalized = normalizeSourceObject(source);
     if (normalized?.kind === "connector") {
@@ -1126,7 +1126,7 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
   if (events.length === 0) {
     return null;
   }
-  const first = events[0];
+  const [first] = events;
   const last = events.at(-1);
   if (!(first && last)) {
     return null;

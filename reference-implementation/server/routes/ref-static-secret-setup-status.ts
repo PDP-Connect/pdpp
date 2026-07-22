@@ -169,7 +169,7 @@ function bindingKind(sourceBinding: unknown): string | null {
   if (!sourceBinding || typeof sourceBinding !== "object" || Array.isArray(sourceBinding)) {
     return null;
   }
-  const kind = (sourceBinding as { kind?: unknown }).kind;
+  const { kind } = (sourceBinding as { kind?: unknown });
   return typeof kind === "string" ? kind : null;
 }
 

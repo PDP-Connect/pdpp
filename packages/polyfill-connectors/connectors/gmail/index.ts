@@ -1394,7 +1394,7 @@ async function fetchGmailMessageByMessageId(
   if (!uids || uids.length === 0) {
     return null;
   }
-  const uid = uids[0];
+  const [uid] = uids;
   if (uid == null) {
     return null;
   }
@@ -2030,7 +2030,7 @@ async function runDeltaPass(
   if (session.fullResync || session.priorModseq === undefined || session.priorModseq === null) {
     return;
   }
-  const priorModseq = session.priorModseq;
+  const { priorModseq } = session;
   const priorModseqBig = typeof priorModseq === "bigint" ? priorModseq : BigInt(priorModseq);
   await emit({
     type: "PROGRESS",
@@ -2194,7 +2194,7 @@ async function runAllMailPasses(
   state: Record<string, unknown>,
   deps: AllMailDeps
 ): Promise<void> {
-  const mailbox = client.mailbox;
+  const { mailbox } = client;
   if (!mailbox) {
     fail("mailbox not selected after lock");
     return;

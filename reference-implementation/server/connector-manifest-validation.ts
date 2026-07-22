@@ -68,7 +68,7 @@ export function isReferenceCompatibleCursorSchema(fieldSchema: unknown): boolean
   if (nonNull.length !== 1) {
     return false;
   }
-  const only = nonNull[0];
+  const [only] = nonNull;
   if (only === "integer" || only === "number") {
     return true;
   }
@@ -108,7 +108,7 @@ export function validateBlobRefSchemaDeclaration(
     );
   }
   const schema = fieldSchema as Record<string, unknown>;
-  const properties = schema.properties;
+  const { properties } = schema;
   if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
     throw invalidConnectorManifest(`Stream '${stream.name as string}' blob_ref must declare object properties`, code);
   }
@@ -247,7 +247,7 @@ const EXTERNAL_TOOL_DETECT_ALLOWED_KEYS = new Set(["args", "executable", "exit_c
 // runtime_requirements object without bindings is accepted verbatim). Returns
 // `true` once bindings are present and fully validated.
 function validateRuntimeBindings(req: Record<string, unknown>, code: string): boolean {
-  const bindings = req.bindings;
+  const { bindings } = req;
   if (bindings === undefined || bindings === null) {
     return false;
   }
@@ -532,7 +532,7 @@ function validateRefreshPolicyFields(pol: Record<string, unknown>, code: string)
 }
 
 export function validateRefreshPolicyCapability(manifest: Record<string, unknown>, code: string): void {
-  const capabilities = manifest.capabilities;
+  const { capabilities } = manifest;
   if (capabilities === undefined || capabilities === null) {
     return;
   }
@@ -551,7 +551,7 @@ export function validateRefreshPolicyCapability(manifest: Record<string, unknown
 }
 
 export function validateManifestSensitivity(manifest: Record<string, unknown>, code: string): void {
-  const sensitivity = manifest.sensitivity;
+  const { sensitivity } = manifest;
   if (sensitivity === undefined) {
     return;
   }
@@ -741,7 +741,7 @@ export function validateStreamExpandDeclarations({
 }
 
 export function validateStreamAvailabilityDeclaration(stream: Record<string, unknown>, code: string): void {
-  const availability = stream.availability;
+  const { availability } = stream;
   if (availability === undefined || availability === null) {
     return;
   }

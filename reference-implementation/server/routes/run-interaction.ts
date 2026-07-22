@@ -142,9 +142,9 @@ export function mountRefDevPlaygroundSession(app: AppLike, ctx: MountRefDevPlayg
       const body = req.body != null && typeof req.body === "object" ? (req.body as Record<string, unknown>) : null;
       let backend: string | undefined;
       if (typeof req.query?.backend === "string") {
-        backend = req.query.backend;
+        ({ backend: backend } = req.query);
       } else if (body && typeof body.backend === "string") {
-        backend = body.backend;
+        ({ backend: backend } = body);
       }
       let streamDebug: string | undefined;
       if (typeof req.query?.stream_debug === "string") {

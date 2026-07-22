@@ -369,7 +369,7 @@ test("P1 assembler: streamSeeAllLinks is non-empty when the time-range fan-out h
     result.streamSeeAllLinks.length > 0,
     "streamSeeAllLinks must be non-empty when a time-range fan-out stream has has_more=true"
   );
-  const link = result.streamSeeAllLinks[0];
+  const [link] = result.streamSeeAllLinks;
   assert.equal(link?.connectionId, "ynab-1", "see-all link must carry the correct connectionId");
   assert.equal(link?.stream, "transactions", "see-all link must carry the correct stream");
 });

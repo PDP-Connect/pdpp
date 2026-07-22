@@ -376,7 +376,7 @@ test("createChatGptApi.fetchBatch posts capped conversation batch requests", asy
 
   const api = createChatGptApi({ capture: null, page: fakePage as Page });
   assert.ok(api.fetchBatch, "production ChatGPT API exposes fetchBatch");
-  const fetchBatch = api.fetchBatch;
+  const { fetchBatch } = api;
   const results = await fetchBatch(["c1", "c2"]);
 
   assert.equal(results.length, 2);
@@ -2899,7 +2899,7 @@ test("runMessagesAndConversationsWithDetail: a cap trip over a large tail writes
     Array.from({ length: 10 }, (_, i) => `convo-${26 + i}`)
   );
 
-  const backlog = backlogGaps[0];
+  const [backlog] = backlogGaps;
   assert.equal(backlog?.record_key, "__chatgpt_conversation_backlog__");
   // Watermark is a content-derived update_time ISO (NOT an offset). It equals the
   // NEWEST update_time of the un-materialized backlog (convo-36 — the first folded
@@ -3617,7 +3617,7 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
       update_time: 1_700_000_000 + index,
     })
   );
-  const pressureItem = listItems[29];
+  const [, , , , , , , , , , , , , , , , , , , , , , , , , , , , , pressureItem] = listItems;
   assert.ok(pressureItem, "fixture must include the 30th list item");
 
   const fetches: string[] = [];

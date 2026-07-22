@@ -1083,7 +1083,7 @@ function parseTerminalFactEvent(row: Row): { payload: Row; streams: unknown[] } 
  * `stream-facts-checkpoint-proof-parity.test.js`.
  */
 function factCheckpointProvesDurableCoverage(fact: Row): boolean {
-  const checkpoint = fact.checkpoint;
+  const { checkpoint } = fact;
   return checkpoint === "committed" || checkpoint === "disabled";
 }
 
@@ -1131,7 +1131,7 @@ function mergeEventStreamFacts(
     if (!rawFact || typeof rawFact !== "object" || Array.isArray(rawFact)) {
       continue;
     }
-    const stream = (rawFact as Row).stream;
+    const { stream } = (rawFact as Row);
     if (typeof stream !== "string" || !stream) {
       continue;
     }

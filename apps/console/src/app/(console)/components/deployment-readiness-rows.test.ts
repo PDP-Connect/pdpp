@@ -334,8 +334,8 @@ test("diskHeadroomRows returns one row per entry", () => {
     ],
   });
   assert.equal(rows.length, 2);
-  const dataRow = rows[0];
-  const postgresRow = rows[1];
+  const [dataRow] = rows;
+  const [, postgresRow] = rows;
   assert.ok(dataRow);
   assert.ok(postgresRow);
   assert.match(dataRow.check, /data/);

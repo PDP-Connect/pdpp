@@ -274,7 +274,7 @@ function isSafeResourceStreamName(stream: string): boolean {
 }
 
 function readRunResources(req: RouteRequest): Readonly<Record<string, readonly string[]>> | undefined {
-  const body = req.body;
+  const { body } = req;
   if (!(body && typeof body === "object" && !Array.isArray(body))) {
     return;
   }

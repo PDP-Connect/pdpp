@@ -44,7 +44,7 @@ test("pdppSafeText rejects U+0000", () => {
   const result = pdppSafeText.safeParse("hello\u0000world");
   assert.equal(result.success, false);
   if (!result.success) {
-    const issue = result.error.issues[0];
+    const [issue] = result.error.issues;
     assert.ok(issue);
     assert.match(issue.message, /PDPP-safe Unicode text/);
   }
@@ -140,7 +140,7 @@ test("error message references blobs table for caller remediation", () => {
   const result = pdppSafeText.safeParse("bad\u0000");
   assert.equal(result.success, false);
   if (!result.success) {
-    const issue = result.error.issues[0];
+    const [issue] = result.error.issues;
     assert.ok(issue);
     assert.match(issue.message, /blobs table/);
   }

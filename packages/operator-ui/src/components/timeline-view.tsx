@@ -199,7 +199,7 @@ function summarizeStreams(events: SpineEvent[]): StreamBreakdown[] {
 }
 
 function ProgressGroupRow({ events, startIndex }: { events: SpineEvent[]; startIndex: number }) {
-  const first = events[0];
+  const [first] = events;
   const last = events.at(-1);
   if (!(first && last)) {
     return null;

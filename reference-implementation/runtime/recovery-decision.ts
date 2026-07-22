@@ -724,7 +724,7 @@ export function summarizeRecoveryAdmissionDiagnostics(
       admission.nextEligibleAt &&
       (nextEligibleAt === null || admission.nextEligibleAt < nextEligibleAt)
     ) {
-      nextEligibleAt = admission.nextEligibleAt;
+      ({ nextEligibleAt: nextEligibleAt } = admission);
     }
   }
   const deferred = candidateRows.length - admitted;

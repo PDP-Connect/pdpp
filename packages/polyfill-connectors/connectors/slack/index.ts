@@ -1059,7 +1059,7 @@ export async function emitMessagesPass(
   let maxMessageTs: string | null = null;
   for (const r of rows) {
     const parsed = parseMessageRow(r, nowIso());
-    const ts = parsed.ts;
+    const { ts } = parsed;
     // Track the max ts seen in this run for the post-loop STATE emit.
     // Slack ts is a fixed-shape "seconds.micros" string; string compare
     // matches numeric order because both halves are zero-padded by Slack.

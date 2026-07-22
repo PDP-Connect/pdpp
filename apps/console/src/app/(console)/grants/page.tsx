@@ -96,7 +96,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     const demo = await import("./grants-demo-data.ts");
     const demoData = demo.buildGrantsDemoData();
     result = demoData.grants;
-    approvals = demoData.approvals;
+    ({ approvals: approvals } = demoData);
   } else {
     try {
       [result, approvals] = await Promise.all([listGrants(filters), listPendingApprovals()]);

@@ -294,7 +294,7 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
     throw new Error("attention-writer: runId is required");
   }
   const connectionId = String(opts.connectionId || connectorId).trim();
-  const store = opts.store;
+  const { store } = opts;
   if (!store || typeof store.upsertAttention !== "function" || typeof store.transitionAttention !== "function") {
     throw new Error("attention-writer: store must implement upsertAttention and transitionAttention");
   }
@@ -385,7 +385,7 @@ export function createAttentionWriter(opts: AttentionWriterOptions) {
       if (!requestId) {
         return null;
       }
-      const kind = msg.kind;
+      const { kind } = msg;
       const dedupeKey = dedupeKeyForInteraction(msg);
       const attentionId = makeAttentionId(requestId);
       const now = nowIso();

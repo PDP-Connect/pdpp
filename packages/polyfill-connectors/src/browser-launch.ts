@@ -260,7 +260,7 @@ export function configuredBrowserChannel(env: Record<string, string | undefined>
 export function isCdpAttachSessionRaceError(err: unknown): boolean {
   let message = "";
   if (err instanceof Error) {
-    message = err.message;
+    ({ message: message } = err);
   } else if (typeof err === "string") {
     message = err;
   }

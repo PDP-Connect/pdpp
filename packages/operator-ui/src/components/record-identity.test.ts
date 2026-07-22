@@ -127,7 +127,7 @@ function previewFor(input: {
 }) {
   const roles = input.roles ?? EMPTY_DECLARED_FIELD_ROLES;
   const types = input.types ?? {};
-  const kind = classifyRecordKind(input.stream, input.data, types, undefined, roles).kind;
+  const { kind } = classifyRecordKind(input.stream, input.data, types, undefined, roles);
   return buildRecordPreview(kind, input.data, types, roles);
 }
 

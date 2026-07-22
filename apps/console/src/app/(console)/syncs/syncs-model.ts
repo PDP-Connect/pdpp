@@ -480,7 +480,7 @@ function buildSyncRows(input: {
   failing: boolean;
 }): { rows: SyncRow[]; lastFailed: boolean; lastRun: RunSummary | null } {
   const { connector, connectionRuns, failing } = input;
-  const schedule = connector.schedule;
+  const { schedule } = connector;
   const cadence = describeCadence(schedule);
   const lastRun = connectionRuns.find((r) => isTerminalRunStatus(r.status)) ?? connectionRuns[0] ?? null;
   const lastFailed = lastRun ? FAILED_RUN_STATUSES.has(lastRun.status) : false;
@@ -617,7 +617,7 @@ function collapseDuplicateFallbackProjections(projections: readonly SyncProjecti
     for (const projection of sortedBucket) {
       collapsedIds.add(projection.connector.connection_id);
     }
-    const first = sortedBucket[0];
+    const [first] = sortedBucket;
     if (!first) {
       continue;
     }
@@ -693,7 +693,7 @@ function projectSyncProjection(input: {
   }
   const actionability = projectSourceActionability(connector);
   const summary = actionability.failureSummary;
-  const work = actionability.work;
+  const { work } = actionability;
   const renderedHealth = connector.rendered_verdict ? renderedStatusGroupHealth(actionability.renderedStatus) : null;
   const failing = (renderedHealth ?? connectionHealth(summary)) === "failing";
   const connectionRuns = connectionRunHistory({ connector, runs });

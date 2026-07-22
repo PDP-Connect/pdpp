@@ -122,7 +122,7 @@ async function locatorIsVisible(locator: Locator): Promise<boolean> {
 }
 
 async function clickRedditLoginSubmit(page: Page): Promise<boolean> {
-  const getByRole = (page as Pick<Page, "getByRole">).getByRole;
+  const { getByRole } = page as Pick<Page, "getByRole">;
   if (typeof getByRole === "function") {
     const semantic = getByRole.call(page, "button", { name: SUBMIT_BUTTON_NAME_RE }).first();
     if (await locatorIsVisible(semantic)) {

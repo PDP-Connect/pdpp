@@ -1177,7 +1177,7 @@ function acquisitionMediaCoverageLabel(mediaCoverage: unknown): string | null {
   if (!mediaCoverage || typeof mediaCoverage !== "object") {
     return null;
   }
-  const status = (mediaCoverage as { status?: unknown }).status;
+  const { status } = (mediaCoverage as { status?: unknown });
   return typeof status === "string" && status.length > 0 ? `media ${status.replaceAll("_", " ")}` : null;
 }
 

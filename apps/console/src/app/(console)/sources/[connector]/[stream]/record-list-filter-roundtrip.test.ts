@@ -71,7 +71,7 @@ function readExactFiltersReplica(searchParams: Record<string, string | string[] 
     if (!match) {
       continue;
     }
-    const field = match[1];
+    const [, field] = match;
     const raw = Array.isArray(value) ? value[0] : value;
     if (field && typeof raw === "string" && raw.length > 0) {
       filters[field] = raw;

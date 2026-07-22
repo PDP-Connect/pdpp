@@ -109,7 +109,7 @@ export function mountAsPolyfillConnectorRegister(app: AppLike, ctx: MountAsPolyf
 export function mountAsPolyfillConnectorDetail(app: AppLike, ctx: MountAsPolyfillConnectorsContext): void {
   const handler: RouteHandler = async (req, res) => {
     try {
-      const connectorId = req.params.connectorId;
+      const { connectorId } = req.params;
       if (!connectorId) {
         ctx.pdppError(res, 400, "invalid_request", "connectorId is required");
         return;

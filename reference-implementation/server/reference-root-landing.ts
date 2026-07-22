@@ -166,9 +166,9 @@ export function servedRootLandingIfBrowser(
   res: LandingResponse,
   options: LandingOptions
 ): boolean {
-  const role = options.role;
-  const providerName = options.providerName;
-  const referenceRevision = options.referenceRevision;
+  const { role } = options;
+  const { providerName } = options;
+  const { referenceRevision } = options;
 
   if (req.query && req.query.format === "json") {
     return false;

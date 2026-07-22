@@ -504,7 +504,7 @@ function projectUsablePageTargetCount(baseUrl: string, targets: unknown): Target
   }
 
   const pageTargets = targets.filter((entry): entry is UsableDevtoolsPageTarget => isUsablePageTarget(entry));
-  const pageTarget = pageTargets[0];
+  const [pageTarget] = pageTargets;
   if (!pageTarget) {
     return {
       ok: false,

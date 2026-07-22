@@ -763,8 +763,8 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       policy,
       priorState,
     });
-    const done = streamResult.done;
-    const bufferedState = streamResult.bufferedState;
+    const { done } = streamResult;
+    const { bufferedState } = streamResult;
     const enqueueResult = {
       enqueuedBatches: streamResult.enqueuedBatches,
       recordsQueued: streamResult.recordsQueued,
@@ -1085,7 +1085,7 @@ function coverageEntryFromRecord(
   if (message.stream !== COVERAGE_DIAGNOSTICS_STREAM) {
     return null;
   }
-  const data = message.data;
+  const { data } = message;
   const dataStore = isRecord(data) && typeof data.store === "string" && data.store ? data.store : null;
   const keyStore = typeof message.key === "string" && message.key ? message.key : null;
   const store = dataStore ?? keyStore;
@@ -2471,7 +2471,7 @@ async function sendQueueItem(
   client: Pick<LocalDeviceClient, "ingestBatch">,
   item: LocalDeviceQueueItem
 ): Promise<void> {
-  const firstRecord = item.records[0];
+  const [firstRecord] = item.records;
   if (!firstRecord) {
     throw new Error(`collector batch has no records: ${item.batch_id}`);
   }
@@ -2533,7 +2533,7 @@ class BoundedStderrBuffer {
     this.#chunks.push(chunk);
     this.#size += chunk.length;
     while (this.#size > this.#limit && this.#chunks.length > 0) {
-      const head = this.#chunks[0];
+      const [head] = this.#chunks;
       if (!head) {
         break;
       }

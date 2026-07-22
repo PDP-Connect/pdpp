@@ -111,7 +111,7 @@ test("the CDP-fallback frame is sized to CONTAIN inside its host on both axes, n
   if (!frameStyleMatch) {
     throw new Error("the CDP-fallback frame's aspect-ratio style block must exist");
   }
-  const frameStyle = frameStyleMatch[0];
+  const [frameStyle] = frameStyleMatch;
 
   assert.ok(
     !(FRAME_WIDTH_100_RE.test(frameStyle) && FRAME_HEIGHT_100_RE.test(frameStyle)),

@@ -267,7 +267,7 @@ test("extractFromQfx: credit-card OFX tree with single STMTTRN", () => {
   };
   const out = extractFromQfx(parsed);
   assert.equal(out.transactions.length, 1);
-  const t = out.transactions[0];
+  const [t] = out.transactions;
   assert.ok(t);
   assert.equal(t.fitid, "FITIDX1");
   assert.equal(t.date, "2026-04-21");
@@ -405,7 +405,7 @@ test("parseCurrentActivityDom: extracts pending and posted UI-visible rows", () 
   const rows = parseCurrentActivityDom(readFixture("current-activity-minimal.html"), "2026-05-15");
   assert.equal(rows.length, 2);
 
-  const pending = rows[0];
+  const [pending] = rows;
   assert.ok(pending);
   assert.equal(pending.status, "pending");
   assert.equal(pending.activity_date, "2026-05-14");
@@ -414,7 +414,7 @@ test("parseCurrentActivityDom: extracts pending and posted UI-visible rows", () 
   assert.equal(pending.description, "Whole Foods Market");
   assert.equal(pending.ui_transaction_id, "txn_20260514_A1");
 
-  const posted = rows[1];
+  const [, posted] = rows;
   assert.ok(posted);
   assert.equal(posted.status, "posted");
   assert.equal(posted.activity_date, "2026-05-13");
@@ -454,8 +454,8 @@ test("currentActivityId: positional MDS row ids fall back to transaction content
     </tbody></table>
   `;
 
-  const first = parseCurrentActivityDom(slotOneHtml, "2026-05-15")[0];
-  const later = parseCurrentActivityDom(slotOneLaterHtml, "2026-05-15")[0];
+  const [first] = parseCurrentActivityDom(slotOneHtml, "2026-05-15");
+  const [later] = parseCurrentActivityDom(slotOneLaterHtml, "2026-05-15");
   assert.ok(first);
   assert.ok(later);
   assert.equal(first.ui_transaction_id, null);
@@ -575,7 +575,7 @@ test("parseStatementsListDom: extracts statement rows (tax documents skipped)", 
   const rows = parseStatementsListDom(html);
   // Tax document row is filtered out; 3 statement rows remain (2 from table 0, 1 from table 1)
   assert.equal(rows.length, 3);
-  const first = rows[0];
+  const [first] = rows;
   assert.ok(first);
   assert.equal(first.rowAnchorId, "accountsTable-0-row0-cell3-requestThisDocumentAnchor-download");
   assert.equal(first.tableIdx, "0");
@@ -585,12 +585,12 @@ test("parseStatementsListDom: extracts statement rows (tax documents skipped)", 
   assert.equal(first.account_reference, "SAPPHIRE PREFERRED (...9241)");
   assert.match(first.title, /Apr 13, 2026 Statement SAPPHIRE PREFERRED/);
   // Second-row checks
-  const second = rows[1];
+  const [, second] = rows;
   assert.ok(second);
   assert.equal(second.rowAnchorId, "accountsTable-0-row1-cell3-requestThisDocumentAnchor-download");
   assert.equal(second.doc_kind, "Statement");
   // Third row is on a different table idx, so account_reference flips
-  const third = rows[2];
+  const [, , third] = rows;
   assert.ok(third);
   assert.equal(third.tableIdx, "1");
   assert.equal(third.account_reference, "TOTAL CHECKING (...1234)");

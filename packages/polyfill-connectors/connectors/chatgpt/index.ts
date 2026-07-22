@@ -656,7 +656,7 @@ function chatGptWarmStartPacingFields(
   if (persisted == null || !Number.isFinite(persisted.intervalMs) || persisted.intervalMs <= 0) {
     return {};
   }
-  const recordedAtMs = persisted.recordedAtMs;
+  const { recordedAtMs } = persisted;
   if (typeof recordedAtMs !== "number" || !Number.isFinite(recordedAtMs)) {
     return { restoredIntervalMs: persisted.intervalMs };
   }
@@ -991,7 +991,7 @@ export async function chatGptBackendFetchInBrowser({
       init.body = JSON.stringify(body);
     }
     const res = await fetch(`https://chatgpt.com/backend-api${path}`, init);
-    const status = res.status;
+    const { status } = res;
     const retryAfter = res.headers.get("retry-after") ?? undefined;
     let json: unknown = null;
     if (parseJson) {
@@ -1978,7 +1978,7 @@ export async function processConversationDetail(
   }
   // Emit conversation record first (parent-first), then messages.
   await emitConversation(c, detail.json as ConversationDetail);
-  const mapping = detail.json.mapping;
+  const { mapping } = detail.json;
   const currentNode = detail.json.current_node || c.current_node;
   const currentBranchIds = new Set(flattenTreeCurrentBranch(mapping, currentNode).map((x) => x.nodeId));
   let emittedMessageCount = 0;
@@ -2435,7 +2435,7 @@ async function classifyChatGptSerialPressure(
     let status: number;
     try {
       const res = await fetchChatGptPressureProbeStatus(deps, id);
-      status = res.status;
+      ({ status: status } = res);
     } catch (err) {
       rateLimited += rateLimitedCountForPreflightError(err);
       return { attempted, classification: "pressured", rateLimited };
@@ -3057,7 +3057,7 @@ export async function runMessagesAndConversationsWithDetail(
   }
 
   async function prefetchConversationDetailBatches(): Promise<void> {
-    const fetchBatch = deps.api.fetchBatch;
+    const { fetchBatch } = deps.api;
     if (!fetchBatch || convosToSync.length === 0 || runBudget.shouldStop()) {
       return;
     }
@@ -3584,7 +3584,7 @@ async function recoverPendingConversationDetailGaps(
   while (page.length > 0) {
     const result = await recoverPendingConversationDetailGapPage(deps, page, emitConversation, pacing);
     recovered += result.recovered;
-    stoppedWithPending = result.stoppedWithPending;
+    ({ stoppedWithPending: stoppedWithPending } = result);
 
     // Bound 3: single-pass mode — honor the page's own stop signal verbatim.
     if (!deps.requestDetailGapPage) {

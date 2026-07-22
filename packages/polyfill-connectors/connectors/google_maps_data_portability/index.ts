@@ -205,16 +205,16 @@ async function collectResourceGroup({
       resources: [resourceGroup],
       ...timeRange,
     });
-    archiveJobId = initiated.archiveJobId;
+    ({ archiveJobId: archiveJobId } = initiated);
     stateName = "IN_PROGRESS";
   }
 
   if (archiveJobId && pollExisting) {
     const archiveState = await client.getArchiveState(archiveJobId);
     stateName = archiveState.state;
-    startTime = archiveState.startTime;
-    exportTime = archiveState.exportTime;
-    urls = archiveState.urls;
+    ({ startTime: startTime } = archiveState);
+    ({ exportTime: exportTime } = archiveState);
+    ({ urls: urls } = archiveState);
   }
 
   return {

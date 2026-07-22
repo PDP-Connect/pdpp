@@ -156,7 +156,7 @@ test("recent feed: a chatgpt/messages row renders a TITLED card (title=content, 
   const data = await assembleExplorerData({}, ds, "https://rs.test");
 
   assert.equal(data.feed.length, 1, "exactly one feed entry");
-  const entry = data.feed[0];
+  const [entry] = data.feed;
   assert.ok(entry, "feed entry present");
   assert.ok(entry.preview, "feed entry MUST carry a preview (it was undefined/generic before the fix)");
   assert.equal(
@@ -202,7 +202,7 @@ test("recent feed: an UNDECLARED stream still takes the honest generic card (no 
   };
 
   const data = await assembleExplorerData({}, ds, "https://rs.test");
-  const entry = data.feed[0];
+  const [entry] = data.feed;
   assert.ok(entry?.preview, "generic preview still present");
   // No declared role → no typed message card; the content is NOT promoted to a title.
   assert.notEqual(entry?.preview?.title, "Here is the answer to your question about timelines.");

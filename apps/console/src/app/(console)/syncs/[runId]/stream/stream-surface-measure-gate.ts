@@ -130,14 +130,14 @@ export function createStreamSurfaceMeasureCoordinator(
   return {
     attachSurface(node: unknown, surfaceKey: string): void {
       const result = drainSurfaceMeasureOnAttach(state, node, surfaceKey);
-      state = result.state;
+      ({ state: state } = result);
       if (result.measureSource) {
         measure(`${result.measureSource}+surface-attached`);
       }
     },
     requestBackendReady(surfaceKey: string): void {
       const result = requestSurfaceMeasure(state, "neko-backend-ready", surfaceKey);
-      state = result.state;
+      ({ state: state } = result);
       if (result.measureSourceNow) {
         measure(`${result.measureSourceNow}+reconnect-current-surface`);
       }

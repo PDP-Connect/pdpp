@@ -108,7 +108,7 @@ export function createWindowSettleReconciliation(deps: WindowSettleReconciliatio
 
   return {
     async reconcileAtBoot(activeRunIds) {
-      const leaseManager = deps.leaseManager;
+      const { leaseManager } = deps;
       if (!(leaseManager && deps.readinessProbe && deps.shouldReconcile())) {
         return;
       }

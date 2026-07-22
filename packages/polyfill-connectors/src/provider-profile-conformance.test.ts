@@ -135,7 +135,7 @@ for (const name of GOVERNOR_USING_CONNECTORS) {
     const calls = [...source.matchAll(callPattern)];
     assert.ok(calls.length > 0, `${name} must construct the shared governor (it is a governor-using connector)`);
     for (const match of calls) {
-      const body = match[1];
+      const [, body] = match;
       assert.ok(body, `${name}: governor call body must be captured`);
       assert.match(
         body,

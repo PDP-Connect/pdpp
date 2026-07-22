@@ -744,7 +744,7 @@ export function WebPushSettings({
   const caveat =
     "Mobile browsers may require opening the installed PDPP app before notifications can arrive. Each phone, tablet, and browser profile must be enabled separately.";
 
-  const lastSubscription = subscriptions[0];
+  const [lastSubscription] = subscriptions;
   const matchesThisBrowser = endpoint ? subscriptions.some((s) => s.endpoint === endpoint && !s.revoked_at) : false;
   const currentDeviceStatus = deviceStatus({ endpoint, matchesThisBrowser, permission, swState, unavailable });
   const setupSteps = buildSetupSteps({ endpoint, matchesThisBrowser, permission, testStatus, unavailable });

@@ -816,7 +816,7 @@ export function inspectLocalOutboxStatus(
   const inspection = exists
     ? readOutboxInspection(dbPath, options.sourceInstanceId)
     : { coverageObserved: null, recordBatchCount: 0, summary: emptyOutboxSummary() };
-  const summary = inspection.summary;
+  const { summary } = inspection;
   const lifecycleState = deriveLocalCollectorLifecycleState({
     coverageObserved: inspection.coverageObserved,
     recordBatchCount: inspection.recordBatchCount,
@@ -871,9 +871,9 @@ export async function inspectLocalReferenceRoute(
   options: CliOptions,
   deps: InspectLocalReferenceRouteDeps = {}
 ): Promise<LocalCollectorReferenceRouteCheck> {
-  const deviceId = options.deviceId;
-  const deviceToken = options.deviceToken;
-  const sourceInstanceId = options.sourceInstanceId;
+  const { deviceId } = options;
+  const { deviceToken } = options;
+  const { sourceInstanceId } = options;
   const missing: LocalCollectorReferenceRouteCheck["missing"] = [];
   if (!deviceId) {
     missing.push("device_id");
@@ -1268,7 +1268,7 @@ export function parseCollectorProfileEnv(contents: string): Record<string, strin
 
 function unquoteProfileEnvValue(rawValue: string): string {
   if (rawValue.length >= 2) {
-    const quote = rawValue[0];
+    const [quote] = rawValue;
     if ((quote === '"' || quote === "'") && rawValue.endsWith(quote)) {
       const inner = rawValue.slice(1, -1);
       return quote === '"' ? inner.replace(/\\"/g, '"').replace(/\\\\/g, "\\") : inner;
@@ -1334,7 +1334,7 @@ export function findLocalCollectorProfiles(input: {
 }
 
 function applyProfileEnv(options: CliOptions, profile: LocalCollectorProfile): CliOptions {
-  const env = profile.env;
+  const { env } = profile;
   const explicit = options.explicitOptions;
   const keep = (flag: string): boolean => explicit?.has(flag) === true;
   const next: CliOptions = {
@@ -1458,7 +1458,7 @@ function recoverDryRunNote(status: LocalOutboxStatusOutput): string {
 }
 
 function outboxOpenWork(status: LocalOutboxStatusOutput): number {
-  const counts = status.outbox.counts;
+  const { counts } = status.outbox;
   return counts.dead_letter + counts.leased + counts.pending;
 }
 
@@ -1496,7 +1496,7 @@ export async function recoverLocalCollector(
   const retryDeadLetters = deps.retryDeadLetters ?? retryLocalOutboxDeadLetters;
   const runOnce = deps.runOnce ?? runCollectorOnce;
   const resolved = resolveRecoveryOptions(options);
-  const sourceInstanceId = resolved.options.sourceInstanceId;
+  const { sourceInstanceId } = resolved.options;
   if (!sourceInstanceId) {
     throw new CollectorUsageError("recover requires --source-instance-id <id>");
   }

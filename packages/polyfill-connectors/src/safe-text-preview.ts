@@ -141,7 +141,7 @@ function decodeBuffer(buf: Buffer | Uint8Array): DecodeBufferResult {
   // Prefer Buffer.isUtf8 if available (Node 19+).
   // Use type assertion since this function is available in Node 19+ but not in older TS type definitions.
   const bufferWithUtf8 = Buffer as typeof Buffer & { isUtf8?: (buf: Buffer) => boolean };
-  const isUtf8 = bufferWithUtf8.isUtf8;
+  const { isUtf8 } = bufferWithUtf8;
   if (typeof isUtf8 === "function" && buf instanceof Buffer) {
     if (!isUtf8(buf)) {
       return { success: false, reason: "invalid UTF-8 sequence in buffer" };
@@ -236,7 +236,7 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
         reason: decoded.reason || "invalid UTF-8",
       };
     }
-    text = decoded.text;
+    ({ text: text } = decoded);
   } else if (value instanceof Uint8Array) {
     originalLength = value.length;
     const decoded = decodeBuffer(value);
@@ -249,7 +249,7 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
         reason: decoded.reason || "invalid UTF-8",
       };
     }
-    text = decoded.text;
+    ({ text: text } = decoded);
   } else {
     // Any other type (number, object, etc.) → empty.
     return {

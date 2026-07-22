@@ -149,7 +149,7 @@ function transitionPointerMove(
   state: MobileKeyboardFocusState,
   event: Extract<MobileKeyboardFocusEvent, { type: "pointermove" }>
 ): MobileKeyboardFocusTransition {
-  const gesture = state.gesture;
+  const { gesture } = state;
   if (gesture?.phase !== "active" || gesture.pointerId !== event.pointerId) {
     return { effect: "none", state };
   }
@@ -188,7 +188,7 @@ function transitionPointerUp(
   state: MobileKeyboardFocusState,
   event: Extract<MobileKeyboardFocusEvent, { type: "pointerup" }>
 ): MobileKeyboardFocusTransition {
-  const gesture = state.gesture;
+  const { gesture } = state;
   if (gesture?.phase !== "active" || gesture.pointerId !== event.pointerId || gesture.moved) {
     return gesture?.pointerId === event.pointerId && gesture.moved ? clearGesture(state) : { effect: "none", state };
   }
@@ -212,7 +212,7 @@ function transitionRemoteFocus(
   state: MobileKeyboardFocusState,
   event: Extract<MobileKeyboardFocusEvent, { type: "remote-focus" }>
 ): MobileKeyboardFocusTransition {
-  const gesture = state.gesture;
+  const { gesture } = state;
   const canMatchLateConfirmation =
     gesture?.phase === "awaiting-confirmation" &&
     !isGestureExpired(gesture, event.atMs) &&

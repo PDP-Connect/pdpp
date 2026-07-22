@@ -237,7 +237,7 @@ function findLastSuccessAt(history: readonly RunRecord[], connectorKey: string):
 }
 
 function readSchedulerEventReasonClass(record: RunRecord, prefix: string): string | null {
-  const error = record.error;
+  const { error } = record;
   if (!error?.startsWith(prefix)) {
     return null;
   }
@@ -369,10 +369,10 @@ function shouldEmitBackoffTransition(
  *   - backoffApplied && !reasonClass: no mutation, no transition (both cells `keep`).
  */
 export function decideBackoffDispatch(inputs: DecideBackoffDispatchInputs): DecideBackoffDispatchValue {
-  const reasonClass = inputs.reasonClass;
+  const { reasonClass } = inputs;
   const transitions: BackoffDispatchTransition[] = [];
-  let eligible = inputs.eligible;
-  let recoveryOnly = inputs.recoveryOnly;
+  let { eligible } = inputs;
+  let { recoveryOnly } = inputs;
   let announcedBackoffMutation: DedupCellMutation = "keep";
   let announcedBlockedMutation: DedupCellMutation = "keep";
 
@@ -541,8 +541,8 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     decision: BackoffDecision,
     history: readonly RunRecord[]
   ): { skipToEmit: RunRecord | null; eventsToEmit: RunRecord[] } {
-    const connectorId = schedule.connectorId;
-    const reasonClass = decision.reasonClass;
+    const { connectorId } = schedule;
+    const { reasonClass } = decision;
     if (value.announcedBackoffMutation === "set" && reasonClass) {
       runtime.announcedBackoffClass.set(key, reasonClass);
     } else if (value.announcedBackoffMutation === "delete") {
@@ -601,7 +601,7 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
     schedule: ConnectorSchedule,
     now: number
   ): Promise<EvaluateBackoffDispatchResult> {
-    const connectorId = schedule.connectorId;
+    const { connectorId } = schedule;
     const key = runtimeKey(schedule);
     const history = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
     // `scheduler_last_run_times` and `scheduler_run_history` are persisted
@@ -715,8 +715,8 @@ export function createDispatchGovernor(deps: DispatchGovernorDeps): DispatchGove
       persistedGaveUp:
         decision.reasonClass != null && currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass),
     });
-    eligible = backoffDecision.eligible;
-    recoveryOnly = backoffDecision.recoveryOnly;
+    ({ eligible: eligible } = backoffDecision);
+    ({ recoveryOnly: recoveryOnly } = backoffDecision);
     const { skipToEmit: backoffSkip, eventsToEmit } = applyBackoffDispatchDecision(
       backoffDecision,
       schedule,

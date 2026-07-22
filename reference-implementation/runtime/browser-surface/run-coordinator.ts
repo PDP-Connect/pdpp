@@ -1520,7 +1520,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       status: "cancelled",
     };
     if (currentEntry?.pending?.interaction_id === interaction.request_id) {
-      const pending = currentEntry.pending;
+      const { pending } = currentEntry;
       currentEntry.pending = null;
       pending.resolve(cancelledResponse);
     }

@@ -233,7 +233,7 @@ function buildOwnerConnectionRenameAuditError(error: unknown): Record<string, un
   if (!error) {
     return {};
   }
-  const code = (error as { code?: unknown }).code;
+  const { code } = (error as { code?: unknown });
   return {
     error: {
       code: typeof code === "string" ? code : "api_error",

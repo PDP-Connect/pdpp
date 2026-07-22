@@ -587,7 +587,7 @@ export class NekoSurfaceAllocatorService {
     if (matches.length === 0) {
       return null;
     }
-    const first = matches[0];
+    const [first] = matches;
     if (first === undefined) {
       return null;
     }
@@ -754,7 +754,7 @@ export class NekoSurfaceAllocatorService {
     // is idempotent and re-run on every access) while a legacy detach
     // attempt still failed and needs retrying — so the detach check runs
     // independently of whether an attach just happened above.
-    const legacyNetwork = this.#options.legacyNetwork;
+    const { legacyNetwork } = this.#options;
     if (legacyNetwork === undefined || legacyNetwork === this.#options.network) {
       return "migrated";
     }

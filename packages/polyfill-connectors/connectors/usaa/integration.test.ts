@@ -332,7 +332,7 @@ test("emitStatementRecords: a failed statement PDF surfaces a DETAIL_GAP + gap_k
 
   const gaps = statementGaps(messages);
   assert.equal(gaps.length, 1, "exactly one DETAIL_GAP for the missing PDF");
-  const gap = gaps[0];
+  const [gap] = gaps;
   assert.ok(gap && gap.type === "DETAIL_GAP");
   assert.equal(gap.record_key, "MISS");
   assert.equal(gap.status, "pending");

@@ -90,7 +90,7 @@ test("n.eko steady-state media layout calls remote-surface's selectNekoMediaDisp
       "applyViewportLayout's steady-state per-media-element loop must exist and apply a computed display via applyElementLayout"
     );
   }
-  const mediaLoop = mediaLoopMatch[0];
+  const [mediaLoop] = mediaLoopMatch;
 
   assert.match(
     mediaLoop,
@@ -130,7 +130,7 @@ test("n.eko transient rotation-mismatch path (applyPendingViewportLayout) is una
   if (!pendingMatch) {
     throw new Error("applyPendingViewportLayout must exist in neko-client.ts");
   }
-  const pendingBody = pendingMatch[0];
+  const [pendingBody] = pendingMatch;
 
   // This function's cover-during-transition behavior is EXPLICITLY NOT part
   // of the contain-fit fix — it exists for a different, deliberate reason

@@ -804,7 +804,7 @@ test("Slice 5: every Explore animation reference sits inside a prefers-reduced-m
   // reset — so we only check keyframe-driven `animation:` here.)
   const animationDeclRe = /animation:\s*[^;]+;/g;
   for (const m of css.matchAll(animationDeclRe)) {
-    const decl = m[0];
+    const [decl] = m;
     const referencesGated = GATED_KEYFRAMES.some((k) => decl.includes(k));
     if (referencesGated) {
       assert.ok(

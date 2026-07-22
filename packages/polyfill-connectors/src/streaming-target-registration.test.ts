@@ -137,7 +137,7 @@ test("register PUTs to /admin/runs/:runId/interactions/:interactionId/streaming-
 
   assert.equal(ok, true);
   assert.equal(seen.length, 1);
-  const sent = seen[0];
+  const [sent] = seen;
   assert.ok(sent, "request was captured");
   assert.equal(sent.method, "PUT");
   assert.equal(sent.url, `http://127.0.0.1:7662${REGISTRATION_PATH("run_123", "int_456")}`);
@@ -190,7 +190,7 @@ test("register accepts explicit cdp backend and preserves PUT ws_url body", asyn
 
   assert.equal(ok, true);
   assert.equal(seen.length, 1);
-  const sent = seen[0];
+  const [sent] = seen;
   assert.ok(sent);
   assert.equal(sent.method, "PUT");
   assert.deepEqual(sent.body ? JSON.parse(sent.body) : null, { ws_url: VALID_WS });
@@ -217,7 +217,7 @@ test("register POSTs n.eko descriptor to /admin/runs/:runId/interactions/:intera
 
   assert.equal(ok, true);
   assert.equal(seen.length, 1);
-  const sent = seen[0];
+  const [sent] = seen;
   assert.ok(sent, "request was captured");
   assert.equal(sent.method, "POST");
   assert.equal(sent.url, `http://127.0.0.1:7662${REGISTRATION_PATH("run_neko", "int_neko")}`);

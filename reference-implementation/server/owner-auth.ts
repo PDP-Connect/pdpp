@@ -183,7 +183,7 @@ function isSecureRequest(req: AuthRequest): boolean {
   }
   const forwarded = req.headers["x-forwarded-proto"];
   if (typeof forwarded === "string") {
-    const first = forwarded.split(",")[0];
+    const [first] = forwarded.split(",");
     if (first && first.trim() === "https") {
       return true;
     }
@@ -192,7 +192,7 @@ function isSecureRequest(req: AuthRequest): boolean {
 }
 
 function wantsHtml(req: AuthRequest): boolean {
-  const accept = req.headers.accept;
+  const { accept } = req.headers;
   if (typeof accept !== "string") {
     return false;
   }

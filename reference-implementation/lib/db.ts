@@ -166,7 +166,7 @@ function decodeCursor(cursor: string): CursorPayload {
   if (obj.v !== CURSOR_VERSION) {
     throw new InvalidCursorError(`Cursor version ${String(obj.v)} is not supported.`);
   }
-  const k = obj.k;
+  const { k } = obj;
   if (k !== null && typeof k !== "string" && typeof k !== "number") {
     throw new InvalidCursorError("Cursor key field has unsupported type.");
   }

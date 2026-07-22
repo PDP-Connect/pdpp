@@ -276,7 +276,7 @@ async function buildRetainedSizeProjection(ctx: MountRefDatasetContext): Promise
 }
 
 function retainedProjectionNeedsReconcile(projection: RefDatasetSummaryProjection): boolean {
-  const state = projection.metadata.state;
+  const { state } = projection.metadata;
   return state === "stale" || state === "failed";
 }
 

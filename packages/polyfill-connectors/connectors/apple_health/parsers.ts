@@ -30,7 +30,7 @@ export function parseAttrs(tag: string): AppleHealthAttrs {
   const re = new RegExp(APPLE_HEALTH_ATTR_RE.source, "g");
   let m: RegExpExecArray | null = re.exec(tag);
   while (m !== null) {
-    const key = m[1];
+    const [, key] = m;
     if (key) {
       attrs[key] = m[2];
     }

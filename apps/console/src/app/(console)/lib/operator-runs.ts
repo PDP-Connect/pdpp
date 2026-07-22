@@ -283,7 +283,7 @@ function isUnavailableErrorBody(body: unknown): boolean {
   if (!body || typeof body !== "object") {
     return false;
   }
-  const error = (body as { error?: unknown }).error;
+  const { error } = (body as { error?: unknown });
   if (!error || typeof error !== "object") {
     return false;
   }

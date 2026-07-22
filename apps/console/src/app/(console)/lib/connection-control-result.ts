@@ -82,11 +82,11 @@ export function connectionControlErrorCode(body: unknown): string | null {
   if (!body || typeof body !== "object") {
     return null;
   }
-  const error = (body as { error?: unknown }).error;
+  const { error } = (body as { error?: unknown });
   if (!error || typeof error !== "object") {
     return null;
   }
-  const code = (error as { code?: unknown }).code;
+  const { code } = (error as { code?: unknown });
   return typeof code === "string" ? code : null;
 }
 

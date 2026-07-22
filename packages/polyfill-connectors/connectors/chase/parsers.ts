@@ -355,7 +355,7 @@ function parseVisibleAmount(text: string): number | null {
   if (!match?.[0]) {
     return null;
   }
-  const raw = match[0];
+  const [raw] = match;
   const sign = ACTIVITY_DEBIT_RE.test(text) ? -1 : 1;
   const normalized = raw.replace(/[$,\s+-]/g, "");
   const n = Number(normalized);

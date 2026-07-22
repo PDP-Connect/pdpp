@@ -452,12 +452,12 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
       }
       const updatedAt = nonEmptyString(now) || nowIso();
       // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
-      const row = [
+      const [row] = [
         ...iterateDynamicSqlAcknowledged<AttentionLifecycleRow>(
           "SELECT record_json, lifecycle FROM connector_attention_records WHERE attention_id = ? LIMIT 1",
           [id]
         ),
-      ][0];
+      ];
       if (!row) {
         return null;
       }
@@ -495,12 +495,12 @@ export function createSqliteConnectorAttentionStore(): ConnectorAttentionStore {
       }
       const updatedAt = nonEmptyString(now) || nowIso();
       // REVIEWED-DYNAMIC: single-row lookup for the store-owned table.
-      const row = [
+      const [row] = [
         ...iterateDynamicSqlAcknowledged<AttentionLifecycleRow>(
           "SELECT record_json, lifecycle FROM connector_attention_records WHERE attention_id = ? LIMIT 1",
           [id]
         ),
-      ][0];
+      ];
       if (!row) {
         return null;
       }

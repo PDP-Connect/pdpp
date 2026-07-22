@@ -92,7 +92,7 @@ test("connector manifest streams: accepted-coverage policy must not combine with
         continue;
       }
       // `required` defaults to true when absent — so absent is the same as required: true.
-      const required = stream.required;
+      const { required } = stream;
       if (required !== false) {
         violations.push(
           `${connectorKey}.${String(stream.name)}: coverage_policy="${policy}" with required=${String(required ?? "absent (defaults true)")} ` +

@@ -842,7 +842,7 @@ function scheduleRemoteCopyFallback(): void {
 
 function startClipboardWriteGuard(): void {
   stopClipboardWriteGuard();
-  const clipboard = navigator.clipboard;
+  const { clipboard } = navigator;
   if (!clipboard || typeof clipboard.writeText !== "function") {
     emitNekoDebug("neko.clipboard_write.guard", {
       available: false,
@@ -1678,7 +1678,7 @@ function clickNekoAtPoint(
   // `playground.event` (matched by approximate timestamp) to verify
   // the click landed on the expected target.
   const snapshot = readNekoPointerMapping(clientX, clientY);
-  const interactionSeq = options.interactionSeq;
+  const { interactionSeq } = options;
   const path = options.path ?? "fallback";
   return runWhenNekoControlReady("tap", () => {
     const control = nekoInstance?.control;
@@ -1747,7 +1747,7 @@ function startMobileTouchScrollBridge(neko: NekoInstance, dispatchInput?: NekoTo
   stopMobileTouchScrollBridge();
   const streamRoot = wrapperEl;
   const listenerTarget = typeof document === "undefined" ? null : document;
-  const control = neko.control;
+  const { control } = neko;
   if (!(streamRoot && listenerTarget && control?.scroll && control.move && control.buttonDown && control.buttonUp)) {
     emitNekoDebug("neko.touch_scroll_bridge.skip", {
       hasControl: Boolean(control),

@@ -195,7 +195,7 @@ async function emitScheduleAudit(
   const actorKind = auditActorKind(req);
   const ownerSubjectId =
     args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
-  const operation = args.operation;
+  const { operation } = args;
   const code = (args.error as { code?: unknown } | null)?.code;
   await ctx.emitSpineEvent({
     event_type: "owner_agent.connection.schedule",

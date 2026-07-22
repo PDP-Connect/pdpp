@@ -321,7 +321,7 @@ export function decodeOffsetCursor(raw: unknown): number | null {
     if (!isRecord(decoded)) {
       return null;
     }
-    const offset = decoded.offset;
+    const { offset } = decoded;
     if (!Number.isInteger(offset) || (typeof offset === "number" && offset < 0)) {
       return null;
     }

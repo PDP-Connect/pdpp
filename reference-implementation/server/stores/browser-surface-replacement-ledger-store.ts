@@ -380,7 +380,7 @@ class PostgresBrowserSurfaceReplacementReceiptStore implements BrowserSurfaceRep
        WHERE replacement_id = $1 ORDER BY event_seq DESC LIMIT 1`,
       [receipt.replacement_id]
     );
-    const priorRow = prior.rows[0];
+    const [priorRow] = prior.rows;
     if (priorRow) {
       assertSameEventIdentity(mapRow(priorRow), receipt);
       assertNoOppositeResolution(mapRow(priorRow), receipt);

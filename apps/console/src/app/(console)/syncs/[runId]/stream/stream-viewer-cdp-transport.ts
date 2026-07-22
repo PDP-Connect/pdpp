@@ -52,7 +52,7 @@ function touchAction(type: unknown): "touchend" | "touchmove" | "touchstart" {
 
 function firstTouchPoint(params: CdpCommandParams): Record<string, unknown> {
   const touchPoints = Array.isArray(params.touchPoints) ? params.touchPoints : [];
-  const point = touchPoints[0];
+  const [point] = touchPoints;
   return typeof point === "object" && point !== null ? (point as Record<string, unknown>) : {};
 }
 

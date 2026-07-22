@@ -382,7 +382,7 @@ function applyFlatNarrowingKey(out: Record<number, SourceNarrowing>, key: string
   const sinceMatch = NARROW_SINCE_KEY.exec(key);
   if (sinceMatch) {
     const stream = decodeStreamKey(sinceMatch[2]);
-    const value = asStringArray(raw)[0];
+    const [value] = asStringArray(raw);
     if (!(stream && value)) {
       return;
     }

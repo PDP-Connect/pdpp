@@ -360,8 +360,8 @@ export function mountOwnerConnectionIntent(app: AppLike, ctx: MountOwnerConnecti
         // Proof-gated, deployment-blocked, and unsupported connectors still
         // return the same setup-plan projection. They do not mint codes, return
         // secrets, or create connection rows.
-        const reason = plan.ownerAgentIntent.reason;
-        const nextStepKind = plan.ownerAgentIntent.nextStepKind;
+        const { reason } = plan.ownerAgentIntent;
+        const { nextStepKind } = plan.ownerAgentIntent;
         await emitConnectionIntentAudit(ctx, req, res, {
           connectorKey,
           connectorModality: modality,

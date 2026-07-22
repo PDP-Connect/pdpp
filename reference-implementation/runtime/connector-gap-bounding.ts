@@ -731,7 +731,7 @@ function classifyKnownGapSeverity({
   if (typeof recoveryHint === "string") {
     action = recoveryHint;
   } else if (recoveryHint && typeof recoveryHint === "object") {
-    action = (recoveryHint as { action?: unknown }).action;
+    ({ action: action } = (recoveryHint as { action?: unknown }));
   }
   if (action === "retry_by_runtime") {
     return "transient";

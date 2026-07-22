@@ -100,7 +100,7 @@ async function redditFetch(page: Page, path: string): Promise<RedditFetchResult>
             "user-agent": userAgent,
           },
         });
-        const status = res.status;
+        const { status } = res;
         let json: unknown = null;
         try {
           json = await res.json();

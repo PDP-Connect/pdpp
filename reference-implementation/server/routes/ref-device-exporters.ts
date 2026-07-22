@@ -687,7 +687,7 @@ function normalizeDeviceIngestRecord(record: unknown, index: number) {
     throw err;
   }
   const hasData = Object.hasOwn(r, "data");
-  const data = r.data;
+  const { data } = r;
   if (op === "upsert") {
     if (!data || typeof data !== "object" || Array.isArray(data)) {
       const err = new Error(`records[${index}].data must be an object for upsert`) as Error & {
@@ -822,7 +822,7 @@ async function compileDeviceAttemptContext(
   const streams = attemptStreamFacts(rawStreams);
   validateAttemptRecords(records, streams);
   const requiresSemanticWork = records.some((record) => {
-    const stream = (record as { stream?: unknown }).stream;
+    const { stream } = (record as { stream?: unknown });
     return typeof stream === "string" && (streams[stream]?.semanticFields.length ?? 0) > 0;
   });
   if (requiresSemanticWork && !ctx.isDeviceSemanticAttemptSupported()) {

@@ -1003,7 +1003,7 @@ function readManifestDisplayName(manifest: ConnectorManifest | null | undefined)
   if (typeof display === "string" && display.trim()) {
     return display.trim();
   }
-  const name = (manifest as { name?: unknown }).name;
+  const { name } = (manifest as { name?: unknown });
   if (typeof name === "string" && name.trim()) {
     return name.trim();
   }
@@ -1014,7 +1014,7 @@ function readManifestRefreshPolicy(manifest: ConnectorManifest | null | undefine
   if (!manifest || typeof manifest !== "object") {
     return null;
   }
-  const capabilities = (manifest as { capabilities?: unknown }).capabilities;
+  const { capabilities } = (manifest as { capabilities?: unknown });
   if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
     return null;
   }
@@ -1570,11 +1570,11 @@ async function fireNtfy(args: {
 }
 
 async function buildAttentionOutcomeRecorder(args: { runId: string; requestId: string | null }) {
-  const requestId = args.requestId;
+  const { requestId } = args;
   if (!requestId) {
     return null;
   }
-  const runId = args.runId;
+  const { runId } = args;
   // Lazy import keeps the runtime startup graph small; this module is only
   // loaded when an interaction actually fires push delivery.
   const { getDefaultConnectorAttentionStore } = await import("../server/stores/connector-attention-store.ts");
@@ -1589,7 +1589,7 @@ async function buildAttentionOutcomeRecorder(args: { runId: string; requestId: s
   if (typeof store.recordNotificationOutcomeById !== "function") {
     return null;
   }
-  const recordNotificationOutcomeById = store.recordNotificationOutcomeById;
+  const { recordNotificationOutcomeById } = store;
   return async ({ state, reason }: { state: string; reason: string | null }) => {
     await recordNotificationOutcomeById({
       attentionId: `att_${runId}_${requestId}`,
@@ -1776,7 +1776,7 @@ function validateScheduleInput(input: ConnectorSchedulePatch | null | undefined)
   let enabled = true;
   if (input?.enabled !== undefined) {
     if (input.enabled === true || input.enabled === false) {
-      enabled = input.enabled;
+      ({ enabled: enabled } = input);
     } else {
       errors.push({ param: "enabled", message: "enabled must be a boolean" });
     }
@@ -1972,7 +1972,7 @@ function mergeBackoffAndCooldown(
   // Preserve the failure reason class when back-off is engaged; otherwise, when
   // the cooldown is the sole driver, label it so the dashboard/audit can
   // distinguish a source-pressure pause from a failure streak.
-  let reasonClass = decision.reasonClass;
+  let { reasonClass } = decision;
   if (!decision.backoffApplied && cooldownDefersNow) {
     reasonClass = "source_pressure";
   }
@@ -2133,13 +2133,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const ownerSubjectId = opts.ownerSubjectId || "owner_local";
   const schedulerStore = opts.schedulerStore || getDefaultSchedulerStore();
   const detailGapStore: ConnectorDetailGapReadStore = opts.detailGapStore || getDefaultConnectorDetailGapStore();
-  const browserSurfaceAllocator = opts.browserSurfaceAllocator;
+  const { browserSurfaceAllocator } = opts;
   const browserSurfaceHealthOptions = browserSurfaceHealthOptionsFor(opts);
   const browserSurfaceAllocatorScopeId = browserSurfaceHealthOptions.allocatorScopeId;
-  const browserSurfaceLeaseManager = opts.browserSurfaceLeaseManager;
+  const { browserSurfaceLeaseManager } = opts;
   const browserSurfaceHealthObservationTtlMs = browserSurfaceHealthOptions.observationTtlMs;
-  const browserSurfaceReadinessTimeoutMs = opts.browserSurfaceReadinessTimeoutMs;
-  const browserSurfaceLeaseStore = opts.browserSurfaceLeaseStore;
+  const { browserSurfaceReadinessTimeoutMs } = opts;
+  const { browserSurfaceLeaseStore } = opts;
   const browserSurfaceReplacementReceiptStore = browserSurfaceReplacementReceiptStoreFor(
     opts,
     browserSurfaceAllocator,
@@ -2152,7 +2152,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // a fake n.eko url in every controller test.
   const browserSurfaceReadinessProbe: BrowserSurfaceReadinessProbe | null =
     opts.browserSurfaceReadinessProbe === undefined ? null : opts.browserSurfaceReadinessProbe;
-  const browserSurfaceMidWaitPollIntervalMs = opts.browserSurfaceMidWaitPollIntervalMs;
+  const { browserSurfaceMidWaitPollIntervalMs } = opts;
   const runConnectorImpl = opts.runConnectorImpl || runConnector;
   // Wall-clock watchdog budget per run. Resolves from opts first, then the
   // PDPP_MAX_RUN_WALL_CLOCK_MS env var, then a safe 4-hour default. Infinity
@@ -2923,7 +2923,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       if (!gap || typeof gap !== "object") {
         return false;
       }
-      const status = (gap as { status?: unknown }).status;
+      const { status } = (gap as { status?: unknown });
       return status === "recovered" || status === "terminal";
     }).length;
   }
@@ -3702,7 +3702,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       request_id: interactionId,
       status: input.status,
     };
-    const data = input.data;
+    const { data } = input;
     if (input.status === "success" && data && typeof data === "object" && !Array.isArray(data)) {
       response.data = data as Record<string, unknown>;
     }

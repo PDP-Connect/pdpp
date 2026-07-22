@@ -62,7 +62,7 @@ async function streamParse({ path, onRecord, onWorkout, onProgress }: StreamPars
     let m: RegExpExecArray | null = re.exec(buf);
     let lastEnd = 0;
     while (m !== null) {
-      const tag = m[1];
+      const [, tag] = m;
       const attrs = parseAttrs(m[2] ?? "");
       if (tag === "Record") {
         await onRecord(attrs);

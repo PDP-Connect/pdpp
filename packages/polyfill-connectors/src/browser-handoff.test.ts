@@ -332,7 +332,7 @@ test("prepareManualAction PUTs the composed wsUrl + page metadata when env is fu
   assert.equal(result.registered, true);
   assert.match(result.interactionId, /^int_\d+_[0-9a-f]{8}$/);
   assert.equal(seen.length, 1);
-  const sent = seen[0];
+  const [sent] = seen;
   assert.ok(sent);
   assert.equal(sent.method, "PUT");
   assert.equal(sent.headers.authorization, "Bearer test_nonce");
@@ -582,7 +582,7 @@ test("manualAction calls sendInteraction with kind=manual_action and the generat
   );
 
   assert.equal(seenInteractions.length, 1);
-  const sent = seenInteractions[0];
+  const [sent] = seenInteractions;
   assert.ok(sent);
   assert.equal(sent.kind, "manual_action");
   assert.equal(sent.message, "Solve the captcha and continue.");

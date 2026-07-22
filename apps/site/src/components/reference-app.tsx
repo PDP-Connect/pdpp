@@ -684,7 +684,7 @@ function IntrospectionField({ label, value, accent }: { label: string; value: st
 }
 
 function TokenIntrospection({ introspection }: { introspection: ClientIntrospection }) {
-  const active = introspection.active;
+  const { active } = introspection;
   const verdictColor = active ? "var(--success)" : "var(--destructive)";
   const verdictWash = active ? "var(--success-wash)" : "var(--status-danger-bg)";
   return (

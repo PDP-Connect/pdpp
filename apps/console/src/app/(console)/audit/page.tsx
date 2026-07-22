@@ -511,7 +511,7 @@ interface PeekPanelProps {
 }
 
 function TracesPeekPanel({ traceId, envelope, cliCommand, listParams }: PeekPanelProps) {
-  const firstEvent = envelope.events[0];
+  const [firstEvent] = envelope.events;
   const closeHref = listHref(listParams, { peek: undefined });
   const detailHref = `/audit/${encodeURIComponent(traceId)}`;
 

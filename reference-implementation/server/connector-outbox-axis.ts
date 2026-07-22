@@ -244,12 +244,12 @@ export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]):
   let manifestGeneration: number | null = null;
   for (const row of trusted) {
     if (row.lastHeartbeatAt !== null && (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt)) {
-      lastHeartbeatAt = row.lastHeartbeatAt;
-      lastHeartbeatStatus = row.lastHeartbeatStatus;
-      manifestGeneration = row.manifestGeneration;
+      ({ lastHeartbeatAt: lastHeartbeatAt } = row);
+      ({ lastHeartbeatStatus: lastHeartbeatStatus } = row);
+      ({ manifestGeneration: manifestGeneration } = row);
     }
     if (row.lastIngestAt !== null && (lastIngestAt === null || row.lastIngestAt > lastIngestAt)) {
-      lastIngestAt = row.lastIngestAt;
+      ({ lastIngestAt: lastIngestAt } = row);
     }
     if (typeof row.recordsPending === "number") {
       recordsPending += row.recordsPending;

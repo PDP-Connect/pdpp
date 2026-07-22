@@ -117,7 +117,7 @@ export async function detectCloudflareChallenge(
     signals.push("cf_challenge_dom");
   }
 
-  const navResponse = opts.navResponse;
+  const { navResponse } = opts;
   if (navResponse) {
     const headers = navResponse.headers();
     if (headers["cf-mitigated"] === "challenge") {

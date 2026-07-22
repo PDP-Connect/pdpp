@@ -1182,7 +1182,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const forwardDisposition = deriveConnectionForwardDisposition(input, conditionSet);
   const collectionRate = input.collectionRate ?? null;
   const detailGapBacklog = deriveSourcePressureBacklog(input.detailGapBacklog ?? null);
-  const ephemeralBrowserRuntime = input.ephemeralBrowserRuntime;
+  const { ephemeralBrowserRuntime } = input;
   const remoteSurface = projectRemoteSurfaceDetail(input.remoteSurface ?? null);
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
   const nextAttemptAt = conditionExpired(input.backoff?.nextRunAt ?? null, input.observedAt ?? null)
@@ -2207,7 +2207,7 @@ function unavailableRuntimeRemediation(
 }
 
 function legacyRuntimeAvailableCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
-  const remoteSurface = input.remoteSurface;
+  const { remoteSurface } = input;
   if (!remoteSurface || remoteSurface.axis === "none") {
     return condition({
       type: "RuntimeAvailable",
@@ -2285,7 +2285,7 @@ function isIdleDynamicRuntime(runtime: EphemeralBrowserRuntimeProjection | null 
 }
 
 function legacyRemoteSurfaceAvailableCondition(input: ComputeConnectionHealthInput): ConnectionHealthCondition {
-  const remoteSurface = input.remoteSurface;
+  const { remoteSurface } = input;
   if (!remoteSurface || remoteSurface.axis === "none") {
     return condition({
       type: "RemoteSurfaceAvailable",

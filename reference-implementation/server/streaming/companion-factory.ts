@@ -285,7 +285,7 @@ function createResolvedCompanion({
   function createInnerCompanion(selected: SelectedTarget): InnerCompanion {
     if (selected.backend === "neko") {
       nekoTarget = selected.neko;
-      const createPresentationLifecycle = (neko as NekoOptions).createPresentationLifecycle;
+      const { createPresentationLifecycle } = (neko as NekoOptions);
       return createNekoCompanion({
         ...neko,
         target: selected.neko,
@@ -325,7 +325,7 @@ function createResolvedCompanion({
     }
 
     const selected = selectBackendTarget(resolved);
-    backend = selected.backend;
+    ({ backend: backend } = selected);
     safeLog(logger, "info", "streaming_backend_selected", {
       run_id,
       interaction_id,

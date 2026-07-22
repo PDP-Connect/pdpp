@@ -213,12 +213,12 @@ export interface ProcessJsonlLineArgs {
  *   - No uuid → no record (uuid is the emitted record id).
  */
 export async function processJsonlLine({ deps, obj, obs }: ProcessJsonlLineArgs): Promise<void> {
-  const sessionId = obs.sessionId;
+  const { sessionId } = obs;
   if (!sessionId) {
     return;
   }
-  const uuid = obj.uuid;
-  const type = obj.type;
+  const { uuid } = obj;
+  const { type } = obj;
 
   if (isMessageType(type)) {
     obs.messageCount++;
@@ -391,7 +391,7 @@ function updateSessionAccumulator(
   projectDir: string,
   obs: JsonlObservations
 ): void {
-  const sessionId = obs.sessionId;
+  const { sessionId } = obs;
   if (!sessionId) {
     return;
   }

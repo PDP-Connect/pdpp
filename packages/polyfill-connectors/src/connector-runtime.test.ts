@@ -928,7 +928,7 @@ test("emitDetailCoverage forwards exactly one built message to ctx.emit", async 
     gapKeys: ["b"],
   });
   assert.equal(emitted.length, 1);
-  const msg = emitted[0];
+  const [msg] = emitted;
   assert.ok(msg, "exactly one message must be emitted");
   assert.equal(msg.type, "DETAIL_COVERAGE");
   assert.deepEqual(
@@ -1026,7 +1026,7 @@ test("emitDetailGap forwards exactly one built message to ctx.emit", async () =>
   };
   await emitDetailGap(ctx, params);
   assert.equal(emitted.length, 1);
-  const msg = emitted[0];
+  const [msg] = emitted;
   assert.ok(msg, "exactly one message must be emitted");
   assert.equal(msg.type, "DETAIL_GAP");
   assert.deepEqual(msg, buildDetailGap(params), "emitDetailGap must emit precisely what buildDetailGap builds");
@@ -1126,7 +1126,7 @@ test("emitDetailGap forwards a gap with optional parent_stream and list_cursor v
   };
   await emitDetailGap(ctx, params);
   assert.equal(emitted.length, 1);
-  const msg = emitted[0];
+  const [msg] = emitted;
   assert.ok(msg, "exactly one message must be emitted");
   assert.deepEqual(
     msg,

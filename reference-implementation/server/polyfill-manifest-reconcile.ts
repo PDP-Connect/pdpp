@@ -288,7 +288,7 @@ function errorMessage(err: unknown): string {
     // Some I/O errors carry a `.code` (`ENOENT`, etc.) on the Error
     // object directly; surface that when present, otherwise fall back
     // to the message.
-    const code = (err as { code?: unknown }).code;
+    const { code } = (err as { code?: unknown });
     if (typeof code === "string" && code.length > 0) {
       return code;
     }
@@ -500,8 +500,8 @@ async function reconcileChangedManifestEntry(
     if (!invalidation.ok) {
       return { errors: 1 };
     }
-    invalidatedConnectors = invalidation.invalidatedConnectors;
-    invalidatedRecords = invalidation.invalidatedRecords;
+    ({ invalidatedConnectors: invalidatedConnectors } = invalidation);
+    ({ invalidatedRecords: invalidatedRecords } = invalidation);
   }
   const registration = await applyShippedManifest(shipped, connectorId, entryName, ctx.log);
   return {
