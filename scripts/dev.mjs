@@ -78,7 +78,7 @@ const child = spawn(
   {
     env,
     stdio: "inherit",
-  },
+  }
 );
 
 child.once("error", (err) => {

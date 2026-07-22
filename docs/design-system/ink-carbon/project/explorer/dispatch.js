@@ -21,21 +21,28 @@ const VIEW_ORDER = [
   // (ledger > conversation > gallery > calendar > map > reader > chart >
   // timeline > table). A stream that lights up multiple gets the most
   // informative default. Users can override via the view switcher.
-  "ledger", "conversation", "gallery", "calendar", "map",
-  "reader", "chart", "timeline", "table",
+  "ledger",
+  "conversation",
+  "gallery",
+  "calendar",
+  "map",
+  "reader",
+  "chart",
+  "timeline",
+  "table",
 ];
 
 const FIELD_HINTS = {
   // Lexical clues used in addition to type. Always lowercased before match.
-  author:  ["author", "from", "sender", "user", "user_id", "actor"],
-  body:    ["body", "text", "message", "content", "snippet"],
-  thread:  ["thread_id", "thread_ts", "channel", "channel_id", "conversation_id", "conv_id"],
-  geo:     ["lat", "lng", "longitude", "latitude", "geo", "location", "polyline", "coords"],
-  amount:  ["amount", "value", "price", "total"],
-  ts_lex:  ["date", "ts", "occurred_at", "created_at", "started_at", "taken_at", "posted_at", "night_of", "ordered_at"],
-  start:   ["start", "starts_at", "start_at", "begin"],
-  end:     ["end", "ends_at", "end_at", "finish"],
-  title:   ["title", "subject", "name", "headline"],
+  author: ["author", "from", "sender", "user", "user_id", "actor"],
+  body: ["body", "text", "message", "content", "snippet"],
+  thread: ["thread_id", "thread_ts", "channel", "channel_id", "conversation_id", "conv_id"],
+  geo: ["lat", "lng", "longitude", "latitude", "geo", "location", "polyline", "coords"],
+  amount: ["amount", "value", "price", "total"],
+  ts_lex: ["date", "ts", "occurred_at", "created_at", "started_at", "taken_at", "posted_at", "night_of", "ordered_at"],
+  start: ["start", "starts_at", "start_at", "begin"],
+  end: ["end", "ends_at", "end_at", "finish"],
+  title: ["title", "subject", "name", "headline"],
 };
 
 function namesByHint(fields, hintKey) {
@@ -79,7 +86,9 @@ function detect(stream) {
   // ─── gallery ──────────────────────────────────────────────────────
   // A blob field with image media type, or a clearly-named thumb/image.
   const blobImg = fields.find((f) => f.type === "blob" && (f.media_type ?? "").startsWith("image/"));
-  const namedImg = fields.find((f) => /thumb|image|photo|picture|avatar/i.test(f.name) && (f.type === "blob" || f.type === "url"));
+  const namedImg = fields.find(
+    (f) => /thumb|image|photo|picture|avatar/i.test(f.name) && (f.type === "blob" || f.type === "url")
+  );
   if (blobImg || namedImg) declare("gallery", [(blobImg ?? namedImg).name]);
 
   // ─── ledger ──────────────────────────────────────────────────────
@@ -122,9 +131,7 @@ function detect(stream) {
   // Temporal anchor + at least one numeric measure. We exclude obvious
   // non-measures (lat/lng/id-ish fields) so location streams don't
   // accidentally light up the chart view.
-  const isMeasure = (f) =>
-    f.type === "number" &&
-    !/^(lat|lng|longitude|latitude|id|.*_id|.*_count)$/i.test(f.name);
+  const isMeasure = (f) => f.type === "number" && !/^(lat|lng|longitude|latitude|id|.*_id|.*_count)$/i.test(f.name);
   const measures = fields.filter(isMeasure).map((f) => f.name);
   if (timeField && measures.length) declare("chart", [timeField, ...measures.slice(0, 3)]);
 

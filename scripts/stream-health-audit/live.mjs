@@ -113,7 +113,12 @@ function asArrayList(raw) {
  */
 export async function runLiveStreamHealthAudit({ origin, env = process.env, fetchImpl = fetch }) {
   const base = origin.replace(/\/+$/, "");
-  const { header, mode, supported, error: authError } = await resolveOwnerAuthForStreamHealth({
+  const {
+    header,
+    mode,
+    supported,
+    error: authError,
+  } = await resolveOwnerAuthForStreamHealth({
     base,
     env,
     fetchImpl,

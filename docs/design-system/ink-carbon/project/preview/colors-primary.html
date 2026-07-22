@@ -1,26 +1,67 @@
 <!doctype html>
 <!-- @dsCard group="Colors" name="Colors · Core" subtitle="Paper, ink, protocol ink, human warmth" viewport="700x170" -->
 <html lang="en">
-<head>
-<meta charset="utf-8"/>
-<title>PDPP · Color foundations</title>
-<link href="../colors_and_type.css" rel="stylesheet"/>
-<style>
-body { margin: 0; padding: 20px 24px; background: var(--background); }
-.grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-.sw { display: flex; flex-direction: column; gap: 6px; }
-.chip { height: 56px; border: 1px solid var(--border); }
-.name { font-family: var(--font-sans); font-size: 11.5px; font-weight: 600; line-height: 1.2; }
-.val { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); line-height: 1.3; }
-</style>
-</head>
-<body>
-<div class="grid">
-  <div class="sw"><div class="chip" style="background: var(--background);"></div><span class="name">Paper</span><span class="val">--background</span><span class="val">oklch(.985 .004 90)</span></div>
-  <div class="sw"><div class="chip" style="background: var(--foreground);"></div><span class="name">Ink</span><span class="val">--foreground</span><span class="val">oklch(.18 .005 270)</span></div>
-  <div class="sw"><div class="chip" style="background: var(--primary);"></div><span class="name">Protocol ink</span><span class="val">--primary</span><span class="val">oklch(.46 .11 255)</span></div>
-  <div class="sw"><div class="chip" style="background: var(--human);"></div><span class="name">Human</span><span class="val">--human</span><span class="val">oklch(.55 .11 45)</span></div>
-  <div class="sw"><div class="chip" style="background: var(--muted);"></div><span class="name">Muted</span><span class="val">--muted</span><span class="val">oklch(.955 .004 270)</span></div>
-</div>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <title>PDPP · Color foundations</title>
+    <link href="../colors_and_type.css" rel="stylesheet">
+    <style>
+    body {
+      margin: 0;
+      padding: 20px 24px;
+      background: var(--background);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+    }
+    .sw {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .chip {
+      height: 56px;
+      border: 1px solid var(--border);
+    }
+    .name {
+      font-family: var(--font-sans);
+      font-size: 11.5px;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .val {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--muted-foreground);
+      line-height: 1.3;
+    }
+    </style>
+  </head>
+  <body>
+    <div class="grid">
+      <div class="sw">
+        <div class="chip" style="background: var(--background);"></div>
+        <span class="name">Paper</span><span class="val">--background</span><span class="val">oklch(.985 .004 90)</span>
+      </div>
+      <div class="sw">
+        <div class="chip" style="background: var(--foreground);"></div>
+        <span class="name">Ink</span><span class="val">--foreground</span><span class="val">oklch(.18 .005 270)</span>
+      </div>
+      <div class="sw">
+        <div class="chip" style="background: var(--primary);"></div>
+        <span class="name">Protocol ink</span><span class="val">--primary</span
+        ><span class="val">oklch(.46 .11 255)</span>
+      </div>
+      <div class="sw">
+        <div class="chip" style="background: var(--human);"></div>
+        <span class="name">Human</span><span class="val">--human</span><span class="val">oklch(.55 .11 45)</span>
+      </div>
+      <div class="sw">
+        <div class="chip" style="background: var(--muted);"></div>
+        <span class="name">Muted</span><span class="val">--muted</span><span class="val">oklch(.955 .004 270)</span>
+      </div>
+    </div>
+  </body>
 </html>

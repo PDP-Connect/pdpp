@@ -482,12 +482,7 @@ async function handleRefStaticSecretSetupStatus(
     const setupKind = setupKindForConnection(instance.sourceBinding, manifest);
     const credentialMeta = await readCredentialMetadata(setupKind, credentialStore, namespace.connectorInstanceId);
     const requestedRunId = firstQueryValue(req.query?.run_id);
-    const { activeRun, lastRun } = await resolveRunEvidence(
-      ctx,
-      store,
-      namespace.connectorInstanceId,
-      requestedRunId
-    );
+    const { activeRun, lastRun } = await resolveRunEvidence(ctx, store, namespace.connectorInstanceId, requestedRunId);
     const acquisitionStore = ctx.createRequestAcquisitionBatchStore();
     const latestBatch = await readLatestAcquisitionBatch(setupKind, acquisitionStore, namespace.connectorInstanceId);
 

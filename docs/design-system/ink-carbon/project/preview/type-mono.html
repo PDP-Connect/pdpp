@@ -1,24 +1,47 @@
 <!doctype html>
 <!-- @dsCard group="Type" name="Type · Typed voice" subtitle="JetBrains Mono — everything the protocol writes" viewport="700x230" -->
 <html lang="en">
-<head>
-<meta charset="utf-8"/>
-<title>PDPP · Typed voice</title>
-<link href="../colors_and_type.css" rel="stylesheet"/>
-<style>
-body { margin: 0; padding: 22px 24px; background: var(--background); display: flex; flex-direction: column; gap: 9px; }
-.tag { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); }
-.rule { font-family: var(--font-sans); font-size: 12.5px; color: var(--muted-foreground); max-width: 58ch; }
-.rule b { color: var(--foreground); font-weight: 600; }
-</style>
-</head>
-<body>
-<span class="tag">pdpp-eyebrow</span>
-<span class="pdpp-eyebrow">Access request · staged via PAR</span>
-<span class="tag">pdpp-typed · 13/500</span>
-<span class="pdpp-typed">pay_statements.read · append only · exp 2026-12-14</span>
-<span class="tag">pdpp-typed-sm · 11/400</span>
-<span class="pdpp-typed-sm">grant grt_lngvw_01 · client longview_planning_v1</span>
-<p class="rule"><b>The voice rule:</b> mono is reserved for what the protocol itself writes — IDs, scopes, terms, timestamps. If a human wrote it or a human is being addressed, it is grotesk.</p>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <title>PDPP · Typed voice</title>
+    <link href="../colors_and_type.css" rel="stylesheet">
+    <style>
+    body {
+      margin: 0;
+      padding: 22px 24px;
+      background: var(--background);
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+    .tag {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--muted-foreground);
+    }
+    .rule {
+      font-family: var(--font-sans);
+      font-size: 12.5px;
+      color: var(--muted-foreground);
+      max-width: 58ch;
+    }
+    .rule b {
+      color: var(--foreground);
+      font-weight: 600;
+    }
+    </style>
+  </head>
+  <body>
+    <span class="tag">pdpp-eyebrow</span>
+    <span class="pdpp-eyebrow">Access request · staged via PAR</span>
+    <span class="tag">pdpp-typed · 13/500</span>
+    <span class="pdpp-typed">pay_statements.read · append only · exp 2026-12-14</span>
+    <span class="tag">pdpp-typed-sm · 11/400</span>
+    <span class="pdpp-typed-sm">grant grt_lngvw_01 · client longview_planning_v1</span>
+    <p class="rule">
+      <b>The voice rule:</b>
+      mono is reserved for what the protocol itself writes — IDs, scopes, terms, timestamps. If a human wrote it or a
+      human is being addressed, it is grotesk.
+    </p>
+  </body>
 </html>

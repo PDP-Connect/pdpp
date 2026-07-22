@@ -1,13 +1,13 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { CollectorUsageError } from './errors.js';
+import { CollectorUsageError } from "./errors.js";
 
 /**
  * Resolve the published `@pdpp/local-collector` package, if installed.
@@ -26,8 +26,8 @@ export function resolveLocalCollectorPackage(startDir = dirname(fileURLToPath(im
   // npm install where @pdpp/local-collector is alongside @pdpp/cli in the
   // same node_modules tree.
   try {
-    const require = createRequire(join(startDir, '_'));
-    const manifestPath = require.resolve('@pdpp/local-collector/package.json');
+    const require = createRequire(join(startDir, "_"));
+    const manifestPath = require.resolve("@pdpp/local-collector/package.json");
     return { manifestPath, packageDir: dirname(manifestPath) };
   } catch {
     // Continue to workspace fallback.
@@ -40,7 +40,7 @@ export function resolveLocalCollectorPackage(startDir = dirname(fileURLToPath(im
   const seen = new Set();
   while (!seen.has(cursor)) {
     seen.add(cursor);
-    const candidate = join(cursor, 'packages', 'local-collector', 'package.json');
+    const candidate = join(cursor, "packages", "local-collector", "package.json");
     if (existsSync(candidate)) {
       return { manifestPath: candidate, packageDir: dirname(candidate) };
     }
@@ -74,7 +74,7 @@ export function resolveCollectorRunnerScript(startDir = dirname(fileURLToPath(im
   const seen = new Set();
   while (!seen.has(cursor)) {
     seen.add(cursor);
-    const candidate = join(cursor, 'packages', 'polyfill-connectors', 'bin', 'collector-runner.ts');
+    const candidate = join(cursor, "packages", "polyfill-connectors", "bin", "collector-runner.ts");
     if (existsSync(candidate)) {
       return candidate;
     }
@@ -92,7 +92,7 @@ export function resolveTsxBinary(startDir = dirname(fileURLToPath(import.meta.ur
   const seen = new Set();
   while (!seen.has(cursor)) {
     seen.add(cursor);
-    const candidate = join(cursor, 'node_modules', '.bin', 'tsx');
+    const candidate = join(cursor, "node_modules", ".bin", "tsx");
     if (existsSync(candidate)) {
       return candidate;
     }
@@ -110,12 +110,12 @@ export function resolveTsxBinary(startDir = dirname(fileURLToPath(import.meta.ur
  * installed `@pdpp/local-collector` can be found.
  */
 const RUNNER_MISSING_MESSAGE =
-  'pdpp collector requires @pdpp/local-collector. Install once with ' +
+  "pdpp collector requires @pdpp/local-collector. Install once with " +
   '"npm i -g @pdpp/local-collector" or run "npx -y @pdpp/local-collector ...". ' +
-  'See openspec/changes/publish-pdpp-local-collector/design.md.';
+  "See openspec/changes/publish-pdpp-local-collector/design.md.";
 
 const TSX_MISSING_MESSAGE =
-  'Could not locate tsx alongside the collector runner. Install ' +
+  "Could not locate tsx alongside the collector runner. Install " +
   '@pdpp/local-collector with "npm i -g @pdpp/local-collector" or run ' +
   '"pnpm install" at the monorepo root.';
 
@@ -138,8 +138,8 @@ export async function spawnCollectorRunner(
     localCollector = resolveLocalCollectorPackage(),
     tsxBinary = resolveTsxBinary(),
     spawnFn = spawn,
-    stdio = 'inherit',
-  } = {},
+    stdio = "inherit",
+  } = {}
 ) {
   if (runnerScript) {
     if (!tsxBinary) {
@@ -153,10 +153,10 @@ export async function spawnCollectorRunner(
     if (!existsSync(binPath)) {
       throw new CollectorUsageError(
         `@pdpp/local-collector is installed at ${localCollector.packageDir} but is missing its bin entrypoint. ` +
-          'Reinstall the package or report this on https://github.com/PDP-Connect/pdpp/issues.',
+          "Reinstall the package or report this on https://github.com/PDP-Connect/pdpp/issues."
       );
     }
-    if (binPath.endsWith('.ts')) {
+    if (binPath.endsWith(".ts")) {
       if (!tsxBinary) {
         throw new CollectorUsageError(TSX_MISSING_MESSAGE);
       }
@@ -170,22 +170,22 @@ export async function spawnCollectorRunner(
 
 function resolveLocalCollectorBin(packageDir) {
   try {
-    const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
-    const bin = manifest?.bin?.['pdpp-local-collector'];
-    if (typeof bin === 'string' && bin.trim()) {
+    const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+    const bin = manifest?.bin?.["pdpp-local-collector"];
+    if (typeof bin === "string" && bin.trim()) {
       return join(packageDir, bin);
     }
   } catch {}
-  const publishedBin = join(packageDir, 'dist', 'local-collector', 'bin', 'pdpp-local-collector.js');
+  const publishedBin = join(packageDir, "dist", "local-collector", "bin", "pdpp-local-collector.js");
   if (existsSync(publishedBin)) return publishedBin;
-  return join(packageDir, 'bin', 'pdpp-local-collector.ts');
+  return join(packageDir, "bin", "pdpp-local-collector.ts");
 }
 
 function runSubprocess(spawnFn, binary, args, { env, stdio }) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawnFn(binary, args, { env, stdio });
-    child.on('error', rejectPromise);
-    child.on('exit', (code, signal) => {
+    child.on("error", rejectPromise);
+    child.on("exit", (code, signal) => {
       if (signal) {
         rejectPromise(new Error(`collector-runner terminated by signal ${signal}`));
         return;

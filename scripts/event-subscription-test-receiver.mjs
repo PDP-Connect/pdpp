@@ -105,7 +105,7 @@ function printUsage() {
       "                  is returned after the receiver has already started.",
       "  --insecure      Skip signature verification. For one-off envelope inspection only.",
       "",
-    ].join("\n"),
+    ].join("\n")
   );
 }
 
@@ -144,10 +144,7 @@ function verify(secret, eventId, timestampHeader, body, signatureHeader) {
     if (idx < 0) continue;
     if (token.slice(0, idx) !== "v1") continue;
     const candidateBuf = Buffer.from(token.slice(idx + 1));
-    if (
-      candidateBuf.length === expectedBuf.length &&
-      timingSafeEqual(candidateBuf, expectedBuf)
-    ) {
+    if (candidateBuf.length === expectedBuf.length && timingSafeEqual(candidateBuf, expectedBuf)) {
       return { ok: true };
     }
   }
@@ -205,7 +202,7 @@ async function main() {
         "  Set WEBHOOK_SECRET, pass --secret <whsec_…>, or write the value into --secret-file before delivery.",
         "  Until then, the receiver will reject every signed delivery as `no_secret_configured`.",
         "",
-      ].join("\n"),
+      ].join("\n")
     );
   }
 
@@ -300,7 +297,7 @@ async function main() {
           args.port +
           "/webhook from your client to drive the verification handshake.",
         "",
-      ].join("\n"),
+      ].join("\n")
     );
   });
 

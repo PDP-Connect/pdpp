@@ -60,17 +60,22 @@
 
 #nd-subnav {
   height: 3rem;
-  background: color-mix(in oklab, var(--background) 92%, var(--surface-tint) / 78%);
+  background: color-mix(
+    in oklab,
+    var(--background) 92%,
+    var(--surface-tint) /
+    78%
+  );
   border-bottom-color: var(--border);
   backdrop-filter: blur(10px);
 }
 
 @media (min-width: 768px) {
-  #nd-subnav button[aria-label='Open Sidebar'] {
+  #nd-subnav button[aria-label="Open Sidebar"] {
     display: none;
   }
 
-  #nd-sidebar button[aria-label='Open Sidebar'] {
+  #nd-sidebar button[aria-label="Open Sidebar"] {
     display: none;
   }
 }
@@ -124,7 +129,11 @@
 
 #nd-sidebar {
   background:
-    linear-gradient(to bottom, color-mix(in oklab, var(--human-wash) 58%, var(--surface-tint)), transparent 18%),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklab, var(--human-wash) 58%, var(--surface-tint)),
+      transparent 18%
+    ),
     color-mix(in oklab, var(--background) 97%, var(--surface-tint));
   border-right-color: var(--border);
   box-shadow: none;
@@ -141,17 +150,17 @@
 #nd-sidebar a,
 #nd-sidebar button,
 #nd-sidebar summary,
-#nd-sidebar [role='button'] {
+#nd-sidebar [role="button"] {
   border-radius: 0.5rem;
 }
 
-#nd-sidebar a[data-active='true'],
-#nd-sidebar button[data-active='true'] {
+#nd-sidebar a[data-active="true"],
+#nd-sidebar button[data-active="true"] {
   background: var(--muted);
   color: var(--foreground);
 }
 
-#nd-sidebar [data-active='true']::before {
+#nd-sidebar [data-active="true"]::before {
   background: var(--human);
 }
 
@@ -164,7 +173,7 @@
   font-size: 0.8125rem;
 }
 
-#nd-sidebar [class*='mb-1 px-2 mt-6'] {
+#nd-sidebar [class*="mb-1 px-2 mt-6"] {
   font-family: var(--font-mono);
   font-size: 0.62rem;
   font-weight: 600;
@@ -323,7 +332,9 @@
   border-radius: 1rem;
   background: var(--muted) !important;
   color: var(--muted-foreground) !important;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.02);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.04),
+    0 1px 3px rgb(0 0 0 / 0.02);
 }
 
 .pdpp-docs-body figure.shiki pre,
@@ -392,11 +403,16 @@
   color: var(--muted-foreground);
 }
 
-#nd-toc a[data-active='true'] {
+#nd-toc a[data-active="true"] {
   color: var(--foreground);
 }
 
 [data-toc-popover] header {
   border-bottom-color: var(--border);
-  background: color-mix(in oklab, var(--background) 90%, var(--surface-tint) / 78%);
+  background: color-mix(
+    in oklab,
+    var(--background) 90%,
+    var(--surface-tint) /
+    78%
+  );
 }

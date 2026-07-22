@@ -24,27 +24,25 @@
 //     [--cache-root <dir>] [--format json|table]
 //     [--status-only]
 
-import { parseArgs, requirePositional } from '../args.js';
-import { resolveAuthMode, buildAuthHeaders } from '../auth.js';
-import { PdppUsageError, PdppHttpError } from '../errors.js';
-import { resolveReferenceUrl } from '../fetch.js';
-import { resolveFormat, writeData, writeEnvelopeWarnings } from '../output.js';
+import { parseArgs, requirePositional } from "../args.js";
+import { resolveAuthMode, buildAuthHeaders } from "../auth.js";
+import { PdppUsageError, PdppHttpError } from "../errors.js";
+import { resolveReferenceUrl } from "../fetch.js";
+import { resolveFormat, writeData, writeEnvelopeWarnings } from "../output.js";
 
-const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const KNOWN_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']);
+const METHODS_WITH_BODY = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const KNOWN_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]);
 
 export async function runRefCall(argv, io = {}, fetchImpl = globalThis.fetch) {
   const out = io.stdout || process.stdout;
   const err = io.stderr || process.stderr;
 
   const { flags, positionals } = parseArgs(argv);
-  const method = requirePositional(positionals, 0, 'method').toUpperCase();
+  const method = requirePositional(positionals, 0, "method").toUpperCase();
   if (!KNOWN_METHODS.has(method)) {
-    throw new PdppUsageError(
-      `Unsupported method: ${method}. Use one of ${[...KNOWN_METHODS].join(', ')}.`
-    );
+    throw new PdppUsageError(`Unsupported method: ${method}. Use one of ${[...KNOWN_METHODS].join(", ")}.`);
   }
-  const path = requirePositional(positionals, 1, 'path');
+  const path = requirePositional(positionals, 1, "path");
 
   const referenceUrl = resolveReferenceUrl(flags);
   const mode = resolveAuthMode(path, flags.auth);
@@ -52,14 +50,14 @@ export async function runRefCall(argv, io = {}, fetchImpl = globalThis.fetch) {
 
   const body = await resolveBody(flags, io, method);
 
-  const headers = { Accept: 'application/json', ...authHeaders };
-  const init = { method, headers, redirect: 'manual' };
+  const headers = { Accept: "application/json", ...authHeaders };
+  const init = { method, headers, redirect: "manual" };
   if (body !== undefined) {
-    headers['Content-Type'] = 'application/json';
+    headers["Content-Type"] = "application/json";
     init.body = body;
   }
 
-  const url = `${referenceUrl}${path.startsWith('/') ? path : `/${path}`}`;
+  const url = `${referenceUrl}${path.startsWith("/") ? path : `/${path}`}`;
 
   let resp;
   try {
@@ -70,9 +68,9 @@ export async function runRefCall(argv, io = {}, fetchImpl = globalThis.fetch) {
 
   // Always surface the status line on stderr so machine-readable stdout stays
   // clean. The URL is intentionally the path only — never the cookie/bearer.
-  err.write(`${method} ${path} → ${resp.status} ${resp.statusText || ''}`.trimEnd() + '\n');
+  err.write(`${method} ${path} → ${resp.status} ${resp.statusText || ""}`.trimEnd() + "\n");
 
-  if (flags['status-only']) {
+  if (flags["status-only"]) {
     return statusExitCode(resp.status);
   }
 
@@ -88,15 +86,15 @@ export async function runRefCall(argv, io = {}, fetchImpl = globalThis.fetch) {
 
   if (resp.status >= 400) {
     const message =
-      (parsed && typeof parsed === 'object' && (parsed.error_description || parsed.error?.message || parsed.message)) ||
-      `HTTP ${resp.status} ${resp.statusText || ''}`.trim();
+      (parsed && typeof parsed === "object" && (parsed.error_description || parsed.error?.message || parsed.message)) ||
+      `HTTP ${resp.status} ${resp.statusText || ""}`.trim();
     throw new PdppHttpError(String(message), resp.status, parsed);
   }
 
-  if (parsed !== null && parsed !== '') {
-    const format = resolveFormat(flags, 'json', 'json');
+  if (parsed !== null && parsed !== "") {
+    const format = resolveFormat(flags, "json", "json");
     writeData(parsed, format, out);
-    if (parsed && typeof parsed === 'object') {
+    if (parsed && typeof parsed === "object") {
       writeEnvelopeWarnings(parsed, err);
     }
   }
@@ -104,10 +102,10 @@ export async function runRefCall(argv, io = {}, fetchImpl = globalThis.fetch) {
 }
 
 async function resolveBody(flags, io, method) {
-  const hasInline = typeof flags.data === 'string';
-  const hasStdin = Boolean(flags['data-stdin']);
+  const hasInline = typeof flags.data === "string";
+  const hasStdin = Boolean(flags["data-stdin"]);
   if (hasInline && hasStdin) {
-    throw new PdppUsageError('Use only one of --data or --data-stdin, not both.');
+    throw new PdppUsageError("Use only one of --data or --data-stdin, not both.");
   }
 
   let raw;
@@ -148,24 +146,24 @@ function statusExitCode(status) {
 }
 
 async function readBody(resp) {
-  if (typeof resp.text === 'function') {
+  if (typeof resp.text === "function") {
     return await resp.text();
   }
-  return '';
+  return "";
 }
 
 function readAll(stream) {
   return new Promise((resolve, reject) => {
-    if (!stream || typeof stream.on !== 'function') {
-      resolve('');
+    if (!stream || typeof stream.on !== "function") {
+      resolve("");
       return;
     }
-    let buf = '';
-    stream.setEncoding?.('utf8');
-    stream.on('data', (chunk) => {
+    let buf = "";
+    stream.setEncoding?.("utf8");
+    stream.on("data", (chunk) => {
       buf += chunk;
     });
-    stream.on('end', () => resolve(buf));
-    stream.on('error', reject);
+    stream.on("end", () => resolve(buf));
+    stream.on("error", reject);
   });
 }

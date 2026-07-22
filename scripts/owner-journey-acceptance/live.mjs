@@ -94,9 +94,7 @@ function htmlToText(html) {
 }
 
 function htmlToProseText(html) {
-  return htmlToText(
-    String(html).replace(/<(pre|code|kbd|samp)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
-  );
+  return htmlToText(String(html).replace(/<(pre|code|kbd|samp)\b[^>]*>[\s\S]*?<\/\1>/gi, " "));
 }
 
 function visibleMonogramInitials(html) {
@@ -195,7 +193,8 @@ function connectorLabel(connector) {
 
 function sourceCountPhrase(connector) {
   const records = Number(connector?.total_records);
-  const rawStreamCount = connector?.stream_count ?? (Array.isArray(connector?.streams) ? connector.streams.length : null);
+  const rawStreamCount =
+    connector?.stream_count ?? (Array.isArray(connector?.streams) ? connector.streams.length : null);
   const streams = Number(rawStreamCount);
   if (!Number.isFinite(records) || !Number.isFinite(streams)) {
     return null;
@@ -440,7 +439,8 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   }
 
   if (sourceIssues.length > 0 || rawSourceIssues.length > 0) {
-    const allClearRe = /No source issues to review here|Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
+    const allClearRe =
+      /No source issues to review here|Nothing needs you\.[^.]*sources are syncing\.|everything'?s syncing/i;
     if (allClearRe.test(dashboardText)) {
       findings.push({
         ruleId: "dashboard-source-issue-all-clear",
@@ -455,9 +455,12 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
   }
 
   const overstatedHealthyAdvisories = healthyRefreshAdvisories.filter((issue) => {
-    const renderedAsBroken = dashboardText.includes(`${issue.label} is degraded`) || dashboardText.includes(`${issue.label} can't collect`);
+    const renderedAsBroken =
+      dashboardText.includes(`${issue.label} is degraded`) || dashboardText.includes(`${issue.label} can't collect`);
     const renderedWithRefreshStatement =
-      issue.forwardStatement.length > 0 && dashboardText.includes(issue.label) && dashboardText.includes(issue.forwardStatement);
+      issue.forwardStatement.length > 0 &&
+      dashboardText.includes(issue.label) &&
+      dashboardText.includes(issue.forwardStatement);
     return renderedAsBroken || renderedWithRefreshStatement;
   });
   if (overstatedHealthyAdvisories.length > 0) {
@@ -466,7 +469,10 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       class: "dashboard-trust-claim",
       path: "live:/",
       line: 0,
-      excerpt: overstatedHealthyAdvisories.map((issue) => issue.label).slice(0, 5).join(", "),
+      excerpt: overstatedHealthyAdvisories
+        .map((issue) => issue.label)
+        .slice(0, 5)
+        .join(", "),
       rationale:
         "A healthy source with a refresh-available advisory must not appear in the dashboard issue list as degraded or broken. The source detail may offer Refresh now, but the dashboard must not manufacture urgency.",
     });
@@ -480,7 +486,10 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         class: "dashboard-trust-claim",
         path: "live:/",
         line: 0,
-        excerpt: sourceIssues.map((issue) => issue.label).slice(0, 5).join(", "),
+        excerpt: sourceIssues
+          .map((issue) => issue.label)
+          .slice(0, 5)
+          .join(", "),
         rationale:
           "The dashboard reference data contains material source issues, but none of their source labels appear on the rendered dashboard. The owner needs a visible issue row, not a silent calm state.",
       });
@@ -570,7 +579,11 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
       title: "Explore",
       required: [
         { label: "Explore title", pattern: /\bExplore\b/i },
-        { label: "record query controls", pattern: /Search names, fields, and values|Search records|text across every searchable stream|\boperators\b.*\bcon:/i },
+        {
+          label: "record query controls",
+          pattern:
+            /Search names, fields, and values|Search records|text across every searchable stream|\boperators\b.*\bcon:/i,
+        },
         { label: "record filters", pattern: /\bFilters\b/i },
         { label: "record sort controls", pattern: /\bnewest\b.*\boldest\b/i },
       ],
@@ -586,16 +599,16 @@ async function runLiveSemanticChecks({ base, header, fetchImpl, htmlByPath }) {
         path: `live:${expectation.path}`,
         line: 0,
         excerpt: missing.map((item) => item.label).join(", "),
-        rationale:
-          `${expectation.title} must render its core owner controls on the live surface. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
+        rationale: `${expectation.title} must render its core owner controls on the live surface. A shell-only, login, or error-boundary page cannot prove the owner can use this journey.`,
       });
     }
     checks.push({
       id: expectation.id,
       status: missing.length > 0 ? "fail" : "pass",
-      detail: missing.length > 0
-        ? `missing ${missing.map((item) => item.label).join(", ")}`
-        : `${expectation.title} rendered core owner controls`,
+      detail:
+        missing.length > 0
+          ? `missing ${missing.map((item) => item.label).join(", ")}`
+          : `${expectation.title} rendered core owner controls`,
     });
   }
 

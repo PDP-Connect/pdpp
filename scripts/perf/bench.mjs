@@ -66,8 +66,18 @@ function apiTargets() {
   return [
     { group: "api", name: "schema", url: `${BASE}/v1/schema`, headers: h },
     { group: "api", name: "search.lexical", url: `${BASE}/v1/search${q({ q: "error", limit: "25" })}`, headers: h },
-    { group: "api", name: "search.semantic", url: `${BASE}/v1/search/semantic${q({ q: "deployment failure", limit: "25" })}`, headers: h },
-    { group: "api", name: "search.hybrid", url: `${BASE}/v1/search/hybrid${q({ q: "deployment failure", limit: "25" })}`, headers: h },
+    {
+      group: "api",
+      name: "search.semantic",
+      url: `${BASE}/v1/search/semantic${q({ q: "deployment failure", limit: "25" })}`,
+      headers: h,
+    },
+    {
+      group: "api",
+      name: "search.hybrid",
+      url: `${BASE}/v1/search/hybrid${q({ q: "deployment failure", limit: "25" })}`,
+      headers: h,
+    },
     // messages is shared across connectors → must disambiguate with connection_id.
     // PDPP_BENCH_CONNECTION_ID lets a run pin a real connection; default below is a
     // live Slack connection (override per-instance). A 400 here in results means the
@@ -114,16 +124,7 @@ async function fetchOwnerCookie() {
 function pageTargets(cookieOverride) {
   const cookie = cookieOverride || process.env.PDPP_BENCH_COOKIE || "";
   const headers = cookie ? { Cookie: cookie } : {};
-  const routes = [
-    "/",
-    "/sources",
-    "/sources/add",
-    "/explore",
-    "/syncs",
-    "/grants",
-    "/connect",
-    "/search",
-  ];
+  const routes = ["/", "/sources", "/sources/add", "/explore", "/syncs", "/grants", "/connect", "/search"];
   return routes.map((r) => ({ group: "page", name: r, url: `${BASE}${r}`, headers }));
 }
 
@@ -197,10 +198,7 @@ async function main() {
   if (args.has("--login") && !cookie) {
     console.error("# --login: no cookie (set PDPP_OWNER_PASSWORD) — pages measured unauthenticated");
   }
-  const targets = [
-    ...(PAGES_ONLY ? [] : apiTargets()),
-    ...(API_ONLY ? [] : pageTargets(cookie)),
-  ];
+  const targets = [...(PAGES_ONLY ? [] : apiTargets()), ...(API_ONLY ? [] : pageTargets(cookie))];
   if (targets.length === 0) {
     console.error("No targets. (RS API targets need PDPP_OWNER_TOKEN; pages need none.)");
     process.exit(2);
@@ -257,7 +255,9 @@ function compare(current, priorPath) {
     if (!p || p.p50 == null || r.p50 == null) continue;
     const deltaPct = ((r.p50 - p.p50) / p.p50) * 100;
     const flag = deltaPct > 15 ? " ⚠ SLOWER" : deltaPct < -15 ? " ✓ faster" : "";
-    console.error(`  ${pad(r.name, 26)} ${pad(p.p50, 7)} → ${pad(r.p50, 7)}ms (${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(0)}%)${flag}`);
+    console.error(
+      `  ${pad(r.name, 26)} ${pad(p.p50, 7)} → ${pad(r.p50, 7)}ms (${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(0)}%)${flag}`
+    );
   }
 }
 

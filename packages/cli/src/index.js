@@ -1,23 +1,19 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import {
-  createPdppCliCommand,
-  getPdppCliPackageInfo,
-  PDPP_CLI_BIN_NAME,
-} from './package-info.js';
-import { ConnectError, connectProvider, normalizeProviderUrl, readStoredCredential } from './connect/flow.js';
-import { runCollector } from './collector/commands.js';
-import { runRefRun } from './ref/commands/run.js';
-import { runRefGrant } from './ref/commands/grant.js';
-import { runRefTrace } from './ref/commands/trace.js';
-import { runRefLogin } from './ref/commands/login.js';
-import { runRefConnectors } from './ref/commands/connectors.js';
-import { runRefEventSubscriptions } from './ref/commands/event-subscriptions.js';
-import { runRefCall } from './ref/commands/call.js';
-import { readHelp, runRead } from './read/commands.js';
-import { runOwnerAgent } from './owner-agent/command.js';
-import { PdppCliError, PdppUsageError } from './ref/errors.js';
+import { createPdppCliCommand, getPdppCliPackageInfo, PDPP_CLI_BIN_NAME } from "./package-info.js";
+import { ConnectError, connectProvider, normalizeProviderUrl, readStoredCredential } from "./connect/flow.js";
+import { runCollector } from "./collector/commands.js";
+import { runRefRun } from "./ref/commands/run.js";
+import { runRefGrant } from "./ref/commands/grant.js";
+import { runRefTrace } from "./ref/commands/trace.js";
+import { runRefLogin } from "./ref/commands/login.js";
+import { runRefConnectors } from "./ref/commands/connectors.js";
+import { runRefEventSubscriptions } from "./ref/commands/event-subscriptions.js";
+import { runRefCall } from "./ref/commands/call.js";
+import { readHelp, runRead } from "./read/commands.js";
+import { runOwnerAgent } from "./owner-agent/command.js";
+import { PdppCliError, PdppUsageError } from "./ref/errors.js";
 
 const HELP = `PDPP CLI
 
@@ -74,21 +70,21 @@ Notes:
 export async function runCli(argv, io = { stdout: process.stdout, stderr: process.stderr }) {
   const [command, ...rest] = argv;
 
-  if (!command || command === '--help' || command === '-h' || command === 'help') {
+  if (!command || command === "--help" || command === "-h" || command === "help") {
     io.stdout.write(`${HELP}\n`);
     return 0;
   }
 
-  if (command === 'package-info') {
-    const providerUrl = readOption(rest, '--provider-url');
+  if (command === "package-info") {
+    const providerUrl = readOption(rest, "--provider-url");
     io.stdout.write(`${JSON.stringify(getPdppCliPackageInfo(providerUrl), null, 2)}\n`);
     return 0;
   }
 
-  if (command === 'connect') {
+  if (command === "connect") {
     const providerUrl = rest[0];
     if (!providerUrl) {
-      io.stderr.write('Usage: pdpp connect <provider-url>\n');
+      io.stderr.write("Usage: pdpp connect <provider-url>\n");
       return 64;
     }
 
@@ -104,16 +100,16 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
     }
   }
 
-  if (command === 'token') {
+  if (command === "token") {
     const providerUrl = readFirstPositional(rest);
     if (!providerUrl) {
-      io.stderr.write('Usage: pdpp token <provider-url>\n');
+      io.stderr.write("Usage: pdpp token <provider-url>\n");
       return 64;
     }
 
     try {
       const { credential } = await readStoredCredential(providerUrl, {
-        cacheRoot: readOption(rest, '--cache-root'),
+        cacheRoot: readOption(rest, "--cache-root"),
       });
       io.stdout.write(`${credential.access_token}\n`);
       return 0;
@@ -126,11 +122,11 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
     }
   }
 
-  if (command === 'collector') {
+  if (command === "collector") {
     return await runCollector(rest, io);
   }
 
-  if (command === 'read') {
+  if (command === "read") {
     try {
       return await runRead(rest, io);
     } catch (error) {
@@ -146,25 +142,43 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
     }
   }
 
-  if (command === 'owner-agent') {
+  if (command === "owner-agent") {
     return await runOwnerAgent(rest, io);
   }
 
-  if (command === 'ref') {
+  if (command === "ref") {
     const [refCommand, ...refRest] = rest;
 
-    if (!refCommand || refCommand === '--help' || refCommand === '-h') {
+    if (!refCommand || refCommand === "--help" || refCommand === "-h") {
       io.stdout.write(`Reference diagnostics (reference server only):\n`);
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref login <reference-url> [--password-stdin] [--cache-root <dir>]\n`);
-      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref call <method> <path> --as-url <url> [--data <json> | --data-stdin] [--auth cookie|bearer] [--owner-session <cookie>] [--owner-token-stdin] [--status-only] [--format json|table]\n`);
-      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref run timeline <run-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
-      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref grant timeline <grant-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
-      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
-      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref connectors list --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`);
-      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref connectors show <connector-id> --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`);
-      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref event-subscriptions list --as-url <url> [--client-id <id>] [--grant-id <id>] [--status <status>] [--owner-session <cookie>] [--format json|table]\n`);
-      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref event-subscriptions show <subscription-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
-      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref event-subscriptions disable <subscription-id> --as-url <url> [--reason <text>] [--yes] [--owner-session <cookie>]\n`);
+      io.stdout.write(
+        `  ${PDPP_CLI_BIN_NAME} ref call <method> <path> --as-url <url> [--data <json> | --data-stdin] [--auth cookie|bearer] [--owner-session <cookie>] [--owner-token-stdin] [--status-only] [--format json|table]\n`
+      );
+      io.stdout.write(
+        `  ${PDPP_CLI_BIN_NAME} ref run timeline <run-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`
+      );
+      io.stdout.write(
+        `  ${PDPP_CLI_BIN_NAME} ref grant timeline <grant-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`
+      );
+      io.stdout.write(
+        `  ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`
+      );
+      io.stdout.write(
+        `  ${PDPP_CLI_BIN_NAME} ref connectors list --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`
+      );
+      io.stdout.write(
+        `  ${PDPP_CLI_BIN_NAME} ref connectors show <connector-id> --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`
+      );
+      io.stdout.write(
+        `  ${PDPP_CLI_BIN_NAME} ref event-subscriptions list --as-url <url> [--client-id <id>] [--grant-id <id>] [--status <status>] [--owner-session <cookie>] [--format json|table]\n`
+      );
+      io.stdout.write(
+        `  ${PDPP_CLI_BIN_NAME} ref event-subscriptions show <subscription-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`
+      );
+      io.stdout.write(
+        `  ${PDPP_CLI_BIN_NAME} ref event-subscriptions disable <subscription-id> --as-url <url> [--reason <text>] [--yes] [--owner-session <cookie>]\n`
+      );
       io.stdout.write(`\nNotes:\n`);
       io.stdout.write(`  "ref login" prompts the reference server's owner-login route and caches the\n`);
       io.stdout.write(`  resulting session in .pdpp/owner-sessions/ (mode 0600). The cookie value is\n`);
@@ -184,7 +198,7 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
       grant: runRefGrant,
       trace: runRefTrace,
       connectors: runRefConnectors,
-      'event-subscriptions': runRefEventSubscriptions,
+      "event-subscriptions": runRefEventSubscriptions,
     };
     const handler = refDispatch[refCommand];
     if (!handler) {
@@ -223,7 +237,7 @@ function readOption(argv, name) {
 function readFirstPositional(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value.startsWith('--')) {
+    if (value.startsWith("--")) {
       index += 1;
       continue;
     }

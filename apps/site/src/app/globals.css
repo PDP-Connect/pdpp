@@ -20,7 +20,9 @@
 @import "@demodesk/neko/dist/neko.css";
 @import "@pdpp/brand/docs.css";
 
-@custom-variant dark (&:where(.dark, .dark *, [data-theme=dark], [data-theme=dark] *));
+@custom-variant dark (
+  &:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *)
+);
 
 @theme inline {
   --font-sans: var(--font-sans);
@@ -166,7 +168,10 @@
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
   }
-  html, body { height: 100%; }
+  html,
+  body {
+    height: 100%;
+  }
 }
 
 html {
@@ -258,7 +263,10 @@ html > body[data-scroll-locked] {
   .pdpp-stream-corner-controls {
     inset-block-start: auto;
     inset-inline-end: 50%;
-    inset-block-end: calc(env(safe-area-inset-bottom) + var(--pdpp-stream-control-offset));
+    inset-block-end: calc(
+      env(safe-area-inset-bottom) +
+      var(--pdpp-stream-control-offset)
+    );
     translate: 50% 0;
     align-items: center;
   }
@@ -316,7 +324,10 @@ html > body[data-scroll-locked] {
   pointer-events: none;
   position: absolute;
   inset-inline: 0;
-  inset-block-end: calc(env(safe-area-inset-bottom) + var(--pdpp-stream-toast-offset));
+  inset-block-end: calc(
+    env(safe-area-inset-bottom) +
+    var(--pdpp-stream-toast-offset)
+  );
   z-index: 10;
   display: flex;
   max-inline-size: 24rem;
@@ -465,25 +476,106 @@ html > body[data-scroll-locked] {
 .docs-prose {
   --docs-prose-spacing: 1rem;
 }
-.docs-prose > * + * { margin-top: var(--docs-prose-spacing); }
-.docs-prose h1 { font-size: 1.6rem; font-weight: 600; letter-spacing: -0.01em; margin-top: 1.75rem; }
-.docs-prose h2 { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.005em; margin-top: 1.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
-.docs-prose h3 { font-size: 1.05rem; font-weight: 600; margin-top: 1.25rem; }
-.docs-prose h4, .docs-prose h5, .docs-prose h6 { font-weight: 600; margin-top: 1rem; }
-.docs-prose p { color: var(--foreground); }
-.docs-prose a { color: var(--foreground); text-decoration: underline; text-underline-offset: 2px; }
-.docs-prose a:hover { text-decoration-thickness: 2px; }
-.docs-prose ul { list-style: disc; padding-left: 1.25rem; }
-.docs-prose ol { list-style: decimal; padding-left: 1.25rem; }
-.docs-prose li + li { margin-top: 0.25rem; }
-.docs-prose li > p { margin: 0; }
-.docs-prose code { font-family: var(--font-mono); font-size: 0.85em; background: var(--muted); padding: 0.1em 0.35em; border-radius: 0.3em; }
-.docs-prose pre { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.875rem 1rem; overflow-x: auto; font-size: 0.85em; }
-.docs-prose pre code { background: transparent; padding: 0; border-radius: 0; }
-.docs-prose blockquote { border-left: 2px solid var(--border); padding: 0.25rem 0 0.25rem 0.875rem; color: var(--muted-foreground); }
-.docs-prose hr { border: 0; border-top: 1px solid var(--border); margin: 2rem 0; }
-.docs-prose table { width: 100%; font-size: 0.9em; border-collapse: collapse; }
-.docs-prose th, .docs-prose td { border-bottom: 1px solid var(--border); padding: 0.45rem 0.6rem; text-align: left; }
-.docs-prose th { font-weight: 600; }
-.docs-prose input[type="checkbox"] { margin-right: 0.4rem; }
-.docs-prose strong { font-weight: 600; }
+.docs-prose > * + * {
+  margin-top: var(--docs-prose-spacing);
+}
+.docs-prose h1 {
+  font-size: 1.6rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 1.75rem;
+}
+.docs-prose h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  margin-top: 1.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.docs-prose h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
+}
+.docs-prose h4,
+.docs-prose h5,
+.docs-prose h6 {
+  font-weight: 600;
+  margin-top: 1rem;
+}
+.docs-prose p {
+  color: var(--foreground);
+}
+.docs-prose a {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.docs-prose a:hover {
+  text-decoration-thickness: 2px;
+}
+.docs-prose ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+.docs-prose ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+.docs-prose li + li {
+  margin-top: 0.25rem;
+}
+.docs-prose li > p {
+  margin: 0;
+}
+.docs-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--muted);
+  padding: 0.1em 0.35em;
+  border-radius: 0.3em;
+}
+.docs-prose pre {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+.docs-prose pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+.docs-prose blockquote {
+  border-left: 2px solid var(--border);
+  padding: 0.25rem 0 0.25rem 0.875rem;
+  color: var(--muted-foreground);
+}
+.docs-prose hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2rem 0;
+}
+.docs-prose table {
+  width: 100%;
+  font-size: 0.9em;
+  border-collapse: collapse;
+}
+.docs-prose th,
+.docs-prose td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+}
+.docs-prose th {
+  font-weight: 600;
+}
+.docs-prose input[type="checkbox"] {
+  margin-right: 0.4rem;
+}
+.docs-prose strong {
+  font-weight: 600;
+}

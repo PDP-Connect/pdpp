@@ -129,9 +129,7 @@ export function renderInventory(manifests) {
 
   lines.push("## Summary");
   lines.push("");
-  lines.push(
-    `${missingStrategyCount} stream(s) missing a coverage_strategy or freshness_strategy declaration (debt).`
-  );
+  lines.push(`${missingStrategyCount} stream(s) missing a coverage_strategy or freshness_strategy declaration (debt).`);
   lines.push(
     `${requiredAcceptedAbsenceCount} stream(s) combine required=true/default-required with an accepted-absence coverage_policy (debt).`
   );

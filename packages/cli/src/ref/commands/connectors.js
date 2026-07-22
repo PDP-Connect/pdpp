@@ -1,10 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { parseArgs, requirePositional } from '../args.js';
-import { PdppUsageError } from '../errors.js';
-import { fetchJson, ownerSessionHeaders, resolveReferenceUrl } from '../fetch.js';
-import { resolveFormat, writeData, writeEnvelopeWarnings } from '../output.js';
+import { parseArgs, requirePositional } from "../args.js";
+import { PdppUsageError } from "../errors.js";
+import { fetchJson, ownerSessionHeaders, resolveReferenceUrl } from "../fetch.js";
+import { resolveFormat, writeData, writeEnvelopeWarnings } from "../output.js";
 
 // Operator-facing summary projection. Mirrors the evidence the dashboard renders
 // in `apps/console/src/app/(console)/lib/ref-client.ts` (RefConnectorSummary +
@@ -27,11 +27,11 @@ function projectSummaryRow(summary) {
     connection_id: summary?.connection_id ?? null,
     connector_id: summary?.connector_id ?? null,
     display_name: summary?.display_name ?? null,
-    state: health.state ?? 'unknown',
-    coverage: axes.coverage ?? 'unknown',
-    freshness: axes.freshness ?? 'unknown',
-    attention: axes.attention ?? 'none',
-    outbox: axes.outbox ?? 'unknown',
+    state: health.state ?? "unknown",
+    coverage: axes.coverage ?? "unknown",
+    freshness: axes.freshness ?? "unknown",
+    attention: axes.attention ?? "none",
+    outbox: axes.outbox ?? "unknown",
     syncing: badges.syncing === true,
     stale: badges.stale === true,
     reason_code: health.reason_code ?? null,
@@ -52,7 +52,7 @@ function projectSummaryRow(summary) {
     primary_action_cta: primaryAction?.cta ?? null,
     primary_action_satisfied_when: primaryAction?.satisfied_when?.kind ?? null,
     primary_action_terminal: primaryAction?.terminal ?? null,
-    next_action_source: nextAction?.source ?? 'none',
+    next_action_source: nextAction?.source ?? "none",
     next_action_reason: nextAction?.reason_code ?? null,
     next_action_owner_action: nextAction?.owner_action ?? null,
     next_action_target: nextAction?.action_target ?? null,
@@ -90,53 +90,53 @@ export async function runRefConnectors(argv, io = {}, fetchImpl = globalThis.fet
   const out = io.stdout || process.stdout;
   const err = io.stderr || process.stderr;
 
-  if (subcommand === 'list') {
+  if (subcommand === "list") {
     const asUrl = resolveReferenceUrl(flags);
-    const ownerSession = flags['owner-session'] || '';
-    const cacheRoot = flags['cache-root'];
+    const ownerSession = flags["owner-session"] || "";
+    const cacheRoot = flags["cache-root"];
     const { body } = await fetchJson(
       `${asUrl}/_ref/connectors`,
       { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
       fetchImpl
     );
-    const format = resolveFormat(flags, 'table', 'json');
-    const verbose = flags.verbose === true || flags.verbose === 'true';
+    const format = resolveFormat(flags, "table", "json");
+    const verbose = flags.verbose === true || flags.verbose === "true";
     if (verbose) {
-      writeData(format === 'table' ? (body.data || []) : body, format, out);
+      writeData(format === "table" ? body.data || [] : body, format, out);
       writeEnvelopeWarnings(body, err);
       return 0;
     }
     const rows = Array.isArray(body?.data) ? body.data.map(projectSummaryRow) : [];
-    writeData(format === 'table' ? rows.map(projectSummaryTableRow) : { object: 'list', data: rows }, format, out);
+    writeData(format === "table" ? rows.map(projectSummaryTableRow) : { object: "list", data: rows }, format, out);
     writeEnvelopeWarnings(body, err);
     return 0;
   }
 
-  if (subcommand === 'show') {
-    const connectorId = requirePositional(positionals, 0, 'connector-id');
+  if (subcommand === "show") {
+    const connectorId = requirePositional(positionals, 0, "connector-id");
     const asUrl = resolveReferenceUrl(flags);
-    const ownerSession = flags['owner-session'] || '';
-    const cacheRoot = flags['cache-root'];
+    const ownerSession = flags["owner-session"] || "";
+    const cacheRoot = flags["cache-root"];
     const { body } = await fetchJson(
       `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}`,
       { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
       fetchImpl
     );
-    const format = resolveFormat(flags, 'table', 'json');
-    const verbose = flags.verbose === true || flags.verbose === 'true';
+    const format = resolveFormat(flags, "table", "json");
+    const verbose = flags.verbose === true || flags.verbose === "true";
     if (verbose) {
       writeData(body, format, out);
       writeEnvelopeWarnings(body, err);
       return 0;
     }
     const row = projectSummaryRow(body);
-    writeData(format === 'table' ? [projectSummaryTableRow(row)] : row, format, out);
+    writeData(format === "table" ? [projectSummaryTableRow(row)] : row, format, out);
     writeEnvelopeWarnings(body, err);
     return 0;
   }
 
   throw new PdppUsageError(
-    'Usage: pdpp ref connectors <list|show <connector-id>> [--as-url <url>] [--owner-session <cookie>] [--format json|table] [--verbose]'
+    "Usage: pdpp ref connectors <list|show <connector-id>> [--as-url <url>] [--owner-session <cookie>] [--format json|table] [--verbose]"
   );
 }
 

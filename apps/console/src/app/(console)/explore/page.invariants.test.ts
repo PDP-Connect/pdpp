@@ -60,7 +60,8 @@ const ROW_ACTION_LABEL_RE = /<span className="rr-x-row__action">\{actionLabel\}<
 // as "ingested", and still renders a `precision="time"` Timestamp. Keep the
 // assertions loose enough to tolerate JSX reshaping.
 const ROW_TIME_CONTAINER_RE = /<span className="rr-x-row__time">/;
-const ROW_TIME_QUALIFIER_RE = /entry\.displayIsSemantic \? null : <span className="text-muted-foreground">ingested <\/span>/;
+const ROW_TIME_QUALIFIER_RE =
+  /entry\.displayIsSemantic \? null : <span className="text-muted-foreground">ingested <\/span>/;
 const ROW_TIME_TIMESTAMP_RE = /<Timestamp precision="time" value=\{entry\.displayAt\} \/>/;
 const ROW_TIME_CSS_RE = /\.rr-x-row__time\s*\{/;
 // Future-dated records (e.g. YNAB future budget months) must NOT sit above today:

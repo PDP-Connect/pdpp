@@ -1,29 +1,63 @@
 <!doctype html>
 <!-- @dsCard group="Spacing" name="Corners" subtitle="Paper is square; controls get a 2px ease" viewport="700x190" -->
 <html lang="en">
-<head>
-<meta charset="utf-8"/>
-<title>PDPP · Corners</title>
-<link href="../colors_and_type.css" rel="stylesheet"/>
-<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
-<style>
-body { margin: 0; padding: 22px 24px; background: var(--background); display: flex; gap: 26px; align-items: flex-start; font-family: var(--font-sans); }
-.demo { display: flex; flex-direction: column; gap: 7px; }
-.lbl { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); }
-.sq { width: 130px; height: 64px; background: var(--card); border: 1px solid var(--border-strong); }
-.rule { font-size: 12.5px; color: var(--muted-foreground); max-width: 30ch; margin: 0; align-self: center; }
-.rule b { color: var(--foreground); font-weight: 600; }
-</style>
-</head>
-<body>
-<div class="demo">
-  <div class="sq"></div>
-  <span class="lbl">sheets, rows, bands — 0px</span>
-</div>
-<div class="demo">
-  <button class="pdpp-btn" style="width: 130px;" type="button">Control — 2px</button>
-  <span class="lbl">buttons, inputs — var(--radius-control)</span>
-</div>
-<p class="rule"><b>Why:</b> documents are square. A 2px ease on controls is the only concession — enough to read as pressable, never as a pill.</p>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <title>PDPP · Corners</title>
+    <link href="../colors_and_type.css" rel="stylesheet">
+    <link href="../ui_kits/web/kit.css" rel="stylesheet">
+    <style>
+    body {
+      margin: 0;
+      padding: 22px 24px;
+      background: var(--background);
+      display: flex;
+      gap: 26px;
+      align-items: flex-start;
+      font-family: var(--font-sans);
+    }
+    .demo {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+    .lbl {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--muted-foreground);
+    }
+    .sq {
+      width: 130px;
+      height: 64px;
+      background: var(--card);
+      border: 1px solid var(--border-strong);
+    }
+    .rule {
+      font-size: 12.5px;
+      color: var(--muted-foreground);
+      max-width: 30ch;
+      margin: 0;
+      align-self: center;
+    }
+    .rule b {
+      color: var(--foreground);
+      font-weight: 600;
+    }
+    </style>
+  </head>
+  <body>
+    <div class="demo">
+      <div class="sq"></div>
+      <span class="lbl">sheets, rows, bands — 0px</span>
+    </div>
+    <div class="demo">
+      <button class="pdpp-btn" style="width: 130px;" type="button">Control — 2px</button>
+      <span class="lbl">buttons, inputs — var(--radius-control)</span>
+    </div>
+    <p class="rule">
+      <b>Why:</b>
+      documents are square. A 2px ease on controls is the only concession — enough to read as pressable, never as a
+      pill.
+    </p>
+  </body>
 </html>

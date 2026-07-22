@@ -1,7 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-export function resolveFormat(flags, defaultWhenTty = 'json', defaultWhenPipe = 'json') {
+export function resolveFormat(flags, defaultWhenTty = "json", defaultWhenPipe = "json") {
   return flags.format || (process.stdout.isTTY ? defaultWhenTty : defaultWhenPipe);
 }
 
@@ -15,15 +15,15 @@ export function resolveFormat(flags, defaultWhenTty = 'json', defaultWhenPipe = 
  * the renderer prints nothing.
  */
 export function extractEnvelopeWarnings(body) {
-  if (!body || typeof body !== 'object') {
+  if (!body || typeof body !== "object") {
     return [];
   }
   const meta = body.meta;
-  if (!meta || typeof meta !== 'object') {
+  if (!meta || typeof meta !== "object") {
     return [];
   }
   const warnings = Array.isArray(meta.warnings) ? meta.warnings : [];
-  return warnings.filter((w) => w && typeof w === 'object' && typeof w.code === 'string');
+  return warnings.filter((w) => w && typeof w === "object" && typeof w.code === "string");
 }
 
 /**
@@ -45,17 +45,17 @@ export function writeEnvelopeWarnings(body, err = process.stderr) {
     if (warning.dropped_parameter) {
       parts.push(`(dropped: ${warning.dropped_parameter})`);
     }
-    err.write(`${parts.join(' — ')}\n`);
+    err.write(`${parts.join(" — ")}\n`);
   }
 }
 
-export function writeData(data, format = 'json', out = process.stdout) {
-  if (format === 'json') {
+export function writeData(data, format = "json", out = process.stdout) {
+  if (format === "json") {
     out.write(`${JSON.stringify(data, null, 2)}\n`);
     return;
   }
 
-  if (format === 'jsonl') {
+  if (format === "jsonl") {
     if (!Array.isArray(data)) {
       out.write(`${JSON.stringify(data)}\n`);
       return;
@@ -66,7 +66,7 @@ export function writeData(data, format = 'json', out = process.stdout) {
     return;
   }
 
-  if (format === 'table') {
+  if (format === "table") {
     writeTable(data, out);
     return;
   }
@@ -77,7 +77,7 @@ export function writeData(data, format = 'json', out = process.stdout) {
 function writeTable(data, out = process.stdout) {
   const rows = Array.isArray(data) ? data : [data];
   if (!rows.length) {
-    out.write('(empty)\n');
+    out.write("(empty)\n");
     return;
   }
 
@@ -92,17 +92,14 @@ function writeTable(data, out = process.stdout) {
   const widths = Object.fromEntries(
     columns.map((column) => [
       column,
-      Math.max(column.length, ...normalized.map((row) => String(row[column] ?? '').length)),
+      Math.max(column.length, ...normalized.map((row) => String(row[column] ?? "").length)),
     ])
   );
 
-  const renderRow = (row) =>
-    columns
-      .map((column) => String(row[column] ?? '').padEnd(widths[column]))
-      .join('  ');
+  const renderRow = (row) => columns.map((column) => String(row[column] ?? "").padEnd(widths[column])).join("  ");
 
   out.write(`${renderRow(Object.fromEntries(columns.map((column) => [column, column])))}\n`);
-  out.write(`${columns.map((column) => '-'.repeat(widths[column])).join('  ')}\n`);
+  out.write(`${columns.map((column) => "-".repeat(widths[column])).join("  ")}\n`);
   for (const row of normalized) {
     out.write(`${renderRow(row)}\n`);
   }
@@ -112,11 +109,11 @@ function flattenRow(row) {
   const out = {};
   for (const [key, value] of Object.entries(row)) {
     if (Array.isArray(value)) {
-      out[key] = value.join(', ');
-    } else if (value && typeof value === 'object') {
+      out[key] = value.join(", ");
+    } else if (value && typeof value === "object") {
       out[key] = JSON.stringify(value);
     } else {
-      out[key] = value ?? '';
+      out[key] = value ?? "";
     }
   }
   return out;

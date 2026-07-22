@@ -26,10 +26,7 @@ import { join } from "node:path";
 // root, so this is a dynamic, intentionally-untyped import. harness lives at
 // docs/explorer/uat/harness/ → repo root is four levels up.
 const { chromium } = await import(
-  new URL(
-    "../../../../packages/polyfill-connectors/node_modules/patchright/index.mjs",
-    import.meta.url
-  )
+  new URL("../../../../packages/polyfill-connectors/node_modules/patchright/index.mjs", import.meta.url)
 );
 
 const DASH_URL = process.env.DASH_URL || "http://localhost:3300/explore";

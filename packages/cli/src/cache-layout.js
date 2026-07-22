@@ -1,21 +1,21 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { mkdirSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
-export function getPdppCacheLayout(cacheRoot = '.pdpp') {
+export function getPdppCacheLayout(cacheRoot = ".pdpp") {
   return {
     root: cacheRoot,
-    clientsDir: join(cacheRoot, 'clients'),
-    gitignoreFile: join(cacheRoot, '.gitignore'),
-    credentialFile: (providerUrl) => join(cacheRoot, 'clients', `${providerCacheKey(providerUrl)}.json`),
+    clientsDir: join(cacheRoot, "clients"),
+    gitignoreFile: join(cacheRoot, ".gitignore"),
+    credentialFile: (providerUrl) => join(cacheRoot, "clients", `${providerCacheKey(providerUrl)}.json`),
   };
 }
 
 function providerCacheKey(providerUrl) {
-  const host = providerUrl.includes('://') ? new URL(providerUrl).host : providerUrl;
-  return host.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const host = providerUrl.includes("://") ? new URL(providerUrl).host : providerUrl;
+  return host.replace(/[^a-zA-Z0-9.-]/g, "_");
 }
 
 export function writePdppSecretFile(path, value) {

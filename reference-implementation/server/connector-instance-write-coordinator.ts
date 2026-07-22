@@ -78,7 +78,10 @@ export function __setConnectorInstancePostgresLockPoolForTest(
 /** Narrow deterministic ordering seam; production never installs a hook. */
 export function __setConnectorInstanceWritePhaseHookForTest(
   hook:
-    | ((stage: "before_key_acquire" | "after_acquire", context: { connectorInstanceId: string }) => Promise<void> | void)
+    | ((
+        stage: "before_key_acquire" | "after_acquire",
+        context: { connectorInstanceId: string }
+      ) => Promise<void> | void)
     | null
 ): void {
   writePhaseHookForTest = hook;

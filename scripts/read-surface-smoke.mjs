@@ -13,38 +13,38 @@
 //   PDPP_READ_SURFACE_TOKEN=... node scripts/read-surface-smoke.mjs \
 //     --origin https://pdpp.example --connection-id cin_... --stream messages
 
-import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   establishOwnerSessionCookie,
   extractCsrfFieldValue,
   findSetCookiePair,
   getSetCookieList,
-} from './lib/owner-session.mjs';
+} from "./lib/owner-session.mjs";
 
-const CORE_MCP_TOOLS = ['schema', 'query_records', 'fetch', 'search', 'aggregate'];
+const CORE_MCP_TOOLS = ["schema", "query_records", "fetch", "search", "aggregate"];
 const FORBIDDEN_NORMAL_MCP_TOOLS = [
-  'list_streams',
-  'discover_event_subscription_capabilities',
-  'list_event_subscriptions',
-  'create_event_subscription',
-  'get_event_subscription',
-  'send_test_event',
-  'update_event_subscription',
-  'delete_event_subscription',
+  "list_streams",
+  "discover_event_subscription_capabilities",
+  "list_event_subscriptions",
+  "create_event_subscription",
+  "get_event_subscription",
+  "send_test_event",
+  "update_event_subscription",
+  "delete_event_subscription",
 ];
 
-const DEFAULT_STREAM = 'messages';
-const DEFAULT_SEARCH_QUERY = 'test';
-const DEFAULT_DATE_FIELD = 'sent_at';
-const DEFAULT_SINCE = '1970-01-01T00:00:00.000Z';
+const DEFAULT_STREAM = "messages";
+const DEFAULT_SEARCH_QUERY = "test";
+const DEFAULT_DATE_FIELD = "sent_at";
+const DEFAULT_SINCE = "1970-01-01T00:00:00.000Z";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const SCOPED_FULL_SCHEMA_BYTE_BUDGET = 200_000;
-const NON_GRANT_BEARER = 'pdpp-read-surface-smoke-non-grant-bearer';
+const NON_GRANT_BEARER = "pdpp-read-surface-smoke-non-grant-bearer";
 
 export function parseArgs(argv) {
   const args = argv.slice(2);
@@ -61,37 +61,37 @@ export function parseArgs(argv) {
   };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if (arg === '--json') out.json = true;
-    else if (arg === '--skip-cli') out.skipCli = true;
-    else if (arg === '--skip-mcp') out.skipMcp = true;
-    else if (arg === '--skip-rest') out.skipRest = true;
-    else if (arg === '--origin') out.origin = args[++i];
-    else if (arg === '--token') out.token = args[++i];
-    else if (arg === '--owner-password') out.ownerPassword = args[++i];
-    else if (arg === '--owner-subject') out.ownerSubject = args[++i];
-    else if (arg === '--connector-id') out.connectorId = args[++i];
-    else if (arg === '--connection-id') out.connectionId = args[++i];
-    else if (arg === '--stream') out.stream = args[++i];
-    else if (arg === '--search-query') out.searchQuery = args[++i];
-    else if (arg === '--date-field') out.dateField = args[++i];
-    else if (arg === '--since') out.since = args[++i];
-    else if (arg === '--timeout-ms') out.timeoutMs = Number(args[++i]);
-    else if (arg === '--help' || arg === '-h') out.help = true;
+    if (arg === "--json") out.json = true;
+    else if (arg === "--skip-cli") out.skipCli = true;
+    else if (arg === "--skip-mcp") out.skipMcp = true;
+    else if (arg === "--skip-rest") out.skipRest = true;
+    else if (arg === "--origin") out.origin = args[++i];
+    else if (arg === "--token") out.token = args[++i];
+    else if (arg === "--owner-password") out.ownerPassword = args[++i];
+    else if (arg === "--owner-subject") out.ownerSubject = args[++i];
+    else if (arg === "--connector-id") out.connectorId = args[++i];
+    else if (arg === "--connection-id") out.connectionId = args[++i];
+    else if (arg === "--stream") out.stream = args[++i];
+    else if (arg === "--search-query") out.searchQuery = args[++i];
+    else if (arg === "--date-field") out.dateField = args[++i];
+    else if (arg === "--since") out.since = args[++i];
+    else if (arg === "--timeout-ms") out.timeoutMs = Number(args[++i]);
+    else if (arg === "--help" || arg === "-h") out.help = true;
   }
   return out;
 }
 
 export function normalizeOrigin(origin) {
-  return String(origin || '').replace(/\/+$/, '');
+  return String(origin || "").replace(/\/+$/, "");
 }
 
 export function buildUrl(origin, path, params = {}) {
   const url = new URL(path, normalizeOrigin(origin));
   for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null || value === '') continue;
+    if (value === undefined || value === null || value === "") continue;
     if (Array.isArray(value)) {
       for (const item of value) {
-        if (item !== undefined && item !== null && item !== '') url.searchParams.append(key, String(item));
+        if (item !== undefined && item !== null && item !== "") url.searchParams.append(key, String(item));
       }
       continue;
     }
@@ -102,34 +102,34 @@ export function buildUrl(origin, path, params = {}) {
 
 export function mcpInitializeMessage(id = 1) {
   return {
-    jsonrpc: '2.0',
+    jsonrpc: "2.0",
     id,
-    method: 'initialize',
+    method: "initialize",
     params: {
-      protocolVersion: '2024-11-05',
+      protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: 'pdpp-read-surface-smoke', version: '1' },
+      clientInfo: { name: "pdpp-read-surface-smoke", version: "1" },
     },
   };
 }
 
 export function mcpToolsListMessage(id = 2) {
-  return { jsonrpc: '2.0', id, method: 'tools/list', params: {} };
+  return { jsonrpc: "2.0", id, method: "tools/list", params: {} };
 }
 
 export function mcpToolCallMessage(name, args = {}, id = 3) {
-  return { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } };
+  return { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } };
 }
 
 export function parseMcpResponseText(contentType, text) {
   if (!text) return null;
-  if (String(contentType || '').includes('text/event-stream')) {
+  if (String(contentType || "").includes("text/event-stream")) {
     const dataLines = String(text)
-      .split('\n')
-      .filter((line) => line.startsWith('data:'))
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
       .map((line) => line.slice(5).trim())
       .filter(Boolean);
-    const payload = dataLines.find((line) => line !== '[DONE]');
+    const payload = dataLines.find((line) => line !== "[DONE]");
     return payload ? JSON.parse(payload) : null;
   }
   return JSON.parse(text);
@@ -145,38 +145,38 @@ export function extractListData(body) {
 
 export function extractRecordId(record) {
   const candidate = record?.id ?? record?.key ?? record?.record_id ?? record?.data?.id;
-  return typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
 }
 
 function recordPayload(record) {
-  if (record?.data && typeof record.data === 'object' && !Array.isArray(record.data)) return record.data;
-  if (record && typeof record === 'object' && !Array.isArray(record)) return record;
+  if (record?.data && typeof record.data === "object" && !Array.isArray(record.data)) return record.data;
+  if (record && typeof record === "object" && !Array.isArray(record)) return record;
   return {};
 }
 
 function objectKeys(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).sort() : [];
+  return value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort() : [];
 }
 
 export function classifyStrictProjection(record, expectedFields) {
   const payload = recordPayload(record);
   const actual = objectKeys(payload);
   const expected = [...expectedFields].sort();
-  if (actual.length === 0) return { status: 'skip', detail: 'no projected record was available' };
+  if (actual.length === 0) return { status: "skip", detail: "no projected record was available" };
   const unexpected = actual.filter((key) => !expected.includes(key));
   const missing = expected.filter((key) => !actual.includes(key));
   if (unexpected.length > 0 || missing.length > 0) {
     return {
-      status: 'fail',
-      detail: `projected payload keys were ${actual.join(',') || '<none>'}; expected exactly ${expected.join(',')}`,
+      status: "fail",
+      detail: `projected payload keys were ${actual.join(",") || "<none>"}; expected exactly ${expected.join(",")}`,
       extra: { payload },
     };
   }
-  return { status: 'pass', detail: `projection returned only ${expected.join(',')}` };
+  return { status: "pass", detail: `projection returned only ${expected.join(",")}` };
 }
 
 function extractSearchResults(body) {
-  if (!body || typeof body !== 'object') return [];
+  if (!body || typeof body !== "object") return [];
   if (Array.isArray(body.results)) return body.results;
   if (Array.isArray(body.hits)) return body.hits;
   if (Array.isArray(body.data?.results)) return body.data.results;
@@ -187,48 +187,55 @@ function extractSearchResults(body) {
 }
 
 function sourceIdForHit(hit) {
-  const source = hit?.source && typeof hit.source === 'object' ? hit.source : {};
-  return hit?.connection_id ?? hit?.connector_instance_id ?? source.connection_id ?? source.connector_instance_id ?? null;
+  const source = hit?.source && typeof hit.source === "object" ? hit.source : {};
+  return (
+    hit?.connection_id ?? hit?.connector_instance_id ?? source.connection_id ?? source.connector_instance_id ?? null
+  );
 }
 
 export function classifySearchLimitAndSource(body, limit) {
   const hits = extractSearchResults(body);
   if (hits.length > limit) {
-    return { status: 'fail', detail: `returned ${hits.length} hits for limit ${limit}`, extra: { hits } };
+    return { status: "fail", detail: `returned ${hits.length} hits for limit ${limit}`, extra: { hits } };
   }
-  if (hits.length === 0) return { status: 'warn', detail: 'search returned no hits; limit held but source identity is unproven' };
+  if (hits.length === 0)
+    return { status: "warn", detail: "search returned no hits; limit held but source identity is unproven" };
   const missingSource = hits.filter((hit) => !sourceIdForHit(hit));
   if (missingSource.length > 0) {
-    return { status: 'fail', detail: `${missingSource.length} hit(s) lacked connection_id/source identity`, extra: { hits } };
+    return {
+      status: "fail",
+      detail: `${missingSource.length} hit(s) lacked connection_id/source identity`,
+      extra: { hits },
+    };
   }
   const sourceMix = body?.meta?.package?.source_mix ?? body?.data?.meta?.package?.source_mix;
   return {
-    status: 'pass',
+    status: "pass",
     detail: `returned ${hits.length} hit(s) within limit ${limit} with source identity`,
     ...(Array.isArray(sourceMix) ? { extra: { sourceMix } } : {}),
   };
 }
 
 export function classifyPageHandles(body) {
-  const root = body?.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : body;
+  const root = body?.data && typeof body.data === "object" && !Array.isArray(body.data) ? body.data : body;
   const hasMore = root?.has_more ?? body?.has_more;
   const nextCursor = root?.next_cursor ?? body?.next_cursor ?? body?.links?.next ?? null;
   const count = root?.meta?.count ?? body?.meta?.count ?? null;
   if (hasMore === true && !nextCursor) {
-    return { status: 'fail', detail: 'has_more=true but no next cursor/link was visible', extra: { body } };
+    return { status: "fail", detail: "has_more=true but no next cursor/link was visible", extra: { body } };
   }
   if (!count) {
-    return { status: 'warn', detail: 'page returned but count handle was not visible' };
+    return { status: "warn", detail: "page returned but count handle was not visible" };
   }
-  return { status: 'pass', detail: `page handles visible${nextCursor ? ' with cursor' : ''}` };
+  return { status: "pass", detail: `page handles visible${nextCursor ? " with cursor" : ""}` };
 }
 
 export function extractMcpToolData(rpc) {
   const structured = rpc?.result?.structuredContent;
-  if (structured && typeof structured === 'object' && 'error' in structured) return structured.error;
-  if (structured && typeof structured === 'object' && 'data' in structured) return structured.data;
+  if (structured && typeof structured === "object" && "error" in structured) return structured.error;
+  if (structured && typeof structured === "object" && "data" in structured) return structured.data;
   if (structured !== undefined) return structured;
-  const text = rpc?.result?.content?.find?.((entry) => entry?.type === 'text')?.text;
+  const text = rpc?.result?.content?.find?.((entry) => entry?.type === "text")?.text;
   if (!text) return null;
   try {
     return JSON.parse(text);
@@ -239,25 +246,25 @@ export function extractMcpToolData(rpc) {
 
 export function extractMcpToolStructuredContent(rpc) {
   const structured = rpc?.result?.structuredContent;
-  return structured && typeof structured === 'object' ? structured : extractMcpToolData(rpc);
+  return structured && typeof structured === "object" ? structured : extractMcpToolData(rpc);
 }
 
 export function extractMcpToolError(rpc) {
   if (rpc?.error) {
     return {
-      code: rpc.error.code ? String(rpc.error.code) : 'json_rpc_error',
-      message: String(rpc.error.message ?? 'JSON-RPC error'),
+      code: rpc.error.code ? String(rpc.error.code) : "json_rpc_error",
+      message: String(rpc.error.message ?? "JSON-RPC error"),
     };
   }
   if (!rpc?.result?.isError) return null;
   const data = extractMcpToolData(rpc);
-  if (data && typeof data === 'object') {
+  if (data && typeof data === "object") {
     return {
-      code: String(data.code ?? data.type ?? 'tool_error'),
+      code: String(data.code ?? data.type ?? "tool_error"),
       message: String(data.message ?? JSON.stringify(data)),
     };
   }
-  return { code: 'tool_error', message: String(data ?? 'MCP tool error') };
+  return { code: "tool_error", message: String(data ?? "MCP tool error") };
 }
 
 export function bodyErrorCode(body) {
@@ -266,52 +273,52 @@ export function bodyErrorCode(body) {
 
 export function classifyAmbiguousConnection(status, body) {
   if (status >= 200 && status < 300) {
-    return { ok: true, status: 'pass', detail: 'request succeeded without connection_id; grant may be single-source' };
+    return { ok: true, status: "pass", detail: "request succeeded without connection_id; grant may be single-source" };
   }
   const code = bodyErrorCode(body);
-  if (status === 409 && code === 'ambiguous_connection') {
-    return { ok: true, status: 'pass', detail: 'returned typed ambiguous_connection' };
+  if (status === 409 && code === "ambiguous_connection") {
+    return { ok: true, status: "pass", detail: "returned typed ambiguous_connection" };
   }
   return {
     ok: false,
-    status: 'fail',
-    detail: `expected 2xx or typed ambiguous_connection; got HTTP ${status}${code ? ` ${code}` : ''}`,
+    status: "fail",
+    detail: `expected 2xx or typed ambiguous_connection; got HTTP ${status}${code ? ` ${code}` : ""}`,
   };
 }
 
 const BOUNDED_AUTH_ERROR_CODES = new Set([
-  'invalid_token',
-  'insufficient_scope',
-  'unauthorized',
-  'invalid_request',
-  'invalid_client',
-  'authentication_error',
+  "invalid_token",
+  "insufficient_scope",
+  "unauthorized",
+  "invalid_request",
+  "invalid_client",
+  "authentication_error",
 ]);
 
 export function classifyExcludedBearer(status, body) {
   if (status >= 200 && status < 300) {
     return {
-      status: 'fail',
-      detail: 'ordinary read served a non-grant bearer; scoped-grant requirement not enforced',
+      status: "fail",
+      detail: "ordinary read served a non-grant bearer; scoped-grant requirement not enforced",
       extra: { body },
     };
   }
   if (status !== 401 && status !== 403) {
-    return { status: 'warn', detail: `non-grant bearer rejected with HTTP ${status} (expected bounded 401/403)` };
+    return { status: "warn", detail: `non-grant bearer rejected with HTTP ${status} (expected bounded 401/403)` };
   }
   const code = bodyErrorCode(body);
   if (code && !BOUNDED_AUTH_ERROR_CODES.has(String(code))) {
-    return { status: 'warn', detail: `non-grant bearer rejected HTTP ${status} with unexpected code ${code}` };
+    return { status: "warn", detail: `non-grant bearer rejected HTTP ${status} with unexpected code ${code}` };
   }
   return {
-    status: 'pass',
-    detail: `non-grant bearer rejected (HTTP ${status}${code ? ` ${code}` : ''}); reads require the scoped grant`,
+    status: "pass",
+    detail: `non-grant bearer rejected (HTTP ${status}${code ? ` ${code}` : ""}); reads require the scoped grant`,
   };
 }
 
 function extractSchemaRoot(body) {
-  if (body?.object === 'schema') return body;
-  if (body?.data?.object === 'schema') return body.data;
+  if (body?.object === "schema") return body;
+  if (body?.data?.object === "schema") return body.data;
   if (Array.isArray(body?.connectors)) return body;
   if (Array.isArray(body?.data?.connectors)) return body.data;
   return null;
@@ -319,9 +326,7 @@ function extractSchemaRoot(body) {
 
 function schemaStreams(root) {
   return (root?.connectors ?? []).flatMap((connector) =>
-    Array.isArray(connector?.streams)
-      ? connector.streams.map((stream) => ({ connector, stream }))
-      : [],
+    Array.isArray(connector?.streams) ? connector.streams.map((stream) => ({ connector, stream })) : []
   );
 }
 
@@ -343,38 +348,38 @@ function schemaConnectionIds(root) {
 }
 
 function addConnectionIds(ids, value) {
-  for (const key of ['connection_id', 'connector_instance_id']) {
+  for (const key of ["connection_id", "connector_instance_id"]) {
     const id = value?.[key];
-    if (typeof id === 'string' && id.length > 0) ids.add(id);
+    if (typeof id === "string" && id.length > 0) ids.add(id);
   }
 }
 
 export function classifyScopedSchema(body, streamName, connectionId) {
   const root = extractSchemaRoot(body);
   if (!root) {
-    return { status: 'fail', detail: 'schema body did not contain a schema document', extra: { body } };
+    return { status: "fail", detail: "schema body did not contain a schema document", extra: { body } };
   }
   const rows = schemaStreams(root);
   if (rows.length === 0) {
-    return { status: 'fail', detail: 'scoped schema returned no streams', extra: { body } };
+    return { status: "fail", detail: "scoped schema returned no streams", extra: { body } };
   }
   const wrongStream = rows.find(({ stream }) => stream?.name !== streamName);
   if (wrongStream) {
     return {
-      status: 'fail',
-      detail: `scoped schema included unexpected stream ${wrongStream.stream?.name ?? '<unknown>'}`,
+      status: "fail",
+      detail: `scoped schema included unexpected stream ${wrongStream.stream?.name ?? "<unknown>"}`,
       extra: { body },
     };
   }
   const ids = schemaConnectionIds(root);
   if (ids.length !== 1 || ids[0] !== connectionId) {
     return {
-      status: 'fail',
-      detail: `scoped schema connection ids were ${ids.join(',') || '<none>'}, expected ${connectionId}`,
+      status: "fail",
+      detail: `scoped schema connection ids were ${ids.join(",") || "<none>"}, expected ${connectionId}`,
       extra: { body },
     };
   }
-  return { status: 'pass', detail: `schema narrowed to ${streamName} / ${connectionId}` };
+  return { status: "pass", detail: `schema narrowed to ${streamName} / ${connectionId}` };
 }
 
 function schemaConnectorKeys(root) {
@@ -388,37 +393,37 @@ function schemaConnectorKeys(root) {
 
 function addConnectorKey(keys, value) {
   const key = value?.connector_key;
-  if (typeof key === 'string' && key.length > 0) keys.add(key);
+  if (typeof key === "string" && key.length > 0) keys.add(key);
 }
 
 export function classifySourceIdentity(body, connectionId) {
   const root = extractSchemaRoot(body);
   if (!root) {
-    return { status: 'fail', detail: 'schema body did not contain a schema document', extra: { body } };
+    return { status: "fail", detail: "schema body did not contain a schema document", extra: { body } };
   }
   const ids = schemaConnectionIds(root);
   if (ids.length !== 1 || ids[0] !== connectionId) {
     return {
-      status: 'fail',
-      detail: `expected canonical connection_id ${connectionId}; saw ${ids.join(',') || '<none>'}`,
+      status: "fail",
+      detail: `expected canonical connection_id ${connectionId}; saw ${ids.join(",") || "<none>"}`,
       extra: { body },
     };
   }
   const connectorKeys = schemaConnectorKeys(root);
   if (connectorKeys.length === 0) {
     return {
-      status: 'warn',
+      status: "warn",
       detail: `connection_id ${connectionId} present; connector_key not surfaced by this transport/view`,
     };
   }
   if (connectorKeys.length > 1) {
     return {
-      status: 'fail',
-      detail: `scoped schema mixed connector_keys ${connectorKeys.join(',')}`,
+      status: "fail",
+      detail: `scoped schema mixed connector_keys ${connectorKeys.join(",")}`,
       extra: { body },
     };
   }
-  return { status: 'pass', detail: `canonical source identity ${connectionId} / ${connectorKeys[0]}` };
+  return { status: "pass", detail: `canonical source identity ${connectionId} / ${connectorKeys[0]}` };
 }
 
 export function classifyToolNames(toolNames) {
@@ -440,34 +445,34 @@ export function summarizeResults(results) {
   return { ok: counts.fail === 0, counts };
 }
 
-const PARITY_TRANSPORTS = ['REST', 'MCP', 'CLI'];
+const PARITY_TRANSPORTS = ["REST", "MCP", "CLI"];
 
 const PARITY_ROW_BY_CHECK = {
-  'schema.compact': 'compact_schema',
-  'schema.scoped': 'source_scoping',
-  'schema.scoped_full': 'source_scoping',
-  'schema.source_identity': 'source_identity',
-  'query_records.projection': 'projection',
-  'fetch.projection': 'projection',
-  'record_detail.projection': 'projection',
-  'search.fan_in_limit_source_identity': 'search_limit_source',
-  'query_records.count': 'count_handle',
-  'query_records.sort_count': 'count_handle',
-  'aggregate.count': 'aggregate_count',
-  'query_records.omit_connection_id': 'typed_ambiguity',
-  excluded_bearer: 'grant_bearer_only',
+  "schema.compact": "compact_schema",
+  "schema.scoped": "source_scoping",
+  "schema.scoped_full": "source_scoping",
+  "schema.source_identity": "source_identity",
+  "query_records.projection": "projection",
+  "fetch.projection": "projection",
+  "record_detail.projection": "projection",
+  "search.fan_in_limit_source_identity": "search_limit_source",
+  "query_records.count": "count_handle",
+  "query_records.sort_count": "count_handle",
+  "aggregate.count": "aggregate_count",
+  "query_records.omit_connection_id": "typed_ambiguity",
+  excluded_bearer: "grant_bearer_only",
 };
 
 const PARITY_ROW_ORDER = [
-  'compact_schema',
-  'source_scoping',
-  'source_identity',
-  'projection',
-  'search_limit_source',
-  'count_handle',
-  'aggregate_count',
-  'typed_ambiguity',
-  'grant_bearer_only',
+  "compact_schema",
+  "source_scoping",
+  "source_identity",
+  "projection",
+  "search_limit_source",
+  "count_handle",
+  "aggregate_count",
+  "typed_ambiguity",
+  "grant_bearer_only",
 ];
 
 export function buildParityMatrix(results) {
@@ -478,7 +483,7 @@ export function buildParityMatrix(results) {
     if (!row) continue;
     const key = `${row}\0${entry.surface}`;
     const prior = cells.get(key);
-    if (prior === 'fail') continue;
+    if (prior === "fail") continue;
     cells.set(key, entry.status);
   }
 
@@ -489,10 +494,10 @@ export function buildParityMatrix(results) {
     let anyPass = false;
     let anyFail = false;
     for (const surface of PARITY_TRANSPORTS) {
-      const status = cells.get(`${row}\0${surface}`) ?? 'absent';
+      const status = cells.get(`${row}\0${surface}`) ?? "absent";
       transports[surface] = status;
-      if (status === 'pass') anyPass = true;
-      if (status === 'fail') anyFail = true;
+      if (status === "pass") anyPass = true;
+      if (status === "fail") anyFail = true;
     }
     const rowDiverged = anyPass && anyFail;
     if (rowDiverged) diverged = true;
@@ -502,8 +507,8 @@ export function buildParityMatrix(results) {
 }
 
 export function cliCredentialCacheFile(cacheRoot, origin) {
-  const host = new URL(normalizeOrigin(origin)).host.replace(/[^a-zA-Z0-9.-]/g, '_');
-  return join(cacheRoot, 'clients', `${host}.json`);
+  const host = new URL(normalizeOrigin(origin)).host.replace(/[^a-zA-Z0-9.-]/g, "_");
+  return join(cacheRoot, "clients", `${host}.json`);
 }
 
 async function readBody(resp) {
@@ -518,7 +523,7 @@ async function readBody(resp) {
 }
 
 function pkceChallenge(verifier) {
-  return crypto.createHash('sha256').update(verifier).digest('base64url');
+  return crypto.createHash("sha256").update(verifier).digest("base64url");
 }
 
 // Delegates to the shared owner-session helper (scripts/lib/owner-session.mjs
@@ -528,21 +533,21 @@ async function establishOwnerSession(origin, ownerPassword) {
 }
 
 async function mintScopedClientToken({ origin, ownerPassword, ownerSubject, connectorId, connectionId, stream }) {
-  if (!ownerPassword) throw new Error('--owner-password or PDPP_OWNER_PASSWORD is required when --token is omitted');
-  if (!connectorId) throw new Error('--connector-id is required when --token is omitted');
+  if (!ownerPassword) throw new Error("--owner-password or PDPP_OWNER_PASSWORD is required when --token is omitted");
+  if (!connectorId) throw new Error("--connector-id is required when --token is omitted");
 
   const sessionCookie = await establishOwnerSession(origin, ownerPassword);
-  const redirectUri = 'https://client.example/callback';
+  const redirectUri = "https://client.example/callback";
   const registerResp = await fetch(`${origin}/oauth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      client_name: 'PDPP read-surface smoke client',
+      client_name: "PDPP read-surface smoke client",
       redirect_uris: [redirectUri],
-      grant_types: ['authorization_code', 'refresh_token'],
-      response_types: ['code'],
-      application_type: 'web',
-      token_endpoint_auth_method: 'none',
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      application_type: "web",
+      token_endpoint_auth_method: "none",
     }),
   });
   if (registerResp.status !== 201) {
@@ -550,57 +555,57 @@ async function mintScopedClientToken({ origin, ownerPassword, ownerSubject, conn
     throw new Error(`oauth/register failed ${registerResp.status}: ${text}`);
   }
   const client = (await readBody(registerResp)).json;
-  const verifier = crypto.randomBytes(32).toString('base64url');
-  const streamGrant = { name: stream || '*' };
+  const verifier = crypto.randomBytes(32).toString("base64url");
+  const streamGrant = { name: stream || "*" };
   if (connectionId) streamGrant.connection_id = connectionId;
   const authorizationDetails = [
     {
-      type: 'https://pdpp.org/data-access',
-      source: { kind: 'connector', id: connectorId },
-      purpose_code: 'https://pdpp.org/purpose/personal_ai_assistant',
-      purpose_description: 'PDPP read-surface smoke',
-      access_mode: 'continuous',
+      type: "https://pdpp.org/data-access",
+      source: { kind: "connector", id: connectorId },
+      purpose_code: "https://pdpp.org/purpose/personal_ai_assistant",
+      purpose_description: "PDPP read-surface smoke",
+      access_mode: "continuous",
       streams: [streamGrant],
     },
   ];
 
   const authorizeUrl = new URL(`${origin}/oauth/authorize`);
-  authorizeUrl.searchParams.set('client_id', client.client_id);
-  authorizeUrl.searchParams.set('redirect_uri', redirectUri);
-  authorizeUrl.searchParams.set('response_type', 'code');
-  authorizeUrl.searchParams.set('state', 'read-surface-smoke');
-  authorizeUrl.searchParams.set('code_challenge', pkceChallenge(verifier));
-  authorizeUrl.searchParams.set('code_challenge_method', 'S256');
-  authorizeUrl.searchParams.set('authorization_details', JSON.stringify(authorizationDetails));
+  authorizeUrl.searchParams.set("client_id", client.client_id);
+  authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("state", "read-surface-smoke");
+  authorizeUrl.searchParams.set("code_challenge", pkceChallenge(verifier));
+  authorizeUrl.searchParams.set("code_challenge_method", "S256");
+  authorizeUrl.searchParams.set("authorization_details", JSON.stringify(authorizationDetails));
 
   const authorizeResp = await fetch(authorizeUrl, {
-    redirect: 'manual',
+    redirect: "manual",
     headers: { Cookie: sessionCookie },
   });
   if (authorizeResp.status !== 302) {
     const { text } = await readBody(authorizeResp);
     throw new Error(`oauth/authorize failed ${authorizeResp.status}: ${text}`);
   }
-  const consentUrl = new URL(authorizeResp.headers.get('location'), origin);
-  const requestUri = consentUrl.searchParams.get('request_uri');
-  if (!requestUri) throw new Error('oauth/authorize did not return a consent request_uri');
+  const consentUrl = new URL(authorizeResp.headers.get("location"), origin);
+  const requestUri = consentUrl.searchParams.get("request_uri");
+  if (!requestUri) throw new Error("oauth/authorize did not return a consent request_uri");
 
   const consentPageResp = await fetch(consentUrl, {
-    headers: { Accept: 'text/html', Cookie: sessionCookie },
-    redirect: 'manual',
+    headers: { Accept: "text/html", Cookie: sessionCookie },
+    redirect: "manual",
   });
-  const consentCsrfCookie = findSetCookiePair(getSetCookieList(consentPageResp), 'pdpp_owner_csrf');
+  const consentCsrfCookie = findSetCookiePair(getSetCookieList(consentPageResp), "pdpp_owner_csrf");
   const consentCsrfField = extractCsrfFieldValue(await consentPageResp.text());
 
-  const approveHeaders = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  const approveHeaders = { "Content-Type": "application/x-www-form-urlencoded" };
   const cookieParts = [sessionCookie, consentCsrfCookie].filter(Boolean);
-  if (cookieParts.length > 0) approveHeaders.Cookie = cookieParts.join('; ');
-  const approveBody = { request_uri: requestUri, subject_id: ownerSubject || 'owner_local' };
+  if (cookieParts.length > 0) approveHeaders.Cookie = cookieParts.join("; ");
+  const approveBody = { request_uri: requestUri, subject_id: ownerSubject || "owner_local" };
   if (consentCsrfField) approveBody._csrf = consentCsrfField;
 
   const approveResp = await fetch(`${origin}/consent/approve`, {
-    method: 'POST',
-    redirect: 'manual',
+    method: "POST",
+    redirect: "manual",
     headers: approveHeaders,
     body: new URLSearchParams(approveBody).toString(),
   });
@@ -608,15 +613,15 @@ async function mintScopedClientToken({ origin, ownerPassword, ownerSubject, conn
     const { text } = await readBody(approveResp);
     throw new Error(`consent/approve failed ${approveResp.status}: ${text}`);
   }
-  const callback = new URL(approveResp.headers.get('location'));
-  const code = callback.searchParams.get('code');
-  if (!code) throw new Error('consent/approve did not return an authorization code');
+  const callback = new URL(approveResp.headers.get("location"));
+  const code = callback.searchParams.get("code");
+  if (!code) throw new Error("consent/approve did not return an authorization code");
 
   const tokenResp = await fetch(`${origin}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: 'authorization_code',
+      grant_type: "authorization_code",
       code,
       client_id: client.client_id,
       redirect_uri: redirectUri,
@@ -631,14 +636,11 @@ async function mintScopedClientToken({ origin, ownerPassword, ownerSubject, conn
 }
 
 export function classifyCliHelp(stdout) {
-  const text = String(stdout || '');
+  const text = String(stdout || "");
   const hasCliHelp = /PDPP CLI/.test(text);
-  const advertisedReadCommands = [
-    /\bquery[_-]?records\b/i,
-    /\bsearch\b/i,
-    /\baggregate\b/i,
-    /\bfetch\b/i,
-  ].filter((pattern) => pattern.test(text));
+  const advertisedReadCommands = [/\bquery[_-]?records\b/i, /\bsearch\b/i, /\baggregate\b/i, /\bfetch\b/i].filter(
+    (pattern) => pattern.test(text)
+  );
   return {
     hasCliHelp,
     hasGrantScopedReadCommands: advertisedReadCommands.length > 0,
@@ -650,28 +652,31 @@ function result(status, surface, name, detail, extra = {}) {
 }
 
 function ok(surface, name, detail, extra) {
-  return result('pass', surface, name, detail, extra);
+  return result("pass", surface, name, detail, extra);
 }
 
 function warn(surface, name, detail, extra) {
-  return result('warn', surface, name, detail, extra);
+  return result("warn", surface, name, detail, extra);
 }
 
 function fail(surface, name, detail, extra) {
-  return result('fail', surface, name, detail, extra);
+  return result("fail", surface, name, detail, extra);
 }
 
 function skip(surface, name, detail, extra) {
-  return result('skip', surface, name, detail, extra);
+  return result("skip", surface, name, detail, extra);
 }
 
-async function fetchText(url, { token, method = 'GET', body, timeoutMs = DEFAULT_TIMEOUT_MS, accept = 'application/json' } = {}) {
+async function fetchText(
+  url,
+  { token, method = "GET", body, timeoutMs = DEFAULT_TIMEOUT_MS, accept = "application/json" } = {}
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers = { Accept: accept };
     if (token) headers.Authorization = `Bearer ${token}`;
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (body !== undefined) headers["Content-Type"] = "application/json";
     const resp = await fetch(url, {
       method,
       headers,
@@ -685,7 +690,7 @@ async function fetchText(url, { token, method = 'GET', body, timeoutMs = DEFAULT
     } catch {
       json = null;
     }
-    return { status: resp.status, contentType: resp.headers.get('content-type'), text, json };
+    return { status: resp.status, contentType: resp.headers.get("content-type"), text, json };
   } finally {
     clearTimeout(timer);
   }
@@ -698,10 +703,10 @@ async function getJson(origin, path, params, opts) {
 async function mcpPost(origin, token, message, timeoutMs) {
   const resp = await fetchText(`${normalizeOrigin(origin)}/mcp`, {
     token,
-    method: 'POST',
+    method: "POST",
     body: message,
     timeoutMs,
-    accept: 'application/json, text/event-stream',
+    accept: "application/json, text/event-stream",
   });
   const rpc = resp.text ? parseMcpResponseText(resp.contentType, resp.text) : null;
   return { ...resp, rpc };
@@ -718,15 +723,15 @@ async function pushChecked(results, surface, name, fn) {
 function require2xx(resp, surface, name) {
   if (resp.status >= 200 && resp.status < 300) return null;
   const code = bodyErrorCode(resp.json);
-  return fail(surface, name, `HTTP ${resp.status}${code ? ` ${code}` : ''}`, { body: resp.json ?? resp.text });
+  return fail(surface, name, `HTTP ${resp.status}${code ? ` ${code}` : ""}`, { body: resp.json ?? resp.text });
 }
 
 function requireMcpOk(resp, name) {
   if (resp.status < 200 || resp.status >= 300) {
-    return fail('MCP', name, `HTTP ${resp.status}`, { body: resp.json ?? resp.text });
+    return fail("MCP", name, `HTTP ${resp.status}`, { body: resp.json ?? resp.text });
   }
   const toolError = extractMcpToolError(resp.rpc);
-  if (toolError) return fail('MCP', name, `${toolError.code}: ${toolError.message}`);
+  if (toolError) return fail("MCP", name, `${toolError.code}: ${toolError.message}`);
   return null;
 }
 
@@ -734,226 +739,231 @@ async function runRestChecks({ origin, token, connectionId, stream, searchQuery,
   const results = [];
   let firstRecordId = null;
 
-  await pushChecked(results, 'REST', 'schema', async () => {
-    const resp = await getJson(origin, '/v1/schema', {}, { token, timeoutMs });
-    const failure = require2xx(resp, 'REST', 'schema');
-    return failure ?? ok('REST', 'schema', 'schema returned');
+  await pushChecked(results, "REST", "schema", async () => {
+    const resp = await getJson(origin, "/v1/schema", {}, { token, timeoutMs });
+    const failure = require2xx(resp, "REST", "schema");
+    return failure ?? ok("REST", "schema", "schema returned");
   });
 
-  await pushChecked(results, 'REST', 'schema.compact', async () => {
-    const resp = await getJson(origin, '/v1/schema', { view: 'compact' }, { token, timeoutMs });
-    const failure = require2xx(resp, 'REST', 'schema.compact');
+  await pushChecked(results, "REST", "schema.compact", async () => {
+    const resp = await getJson(origin, "/v1/schema", { view: "compact" }, { token, timeoutMs });
+    const failure = require2xx(resp, "REST", "schema.compact");
     if (failure) return failure;
-    return resp.json?.detail === 'compact'
-      ? ok('REST', 'schema.compact', 'compact schema returned')
-      : fail('REST', 'schema.compact', 'schema did not carry detail=compact', { body: resp.json });
+    return resp.json?.detail === "compact"
+      ? ok("REST", "schema.compact", "compact schema returned")
+      : fail("REST", "schema.compact", "schema did not carry detail=compact", { body: resp.json });
   });
 
-  await pushChecked(results, 'REST', 'schema.scoped', async () => {
+  await pushChecked(results, "REST", "schema.scoped", async () => {
     const resp = await getJson(
       origin,
-      '/v1/schema',
-      { view: 'compact', stream, connection_id: connectionId },
-      { token, timeoutMs },
+      "/v1/schema",
+      { view: "compact", stream, connection_id: connectionId },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'schema.scoped');
+    const failure = require2xx(resp, "REST", "schema.scoped");
     if (failure) return failure;
     const verdict = classifyScopedSchema(resp.json, stream, connectionId);
-    return result(verdict.status, 'REST', 'schema.scoped', verdict.detail, verdict.extra);
+    return result(verdict.status, "REST", "schema.scoped", verdict.detail, verdict.extra);
   });
 
-  await pushChecked(results, 'REST', 'schema.source_identity', async () => {
+  await pushChecked(results, "REST", "schema.source_identity", async () => {
     const resp = await getJson(
       origin,
-      '/v1/schema',
-      { view: 'compact', stream, connection_id: connectionId },
-      { token, timeoutMs },
+      "/v1/schema",
+      { view: "compact", stream, connection_id: connectionId },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'schema.source_identity');
+    const failure = require2xx(resp, "REST", "schema.source_identity");
     if (failure) return failure;
     const verdict = classifySourceIdentity(resp.json, connectionId);
-    return result(verdict.status, 'REST', 'schema.source_identity', verdict.detail, verdict.extra);
+    return result(verdict.status, "REST", "schema.source_identity", verdict.detail, verdict.extra);
   });
 
-  await pushChecked(results, 'REST', 'list_streams.scoped', async () => {
-    const resp = await getJson(origin, '/v1/streams', { connection_id: connectionId }, { token, timeoutMs });
-    const failure = require2xx(resp, 'REST', 'list_streams.scoped');
+  await pushChecked(results, "REST", "list_streams.scoped", async () => {
+    const resp = await getJson(origin, "/v1/streams", { connection_id: connectionId }, { token, timeoutMs });
+    const failure = require2xx(resp, "REST", "list_streams.scoped");
     if (failure) return failure;
     const streams = extractListData(resp.json);
-    return ok('REST', 'list_streams.scoped', `${streams.length} stream(s) returned`);
+    return ok("REST", "list_streams.scoped", `${streams.length} stream(s) returned`);
   });
 
-  await pushChecked(results, 'REST', 'query_records.basic', async () => {
+  await pushChecked(results, "REST", "query_records.basic", async () => {
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/records`,
       { limit: 1, connection_id: connectionId },
-      { token, timeoutMs },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'query_records.basic');
+    const failure = require2xx(resp, "REST", "query_records.basic");
     if (failure) return failure;
     const records = extractListData(resp.json);
     firstRecordId = extractRecordId(records[0]);
-    return ok('REST', 'query_records.basic', `${records.length} record(s) returned`, { firstRecordId });
+    return ok("REST", "query_records.basic", `${records.length} record(s) returned`, { firstRecordId });
   });
 
-  await pushChecked(results, 'REST', 'query_records.projection', async () => {
+  await pushChecked(results, "REST", "query_records.projection", async () => {
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/records`,
-      { limit: 1, connection_id: connectionId, fields: ['id'] },
-      { token, timeoutMs },
+      { limit: 1, connection_id: connectionId, fields: ["id"] },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'query_records.projection');
+    const failure = require2xx(resp, "REST", "query_records.projection");
     if (failure) return failure;
-    const verdict = classifyStrictProjection(extractListData(resp.json)[0], ['id']);
-    return result(verdict.status, 'REST', 'query_records.projection', verdict.detail, verdict.extra);
+    const verdict = classifyStrictProjection(extractListData(resp.json)[0], ["id"]);
+    return result(verdict.status, "REST", "query_records.projection", verdict.detail, verdict.extra);
   });
 
-  await pushChecked(results, 'REST', 'query_records.omit_connection_id', async () => {
+  await pushChecked(results, "REST", "query_records.omit_connection_id", async () => {
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/records`,
       { limit: 1 },
-      { token, timeoutMs },
+      { token, timeoutMs }
     );
     const verdict = classifyAmbiguousConnection(resp.status, resp.json);
-    return result(verdict.status, 'REST', 'query_records.omit_connection_id', verdict.detail);
+    return result(verdict.status, "REST", "query_records.omit_connection_id", verdict.detail);
   });
 
-  await pushChecked(results, 'REST', 'query_records.sort', async () => {
+  await pushChecked(results, "REST", "query_records.sort", async () => {
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/records`,
       { limit: 1, connection_id: connectionId, sort: `-${dateField}` },
-      { token, timeoutMs },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'query_records.sort');
-    if (!failure) return ok('REST', 'query_records.sort', `sort=-${dateField} accepted`);
-    if (bodyErrorCode(resp.json) === 'unsupported_query') return warn('REST', 'query_records.sort', failure.detail);
+    const failure = require2xx(resp, "REST", "query_records.sort");
+    if (!failure) return ok("REST", "query_records.sort", `sort=-${dateField} accepted`);
+    if (bodyErrorCode(resp.json) === "unsupported_query") return warn("REST", "query_records.sort", failure.detail);
     return failure;
   });
 
-  await pushChecked(results, 'REST', 'query_records.count', async () => {
+  await pushChecked(results, "REST", "query_records.count", async () => {
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/records`,
-      { limit: 1, connection_id: connectionId, count: 'exact' },
-      { token, timeoutMs },
+      { limit: 1, connection_id: connectionId, count: "exact" },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'query_records.count');
+    const failure = require2xx(resp, "REST", "query_records.count");
     if (!failure) {
       const verdict = classifyPageHandles(resp.json);
-      return result(verdict.status, 'REST', 'query_records.count', `count=exact accepted; ${verdict.detail}`, verdict.extra);
+      return result(
+        verdict.status,
+        "REST",
+        "query_records.count",
+        `count=exact accepted; ${verdict.detail}`,
+        verdict.extra
+      );
     }
-    if (bodyErrorCode(resp.json) === 'unsupported_query') return warn('REST', 'query_records.count', failure.detail);
+    if (bodyErrorCode(resp.json) === "unsupported_query") return warn("REST", "query_records.count", failure.detail);
     return failure;
   });
 
-  await pushChecked(results, 'REST', 'query_records.filter_object', async () => {
+  await pushChecked(results, "REST", "query_records.filter_object", async () => {
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/records`,
       { limit: 1, connection_id: connectionId, [`filter[${dateField}][gte]`]: since },
-      { token, timeoutMs },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'query_records.filter_object');
-    return failure ? warn('REST', 'query_records.filter_object', failure.detail) : ok('REST', 'query_records.filter_object', 'typed bracket filter accepted');
+    const failure = require2xx(resp, "REST", "query_records.filter_object");
+    return failure
+      ? warn("REST", "query_records.filter_object", failure.detail)
+      : ok("REST", "query_records.filter_object", "typed bracket filter accepted");
   });
 
-  await pushChecked(results, 'REST', 'record_detail', async () => {
-    if (!firstRecordId) return skip('REST', 'record_detail', 'no record id returned by basic query');
+  await pushChecked(results, "REST", "record_detail", async () => {
+    if (!firstRecordId) return skip("REST", "record_detail", "no record id returned by basic query");
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(firstRecordId)}`,
       { connection_id: connectionId },
-      { token, timeoutMs },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'record_detail');
-    return failure ?? ok('REST', 'record_detail', `record ${firstRecordId} returned`);
+    const failure = require2xx(resp, "REST", "record_detail");
+    return failure ?? ok("REST", "record_detail", `record ${firstRecordId} returned`);
   });
 
-  await pushChecked(results, 'REST', 'record_detail.projection', async () => {
-    if (!firstRecordId) return skip('REST', 'record_detail.projection', 'no record id returned by basic query');
+  await pushChecked(results, "REST", "record_detail.projection", async () => {
+    if (!firstRecordId) return skip("REST", "record_detail.projection", "no record id returned by basic query");
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(firstRecordId)}`,
-      { connection_id: connectionId, fields: ['id'] },
-      { token, timeoutMs },
+      { connection_id: connectionId, fields: ["id"] },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'record_detail.projection');
+    const failure = require2xx(resp, "REST", "record_detail.projection");
     if (failure) return failure;
-    const verdict = classifyStrictProjection(resp.json?.data ?? resp.json, ['id']);
-    return result(verdict.status, 'REST', 'record_detail.projection', verdict.detail, verdict.extra);
+    const verdict = classifyStrictProjection(resp.json?.data ?? resp.json, ["id"]);
+    return result(verdict.status, "REST", "record_detail.projection", verdict.detail, verdict.extra);
   });
 
-  await pushChecked(results, 'REST', 'search.lexical', async () => {
+  await pushChecked(results, "REST", "search.lexical", async () => {
     const resp = await getJson(
       origin,
-      '/v1/search',
+      "/v1/search",
       { q: searchQuery, streams: stream, limit: 1, connection_id: connectionId },
-      { token, timeoutMs },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'search.lexical');
-    return failure ?? ok('REST', 'search.lexical', 'lexical search returned');
+    const failure = require2xx(resp, "REST", "search.lexical");
+    return failure ?? ok("REST", "search.lexical", "lexical search returned");
   });
 
-  await pushChecked(results, 'REST', 'search.fan_in_limit_source_identity', async () => {
+  await pushChecked(results, "REST", "search.fan_in_limit_source_identity", async () => {
     const limit = 3;
-    const resp = await getJson(
-      origin,
-      '/v1/search',
-      { q: searchQuery, streams: stream, limit },
-      { token, timeoutMs },
-    );
-    const failure = require2xx(resp, 'REST', 'search.fan_in_limit_source_identity');
+    const resp = await getJson(origin, "/v1/search", { q: searchQuery, streams: stream, limit }, { token, timeoutMs });
+    const failure = require2xx(resp, "REST", "search.fan_in_limit_source_identity");
     if (failure) return failure;
     const verdict = classifySearchLimitAndSource(resp.json, limit);
-    return result(verdict.status, 'REST', 'search.fan_in_limit_source_identity', verdict.detail, verdict.extra);
+    return result(verdict.status, "REST", "search.fan_in_limit_source_identity", verdict.detail, verdict.extra);
   });
 
-  await pushChecked(results, 'REST', 'aggregate.count', async () => {
+  await pushChecked(results, "REST", "aggregate.count", async () => {
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/aggregate`,
-      { metric: 'count', connection_id: connectionId },
-      { token, timeoutMs },
+      { metric: "count", connection_id: connectionId },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'aggregate.count');
-    return failure ?? ok('REST', 'aggregate.count', 'count aggregate returned');
+    const failure = require2xx(resp, "REST", "aggregate.count");
+    return failure ?? ok("REST", "aggregate.count", "count aggregate returned");
   });
 
-  await pushChecked(results, 'REST', 'aggregate.group_by_time', async () => {
+  await pushChecked(results, "REST", "aggregate.group_by_time", async () => {
     const resp = await getJson(
       origin,
       `/v1/streams/${encodeURIComponent(stream)}/aggregate`,
-      { metric: 'count', group_by_time: dateField, granularity: 'day', limit: 7, connection_id: connectionId },
-      { token, timeoutMs },
+      { metric: "count", group_by_time: dateField, granularity: "day", limit: 7, connection_id: connectionId },
+      { token, timeoutMs }
     );
-    const failure = require2xx(resp, 'REST', 'aggregate.group_by_time');
-    return failure ? warn('REST', 'aggregate.group_by_time', failure.detail) : ok('REST', 'aggregate.group_by_time', `${dateField}/day aggregate returned`);
+    const failure = require2xx(resp, "REST", "aggregate.group_by_time");
+    return failure
+      ? warn("REST", "aggregate.group_by_time", failure.detail)
+      : ok("REST", "aggregate.group_by_time", `${dateField}/day aggregate returned`);
   });
 
-  await pushChecked(results, 'REST', 'event_capabilities', async () => {
-    const resp = await getJson(origin, '/.well-known/oauth-protected-resource', {}, { timeoutMs });
-    const failure = require2xx(resp, 'REST', 'event_capabilities');
+  await pushChecked(results, "REST", "event_capabilities", async () => {
+    const resp = await getJson(origin, "/.well-known/oauth-protected-resource", {}, { timeoutMs });
+    const failure = require2xx(resp, "REST", "event_capabilities");
     if (failure) return failure;
     const supported = resp.json?.capabilities?.client_event_subscriptions?.supported;
     return supported === true
-      ? ok('REST', 'event_capabilities', 'client event subscriptions advertised')
-      : warn('REST', 'event_capabilities', 'client event subscriptions not advertised');
+      ? ok("REST", "event_capabilities", "client event subscriptions advertised")
+      : warn("REST", "event_capabilities", "client event subscriptions not advertised");
   });
 
-  await pushChecked(results, 'REST', 'list_event_subscriptions', async () => {
-    const resp = await getJson(origin, '/v1/event-subscriptions', {}, { token, timeoutMs });
-    const failure = require2xx(resp, 'REST', 'list_event_subscriptions');
-    return failure ?? ok('REST', 'list_event_subscriptions', 'event subscriptions listed');
+  await pushChecked(results, "REST", "list_event_subscriptions", async () => {
+    const resp = await getJson(origin, "/v1/event-subscriptions", {}, { token, timeoutMs });
+    const failure = require2xx(resp, "REST", "list_event_subscriptions");
+    return failure ?? ok("REST", "list_event_subscriptions", "event subscriptions listed");
   });
 
-  await pushChecked(results, 'REST', 'excluded_bearer', async () => {
-    const resp = await getJson(origin, '/v1/schema', {}, { token: NON_GRANT_BEARER, timeoutMs });
+  await pushChecked(results, "REST", "excluded_bearer", async () => {
+    const resp = await getJson(origin, "/v1/schema", {}, { token: NON_GRANT_BEARER, timeoutMs });
     const verdict = classifyExcludedBearer(resp.status, resp.json);
-    return result(verdict.status, 'REST', 'excluded_bearer', verdict.detail, verdict.extra);
+    return result(verdict.status, "REST", "excluded_bearer", verdict.detail, verdict.extra);
   });
 
   return { results, firstRecordId };
@@ -965,127 +975,151 @@ async function runMcpChecks({ origin, token, connectionId, stream, searchQuery, 
   let firstRecordId = null;
   const call = (name, args) => mcpPost(origin, token, mcpToolCallMessage(name, args, id++), timeoutMs);
 
-  await pushChecked(results, 'MCP', 'initialize', async () => {
+  await pushChecked(results, "MCP", "initialize", async () => {
     const resp = await mcpPost(origin, token, mcpInitializeMessage(id++), timeoutMs);
-    if (resp.status >= 200 && resp.status < 300 && !resp.rpc?.error) return ok('MCP', 'initialize', 'initialized');
-    return fail('MCP', 'initialize', `HTTP ${resp.status}: ${resp.rpc?.error?.message ?? resp.text}`);
+    if (resp.status >= 200 && resp.status < 300 && !resp.rpc?.error) return ok("MCP", "initialize", "initialized");
+    return fail("MCP", "initialize", `HTTP ${resp.status}: ${resp.rpc?.error?.message ?? resp.text}`);
   });
 
   let toolNames = [];
-  await pushChecked(results, 'MCP', 'tools.list', async () => {
+  await pushChecked(results, "MCP", "tools.list", async () => {
     const resp = await mcpPost(origin, token, mcpToolsListMessage(id++), timeoutMs);
     if (resp.status < 200 || resp.status >= 300 || resp.rpc?.error) {
-      return fail('MCP', 'tools.list', `HTTP ${resp.status}: ${resp.rpc?.error?.message ?? resp.text}`);
+      return fail("MCP", "tools.list", `HTTP ${resp.status}: ${resp.rpc?.error?.message ?? resp.text}`);
     }
     const tools = resp.rpc?.result?.tools ?? [];
     toolNames = tools.map((tool) => tool?.name).filter(Boolean);
     const verdict = classifyToolNames(toolNames);
     if (verdict.missingCore.length > 0) {
-      return fail('MCP', 'tools.list', `missing core tool(s): ${verdict.missingCore.join(', ')}`);
+      return fail("MCP", "tools.list", `missing core tool(s): ${verdict.missingCore.join(", ")}`);
     }
     if (verdict.forbiddenPresent.length > 0 || verdict.unexpectedTools.length > 0) {
       const extra = [...new Set([...verdict.forbiddenPresent, ...verdict.unexpectedTools])];
-      return fail('MCP', 'tools.list', `${verdict.detail}; unexpected normal-surface tool(s): ${extra.join(', ')}`);
+      return fail("MCP", "tools.list", `${verdict.detail}; unexpected normal-surface tool(s): ${extra.join(", ")}`);
     }
-    const schemaTool = tools.find((tool) => tool?.name === 'schema');
+    const schemaTool = tools.find((tool) => tool?.name === "schema");
     const schemaProperties = schemaTool?.inputSchema?.properties;
     if (!schemaProperties?.connection_id) {
-      return fail('MCP', 'tools.list', 'schema tool does not expose connection_id in inputSchema');
+      return fail("MCP", "tools.list", "schema tool does not expose connection_id in inputSchema");
     }
-    return ok('MCP', 'tools.list', `${verdict.detail}; exact normal read surface present`);
+    return ok("MCP", "tools.list", `${verdict.detail}; exact normal read surface present`);
   });
 
-  await pushChecked(results, 'MCP', 'schema', async () => {
-    const resp = await call('schema', {});
-    const failure = requireMcpOk(resp, 'schema');
-    return failure ?? ok('MCP', 'schema', 'schema returned');
+  await pushChecked(results, "MCP", "schema", async () => {
+    const resp = await call("schema", {});
+    const failure = requireMcpOk(resp, "schema");
+    return failure ?? ok("MCP", "schema", "schema returned");
   });
 
-  await pushChecked(results, 'MCP', 'schema.compact', async () => {
-    const resp = await call('schema', { detail: 'compact' });
-    const failure = requireMcpOk(resp, 'schema.compact');
+  await pushChecked(results, "MCP", "schema.compact", async () => {
+    const resp = await call("schema", { detail: "compact" });
+    const failure = requireMcpOk(resp, "schema.compact");
     if (failure) return failure;
     const body = extractMcpToolData(resp.rpc);
-    return body?.detail === 'compact'
-      ? ok('MCP', 'schema.compact', 'compact schema returned')
-      : warn('MCP', 'schema.compact', `compact schema detail was ${body?.detail ?? '<unset>'}`);
+    return body?.detail === "compact"
+      ? ok("MCP", "schema.compact", "compact schema returned")
+      : warn("MCP", "schema.compact", `compact schema detail was ${body?.detail ?? "<unset>"}`);
   });
 
-  await pushChecked(results, 'MCP', 'schema.scoped_full', async () => {
-    const resp = await call('schema', { stream, connection_id: connectionId, detail: 'full' });
-    const failure = requireMcpOk(resp, 'schema.scoped_full');
+  await pushChecked(results, "MCP", "schema.scoped_full", async () => {
+    const resp = await call("schema", { stream, connection_id: connectionId, detail: "full" });
+    const failure = requireMcpOk(resp, "schema.scoped_full");
     if (failure) return failure;
-    const bytes = Buffer.byteLength(JSON.stringify(resp.rpc?.result?.structuredContent ?? {}), 'utf8');
+    const bytes = Buffer.byteLength(JSON.stringify(resp.rpc?.result?.structuredContent ?? {}), "utf8");
     if (bytes > SCOPED_FULL_SCHEMA_BYTE_BUDGET) {
       return fail(
-        'MCP',
-        'schema.scoped_full',
-        `scoped full schema exceeded ${SCOPED_FULL_SCHEMA_BYTE_BUDGET} bytes (${bytes}); likely ignored stream/connection scope`,
+        "MCP",
+        "schema.scoped_full",
+        `scoped full schema exceeded ${SCOPED_FULL_SCHEMA_BYTE_BUDGET} bytes (${bytes}); likely ignored stream/connection scope`
       );
     }
-    return ok('MCP', 'schema.scoped_full', `scoped full schema stayed bounded (${bytes} bytes)`);
+    return ok("MCP", "schema.scoped_full", `scoped full schema stayed bounded (${bytes} bytes)`);
   });
 
-  await pushChecked(results, 'MCP', 'schema.source_identity', async () => {
-    const resp = await call('schema', { stream, connection_id: connectionId, detail: 'compact' });
-    const failure = requireMcpOk(resp, 'schema.source_identity');
+  await pushChecked(results, "MCP", "schema.source_identity", async () => {
+    const resp = await call("schema", { stream, connection_id: connectionId, detail: "compact" });
+    const failure = requireMcpOk(resp, "schema.source_identity");
     if (failure) return failure;
     const verdict = classifySourceIdentity(extractMcpToolData(resp.rpc), connectionId);
-    return result(verdict.status, 'MCP', 'schema.source_identity', verdict.detail, verdict.extra);
+    return result(verdict.status, "MCP", "schema.source_identity", verdict.detail, verdict.extra);
   });
 
-  await pushChecked(results, 'MCP', 'query_records.basic', async () => {
-    const resp = await call('query_records', { stream, limit: 1, connection_id: connectionId });
-    const failure = requireMcpOk(resp, 'query_records.basic');
+  await pushChecked(results, "MCP", "query_records.basic", async () => {
+    const resp = await call("query_records", { stream, limit: 1, connection_id: connectionId });
+    const failure = requireMcpOk(resp, "query_records.basic");
     if (failure) return failure;
     const records = extractListData(extractMcpToolData(resp.rpc));
     firstRecordId = extractRecordId(records[0]);
-    return ok('MCP', 'query_records.basic', `${records.length} record(s) returned`, { firstRecordId });
+    return ok("MCP", "query_records.basic", `${records.length} record(s) returned`, { firstRecordId });
   });
 
-  await pushChecked(results, 'MCP', 'query_records.projection', async () => {
-    const resp = await call('query_records', { stream, limit: 1, connection_id: connectionId, fields: ['id'] });
-    const failure = requireMcpOk(resp, 'query_records.projection');
+  await pushChecked(results, "MCP", "query_records.projection", async () => {
+    const resp = await call("query_records", { stream, limit: 1, connection_id: connectionId, fields: ["id"] });
+    const failure = requireMcpOk(resp, "query_records.projection");
     if (failure) return failure;
-    const verdict = classifyStrictProjection(extractListData(extractMcpToolData(resp.rpc))[0], ['id']);
-    return result(verdict.status, 'MCP', 'query_records.projection', verdict.detail, verdict.extra);
+    const verdict = classifyStrictProjection(extractListData(extractMcpToolData(resp.rpc))[0], ["id"]);
+    return result(verdict.status, "MCP", "query_records.projection", verdict.detail, verdict.extra);
   });
 
-  await pushChecked(results, 'MCP', 'query_records.omit_connection_id', async () => {
-    const resp = await call('query_records', { stream, limit: 1 });
+  await pushChecked(results, "MCP", "query_records.omit_connection_id", async () => {
+    const resp = await call("query_records", { stream, limit: 1 });
     const toolError = extractMcpToolError(resp.rpc);
     if (!toolError && resp.status >= 200 && resp.status < 300) {
-      return ok('MCP', 'query_records.omit_connection_id', 'request succeeded without connection_id; grant may be single-source');
+      return ok(
+        "MCP",
+        "query_records.omit_connection_id",
+        "request succeeded without connection_id; grant may be single-source"
+      );
     }
-    if (toolError?.code === 'ambiguous_connection') {
-      return ok('MCP', 'query_records.omit_connection_id', 'returned typed ambiguous_connection');
+    if (toolError?.code === "ambiguous_connection") {
+      return ok("MCP", "query_records.omit_connection_id", "returned typed ambiguous_connection");
     }
-    return fail('MCP', 'query_records.omit_connection_id', `expected success or ambiguous_connection; got ${toolError?.code ?? `HTTP ${resp.status}`}`);
+    return fail(
+      "MCP",
+      "query_records.omit_connection_id",
+      `expected success or ambiguous_connection; got ${toolError?.code ?? `HTTP ${resp.status}`}`
+    );
   });
 
-  await pushChecked(results, 'MCP', 'query_records.sort_count', async () => {
-    const resp = await call('query_records', { stream, limit: 1, connection_id: connectionId, sort: `-${dateField}`, count: 'exact' });
-    const failure = requireMcpOk(resp, 'query_records.sort_count');
+  await pushChecked(results, "MCP", "query_records.sort_count", async () => {
+    const resp = await call("query_records", {
+      stream,
+      limit: 1,
+      connection_id: connectionId,
+      sort: `-${dateField}`,
+      count: "exact",
+    });
+    const failure = requireMcpOk(resp, "query_records.sort_count");
     if (!failure) {
       const verdict = classifyPageHandles(extractMcpToolData(resp.rpc));
-      return result(verdict.status, 'MCP', 'query_records.sort_count', `sort=-${dateField} and count=exact accepted; ${verdict.detail}`, verdict.extra);
+      return result(
+        verdict.status,
+        "MCP",
+        "query_records.sort_count",
+        `sort=-${dateField} and count=exact accepted; ${verdict.detail}`,
+        verdict.extra
+      );
     }
-    return failure.detail.includes('unsupported_query') ? warn('MCP', 'query_records.sort_count', failure.detail) : failure;
+    return failure.detail.includes("unsupported_query")
+      ? warn("MCP", "query_records.sort_count", failure.detail)
+      : failure;
   });
 
-  await pushChecked(results, 'MCP', 'query_records.filter_object', async () => {
-    const resp = await call('query_records', {
+  await pushChecked(results, "MCP", "query_records.filter_object", async () => {
+    const resp = await call("query_records", {
       stream,
       limit: 1,
       connection_id: connectionId,
       filter: { [dateField]: { gte: since } },
     });
-    const failure = requireMcpOk(resp, 'query_records.filter_object');
-    return failure ? warn('MCP', 'query_records.filter_object', failure.detail) : ok('MCP', 'query_records.filter_object', 'typed filter object accepted');
+    const failure = requireMcpOk(resp, "query_records.filter_object");
+    return failure
+      ? warn("MCP", "query_records.filter_object", failure.detail)
+      : ok("MCP", "query_records.filter_object", "typed filter object accepted");
   });
 
-  await pushChecked(results, 'MCP', 'query_records.filter_legacy_literal', async () => {
-    const resp = await call('query_records', {
+  await pushChecked(results, "MCP", "query_records.filter_legacy_literal", async () => {
+    const resp = await call("query_records", {
       stream,
       limit: 1,
       connection_id: connectionId,
@@ -1093,13 +1127,17 @@ async function runMcpChecks({ origin, token, connectionId, stream, searchQuery, 
     });
     const toolError = extractMcpToolError(resp.rpc);
     if (toolError) {
-      return ok('MCP', 'query_records.filter_legacy_literal', `legacy string filter rejected (${toolError.code})`);
+      return ok("MCP", "query_records.filter_legacy_literal", `legacy string filter rejected (${toolError.code})`);
     }
-    return warn('MCP', 'query_records.filter_legacy_literal', 'legacy string filter unexpectedly accepted; MCP filters should be typed objects');
+    return warn(
+      "MCP",
+      "query_records.filter_legacy_literal",
+      "legacy string filter unexpectedly accepted; MCP filters should be typed objects"
+    );
   });
 
-  await pushChecked(results, 'MCP', 'query_records.filter_legacy_encoded', async () => {
-    const resp = await call('query_records', {
+  await pushChecked(results, "MCP", "query_records.filter_legacy_encoded", async () => {
+    const resp = await call("query_records", {
       stream,
       limit: 1,
       connection_id: connectionId,
@@ -1107,390 +1145,502 @@ async function runMcpChecks({ origin, token, connectionId, stream, searchQuery, 
     });
     const toolError = extractMcpToolError(resp.rpc);
     if (toolError) {
-      return ok('MCP', 'query_records.filter_legacy_encoded', `encoded raw filter rejected (${toolError.code})`);
+      return ok("MCP", "query_records.filter_legacy_encoded", `encoded raw filter rejected (${toolError.code})`);
     }
-    return warn('MCP', 'query_records.filter_legacy_encoded', 'encoded raw filter unexpectedly accepted; MCP filters should be typed objects');
+    return warn(
+      "MCP",
+      "query_records.filter_legacy_encoded",
+      "encoded raw filter unexpectedly accepted; MCP filters should be typed objects"
+    );
   });
 
-  await pushChecked(results, 'MCP', 'fetch', async () => {
-    if (!firstRecordId) return skip('MCP', 'fetch', 'no record id returned by basic query');
-    const resp = await call('fetch', { id: `${stream}:${firstRecordId}`, connection_id: connectionId });
-    const failure = requireMcpOk(resp, 'fetch');
-    return failure ?? ok('MCP', 'fetch', `fetched ${stream}:${firstRecordId}`);
+  await pushChecked(results, "MCP", "fetch", async () => {
+    if (!firstRecordId) return skip("MCP", "fetch", "no record id returned by basic query");
+    const resp = await call("fetch", { id: `${stream}:${firstRecordId}`, connection_id: connectionId });
+    const failure = requireMcpOk(resp, "fetch");
+    return failure ?? ok("MCP", "fetch", `fetched ${stream}:${firstRecordId}`);
   });
 
-  await pushChecked(results, 'MCP', 'fetch.projection', async () => {
-    if (!firstRecordId) return skip('MCP', 'fetch.projection', 'no record id returned by basic query');
-    const resp = await call('fetch', { id: `${stream}:${firstRecordId}`, connection_id: connectionId, fields: ['id'] });
-    const failure = requireMcpOk(resp, 'fetch.projection');
+  await pushChecked(results, "MCP", "fetch.projection", async () => {
+    if (!firstRecordId) return skip("MCP", "fetch.projection", "no record id returned by basic query");
+    const resp = await call("fetch", { id: `${stream}:${firstRecordId}`, connection_id: connectionId, fields: ["id"] });
+    const failure = requireMcpOk(resp, "fetch.projection");
     if (failure) return failure;
     const doc = extractMcpToolData(resp.rpc);
     let projected = null;
     try {
-      projected = typeof doc?.text === 'string' ? JSON.parse(doc.text) : null;
+      projected = typeof doc?.text === "string" ? JSON.parse(doc.text) : null;
     } catch {
       projected = null;
     }
-    if (!projected) return warn('MCP', 'fetch.projection', 'fetch returned a document but text was not JSON-projectable');
-    const verdict = classifyStrictProjection(projected?.data ?? projected, ['id']);
-    return result(verdict.status, 'MCP', 'fetch.projection', verdict.detail, verdict.extra);
+    if (!projected)
+      return warn("MCP", "fetch.projection", "fetch returned a document but text was not JSON-projectable");
+    const verdict = classifyStrictProjection(projected?.data ?? projected, ["id"]);
+    return result(verdict.status, "MCP", "fetch.projection", verdict.detail, verdict.extra);
   });
 
-  await pushChecked(results, 'MCP', 'search.lexical', async () => {
-    const resp = await call('search', { q: searchQuery, streams: [stream], limit: 1, mode: 'lexical', connection_id: connectionId });
-    const failure = requireMcpOk(resp, 'search.lexical');
-    return failure ?? ok('MCP', 'search.lexical', 'lexical search returned');
+  await pushChecked(results, "MCP", "search.lexical", async () => {
+    const resp = await call("search", {
+      q: searchQuery,
+      streams: [stream],
+      limit: 1,
+      mode: "lexical",
+      connection_id: connectionId,
+    });
+    const failure = requireMcpOk(resp, "search.lexical");
+    return failure ?? ok("MCP", "search.lexical", "lexical search returned");
   });
 
-  await pushChecked(results, 'MCP', 'search.fan_in_limit_source_identity', async () => {
+  await pushChecked(results, "MCP", "search.fan_in_limit_source_identity", async () => {
     const limit = 3;
-    const resp = await call('search', { q: searchQuery, streams: [stream], limit, mode: 'lexical' });
-    const failure = requireMcpOk(resp, 'search.fan_in_limit_source_identity');
+    const resp = await call("search", { q: searchQuery, streams: [stream], limit, mode: "lexical" });
+    const failure = requireMcpOk(resp, "search.fan_in_limit_source_identity");
     if (failure) return failure;
     const verdict = classifySearchLimitAndSource(extractMcpToolStructuredContent(resp.rpc), limit);
-    return result(verdict.status, 'MCP', 'search.fan_in_limit_source_identity', verdict.detail, verdict.extra);
+    return result(verdict.status, "MCP", "search.fan_in_limit_source_identity", verdict.detail, verdict.extra);
   });
 
-  await pushChecked(results, 'MCP', 'aggregate.count', async () => {
-    const resp = await call('aggregate', { stream, metric: 'count', connection_id: connectionId });
-    const failure = requireMcpOk(resp, 'aggregate.count');
-    return failure ?? ok('MCP', 'aggregate.count', 'count aggregate returned');
+  await pushChecked(results, "MCP", "aggregate.count", async () => {
+    const resp = await call("aggregate", { stream, metric: "count", connection_id: connectionId });
+    const failure = requireMcpOk(resp, "aggregate.count");
+    return failure ?? ok("MCP", "aggregate.count", "count aggregate returned");
   });
 
-  await pushChecked(results, 'MCP', 'aggregate.group_by_time', async () => {
-    const resp = await call('aggregate', {
+  await pushChecked(results, "MCP", "aggregate.group_by_time", async () => {
+    const resp = await call("aggregate", {
       stream,
-      metric: 'count',
+      metric: "count",
       group_by_time: dateField,
-      granularity: 'day',
+      granularity: "day",
       limit: 7,
       connection_id: connectionId,
     });
-    const failure = requireMcpOk(resp, 'aggregate.group_by_time');
-    return failure ? warn('MCP', 'aggregate.group_by_time', failure.detail) : ok('MCP', 'aggregate.group_by_time', `${dateField}/day aggregate returned`);
+    const failure = requireMcpOk(resp, "aggregate.group_by_time");
+    return failure
+      ? warn("MCP", "aggregate.group_by_time", failure.detail)
+      : ok("MCP", "aggregate.group_by_time", `${dateField}/day aggregate returned`);
   });
 
-  await pushChecked(results, 'MCP', 'excluded_bearer', async () => {
+  await pushChecked(results, "MCP", "excluded_bearer", async () => {
     const resp = await mcpPost(origin, NON_GRANT_BEARER, mcpToolsListMessage(id++), timeoutMs);
     if (resp.status >= 200 && resp.status < 300 && !resp.rpc?.error) {
-      return fail('MCP', 'excluded_bearer', 'MCP served a non-grant bearer; scoped-grant requirement not enforced');
+      return fail("MCP", "excluded_bearer", "MCP served a non-grant bearer; scoped-grant requirement not enforced");
     }
     const verdict = classifyExcludedBearer(resp.status, resp.json);
-    return result(verdict.status, 'MCP', 'excluded_bearer', verdict.detail, verdict.extra);
+    return result(verdict.status, "MCP", "excluded_bearer", verdict.detail, verdict.extra);
   });
 
-  results.push(warn('ChatGPT host', 'direct_recipient_routing', 'direct MCP cannot reproduce ChatGPT host resource invalidation; rerun the ChatGPT-host checklist after this passes'));
+  results.push(
+    warn(
+      "ChatGPT host",
+      "direct_recipient_routing",
+      "direct MCP cannot reproduce ChatGPT host resource invalidation; rerun the ChatGPT-host checklist after this passes"
+    )
+  );
   return { results, toolNames };
 }
 
 async function runCliChecks({ origin, token, connectionId, stream, searchQuery, dateField, timeoutMs }) {
   const results = [];
-  const { spawnSync } = await import('node:child_process');
-  const cliBin = join(process.cwd(), 'packages/cli/bin/pdpp.js');
+  const { spawnSync } = await import("node:child_process");
+  const cliBin = join(process.cwd(), "packages/cli/bin/pdpp.js");
   let parent = null;
   let cacheRoot = null;
   let firstRecordId = null;
 
   async function writeCredentialCache(root, credentialToken) {
     const cacheFile = cliCredentialCacheFile(root, origin);
-    await mkdir(join(root, 'clients'), { recursive: true, mode: 0o700 });
+    await mkdir(join(root, "clients"), { recursive: true, mode: 0o700 });
     await writeFile(
       cacheFile,
       `${JSON.stringify(
         {
           provider_url: normalizeOrigin(origin),
           authorization_server: normalizeOrigin(origin),
-          scope: 'pdpp:read',
-          client: { client_id: 'read-surface-smoke' },
-          credential: { access_token: credentialToken, token_type: 'Bearer' },
+          scope: "pdpp:read",
+          client: { client_id: "read-surface-smoke" },
+          credential: { access_token: credentialToken, token_type: "Bearer" },
           created_at: new Date().toISOString(),
         },
         null,
-        2,
+        2
       )}\n`,
-      { mode: 0o600 },
+      { mode: 0o600 }
     );
   }
 
   async function ensureCache() {
     if (cacheRoot) return cacheRoot;
-    parent = await mkdtemp(join(tmpdir(), 'pdpp-read-surface-cli-'));
-    cacheRoot = join(parent, '.pdpp');
+    parent = await mkdtemp(join(tmpdir(), "pdpp-read-surface-cli-"));
+    cacheRoot = join(parent, ".pdpp");
     await writeCredentialCache(cacheRoot, token);
     return cacheRoot;
   }
 
   function spawnCli(args) {
-    return spawnSync('node', [cliBin, ...args], {
-      encoding: 'utf8',
+    return spawnSync("node", [cliBin, ...args], {
+      encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: timeoutMs,
     });
   }
 
   try {
-  await pushChecked(results, 'CLI', 'help', async () => {
-    const child = spawnCli(['--help']);
-    if (child.status !== 0) return fail('CLI', 'help', `pdpp --help exited ${child.status}: ${child.stderr || child.stdout}`);
-    const verdict = classifyCliHelp(child.stdout);
-    if (!verdict.hasCliHelp) return fail('CLI', 'help', 'help output did not identify the PDPP CLI');
-    return ok('CLI', 'help', 'pdpp --help returned');
-  });
+    await pushChecked(results, "CLI", "help", async () => {
+      const child = spawnCli(["--help"]);
+      if (child.status !== 0)
+        return fail("CLI", "help", `pdpp --help exited ${child.status}: ${child.stderr || child.stdout}`);
+      const verdict = classifyCliHelp(child.stdout);
+      if (!verdict.hasCliHelp) return fail("CLI", "help", "help output did not identify the PDPP CLI");
+      return ok("CLI", "help", "pdpp --help returned");
+    });
 
-  await pushChecked(results, 'CLI', 'token_cache', async () => {
-    const root = await ensureCache();
-    const child = spawnCli(['token', normalizeOrigin(origin), '--cache-root', root]);
-    if (child.status !== 0) return fail('CLI', 'token_cache', `pdpp token exited ${child.status}: ${child.stderr || child.stdout}`);
-    if (child.stdout.trim() !== token) return fail('CLI', 'token_cache', 'pdpp token did not return the cached bearer');
-    return ok('CLI', 'token_cache', 'stored credential can be read by pdpp token');
-  });
+    await pushChecked(results, "CLI", "token_cache", async () => {
+      const root = await ensureCache();
+      const child = spawnCli(["token", normalizeOrigin(origin), "--cache-root", root]);
+      if (child.status !== 0)
+        return fail("CLI", "token_cache", `pdpp token exited ${child.status}: ${child.stderr || child.stdout}`);
+      if (child.stdout.trim() !== token)
+        return fail("CLI", "token_cache", "pdpp token did not return the cached bearer");
+      return ok("CLI", "token_cache", "stored credential can be read by pdpp token");
+    });
 
-  await pushChecked(results, 'CLI', 'grant_scoped_read_commands', async () => {
-    const child = spawnCli(['--help']);
-    if (child.status !== 0) return fail('CLI', 'grant_scoped_read_commands', `pdpp --help exited ${child.status}`);
-    const verdict = classifyCliHelp(child.stdout);
-    return verdict.hasGrantScopedReadCommands
-      ? ok('CLI', 'grant_scoped_read_commands', 'grant-scoped read commands are advertised')
-      : warn('CLI', 'grant_scoped_read_commands', 'current pdpp CLI exposes connect/token but not query_records/search/aggregate/fetch read commands');
-  });
+    await pushChecked(results, "CLI", "grant_scoped_read_commands", async () => {
+      const child = spawnCli(["--help"]);
+      if (child.status !== 0) return fail("CLI", "grant_scoped_read_commands", `pdpp --help exited ${child.status}`);
+      const verdict = classifyCliHelp(child.stdout);
+      return verdict.hasGrantScopedReadCommands
+        ? ok("CLI", "grant_scoped_read_commands", "grant-scoped read commands are advertised")
+        : warn(
+            "CLI",
+            "grant_scoped_read_commands",
+            "current pdpp CLI exposes connect/token but not query_records/search/aggregate/fetch read commands"
+          );
+    });
 
-  await pushChecked(results, 'CLI', 'schema', async () => {
-    const root = await ensureCache();
-    const child = spawnCli(['read', 'schema', normalizeOrigin(origin), '--cache-root', root, '--format', 'json']);
-    if (child.status !== 0) return fail('CLI', 'schema', `pdpp read schema exited ${child.status}: ${child.stderr || child.stdout}`);
-    const parsed = JSON.parse(child.stdout);
-    return parsed ? ok('CLI', 'schema', 'schema returned through cached grant') : fail('CLI', 'schema', 'empty schema output');
-  });
+    await pushChecked(results, "CLI", "schema", async () => {
+      const root = await ensureCache();
+      const child = spawnCli(["read", "schema", normalizeOrigin(origin), "--cache-root", root, "--format", "json"]);
+      if (child.status !== 0)
+        return fail("CLI", "schema", `pdpp read schema exited ${child.status}: ${child.stderr || child.stdout}`);
+      const parsed = JSON.parse(child.stdout);
+      return parsed
+        ? ok("CLI", "schema", "schema returned through cached grant")
+        : fail("CLI", "schema", "empty schema output");
+    });
 
-  await pushChecked(results, 'CLI', 'schema.compact', async () => {
-    const root = await ensureCache();
-    const child = spawnCli(['read', 'schema', normalizeOrigin(origin), '--view', 'compact', '--cache-root', root, '--format', 'json']);
-    if (child.status !== 0) return fail('CLI', 'schema.compact', `pdpp read schema compact exited ${child.status}: ${child.stderr || child.stdout}`);
-    const body = JSON.parse(child.stdout);
-    return body?.detail === 'compact'
-      ? ok('CLI', 'schema.compact', 'compact schema returned through cached grant')
-      : warn('CLI', 'schema.compact', `compact schema detail was ${body?.detail ?? '<unset>'}`);
-  });
+    await pushChecked(results, "CLI", "schema.compact", async () => {
+      const root = await ensureCache();
+      const child = spawnCli([
+        "read",
+        "schema",
+        normalizeOrigin(origin),
+        "--view",
+        "compact",
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
+      if (child.status !== 0)
+        return fail(
+          "CLI",
+          "schema.compact",
+          `pdpp read schema compact exited ${child.status}: ${child.stderr || child.stdout}`
+        );
+      const body = JSON.parse(child.stdout);
+      return body?.detail === "compact"
+        ? ok("CLI", "schema.compact", "compact schema returned through cached grant")
+        : warn("CLI", "schema.compact", `compact schema detail was ${body?.detail ?? "<unset>"}`);
+    });
 
-  await pushChecked(results, 'CLI', 'schema.scoped', async () => {
-    const root = await ensureCache();
-    const child = spawnCli([
-      'read',
-      'schema',
-      normalizeOrigin(origin),
-      '--view',
-      'compact',
-      '--stream',
-      stream,
-      '--connection-id',
-      connectionId,
-      '--cache-root',
-      root,
-      '--format',
-      'json',
-    ]);
-    if (child.status !== 0) return fail('CLI', 'schema.scoped', `pdpp read schema scoped exited ${child.status}: ${child.stderr || child.stdout}`);
-    const verdict = classifyScopedSchema(JSON.parse(child.stdout), stream, connectionId);
-    return result(verdict.status, 'CLI', 'schema.scoped', verdict.detail, verdict.extra);
-  });
+    await pushChecked(results, "CLI", "schema.scoped", async () => {
+      const root = await ensureCache();
+      const child = spawnCli([
+        "read",
+        "schema",
+        normalizeOrigin(origin),
+        "--view",
+        "compact",
+        "--stream",
+        stream,
+        "--connection-id",
+        connectionId,
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
+      if (child.status !== 0)
+        return fail(
+          "CLI",
+          "schema.scoped",
+          `pdpp read schema scoped exited ${child.status}: ${child.stderr || child.stdout}`
+        );
+      const verdict = classifyScopedSchema(JSON.parse(child.stdout), stream, connectionId);
+      return result(verdict.status, "CLI", "schema.scoped", verdict.detail, verdict.extra);
+    });
 
-  await pushChecked(results, 'CLI', 'schema.source_identity', async () => {
-    const root = await ensureCache();
-    const child = spawnCli([
-      'read',
-      'schema',
-      normalizeOrigin(origin),
-      '--view',
-      'compact',
-      '--stream',
-      stream,
-      '--connection-id',
-      connectionId,
-      '--cache-root',
-      root,
-      '--format',
-      'json',
-    ]);
-    if (child.status !== 0) return fail('CLI', 'schema.source_identity', `pdpp read schema scoped exited ${child.status}: ${child.stderr || child.stdout}`);
-    const verdict = classifySourceIdentity(JSON.parse(child.stdout), connectionId);
-    return result(verdict.status, 'CLI', 'schema.source_identity', verdict.detail, verdict.extra);
-  });
+    await pushChecked(results, "CLI", "schema.source_identity", async () => {
+      const root = await ensureCache();
+      const child = spawnCli([
+        "read",
+        "schema",
+        normalizeOrigin(origin),
+        "--view",
+        "compact",
+        "--stream",
+        stream,
+        "--connection-id",
+        connectionId,
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
+      if (child.status !== 0)
+        return fail(
+          "CLI",
+          "schema.source_identity",
+          `pdpp read schema scoped exited ${child.status}: ${child.stderr || child.stdout}`
+        );
+      const verdict = classifySourceIdentity(JSON.parse(child.stdout), connectionId);
+      return result(verdict.status, "CLI", "schema.source_identity", verdict.detail, verdict.extra);
+    });
 
-  await pushChecked(results, 'CLI', 'query_records.basic', async () => {
-    const root = await ensureCache();
-    const child = spawnCli([
-      'read',
-      'query-records',
-      normalizeOrigin(origin),
-      stream,
-      '--connection-id',
-      connectionId,
-      '--limit',
-      '1',
-      '--sort',
-      `-${dateField}`,
-      '--cache-root',
-      root,
-      '--format',
-      'json',
-    ]);
-    if (child.status !== 0) return fail('CLI', 'query_records.basic', `pdpp read query-records exited ${child.status}: ${child.stderr || child.stdout}`);
-    const records = extractListData(JSON.parse(child.stdout));
-    firstRecordId = extractRecordId(records[0]);
-    return ok('CLI', 'query_records.basic', `${records.length} record(s) returned through cached grant`);
-  });
+    await pushChecked(results, "CLI", "query_records.basic", async () => {
+      const root = await ensureCache();
+      const child = spawnCli([
+        "read",
+        "query-records",
+        normalizeOrigin(origin),
+        stream,
+        "--connection-id",
+        connectionId,
+        "--limit",
+        "1",
+        "--sort",
+        `-${dateField}`,
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
+      if (child.status !== 0)
+        return fail(
+          "CLI",
+          "query_records.basic",
+          `pdpp read query-records exited ${child.status}: ${child.stderr || child.stdout}`
+        );
+      const records = extractListData(JSON.parse(child.stdout));
+      firstRecordId = extractRecordId(records[0]);
+      return ok("CLI", "query_records.basic", `${records.length} record(s) returned through cached grant`);
+    });
 
-  await pushChecked(results, 'CLI', 'query_records.projection', async () => {
-    const root = await ensureCache();
-    const child = spawnCli([
-      'read',
-      'query-records',
-      normalizeOrigin(origin),
-      stream,
-      '--connection-id',
-      connectionId,
-      '--limit',
-      '1',
-      '--fields',
-      'id',
-      '--cache-root',
-      root,
-      '--format',
-      'json',
-    ]);
-    if (child.status !== 0) return fail('CLI', 'query_records.projection', `pdpp read query-records projection exited ${child.status}: ${child.stderr || child.stdout}`);
-    const verdict = classifyStrictProjection(extractListData(JSON.parse(child.stdout))[0], ['id']);
-    return result(verdict.status, 'CLI', 'query_records.projection', verdict.detail, verdict.extra);
-  });
+    await pushChecked(results, "CLI", "query_records.projection", async () => {
+      const root = await ensureCache();
+      const child = spawnCli([
+        "read",
+        "query-records",
+        normalizeOrigin(origin),
+        stream,
+        "--connection-id",
+        connectionId,
+        "--limit",
+        "1",
+        "--fields",
+        "id",
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
+      if (child.status !== 0)
+        return fail(
+          "CLI",
+          "query_records.projection",
+          `pdpp read query-records projection exited ${child.status}: ${child.stderr || child.stdout}`
+        );
+      const verdict = classifyStrictProjection(extractListData(JSON.parse(child.stdout))[0], ["id"]);
+      return result(verdict.status, "CLI", "query_records.projection", verdict.detail, verdict.extra);
+    });
 
-  await pushChecked(results, 'CLI', 'query_records.omit_connection_id', async () => {
-    const root = await ensureCache();
-    const child = spawnCli([
-      'read',
-      'query-records',
-      normalizeOrigin(origin),
-      stream,
-      '--limit',
-      '1',
-      '--cache-root',
-      root,
-      '--format',
-      'json',
-    ]);
-    if (child.status === 0) {
-      return ok('CLI', 'query_records.omit_connection_id', 'request succeeded without connection_id; grant may be single-source');
-    }
-    const combined = `${child.stderr || ''}\n${child.stdout || ''}`;
-    return /ambiguous_connection|connection_id/i.test(combined)
-      ? ok('CLI', 'query_records.omit_connection_id', 'returned typed ambiguity guidance')
-      : fail('CLI', 'query_records.omit_connection_id', `expected success or ambiguous_connection; got exit ${child.status}: ${combined.trim()}`);
-  });
-
-  await pushChecked(results, 'CLI', 'query_records.count', async () => {
-    const root = await ensureCache();
-    const child = spawnCli([
-      'read',
-      'query-records',
-      normalizeOrigin(origin),
-      stream,
-      '--connection-id',
-      connectionId,
-      '--limit',
-      '1',
-      '--count',
-      'exact',
-      '--cache-root',
-      root,
-      '--format',
-      'json',
-    ]);
-    if (child.status !== 0) return fail('CLI', 'query_records.count', `pdpp read query-records count exited ${child.status}: ${child.stderr || child.stdout}`);
-    const verdict = classifyPageHandles(JSON.parse(child.stdout));
-    return result(verdict.status, 'CLI', 'query_records.count', `count=exact accepted; ${verdict.detail}`, verdict.extra);
-  });
-
-  await pushChecked(results, 'CLI', 'fetch.projection', async () => {
-    if (!firstRecordId) return skip('CLI', 'fetch.projection', 'no record id returned by basic query');
-    const root = await ensureCache();
-    const child = spawnCli([
-      'read',
-      'fetch',
-      normalizeOrigin(origin),
-      stream,
-      firstRecordId,
-      '--connection-id',
-      connectionId,
-      '--fields',
-      'id',
-      '--cache-root',
-      root,
-      '--format',
-      'json',
-    ]);
-    if (child.status !== 0) return fail('CLI', 'fetch.projection', `pdpp read fetch projection exited ${child.status}: ${child.stderr || child.stdout}`);
-    const parsed = JSON.parse(child.stdout);
-    const verdict = classifyStrictProjection(parsed?.data ?? parsed, ['id']);
-    return result(verdict.status, 'CLI', 'fetch.projection', verdict.detail, verdict.extra);
-  });
-
-  await pushChecked(results, 'CLI', 'search.fan_in_limit_source_identity', async () => {
-    const root = await ensureCache();
-    const limit = 3;
-    const child = spawnCli([
-      'read',
-      'search',
-      normalizeOrigin(origin),
-      searchQuery,
-      '--streams',
-      stream,
-      '--limit',
-      String(limit),
-      '--cache-root',
-      root,
-      '--format',
-      'json',
-    ]);
-    if (child.status !== 0) return fail('CLI', 'search.fan_in_limit_source_identity', `pdpp read search exited ${child.status}: ${child.stderr || child.stdout}`);
-    const verdict = classifySearchLimitAndSource(JSON.parse(child.stdout), limit);
-    return result(verdict.status, 'CLI', 'search.fan_in_limit_source_identity', verdict.detail, verdict.extra);
-  });
-
-  await pushChecked(results, 'CLI', 'aggregate.count', async () => {
-    const root = await ensureCache();
-    const child = spawnCli([
-      'read',
-      'aggregate',
-      normalizeOrigin(origin),
-      stream,
-      '--metric',
-      'count',
-      '--connection-id',
-      connectionId,
-      '--cache-root',
-      root,
-      '--format',
-      'json',
-    ]);
-    if (child.status !== 0) return fail('CLI', 'aggregate.count', `pdpp read aggregate exited ${child.status}: ${child.stderr || child.stdout}`);
-    const parsed = JSON.parse(child.stdout);
-    return parsed ? ok('CLI', 'aggregate.count', 'count aggregate returned through cached grant') : fail('CLI', 'aggregate.count', 'empty aggregate output');
-  });
-
-  await pushChecked(results, 'CLI', 'excluded_bearer', async () => {
-    let junkParent = null;
-    try {
-      junkParent = await mkdtemp(join(tmpdir(), 'pdpp-read-surface-cli-junk-'));
-      const junkRoot = join(junkParent, '.pdpp');
-      await writeCredentialCache(junkRoot, NON_GRANT_BEARER);
-      const child = spawnCli(['read', 'schema', normalizeOrigin(origin), '--cache-root', junkRoot, '--format', 'json']);
+    await pushChecked(results, "CLI", "query_records.omit_connection_id", async () => {
+      const root = await ensureCache();
+      const child = spawnCli([
+        "read",
+        "query-records",
+        normalizeOrigin(origin),
+        stream,
+        "--limit",
+        "1",
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
       if (child.status === 0) {
-        return fail('CLI', 'excluded_bearer', 'CLI served a non-grant bearer; scoped-grant requirement not enforced');
+        return ok(
+          "CLI",
+          "query_records.omit_connection_id",
+          "request succeeded without connection_id; grant may be single-source"
+        );
       }
-      return ok('CLI', 'excluded_bearer', `non-grant bearer rejected (exit ${child.status}); reads require the scoped grant`);
-    } finally {
-      if (junkParent) await rm(junkParent, { recursive: true, force: true });
-    }
-  });
+      const combined = `${child.stderr || ""}\n${child.stdout || ""}`;
+      return /ambiguous_connection|connection_id/i.test(combined)
+        ? ok("CLI", "query_records.omit_connection_id", "returned typed ambiguity guidance")
+        : fail(
+            "CLI",
+            "query_records.omit_connection_id",
+            `expected success or ambiguous_connection; got exit ${child.status}: ${combined.trim()}`
+          );
+    });
+
+    await pushChecked(results, "CLI", "query_records.count", async () => {
+      const root = await ensureCache();
+      const child = spawnCli([
+        "read",
+        "query-records",
+        normalizeOrigin(origin),
+        stream,
+        "--connection-id",
+        connectionId,
+        "--limit",
+        "1",
+        "--count",
+        "exact",
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
+      if (child.status !== 0)
+        return fail(
+          "CLI",
+          "query_records.count",
+          `pdpp read query-records count exited ${child.status}: ${child.stderr || child.stdout}`
+        );
+      const verdict = classifyPageHandles(JSON.parse(child.stdout));
+      return result(
+        verdict.status,
+        "CLI",
+        "query_records.count",
+        `count=exact accepted; ${verdict.detail}`,
+        verdict.extra
+      );
+    });
+
+    await pushChecked(results, "CLI", "fetch.projection", async () => {
+      if (!firstRecordId) return skip("CLI", "fetch.projection", "no record id returned by basic query");
+      const root = await ensureCache();
+      const child = spawnCli([
+        "read",
+        "fetch",
+        normalizeOrigin(origin),
+        stream,
+        firstRecordId,
+        "--connection-id",
+        connectionId,
+        "--fields",
+        "id",
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
+      if (child.status !== 0)
+        return fail(
+          "CLI",
+          "fetch.projection",
+          `pdpp read fetch projection exited ${child.status}: ${child.stderr || child.stdout}`
+        );
+      const parsed = JSON.parse(child.stdout);
+      const verdict = classifyStrictProjection(parsed?.data ?? parsed, ["id"]);
+      return result(verdict.status, "CLI", "fetch.projection", verdict.detail, verdict.extra);
+    });
+
+    await pushChecked(results, "CLI", "search.fan_in_limit_source_identity", async () => {
+      const root = await ensureCache();
+      const limit = 3;
+      const child = spawnCli([
+        "read",
+        "search",
+        normalizeOrigin(origin),
+        searchQuery,
+        "--streams",
+        stream,
+        "--limit",
+        String(limit),
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
+      if (child.status !== 0)
+        return fail(
+          "CLI",
+          "search.fan_in_limit_source_identity",
+          `pdpp read search exited ${child.status}: ${child.stderr || child.stdout}`
+        );
+      const verdict = classifySearchLimitAndSource(JSON.parse(child.stdout), limit);
+      return result(verdict.status, "CLI", "search.fan_in_limit_source_identity", verdict.detail, verdict.extra);
+    });
+
+    await pushChecked(results, "CLI", "aggregate.count", async () => {
+      const root = await ensureCache();
+      const child = spawnCli([
+        "read",
+        "aggregate",
+        normalizeOrigin(origin),
+        stream,
+        "--metric",
+        "count",
+        "--connection-id",
+        connectionId,
+        "--cache-root",
+        root,
+        "--format",
+        "json",
+      ]);
+      if (child.status !== 0)
+        return fail(
+          "CLI",
+          "aggregate.count",
+          `pdpp read aggregate exited ${child.status}: ${child.stderr || child.stdout}`
+        );
+      const parsed = JSON.parse(child.stdout);
+      return parsed
+        ? ok("CLI", "aggregate.count", "count aggregate returned through cached grant")
+        : fail("CLI", "aggregate.count", "empty aggregate output");
+    });
+
+    await pushChecked(results, "CLI", "excluded_bearer", async () => {
+      let junkParent = null;
+      try {
+        junkParent = await mkdtemp(join(tmpdir(), "pdpp-read-surface-cli-junk-"));
+        const junkRoot = join(junkParent, ".pdpp");
+        await writeCredentialCache(junkRoot, NON_GRANT_BEARER);
+        const child = spawnCli([
+          "read",
+          "schema",
+          normalizeOrigin(origin),
+          "--cache-root",
+          junkRoot,
+          "--format",
+          "json",
+        ]);
+        if (child.status === 0) {
+          return fail("CLI", "excluded_bearer", "CLI served a non-grant bearer; scoped-grant requirement not enforced");
+        }
+        return ok(
+          "CLI",
+          "excluded_bearer",
+          `non-grant bearer rejected (exit ${child.status}); reads require the scoped grant`
+        );
+      } finally {
+        if (junkParent) await rm(junkParent, { recursive: true, force: true });
+      }
+    });
   } finally {
     if (parent) await rm(parent, { recursive: true, force: true });
   }
@@ -1525,20 +1675,22 @@ function printTextReport(origin, report) {
     process.stdout.write(`  ${marker} ${entry.surface}.${entry.name}: ${entry.detail}\n`);
   }
   if (report.parityMatrix) {
-    process.stdout.write('\nParity matrix (shared read semantics):\n');
-    const header = ['row'.padEnd(20), ...PARITY_TRANSPORTS.map((transport) => transport.padEnd(7))].join(' ');
+    process.stdout.write("\nParity matrix (shared read semantics):\n");
+    const header = ["row".padEnd(20), ...PARITY_TRANSPORTS.map((transport) => transport.padEnd(7))].join(" ");
     process.stdout.write(`  ${header}\n`);
     for (const { row, transports, diverged } of report.parityMatrix.rows) {
-      const cells = PARITY_TRANSPORTS.map((transport) => String(transports[transport]).padEnd(7)).join(' ');
-      const flag = diverged ? '  <- DIVERGED' : '';
+      const cells = PARITY_TRANSPORTS.map((transport) => String(transports[transport]).padEnd(7)).join(" ");
+      const flag = diverged ? "  <- DIVERGED" : "";
       process.stdout.write(`  ${row.padEnd(20)} ${cells}${flag}\n`);
     }
     if (report.parityMatrix.diverged) {
-      process.stdout.write('  parity FAILED: a shared behavior passed on one adapter and failed on another\n');
+      process.stdout.write("  parity FAILED: a shared behavior passed on one adapter and failed on another\n");
     }
   }
   const { counts } = report.summary;
-  process.stdout.write(`\nSummary: ${counts.pass} pass, ${counts.warn} warn, ${counts.skip} skip, ${counts.fail} fail\n`);
+  process.stdout.write(
+    `\nSummary: ${counts.pass} pass, ${counts.warn} warn, ${counts.skip} skip, ${counts.fail} fail\n`
+  );
 }
 
 const USAGE = `Usage: node scripts/read-surface-smoke.mjs --origin <url> --connection-id <cin> [options]
@@ -1585,10 +1737,10 @@ async function main(argv) {
   let token = opts.token ?? process.env.PDPP_READ_SURFACE_TOKEN;
   if (!token) {
     const ownerPassword = opts.ownerPassword ?? process.env.PDPP_OWNER_PASSWORD;
-    const ownerSubject = opts.ownerSubject ?? process.env.PDPP_OWNER_SUBJECT_ID ?? 'owner_local';
+    const ownerSubject = opts.ownerSubject ?? process.env.PDPP_OWNER_SUBJECT_ID ?? "owner_local";
     if (!ownerPassword || !opts.connectorId) {
       process.stderr.write(
-        `--token/PDPP_READ_SURFACE_TOKEN or (--owner-password/PDPP_OWNER_PASSWORD plus --connector-id) is required.\n\n${USAGE}\n`,
+        `--token/PDPP_READ_SURFACE_TOKEN or (--owner-password/PDPP_OWNER_PASSWORD plus --connector-id) is required.\n\n${USAGE}\n`
       );
       process.exit(2);
     }

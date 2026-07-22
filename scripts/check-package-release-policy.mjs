@@ -2,20 +2,20 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import path from 'node:path';
-import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const repoRoot = process.cwd();
 const expectedPublishConfig = {
-  access: 'public',
+  access: "public",
   provenance: false,
-  registry: 'https://registry.npmjs.org/',
-  tag: 'latest',
+  registry: "https://registry.npmjs.org/",
+  tag: "latest",
 };
-const expectedRepositoryUrl = 'git+https://github.com/PDP-Connect/pdpp.git';
-const expectedNodeEngine = '>=22.14.0';
+const expectedRepositoryUrl = "git+https://github.com/PDP-Connect/pdpp.git";
+const expectedNodeEngine = ">=22.14.0";
 
 // The release train publishes a single channel: 0.x versions on npm's default
 // `latest` dist-tag, released from `main` (see docs/reference/package-release-policy.md).
@@ -24,20 +24,20 @@ const expectedNodeEngine = '>=22.14.0';
 // the retired `@beta` tag on every publishable-package install command in the
 // active docs below, so the docs cannot silently regress operators onto the
 // dead prerelease channel.
-const retiredDistTag = 'beta';
+const retiredDistTag = "beta";
 const installDocRoots = [
-  'README.md',
-  'docs',
-  'reference-implementation/README.md',
-  'reference-implementation/docs',
-  'apps/site/content/docs',
-  'packages/cli/README.md',
-  'packages/local-collector/README.md',
-  'packages/mcp-server/README.md',
+  "README.md",
+  "docs",
+  "reference-implementation/README.md",
+  "reference-implementation/docs",
+  "apps/site/content/docs",
+  "packages/cli/README.md",
+  "packages/local-collector/README.md",
+  "packages/mcp-server/README.md",
 ];
 
 function readJson(filePath) {
-  return JSON.parse(readFileSync(filePath, 'utf8'));
+  return JSON.parse(readFileSync(filePath, "utf8"));
 }
 
 function listMarkdownFiles(relativeRoot) {
@@ -49,7 +49,7 @@ function listMarkdownFiles(relativeRoot) {
   function walk(target) {
     const stat = statSync(target);
     if (stat.isFile()) {
-      if (target.endsWith('.md')) {
+      if (target.endsWith(".md")) {
         out.push(path.relative(repoRoot, target));
       }
       return;
@@ -58,7 +58,7 @@ function listMarkdownFiles(relativeRoot) {
       return;
     }
     for (const entry of readdirSync(target, { withFileTypes: true })) {
-      if (entry.name === 'node_modules' || entry.name === '.next') {
+      if (entry.name === "node_modules" || entry.name === ".next") {
         continue;
       }
       walk(path.join(target, entry.name));
@@ -78,7 +78,7 @@ export function findRetiredTagInstallDocReferences({ packageNames, docFiles, rea
   // package name (specs, comments) are intentionally ignored.
   const installCommand = /\b(?:npm\s+(?:i|install|add)|pnpm\s+(?:add|install|dlx|exec)|npx)\b/;
   for (const docFile of docFiles) {
-    const lines = readFile(docFile).split('\n');
+    const lines = readFile(docFile).split("\n");
     for (const line of lines) {
       // Skip shell comments and Markdown headings (`# ...`): they describe an
       // install command in prose but cannot execute one, so a bare package
@@ -95,7 +95,7 @@ export function findRetiredTagInstallDocReferences({ packageNames, docFiles, rea
         const retiredReference = new RegExp(`${escapeRegExp(packageName)}@${retiredDistTag}(?![\\w.-])`);
         if (retiredReference.test(line)) {
           problems.push(
-            `${docFile} installs ${packageName} with the retired @${retiredDistTag} dist-tag (the release train publishes only to latest): ${line.trim()}`,
+            `${docFile} installs ${packageName} with the retired @${retiredDistTag} dist-tag (the release train publishes only to latest): ${line.trim()}`
           );
         }
       }
@@ -105,13 +105,13 @@ export function findRetiredTagInstallDocReferences({ packageNames, docFiles, rea
 }
 
 function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function listPackageJsonFiles(rootDir = '.') {
+function listPackageJsonFiles(rootDir = ".") {
   const root = path.join(repoRoot, rootDir);
   const out = [];
-  const ignoredDirs = new Set(['.git', '.next', '.turbo', 'build', 'coverage', 'dist', 'node_modules']);
+  const ignoredDirs = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules"]);
   function walk(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const fullPath = path.join(dir, entry.name);
@@ -121,7 +121,7 @@ function listPackageJsonFiles(rootDir = '.') {
         }
         continue;
       }
-      if (entry.name === 'package.json') {
+      if (entry.name === "package.json") {
         out.push(path.relative(repoRoot, fullPath));
       }
     }
@@ -146,13 +146,13 @@ export function findPublishableWorkspaceDependencyErrors(publishablePackages) {
       optionalDependencies: manifest.optionalDependencies,
       peerDependencies: manifest.peerDependencies,
     })) {
-      if (!dependencies || typeof dependencies !== 'object') {
+      if (!dependencies || typeof dependencies !== "object") {
         continue;
       }
       for (const [name, range] of Object.entries(dependencies)) {
-        if (typeof range === 'string' && range.startsWith('workspace:')) {
+        if (typeof range === "string" && range.startsWith("workspace:")) {
           problems.push(
-            `${file} ${section}.${name} uses ${range}; publishable packages must use registry-resolvable ranges`,
+            `${file} ${section}.${name} uses ${range}; publishable packages must use registry-resolvable ranges`
           );
         }
       }
@@ -164,9 +164,9 @@ export function findPublishableWorkspaceDependencyErrors(publishablePackages) {
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 
 const errors = [];
-const rootPackage = readJson(path.join(repoRoot, 'package.json'));
+const rootPackage = readJson(path.join(repoRoot, "package.json"));
 if (rootPackage.private !== true) {
-  fail(errors, 'root package.json must remain private:true so the workspace root cannot publish');
+  fail(errors, "root package.json must remain private:true so the workspace root cannot publish");
 }
 
 const packageFiles = listPackageJsonFiles();
@@ -176,11 +176,14 @@ const packages = packageFiles.map((file) => ({
   manifest: readJson(path.join(repoRoot, file)),
 }));
 const publishablePackages = packages
-  .filter(({ dir, manifest }) => dir.startsWith('packages/') && manifest.name?.startsWith('@pdpp/') && manifest.private !== true)
+  .filter(
+    ({ dir, manifest }) =>
+      dir.startsWith("packages/") && manifest.name?.startsWith("@pdpp/") && manifest.private !== true
+  )
   .sort((a, b) => a.dir.localeCompare(b.dir));
 
 for (const { file, manifest } of packages) {
-  if (file === 'package.json') {
+  if (file === "package.json") {
     continue;
   }
   const hasPublishConfig = manifest.publishConfig !== undefined;
@@ -197,7 +200,7 @@ for (const { file, dir, manifest } of publishablePackages) {
   if (!deepEqual(manifest.publishConfig, expectedPublishConfig)) {
     fail(errors, `${file} publishConfig must match ${JSON.stringify(expectedPublishConfig)}`);
   }
-  if (manifest.version !== '0.0.0') {
+  if (manifest.version !== "0.0.0") {
     fail(errors, `${file} version must stay at 0.0.0; semantic-release owns published versions`);
   }
   if (!manifest.description) {
@@ -218,7 +221,7 @@ for (const { file, dir, manifest } of publishablePackages) {
   if (manifest.engines?.node !== expectedNodeEngine) {
     fail(errors, `${file} engines.node must be ${expectedNodeEngine}`);
   }
-  if (!existsSync(path.join(repoRoot, dir, 'README.md'))) {
+  if (!existsSync(path.join(repoRoot, dir, "README.md"))) {
     fail(errors, `${dir}/README.md must exist for the npm package`);
   }
 }
@@ -227,39 +230,39 @@ for (const problem of findPublishableWorkspaceDependencyErrors(publishablePackag
   fail(errors, problem);
 }
 
-const releaseConfig = readFileSync(path.join(repoRoot, '.releaserc.yaml'), 'utf8');
-const releaseWorkflow = readFileSync(path.join(repoRoot, '.github/workflows/semantic-release.yml'), 'utf8');
+const releaseConfig = readFileSync(path.join(repoRoot, ".releaserc.yaml"), "utf8");
+const releaseWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/semantic-release.yml"), "utf8");
 const configuredPackageRoots = [...releaseConfig.matchAll(/pkgRoot:\s*"([^"]+)"/g)].map((match) => match[1]).sort();
 const publishableRoots = publishablePackages.map(({ dir }) => dir).sort();
 
 if (!deepEqual(configuredPackageRoots, publishableRoots)) {
   fail(
     errors,
-    `.releaserc.yaml @semantic-release/npm pkgRoot list ${JSON.stringify(configuredPackageRoots)} must match publishable packages ${JSON.stringify(publishableRoots)}`,
+    `.releaserc.yaml @semantic-release/npm pkgRoot list ${JSON.stringify(configuredPackageRoots)} must match publishable packages ${JSON.stringify(publishableRoots)}`
   );
 }
 
 if (!/id-token:\s*write/.test(releaseWorkflow)) {
-  fail(errors, '.github/workflows/semantic-release.yml must grant id-token: write for npm trusted publishing');
+  fail(errors, ".github/workflows/semantic-release.yml must grant id-token: write for npm trusted publishing");
 }
 if (/\b(NPM_TOKEN|NODE_AUTH_TOKEN)\b/.test(releaseWorkflow)) {
-  fail(errors, 'semantic-release workflow must not use NPM_TOKEN/NODE_AUTH_TOKEN in the normal release path');
+  fail(errors, "semantic-release workflow must not use NPM_TOKEN/NODE_AUTH_TOKEN in the normal release path");
 }
 if (!/pnpm release:policy-check/.test(releaseWorkflow)) {
-  fail(errors, 'semantic-release quality job must run pnpm release:policy-check');
+  fail(errors, "semantic-release quality job must run pnpm release:policy-check");
 }
 
 // Single release channel: releases are cut from `main` onto npm's default
 // `latest` dist-tag. A prerelease branch (the old `beta` lane) is a second
 // moving part that goes stale; the policy forbids reintroducing one.
 if (/^\s*prerelease\s*:/m.test(releaseConfig) || /^\s*-\s*name:\s*beta\s*$/m.test(releaseConfig)) {
-  fail(errors, '.releaserc.yaml must declare a single release channel from main (no prerelease/beta branch)');
+  fail(errors, ".releaserc.yaml must declare a single release channel from main (no prerelease/beta branch)");
 }
 if (!/branches:\s*\[main\]/.test(releaseWorkflow)) {
-  fail(errors, 'semantic-release workflow must trigger on push to main (single release channel)');
+  fail(errors, "semantic-release workflow must trigger on push to main (single release channel)");
 }
 
-const packageScopes = publishablePackages.map(({ manifest }) => manifest.name.replace(/^@pdpp\//, ''));
+const packageScopes = publishablePackages.map(({ manifest }) => manifest.name.replace(/^@pdpp\//, ""));
 for (const scope of packageScopes) {
   if (!new RegExp(`scope:\\s*${scope}\\b`).test(releaseConfig)) {
     fail(errors, `.releaserc.yaml release-notes grouping must include Conventional Commit scope "${scope}"`);
@@ -278,7 +281,7 @@ const installDocFiles = installDocRoots.flatMap((root) => listMarkdownFiles(root
 const retiredTagInstallDocReferences = findRetiredTagInstallDocReferences({
   packageNames: publishablePackageNames,
   docFiles: installDocFiles,
-  readFile: (relativePath) => readFileSync(path.join(repoRoot, relativePath), 'utf8'),
+  readFile: (relativePath) => readFileSync(path.join(repoRoot, relativePath), "utf8"),
 });
 for (const problem of retiredTagInstallDocReferences) {
   fail(errors, problem);
@@ -290,7 +293,7 @@ export const policyErrors = errors;
 
 if (isMainModule) {
   if (errors.length > 0) {
-    console.error('PDPP package release policy check failed:');
+    console.error("PDPP package release policy check failed:");
     for (const error of errors) {
       console.error(`- ${error}`);
     }
@@ -298,6 +301,6 @@ if (isMainModule) {
   }
 
   console.log(
-    `PDPP package release policy OK: ${publishablePackages.map(({ manifest }) => manifest.name).join(', ') || 'no publishable packages'}`,
+    `PDPP package release policy OK: ${publishablePackages.map(({ manifest }) => manifest.name).join(", ") || "no publishable packages"}`
   );
 }

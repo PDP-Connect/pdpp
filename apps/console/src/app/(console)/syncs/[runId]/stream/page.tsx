@@ -44,7 +44,10 @@ interface ConnectorContext {
 
 function RunDetailLink({ children, runId }: { children: string; runId: string }) {
   return (
-    <a className={buttonVariants({ variant: "default", size: "sm", className: "mt-5" })} href={`/syncs/${encodeURIComponent(runId)}`}>
+    <a
+      className={buttonVariants({ variant: "default", size: "sm", className: "mt-5" })}
+      href={`/syncs/${encodeURIComponent(runId)}`}
+    >
       {children}
     </a>
   );
@@ -327,8 +330,8 @@ function ExternalApprovalSurface({
         <h1 className="pdpp-heading mt-3 text-balance text-foreground">Approve the prompt outside PDPP.</h1>
         <p className="mt-3 text-muted-foreground text-sm leading-6">{assistance.message}</p>
         <p className="mt-3 text-muted-foreground text-sm leading-6">
-          {subject} will continue automatically after the provider confirms the approval. No browser controls are waiting
-          on this page.
+          {subject} will continue automatically after the provider confirms the approval. No browser controls are
+          waiting on this page.
         </p>
         <RunDetailLink runId={runId}>Open run timeline</RunDetailLink>
       </section>

@@ -6,7 +6,7 @@ const DEFAULT_RECORD_PREVIEW_CHAR_LIMIT = 1792;
 const DEFAULT_RECORD_PREVIEW_FOOTER_RESERVE = 96;
 const DEFAULT_RECORD_PREVIEW_MIN_RECORD_CHARS = 24;
 const DEFAULT_RECORD_PREVIEW_TRUNCATED_MARKER =
-  'record_preview_truncated=true; followup=rerun_limit; machine envelope in structuredContent.data';
+  "record_preview_truncated=true; followup=rerun_limit; machine envelope in structuredContent.data";
 const DEFAULT_FIELD_WINDOW_LIMIT_CHARS = 2048;
 const DEFAULT_FIELD_WINDOW_LIMIT = 8;
 const DEFAULT_BINARY_FIELD_LIMIT = 8;
@@ -14,15 +14,15 @@ const DEFAULT_JSON_FIELD_LIMIT = 8;
 const DEFAULT_JSON_PREVIEW_CHAR_LIMIT = 512;
 
 const OMIT_FIELD_KEYS = new Set([
-  'id',
-  'record_id',
-  'recordId',
-  'connection_id',
-  'connector_instance_id',
-  'connector_key',
-  'stream',
-  'metadata',
-  '_meta',
+  "id",
+  "record_id",
+  "recordId",
+  "connection_id",
+  "connector_instance_id",
+  "connector_key",
+  "stream",
+  "metadata",
+  "_meta",
 ]);
 
 export function stableInlineJson(value) {
@@ -30,10 +30,10 @@ export function stableInlineJson(value) {
 }
 
 export function truncateText(value, limit) {
-  const text = String(value ?? '');
-  if (!Number.isFinite(limit) || limit <= 0) return '';
+  const text = String(value ?? "");
+  if (!Number.isFinite(limit) || limit <= 0) return "";
   if (text.length <= limit) return text;
-  if (limit <= 1) return '…'.slice(0, limit);
+  if (limit <= 1) return "…".slice(0, limit);
   return `${text.slice(0, limit - 1)}…`;
 }
 
@@ -50,10 +50,9 @@ export function summarizeRecordEvidence(body, label, options = {}) {
   const charLimit = options.charLimit ?? DEFAULT_RECORD_PREVIEW_CHAR_LIMIT;
   const footerReserve = options.footerReserve ?? DEFAULT_RECORD_PREVIEW_FOOTER_RESERVE;
   const minRecordChars = options.minRecordChars ?? DEFAULT_RECORD_PREVIEW_MIN_RECORD_CHARS;
-  const truncatedMarker =
-    options.truncatedMarker ?? DEFAULT_RECORD_PREVIEW_TRUNCATED_MARKER;
+  const truncatedMarker = options.truncatedMarker ?? DEFAULT_RECORD_PREVIEW_TRUNCATED_MARKER;
   const records = extractRecordRows(body);
-  const hasMore = envelopeField(body, 'has_more') === true ? ' has_more=true.' : '';
+  const hasMore = envelopeField(body, "has_more") === true ? " has_more=true." : "";
   const handles = formatEnvelopeHandles(body);
 
   if (records.length === 0) return `${label}: 0 record(s).${handles}`;
@@ -86,7 +85,7 @@ export function summarizeRecordEvidence(body, label, options = {}) {
     );
   }
 
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 export function summarizeFieldWindowEvidence(body) {
@@ -101,33 +100,33 @@ export function summarizeFieldWindowEvidence(body) {
   const nextCursor = firstString(window.next_cursor);
   const previousCursor = firstString(window.previous_cursor);
   const range =
-    start !== null && end !== null ? `chars ${start}..${end}` : start !== null ? `chars ${start}..` : 'chars';
-  const identity = [connectionId, stream, recordId].filter(Boolean).join('/');
+    start !== null && end !== null ? `chars ${start}..${end}` : start !== null ? `chars ${start}..` : "chars";
+  const identity = [connectionId, stream, recordId].filter(Boolean).join("/");
   const cursorText = [
     nextCursor ? `next_cursor=${formatScalar(nextCursor)}` : null,
     previousCursor ? `previous_cursor=${formatScalar(previousCursor)}` : null,
   ]
     .filter(Boolean)
-    .join(' ');
+    .join(" ");
 
   return [
-    `record=${identity || 'unknown'} field=${fieldPath || 'unknown'} ${range} complete=${complete}`,
+    `record=${identity || "unknown"} field=${fieldPath || "unknown"} ${range} complete=${complete}`,
     cursorText,
-    String(window.text ?? ''),
+    String(window.text ?? ""),
   ]
     .filter(Boolean)
-    .join('\n');
+    .join("\n");
 }
 
 export function formatEnvelopeHandles(body) {
   const parts = [];
-  const nextCursor = envelopeField(body, 'next_cursor');
+  const nextCursor = envelopeField(body, "next_cursor");
   if (nextCursor) parts.push(`next_cursor=${formatScalar(nextCursor)}`);
-  const nextChangesSince = envelopeField(body, 'next_changes_since');
+  const nextChangesSince = envelopeField(body, "next_changes_since");
   if (nextChangesSince) parts.push(`next_changes_since=${formatScalar(nextChangesSince)}`);
   const count = envelopeCount(body);
   if (count) parts.push(`count=${count}`);
-  return parts.length > 0 ? ` ${parts.join(' ')}.` : '';
+  return parts.length > 0 ? ` ${parts.join(" ")}.` : "";
 }
 
 export function buildRecordContentLadder(record, options = {}) {
@@ -153,8 +152,8 @@ export function buildRecordContentLadder(record, options = {}) {
     connection_id: identity.connectionId,
     stream: identity.stream,
     record_id: identity.recordId,
-    handle_semantics: 'live_lookup',
-    record_uri: encodeResourceUri('record', {
+    handle_semantics: "live_lookup",
+    record_uri: encodeResourceUri("record", {
       connection_id: identity.connectionId,
       stream: identity.stream,
       record_id: identity.recordId,
@@ -172,8 +171,8 @@ export function buildRecordSetContentLadder(body, options = {}) {
     .slice(0, options.recordLimit ?? DEFAULT_RECORD_PREVIEW_LIMIT);
   if (records.length === 0) return null;
   return {
-    kind: 'record_set',
-    read_tool: options.readTool ?? 'read_record_field',
+    kind: "record_set",
+    read_tool: options.readTool ?? "read_record_field",
     records,
   };
 }
@@ -194,20 +193,20 @@ export function encodeContentHandle(kind, payload) {
 
 export function decodeContentHandle(handle, expectedKind) {
   const payload = JSON.parse(base64UrlDecode(String(handle)));
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('Content handle is malformed.');
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Content handle is malformed.");
   }
   if (payload.v !== 1 || payload.kind !== expectedKind) {
-    throw new Error('Content handle has the wrong kind or version.');
+    throw new Error("Content handle has the wrong kind or version.");
   }
   return payload;
 }
 
 export function sanitizeRecordForEvidence(record) {
-  if (!record || typeof record !== 'object' || Array.isArray(record)) return record;
+  if (!record || typeof record !== "object" || Array.isArray(record)) return record;
   const sanitized = {};
   for (const [key, value] of Object.entries(record)) {
-    if (key === 'data' && value && typeof value === 'object' && !Array.isArray(value)) {
+    if (key === "data" && value && typeof value === "object" && !Array.isArray(value)) {
       sanitized[key] = sanitizePayloadObject(value);
       continue;
     }
@@ -217,7 +216,7 @@ export function sanitizeRecordForEvidence(record) {
 }
 
 export function binaryFieldMetadata(fieldPath, value) {
-  if (typeof fieldPath !== 'string' || fieldPath.length === 0 || OMIT_FIELD_KEYS.has(fieldPath)) return null;
+  if (typeof fieldPath !== "string" || fieldPath.length === 0 || OMIT_FIELD_KEYS.has(fieldPath)) return null;
 
   const blob = blobRefMetadata(value);
   if (blob) {
@@ -225,8 +224,8 @@ export function binaryFieldMetadata(fieldPath, value) {
       field_path: fieldPath,
       binary_field: true,
       text_like: false,
-      handle_semantics: 'live_lookup',
-      preview_status: 'binary-only',
+      handle_semantics: "live_lookup",
+      preview_status: "binary-only",
       ...blob,
     };
   }
@@ -236,9 +235,9 @@ export function binaryFieldMetadata(fieldPath, value) {
       field_path: fieldPath,
       binary_field: true,
       text_like: false,
-      handle_semantics: 'live_lookup',
-      preview_status: 'binary-only',
-      encoding: 'base64',
+      handle_semantics: "live_lookup",
+      preview_status: "binary-only",
+      encoding: "base64",
       size_chars: value.length,
     };
   }
@@ -250,13 +249,7 @@ function recordContentIdentity(record, fallback = {}) {
   const payload = objectValue(record?.data) || objectValue(record?.record) || objectValue(record);
   const directId = firstString(fallback?.id, record?.id, record?.result_id, record?.record_id, record?.recordId);
   const parsed = directId ? parseRecordResultId(directId) : null;
-  const stream = firstString(
-    fallback?.stream,
-    record?.stream,
-    record?.stream_name,
-    payload?.stream,
-    parsed?.stream
-  );
+  const stream = firstString(fallback?.stream, record?.stream, record?.stream_name, payload?.stream, parsed?.stream);
   const recordId = firstString(
     fallback?.recordId,
     fallback?.record_id,
@@ -288,11 +281,11 @@ function recordContentFields(record, identity, options) {
     .map(([fieldPath, value]) => ({
       field_path: fieldPath,
       text_like: true,
-      handle_semantics: 'live_lookup',
-      preview_status: value.length > options.windowLimitChars ? 'truncated' : 'complete',
+      handle_semantics: "live_lookup",
+      preview_status: value.length > options.windowLimitChars ? "truncated" : "complete",
       size_chars: value.length,
       read: {
-        tool: 'read_record_field',
+        tool: "read_record_field",
         args: {
           id: identity.id,
           field_path: fieldPath,
@@ -300,7 +293,7 @@ function recordContentFields(record, identity, options) {
           limit_chars: options.windowLimitChars,
         },
       },
-      resource_uri: options.encodeResourceUri('field-window', {
+      resource_uri: options.encodeResourceUri("field-window", {
         connection_id: identity.connectionId,
         stream: identity.stream,
         record_id: identity.recordId,
@@ -330,12 +323,12 @@ function recordContentJsonFields(record, identity, options) {
         field_path: fieldPath,
         json_field: true,
         text_like: false,
-        handle_semantics: 'live_lookup',
-        preview_status: rendered.length > options.jsonPreviewChars ? 'truncated' : 'complete',
+        handle_semantics: "live_lookup",
+        preview_status: rendered.length > options.jsonPreviewChars ? "truncated" : "complete",
         size_chars: rendered.length,
         preview_text: truncateText(rendered, options.jsonPreviewChars),
         read: {
-          tool: 'fetch',
+          tool: "fetch",
           args: {
             id: identity.id,
             fields: [fieldPath],
@@ -346,8 +339,8 @@ function recordContentJsonFields(record, identity, options) {
 }
 
 function isJsonEvidenceField(fieldPath, value) {
-  if (typeof fieldPath !== 'string' || fieldPath.length === 0 || OMIT_FIELD_KEYS.has(fieldPath)) return false;
-  if (!value || typeof value !== 'object') return false;
+  if (typeof fieldPath !== "string" || fieldPath.length === 0 || OMIT_FIELD_KEYS.has(fieldPath)) return false;
+  if (!value || typeof value !== "object") return false;
   if (blobRefMetadata(value)) return false;
   return true;
 }
@@ -363,12 +356,12 @@ function sanitizePayloadObject(payload) {
 
 function sanitizeEvidenceValue(value) {
   if (Array.isArray(value)) return value.map((entry) => sanitizeEvidenceValue(entry));
-  if (!value || typeof value !== 'object') return value;
+  if (!value || typeof value !== "object") return value;
   const blob = blobRefMetadata(value);
   if (blob) {
     return {
       text_like: false,
-      preview_status: 'binary-only',
+      preview_status: "binary-only",
       ...blob,
     };
   }
@@ -377,22 +370,22 @@ function sanitizeEvidenceValue(value) {
 
 function isContentStringField(fieldPath, value) {
   return (
-    typeof fieldPath === 'string' &&
+    typeof fieldPath === "string" &&
     fieldPath.length > 0 &&
     !OMIT_FIELD_KEYS.has(fieldPath) &&
-    typeof value === 'string' &&
+    typeof value === "string" &&
     value.length > 0 &&
     !isLargeBase64Field(fieldPath, value) &&
-    !fieldPath.includes('/') &&
-    !fieldPath.includes('\\') &&
-    fieldPath !== '.' &&
-    fieldPath !== '..' &&
-    !fieldPath.includes('..')
+    !fieldPath.includes("/") &&
+    !fieldPath.includes("\\") &&
+    fieldPath !== "." &&
+    fieldPath !== ".." &&
+    !fieldPath.includes("..")
   );
 }
 
 function isLargeBase64Field(fieldPath, value) {
-  if (typeof value !== 'string' || value.length < 256) return false;
+  if (typeof value !== "string" || value.length < 256) return false;
   if (value.length % 4 !== 0) return false;
   if (new Set(value).size < 4) return false;
   return /^[A-Za-z0-9+/]+={0,2}$/.test(value);
@@ -420,8 +413,8 @@ function blobRefMetadata(value) {
 }
 
 function parseRecordResultId(id) {
-  const slash = id.indexOf('/');
-  const colon = id.indexOf(':', slash + 1);
+  const slash = id.indexOf("/");
+  const colon = id.indexOf(":", slash + 1);
   if (colon <= 0) return null;
   if (slash > 0) {
     return {
@@ -440,15 +433,15 @@ function parseRecordResultId(id) {
 function envelopeField(body, key) {
   if (body && Object.hasOwn(body, key)) return body[key];
   if (body?.meta && Object.hasOwn(body.meta, key)) return body.meta[key];
-  if (body?.data && typeof body.data === 'object' && !Array.isArray(body.data) && Object.hasOwn(body.data, key)) {
+  if (body?.data && typeof body.data === "object" && !Array.isArray(body.data) && Object.hasOwn(body.data, key)) {
     return body.data[key];
   }
   return undefined;
 }
 
 function envelopeCount(body) {
-  const count = envelopeField(body, 'count');
-  if (!count || typeof count !== 'object') return null;
+  const count = envelopeField(body, "count");
+  if (!count || typeof count !== "object") return null;
   const kind = firstString(count.kind);
   const value = numberValue(count.value);
   if (!kind || value === null) return null;
@@ -456,20 +449,20 @@ function envelopeCount(body) {
 }
 
 function objectValue(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
 function firstString(...values) {
   for (const value of values) {
-    if (typeof value === 'string' && value.length > 0) return value;
+    if (typeof value === "string" && value.length > 0) return value;
   }
   return null;
 }
 
 function numberValue(...values) {
   for (const value of values) {
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string' && value.trim() !== '') {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "") {
       const parsed = Number.parseInt(value, 10);
       if (Number.isFinite(parsed)) return parsed;
     }
@@ -482,9 +475,9 @@ function formatScalar(value) {
 }
 
 function base64UrlEncode(value) {
-  return Buffer.from(value, 'utf8').toString('base64url');
+  return Buffer.from(value, "utf8").toString("base64url");
 }
 
 function base64UrlDecode(value) {
-  return Buffer.from(value, 'base64url').toString('utf8');
+  return Buffer.from(value, "base64url").toString("utf8");
 }

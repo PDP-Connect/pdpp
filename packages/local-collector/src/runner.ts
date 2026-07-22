@@ -185,15 +185,11 @@ export type BundledConnectorRegistry = Readonly<Record<string, BundledConnectorE
  * connectors into `dist/polyfill-connectors/connectors/<entry>/`.
  */
 export function resolveBundledConnectorEntry(entry: string): string {
-  const built = fileURLToPath(
-    new URL(`../../polyfill-connectors/connectors/${entry}/index.js`, import.meta.url)
-  );
+  const built = fileURLToPath(new URL(`../../polyfill-connectors/connectors/${entry}/index.js`, import.meta.url));
   if (existsSync(built)) {
     return built;
   }
-  return fileURLToPath(
-    new URL(`../../polyfill-connectors/connectors/${entry}/index.ts`, import.meta.url)
-  );
+  return fileURLToPath(new URL(`../../polyfill-connectors/connectors/${entry}/index.ts`, import.meta.url));
 }
 
 function commandForEntry(entry: string): "node" | "tsx" {
@@ -255,9 +251,7 @@ export function getBundledConnectorFrom(
  * the map covers exactly the injected ids; the shape stays stable so
  * per-connector versioning can be added later without a payload migration.
  */
-export function bundledConnectorVersions(
-  registry: BundledConnectorRegistry
-): Readonly<Record<string, string>> {
+export function bundledConnectorVersions(registry: BundledConnectorRegistry): Readonly<Record<string, string>> {
   const versions: Record<string, string> = {};
   for (const id of Object.keys(registry)) {
     versions[id] = PROTOCOL_VERSION;

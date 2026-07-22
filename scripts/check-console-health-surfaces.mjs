@@ -32,7 +32,8 @@ const RULES = [
   },
   {
     id: "legacy-next-action",
-    pattern: /\b(?:formatNextAction\(|summary\.next_action|connection_health\?\.next_action|connectionHealth\?\.next_action)/,
+    pattern:
+      /\b(?:formatNextAction\(|summary\.next_action|connection_health\?\.next_action|connectionHealth\?\.next_action)/,
     message: "owner surface must derive CTAs from rendered_verdict.required_actions",
   },
   {

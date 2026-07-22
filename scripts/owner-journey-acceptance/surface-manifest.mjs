@@ -77,9 +77,7 @@ export const NORMAL_OWNER_ROUTE_SCAN_ROOTS = [
  * may legitimately show `connector_instance_id`, `source_instance_id`, and a
  * `docs/operator/...` runbook pointer behind reference-experimental framing).
  */
-export const ADVANCED_OWNER_UI_FILES = [
-  "apps/console/src/app/(console)/device-exporters/page.tsx",
-];
+export const ADVANCED_OWNER_UI_FILES = ["apps/console/src/app/(console)/device-exporters/page.tsx"];
 
 /**
  * Command-source libraries: not rendered themselves, but they build the command
@@ -139,11 +137,7 @@ export const FORBIDDEN_RENDERED_HELPERS = [
     id: "browser-collector-monorepo-helper",
     class: "developer-only-path",
     // Helper symbols that emit `pnpm --dir packages/polyfill-connectors ...`.
-    symbols: [
-      "pdppBrowserCollectorEnrollCommand",
-      "pdppBrowserCollectorRunCommand",
-      "pdppCliMonorepoCommand",
-    ],
+    symbols: ["pdppBrowserCollectorEnrollCommand", "pdppBrowserCollectorRunCommand", "pdppCliMonorepoCommand"],
     rationale:
       "These helpers emit monorepo-only `pnpm --dir packages/...` commands. No rendered owner page may wire them into displayed setup copy.",
   },
@@ -177,8 +171,7 @@ export const FORBIDDEN_STRING_RULES = [
     class: "developer-only-path",
     tiers: ["normal", "advanced"],
     pattern: /pnpm\s+--dir\b/,
-    rationale:
-      "`pnpm --dir` is a monorepo-checkout command. It cannot run from an owner's shipped install.",
+    rationale: "`pnpm --dir` is a monorepo-checkout command. It cannot run from an owner's shipped install.",
   },
   {
     id: "monorepo-checkout",

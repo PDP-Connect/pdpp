@@ -1,9 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { PDPP_CLI_BIN_NAME } from '../package-info.js';
-import { CollectorUsageError } from './errors.js';
-import { spawnCollectorRunner } from './runner.js';
+import { PDPP_CLI_BIN_NAME } from "../package-info.js";
+import { CollectorUsageError } from "./errors.js";
+import { spawnCollectorRunner } from "./runner.js";
 
 const COLLECTOR_HELP = `Local collector runner (reference operator surface).
 
@@ -68,12 +68,12 @@ Notes:
   PDPP_RUN_ID. PDPP_SOURCE_INSTANCE_ID remains a compatibility alias.
 `;
 
-const SUBCOMMANDS = new Set(['advertise', 'enroll', 'run']);
+const SUBCOMMANDS = new Set(["advertise", "enroll", "run"]);
 
 export async function runCollector(argv, io) {
   const [sub, ...rest] = argv;
 
-  if (!sub || sub === '--help' || sub === '-h' || sub === 'help') {
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     io.stdout.write(COLLECTOR_HELP);
     return 0;
   }

@@ -323,12 +323,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     inboundToken: string
   ): Promise<McpServerOptions | null> {
     if (req.tokenInfo?.pdpp_token_kind === "mcp_package") {
-      return buildPackageMcpServerOptions(
-        req,
-        res,
-        resource,
-        internalBase
-      );
+      return buildPackageMcpServerOptions(req, res, resource, internalBase);
     }
     return buildStandaloneMcpServerOptions(resource, internalBase, inboundToken);
   }

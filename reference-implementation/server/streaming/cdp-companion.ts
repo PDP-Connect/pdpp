@@ -81,8 +81,13 @@ function mouseCommand(type: string, x: number, y: number, button: string, clickC
 }
 
 const MOUSE_COMMANDS: Record<string, MouseCommandBuilder> = {
-  mousemove: ({ x, y }) => [{ method: "Input.dispatchMouseEvent", params: { type: "mouseMoved", x, y, button: "none" } }],
-  click: ({ x, y, button }) => [mouseCommand("mousePressed", x, y, button), mouseCommand("mouseReleased", x, y, button)],
+  mousemove: ({ x, y }) => [
+    { method: "Input.dispatchMouseEvent", params: { type: "mouseMoved", x, y, button: "none" } },
+  ],
+  click: ({ x, y, button }) => [
+    mouseCommand("mousePressed", x, y, button),
+    mouseCommand("mouseReleased", x, y, button),
+  ],
   dblclick: ({ x, y }) => [
     mouseCommand("mousePressed", x, y, "left"),
     mouseCommand("mouseReleased", x, y, "left"),
@@ -144,7 +149,12 @@ function mapKeyboardEventToCdp(event: WireInput): CdpCommand[] {
   const isPrintable = event.key.length === 1;
   const type = keyboardType(event.action, isPrintable);
   const text = type === "keyDown" ? { text: event.key } : {};
-  return [{ method: "Input.dispatchKeyEvent", params: { type, key: event.key, code, modifiers, ...text, ...virtualKeyCodeParams(vk) } }];
+  return [
+    {
+      method: "Input.dispatchKeyEvent",
+      params: { type, key: event.key, code, modifiers, ...text, ...virtualKeyCodeParams(vk) },
+    },
+  ];
 }
 
 function mapTouchEventToCdp(event: WireInput): CdpCommand[] {

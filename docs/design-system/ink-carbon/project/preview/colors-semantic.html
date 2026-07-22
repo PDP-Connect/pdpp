@@ -1,25 +1,65 @@
 <!doctype html>
 <!-- @dsCard group="Colors" name="Colors · State" subtitle="Recorded, expiring, destructive — each spent on one meaning" viewport="700x170" -->
 <html lang="en">
-<head>
-<meta charset="utf-8"/>
-<title>PDPP · State colors</title>
-<link href="../colors_and_type.css" rel="stylesheet"/>
-<style>
-body { margin: 0; padding: 20px 24px; background: var(--background); }
-.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-.sw { display: flex; flex-direction: column; gap: 6px; }
-.chip { height: 56px; border: 1px solid var(--border); }
-.name { font-family: var(--font-sans); font-size: 11.5px; font-weight: 600; line-height: 1.2; }
-.val { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); line-height: 1.3; }
-</style>
-</head>
-<body>
-<div class="grid">
-  <div class="sw"><div class="chip" style="background: var(--success);"></div><span class="name">Recorded / active</span><span class="val">--success</span><span class="val">oklch(.50 .11 158)</span></div>
-  <div class="sw"><div class="chip" style="background: var(--warning);"></div><span class="name">Expiring</span><span class="val">--warning</span><span class="val">oklch(.58 .13 70)</span></div>
-  <div class="sw"><div class="chip" style="background: var(--destructive);"></div><span class="name">Destructive</span><span class="val">--destructive</span><span class="val">oklch(.52 .16 27)</span></div>
-  <div class="sw"><div class="chip" style="background: var(--carbon-fill); border-color: var(--carbon-outline);"></div><span class="name">Carbon</span><span class="val">--carbon-fill / -outline</span><span class="val">primary @ 9% / 40%</span></div>
-</div>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <title>PDPP · State colors</title>
+    <link href="../colors_and_type.css" rel="stylesheet">
+    <style>
+    body {
+      margin: 0;
+      padding: 20px 24px;
+      background: var(--background);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .sw {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .chip {
+      height: 56px;
+      border: 1px solid var(--border);
+    }
+    .name {
+      font-family: var(--font-sans);
+      font-size: 11.5px;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .val {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--muted-foreground);
+      line-height: 1.3;
+    }
+    </style>
+  </head>
+  <body>
+    <div class="grid">
+      <div class="sw">
+        <div class="chip" style="background: var(--success);"></div>
+        <span class="name">Recorded / active</span><span class="val">--success</span
+        ><span class="val">oklch(.50 .11 158)</span>
+      </div>
+      <div class="sw">
+        <div class="chip" style="background: var(--warning);"></div>
+        <span class="name">Expiring</span><span class="val">--warning</span><span class="val">oklch(.58 .13 70)</span>
+      </div>
+      <div class="sw">
+        <div class="chip" style="background: var(--destructive);"></div>
+        <span class="name">Destructive</span><span class="val">--destructive</span
+        ><span class="val">oklch(.52 .16 27)</span>
+      </div>
+      <div class="sw">
+        <div class="chip" style="background: var(--carbon-fill); border-color: var(--carbon-outline);"></div>
+        <span class="name">Carbon</span><span class="val">--carbon-fill / -outline</span
+        ><span class="val">primary @ 9% / 40%</span>
+      </div>
+    </div>
+  </body>
 </html>

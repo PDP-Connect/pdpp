@@ -162,5 +162,7 @@ function dedupeCommands(commands) {
 }
 
 function escapeCell(text) {
-  return String(text ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+  return String(text ?? "")
+    .replace(/\|/g, "\\|")
+    .replace(/\n/g, " ");
 }

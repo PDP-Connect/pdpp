@@ -16,7 +16,7 @@
      · paper geometry: sheets are square; only controls get a 2px ease
    ═══════════════════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400..900;1,400..700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400..900;1,400..700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap");
 
 :root {
   /* ─── Fonts — the two voices ─────────────────────────────────── */
@@ -42,7 +42,7 @@
   --human-tint: oklch(0.55 0.11 45 / 0.08);
 
   /* ─── Carbon — the duplicate the server keeps ────────────────── */
-  --carbon-outline: oklch(0.46 0.11 255 / 0.40);
+  --carbon-outline: oklch(0.46 0.11 255 / 0.4);
   --carbon-fill: oklch(0.46 0.11 255 / 0.09);
   --carbon-offset: 9px;
 
@@ -59,11 +59,11 @@
   --ring: oklch(0.46 0.11 255);
 
   /* ─── State (spent, never sprayed) ──────────────────────────── */
-  --success: oklch(0.50 0.11 158);          /* recorded / active */
-  --success-tint: oklch(0.50 0.11 158 / 0.10);
-  --warning: oklch(0.58 0.13 70);           /* expiring */
-  --warning-tint: oklch(0.58 0.13 70 / 0.10);
-  --destructive: oklch(0.52 0.16 27);       /* destructive acts only */
+  --success: oklch(0.5 0.11 158); /* recorded / active */
+  --success-tint: oklch(0.5 0.11 158 / 0.1);
+  --warning: oklch(0.58 0.13 70); /* expiring */
+  --warning-tint: oklch(0.58 0.13 70 / 0.1);
+  --destructive: oklch(0.52 0.16 27); /* destructive acts only */
   --destructive-foreground: oklch(0.99 0.002 90);
   --destructive-tint: oklch(0.52 0.16 27 / 0.08);
 
@@ -71,10 +71,10 @@
   --primary-wash: var(--primary-tint);
   --human-wash: var(--human-tint);
   --success-wash: var(--success-tint);
-  --success-wash-strong: oklch(0.50 0.11 158 / 0.16);
+  --success-wash-strong: oklch(0.5 0.11 158 / 0.16);
   --warning-wash: var(--warning-tint);
   --verified-wash: var(--success-tint);
-  --edu-fg: oklch(0.50 0.06 210);
+  --edu-fg: oklch(0.5 0.06 210);
 
   /* ─── Geometry — paper is square, controls get a 2px ease ───── */
   --radius: 0px;
@@ -103,7 +103,9 @@
 }
 
 @media (min-width: 1440px) {
-  :root { --pdpp-sidebar-width: 280px; }
+  :root {
+    --pdpp-sidebar-width: 280px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -143,22 +145,22 @@
   --accent: oklch(0.26 0.007 262);
   --accent-foreground: oklch(0.95 0.005 262);
   --border: oklch(0.29 0.008 262);
-  --border-strong: oklch(0.40 0.008 262);
+  --border-strong: oklch(0.4 0.008 262);
   --input: oklch(0.34 0.008 262);
   --ring: oklch(0.74 0.13 255);
 
   --success: oklch(0.76 0.13 158);
   --success-tint: oklch(0.76 0.13 158 / 0.14);
-  --warning: oklch(0.80 0.14 75);
-  --warning-tint: oklch(0.80 0.14 75 / 0.13);
-  --destructive: oklch(0.70 0.16 27);
+  --warning: oklch(0.8 0.14 75);
+  --warning-tint: oklch(0.8 0.14 75 / 0.13);
+  --destructive: oklch(0.7 0.16 27);
   --destructive-foreground: oklch(0.15 0.01 262);
-  --destructive-tint: oklch(0.70 0.16 27 / 0.12);
+  --destructive-tint: oklch(0.7 0.16 27 / 0.12);
 
   --primary-wash: var(--primary-tint);
   --human-wash: var(--human-tint);
   --success-wash: var(--success-tint);
-  --success-wash-strong: oklch(0.76 0.13 158 / 0.20);
+  --success-wash-strong: oklch(0.76 0.13 158 / 0.2);
   --warning-wash: var(--warning-tint);
   --verified-wash: var(--success-tint);
   --edu-fg: oklch(0.78 0.06 210);
@@ -185,19 +187,44 @@ body {
   color: var(--foreground);
 }
 
-*, *::before, *::after { box-sizing: border-box; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
 
-button, [role="button"] { cursor: pointer; }
+button,
+[role="button"] {
+  cursor: pointer;
+}
 
-a { color: inherit; }
+a {
+  color: inherit;
+}
 
-code, pre, kbd, samp { font-family: var(--font-mono); }
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+}
 
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: oklch(0 0 0 / 0.14); }
-::-webkit-scrollbar-thumb:hover { background: oklch(0 0 0 / 0.22); }
-:is(html.dark, html[data-theme="dark"]) ::-webkit-scrollbar-thumb { background: oklch(1 0 0 / 0.14); }
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(0 0 0 / 0.14);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0 0 0 / 0.22);
+}
+:is(html.dark, html[data-theme="dark"]) ::-webkit-scrollbar-thumb {
+  background: oklch(1 0 0 / 0.14);
+}
 
 /* ─── Surfaces — flat tints, no accent stripe, no gradient ────────
    The temperature system survives, rendered honestly: a protocol-authored
@@ -217,7 +244,11 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 
 [data-surface="stage"] {
   background-color: var(--muted);
-  background-image: radial-gradient(circle, oklch(0 0 0 / 0.06) 1px, transparent 1px);
+  background-image: radial-gradient(
+    circle,
+    oklch(0 0 0 / 0.06) 1px,
+    transparent 1px
+  );
   background-size: 20px 20px;
 }
 
@@ -227,7 +258,9 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
    the owner's behalf: a staged consent request, a held grant, an export
    in flight. Never decoration; if nothing is retained, no carbon. */
 
-.pdpp-carbon { position: relative; }
+.pdpp-carbon {
+  position: relative;
+}
 .pdpp-carbon::before {
   content: "";
   position: absolute;
@@ -237,13 +270,15 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   border: 1px solid var(--carbon-outline);
   pointer-events: none;
 }
-.pdpp-carbon > * { position: relative; }
+.pdpp-carbon > * {
+  position: relative;
+}
 
 /* ─── Type scale ──────────────────────────────────────────────── */
 
 .pdpp-display-lg {
   font-family: var(--font-sans);
-  font-size: 3.75rem;   /* 60px */
+  font-size: 3.75rem; /* 60px */
   font-weight: 700;
   line-height: 1.04;
   letter-spacing: -0.028em;
@@ -251,7 +286,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 
 .pdpp-display {
   font-family: var(--font-sans);
-  font-size: 2.5rem;    /* 40px */
+  font-size: 2.5rem; /* 40px */
   font-weight: 700;
   line-height: 1.08;
   letter-spacing: -0.022em;
@@ -259,7 +294,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 
 .pdpp-heading {
   font-family: var(--font-sans);
-  font-size: 1.25rem;   /* 20px */
+  font-size: 1.25rem; /* 20px */
   font-weight: 700;
   line-height: 1.3;
   letter-spacing: -0.012em;
@@ -267,35 +302,35 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 
 .pdpp-title {
   font-family: var(--font-sans);
-  font-size: 0.875rem;  /* 14px */
+  font-size: 0.875rem; /* 14px */
   font-weight: 600;
   line-height: 1.4;
 }
 
 .pdpp-body-lg {
   font-family: var(--font-sans);
-  font-size: 1.125rem;  /* 18px */
+  font-size: 1.125rem; /* 18px */
   font-weight: 400;
   line-height: 1.6;
 }
 
 .pdpp-body {
   font-family: var(--font-sans);
-  font-size: 0.875rem;  /* 14px */
+  font-size: 0.875rem; /* 14px */
   font-weight: 400;
   line-height: 1.6;
 }
 
 .pdpp-label {
   font-family: var(--font-sans);
-  font-size: 0.75rem;   /* 12px */
+  font-size: 0.75rem; /* 12px */
   font-weight: 500;
   line-height: 1.4;
 }
 
 .pdpp-caption {
   font-family: var(--font-sans);
-  font-size: 0.75rem;   /* 12px */
+  font-size: 0.75rem; /* 12px */
   font-weight: 400;
   line-height: 1.5;
 }
@@ -333,9 +368,26 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   border-bottom: 1px solid var(--border);
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
 @keyframes slide-up {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

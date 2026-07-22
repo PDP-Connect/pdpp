@@ -29,25 +29,25 @@
  * without a live run.
  */
 
-import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { execFileSync } from "node:child_process";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, '..');
-const DEBUG_DIR = join(REPO_ROOT, 'tmp', 'workstreams', 'stream-debug');
-const NOW = new Date().toISOString().replace(/[:.]/g, '-');
+const REPO_ROOT = join(__dirname, "..");
+const DEBUG_DIR = join(REPO_ROOT, "tmp", "workstreams", "stream-debug");
+const NOW = new Date().toISOString().replace(/[:.]/g, "-");
 const FIXTURE_PATH = join(DEBUG_DIR, `${NOW}-stream-mint-probe.jsonl`);
 
 mkdirSync(DEBUG_DIR, { recursive: true });
 
 const TEST_FILES = [
-  'reference-implementation/test/run-interaction-stream-routes.test.js',
-  'reference-implementation/test/run-interaction-stream-neko-adapter.test.js',
-  'reference-implementation/test/run-interaction-stream-playground.test.js',
-  'reference-implementation/test/neko-surface-allocator-server.test.js',
-  'reference-implementation/test/neko-surface-allocator.test.js',
+  "reference-implementation/test/run-interaction-stream-routes.test.js",
+  "reference-implementation/test/run-interaction-stream-neko-adapter.test.js",
+  "reference-implementation/test/run-interaction-stream-playground.test.js",
+  "reference-implementation/test/neko-surface-allocator-server.test.js",
+  "reference-implementation/test/neko-surface-allocator.test.js",
 ];
 
 console.log(`[stream-mint-probe] running ${TEST_FILES.length} test files`);
@@ -57,37 +57,42 @@ let exitCode = 0;
 const results = [];
 
 for (const file of TEST_FILES) {
-  const label = file.split('/').pop();
+  const label = file.split("/").pop();
   const startMs = Date.now();
-  let output = '';
+  let output = "";
   let passed = 0;
   let failed = 0;
-  let status = 'pass';
+  let status = "pass";
 
   try {
-    output = execFileSync(process.execPath, ['--test', file], {
+    output = execFileSync(process.execPath, ["--test", file], {
       cwd: REPO_ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
     });
     // Parse node:test summary lines for counts.
-    for (const line of output.split('\n')) {
+    for (const line of output.split("\n")) {
       const passMatch = line.match(/^\u2139 pass (\d+)/);
       const failMatch = line.match(/^\u2139 fail (\d+)/);
       if (passMatch) passed = parseInt(passMatch[1], 10);
       if (failMatch) failed = parseInt(failMatch[1], 10);
     }
-    if (failed > 0) { status = 'fail'; exitCode = 1; }
-    console.log(`  ${status === 'pass' ? 'PASS' : 'FAIL'} ${label}  (${passed}p/${failed}f in ${Date.now() - startMs}ms)`);
+    if (failed > 0) {
+      status = "fail";
+      exitCode = 1;
+    }
+    console.log(
+      `  ${status === "pass" ? "PASS" : "FAIL"} ${label}  (${passed}p/${failed}f in ${Date.now() - startMs}ms)`
+    );
   } catch (err) {
-    status = 'fail';
+    status = "fail";
     exitCode = 1;
     output = err.stdout || err.message;
-    console.error(`  FAIL ${label}  ERROR: ${err.message.split('\n')[0]}`);
+    console.error(`  FAIL ${label}  ERROR: ${err.message.split("\n")[0]}`);
   }
 
   const record = {
-    probe: 'stream-mint',
+    probe: "stream-mint",
     file: label,
     status,
     passed,
@@ -96,13 +101,13 @@ for (const file of TEST_FILES) {
     capturedAt: new Date().toISOString(),
     // Trim verbose pino log lines from output before persisting
     output: output
-      .split('\n')
+      .split("\n")
       .filter((l) => !l.match(/^\[ntfy\]|\bINFO\b|\bDEBUG\b/))
-      .join('\n')
+      .join("\n")
       .trim(),
   };
   results.push(record);
-  appendFileSync(FIXTURE_PATH, JSON.stringify(record) + '\n', 'utf8');
+  appendFileSync(FIXTURE_PATH, JSON.stringify(record) + "\n", "utf8");
 }
 
 const total = results.reduce((s, r) => s + r.passed + r.failed, 0);

@@ -1,15 +1,15 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { createMDX } from 'fumadocs-mdx/next';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { collectAllowedDevOrigins } from './scripts/dev-origins.mjs';
+import { createMDX } from "fumadocs-mdx/next";
+import path from "path";
+import { fileURLToPath } from "url";
+import { collectAllowedDevOrigins } from "./scripts/dev-origins.mjs";
 
-const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const withMDX = createMDX();
 
-const allowedDevOrigins = process.env.NODE_ENV === 'production' ? [] : collectAllowedDevOrigins();
+const allowedDevOrigins = process.env.NODE_ENV === "production" ? [] : collectAllowedDevOrigins();
 
 function parseBuildWorkers(value) {
   if (!value) {
@@ -24,8 +24,8 @@ const buildWorkers = parseBuildWorkers(process.env.PDPP_WEB_BUILD_WORKERS);
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
-  output: 'standalone',
-  outputFileTracingRoot: path.join(__dirname, '../..'),
+  output: "standalone",
+  outputFileTracingRoot: path.join(__dirname, "../.."),
   // Runtime file reads outside the bundled output need explicit tracing
   // includes so Next copies them into the standalone deploy. Without these,
   // /reference/coverage, the well-known agent-skill catalog, and /llms-full.txt
@@ -34,21 +34,13 @@ const nextConfig = {
     // resolveRepoRoot() looks for a directory containing both
     // pnpm-workspace.yaml and openspec/, so a stub openspec marker is needed
     // even for routes that only read docs/agent-skills.
-    '/well-known/skills/**': [
-      '../../docs/agent-skills/**/*.md',
-      '../../openspec/README.md',
-      '../../pnpm-workspace.yaml',
+    "/well-known/skills/**": [
+      "../../docs/agent-skills/**/*.md",
+      "../../openspec/README.md",
+      "../../pnpm-workspace.yaml",
     ],
-    '/llms-full.txt': [
-      '../../docs/agent-skills/**/*.md',
-      '../../openspec/README.md',
-      '../../pnpm-workspace.yaml',
-    ],
-    '/llms.txt': [
-      '../../docs/agent-skills/**/*.md',
-      '../../openspec/README.md',
-      '../../pnpm-workspace.yaml',
-    ],
+    "/llms-full.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
+    "/llms.txt": ["../../docs/agent-skills/**/*.md", "../../openspec/README.md", "../../pnpm-workspace.yaml"],
   },
   reactStrictMode: true,
   experimental: {
@@ -62,84 +54,84 @@ const nextConfig = {
   // consume its TypeScript sources directly once shim pairs (.js + .d.ts)
   // collapse into single .ts exports. Without this, Next's bundler would
   // reject .ts entries from a node_modules-resolved workspace package.
-  transpilePackages: ['pdpp-reference-implementation', '@pdpp/brand', '@pdpp/operator-ui'],
+  transpilePackages: ["pdpp-reference-implementation", "@pdpp/brand", "@pdpp/operator-ui"],
   async redirects() {
     return [
       {
-        source: '/spec-core',
-        destination: '/docs/spec-core',
+        source: "/spec-core",
+        destination: "/docs/spec-core",
         permanent: true,
       },
       {
-        source: '/spec-collection-profile',
-        destination: '/docs/spec-collection-profile',
+        source: "/spec-collection-profile",
+        destination: "/docs/spec-collection-profile",
         permanent: true,
       },
       {
-        source: '/spec-architecture',
-        destination: '/docs/spec-architecture',
+        source: "/spec-architecture",
+        destination: "/docs/spec-architecture",
         permanent: true,
       },
       {
-        source: '/spec-auth-design',
-        destination: '/docs/spec-auth-design',
+        source: "/spec-auth-design",
+        destination: "/docs/spec-auth-design",
         permanent: true,
       },
       {
-        source: '/spec-change-tracking',
-        destination: '/docs/spec-change-tracking',
+        source: "/spec-change-tracking",
+        destination: "/docs/spec-change-tracking",
         permanent: true,
       },
       {
-        source: '/spec-connector-ecosystem',
-        destination: '/docs/spec-connector-ecosystem',
+        source: "/spec-connector-ecosystem",
+        destination: "/docs/spec-connector-ecosystem",
         permanent: true,
       },
       {
-        source: '/spec-data-query-api',
-        destination: '/docs/spec-data-query-api',
+        source: "/spec-data-query-api",
+        destination: "/docs/spec-data-query-api",
         permanent: true,
       },
       {
-        source: '/spec-deferred',
-        destination: '/docs/spec-deferred',
+        source: "/spec-deferred",
+        destination: "/docs/spec-deferred",
         permanent: true,
       },
       {
-        source: '/spec-dti-alignment',
-        destination: '/docs/spec-dti-alignment',
+        source: "/spec-dti-alignment",
+        destination: "/docs/spec-dti-alignment",
         permanent: true,
       },
       {
-        source: '/spec-e2e-examples',
-        destination: '/docs/reference-implementation-examples',
+        source: "/spec-e2e-examples",
+        destination: "/docs/reference-implementation-examples",
         permanent: true,
       },
       {
-        source: '/spec-reference-implementation-examples',
-        destination: '/docs/reference-implementation-examples',
+        source: "/spec-reference-implementation-examples",
+        destination: "/docs/reference-implementation-examples",
         permanent: true,
       },
       {
-        source: '/e2e',
-        destination: '/docs/reference-implementation',
+        source: "/e2e",
+        destination: "/docs/reference-implementation",
         permanent: true,
       },
       {
-        source: '/e2e/:path*',
-        destination: '/docs/reference-implementation',
+        source: "/e2e/:path*",
+        destination: "/docs/reference-implementation",
         permanent: true,
       },
       {
-        source: '/reference-implementation',
-        destination: '/docs/reference-implementation',
+        source: "/reference-implementation",
+        destination: "/docs/reference-implementation",
         permanent: true,
       },
       // Sandbox IA parity: sandbox/records/timeline redirects to sandbox/explore
       // now that the sandbox Explore canvas exists.
       {
-        source: '/sandbox/records/timeline',
-        destination: '/sandbox/explore',
+        source: "/sandbox/records/timeline",
+        destination: "/sandbox/explore",
         permanent: false,
       },
       // NOTE: old owner-console redirects were dropped when the operator
@@ -150,25 +142,25 @@ const nextConfig = {
   async rewrites() {
     return [
       {
-        source: '/docs.mdx',
-        destination: '/llms.mdx/docs',
+        source: "/docs.mdx",
+        destination: "/llms.mdx/docs",
       },
       {
-        source: '/docs/:path*.mdx',
-        destination: '/llms.mdx/docs/:path*',
+        source: "/docs/:path*.mdx",
+        destination: "/llms.mdx/docs/:path*",
       },
       // Root agent skill discovery. Keep handlers under a filesystem-safe
       // internal path and expose the standards-shaped public .well-known URL.
       {
-        source: '/.well-known/skills/:path*',
-        destination: '/well-known/skills/:path*',
+        source: "/.well-known/skills/:path*",
+        destination: "/well-known/skills/:path*",
       },
       // Agents that probe the well-known namespace first should still land on
       // the canonical agent-readable entrypoint, so there is no single
       // universal URL to guess. Compact alias, not duplicate content.
       {
-        source: '/.well-known/llms.txt',
-        destination: '/llms.txt',
+        source: "/.well-known/llms.txt",
+        destination: "/llms.txt",
       },
       // NOTE: the top-level `/.well-known/oauth-authorization-server` and
       // `/.well-known/oauth-protected-resource` rewrites were dropped with the
@@ -178,27 +170,27 @@ const nextConfig = {
       // Sandbox demo well-known metadata uses the same internal-path adapter:
       // handlers live under `well-known/**`; public URLs stay .well-known.
       {
-        source: '/sandbox/.well-known/oauth-authorization-server',
-        destination: '/sandbox/well-known/oauth-authorization-server',
+        source: "/sandbox/.well-known/oauth-authorization-server",
+        destination: "/sandbox/well-known/oauth-authorization-server",
       },
       {
-        source: '/sandbox/.well-known/oauth-protected-resource',
-        destination: '/sandbox/well-known/oauth-protected-resource',
+        source: "/sandbox/.well-known/oauth-protected-resource",
+        destination: "/sandbox/well-known/oauth-protected-resource",
       },
       // Sandbox demo reference-only inspection routes. Public path uses
       // the underscore convention from the live reference (`/_ref/`); the
       // handlers live under `ref/**` so Next's "private folder" rule does
       // not exclude them from routing.
       {
-        source: '/sandbox/_ref/:path*',
-        destination: '/sandbox/ref/:path*',
+        source: "/sandbox/_ref/:path*",
+        destination: "/sandbox/ref/:path*",
       },
     ];
   },
   webpack(config) {
     config.resolve.alias = {
       ...config.resolve.alias,
-      '@': path.join(__dirname, 'src'),
+      "@": path.join(__dirname, "src"),
     };
     return config;
   },

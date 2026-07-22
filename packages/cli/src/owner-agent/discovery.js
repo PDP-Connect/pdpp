@@ -23,29 +23,29 @@
 //
 // This module does NOT emit server metadata. It only consumes it.
 
-import { OwnerAgentError } from './errors.js';
+import { OwnerAgentError } from "./errors.js";
 
-const PROTECTED_RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-resource';
-const AUTHORIZATION_SERVER_METADATA_PATH = '/.well-known/oauth-authorization-server';
+const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
+const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
 
 export function normalizeEntrypointUrl(value) {
-  if (typeof value !== 'string' || value.length === 0) {
+  if (typeof value !== "string" || value.length === 0) {
     return null;
   }
   try {
-    const parsed = new URL(value.includes('://') ? value : `https://${value}`);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    const parsed = new URL(value.includes("://") ? value : `https://${value}`);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
       return null;
     }
-    parsed.username = '';
-    parsed.password = '';
-    parsed.hash = '';
-    parsed.search = '';
-    parsed.pathname = parsed.pathname.length > 1 ? parsed.pathname.replace(/\/+$/, '') : parsed.pathname;
-    if (parsed.pathname === '/') {
-      parsed.pathname = '';
+    parsed.username = "";
+    parsed.password = "";
+    parsed.hash = "";
+    parsed.search = "";
+    parsed.pathname = parsed.pathname.length > 1 ? parsed.pathname.replace(/\/+$/, "") : parsed.pathname;
+    if (parsed.pathname === "/") {
+      parsed.pathname = "";
     }
-    return parsed.toString().replace(/\/$/, '');
+    return parsed.toString().replace(/\/$/, "");
   } catch {
     return null;
   }
@@ -62,17 +62,17 @@ export function normalizeEntrypointUrl(value) {
 export async function discoverOwnerAgentProfile(entrypointUrl, options = {}) {
   const resource = normalizeEntrypointUrl(entrypointUrl);
   if (!resource) {
-    throw new OwnerAgentError('invalid_entrypoint', `Invalid entrypoint URL: ${entrypointUrl}`, 64);
+    throw new OwnerAgentError("invalid_entrypoint", `Invalid entrypoint URL: ${entrypointUrl}`, 64);
   }
   const fetchFn = options.fetch ?? globalThis.fetch;
-  if (typeof fetchFn !== 'function') {
-    throw new OwnerAgentError('fetch_unavailable', 'This Node runtime does not provide fetch().');
+  if (typeof fetchFn !== "function") {
+    throw new OwnerAgentError("fetch_unavailable", "This Node runtime does not provide fetch().");
   }
 
   const resourceMetadata = await getJson(
     fetchFn,
     new URL(PROTECTED_RESOURCE_METADATA_PATH, resource).toString(),
-    'metadata_failure'
+    "metadata_failure"
   );
 
   // The root pointer (GET /) may also carry the advisory block. We only fetch
@@ -85,10 +85,7 @@ export async function discoverOwnerAgentProfile(entrypointUrl, options = {}) {
 
   const authorizationServerUrl = selectAuthorizationServer(resourceMetadata, resource);
   const authorizationMetadata = authorizationServerUrl
-    ? await getJsonOptional(
-        fetchFn,
-        new URL(AUTHORIZATION_SERVER_METADATA_PATH, authorizationServerUrl).toString()
-      )
+    ? await getJsonOptional(fetchFn, new URL(AUTHORIZATION_SERVER_METADATA_PATH, authorizationServerUrl).toString())
     : null;
 
   const profile = buildProfile({
@@ -100,9 +97,9 @@ export async function discoverOwnerAgentProfile(entrypointUrl, options = {}) {
 
   if (!profile.deviceAuthorizationEndpoint || !profile.tokenEndpoint) {
     throw new OwnerAgentError(
-      'onboarding_unavailable',
-      'This deployment does not advertise a trusted owner-agent onboarding flow. ' +
-        'Expected a pdpp_owner_agent_onboarding block or an RFC 8628 device_authorization_endpoint + token_endpoint.'
+      "onboarding_unavailable",
+      "This deployment does not advertise a trusted owner-agent onboarding flow. " +
+        "Expected a pdpp_owner_agent_onboarding block or an RFC 8628 device_authorization_endpoint + token_endpoint."
     );
   }
 
@@ -110,14 +107,11 @@ export async function discoverOwnerAgentProfile(entrypointUrl, options = {}) {
 }
 
 function readOnboardingBlock(metadata) {
-  if (!metadata || typeof metadata !== 'object') {
+  if (!metadata || typeof metadata !== "object") {
     return null;
   }
-  const block =
-    metadata.pdpp_owner_agent_onboarding ??
-    metadata.pdpp_agent_discovery?.owner_agent_onboarding ??
-    null;
-  return block && typeof block === 'object' ? block : null;
+  const block = metadata.pdpp_owner_agent_onboarding ?? metadata.pdpp_agent_discovery?.owner_agent_onboarding ?? null;
+  return block && typeof block === "object" ? block : null;
 }
 
 function buildProfile({ resource, authorizationServerUrl, onboarding, authorizationMetadata }) {
@@ -130,10 +124,7 @@ function buildProfile({ resource, authorizationServerUrl, onboarding, authorizat
     onboarding?.device_authorization_endpoint ?? authorizationMetadata?.device_authorization_endpoint,
     base
   );
-  const tokenEndpoint = resolveEndpoint(
-    onboarding?.token_endpoint ?? authorizationMetadata?.token_endpoint,
-    base
-  );
+  const tokenEndpoint = resolveEndpoint(onboarding?.token_endpoint ?? authorizationMetadata?.token_endpoint, base);
   const introspectionEndpoint = resolveEndpoint(
     onboarding?.introspection_endpoint ?? authorizationMetadata?.introspection_endpoint,
     base
@@ -150,10 +141,10 @@ function buildProfile({ resource, authorizationServerUrl, onboarding, authorizat
   );
   const streamsEndpoint = resolveEndpoint(onboarding?.streams_endpoint, resource);
   const revocationPathTemplate =
-    typeof onboarding?.revocation_path_template === 'string' ? onboarding.revocation_path_template : null;
+    typeof onboarding?.revocation_path_template === "string" ? onboarding.revocation_path_template : null;
 
   return {
-    profile: onboarding?.profile ?? 'trusted_owner_agent',
+    profile: onboarding?.profile ?? "trusted_owner_agent",
     advisory: Boolean(onboarding),
     resource,
     authorizationServer: issuer,
@@ -177,7 +168,7 @@ function selectAuthorizationServer(resourceMetadata, resource) {
 }
 
 function resolveEndpoint(value, base) {
-  if (!value || typeof value !== 'string') {
+  if (!value || typeof value !== "string") {
     return null;
   }
   try {
@@ -190,7 +181,7 @@ function resolveEndpoint(value, base) {
 async function getJson(fetchFn, url, errorCode) {
   let response;
   try {
-    response = await fetchFn(url, { headers: { Accept: 'application/json' } });
+    response = await fetchFn(url, { headers: { Accept: "application/json" } });
   } catch (error) {
     throw new OwnerAgentError(errorCode, `Failed to fetch ${url}: ${error.message}.`);
   }
@@ -203,7 +194,7 @@ async function getJson(fetchFn, url, errorCode) {
 async function getJsonOptional(fetchFn, url) {
   let response;
   try {
-    response = await fetchFn(url, { headers: { Accept: 'application/json' } });
+    response = await fetchFn(url, { headers: { Accept: "application/json" } });
   } catch {
     return null;
   }

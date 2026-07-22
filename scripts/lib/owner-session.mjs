@@ -95,7 +95,11 @@ export async function loginWithOwnerPassword({ base, password, fetchImpl }) {
   });
   const sessionCookie = findSetCookiePair(getSetCookieList(resp), "pdpp_owner_session");
   if (!sessionCookie) {
-    return { header: {}, mode: "password-session", error: `owner login did not issue a session cookie (status ${resp.status})` };
+    return {
+      header: {},
+      mode: "password-session",
+      error: `owner login did not issue a session cookie (status ${resp.status})`,
+    };
   }
   return { header: { cookie: sessionCookie }, mode: "password-session", error: null };
 }

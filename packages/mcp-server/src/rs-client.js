@@ -7,29 +7,29 @@
  */
 export class RsClient {
   constructor({ providerUrl, accessToken, fetch = globalThis.fetch, userAgent }) {
-    if (typeof fetch !== 'function') {
-      throw new TypeError('RsClient requires a fetch implementation');
+    if (typeof fetch !== "function") {
+      throw new TypeError("RsClient requires a fetch implementation");
     }
     if (!providerUrl) {
-      throw new TypeError('RsClient requires providerUrl');
+      throw new TypeError("RsClient requires providerUrl");
     }
     if (!accessToken) {
-      throw new TypeError('RsClient requires accessToken');
+      throw new TypeError("RsClient requires accessToken");
     }
-    this.providerUrl = providerUrl.replace(/\/$/, '');
+    this.providerUrl = providerUrl.replace(/\/$/, "");
     this.accessToken = accessToken;
     this.fetch = fetch;
-    this.userAgent = userAgent ?? '@pdpp/mcp-server';
+    this.userAgent = userAgent ?? "@pdpp/mcp-server";
   }
 
   async getJson(path, { query, headers } = {}) {
     const url = this.buildUrl(path, query);
     const response = await this.fetch(url, {
-      method: 'GET',
+      method: "GET",
       headers: {
-        Accept: 'application/json',
+        Accept: "application/json",
         Authorization: `Bearer ${this.accessToken}`,
-        'User-Agent': this.userAgent,
+        "User-Agent": this.userAgent,
         ...(headers ?? {}),
       },
     });
@@ -39,10 +39,10 @@ export class RsClient {
   async getRaw(path, { query, headers } = {}) {
     const url = this.buildUrl(path, query);
     const response = await this.fetch(url, {
-      method: 'GET',
+      method: "GET",
       headers: {
         Authorization: `Bearer ${this.accessToken}`,
-        'User-Agent': this.userAgent,
+        "User-Agent": this.userAgent,
         ...(headers ?? {}),
       },
     });
@@ -50,15 +50,15 @@ export class RsClient {
   }
 
   async postJson(path, { body, query, headers } = {}) {
-    return this.sendJson('POST', path, { body, query, headers });
+    return this.sendJson("POST", path, { body, query, headers });
   }
 
   async patchJson(path, { body, query, headers } = {}) {
-    return this.sendJson('PATCH', path, { body, query, headers });
+    return this.sendJson("PATCH", path, { body, query, headers });
   }
 
   async deleteJson(path, { query, headers } = {}) {
-    return this.sendJson('DELETE', path, { body: undefined, query, headers });
+    return this.sendJson("DELETE", path, { body: undefined, query, headers });
   }
 
   async sendJson(method, path, { body, query, headers } = {}) {
@@ -67,23 +67,23 @@ export class RsClient {
     const init = {
       method,
       headers: {
-        Accept: 'application/json',
+        Accept: "application/json",
         Authorization: `Bearer ${this.accessToken}`,
-        'User-Agent': this.userAgent,
-        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        "User-Agent": this.userAgent,
+        ...(hasBody ? { "Content-Type": "application/json" } : {}),
         ...(headers ?? {}),
       },
     };
     if (hasBody) {
-      init.body = typeof body === 'string' ? body : JSON.stringify(body);
+      init.body = typeof body === "string" ? body : JSON.stringify(body);
     }
     const response = await this.fetch(url, init);
     return parseRsResponse(response, { expectJson: true });
   }
 
   buildUrl(path, query) {
-    const url = new URL(path.startsWith('/') ? path : `/${path}`, `${this.providerUrl}/`);
-    if (query && typeof query === 'object') {
+    const url = new URL(path.startsWith("/") ? path : `/${path}`, `${this.providerUrl}/`);
+    if (query && typeof query === "object") {
       for (const [key, value] of Object.entries(query)) {
         appendQuery(url, key, value);
       }
@@ -103,9 +103,9 @@ function appendQuery(url, key, value) {
     }
     return;
   }
-  if (typeof value === 'object') {
+  if (typeof value === "object") {
     throw new TypeError(
-      `query parameter '${key}' must be a scalar or array; encode nested query shapes explicitly before calling RsClient`,
+      `query parameter '${key}' must be a scalar or array; encode nested query shapes explicitly before calling RsClient`
     );
   }
   url.searchParams.append(key, String(value));
@@ -113,15 +113,15 @@ function appendQuery(url, key, value) {
 
 async function parseRsResponse(response, { expectJson }) {
   const status = response.status;
-  const contentType = response.headers?.get?.('content-type') ?? '';
-  const requestId = response.headers?.get?.('x-request-id') ?? null;
+  const contentType = response.headers?.get?.("content-type") ?? "";
+  const requestId = response.headers?.get?.("x-request-id") ?? null;
 
   if (status >= 200 && status < 300) {
     if (expectJson) {
       if (status === 204) {
         return { ok: true, status, body: null, requestId, contentType };
       }
-      const body = contentType.includes('application/json') ? await response.json() : await response.text();
+      const body = contentType.includes("application/json") ? await response.json() : await response.text();
       return { ok: true, status, body, requestId, contentType };
     }
     const buffer = Buffer.from(await response.arrayBuffer());
@@ -130,7 +130,7 @@ async function parseRsResponse(response, { expectJson }) {
 
   let errorBody = null;
   try {
-    if (contentType.includes('application/json')) {
+    if (contentType.includes("application/json")) {
       errorBody = await response.json();
     } else {
       errorBody = await response.text();
@@ -140,7 +140,7 @@ async function parseRsResponse(response, { expectJson }) {
   }
 
   const envelope = normalizeErrorEnvelope(errorBody, status);
-  if (requestId && envelope && typeof envelope === 'object' && !envelope.request_id) {
+  if (requestId && envelope && typeof envelope === "object" && !envelope.request_id) {
     envelope.request_id = requestId;
   }
 
@@ -148,11 +148,11 @@ async function parseRsResponse(response, { expectJson }) {
 }
 
 function normalizeErrorEnvelope(body, status) {
-  if (body && typeof body === 'object') {
-    if (body.error && typeof body.error === 'object') {
+  if (body && typeof body === "object") {
+    if (body.error && typeof body.error === "object") {
       return body.error;
     }
-    if (typeof body.error === 'string') {
+    if (typeof body.error === "string") {
       return {
         type: body.error,
         code: body.error,
@@ -163,8 +163,8 @@ function normalizeErrorEnvelope(body, status) {
   }
 
   return {
-    type: 'rs_error',
+    type: "rs_error",
     code: `http_${status}`,
-    message: typeof body === 'string' && body.length > 0 ? body : `Resource server returned HTTP ${status}`,
+    message: typeof body === "string" && body.length > 0 ? body : `Resource server returned HTTP ${status}`,
   };
 }

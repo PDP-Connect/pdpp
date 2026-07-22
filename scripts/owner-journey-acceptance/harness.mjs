@@ -68,9 +68,7 @@ async function walkRepoFiles(repoRelativeDir) {
 
 async function readRouteSources(repoRelativeRoot) {
   const files = await walkRepoFiles(repoRelativeRoot);
-  const routeFiles = files
-    .filter((file) => /\/(?:page|loading)\.tsx$/.test(file))
-    .sort();
+  const routeFiles = files.filter((file) => /\/(?:page|loading)\.tsx$/.test(file)).sort();
   const sources = [];
   for (const file of routeFiles) {
     sources.push({ path: file, src: await readRepoFile(file) });
@@ -143,9 +141,7 @@ export async function runLocalAcceptance(opts = {}) {
   const scanRenderedTier = async (file, tier) => {
     const src = await readRepoFile(file);
     findings.push(...scanForbiddenStrings({ path: file, src, tier, rules: FORBIDDEN_STRING_RULES }));
-    findings.push(
-      ...scanRenderedHelperReachability({ path: file, src, forbiddenHelpers: FORBIDDEN_RENDERED_HELPERS })
-    );
+    findings.push(...scanRenderedHelperReachability({ path: file, src, forbiddenHelpers: FORBIDDEN_RENDERED_HELPERS }));
     const cmds = extractRenderedCommands(src).map((c) => ({ ...c, path: file }));
     const fresh = checkCommandFreshness({ commands: cmds, surfaceByPackage, publishedPackages: PUBLISHED_PACKAGES });
     findings.push(...fresh.findings);
@@ -203,9 +199,7 @@ export async function runLocalAcceptance(opts = {}) {
     );
   }
 
-  const publishedSurface = Object.fromEntries(
-    Object.entries(surfaceByPackage).map(([k, v]) => [k, [...v].sort()])
-  );
+  const publishedSurface = Object.fromEntries(Object.entries(surfaceByPackage).map(([k, v]) => [k, [...v].sort()]));
 
   return {
     findings,

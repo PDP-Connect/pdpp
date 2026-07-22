@@ -26,36 +26,36 @@
 // The reason is printed and the check exits 0, but the
 // finding is still reported so the waiver stays honest and visible.
 
-import { readdirSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import process from 'node:process';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import process from "node:process";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = process.cwd();
-export const placeholderVersion = '0.0.0';
+export const placeholderVersion = "0.0.0";
 
 function readJson(filePath) {
-  return JSON.parse(readFileSync(filePath, 'utf8'));
+  return JSON.parse(readFileSync(filePath, "utf8"));
 }
 
-function listPublishablePackageNames(rootDir = 'packages') {
+function listPublishablePackageNames(rootDir = "packages") {
   const root = path.join(repoRoot, rootDir);
   const names = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if (!entry.isDirectory()) {
       continue;
     }
-    const manifestPath = path.join(root, entry.name, 'package.json');
+    const manifestPath = path.join(root, entry.name, "package.json");
     let manifest;
     try {
       manifest = readJson(manifestPath);
     } catch {
       continue;
     }
-    if (manifest.name?.startsWith('@pdpp/') && manifest.private !== true) {
+    if (manifest.name?.startsWith("@pdpp/") && manifest.private !== true) {
       names.push(manifest.name);
     }
   }
@@ -73,7 +73,7 @@ function listPublishablePackageNames(rootDir = 'packages') {
 export function classifyDistTagPosture(packageName, distTags) {
   if (!distTags) {
     return {
-      status: 'skip',
+      status: "skip",
       detail: `${packageName}: not published yet or registry unreachable; nothing to verify`,
     };
   }
@@ -82,33 +82,33 @@ export function classifyDistTagPosture(packageName, distTags) {
   if (!latest) {
     if (beta) {
       return {
-        status: 'hazard',
+        status: "hazard",
         detail: `${packageName}: no "latest" dist-tag while "beta" is ${beta}; a bare install has no stable target`,
       };
     }
     return {
-      status: 'skip',
+      status: "skip",
       detail: `${packageName}: no dist-tags published yet; nothing to verify`,
     };
   }
   if (latest === placeholderVersion) {
     return {
-      status: 'hazard',
+      status: "hazard",
       detail: `${packageName}: "latest" resolves to placeholder ${placeholderVersion}${
-        beta ? ` while "beta" is ${beta}` : ''
+        beta ? ` while "beta" is ${beta}` : ""
       }; a bare \`npm install ${packageName}\` would install an empty package`,
     };
   }
   return {
-    status: 'ok',
-    detail: `${packageName}: "latest" is ${latest}${beta ? ` ("beta" is ${beta})` : ''}`,
+    status: "ok",
+    detail: `${packageName}: "latest" is ${latest}${beta ? ` ("beta" is ${beta})` : ""}`,
   };
 }
 
 async function fetchDistTags(packageName) {
   try {
-    const { stdout } = await execFileAsync('npm', ['view', packageName, 'dist-tags', '--json'], {
-      encoding: 'utf8',
+    const { stdout } = await execFileAsync("npm", ["view", packageName, "dist-tags", "--json"], {
+      encoding: "utf8",
       maxBuffer: 1024 * 1024,
     });
     const trimmed = stdout.trim();
@@ -119,7 +119,7 @@ async function fetchDistTags(packageName) {
   } catch (error) {
     // `npm view` exits non-zero for E404 (package does not exist) and for
     // network failures. Both are non-fatal "skip" signals here.
-    const text = `${error.stdout ?? ''}${error.stderr ?? ''}${error.message ?? ''}`;
+    const text = `${error.stdout ?? ""}${error.stderr ?? ""}${error.message ?? ""}`;
     if (/E404|404 Not Found|ENOTFOUND|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|network/i.test(text)) {
       return null;
     }
@@ -129,8 +129,8 @@ async function fetchDistTags(packageName) {
 
 async function main() {
   const args = new Set(process.argv.slice(2));
-  const requireReachable = args.has('--require-reachable');
-  const asJson = args.has('--json');
+  const requireReachable = args.has("--require-reachable");
+  const asJson = args.has("--json");
   const waiver = process.env.PDPP_RELEASE_DIST_TAG_WAIVER?.trim();
 
   const packageNames = listPublishablePackageNames();
@@ -140,21 +140,21 @@ async function main() {
     results.push({ packageName, distTags, ...classifyDistTagPosture(packageName, distTags) });
   }
 
-  const hazards = results.filter((result) => result.status === 'hazard');
-  const skips = results.filter((result) => result.status === 'skip');
+  const hazards = results.filter((result) => result.status === "hazard");
+  const skips = results.filter((result) => result.status === "skip");
 
   if (asJson) {
     process.stdout.write(`${JSON.stringify({ results, waiver: waiver ?? null }, null, 2)}\n`);
   } else {
     for (const result of results) {
-      const marker = result.status === 'ok' ? 'OK  ' : result.status === 'skip' ? 'SKIP' : 'FAIL';
+      const marker = result.status === "ok" ? "OK  " : result.status === "skip" ? "SKIP" : "FAIL";
       process.stdout.write(`${marker} ${result.detail}\n`);
     }
   }
 
   if (requireReachable && skips.length > 0) {
     process.stderr.write(
-      `\nFAIL --require-reachable was set but ${skips.length} package(s) could not be verified against the registry.\n`,
+      `\nFAIL --require-reachable was set but ${skips.length} package(s) could not be verified against the registry.\n`
     );
     process.exit(1);
   }
@@ -167,19 +167,19 @@ async function main() {
   if (waiver) {
     process.stdout.write(
       `\nPDPP dist-tag posture WAIVED: ${hazards.length} known hazard(s) acknowledged.\nReason: ${waiver}\n` +
-        'Clear the waiver and run the owner promotion step in docs/reference/package-release-policy.md to make this pass cleanly.\n',
+        "Clear the waiver and run the owner promotion step in docs/reference/package-release-policy.md to make this pass cleanly.\n"
     );
     process.exit(0);
   }
 
   process.stderr.write(
-    '\nPDPP dist-tag posture check failed:\n' +
-      hazards.map((hazard) => `- ${hazard.detail}`).join('\n') +
-      '\n\nThe default install target is broken for operators. Either:\n' +
-      '  1. promote the package to a real stable `latest` (owner release-readiness step in\n' +
-      '     docs/reference/package-release-policy.md), or\n' +
+    "\nPDPP dist-tag posture check failed:\n" +
+      hazards.map((hazard) => `- ${hazard.detail}`).join("\n") +
+      "\n\nThe default install target is broken for operators. Either:\n" +
+      "  1. promote the package to a real stable `latest` (owner release-readiness step in\n" +
+      "     docs/reference/package-release-policy.md), or\n" +
       '  2. set PDPP_RELEASE_DIST_TAG_WAIVER="<reason>" to acknowledge it explicitly.\n' +
-      'Until then, a bare `npm install` of the package hands operators the empty placeholder.\n',
+      "Until then, a bare `npm install` of the package hands operators the empty placeholder.\n"
   );
   process.exit(1);
 }

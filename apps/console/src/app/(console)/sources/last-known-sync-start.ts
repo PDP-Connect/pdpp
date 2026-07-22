@@ -68,10 +68,7 @@ export function markSyncStartToast(
   }
 }
 
-export function syncStartToastDismissDelayMs(
-  toast: { readonly expiresAt?: number },
-  now: number = Date.now()
-): number {
+export function syncStartToastDismissDelayMs(toast: { readonly expiresAt?: number }, now: number = Date.now()): number {
   if (typeof toast.expiresAt === "number" && Number.isFinite(toast.expiresAt)) {
     return Math.max(0, toast.expiresAt - now);
   }

@@ -1,14 +1,10 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { parseArgs } from '../args.js';
-import { PdppCliError, PdppUsageError } from '../errors.js';
-import { OWNER_SESSION_COOKIE_NAME } from '../fetch.js';
-import {
-  extractCookieFromSetCookie,
-  getOwnerSessionPaths,
-  writeOwnerSession,
-} from '../session.js';
+import { parseArgs } from "../args.js";
+import { PdppCliError, PdppUsageError } from "../errors.js";
+import { OWNER_SESSION_COOKIE_NAME } from "../fetch.js";
+import { extractCookieFromSetCookie, getOwnerSessionPaths, writeOwnerSession } from "../session.js";
 
 // Owner-session login UX for `pdpp ref ...`.
 //
@@ -30,17 +26,15 @@ export async function runRefLogin(argv, io = {}, fetchImpl = globalThis.fetch) {
   const { flags, positionals } = parseArgs(argv);
   const referenceUrlRaw = positionals[0];
   if (!referenceUrlRaw) {
-    throw new PdppUsageError(
-      'Usage: pdpp ref login <reference-url> [--password-stdin] [--cache-root <dir>]'
-    );
+    throw new PdppUsageError("Usage: pdpp ref login <reference-url> [--password-stdin] [--cache-root <dir>]");
   }
-  const referenceUrl = referenceUrlRaw.replace(/\/$/, '');
+  const referenceUrl = referenceUrlRaw.replace(/\/$/, "");
 
   const password = await resolvePassword(flags, io);
   if (!password) {
     throw new PdppUsageError(
-      'Owner password required. Pipe it via `--password-stdin` or set PDPP_OWNER_PASSWORD. ' +
-        'The password is never accepted on the command line.'
+      "Owner password required. Pipe it via `--password-stdin` or set PDPP_OWNER_PASSWORD. " +
+        "The password is never accepted on the command line."
     );
   }
 
@@ -48,13 +42,13 @@ export async function runRefLogin(argv, io = {}, fetchImpl = globalThis.fetch) {
   let resp;
   try {
     resp = await fetchImpl(loginUrl, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
+        "Content-Type": "application/json",
+        Accept: "application/json",
       },
       body: JSON.stringify({ password }),
-      redirect: 'manual',
+      redirect: "manual",
     });
   } catch (e) {
     throw new PdppCliError(`Network request to ${loginUrl} failed: ${e.message}`);
@@ -66,16 +60,10 @@ export async function runRefLogin(argv, io = {}, fetchImpl = globalThis.fetch) {
   // 200-399 means the login was rejected.
   if (status >= 400) {
     if (status === 401) {
-      throw new PdppCliError(
-        'Owner login rejected: incorrect password (HTTP 401).',
-        3
-      );
+      throw new PdppCliError("Owner login rejected: incorrect password (HTTP 401).", 3);
     }
     if (status === 403) {
-      throw new PdppCliError(
-        'Owner login rejected: CSRF/policy failure (HTTP 403).',
-        4
-      );
+      throw new PdppCliError("Owner login rejected: CSRF/policy failure (HTTP 403).", 4);
     }
     if (status === 404) {
       throw new PdppCliError(
@@ -90,12 +78,12 @@ export async function runRefLogin(argv, io = {}, fetchImpl = globalThis.fetch) {
   const cookieValue = extractCookieFromSetCookie(setCookie, OWNER_SESSION_COOKIE_NAME);
   if (!cookieValue) {
     throw new PdppCliError(
-      'Owner login succeeded but no owner-session cookie was returned. ' +
-        'Confirm that placeholder owner auth is enabled on the reference server.'
+      "Owner login succeeded but no owner-session cookie was returned. " +
+        "Confirm that placeholder owner auth is enabled on the reference server."
     );
   }
 
-  const cacheRoot = flags['cache-root'] || '.pdpp';
+  const cacheRoot = flags["cache-root"] || ".pdpp";
   const file = writeOwnerSession({
     referenceUrl,
     cookie: `${OWNER_SESSION_COOKIE_NAME}=${cookieValue}`,
@@ -109,11 +97,11 @@ export async function runRefLogin(argv, io = {}, fetchImpl = globalThis.fetch) {
 }
 
 async function resolvePassword(flags, io) {
-  if (flags['password-stdin']) {
+  if (flags["password-stdin"]) {
     return readFirstLine(io.stdin || process.stdin);
   }
   const fromEnv = process.env.PDPP_OWNER_PASSWORD;
-  if (typeof fromEnv === 'string' && fromEnv.length > 0) {
+  if (typeof fromEnv === "string" && fromEnv.length > 0) {
     return fromEnv;
   }
   return null;
@@ -121,50 +109,50 @@ async function resolvePassword(flags, io) {
 
 function readFirstLine(stream) {
   return new Promise((resolve, reject) => {
-    let buf = '';
-    if (!stream || typeof stream.on !== 'function') {
-      resolve('');
+    let buf = "";
+    if (!stream || typeof stream.on !== "function") {
+      resolve("");
       return;
     }
-    stream.setEncoding?.('utf8');
+    stream.setEncoding?.("utf8");
     const onData = (chunk) => {
       buf += chunk;
-      const nl = buf.indexOf('\n');
+      const nl = buf.indexOf("\n");
       if (nl !== -1) {
         cleanup();
-        resolve(buf.slice(0, nl).replace(/\r$/, ''));
+        resolve(buf.slice(0, nl).replace(/\r$/, ""));
       }
     };
     const onEnd = () => {
       cleanup();
-      resolve(buf.replace(/\r?\n$/, ''));
+      resolve(buf.replace(/\r?\n$/, ""));
     };
     const onError = (e) => {
       cleanup();
       reject(e);
     };
     function cleanup() {
-      stream.off?.('data', onData);
-      stream.off?.('end', onEnd);
-      stream.off?.('error', onError);
+      stream.off?.("data", onData);
+      stream.off?.("end", onEnd);
+      stream.off?.("error", onError);
     }
-    stream.on('data', onData);
-    stream.on('end', onEnd);
-    stream.on('error', onError);
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+    stream.on("error", onError);
   });
 }
 
 function readSetCookie(resp) {
   const headers = resp.headers;
   if (!headers) return null;
-  if (typeof headers.getSetCookie === 'function') {
+  if (typeof headers.getSetCookie === "function") {
     const arr = headers.getSetCookie();
     if (arr && arr.length) return arr;
   }
-  if (typeof headers.get === 'function') {
-    return headers.get('set-cookie') || headers.get('Set-Cookie');
+  if (typeof headers.get === "function") {
+    return headers.get("set-cookie") || headers.get("Set-Cookie");
   }
-  return headers['set-cookie'] || headers['Set-Cookie'] || null;
+  return headers["set-cookie"] || headers["Set-Cookie"] || null;
 }
 
 export { getOwnerSessionPaths };

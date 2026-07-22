@@ -16,11 +16,11 @@
 //     home directory, not a project-local `.pdpp/`, so an owner-level bearer is
 //     never accidentally committed alongside project files.
 
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
-export const DEFAULT_OWNER_AGENT_DIR = join('.pdpp', 'owner-agents');
+export const DEFAULT_OWNER_AGENT_DIR = join(".pdpp", "owner-agents");
 
 /**
  * Resolve the absolute credential-file path for an owner-agent credential.
@@ -79,12 +79,12 @@ export function buildCredentialRecord({
   streamsEndpoint,
   createdAt,
 }) {
-  const tokenType = credential.token_type ?? 'Bearer';
+  const tokenType = credential.token_type ?? "Bearer";
   const expiresAt = credential.expires_at ?? null;
   const scope = credential.scope ?? null;
   return {
-    profile: 'trusted_owner_agent',
-    pdpp_token_kind: 'owner',
+    profile: "trusted_owner_agent",
+    pdpp_token_kind: "owner",
     resource,
     authorization_server: authorizationServer ?? null,
     client_id: clientId ?? null,
@@ -115,15 +115,15 @@ export function buildCredentialRecord({
 }
 
 function expandHome(p, base) {
-  if (p === '~') return base;
-  if (p.startsWith('~/')) return join(base, p.slice(2));
+  if (p === "~") return base;
+  if (p.startsWith("~/")) return join(base, p.slice(2));
   return p;
 }
 
 function hostSlug(resource) {
   try {
-    return new URL(resource).host.replace(/[^a-zA-Z0-9.-]/g, '_');
+    return new URL(resource).host.replace(/[^a-zA-Z0-9.-]/g, "_");
   } catch {
-    return 'owner-agent';
+    return "owner-agent";
   }
 }

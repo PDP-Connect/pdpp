@@ -178,10 +178,14 @@ function checkPair(file) {
     errors.push(`${file}: public-site copy must start with a Status/Date Callout`);
   }
   if (expectedMeta.status && actualMeta.status !== expectedMeta.status) {
-    errors.push(`${file}: site Status mismatch (root=${JSON.stringify(expectedMeta.status)} site=${JSON.stringify(actualMeta.status)})`);
+    errors.push(
+      `${file}: site Status mismatch (root=${JSON.stringify(expectedMeta.status)} site=${JSON.stringify(actualMeta.status)})`
+    );
   }
   if (expectedMeta.date && actualMeta.date !== expectedMeta.date) {
-    errors.push(`${file}: site Date mismatch (root=${JSON.stringify(expectedMeta.date)} site=${JSON.stringify(actualMeta.date)})`);
+    errors.push(
+      `${file}: site Date mismatch (root=${JSON.stringify(expectedMeta.date)} site=${JSON.stringify(actualMeta.date)})`
+    );
   }
 
   const expected = normalizeBody(stripTitleAndRootStatus(rootText));

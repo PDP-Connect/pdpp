@@ -112,10 +112,7 @@ console.log(`Active changes: ${records.length} (archive bucket not scanned)`);
 
 formatBucket("In-flight (some tasks done, some open)", byStatus["in-flight"]);
 formatBucket("Zero-progress (proposed, no tasks done yet)", byStatus["zero-progress"]);
-formatBucket(
-  "Complete (all tasks done — awaiting owner archive sweep)",
-  byStatus.complete
-);
+formatBucket("Complete (all tasks done — awaiting owner archive sweep)", byStatus.complete);
 
 if (byStatus["no-tasks"].length > 0 || byStatus["no-tasks-file"].length > 0) {
   formatBucket("Without task tracking", [...byStatus["no-tasks"], ...byStatus["no-tasks-file"]], {

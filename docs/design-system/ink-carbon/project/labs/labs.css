@@ -8,9 +8,9 @@
    "The spec as a living document"
    ═══════════════════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap");
 
 :root {
   /* Typography */
@@ -30,7 +30,12 @@
   --protocol-glow: oklch(0.72 0.16 253);
 
   /* The thermal gradient — human to protocol across temperature */
-  --thermal: linear-gradient(90deg, var(--human) 0%, oklch(0.55 0.1 180) 50%, var(--protocol) 100%);
+  --thermal: linear-gradient(
+    90deg,
+    var(--human) 0%,
+    oklch(0.55 0.1 180) 50%,
+    var(--protocol) 100%
+  );
 
   /* Paper / ink — the ledger aesthetic */
   --paper: oklch(0.985 0.005 85);
@@ -73,7 +78,9 @@
   --live: oklch(0.72 0.15 145);
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 html {
   background: var(--paper);
@@ -91,15 +98,26 @@ body {
     radial-gradient(ellipse at 85% 10%, var(--protocol-wash), transparent 50%),
     var(--paper);
   min-height: 100vh;
-  transition: background 400ms var(--ease-read), color 200ms;
+  transition:
+    background 400ms var(--ease-read),
+    color 200ms;
 }
 
 /* Scrollbar — like a page edge */
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-thumb { background: var(--rule-deep); border-radius: 999px; }
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--rule-deep);
+  border-radius: 999px;
+}
 
 /* Selection — copper ink */
-::selection { background: var(--human-wash); color: var(--ink); }
+::selection {
+  background: var(--human-wash);
+  color: var(--ink);
+}
 
 /* ═══ Type — serif display, sans body, mono machine ═══ */
 
@@ -179,66 +197,156 @@ body {
 
 /* ═══ Structural elements ═══ */
 
-.hair { height: 1px; background: var(--rule); }
-.hair-deep { height: 1px; background: var(--rule-deep); }
+.hair {
+  height: 1px;
+  background: var(--rule);
+}
+.hair-deep {
+  height: 1px;
+  background: var(--rule-deep);
+}
 
 /* The thermal rule — copper to blue, used for major section dividers */
-.hair-thermal { height: 1px; background: var(--thermal); opacity: 0.55; }
+.hair-thermal {
+  height: 1px;
+  background: var(--thermal);
+  opacity: 0.55;
+}
 
 /* Buttons — flat, inked, no shadows, press-feedback only */
 .btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  height: 40px; padding: 0 18px;
-  font-family: var(--font-sans); font-size: 14px; font-weight: 500;
-  border-radius: 2px; border: 1px solid transparent; cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 18px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 2px;
+  border: 1px solid transparent;
+  cursor: pointer;
   transition: all 150ms var(--ease-read);
   letter-spacing: 0.01em;
 }
-.btn-ink { background: var(--ink); color: var(--paper); }
-.btn-ink:hover { background: var(--ink-soft); }
-.btn-ink:active { transform: translateY(1px); }
-.btn-paper { background: transparent; color: var(--ink); border-color: var(--rule-deep); }
-.btn-paper:hover { background: var(--paper-warm); border-color: var(--ink-faint); }
-.btn-ghost { background: transparent; color: var(--ink-soft); }
-.btn-ghost:hover { color: var(--ink); }
+.btn-ink {
+  background: var(--ink);
+  color: var(--paper);
+}
+.btn-ink:hover {
+  background: var(--ink-soft);
+}
+.btn-ink:active {
+  transform: translateY(1px);
+}
+.btn-paper {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--rule-deep);
+}
+.btn-paper:hover {
+  background: var(--paper-warm);
+  border-color: var(--ink-faint);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--ink-soft);
+}
+.btn-ghost:hover {
+  color: var(--ink);
+}
 
 /* Chips — the pill-in-prose */
 .chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 1px 7px; border-radius: 2px;
-  font-family: var(--font-mono); font-size: 11.5px;
-  background: var(--paper-warm); color: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: var(--paper-warm);
+  color: var(--ink-soft);
   border: 1px solid var(--rule);
 }
-.chip-human { color: var(--human); border-color: oklch(from var(--human) l c h / 0.25); background: var(--human-wash); }
-.chip-protocol { color: var(--protocol); border-color: oklch(from var(--protocol) l c h / 0.25); background: var(--protocol-wash); }
-.chip-live { color: var(--live); border-color: oklch(from var(--live) l c h / 0.3); background: oklch(from var(--live) l c h / 0.08); }
+.chip-human {
+  color: var(--human);
+  border-color: oklch(from var(--human) l c h / 0.25);
+  background: var(--human-wash);
+}
+.chip-protocol {
+  color: var(--protocol);
+  border-color: oklch(from var(--protocol) l c h / 0.25);
+  background: var(--protocol-wash);
+}
+.chip-live {
+  color: var(--live);
+  border-color: oklch(from var(--live) l c h / 0.3);
+  background: oklch(from var(--live) l c h / 0.08);
+}
 
 /* ═══ Animations ═══ */
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 0.5; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1); }
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @keyframes stream-flow {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 @keyframes reveal-up {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes glyph-cycle {
-  0%, 20% { opacity: 1; }
-  25%, 45% { opacity: 0; }
-  50%, 70% { opacity: 1; }
-  75%, 95% { opacity: 0; }
-  100% { opacity: 1; }
+  0%,
+  20% {
+    opacity: 1;
+  }
+  25%,
+  45% {
+    opacity: 0;
+  }
+  50%,
+  70% {
+    opacity: 1;
+  }
+  75%,
+  95% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

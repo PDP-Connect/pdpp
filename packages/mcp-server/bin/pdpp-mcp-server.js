@@ -2,7 +2,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { runMcpServerCli } from '../src/index.js';
+import { runMcpServerCli } from "../src/index.js";
 
 runMcpServerCli(process.argv.slice(2)).then(
   (code) => {

@@ -18,12 +18,7 @@ const cliPackageRoot = path.join(repoRoot, "packages/cli");
 const referenceServerEntry = path.join(repoRoot, "reference-implementation/server/index.js");
 const referenceDbModule = path.join(repoRoot, "reference-implementation/server/db.js");
 const forbiddenPackages = ["playwright", "patchright", "imapflow", "pdf-parse", "better-sqlite3", "linkedom"];
-const browserArtifactPatterns = [
-  /chromium/i,
-  /chrome-linux/i,
-  /ms-playwright/i,
-  /patchright/i,
-];
+const browserArtifactPatterns = [/chromium/i, /chrome-linux/i, /ms-playwright/i, /patchright/i];
 
 function log(message) {
   process.stdout.write(`${message}\n`);
@@ -69,11 +64,7 @@ async function pathExists(candidate) {
 
 async function assertPackageAbsent(projectDir, packageName) {
   const candidate = path.join(projectDir, "node_modules", ...packageName.split("/"));
-  assert.equal(
-    await pathExists(candidate),
-    false,
-    `unexpected browser-bound package installed: ${packageName}`
-  );
+  assert.equal(await pathExists(candidate), false, `unexpected browser-bound package installed: ${packageName}`);
 }
 
 async function assertNoBrowserArtifacts(rootDir) {
@@ -140,7 +131,11 @@ async function main() {
     }
 
     if (await pathExists(referenceServerEntry)) {
-      await runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProtocolVersion: advertised.collector_protocol_version });
+      await runFixtureBackedEnrollRunSmoke({
+        projectDir,
+        env,
+        advertisedProtocolVersion: advertised.collector_protocol_version,
+      });
       await runProtocolMismatchSmoke({ projectDir, env });
     } else {
       log("SKIP fixture-backed enroll/run smoke: reference-implementation/server/index.js not present.");
@@ -182,21 +177,21 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
       connector_id: "codex",
       local_binding_name: "pack-install-run-laptop",
     });
-    assert.equal(codeResp.status, 201, `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
+    assert.equal(
+      codeResp.status,
+      201,
+      `enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
+    );
     const enrollmentCode = codeResp.body.enrollment_code;
-    assert.ok(typeof enrollmentCode === "string" && enrollmentCode.length > 0, "enrollment_code must be a non-empty string");
+    assert.ok(
+      typeof enrollmentCode === "string" && enrollmentCode.length > 0,
+      "enrollment_code must be a non-empty string"
+    );
 
     log("Running installed pdpp-local-collector enroll against the in-process reference server...");
     const enroll = await run(
       "npx",
-      [
-        "pdpp-local-collector",
-        "enroll",
-        "--base-url",
-        baseUrl,
-        "--code",
-        enrollmentCode,
-      ],
+      ["pdpp-local-collector", "enroll", "--base-url", baseUrl, "--code", enrollmentCode],
       { cwd: projectDir, env }
     );
     const enrollment = JSON.parse(enroll.stdout);
@@ -250,9 +245,16 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
       }
     );
     const runOutput = JSON.parse(runResult.stdout);
-    assert.equal(runOutput.done?.status, "succeeded", `codex connector did not report DONE.status=succeeded: ${runResult.stdout}`);
+    assert.equal(
+      runOutput.done?.status,
+      "succeeded",
+      `codex connector did not report DONE.status=succeeded: ${runResult.stdout}`
+    );
     assert.ok((runOutput.recordsQueued ?? 0) > 0, `codex connector did not queue any records: ${runResult.stdout}`);
-    assert.ok((runOutput.sentBatches ?? 0) > 0, `codex connector did not send any batches to the reference server: ${runResult.stdout}`);
+    assert.ok(
+      (runOutput.sentBatches ?? 0) > 0,
+      `codex connector did not send any batches to the reference server: ${runResult.stdout}`
+    );
 
     // Records land under the bare canonical connector key (`codex`), NOT a
     // `local-device:codex` storage prefix — connection isolation is carried by
@@ -305,24 +307,20 @@ async function runProtocolMismatchSmoke({ projectDir, env }) {
       connector_id: "codex",
       local_binding_name: "pack-install-run-pinned",
     });
-    assert.equal(codeResp.status, 201, `pinned enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`);
+    assert.equal(
+      codeResp.status,
+      201,
+      `pinned enrollment-codes returned ${codeResp.status}: ${JSON.stringify(codeResp.body)}`
+    );
     const enrollmentCode = codeResp.body.enrollment_code;
 
     log("Calling pdpp-local-collector enroll against the pinned server (expecting 409)...");
     let failure = null;
     try {
-      await run(
-        "npx",
-        [
-          "pdpp-local-collector",
-          "enroll",
-          "--base-url",
-          baseUrl,
-          "--code",
-          enrollmentCode,
-        ],
-        { cwd: projectDir, env }
-      );
+      await run("npx", ["pdpp-local-collector", "enroll", "--base-url", baseUrl, "--code", enrollmentCode], {
+        cwd: projectDir,
+        env,
+      });
     } catch (error) {
       failure = error;
     }
@@ -397,10 +395,7 @@ async function prepareCodexFixture() {
     path.join(promptsDir, "hello.md"),
     "---\nname: hello\ndescription: greet the operator\n---\n\nHello from the pack-install-run fixture.\n"
   );
-  await writeFile(
-    path.join(rulesDir, "trust.rules"),
-    "# trust registry\nallow shell pwd\n"
-  );
+  await writeFile(path.join(rulesDir, "trust.rules"), "# trust registry\nallow shell pwd\n");
   return codexHome;
 }
 

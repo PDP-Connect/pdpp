@@ -89,10 +89,7 @@ export function normalizeRecordSourceCheckpoint(input: {
  * generation string matches exactly and every stream entry matches in the
  * same sorted position.
  */
-export function recordSourceCheckpointsEqual(
-  a: RecordSourceCheckpoint,
-  b: RecordSourceCheckpoint
-): boolean {
+export function recordSourceCheckpointsEqual(a: RecordSourceCheckpoint, b: RecordSourceCheckpoint): boolean {
   if (a.reset_generation !== b.reset_generation) {
     return false;
   }

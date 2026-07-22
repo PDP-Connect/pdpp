@@ -4,7 +4,7 @@
 export class PdppCliError extends Error {
   constructor(message, exitCode = 1, details = null) {
     super(message);
-    this.name = 'PdppCliError';
+    this.name = "PdppCliError";
     this.exitCode = exitCode;
     this.details = details;
   }
@@ -13,7 +13,7 @@ export class PdppCliError extends Error {
 export class PdppUsageError extends PdppCliError {
   constructor(message, details = null) {
     super(message, 2, details);
-    this.name = 'PdppUsageError';
+    this.name = "PdppUsageError";
   }
 }
 
@@ -24,7 +24,7 @@ export class PdppHttpError extends PdppCliError {
       body,
       ...(responseMetadata || {}),
     });
-    this.name = 'PdppHttpError';
+    this.name = "PdppHttpError";
     this.status = status;
     this.body = body;
     this.requestId = responseMetadata?.request_id || null;

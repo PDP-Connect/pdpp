@@ -293,10 +293,11 @@ function sqliteFetchSnapshotAnchor(): { snapshotSeq: number; snapshotAt: string 
 
 type PartitionPageDirection = "asc" | "desc";
 
-const PARTITION_PAGE_DIRECTION_SQL: Record<PartitionPageDirection, { readonly order: string; readonly seek: string }> = {
-  asc: { order: "ASC", seek: ">" },
-  desc: { order: "DESC", seek: "<" },
-};
+const PARTITION_PAGE_DIRECTION_SQL: Record<PartitionPageDirection, { readonly order: string; readonly seek: string }> =
+  {
+    asc: { order: "ASC", seek: ">" },
+    desc: { order: "DESC", seek: "<" },
+  };
 
 function partitionPageDirection(input: PartitionPageInput): PartitionPageDirection {
   return input.direction === "asc" ? "asc" : "desc";
@@ -340,7 +341,10 @@ function appendSqlitePartitionPageCursor(
   binds.push(...cursorValues);
 }
 
-function sqlitePartitionPageQuery(input: PartitionPageInput): { readonly sql: string; readonly binds: (string | number)[] } {
+function sqlitePartitionPageQuery(input: PartitionPageInput): {
+  readonly sql: string;
+  readonly binds: (string | number)[];
+} {
   const { connectorId, stream, snapshotSeq, limit } = input;
   const direction = partitionPageDirection(input);
   const directionSql = PARTITION_PAGE_DIRECTION_SQL[direction];
@@ -910,7 +914,14 @@ async function postgresFetchUpcoming(input: UpcomingFetchInput): Promise<Upcomin
 
   for (const [partitionIndex, partition] of input.partitions.entries()) {
     const after = afterByKey.get(upcomingPartitionKey(partition.connectorId, partition.stream)) ?? null;
-    const fetched = await postgresFetchUpcomingPartition(input, semExpr, computeTotal, partition, partitionIndex, after);
+    const fetched = await postgresFetchUpcomingPartition(
+      input,
+      semExpr,
+      computeTotal,
+      partition,
+      partitionIndex,
+      after
+    );
     total += fetched.total;
     tagged.push(...fetched.tagged);
     partitionOverflow[partitionIndex] = fetched.overflow;

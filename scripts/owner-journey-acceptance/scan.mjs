@@ -149,8 +149,7 @@ export function scanForbiddenStrings({ path, src, tier, rules }) {
  * @returns {string}
  */
 export function blankModuleSpecifiers(src) {
-  const blankRange = (text, re) =>
-    text.replace(re, (full) => full.replace(/[^\n]/g, " "));
+  const blankRange = (text, re) => text.replace(re, (full) => full.replace(/[^\n]/g, " "));
   let out = src;
   // import ... from "x"  /  export ... from "x"  (single or double quoted)
   out = blankRange(out, /\b(?:import|export)\b[^\n;]*?\bfrom\s*["'][^"'\n]*["']/g);
@@ -306,7 +305,10 @@ export function deriveSpecifierVars(src) {
   for (const mm of cleaned.matchAll(/\b(?:const|let|var)\s+([\w]+)\s*=\s*`\$\{\s*([\w]+)\s*\}@([\w.-]+)`/g)) {
     const base = vars[mm[2]];
     if (base) {
-      vars[mm[1]] = `${base.split("@").slice(0, base.startsWith("@") ? 2 : 1).join("@")}@${mm[3]}`;
+      vars[mm[1]] = `${base
+        .split("@")
+        .slice(0, base.startsWith("@") ? 2 : 1)
+        .join("@")}@${mm[3]}`;
     }
   }
   return vars;
@@ -560,8 +562,7 @@ export function checkSharedShellNavContract({ path, src, requiredItems }) {
       path,
       line: 0,
       excerpt: "aria-current active page marker",
-      rationale:
-        "The shared shell must mark the current route with aria-current so the owner can tell where they are.",
+      rationale: "The shared shell must mark the current route with aria-current so the owner can tell where they are.",
     });
   }
 
@@ -670,8 +671,5 @@ export function lineOf(text, index) {
 export function excerptAround(text, index, radius = 50) {
   const start = Math.max(0, index - radius);
   const end = Math.min(text.length, index + radius);
-  return text
-    .slice(start, end)
-    .replace(/\s+/g, " ")
-    .trim();
+  return text.slice(start, end).replace(/\s+/g, " ").trim();
 }

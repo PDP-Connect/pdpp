@@ -58,7 +58,9 @@ a.rr-s-item {
 /* B-2 unified active treatment: left-2 --primary accent + tint fill */
 .rr-s-item.is-on {
   background: var(--primary-tint);
-  box-shadow: inset 3px 0 0 var(--primary), inset 0 0 0 1px var(--border-strong);
+  box-shadow:
+    inset 3px 0 0 var(--primary),
+    inset 0 0 0 1px var(--border-strong);
 }
 
 .rr-s-item__name {

@@ -30,11 +30,7 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  ALLOW_CUSTOM_COMMAND_ENV,
-  CollectorCustomCommandRefusedError,
-  CollectorUsageError,
-} from "../src/errors.ts";
+import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError } from "../src/errors.ts";
 import {
   type BundledConnectorEntry,
   type BundledConnectorRegistry,
@@ -74,8 +70,7 @@ import { LOCAL_COLLECTOR_DEFINITIONS } from "../../polyfill-connectors/src/colle
  * `@pdpp/polyfill-connectors/collectors` — this file and the runtime do not
  * change.
  */
-export const BUNDLED_CONNECTORS: BundledConnectorRegistry =
-  createBundledConnectorRegistry(LOCAL_COLLECTOR_DEFINITIONS);
+export const BUNDLED_CONNECTORS: BundledConnectorRegistry = createBundledConnectorRegistry(LOCAL_COLLECTOR_DEFINITIONS);
 
 /** Stable list of connector ids the published `pdpp-local-collector` accepts. */
 export const BUNDLED_CONNECTOR_IDS: readonly string[] = bundledConnectorIds(BUNDLED_CONNECTORS);
@@ -140,10 +135,7 @@ interface LocalCollectorManifestResolution {
  * resolving symlinks is what lets posture classification see the repo tree.
  */
 function resolveLocalCollectorManifest(startUrl: string | URL): LocalCollectorManifestResolution {
-  const startPath =
-    typeof startUrl === "string" && !startUrl.startsWith("file:")
-      ? startUrl
-      : fileURLToPath(startUrl);
+  const startPath = typeof startUrl === "string" && !startUrl.startsWith("file:") ? startUrl : fileURLToPath(startUrl);
   let realStart = startPath;
   try {
     realStart = realpathSync(startPath);
@@ -229,10 +221,7 @@ export interface LocalCollectorDeploymentPosture {
 export function classifyLocalCollectorDeploymentPosture(
   startUrl: string | URL = import.meta.url
 ): LocalCollectorDeploymentPosture {
-  const startPath =
-    typeof startUrl === "string" && !startUrl.startsWith("file:")
-      ? startUrl
-      : fileURLToPath(startUrl);
+  const startPath = typeof startUrl === "string" && !startUrl.startsWith("file:") ? startUrl : fileURLToPath(startUrl);
   const moduleBasename = basename(startPath);
   const isSourceEntrypoint = extname(startPath) === ".ts";
 
@@ -934,10 +923,9 @@ export async function inspectLocalReferenceRoute(
   }
 }
 
-function referenceRouteErrorFields(error: unknown): Pick<
-  LocalCollectorReferenceRouteCheck,
-  "error_class" | "http_status"
-> {
+function referenceRouteErrorFields(
+  error: unknown
+): Pick<LocalCollectorReferenceRouteCheck, "error_class" | "http_status"> {
   if (error instanceof LocalDeviceHttpError) {
     return {
       error_class: error.code ? `http_${error.status}_${error.code}` : `http_${error.status}`,
@@ -983,8 +971,7 @@ export function buildLocalOutboxDoctor(
   referenceRoute?: LocalCollectorReferenceRouteCheck | null
 ): LocalOutboxDoctorOutput {
   const posture = status.deployment_posture;
-  const postureDisqualifiesEvidence =
-    posture.kind === "repo_dist_override" || posture.is_placeholder_version;
+  const postureDisqualifiesEvidence = posture.kind === "repo_dist_override" || posture.is_placeholder_version;
   const checks: LocalOutboxDoctorOutput["checks"] = {
     coverage_diagnostics: status.lifecycle_state === "coverage_missing" ? "warn" : "ok",
     deployment_posture: postureDisqualifiesEvidence ? "warn" : "ok",
@@ -996,9 +983,7 @@ export function buildLocalOutboxDoctor(
   const remediation: string[] = [];
   if (checks.outbox_failures === "fail") {
     const topClass = errorSummary?.top_classes?.[0];
-    const causeHint = topClass
-      ? ` Most common cause: ${topClass.error_class} (${topClass.count} row(s)).`
-      : "";
+    const causeHint = topClass ? ` Most common cause: ${topClass.error_class} (${topClass.count} row(s)).` : "";
     remediation.push(
       `${status.outbox.counts.dead_letter} dead-letter row(s) need recovery.${causeHint} ` +
         "Preview with `pdpp-local-collector recover --source-instance-id <id>`, then apply with " +
@@ -1042,7 +1027,7 @@ export function buildLocalOutboxDoctor(
 }
 
 function referenceRouteRemediation(route: LocalCollectorReferenceRouteCheck): string {
-  const detail = route.http_status ? `HTTP ${route.http_status}` : route.error_class ?? "route failure";
+  const detail = route.http_status ? `HTTP ${route.http_status}` : (route.error_class ?? "route failure");
   return (
     `The configured reference route (${route.base_url}) did not accept the device source-state check (${detail}). ` +
     "Check `PDPP_REFERENCE_BASE_URL`, network/VPN/reverse-proxy routing, and the enrolled device token before re-running. " +
@@ -1078,7 +1063,7 @@ function deploymentPostureRemediation(posture: LocalCollectorDeploymentPosture):
       "fixes you need before re-pinning — `pnpm release:dist-tag-check` (release " +
       "owner) reports the live dist-tag posture; a `repo_dist_override` that is " +
       "ahead of the published build is dev evidence, not a build to downgrade to. " +
-      "See docs/reference/local-collector.md §\"Deployment Posture: Published vs Dev\"."
+      'See docs/reference/local-collector.md §"Deployment Posture: Published vs Dev".'
   );
   return parts.join(" ");
 }
@@ -1175,7 +1160,9 @@ export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLette
 
   const outbox = new LocalDeviceOutbox({ path: dbPath });
   try {
-    const statusBefore = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+    const statusBefore = summaryCounts(
+      outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {})
+    );
     const errorSummary = outbox.deadLetterErrorSummary(
       options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}
     );
@@ -1187,7 +1174,9 @@ export function retryLocalOutboxDeadLetters(options: CliOptions): RetryDeadLette
       ...(options.limit ? { limit: options.limit } : {}),
       ...(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}),
     });
-    const statusAfter = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+    const statusAfter = summaryCounts(
+      outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {})
+    );
     return {
       backup_path: backupPath,
       db: { exists: true, path: dbPath },
@@ -1306,13 +1295,16 @@ export function findLocalCollectorProfiles(input: {
   profileName?: string | null;
   sourceInstanceId?: string | null;
 }): LocalCollectorProfileLookupResult {
-  const profileDir = input.profileDir?.trim() || process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
+  const profileDir =
+    input.profileDir?.trim() || process.env[LOCAL_COLLECTOR_PROFILE_DIR_ENV]?.trim() || defaultCollectorProfileDir();
   const sourceInstanceId = input.sourceInstanceId?.trim() || null;
   const files = input.profileName
     ? [safeProfileFileName(input.profileName)]
     : (() => {
         try {
-          return readdirSync(profileDir).filter((name) => name.endsWith(".env")).sort();
+          return readdirSync(profileDir)
+            .filter((name) => name.endsWith(".env"))
+            .sort();
         } catch {
           return [];
         }
@@ -1354,7 +1346,9 @@ function applyProfileEnv(options: CliOptions, profile: LocalCollectorProfile): C
   const sourceInstanceId = profile.source_instance_id ?? options.sourceInstanceId;
   const connector = keep("--connector") ? options.connector : env.PDPP_COLLECTOR_CONNECTOR?.trim() || options.connector;
   const deviceId = keep("--device-id") ? options.deviceId : env.PDPP_LOCAL_DEVICE_ID?.trim() || options.deviceId;
-  const deviceToken = keep("--device-token") ? options.deviceToken : env.PDPP_LOCAL_DEVICE_TOKEN?.trim() || options.deviceToken;
+  const deviceToken = keep("--device-token")
+    ? options.deviceToken
+    : env.PDPP_LOCAL_DEVICE_TOKEN?.trim() || options.deviceToken;
   if (sourceInstanceId) {
     next.sourceInstanceId = sourceInstanceId;
   }
@@ -1399,8 +1393,7 @@ function resolveRecoveryOptions(options: CliOptions): {
     };
   }
 
-  const configuredQueue =
-    options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
+  const configuredQueue = options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
   if (!configuredQueue) {
     throw new CollectorUsageError(
       `recover could not find a local collector profile for source_instance_id '${sourceInstanceId}'. ` +
@@ -1436,8 +1429,7 @@ export function resolveInspectionOptions(options: CliOptions): CliOptions {
     return applyProfileEnv(options, lookup.matches[0] as LocalCollectorProfile);
   }
 
-  const configuredQueue =
-    options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
+  const configuredQueue = options.queuePath !== DEFAULT_QUEUE_PATH || Boolean(process.env.PDPP_COLLECTOR_QUEUE?.trim());
   if (!configuredQueue) {
     throw new CollectorUsageError(
       `${options.command} could not find a local collector profile for source_instance_id '${sourceInstanceId}'. ` +
@@ -1516,7 +1508,9 @@ export async function recoverLocalCollector(
   if (!options.apply) {
     return {
       applied: false,
-      db: statusBefore.db.path ? { exists: statusBefore.db.exists, path: statusBefore.db.path } : { exists: false, path: "" },
+      db: statusBefore.db.path
+        ? { exists: statusBefore.db.exists, path: statusBefore.db.path }
+        : { exists: false, path: "" },
       dry_run: true,
       note: recoverDryRunNote(statusBefore),
       object: "local_collector_recovery",
@@ -1558,7 +1552,9 @@ export async function recoverLocalCollector(
   const latestRun = runs.at(-1) ?? null;
   return {
     applied: true,
-    db: statusAfter.db.path ? { exists: statusAfter.db.exists, path: statusAfter.db.path } : { exists: false, path: "" },
+    db: statusAfter.db.path
+      ? { exists: statusAfter.db.exists, path: statusAfter.db.path }
+      : { exists: false, path: "" },
     drain_attempts: runs.length,
     drain_stopped_reason: stoppedReason,
     dry_run: false,
@@ -1660,7 +1656,9 @@ export function pruneSentOutboxRows(options: CliOptions): PruneSentOutput {
 
   const outbox = new LocalDeviceOutbox({ path: dbPath });
   try {
-    const statusBefore = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+    const statusBefore = summaryCounts(
+      outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {})
+    );
     const dryRun = !options.apply;
 
     const pruneInput: LocalDeviceOutboxPruneSentInput = {
@@ -1674,7 +1672,9 @@ export function pruneSentOutboxRows(options: CliOptions): PruneSentOutput {
     // For apply, back up first then delete.
     const backupPath = dryRun ? null : backupSqliteDb(outbox, dbPath, "prune-sent");
     const result = outbox.pruneSent(pruneInput);
-    const statusAfter = summaryCounts(outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {}));
+    const statusAfter = summaryCounts(
+      outbox.summary(options.sourceInstanceId ? { sourceInstanceId: options.sourceInstanceId } : {})
+    );
 
     const note = pruneSentNote(result, dryRun, reportedOlderThanDays, options.keepCount);
     return {
@@ -1874,11 +1874,7 @@ function compactDryRunNote(stats: LocalDeviceOutboxPageStats, nonSucceeded: numb
   return base;
 }
 
-function compactAppliedNote(
-  result: LocalDeviceOutboxCompactResult,
-  nonSucceeded: number,
-  force: boolean
-): string {
+function compactAppliedNote(result: LocalDeviceOutboxCompactResult, nonSucceeded: number, force: boolean): string {
   const reclaimedMb = (result.reclaimedBytes / (1024 * 1024)).toFixed(1);
   const forcedNote =
     nonSucceeded > 0 && force
@@ -2125,11 +2121,7 @@ function parseCsv(value: string): string[] {
     .filter(Boolean);
 }
 
-export function scopedDefaultQueuePath(
-  queuePath: string,
-  defaultQueuePath: string,
-  connectionId: string
-): string {
+export function scopedDefaultQueuePath(queuePath: string, defaultQueuePath: string, connectionId: string): string {
   if (queuePath !== defaultQueuePath) {
     return queuePath;
   }

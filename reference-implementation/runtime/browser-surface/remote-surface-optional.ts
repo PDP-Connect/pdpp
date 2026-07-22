@@ -30,9 +30,7 @@ let cached: RemoteSurfaceAvailability | null = null;
 export async function loadRemoteSurface(): Promise<RemoteSurfaceAvailability> {
   if (cached) return cached;
   try {
-    const module = (await import(
-      "@opendatalabs/remote-surface/leases"
-    )) as RemoteSurfaceModule;
+    const module = (await import("@opendatalabs/remote-surface/leases")) as RemoteSurfaceModule;
     cached = { available: true, module };
   } catch (error) {
     cached = {

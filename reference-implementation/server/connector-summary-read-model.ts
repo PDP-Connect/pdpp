@@ -1582,18 +1582,40 @@ async function foldConnectorSummaryStreamFactsOnce(
   const foldStore = createStreamFactsFoldStore();
   const rows = (await store.listEvidence(connectorInstanceIds === null ? {} : { connectorInstanceIds })) as Row[];
   if (rows.length === 0) {
-    return { casRejectedInstanceIds: [], folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return {
+      casRejectedInstanceIds: [],
+      folded: 0,
+      participants: 0,
+      refused: 0,
+      incomplete: false,
+      resumeAfterSeq: null,
+    };
   }
   const maxSeq = await foldStore.readMaxTerminalEventSeq(connectorInstanceIds);
   const participants = rows.filter((row) => rowNeedsFoldParticipation(row, maxSeq));
   if (participants.length === 0) {
-    return { casRejectedInstanceIds: [], folded: 0, participants: 0, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return {
+      casRejectedInstanceIds: [],
+      folded: 0,
+      participants: 0,
+      refused: 0,
+      incomplete: false,
+      resumeAfterSeq: null,
+    };
   }
   if (maxSeq == null) {
     const casRejectedInstanceIds = await stampZeroCheckpointForBootstrap(foldStore, participants);
-    return { casRejectedInstanceIds, folded: 0, participants: participants.length, refused: 0, incomplete: false, resumeAfterSeq: null };
+    return {
+      casRejectedInstanceIds,
+      folded: 0,
+      participants: participants.length,
+      refused: 0,
+      incomplete: false,
+      resumeAfterSeq: null,
+    };
   }
-  const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, sinceSeq } = seedFoldState(participants);
+  const { factsByInstance, checkpointByInstance, casBaselineByInstance, generationByInstance, sinceSeq } =
+    seedFoldState(participants);
   // Test-only: see `testOnlyFoldPauseHook` — a no-op unless a test installs
   // a hook. Held here, immediately after the baseline (checkpointByInstance)
   // is captured and before this pass's own terminal-event read/CAS write —
@@ -1658,8 +1680,12 @@ async function foldConnectorSummaryStreamFactsOnce(
       foldStore,
       instanceId,
       facts,
-      sourceGenerationCurrent ? writeSeq : checkpointByInstance.get(instanceId) ?? 0,
-      terminalFactsCurrent ? null : sourceGenerationCurrent ? REASON_CODES.TERMINAL_FOLD_INCOMPLETE : REASON_CODES.TERMINAL_FACTS_HISTORICAL,
+      sourceGenerationCurrent ? writeSeq : (checkpointByInstance.get(instanceId) ?? 0),
+      terminalFactsCurrent
+        ? null
+        : sourceGenerationCurrent
+          ? REASON_CODES.TERMINAL_FOLD_INCOMPLETE
+          : REASON_CODES.TERMINAL_FACTS_HISTORICAL,
       terminalFactsCurrent,
       checkpointByInstance,
       casBaselineByInstance

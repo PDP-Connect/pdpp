@@ -4109,10 +4109,7 @@ function localDeviceFreshnessHeartbeatAt(
   if (!localDeviceProgress?.last_heartbeat_at) {
     return null;
   }
-  if (
-    !Number.isInteger(manifestGeneration) ||
-    localDeviceProgress.manifest_generation !== manifestGeneration
-  ) {
+  if (!Number.isInteger(manifestGeneration) || localDeviceProgress.manifest_generation !== manifestGeneration) {
     return null;
   }
   if (outbox.axis === "active") {

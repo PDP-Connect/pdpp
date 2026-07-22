@@ -18,8 +18,8 @@
 // header. It is NEVER printed: this command emits only non-secret capability
 // and connection metadata.
 
-import { OwnerAgentError } from './errors.js';
-import { getOwnerAgentAccessToken } from './lifecycle.js';
+import { OwnerAgentError } from "./errors.js";
+import { getOwnerAgentAccessToken } from "./lifecycle.js";
 
 /**
  * Fetch the owner-agent control capability document and the configured
@@ -34,24 +34,19 @@ import { getOwnerAgentAccessToken } from './lifecycle.js';
 export async function discoverOwnerAgentControl({ fetchFn, record }) {
   const token = getOwnerAgentAccessToken(record);
   if (!token) {
-    throw new OwnerAgentError('credential_invalid', 'Stored credential is missing an access token.');
+    throw new OwnerAgentError("credential_invalid", "Stored credential is missing an access token.");
   }
-  const resource = typeof record?.resource === 'string' ? record.resource.replace(/\/$/, '') : null;
+  const resource = typeof record?.resource === "string" ? record.resource.replace(/\/$/, "") : null;
   if (!resource) {
     throw new OwnerAgentError(
-      'credential_invalid',
-      'Stored credential has no resource origin; re-run `pdpp owner-agent onboard`.'
+      "credential_invalid",
+      "Stored credential has no resource origin; re-run `pdpp owner-agent onboard`."
     );
   }
-  const headers = { Accept: 'application/json', Authorization: `Bearer ${token}` };
+  const headers = { Accept: "application/json", Authorization: `Bearer ${token}` };
 
-  const control = await getJson(fetchFn, `${resource}/v1/owner/control`, headers, 'control_failed');
-  const connectionsBody = await getJson(
-    fetchFn,
-    `${resource}/v1/owner/connections`,
-    headers,
-    'connections_failed'
-  );
+  const control = await getJson(fetchFn, `${resource}/v1/owner/control`, headers, "control_failed");
+  const connectionsBody = await getJson(fetchFn, `${resource}/v1/owner/connections`, headers, "connections_failed");
   const connections = Array.isArray(connectionsBody?.data) ? connectionsBody.data : [];
   return { control, connections };
 }
@@ -64,32 +59,32 @@ export async function discoverOwnerAgentControl({ fetchFn, record }) {
  */
 export function formatOwnerAgentControl({ control, connections }) {
   const lines = [];
-  lines.push('Owner-agent control capabilities (non-secret):');
+  lines.push("Owner-agent control capabilities (non-secret):");
   if (control?.entrypoint) {
     lines.push(`  entrypoint: ${control.entrypoint}`);
   }
   lines.push(`  /mcp owner bearer: rejected (use owner-bearer /v1/* REST, not /mcp)`);
-  lines.push('');
-  lines.push('  Action families:');
+  lines.push("");
+  lines.push("  Action families:");
   const actions = Array.isArray(control?.actions) ? control.actions : [];
   for (const action of actions) {
-    const family = action?.family ?? 'unknown';
-    const status = action?.status ?? 'unknown';
-    const route = action?.method && action?.url ? `${action.method} ${action.url}` : '(owner-mediated / not a route)';
+    const family = action?.family ?? "unknown";
+    const status = action?.status ?? "unknown";
+    const route = action?.method && action?.url ? `${action.method} ${action.url}` : "(owner-mediated / not a route)";
     lines.push(`    - ${family} [${status}] ${route}`);
     if (action?.reason) {
       lines.push(`        ${action.reason}`);
     }
   }
 
-  lines.push('');
+  lines.push("");
   lines.push(`Configured connections (${connections.length}):`);
   if (connections.length === 0) {
-    lines.push('  (none yet — initiate one with the initiate_connection action above)');
+    lines.push("  (none yet — initiate one with the initiate_connection action above)");
   }
   for (const connection of connections) {
-    const connectionId = connection?.connection_id ?? '(no connection_id)';
-    const connectorId = connection?.connector_id ?? connection?.connector_key ?? '(unknown connector)';
+    const connectionId = connection?.connection_id ?? "(no connection_id)";
+    const connectorId = connection?.connector_id ?? connection?.connector_key ?? "(unknown connector)";
     lines.push(`  - ${connectionId}  connector=${connectorId}`);
     const label = formatLabel(connection);
     lines.push(`      label: ${label}`);
@@ -97,7 +92,7 @@ export function formatOwnerAgentControl({ control, connections }) {
       lines.push(`      status: ${connection.status}`);
     }
   }
-  return `${lines.join('\n')}\n`;
+  return `${lines.join("\n")}\n`;
 }
 
 // An owner-meaningful label (`owner_set`) is printed as-is. A `fallback` label
@@ -106,14 +101,14 @@ export function formatOwnerAgentControl({ control, connections }) {
 // relying on it. Never invent a label here.
 function formatLabel(connection) {
   const labelStatus = connection?.label_status;
-  const displayName = typeof connection?.display_name === 'string' ? connection.display_name : null;
-  if (labelStatus === 'owner_set' && displayName) {
+  const displayName = typeof connection?.display_name === "string" ? connection.display_name : null;
+  if (labelStatus === "owner_set" && displayName) {
     return `"${displayName}" (owner_set)`;
   }
   if (displayName) {
     return `label-needed (fallback: "${displayName}" — rename with rename_connection)`;
   }
-  return 'label-needed (no display_name — rename with rename_connection)';
+  return "label-needed (no display_name — rename with rename_connection)";
 }
 
 async function getJson(fetchFn, url, headers, errorCode) {
@@ -125,7 +120,7 @@ async function getJson(fetchFn, url, headers, errorCode) {
   }
   if (response.status === 401 || response.status === 403) {
     throw new OwnerAgentError(
-      'control_unauthorized',
+      "control_unauthorized",
       `Owner-agent control is not authorized (HTTP ${response.status}). The credential may be revoked or inactive; run \`pdpp owner-agent status\`.`,
       4
     );

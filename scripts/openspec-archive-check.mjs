@@ -237,8 +237,7 @@ export function classifyChange(changeName, { existsRepoRel, readFile = readFileS
   }
 
   const referenced = extractReferencedPaths(changeDir, readFile);
-  const codeLanded =
-    typeof existsRepoRel === "function" ? resolveReferencedPaths(referenced, existsRepoRel) : [];
+  const codeLanded = typeof existsRepoRel === "function" ? resolveReferencedPaths(referenced, existsRepoRel) : [];
 
   // Signal 1: every implementation checkbox is done (and there is at least one).
   const implComplete = tasks.impl.total > 0 && tasks.impl.done === tasks.impl.total;

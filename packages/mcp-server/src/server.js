@@ -1,29 +1,25 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
-import {
-  buildResourceTemplates,
-  buildTools,
-  PDPP_MCP_TOOL_NAMES,
-} from './tools.js';
-import { RsClient } from './rs-client.js';
+import { buildResourceTemplates, buildTools, PDPP_MCP_TOOL_NAMES } from "./tools.js";
+import { RsClient } from "./rs-client.js";
 
-export const DEFAULT_SERVER_NAME = 'pdpp-mcp-server';
-export const DEFAULT_SERVER_VERSION = '0.0.0';
+export const DEFAULT_SERVER_NAME = "pdpp-mcp-server";
+export const DEFAULT_SERVER_VERSION = "0.0.0";
 
 // Shared MCP server instructions. The first 512 characters must be
 // self-contained for ChatGPT and Codex (OpenAI Apps SDK guidance).
 // Cross-tool details that would otherwise repeat across tool descriptions live
 // here; tool descriptions stay concise and routing-specific.
 export const PDPP_MCP_INSTRUCTIONS =
-  'PDPP tools are grant-scoped. Start with `schema`, then call `schema(stream)` after choosing a stream; add `connection_id` when a stream name appears under multiple sources or before full schema. Use `connection_id` from schema results or `available_connections` errors to disambiguate sources. Filters must be typed objects, not bracket strings. Page and narrow with `limit`, `cursor`, and `fields`; prefer `aggregate` or lexical `search` for exact terms. ' +
-  'The configured bearer limits every result; do not use owner or control-plane tokens for normal MCP access. Schema advertises valid fields, filter operators, expand relations, sort/count support, connection identities, and connector keys. Persist `connection_id`, not `grant_id`, across reconnects. Search result ids are self-contained handles; pass them to `fetch` for projected records or to `read_record_field` for bounded field windows. ' +
-  'When a preview is not enough, follow `structuredContent.content_ladder`: call `read_record_field` with the supplied arguments. Resource-aware hosts may also read hidden/returned resource URIs, but generic resource reads are not required for ordinary text evidence. ' +
-  '`content[]` is the reliable model-visible guide and includes next cursors/bookmarks when present; `structuredContent` is a host-dependent machine envelope, not the only place to find next-step handles.';
+  "PDPP tools are grant-scoped. Start with `schema`, then call `schema(stream)` after choosing a stream; add `connection_id` when a stream name appears under multiple sources or before full schema. Use `connection_id` from schema results or `available_connections` errors to disambiguate sources. Filters must be typed objects, not bracket strings. Page and narrow with `limit`, `cursor`, and `fields`; prefer `aggregate` or lexical `search` for exact terms. " +
+  "The configured bearer limits every result; do not use owner or control-plane tokens for normal MCP access. Schema advertises valid fields, filter operators, expand relations, sort/count support, connection identities, and connector keys. Persist `connection_id`, not `grant_id`, across reconnects. Search result ids are self-contained handles; pass them to `fetch` for projected records or to `read_record_field` for bounded field windows. " +
+  "When a preview is not enough, follow `structuredContent.content_ladder`: call `read_record_field` with the supplied arguments. Resource-aware hosts may also read hidden/returned resource URIs, but generic resource reads are not required for ordinary text evidence. " +
+  "`content[]` is the reliable model-visible guide and includes next cursors/bookmarks when present; `structuredContent` is a host-dependent machine envelope, not the only place to find next-step handles.";
 
 /**
  * Build an MCP server wired to a PDPP resource server through the supplied scoped token.
@@ -65,17 +61,13 @@ export function createPdppMcpServer({
     if (tool.outputSchema) {
       config.outputSchema = tool.outputSchema;
     }
-    server.registerTool(
-      tool.name,
-      config,
-      async (args) => {
-        try {
-          return await tool.handler(args ?? {});
-        } catch (error) {
-          return toolHandlerError(error);
-        }
+    server.registerTool(tool.name, config, async (args) => {
+      try {
+        return await tool.handler(args ?? {});
+      } catch (error) {
+        return toolHandlerError(error);
       }
-    );
+    });
   }
 
   for (const template of buildResourceTemplates({ rs, providerUrl })) {
@@ -140,12 +132,12 @@ function toolHandlerError(error) {
     isError: true,
     content: [
       {
-        type: 'text',
+        type: "text",
         text: JSON.stringify(
           {
-            type: 'adapter_error',
-            code: error?.code ?? 'tool_handler_error',
-            message: error?.message ?? 'Tool handler threw an error',
+            type: "adapter_error",
+            code: error?.code ?? "tool_handler_error",
+            message: error?.message ?? "Tool handler threw an error",
           },
           null,
           2
@@ -154,14 +146,12 @@ function toolHandlerError(error) {
     ],
     structuredContent: {
       error: {
-        type: 'adapter_error',
-        code: error?.code ?? 'tool_handler_error',
-        message: error?.message ?? 'Tool handler threw an error',
+        type: "adapter_error",
+        code: error?.code ?? "tool_handler_error",
+        message: error?.message ?? "Tool handler threw an error",
       },
     },
   };
 }
 
-export {
-  PDPP_MCP_TOOL_NAMES,
-} from './tools.js';
+export { PDPP_MCP_TOOL_NAMES } from "./tools.js";

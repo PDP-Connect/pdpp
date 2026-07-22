@@ -327,7 +327,10 @@ function normalizeClipToViewport(clip, viewportSize) {
 
 async function captureStreamRemoteRect(page, remoteRect, remoteViewport) {
   const contentRect = await streamContentRect(page, remoteViewport);
-  const clip = normalizeClipToViewport(mapRemoteRectToLocalClip(contentRect, remoteRect, remoteViewport), page.viewportSize());
+  const clip = normalizeClipToViewport(
+    mapRemoteRectToLocalClip(contentRect, remoteRect, remoteViewport),
+    page.viewportSize()
+  );
   return {
     clip,
     png: await page.screenshot({ clip }),
@@ -518,9 +521,13 @@ async function streamFailureSignature(page) {
     const media = node.querySelector("video, canvas");
     const video = media instanceof HTMLVideoElement ? media : null;
     const inlineError = [...node.querySelectorAll("[data-pdpp-stream-ui]")].some((element) =>
-      /n\.eko WebRTC stream did not attach|secure browser viewport could not be applied/i.test(element.textContent || "")
+      /n\.eko WebRTC stream did not attach|secure browser viewport could not be applied/i.test(
+        element.textContent || ""
+      )
     );
-    const retryAffordance = [...node.querySelectorAll("button")].some((button) => /retry secure browser/i.test(button.textContent || ""));
+    const retryAffordance = [...node.querySelectorAll("button")].some((button) =>
+      /retry secure browser/i.test(button.textContent || "")
+    );
     const bodyText = document.body?.innerText || "";
     const reachFailure =
       /couldn['’]t reach the browser stream|browser stream failed to start|browser stream isn['’]t available|n\.eko browser window did not settle/i.test(
@@ -532,7 +539,11 @@ async function streamFailureSignature(page) {
       // the distinguishing signal that keeps dark content from looking like a
       // black-frame failure.
       hasFirstFrameSignal: Boolean(
-        video && video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentTime > 0
+        video &&
+          video.videoWidth > 0 &&
+          video.videoHeight > 0 &&
+          video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+          video.currentTime > 0
       ),
       hasRasterMedia: Boolean(media),
     };
@@ -750,7 +761,9 @@ async function assertCornerControlsDisclosure(page) {
   await new Promise((resolve) => setTimeout(resolve, 200));
   const afterFirstEscape = await cornerControlsSnapshot(page);
   if (!afterFirstEscape.dialogPresent) {
-    fail("stream dialog closed/tore down on the FIRST Escape while actions were expanded — the disclosure must consume that Escape, not the dialog");
+    fail(
+      "stream dialog closed/tore down on the FIRST Escape while actions were expanded — the disclosure must consume that Escape, not the dialog"
+    );
   }
   if (afterFirstEscape.toggleExpanded !== "false") {
     fail(`first Escape did not collapse the disclosure: ${JSON.stringify(afterFirstEscape)}`);
@@ -813,7 +826,9 @@ async function captureFailureEvidence(page, debugEvents, requestEvidence, messag
         screenshotPath,
         streamFrame: frame,
         streamFramePixels: framePixels,
-        remotePlaygroundReady: Boolean(latestEvent(debugEvents, (_event, _payload, type) => type === "playground.ready")),
+        remotePlaygroundReady: Boolean(
+          latestEvent(debugEvents, (_event, _payload, type) => type === "playground.ready")
+        ),
         remoteLayoutSource: eventType(latestRemoteLayoutEvent(debugEvents)),
         requestEvidence,
         debugEventCount: debugEvents.length,
@@ -980,7 +995,9 @@ async function proveStrictVisualTyping(page, debugEvents, { mobile = false } = {
 async function run() {
   const origin = publicUrlFromEnv();
   if (!origin) {
-    skip("set PDPP_STREAM_SMOKE_URL, PDPP_PUBLIC_URL, or PDPP_REFERENCE_ORIGIN to the running Docker/public web origin.");
+    skip(
+      "set PDPP_STREAM_SMOKE_URL, PDPP_PUBLIC_URL, or PDPP_REFERENCE_ORIGIN to the running Docker/public web origin."
+    );
     return;
   }
   if (!(await deploymentReachable(origin))) {
@@ -990,7 +1007,13 @@ async function run() {
 
   const { chromium } = await importPatchright();
   const debugEvents = [];
-  const requestEvidence = { consoleErrors: [], eventStreamErrors: [], failedRequests: [], httpFailures: [], nekoHttpFailures: [] };
+  const requestEvidence = {
+    consoleErrors: [],
+    eventStreamErrors: [],
+    failedRequests: [],
+    httpFailures: [],
+    nekoHttpFailures: [],
+  };
   let debugEventSequence = 0;
   const mobile = mobileSmokeEnabled();
   const executablePath = browserExecutablePath();
@@ -1043,7 +1066,12 @@ async function run() {
       const url = new URL(request.url());
       const status = response.status();
       if (status >= 400) {
-        const failure = { method: request.method(), resourceType: request.resourceType(), status, url: redactRequestUrl(url) };
+        const failure = {
+          method: request.method(),
+          resourceType: request.resourceType(),
+          status,
+          url: redactRequestUrl(url),
+        };
         appendEvidence(requestEvidence.httpFailures, failure);
         if (url.pathname === "/neko" || url.pathname.startsWith("/neko/")) {
           appendEvidence(requestEvidence.nekoHttpFailures, failure);
@@ -1104,8 +1132,9 @@ async function run() {
 
     await waitFor(
       async () =>
-        !(await streamFrame.evaluate((node) => Boolean(node.getAttribute("data-pdpp-stream-loading"))).catch(() => true)) ||
-        hasEvent(debugEvents, (_event, _payload, type) => type === "neko.media.displayable"),
+        !(await streamFrame
+          .evaluate((node) => Boolean(node.getAttribute("data-pdpp-stream-loading")))
+          .catch(() => true)) || hasEvent(debugEvents, (_event, _payload, type) => type === "neko.media.displayable"),
       "stream never became displayable"
     );
 
@@ -1143,7 +1172,8 @@ async function run() {
         "strict-mode smoke did not observe healthy n.eko pointer mapping"
       );
       await waitFor(
-        () => hasEvent(debugEvents, (_event, _payload, type) => type === "adapter_mounted" || type === "neko.client.start"),
+        () =>
+          hasEvent(debugEvents, (_event, _payload, type) => type === "adapter_mounted" || type === "neko.client.start"),
         "strict-mode smoke did not observe n.eko adapter/client startup"
       );
       if (mobile) {
@@ -1251,8 +1281,14 @@ async function run() {
             debugEvents,
             (_event, _payload, type) => type.startsWith("surface.neko.") || type.startsWith("neko.touch")
           ) &&
-          hasEvent(debugEvents, (_event, payload, type) => type === "playground.click" || type === "playground.input") &&
-          hasEvent(debugEvents, (_event, payload, type) => type === "stream.input.post.result" || type === "neko.client.start"),
+          hasEvent(
+            debugEvents,
+            (_event, payload, type) => type === "playground.click" || type === "playground.input"
+          ) &&
+          hasEvent(
+            debugEvents,
+            (_event, payload, type) => type === "stream.input.post.result" || type === "neko.client.start"
+          ),
         "telemetry did not capture both local input path and remote playground events"
       );
     }
@@ -1279,7 +1315,9 @@ async function run() {
     process.stdout.write(
       `PASS manual-action stream smoke ${JSON.stringify({
         mobile,
-        mobileBoundary: mobile ? "Chromium touch emulation and proxy focus/typing; OS keyboard visibility not proven" : null,
+        mobileBoundary: mobile
+          ? "Chromium touch emulation and proxy focus/typing; OS keyboard visibility not proven"
+          : null,
         url,
       })}\n`
     );

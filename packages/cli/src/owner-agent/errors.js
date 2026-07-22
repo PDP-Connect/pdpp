@@ -9,7 +9,7 @@
 export class OwnerAgentError extends Error {
   constructor(code, message, exitCode = 69) {
     super(message);
-    this.name = 'OwnerAgentError';
+    this.name = "OwnerAgentError";
     this.code = code;
     this.exitCode = exitCode;
   }

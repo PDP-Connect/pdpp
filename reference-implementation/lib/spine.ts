@@ -1158,9 +1158,7 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
     source_kind: source?.kind ?? null,
     source_id: source?.id ?? null,
     connector_id: findFirstConnectorId(events),
-    ...(connectionId
-      ? { connection_id: connectionId, connector_instance_id: connectionId }
-      : {}),
+    ...(connectionId ? { connection_id: connectionId, connector_instance_id: connectionId } : {}),
     actor_type: first.actor_type,
     actor_id: first.actor_id,
     ...pickBrowserSurfaceFields(browserSurface),

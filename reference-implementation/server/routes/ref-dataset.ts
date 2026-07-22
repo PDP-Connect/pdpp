@@ -345,8 +345,7 @@ function buildDatasetSummaryStreamsDeps(ctx: MountRefDatasetContext): RefDataset
         const global = await ctx.getRetainedSizeGlobal();
         return {
           computed_at: global.computed_at ?? null,
-          state: (global.metadata?.state ||
-            (global.dirty ? "stale" : "fresh")) as RefDatasetSummaryProjectionState,
+          state: (global.metadata?.state || (global.dirty ? "stale" : "fresh")) as RefDatasetSummaryProjectionState,
           stale_since: global.metadata?.stale_since ?? null,
           rebuild_status: (global.metadata?.rebuild_status ?? "idle") as RefDatasetSummaryRebuildStatus,
           last_error: global.metadata?.last_error ?? null,

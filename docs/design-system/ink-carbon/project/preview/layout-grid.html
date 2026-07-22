@@ -1,32 +1,67 @@
 <!doctype html>
 <!-- @dsCard group="Spacing" name="Layout" subtitle="Content widths, sidebar, stat band" viewport="700x220" -->
 <html lang="en">
-<head>
-<meta charset="utf-8"/>
-<title>PDPP · Layout</title>
-<link href="../colors_and_type.css" rel="stylesheet"/>
-<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
-<style>
-body { margin: 0; padding: 22px 24px; background: var(--background); display: flex; flex-direction: column; gap: 14px; }
-.lbl { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted-foreground); }
-.frame { display: grid; grid-template-columns: 64px 1fr; border: 1px solid var(--border-strong); height: 84px; }
-.side { border-right: 1px solid var(--border); background: var(--muted); }
-.main { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
-.line { height: 7px; background: var(--muted); }
-</style>
-</head>
-<body>
-<span class="lbl">console: sidebar 240/280px · main max 1400px — reading column 760px, wide 1200px</span>
-<div class="frame">
-  <div class="side"></div>
-  <div class="main"><div class="line" style="width: 38%;"></div><div class="line"></div><div class="line" style="width: 82%;"></div></div>
-</div>
-<span class="lbl">pdpp-band — the dataset summary</span>
-<div class="pdpp-band">
-  <div class="pdpp-band__cell"><span class="pdpp-band__v">2</span><span class="pdpp-band__k">connectors</span></div>
-  <div class="pdpp-band__cell"><span class="pdpp-band__v">7</span><span class="pdpp-band__k">streams</span></div>
-  <div class="pdpp-band__cell"><span class="pdpp-band__v">48,112</span><span class="pdpp-band__k">records</span></div>
-  <div class="pdpp-band__cell"><span class="pdpp-band__v">1.21 GB</span><span class="pdpp-band__k">retained</span></div>
-</div>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <title>PDPP · Layout</title>
+    <link href="../colors_and_type.css" rel="stylesheet">
+    <link href="../ui_kits/web/kit.css" rel="stylesheet">
+    <style>
+    body {
+      margin: 0;
+      padding: 22px 24px;
+      background: var(--background);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .lbl {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--muted-foreground);
+    }
+    .frame {
+      display: grid;
+      grid-template-columns: 64px 1fr;
+      border: 1px solid var(--border-strong);
+      height: 84px;
+    }
+    .side {
+      border-right: 1px solid var(--border);
+      background: var(--muted);
+    }
+    .main {
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .line {
+      height: 7px;
+      background: var(--muted);
+    }
+    </style>
+  </head>
+  <body>
+    <span class="lbl">console: sidebar 240/280px · main max 1400px — reading column 760px, wide 1200px</span>
+    <div class="frame">
+      <div class="side"></div>
+      <div class="main">
+        <div class="line" style="width: 38%;"></div>
+        <div class="line"></div>
+        <div class="line" style="width: 82%;"></div>
+      </div>
+    </div>
+    <span class="lbl">pdpp-band — the dataset summary</span>
+    <div class="pdpp-band">
+      <div class="pdpp-band__cell"><span class="pdpp-band__v">2</span><span class="pdpp-band__k">connectors</span></div>
+      <div class="pdpp-band__cell"><span class="pdpp-band__v">7</span><span class="pdpp-band__k">streams</span></div>
+      <div class="pdpp-band__cell">
+        <span class="pdpp-band__v">48,112</span><span class="pdpp-band__k">records</span>
+      </div>
+      <div class="pdpp-band__cell">
+        <span class="pdpp-band__v">1.21 GB</span><span class="pdpp-band__k">retained</span>
+      </div>
+    </div>
+  </body>
 </html>

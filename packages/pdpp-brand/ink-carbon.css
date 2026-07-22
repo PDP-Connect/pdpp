@@ -55,7 +55,7 @@
    This import provides the fallback for contexts where the Next.js font
    variable is not available (static exports, storybook, jest).
    The @import is ignored if the variable font is already loaded. */
-@import url('https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400..900;1,400..700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400..900;1,400..700&display=swap");
 
 /* ─── Light mode (paper) ──────────────────────────────────────────── */
 :root {
@@ -64,8 +64,11 @@
      in apps/console/src/app/layout.tsx. It falls back to the Google Fonts
      CDN import in tokens.css if the font variable is not present (e.g. in
      static export or test environments). */
-  --font-sans: var(--ink-carbon-sans, "Schibsted Grotesk"), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, monospace;
+  --font-sans:
+    var(--ink-carbon-sans, "Schibsted Grotesk"), ui-sans-serif, system-ui,
+    sans-serif;
+  --font-mono:
+    "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, monospace;
 
   /* ─── Paper + ink ────────────────────────────────────────────── */
   --background: oklch(0.985 0.004 90);
@@ -86,7 +89,7 @@
   --human-tint: oklch(0.55 0.11 45 / 0.08);
 
   /* ─── Carbon — the duplicate the server keeps ────────────────── */
-  --carbon-outline: oklch(0.46 0.11 255 / 0.40);
+  --carbon-outline: oklch(0.46 0.11 255 / 0.4);
   --carbon-fill: oklch(0.46 0.11 255 / 0.09);
   --carbon-offset: 9px;
 
@@ -103,20 +106,20 @@
   --ring: oklch(0.46 0.11 255);
 
   /* ─── State (spent, never sprayed) ──────────────────────────── */
-  --success: oklch(0.50 0.11 158);          /* recorded / active */
-  --success-tint: oklch(0.50 0.11 158 / 0.10);
-  --warning: oklch(0.58 0.13 70);           /* expiring */
-  --warning-tint: oklch(0.58 0.13 70 / 0.10);
-  --destructive: oklch(0.52 0.16 27);       /* destructive acts only */
+  --success: oklch(0.5 0.11 158); /* recorded / active */
+  --success-tint: oklch(0.5 0.11 158 / 0.1);
+  --warning: oklch(0.58 0.13 70); /* expiring */
+  --warning-tint: oklch(0.58 0.13 70 / 0.1);
+  --destructive: oklch(0.52 0.16 27); /* destructive acts only */
   --destructive-foreground: oklch(0.99 0.002 90);
   --destructive-tint: oklch(0.52 0.16 27 / 0.08);
 
   /* ─── Geometry — square paper ────────────────────────────────── */
-  --radius: 0px;             /* sheets, cards, panels = no rounding */
-  --radius-sm: 0px;          /* override brand sm */
-  --radius-md: 0px;          /* override brand md */
-  --radius-lg: 0px;          /* override brand lg */
-  --radius-control: 2px;     /* the ONLY rounding: inputs, buttons */
+  --radius: 0px; /* sheets, cards, panels = no rounding */
+  --radius-sm: 0px; /* override brand sm */
+  --radius-md: 0px; /* override brand md */
+  --radius-lg: 0px; /* override brand lg */
+  --radius-control: 2px; /* the ONLY rounding: inputs, buttons */
 
   /* ─── Motion ─────────────────────────────────────────────────── */
   --duration-instant: 0ms;
@@ -124,7 +127,7 @@
   --duration-base: 200ms;
   --duration-moderate: 300ms;
   --duration-slow: 500ms;
-  --motion-state: var(--duration-fast) ease;  /* button/badge state transitions */
+  --motion-state: var(--duration-fast) ease; /* button/badge state transitions */
 
   /* ─── Layout ─────────────────────────────────────────────────── */
   --pdpp-sidebar-width: 220px;
@@ -133,7 +136,7 @@
   --primary-wash: var(--primary-tint);
   --human-wash: var(--human-tint);
   --success-wash: var(--success-tint);
-  --success-wash-strong: oklch(0.50 0.11 158 / 0.16);
+  --success-wash-strong: oklch(0.5 0.11 158 / 0.16);
   --warning-wash: var(--warning-tint);
   --verified-wash: var(--success-tint);
   --edu-fg: oklch(0.45 0.06 210);
@@ -146,7 +149,9 @@
 }
 
 @media (min-width: 64rem) {
-  :root { --pdpp-sidebar-width: 240px; }
+  :root {
+    --pdpp-sidebar-width: 240px;
+  }
 }
 
 /* ─── Reduced motion ─────────────────────────────────────────────── */
@@ -199,22 +204,22 @@
   --accent: oklch(0.26 0.007 262);
   --accent-foreground: oklch(0.95 0.005 262);
   --border: oklch(0.29 0.008 262);
-  --border-strong: oklch(0.40 0.008 262);
+  --border-strong: oklch(0.4 0.008 262);
   --input: oklch(0.34 0.008 262);
   --ring: oklch(0.74 0.13 255);
 
   --success: oklch(0.76 0.13 158);
   --success-tint: oklch(0.76 0.13 158 / 0.14);
-  --warning: oklch(0.80 0.14 75);
-  --warning-tint: oklch(0.80 0.14 75 / 0.13);
-  --destructive: oklch(0.70 0.16 27);
+  --warning: oklch(0.8 0.14 75);
+  --warning-tint: oklch(0.8 0.14 75 / 0.13);
+  --destructive: oklch(0.7 0.16 27);
   --destructive-foreground: oklch(0.15 0.01 262);
-  --destructive-tint: oklch(0.70 0.16 27 / 0.12);
+  --destructive-tint: oklch(0.7 0.16 27 / 0.12);
 
   --primary-wash: var(--primary-tint);
   --human-wash: var(--human-tint);
   --success-wash: var(--success-tint);
-  --success-wash-strong: oklch(0.76 0.13 158 / 0.20);
+  --success-wash-strong: oklch(0.76 0.13 158 / 0.2);
   --warning-wash: var(--warning-tint);
   --verified-wash: var(--success-tint);
   --edu-fg: oklch(0.78 0.06 210);

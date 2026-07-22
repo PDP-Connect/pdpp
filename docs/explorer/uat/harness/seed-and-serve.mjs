@@ -24,12 +24,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  CHASE_CONNECTOR_ID,
-  CHASE_TRANSACTIONS,
-  GMAIL_CONNECTOR_ID,
-  GMAIL_MESSAGES,
-} from "./fixtures.mjs";
+import { CHASE_CONNECTOR_ID, CHASE_TRANSACTIONS, GMAIL_CONNECTOR_ID, GMAIL_MESSAGES } from "./fixtures.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 // harness lives at docs/explorer/uat/harness/ — repo root is four levels up.
@@ -101,9 +96,7 @@ async function registerManifest(manifest) {
 }
 
 async function ingest(token, connectorId, stream, records, timeField) {
-  const lines = records
-    .map((r) => JSON.stringify({ key: r.id, data: r, emitted_at: r[timeField] }))
-    .join("\n");
+  const lines = records.map((r) => JSON.stringify({ key: r.id, data: r, emitted_at: r[timeField] })).join("\n");
   const { status, body } = await jsonFetch(
     `${RS_URL}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`,
     {

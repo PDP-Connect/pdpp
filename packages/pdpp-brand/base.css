@@ -8,7 +8,8 @@
 
 :root {
   --font-sans: "Geist Variable", "Geist", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+  --font-mono:
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
 
   --background: oklch(0.99 0.002 95);
   --foreground: oklch(0.13 0 0);
@@ -16,19 +17,19 @@
   --card-foreground: oklch(0.13 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.13 0 0);
-  --primary: oklch(0.580 0.172 253.7);
+  --primary: oklch(0.58 0.172 253.7);
   --primary-foreground: oklch(0.99 0 0);
   --secondary: oklch(0.96 0 0);
-  --secondary-foreground: oklch(0.20 0 0);
+  --secondary-foreground: oklch(0.2 0 0);
   --muted: oklch(0.96 0 0);
-  --muted-foreground: oklch(0.50 0 0);
+  --muted-foreground: oklch(0.5 0 0);
   --accent: oklch(0.96 0 0);
-  --accent-foreground: oklch(0.20 0 0);
-  --destructive: oklch(0.55 0.20 27);
+  --accent-foreground: oklch(0.2 0 0);
+  --destructive: oklch(0.55 0.2 27);
   --destructive-foreground: oklch(0.99 0 0);
   --border: oklch(0.94 0 0);
   --input: oklch(0.91 0 0);
-  --ring: oklch(0.580 0.172 253.7);
+  --ring: oklch(0.58 0.172 253.7);
 
   /* ─── Radius scale ──────────────────────────────────────────────────────────
      One intentional step per component class, not a single radius everywhere.
@@ -46,15 +47,15 @@
      values. Mirrors the Tailwind 4px grid, so named tokens and utility classes
      stay coherent. Compose padding/gap from these steps. */
   --space-0: 0;
-  --space-1: 0.25rem;   /* 4  */
-  --space-2: 0.5rem;    /* 8  */
-  --space-3: 0.75rem;   /* 12 */
-  --space-4: 1rem;      /* 16 */
-  --space-5: 1.25rem;   /* 20 */
-  --space-6: 1.5rem;    /* 24 */
-  --space-8: 2rem;      /* 32 */
-  --space-10: 2.5rem;   /* 40 */
-  --space-12: 3rem;     /* 48 */
+  --space-1: 0.25rem; /* 4  */
+  --space-2: 0.5rem; /* 8  */
+  --space-3: 0.75rem; /* 12 */
+  --space-4: 1rem; /* 16 */
+  --space-5: 1.25rem; /* 20 */
+  --space-6: 1.5rem; /* 24 */
+  --space-8: 2rem; /* 32 */
+  --space-10: 2.5rem; /* 40 */
+  --space-12: 3rem; /* 48 */
 
   /* ─── Surface-elevation ladder ──────────────────────────────────────────────
      Elevation = a step up in surface fill + a paired border, NOT a resting drop
@@ -67,8 +68,9 @@
   --surface-card: var(--card);
   --surface-raised: oklch(0.975 0.003 95);
   --surface-overlay: var(--popover);
-  --border-strong: oklch(0.90 0 0);
-  --shadow-overlay: 0 8px 24px -8px oklch(0 0 0 / 0.18), 0 2px 6px -2px oklch(0 0 0 / 0.10);
+  --border-strong: oklch(0.9 0 0);
+  --shadow-overlay:
+    0 8px 24px -8px oklch(0 0 0 / 0.18), 0 2px 6px -2px oklch(0 0 0 / 0.1);
 
   /* Numeric treatment — every amount, count, timestamp aligns in columns. */
   --numeric: tabular-nums lining-nums;
@@ -85,7 +87,7 @@
 
   --success-wash: oklch(0.52 0.15 150 / 0.1);
   --success-wash-strong: oklch(0.52 0.15 150 / 0.15);
-  --primary-wash: oklch(0.580 0.172 253.7 / 0.06);
+  --primary-wash: oklch(0.58 0.172 253.7 / 0.06);
   --verified-wash: oklch(0.52 0.15 150 / 0.1);
   --warning-wash: oklch(0.62 0.15 70 / 0.1);
 
@@ -104,15 +106,15 @@
      bg tokens use low-alpha fills (readable on --card and --background alike).
      fg tokens are readable body text on those fills, not the vivid badge colors. */
   --status-success-bg: oklch(0.52 0.15 150 / 0.08);
-  --status-success-fg: oklch(0.30 0.12 150);
+  --status-success-fg: oklch(0.3 0.12 150);
 
-  --status-progress-bg: oklch(0.580 0.172 253.7 / 0.07);
-  --status-progress-fg: oklch(0.40 0.14 253.7);
+  --status-progress-bg: oklch(0.58 0.172 253.7 / 0.07);
+  --status-progress-fg: oklch(0.4 0.14 253.7);
 
   --status-warning-bg: oklch(0.62 0.15 70 / 0.09);
   --status-warning-fg: oklch(0.38 0.12 70);
 
-  --status-danger-bg: oklch(0.55 0.20 27 / 0.08);
+  --status-danger-bg: oklch(0.55 0.2 27 / 0.08);
   --status-danger-fg: oklch(0.38 0.16 27);
 
   --status-neutral-bg: oklch(0.94 0 0);
@@ -122,18 +124,18 @@
   --status-disabled-fg: oklch(0.58 0 0);
 
   /* Callout informational / warning tone tokens */
-  --callout-info-bg: oklch(0.580 0.172 253.7 / 0.06);
+  --callout-info-bg: oklch(0.58 0.172 253.7 / 0.06);
   --callout-info-fg: oklch(0.35 0.14 253.7);
-  --callout-info-border: oklch(0.580 0.172 253.7 / 0.22);
+  --callout-info-border: oklch(0.58 0.172 253.7 / 0.22);
 
   --callout-warning-bg: oklch(0.62 0.15 70 / 0.08);
   --callout-warning-fg: oklch(0.38 0.12 70);
-  --callout-warning-border: oklch(0.62 0.15 70 / 0.30);
+  --callout-warning-border: oklch(0.62 0.15 70 / 0.3);
 
   --human: oklch(0.52 0.09 45);
   --human-wash: oklch(0.52 0.09 45 / 0.07);
 
-/* ─── Authorship trust tier ──────────────────────────────────────────────────
+  /* ─── Authorship trust tier ──────────────────────────────────────────────────
      Trust-provenance surfaces. Three authorship classes; each gets a hue
      temperature so a standards reviewer can *see* the authorship boundary.
      protocol  — cool blue (H253.7): enforced, verifiable protocol facts
@@ -141,17 +143,17 @@
      client    — neutral grey + dashed: client claims, never trusted
      Roles: -fg (label ink) · -accent (vivid marker) · -border (hairline) ·
             -wash (low-alpha tint; use for accents/labels, not fill blocks) */
-  --authorship-protocol-fg: oklch(0.40 0.14 253.7);
-  --authorship-protocol-accent: oklch(0.580 0.172 253.7);
-  --authorship-protocol-border: oklch(0.580 0.172 253.7 / 0.30);
-  --authorship-protocol-wash: oklch(0.580 0.172 253.7 / 0.06);
+  --authorship-protocol-fg: oklch(0.4 0.14 253.7);
+  --authorship-protocol-accent: oklch(0.58 0.172 253.7);
+  --authorship-protocol-border: oklch(0.58 0.172 253.7 / 0.3);
+  --authorship-protocol-wash: oklch(0.58 0.172 253.7 / 0.06);
 
-  --authorship-manifest-fg: oklch(0.46 0.10 45);
+  --authorship-manifest-fg: oklch(0.46 0.1 45);
   --authorship-manifest-accent: oklch(0.52 0.12 45);
   --authorship-manifest-border: oklch(0.52 0.12 45 / 0.35);
   --authorship-manifest-wash: oklch(0.52 0.12 45 / 0.06);
 
-  --authorship-client-fg: oklch(0.50 0 0);
+  --authorship-client-fg: oklch(0.5 0 0);
   --authorship-client-accent: oklch(0.62 0 0);
   --authorship-client-border: oklch(0.72 0 0);
   --authorship-client-wash: oklch(0.62 0 0 / 0.05);
@@ -224,9 +226,9 @@ html[data-density="compact"] {
 :is(html.dark, html[data-theme="dark"]) {
   --background: oklch(0.16 0.005 260);
   --foreground: oklch(0.96 0.005 260);
-  --card: oklch(0.20 0.006 260);
+  --card: oklch(0.2 0.006 260);
   --card-foreground: oklch(0.96 0.005 260);
-  --popover: oklch(0.20 0.006 260);
+  --popover: oklch(0.2 0.006 260);
   --popover-foreground: oklch(0.96 0.005 260);
 
   --primary: oklch(0.72 0.16 253.7);
@@ -236,12 +238,12 @@ html[data-density="compact"] {
   --secondary-foreground: oklch(0.96 0.005 260);
 
   --muted: oklch(0.24 0.006 260);
-  --muted-foreground: oklch(0.70 0.01 260);
+  --muted-foreground: oklch(0.7 0.01 260);
 
   --accent: oklch(0.26 0.006 260);
   --accent-foreground: oklch(0.96 0.005 260);
 
-  --destructive: oklch(0.70 0.18 25);
+  --destructive: oklch(0.7 0.18 25);
   --destructive-foreground: oklch(0.14 0.01 260);
 
   --border: oklch(0.28 0.006 260);
@@ -249,7 +251,7 @@ html[data-density="compact"] {
   --ring: oklch(0.72 0.16 253.7);
 
   --success: oklch(0.74 0.16 152);
-  --warning: oklch(0.80 0.15 75);
+  --warning: oklch(0.8 0.15 75);
   --success-badge-foreground: var(--success);
   --warning-badge-foreground: var(--warning);
   --danger-badge-foreground: var(--destructive);
@@ -263,7 +265,7 @@ html[data-density="compact"] {
   --success-wash-strong: oklch(0.74 0.16 152 / 0.22);
   --primary-wash: oklch(0.72 0.16 253.7 / 0.12);
   --verified-wash: oklch(0.74 0.16 152 / 0.16);
-  --warning-wash: oklch(0.80 0.15 75 / 0.14);
+  --warning-wash: oklch(0.8 0.15 75 / 0.14);
 
   /* Status surface tier — dark overrides. Higher alpha than light (charcoal
      absorbs the fill) and lighter fg (near-black background needs more contrast). */
@@ -273,10 +275,10 @@ html[data-density="compact"] {
   --status-progress-bg: oklch(0.72 0.16 253.7 / 0.13);
   --status-progress-fg: oklch(0.82 0.14 253.7);
 
-  --status-warning-bg: oklch(0.80 0.15 75 / 0.14);
+  --status-warning-bg: oklch(0.8 0.15 75 / 0.14);
   --status-warning-fg: oklch(0.86 0.13 75);
 
-  --status-danger-bg: oklch(0.70 0.18 25 / 0.15);
+  --status-danger-bg: oklch(0.7 0.18 25 / 0.15);
   --status-danger-fg: oklch(0.82 0.16 25);
 
   --status-neutral-bg: oklch(0.24 0.006 260);
@@ -285,13 +287,13 @@ html[data-density="compact"] {
   --status-disabled-bg: oklch(0.22 0.005 260);
   --status-disabled-fg: oklch(0.55 0.008 260);
 
-  --callout-info-bg: oklch(0.72 0.16 253.7 / 0.10);
+  --callout-info-bg: oklch(0.72 0.16 253.7 / 0.1);
   --callout-info-fg: oklch(0.82 0.14 253.7);
   --callout-info-border: oklch(0.72 0.16 253.7 / 0.28);
 
-  --callout-warning-bg: oklch(0.80 0.15 75 / 0.12);
+  --callout-warning-bg: oklch(0.8 0.15 75 / 0.12);
   --callout-warning-fg: oklch(0.86 0.13 75);
-  --callout-warning-border: oklch(0.80 0.15 75 / 0.32);
+  --callout-warning-border: oklch(0.8 0.15 75 / 0.32);
 
   /* The warm "human" accent as a true sibling of the blue primary: comparable
      chroma magnitude (0.14 vs primary 0.16) so it carries equal visual weight,
@@ -300,43 +302,44 @@ html[data-density="compact"] {
      as a muted warning. Its own semantic lane between destructive-red (H25) and
      warning-amber (H75). */
   --human: oklch(0.75 0.14 45);
-  --human-wash: oklch(0.75 0.14 45 / 0.10);
+  --human-wash: oklch(0.75 0.14 45 / 0.1);
 
   /* Authorship trust tier — dark overrides.
      Lighter ink and accents to clear the charcoal surface; the client tier
      stays dashed so "claimed, not enforced" survives dark mode. */
   --authorship-protocol-fg: oklch(0.82 0.14 253.7);
   --authorship-protocol-accent: oklch(0.72 0.16 253.7);
-  --authorship-protocol-border: oklch(0.72 0.16 253.7 / 0.40);
+  --authorship-protocol-border: oklch(0.72 0.16 253.7 / 0.4);
   --authorship-protocol-wash: oklch(0.72 0.16 253.7 / 0.12);
 
   --authorship-manifest-fg: oklch(0.82 0.12 45);
   --authorship-manifest-accent: oklch(0.75 0.14 45);
-  --authorship-manifest-border: oklch(0.75 0.14 45 / 0.40);
+  --authorship-manifest-border: oklch(0.75 0.14 45 / 0.4);
   --authorship-manifest-wash: oklch(0.75 0.14 45 / 0.12);
 
-  --authorship-client-fg: oklch(0.70 0.01 260);
+  --authorship-client-fg: oklch(0.7 0.01 260);
   --authorship-client-accent: oklch(0.62 0.008 260);
   --authorship-client-border: oklch(0.45 0.006 260);
-  --authorship-client-wash: oklch(0.70 0.01 260 / 0.07);
+  --authorship-client-wash: oklch(0.7 0.01 260 / 0.07);
 
   /* Lift mixers go *down* toward the page surface in dark mode. */
-  --surface-tint: oklch(0.10 0.005 260);
+  --surface-tint: oklch(0.1 0.005 260);
 
   /* Surface ladder as discrete charcoal steps. Replacing resting shadows with
      fill-steps means each layer must be perceptibly lighter than the one it
      sits on. overlay is a FULL step above raised (not equal) so a floating
      layer over a raised card stays legible even before --shadow-overlay. */
   --surface-page: oklch(0.16 0.005 260);
-  --surface-card: oklch(0.20 0.006 260);
+  --surface-card: oklch(0.2 0.006 260);
   --surface-raised: oklch(0.235 0.006 260);
   --surface-overlay: oklch(0.275 0.006 260);
   --border-strong: oklch(0.34 0.006 260);
   /* One luminance step above --border-strong, dedicated to dense-list row
      dividers so they chunk rows on charcoal without nudging every
      --border-strong consumer. */
-  --data-list-divider: oklch(0.40 0.006 260);
-  --shadow-overlay: 0 10px 28px -10px oklch(0 0 0 / 0.55), 0 3px 8px -3px oklch(0 0 0 / 0.40);
+  --data-list-divider: oklch(0.4 0.006 260);
+  --shadow-overlay:
+    0 10px 28px -10px oklch(0 0 0 / 0.55), 0 3px 8px -3px oklch(0 0 0 / 0.4);
 
   color-scheme: dark;
 }
@@ -345,9 +348,9 @@ html[data-density="compact"] {
   html[data-theme="system"] {
     --background: oklch(0.16 0.005 260);
     --foreground: oklch(0.96 0.005 260);
-    --card: oklch(0.20 0.006 260);
+    --card: oklch(0.2 0.006 260);
     --card-foreground: oklch(0.96 0.005 260);
-    --popover: oklch(0.20 0.006 260);
+    --popover: oklch(0.2 0.006 260);
     --popover-foreground: oklch(0.96 0.005 260);
 
     --primary: oklch(0.72 0.16 253.7);
@@ -357,12 +360,12 @@ html[data-density="compact"] {
     --secondary-foreground: oklch(0.96 0.005 260);
 
     --muted: oklch(0.24 0.006 260);
-    --muted-foreground: oklch(0.70 0.01 260);
+    --muted-foreground: oklch(0.7 0.01 260);
 
     --accent: oklch(0.26 0.006 260);
     --accent-foreground: oklch(0.96 0.005 260);
 
-    --destructive: oklch(0.70 0.18 25);
+    --destructive: oklch(0.7 0.18 25);
     --destructive-foreground: oklch(0.14 0.01 260);
 
     --border: oklch(0.28 0.006 260);
@@ -370,7 +373,7 @@ html[data-density="compact"] {
     --ring: oklch(0.72 0.16 253.7);
 
     --success: oklch(0.74 0.16 152);
-    --warning: oklch(0.80 0.15 75);
+    --warning: oklch(0.8 0.15 75);
     --success-badge-foreground: var(--success);
     --warning-badge-foreground: var(--warning);
     --danger-badge-foreground: var(--destructive);
@@ -382,7 +385,7 @@ html[data-density="compact"] {
     --success-wash-strong: oklch(0.74 0.16 152 / 0.22);
     --primary-wash: oklch(0.72 0.16 253.7 / 0.12);
     --verified-wash: oklch(0.74 0.16 152 / 0.16);
-    --warning-wash: oklch(0.80 0.15 75 / 0.14);
+    --warning-wash: oklch(0.8 0.15 75 / 0.14);
 
     /* Status surface tier — dark overrides. */
     --status-success-bg: oklch(0.74 0.16 152 / 0.14);
@@ -391,10 +394,10 @@ html[data-density="compact"] {
     --status-progress-bg: oklch(0.72 0.16 253.7 / 0.13);
     --status-progress-fg: oklch(0.82 0.14 253.7);
 
-    --status-warning-bg: oklch(0.80 0.15 75 / 0.14);
+    --status-warning-bg: oklch(0.8 0.15 75 / 0.14);
     --status-warning-fg: oklch(0.86 0.13 75);
 
-    --status-danger-bg: oklch(0.70 0.18 25 / 0.15);
+    --status-danger-bg: oklch(0.7 0.18 25 / 0.15);
     --status-danger-fg: oklch(0.82 0.16 25);
 
     --status-neutral-bg: oklch(0.24 0.006 260);
@@ -403,53 +406,54 @@ html[data-density="compact"] {
     --status-disabled-bg: oklch(0.22 0.005 260);
     --status-disabled-fg: oklch(0.55 0.008 260);
 
-    --callout-info-bg: oklch(0.72 0.16 253.7 / 0.10);
+    --callout-info-bg: oklch(0.72 0.16 253.7 / 0.1);
     --callout-info-fg: oklch(0.82 0.14 253.7);
     --callout-info-border: oklch(0.72 0.16 253.7 / 0.28);
 
-    --callout-warning-bg: oklch(0.80 0.15 75 / 0.12);
+    --callout-warning-bg: oklch(0.8 0.15 75 / 0.12);
     --callout-warning-fg: oklch(0.86 0.13 75);
-    --callout-warning-border: oklch(0.80 0.15 75 / 0.32);
+    --callout-warning-border: oklch(0.8 0.15 75 / 0.32);
 
     /* The warm "human" accent as a true sibling of the blue primary: comparable
        chroma magnitude (0.14 vs primary 0.16), hue held in the terracotta lane
        (H45) — same hue as light mode and a full 30° clear of warning amber
        (H75) so a "human" marker never reads as a muted warning. */
     --human: oklch(0.75 0.14 45);
-    --human-wash: oklch(0.75 0.14 45 / 0.10);
+    --human-wash: oklch(0.75 0.14 45 / 0.1);
 
     /* Authorship trust tier — system-dark overrides (mirrors html[data-theme="dark"]). */
     --authorship-protocol-fg: oklch(0.82 0.14 253.7);
     --authorship-protocol-accent: oklch(0.72 0.16 253.7);
-    --authorship-protocol-border: oklch(0.72 0.16 253.7 / 0.40);
+    --authorship-protocol-border: oklch(0.72 0.16 253.7 / 0.4);
     --authorship-protocol-wash: oklch(0.72 0.16 253.7 / 0.12);
 
     --authorship-manifest-fg: oklch(0.82 0.12 45);
     --authorship-manifest-accent: oklch(0.75 0.14 45);
-    --authorship-manifest-border: oklch(0.75 0.14 45 / 0.40);
+    --authorship-manifest-border: oklch(0.75 0.14 45 / 0.4);
     --authorship-manifest-wash: oklch(0.75 0.14 45 / 0.12);
 
-    --authorship-client-fg: oklch(0.70 0.01 260);
+    --authorship-client-fg: oklch(0.7 0.01 260);
     --authorship-client-accent: oklch(0.62 0.008 260);
     --authorship-client-border: oklch(0.45 0.006 260);
-    --authorship-client-wash: oklch(0.70 0.01 260 / 0.07);
+    --authorship-client-wash: oklch(0.7 0.01 260 / 0.07);
 
     /* Lift mixers go *down* toward the page surface in dark mode. */
-    --surface-tint: oklch(0.10 0.005 260);
+    --surface-tint: oklch(0.1 0.005 260);
 
     /* Surface ladder as discrete charcoal steps. overlay is a FULL step above
        raised (not equal) so a floating layer over a raised card stays legible
        even before --shadow-overlay applies. */
     --surface-page: oklch(0.16 0.005 260);
-    --surface-card: oklch(0.20 0.006 260);
+    --surface-card: oklch(0.2 0.006 260);
     --surface-raised: oklch(0.235 0.006 260);
     --surface-overlay: oklch(0.275 0.006 260);
     --border-strong: oklch(0.34 0.006 260);
     /* One luminance step above --border-strong, dedicated to dense-list row
        dividers so they chunk rows on charcoal without nudging every
        --border-strong consumer. */
-    --data-list-divider: oklch(0.40 0.006 260);
-    --shadow-overlay: 0 10px 28px -10px oklch(0 0 0 / 0.55), 0 3px 8px -3px oklch(0 0 0 / 0.40);
+    --data-list-divider: oklch(0.4 0.006 260);
+    --shadow-overlay:
+      0 10px 28px -10px oklch(0 0 0 / 0.55), 0 3px 8px -3px oklch(0 0 0 / 0.4);
 
     color-scheme: dark;
   }
@@ -473,7 +477,9 @@ body {
   color: var(--foreground);
 }
 
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -508,7 +514,7 @@ samp {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: oklch(0 0 0 / 0.20);
+  background: oklch(0 0 0 / 0.2);
 }
 
 :is(html.dark, html[data-theme="dark"]) ::-webkit-scrollbar-thumb {
@@ -557,17 +563,29 @@ samp {
 
 [data-surface="stage"] {
   background-color: var(--muted);
-  background-image: radial-gradient(circle, oklch(0 0 0 / 0.06) 1px, transparent 1px);
+  background-image: radial-gradient(
+    circle,
+    oklch(0 0 0 / 0.06) 1px,
+    transparent 1px
+  );
   background-size: 20px 20px;
 }
 
 :is(html.dark, html[data-theme="dark"]) [data-surface="stage"] {
-  background-image: radial-gradient(circle, oklch(1 0 0 / 0.07) 1px, transparent 1px);
+  background-image: radial-gradient(
+    circle,
+    oklch(1 0 0 / 0.07) 1px,
+    transparent 1px
+  );
 }
 
 @media (prefers-color-scheme: dark) {
   html[data-theme="system"] [data-surface="stage"] {
-    background-image: radial-gradient(circle, oklch(1 0 0 / 0.07) 1px, transparent 1px);
+    background-image: radial-gradient(
+      circle,
+      oklch(1 0 0 / 0.07) 1px,
+      transparent 1px
+    );
   }
 }
 
@@ -604,7 +622,7 @@ samp {
 
 .pdpp-display-lg {
   font-family: var(--font-sans);
-  font-size: 3.75rem;      /* 60px */
+  font-size: 3.75rem; /* 60px */
   font-weight: 600;
   line-height: 1.05;
   letter-spacing: -0.03em;
@@ -612,7 +630,7 @@ samp {
 
 .pdpp-display {
   font-family: var(--font-sans);
-  font-size: 2.5rem;       /* 40px */
+  font-size: 2.5rem; /* 40px */
   font-weight: 600;
   line-height: 1.08;
   letter-spacing: -0.025em;
@@ -620,7 +638,7 @@ samp {
 
 .pdpp-heading {
   font-family: var(--font-sans);
-  font-size: 1.25rem;      /* 20px */
+  font-size: 1.25rem; /* 20px */
   font-weight: 600;
   line-height: 1.3;
   letter-spacing: -0.01em;
@@ -628,7 +646,7 @@ samp {
 
 .pdpp-title {
   font-family: var(--font-sans);
-  font-size: 0.875rem;     /* 14px */
+  font-size: 0.875rem; /* 14px */
   font-weight: 600;
   line-height: 1.4;
   letter-spacing: 0;
@@ -636,7 +654,7 @@ samp {
 
 .pdpp-body-lg {
   font-family: var(--font-sans);
-  font-size: 1.125rem;     /* 18px */
+  font-size: 1.125rem; /* 18px */
   font-weight: 400;
   line-height: 1.625;
   letter-spacing: 0;
@@ -644,7 +662,7 @@ samp {
 
 .pdpp-body {
   font-family: var(--font-sans);
-  font-size: 0.875rem;     /* 14px */
+  font-size: 0.875rem; /* 14px */
   font-weight: 400;
   line-height: 1.6;
   letter-spacing: 0;
@@ -652,7 +670,7 @@ samp {
 
 .pdpp-label {
   font-family: var(--font-sans);
-  font-size: 0.75rem;      /* 12px */
+  font-size: 0.75rem; /* 12px */
   font-weight: 500;
   line-height: 1.4;
   letter-spacing: 0;
@@ -660,7 +678,7 @@ samp {
 
 .pdpp-caption {
   font-family: var(--font-sans);
-  font-size: 0.75rem;      /* 12px */
+  font-size: 0.75rem; /* 12px */
   font-weight: 400;
   line-height: 1.5;
   letter-spacing: 0;
@@ -695,7 +713,9 @@ samp {
   border-top-color: var(--data-list-divider);
   border-bottom-color: var(--data-list-divider);
 }
-:is(html.dark, html[data-theme="dark"]) .pdpp-data-list > :where(:not(:last-child)) {
+:is(html.dark, html[data-theme="dark"])
+  .pdpp-data-list
+  > :where(:not(:last-child)) {
   border-color: var(--data-list-divider);
 }
 @media (prefers-color-scheme: dark) {
@@ -734,19 +754,26 @@ samp {
   color: var(--status-neutral-fg);
 }
 
-:is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="success"] {
+:is(html.dark, html[data-theme="dark"])
+  .pdpp-status-badge[data-status-tone="success"] {
   background-color: var(--status-success-bg);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--success) 30%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklab, var(--success) 30%, transparent);
 }
-:is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="danger"] {
+:is(html.dark, html[data-theme="dark"])
+  .pdpp-status-badge[data-status-tone="danger"] {
   background-color: var(--status-danger-bg);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--destructive) 32%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklab, var(--destructive) 32%, transparent);
 }
-:is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="warning"] {
+:is(html.dark, html[data-theme="dark"])
+  .pdpp-status-badge[data-status-tone="warning"] {
   background-color: var(--status-warning-bg);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warning) 30%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklab, var(--warning) 30%, transparent);
 }
-:is(html.dark, html[data-theme="dark"]) .pdpp-status-badge[data-status-tone="neutral"] {
+:is(html.dark, html[data-theme="dark"])
+  .pdpp-status-badge[data-status-tone="neutral"] {
   background-color: var(--status-neutral-bg);
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }
@@ -754,15 +781,18 @@ samp {
 @media (prefers-color-scheme: dark) {
   html[data-theme="system"] .pdpp-status-badge[data-status-tone="success"] {
     background-color: var(--status-success-bg);
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--success) 30%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in oklab, var(--success) 30%, transparent);
   }
   html[data-theme="system"] .pdpp-status-badge[data-status-tone="danger"] {
     background-color: var(--status-danger-bg);
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--destructive) 32%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in oklab, var(--destructive) 32%, transparent);
   }
   html[data-theme="system"] .pdpp-status-badge[data-status-tone="warning"] {
     background-color: var(--status-warning-bg);
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warning) 30%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in oklab, var(--warning) 30%, transparent);
   }
   html[data-theme="system"] .pdpp-status-badge[data-status-tone="neutral"] {
     background-color: var(--status-neutral-bg);

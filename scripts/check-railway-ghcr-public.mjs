@@ -42,14 +42,12 @@
 // Exit codes: 0 = template image PUBLIC (gate clear); 1 = image not pullable
 // (gate blocked); 2 = bad usage.
 
-import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 // The app-service image, mapped to its Railway service and Dockerfile stage.
 // Repository path only — no registry host, no tag.
-export const TEMPLATE_IMAGES = [
-  { image: 'pdp-connect/pdpp/railway-core', service: 'core', stage: 'railway-core' },
-];
+export const TEMPLATE_IMAGES = [{ image: "pdp-connect/pdpp/railway-core", service: "core", stage: "railway-core" }];
 
 // Map an anonymous GHCR pull-token HTTP status onto a package-visibility verdict.
 // 200 grants a token (package is anonymously readable); 401 means auth required
@@ -57,15 +55,15 @@ export const TEMPLATE_IMAGES = [
 // unclassified transport result we refuse to treat as "public".
 export function classifyTokenStatus(status) {
   if (status === 200) {
-    return { visibility: 'public', tokenGranted: true };
+    return { visibility: "public", tokenGranted: true };
   }
   if (status === 401) {
-    return { visibility: 'private', tokenGranted: false };
+    return { visibility: "private", tokenGranted: false };
   }
   if (status === 403) {
-    return { visibility: 'absent', tokenGranted: false };
+    return { visibility: "absent", tokenGranted: false };
   }
-  return { visibility: 'unknown', tokenGranted: false };
+  return { visibility: "unknown", tokenGranted: false };
 }
 
 // Collapse a token verdict (+ optional tags/list outcome, a required tag pin,
@@ -95,11 +93,11 @@ export function classifyProbeResult({
   if (!tokenGranted) {
     ok = false;
     reason =
-      visibility === 'private'
-        ? 'private — anonymous pull token refused (401); owner must flip package visibility to Public'
-        : visibility === 'absent'
-        ? 'absent — no such GHCR package path (403); check the image name'
-        : `unexpected GHCR token status ${tokenStatus}`;
+      visibility === "private"
+        ? "private — anonymous pull token refused (401); owner must flip package visibility to Public"
+        : visibility === "absent"
+          ? "absent — no such GHCR package path (403); check the image name"
+          : `unexpected GHCR token status ${tokenStatus}`;
   } else if (requiredTag && (tagPresent || manifestReadable)) {
     ok = true;
     reason = manifestReadable
@@ -112,11 +110,11 @@ export function classifyProbeResult({
     ok = false;
     reason =
       manifestStatus === undefined
-        ? `public, but required tag "${requiredTag}" is not published (have: ${tagList.join(', ') || 'none'})`
-        : `public, but required tag "${requiredTag}" is not anonymously readable (manifest status ${manifestStatus}; tags/list has: ${tagList.join(', ') || 'none'})`;
+        ? `public, but required tag "${requiredTag}" is not published (have: ${tagList.join(", ") || "none"})`
+        : `public, but required tag "${requiredTag}" is not anonymously readable (manifest status ${manifestStatus}; tags/list has: ${tagList.join(", ") || "none"})`;
   } else {
     ok = true;
-    reason = 'public (anonymously pullable)';
+    reason = "public (anonymously pullable)";
   }
 
   return { image, service, stage, visibility, ok, reason, tags: tagList, manifestStatus };
@@ -133,7 +131,7 @@ export function summarizePublishReadiness(results) {
     blocked,
     ownerAction: ready
       ? null
-      : 'Flip each blocked package to Public: GitHub -> org pdp-connect -> Packages -> the package -> Change visibility -> Public, then re-run this probe.',
+      : "Flip each blocked package to Public: GitHub -> org pdp-connect -> Packages -> the package -> Change visibility -> Public, then re-run this probe.",
   };
 }
 
@@ -142,11 +140,11 @@ export function parseArgs(argv) {
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
-    if (arg === '--json') {
+    if (arg === "--json") {
       args.json = true;
-    } else if (arg === '--help' || arg === '-h') {
+    } else if (arg === "--help" || arg === "-h") {
       args.help = true;
-    } else if (arg === '--tag') {
+    } else if (arg === "--tag") {
       args.tag = rest[i + 1];
       i += 1;
     } else {
@@ -159,7 +157,7 @@ export function parseArgs(argv) {
 const USAGE = `Usage: node scripts/check-railway-ghcr-public.mjs [--json] [--tag <version-tag>]
 
 Probes the Railway template image for anonymous (public) GHCR pullability:
-  ${TEMPLATE_IMAGES.map((i) => `ghcr.io/${i.image} (${i.service})`).join('\n  ')}
+  ${TEMPLATE_IMAGES.map((i) => `ghcr.io/${i.image} (${i.service})`).join("\n  ")}
 
 Exit codes: 0 = public (publish gate clear); 1 = blocked; 2 = bad usage.`;
 
@@ -181,7 +179,7 @@ async function probeImage({ image, service, stage }, requiredTag) {
       const body = await tokenResult.response.json();
       const headers = {
         Authorization: `Bearer ${body.token}`,
-        Accept: 'application/json',
+        Accept: "application/json",
       };
       const tagsResult = await ghcrGet(`https://ghcr.io/v2/${image}/tags/list`, {
         ...headers,
@@ -195,11 +193,11 @@ async function probeImage({ image, service, stage }, requiredTag) {
         const manifestResult = await ghcrGet(`https://ghcr.io/v2/${image}/manifests/${requiredTag}`, {
           ...headers,
           Accept: [
-            'application/vnd.oci.image.index.v1+json',
-            'application/vnd.docker.distribution.manifest.list.v2+json',
-            'application/vnd.oci.image.manifest.v1+json',
-            'application/vnd.docker.distribution.manifest.v2+json',
-          ].join(','),
+            "application/vnd.oci.image.index.v1+json",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/vnd.docker.distribution.manifest.v2+json",
+          ].join(","),
         });
         manifestStatus = manifestResult.status;
       }
@@ -209,7 +207,7 @@ async function probeImage({ image, service, stage }, requiredTag) {
       image,
       service,
       stage,
-      visibility: 'unknown',
+      visibility: "unknown",
       ok: false,
       reason: `probe failed: ${error.message}`,
       tags: [],
@@ -250,11 +248,11 @@ async function main() {
   }
 
   for (const result of results) {
-    const mark = result.ok ? 'OK ' : 'XX ';
+    const mark = result.ok ? "OK " : "XX ";
     process.stdout.write(`${mark}ghcr.io/${result.image} (${result.service}): ${result.reason}\n`);
   }
   if (summary.ready) {
-    process.stdout.write('\nPublish gate CLEAR: the template image is anonymously pullable.\n');
+    process.stdout.write("\nPublish gate CLEAR: the template image is anonymously pullable.\n");
   } else {
     process.stdout.write(`\nPublish gate BLOCKED.\n${summary.ownerAction}\n`);
   }
@@ -269,6 +267,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     (error) => {
       process.stderr.write(`${error?.stack ?? error}\n`);
       process.exitCode = 1;
-    },
+    }
   );
 }

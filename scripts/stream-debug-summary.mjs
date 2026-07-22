@@ -134,7 +134,11 @@ function summarize(events) {
     } else if (type.startsWith("viewport.post.")) {
       increment(viewportPosts, `${type}:${data.status ?? data.ok ?? "unknown"}`);
       lastViewport = data.viewport ?? lastViewport;
-    } else if (type.startsWith("viewport.") || type.startsWith("neko.layout") || type.startsWith("neko.client.layout")) {
+    } else if (
+      type.startsWith("viewport.") ||
+      type.startsWith("neko.layout") ||
+      type.startsWith("neko.client.layout")
+    ) {
       lastViewport = data.viewport ?? data.layout ?? lastViewport;
     }
 

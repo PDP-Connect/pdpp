@@ -1,25 +1,33 @@
 <!doctype html>
 <!-- @dsCard group="Components" name="Inputs" subtitle="Fields — mono values, grotesk labels" viewport="700x200" -->
 <html lang="en">
-<head>
-<meta charset="utf-8"/>
-<title>PDPP · Inputs</title>
-<link href="../colors_and_type.css" rel="stylesheet"/>
-<link href="../ui_kits/web/kit.css" rel="stylesheet"/>
-<style>
-body { margin: 0; padding: 22px 24px; background: var(--background); display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
-</style>
-</head>
-<body>
-<div class="pdpp-field">
-  <label class="pdpp-field__label" for="i1">Provider URL</label>
-  <input class="pdpp-input" id="i1" type="text" value="https://rs.northstar-hr.example"/>
-  <span class="pdpp-field__hint">Discovery runs against /.well-known/oauth-protected-resource</span>
-</div>
-<div class="pdpp-field">
-  <label class="pdpp-field__label" for="i2">Owner password</label>
-  <input class="pdpp-input" id="i2" placeholder="Set via PDPP_OWNER_PASSWORD" type="password"/>
-  <span class="pdpp-field__hint">Gates consent, device approval, and the console</span>
-</div>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <title>PDPP · Inputs</title>
+    <link href="../colors_and_type.css" rel="stylesheet">
+    <link href="../ui_kits/web/kit.css" rel="stylesheet">
+    <style>
+    body {
+      margin: 0;
+      padding: 22px 24px;
+      background: var(--background);
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+    </style>
+  </head>
+  <body>
+    <div class="pdpp-field">
+      <label class="pdpp-field__label" for="i1">Provider URL</label>
+      <input class="pdpp-input" id="i1" type="text" value="https://rs.northstar-hr.example">
+      <span class="pdpp-field__hint">Discovery runs against /.well-known/oauth-protected-resource</span>
+    </div>
+    <div class="pdpp-field">
+      <label class="pdpp-field__label" for="i2">Owner password</label>
+      <input class="pdpp-input" id="i2" placeholder="Set via PDPP_OWNER_PASSWORD" type="password">
+      <span class="pdpp-field__hint">Gates consent, device approval, and the console</span>
+    </div>
+  </body>
 </html>

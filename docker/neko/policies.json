@@ -20,11 +20,6 @@
   "PasswordManagerEnabled": false,
   "BrowserLabsEnabled": false,
   "RestoreOnStartup": 1,
-  "URLAllowlist": [
-    "file:///home/user/Downloads"
-  ],
-  "URLBlocklist": [
-    "file://*",
-    "chrome://policy"
-  ]
+  "URLAllowlist": ["file:///home/user/Downloads"],
+  "URLBlocklist": ["file://*", "chrome://policy"]
 }

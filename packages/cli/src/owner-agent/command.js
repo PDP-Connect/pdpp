@@ -24,11 +24,11 @@
 // `pdpp connect` path. It must never present owner bearers as the default path
 // for ordinary agents or external MCP clients.
 
-import { parseArgs } from '../ref/args.js';
-import { ownerSessionHeaders } from '../ref/fetch.js';
+import { parseArgs } from "../ref/args.js";
+import { ownerSessionHeaders } from "../ref/fetch.js";
 
-import { resolveCredentialFile, writeOwnerAgentCredential, buildCredentialRecord } from './credential-store.js';
-import { discoverOwnerAgentControl, formatOwnerAgentControl } from './control.js';
+import { resolveCredentialFile, writeOwnerAgentCredential, buildCredentialRecord } from "./credential-store.js";
+import { discoverOwnerAgentControl, formatOwnerAgentControl } from "./control.js";
 import {
   findConnectorTemplates,
   formatConnectionSetupPlan,
@@ -36,11 +36,11 @@ import {
   formatConnectorTemplates,
   requestConnectionSetupPlan,
   requestConnectorTemplates,
-} from './setup.js';
-import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from './discovery.js';
-import { initiateDeviceAuthorization, pollForOwnerAgentToken } from './device-flow.js';
-import { OwnerAgentError } from './errors.js';
-import { introspectOwnerAgentCredential, readCredentialRecord, revokeOwnerAgentCredential } from './lifecycle.js';
+} from "./setup.js";
+import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from "./discovery.js";
+import { initiateDeviceAuthorization, pollForOwnerAgentToken } from "./device-flow.js";
+import { OwnerAgentError } from "./errors.js";
+import { introspectOwnerAgentCredential, readCredentialRecord, revokeOwnerAgentCredential } from "./lifecycle.js";
 
 const USAGE = `Trusted owner-agent onboarding (owner-level local automation):
   pdpp owner-agent onboard <entrypoint-url> [--credential-file <path>] [--client-id <id>] [--client-name <name>]
@@ -72,28 +72,28 @@ export async function runOwnerAgent(argv, io = {}, deps = {}) {
   const err = io.stderr ?? process.stderr;
   const [subcommand, ...rest] = argv;
 
-  if (!subcommand || subcommand === '--help' || subcommand === '-h' || subcommand === 'help') {
+  if (!subcommand || subcommand === "--help" || subcommand === "-h" || subcommand === "help") {
     out.write(`${USAGE}\n`);
     return 0;
   }
 
   try {
-    if (subcommand === 'onboard') {
+    if (subcommand === "onboard") {
       return await runOnboard(rest, { out }, deps);
     }
-    if (subcommand === 'status') {
+    if (subcommand === "status") {
       return await runStatus(rest, { out }, deps);
     }
-    if (subcommand === 'control') {
+    if (subcommand === "control") {
       return await runControl(rest, { out }, deps);
     }
-    if (subcommand === 'connectors') {
+    if (subcommand === "connectors") {
       return await runConnectors(rest, { out }, deps);
     }
-    if (subcommand === 'setup') {
+    if (subcommand === "setup") {
       return await runSetup(rest, { out }, deps);
     }
-    if (subcommand === 'revoke') {
+    if (subcommand === "revoke") {
       return await runRevoke(rest, { out }, deps);
     }
     err.write(`Unknown owner-agent command: ${subcommand}\n\n${USAGE}\n`);
@@ -110,48 +110,44 @@ export async function runOwnerAgent(argv, io = {}, deps = {}) {
 async function runConnectors(argv, { out }, deps) {
   const { record, positionals } = await loadRecord(argv, deps);
   const fetchFn = deps.fetch ?? globalThis.fetch;
-  const action = positionals[0] ?? 'list';
+  const action = positionals[0] ?? "list";
   const templates = await requestConnectorTemplates({ fetchFn, record });
 
-  if (action === 'list') {
+  if (action === "list") {
     out.write(formatConnectorTemplates(templates));
     return 0;
   }
-  if (action === 'search') {
-    const query = positionals.slice(1).join(' ').trim();
+  if (action === "search") {
+    const query = positionals.slice(1).join(" ").trim();
     if (!query) {
       throw new OwnerAgentError(
-        'invalid_request',
-        'Usage: pdpp owner-agent connectors search <query> [--credential-file <path>] [--entrypoint <url>]',
+        "invalid_request",
+        "Usage: pdpp owner-agent connectors search <query> [--credential-file <path>] [--entrypoint <url>]",
         64
       );
     }
     out.write(formatConnectorTemplates(templates, { query }));
     return 0;
   }
-  if (action === 'explain') {
+  if (action === "explain") {
     const connectorId = positionals[1];
-    if (typeof connectorId !== 'string' || !connectorId.trim()) {
+    if (typeof connectorId !== "string" || !connectorId.trim()) {
       throw new OwnerAgentError(
-        'invalid_request',
-        'Usage: pdpp owner-agent connectors explain <connector-id> [--credential-file <path>] [--entrypoint <url>]',
+        "invalid_request",
+        "Usage: pdpp owner-agent connectors explain <connector-id> [--credential-file <path>] [--entrypoint <url>]",
         64
       );
     }
     const matches = findConnectorTemplates(templates, connectorId);
     const exact = matches.find((template) => {
       const key = template?.connector_key ?? template?.connector_id;
-      return typeof key === 'string' && key.toLowerCase() === connectorId.trim().toLowerCase();
+      return typeof key === "string" && key.toLowerCase() === connectorId.trim().toLowerCase();
     });
     out.write(formatConnectorTemplateExplain(exact ?? matches[0] ?? null));
     return 0;
   }
 
-  throw new OwnerAgentError(
-    'invalid_request',
-    `Unknown owner-agent connectors command: ${action}\n\n${USAGE}`,
-    64
-  );
+  throw new OwnerAgentError("invalid_request", `Unknown owner-agent connectors command: ${action}\n\n${USAGE}`, 64);
 }
 
 async function runOnboard(argv, { out }, deps) {
@@ -159,8 +155,8 @@ async function runOnboard(argv, { out }, deps) {
   const entrypoint = normalizeEntrypointUrl(positionals[0]);
   if (!entrypoint) {
     throw new OwnerAgentError(
-      'invalid_entrypoint',
-      'Usage: pdpp owner-agent onboard <entrypoint-url> [--credential-file <path>]',
+      "invalid_entrypoint",
+      "Usage: pdpp owner-agent onboard <entrypoint-url> [--credential-file <path>]",
       64
     );
   }
@@ -169,16 +165,16 @@ async function runOnboard(argv, { out }, deps) {
 
   const profile = await discoverOwnerAgentProfile(entrypoint, { fetch: fetchFn });
 
-  const explicitClientId = typeof flags['client-id'] === 'string' ? flags['client-id'] : undefined;
+  const explicitClientId = typeof flags["client-id"] === "string" ? flags["client-id"] : undefined;
   const registeredClient = explicitClientId
     ? { client_id: explicitClientId, client_name: null }
     : await registerOwnerAgentClient({
         fetchFn,
         endpoint: profile.registrationEndpoint,
         clientName:
-          typeof flags['client-name'] === 'string' && flags['client-name'].trim()
-            ? flags['client-name'].trim()
-            : 'PDPP trusted owner agent',
+          typeof flags["client-name"] === "string" && flags["client-name"].trim()
+            ? flags["client-name"].trim()
+            : "PDPP trusted owner agent",
       });
   const clientId = registeredClient.client_id;
   const registrationClientUri = buildRegistrationClientUri(profile, clientId);
@@ -189,12 +185,12 @@ async function runOnboard(argv, { out }, deps) {
   });
 
   // Print only non-secret approval instructions.
-  out.write('Trusted owner-agent onboarding (owner-level local automation).\n');
+  out.write("Trusted owner-agent onboarding (owner-level local automation).\n");
   out.write(`Open this URL in a browser to approve owner-agent access:\n${device.verificationUri}\n`);
   if (device.userCode) {
     out.write(`Verification code: ${device.userCode}\n`);
   }
-  out.write('Waiting for owner approval...\n');
+  out.write("Waiting for owner approval...\n");
 
   const credential = await pollForOwnerAgentToken({
     fetchFn,
@@ -223,7 +219,7 @@ async function runOnboard(argv, { out }, deps) {
   });
 
   const targetPath = resolveCredentialFile({
-    credentialFile: typeof flags['credential-file'] === 'string' ? flags['credential-file'] : undefined,
+    credentialFile: typeof flags["credential-file"] === "string" ? flags["credential-file"] : undefined,
     resource: profile.resource,
     home: deps.home,
   });
@@ -240,9 +236,9 @@ async function runOnboard(argv, { out }, deps) {
     out.write(`  expires: ${record.expires_at}\n`);
   }
   if (record.registration_client_uri) {
-    out.write('  revocation: owner-session-gated RFC 7592 client delete handle stored\n');
+    out.write("  revocation: owner-session-gated RFC 7592 client delete handle stored\n");
   }
-  out.write('Note: /mcp rejects owner bearers; this credential is for owner-level REST/control-plane use.\n');
+  out.write("Note: /mcp rejects owner bearers; this credential is for owner-level REST/control-plane use.\n");
   return 0;
 }
 
@@ -269,14 +265,14 @@ async function runControl(argv, { out }, deps) {
 async function runSetup(argv, { out }, deps) {
   const { record, flags, positionals } = await loadRecord(argv, deps);
   const connectorId = positionals[0];
-  if (typeof connectorId !== 'string' || !connectorId.trim()) {
+  if (typeof connectorId !== "string" || !connectorId.trim()) {
     throw new OwnerAgentError(
-      'invalid_request',
-      'Usage: pdpp owner-agent setup <connector-id> [--display-name <name>] [--credential-file <path>] [--entrypoint <url>]',
+      "invalid_request",
+      "Usage: pdpp owner-agent setup <connector-id> [--display-name <name>] [--credential-file <path>] [--entrypoint <url>]",
       64
     );
   }
-  const displayName = typeof flags['display-name'] === 'string' ? flags['display-name'] : null;
+  const displayName = typeof flags["display-name"] === "string" ? flags["display-name"] : null;
   const fetchFn = deps.fetch ?? globalThis.fetch;
   const plan = await requestConnectionSetupPlan({ fetchFn, record, connectorId, displayName });
   out.write(formatConnectionSetupPlan(plan));
@@ -287,9 +283,9 @@ async function runRevoke(argv, { out }, deps) {
   const { record, targetPath, flags } = await loadRecord(argv, deps);
   const fetchFn = deps.fetch ?? globalThis.fetch;
   const ownerSession = ownerSessionHeaders({
-    ownerSession: flags['owner-session'] || '',
+    ownerSession: flags["owner-session"] || "",
     referenceUrl: record.authorization_server,
-    cacheRoot: flags['cache-root'],
+    cacheRoot: flags["cache-root"],
   }).Cookie;
   const result = await revokeOwnerAgentCredential({ fetchFn, record, ownerSessionCookie: ownerSession });
   out.write(
@@ -302,11 +298,11 @@ async function runRevoke(argv, { out }, deps) {
 
 async function loadRecord(argv, deps) {
   const { flags, positionals } = parseArgs(argv);
-  const credentialFile = typeof flags['credential-file'] === 'string' ? flags['credential-file'] : undefined;
-  const entrypoint = typeof flags.entrypoint === 'string' ? normalizeEntrypointUrl(flags.entrypoint) : null;
+  const credentialFile = typeof flags["credential-file"] === "string" ? flags["credential-file"] : undefined;
+  const entrypoint = typeof flags.entrypoint === "string" ? normalizeEntrypointUrl(flags.entrypoint) : null;
   const targetPath = resolveCredentialFile({
     credentialFile,
-    resource: entrypoint ?? 'https://owner-agent.invalid',
+    resource: entrypoint ?? "https://owner-agent.invalid",
     home: deps.home,
   });
   const record = await readCredentialRecord(targetPath);
@@ -318,25 +314,25 @@ export { USAGE as OWNER_AGENT_USAGE };
 async function registerOwnerAgentClient({ fetchFn, endpoint, clientName }) {
   if (!endpoint) {
     throw new OwnerAgentError(
-      'registration_unavailable',
-      'Owner-agent onboarding requires a registration_endpoint, or pass --client-id for an existing public client.'
+      "registration_unavailable",
+      "Owner-agent onboarding requires a registration_endpoint, or pass --client-id for an existing public client."
     );
   }
   let response;
   try {
     response = await fetchFn(endpoint, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
+        Accept: "application/json",
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         client_name: clientName,
-        token_endpoint_auth_method: 'none',
+        token_endpoint_auth_method: "none",
       }),
     });
   } catch (error) {
-    throw new OwnerAgentError('registration_failed', `Dynamic client registration failed: ${error.message}.`);
+    throw new OwnerAgentError("registration_failed", `Dynamic client registration failed: ${error.message}.`);
   }
   let json = null;
   try {
@@ -346,10 +342,13 @@ async function registerOwnerAgentClient({ fetchFn, endpoint, clientName }) {
   }
   if (!response.ok) {
     const code = json?.error?.code ?? json?.error ?? `http_${response.status}`;
-    throw new OwnerAgentError('registration_failed', `Dynamic client registration failed (${code}).`);
+    throw new OwnerAgentError("registration_failed", `Dynamic client registration failed (${code}).`);
   }
   if (!json?.client_id) {
-    throw new OwnerAgentError('registration_invalid', 'Dynamic client registration response did not include client_id.');
+    throw new OwnerAgentError(
+      "registration_invalid",
+      "Dynamic client registration response did not include client_id."
+    );
   }
   return json;
 }
@@ -359,10 +358,10 @@ function buildRegistrationClientUri(profile, clientId) {
     return null;
   }
   if (profile.revocationPathTemplate) {
-    return profile.revocationPathTemplate.replace('{client_id}', encodeURIComponent(clientId));
+    return profile.revocationPathTemplate.replace("{client_id}", encodeURIComponent(clientId));
   }
   if (profile.registrationEndpoint) {
-    const base = profile.registrationEndpoint.endsWith('/')
+    const base = profile.registrationEndpoint.endsWith("/")
       ? profile.registrationEndpoint
       : `${profile.registrationEndpoint}/`;
     return `${base}${encodeURIComponent(clientId)}`;

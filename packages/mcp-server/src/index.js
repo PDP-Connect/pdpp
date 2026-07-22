@@ -1,12 +1,8 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { CredentialError, loadScopedCredential } from './credentials.js';
-import {
-  DEFAULT_SERVER_NAME,
-  DEFAULT_SERVER_VERSION,
-  startStdioServer,
-} from './server.js';
+import { CredentialError, loadScopedCredential } from "./credentials.js";
+import { DEFAULT_SERVER_NAME, DEFAULT_SERVER_VERSION, startStdioServer } from "./server.js";
 
 const HELP = `pdpp-mcp-server — local stdio MCP adapter over a PDPP resource server
 
@@ -38,11 +34,11 @@ export async function runMcpServerCli(argv, deps = {}) {
   const load = deps.loadScopedCredential ?? loadScopedCredential;
   const start = deps.startStdioServer ?? startStdioServer;
 
-  if (argv.includes('--help') || argv.includes('-h')) {
+  if (argv.includes("--help") || argv.includes("-h")) {
     stderr.write(HELP);
     return 0;
   }
-  if (argv.includes('--version')) {
+  if (argv.includes("--version")) {
     stderr.write(`${DEFAULT_SERVER_VERSION}\n`);
     return 0;
   }
@@ -87,7 +83,7 @@ export async function runMcpServerCli(argv, deps = {}) {
   // Block until the transport signals close (e.g. parent harness closes our stdin).
   // Without this, the bin would exit immediately after wiring up the server and the
   // child process would terminate before any MCP request could be processed.
-  if (handle && typeof handle.closed?.then === 'function') {
+  if (handle && typeof handle.closed?.then === "function") {
     await handle.closed;
   }
 
@@ -97,19 +93,18 @@ export async function runMcpServerCli(argv, deps = {}) {
 export class OptionParseError extends Error {
   constructor(message, exitCode = 64) {
     super(message);
-    this.name = 'OptionParseError';
+    this.name = "OptionParseError";
     this.exitCode = exitCode;
   }
 }
 
 export function parseOptions(argv, env) {
-  const providerUrl = readOption(argv, '--provider-url') ?? env.PDPP_PROVIDER_URL ?? '';
-  const cacheRoot = readOption(argv, '--cache-root') ?? env.PDPP_CACHE_ROOT ?? '.pdpp';
-  const serverName =
-    readOption(argv, '--server-name') ?? env.PDPP_MCP_SERVER_NAME ?? DEFAULT_SERVER_NAME;
+  const providerUrl = readOption(argv, "--provider-url") ?? env.PDPP_PROVIDER_URL ?? "";
+  const cacheRoot = readOption(argv, "--cache-root") ?? env.PDPP_CACHE_ROOT ?? ".pdpp";
+  const serverName = readOption(argv, "--server-name") ?? env.PDPP_MCP_SERVER_NAME ?? DEFAULT_SERVER_NAME;
 
   if (!providerUrl) {
-    throw new OptionParseError('Missing --provider-url (or PDPP_PROVIDER_URL).');
+    throw new OptionParseError("Missing --provider-url (or PDPP_PROVIDER_URL).");
   }
 
   if (env.PDPP_OWNER_TOKEN || env.PDPP_OWNER_SESSION_COOKIE) {
@@ -117,7 +112,7 @@ export function parseOptions(argv, env) {
     // we never consult it. Exposing the owner-mode self-export surface through MCP
     // is the footgun the design forbids.
     throw new OptionParseError(
-      'Refusing to start: owner credentials (PDPP_OWNER_TOKEN / PDPP_OWNER_SESSION_COOKIE) are present in the environment. Unset them before running the MCP adapter.',
+      "Refusing to start: owner credentials (PDPP_OWNER_TOKEN / PDPP_OWNER_SESSION_COOKIE) are present in the environment. Unset them before running the MCP adapter.",
       77
     );
   }
@@ -131,7 +126,7 @@ function readOption(argv, name) {
   return argv[index + 1];
 }
 
-export { CredentialError, loadScopedCredential } from './credentials.js';
+export { CredentialError, loadScopedCredential } from "./credentials.js";
 export {
   createPdppMcpServer,
   handleStreamableHttpRequest,
@@ -139,6 +134,6 @@ export {
   DEFAULT_SERVER_NAME,
   DEFAULT_SERVER_VERSION,
   PDPP_MCP_TOOL_NAMES,
-} from './server.js';
-export { RsClient } from './rs-client.js';
-export { buildTools, buildResourceTemplates, buildStreamResourceTemplate, InvalidResourceUriError } from './tools.js';
+} from "./server.js";
+export { RsClient } from "./rs-client.js";
+export { buildTools, buildResourceTemplates, buildStreamResourceTemplate, InvalidResourceUriError } from "./tools.js";
