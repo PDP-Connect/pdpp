@@ -3913,7 +3913,7 @@ function NekoSurface({
     const markRemoteInputFocusedAfterMousePointerUp = (source: "pointerup" | "document-mouseup") => {
       window.setTimeout(() => {
         const adapter = nekoSurfaceAdapterRef.current;
-        if (!adapter || adapter.getLifecycleState() !== "mounted") {
+        if (adapter?.getLifecycleState() !== "mounted") {
           logDebug("neko.keyboard_focus.mouse_pointer_up.skip", {
             source,
             state: adapter?.getLifecycleState() ?? null,
@@ -4018,7 +4018,7 @@ function NekoSurface({
       pointerType: "mouse" | "touch" | "pen"
     ) => {
       const viewer = viewerRef.current;
-      if (!viewer || viewer.getLifecycleState() !== "mounted") {
+      if (viewer?.getLifecycleState() !== "mounted") {
         return;
       }
       const pointerIntent: Extract<RemoteSurfaceInputPayload, { type: "pointer" }> = {
@@ -4050,7 +4050,7 @@ function NekoSurface({
     };
     const wheelHandler = (event: WheelEvent) => {
       const viewer = viewerRef.current;
-      if (!viewer || viewer.getLifecycleState() !== "mounted") {
+      if (viewer?.getLifecycleState() !== "mounted") {
         return;
       }
       viewer.dispatchInput({

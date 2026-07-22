@@ -79,7 +79,7 @@ export interface DashboardDataSource {
    * over-time chart's bars. True per-bucket totals over the filtered, grant-scoped
    * corpus (NOT loaded entries).
    */
-  aggregateRecordsByTime(
+  aggregateRecordsByTime: (
     connectorId: string,
     stream: string,
     opts: {
@@ -89,31 +89,31 @@ export interface DashboardDataSource {
       groupByTime: string;
       timeZone?: string;
     }
-  ): Promise<TimeBucketAggregate>;
-  getConnectorOverview(connector: ConnectorManifest): Promise<ConnectorOverview>;
+  ) => Promise<TimeBucketAggregate>;
+  getConnectorOverview: (connector: ConnectorManifest) => Promise<ConnectorOverview>;
   // ── Overview / deployment / approvals ──────────────────────────────────
-  getDatasetSummary(): Promise<DatasetSummary>;
-  getDeploymentDiagnostics(): Promise<DeploymentDiagnostics>;
-  getGrantTimeline(grantId: string): Promise<TimelineEnvelope | null>;
-  getRecord(
+  getDatasetSummary: () => Promise<DatasetSummary>;
+  getDeploymentDiagnostics: () => Promise<DeploymentDiagnostics>;
+  getGrantTimeline: (grantId: string) => Promise<TimelineEnvelope | null>;
+  getRecord: (
     connectorId: string,
     stream: string,
     recordId: string,
     opts?: { connectorInstanceId?: string | null }
-  ): Promise<StreamRecord>;
-  getRunTimeline(runId: string): Promise<TimelineEnvelope | null>;
-  getStreamMetadata(
+  ) => Promise<StreamRecord>;
+  getRunTimeline: (runId: string) => Promise<TimelineEnvelope | null>;
+  getStreamMetadata: (
     connectorId: string,
     stream: string,
     opts?: { connectorInstanceId?: string | null }
-  ): Promise<StreamMetadata>;
-  getTraceTimeline(traceId: string): Promise<TimelineEnvelope | null>;
-  isHybridRetrievalAdvertised(): Promise<boolean>;
-  isSemanticRetrievalAdvertised(): Promise<boolean>;
+  ) => Promise<StreamMetadata>;
+  getTraceTimeline: (traceId: string) => Promise<TimelineEnvelope | null>;
+  isHybridRetrievalAdvertised: () => Promise<boolean>;
+  isSemanticRetrievalAdvertised: () => Promise<boolean>;
   readonly kind: "live" | "sandbox";
-  listConnectorManifests(): Promise<ConnectorManifest[]>;
+  listConnectorManifests: () => Promise<ConnectorManifest[]>;
   // ── Records ────────────────────────────────────────────────────────────
-  listConnectorSummaries(): Promise<RefConnectorSummariesResponse>;
+  listConnectorSummaries: () => Promise<RefConnectorSummariesResponse>;
   /**
    * Index-backed, single-call over-time bucket aggregate for the Explore chart —
    * the honest replacement for the per-(connection, stream) `aggregateRecordsByTime`
@@ -121,7 +121,7 @@ export interface DashboardDataSource {
    * `extent.count` (count == reachability) over the SAME structural scope the feed
    * shows, so the bars reconcile with the list. `GET /_ref/explore/records/buckets`.
    */
-  listExploreRecordBuckets(opts: {
+  listExploreRecordBuckets: (opts: {
     connections?: readonly string[];
     streams?: readonly string[];
     excludeConnections?: readonly string[];
@@ -130,9 +130,9 @@ export interface DashboardDataSource {
     until?: string | null;
     granularity?: TimeBucketGranularity | "auto";
     timeZone?: string;
-  }): Promise<ExploreRecordBucketsResponse>;
+  }) => Promise<ExploreRecordBucketsResponse>;
   // ── Explore merged timeline (Phase 3) ─────────────────────────────────
-  listExploreTimeline(opts?: {
+  listExploreTimeline: (opts?: {
     connectionIds?: readonly string[];
     cursor?: string | null;
     limit?: number;
@@ -148,14 +148,14 @@ export interface DashboardDataSource {
      * "asc" = the `order=oldest` re-page (earliest record first, paging forward).
      */
     direction?: "asc" | "desc";
-  }): Promise<ExploreTimelinePage>;
+  }) => Promise<ExploreTimelinePage>;
   // ── Grants / runs / traces / timelines ─────────────────────────────────
-  listGrants(opts?: ListQuery): Promise<ListResponse<GrantSummary>>;
-  listPendingApprovals(): Promise<ListResponse<PendingApproval>>;
-  listRuns(opts?: ListQuery): Promise<ListResponse<RunSummary>>;
-  listStreams(connectorId: string): Promise<StreamSummary[]>;
-  listTraces(opts?: ListQuery): Promise<ListResponse<TraceSummary>>;
-  queryRecords(
+  listGrants: (opts?: ListQuery) => Promise<ListResponse<GrantSummary>>;
+  listPendingApprovals: () => Promise<ListResponse<PendingApproval>>;
+  listRuns: (opts?: ListQuery) => Promise<ListResponse<RunSummary>>;
+  listStreams: (connectorId: string) => Promise<StreamSummary[]>;
+  listTraces: (opts?: ListQuery) => Promise<ListResponse<TraceSummary>>;
+  queryRecords: (
     connectorId: string,
     stream: string,
     opts?: {
@@ -166,24 +166,24 @@ export interface DashboardDataSource {
       order?: "asc" | "desc";
       window?: "exact" | "none";
     }
-  ): Promise<RecordsPage>;
+  ) => Promise<RecordsPage>;
   // ── Search ─────────────────────────────────────────────────────────────
-  refSearch(query: string): Promise<{
+  refSearch: (query: string) => Promise<{
     object: "search_result";
     traces: TraceSummary[];
     grants: GrantSummary[];
     runs: RunSummary[];
     exact: { kind: "trace" | "grant" | "run"; id: string } | null;
   }>;
-  searchRecordsHybrid(query: string, opts?: { streams?: string[]; limit?: number }): Promise<SearchResultPage>;
-  searchRecordsLexical(
+  searchRecordsHybrid: (query: string, opts?: { streams?: string[]; limit?: number }) => Promise<SearchResultPage>;
+  searchRecordsLexical: (
     query: string,
     opts?: { streams?: string[]; limit?: number; cursor?: string; order?: "relevance" | "recent" }
-  ): Promise<SearchResultPage>;
-  searchRecordsSemantic(
+  ) => Promise<SearchResultPage>;
+  searchRecordsSemantic: (
     query: string,
     opts?: { streams?: string[]; limit?: number; cursor?: string }
-  ): Promise<SearchResultPage>;
+  ) => Promise<SearchResultPage>;
   supportsExploreTimelineDirection?: () => Promise<boolean>;
 }
 

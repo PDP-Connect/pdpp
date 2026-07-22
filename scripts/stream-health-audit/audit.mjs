@@ -88,7 +88,7 @@ function restsUnmeasured(entry) {
 // the more current one depending on which layer served the entry.
 function isSettledConnection(connection) {
   const status = connection?.status;
-  if (status === "revoked" || connection?.revoked_at != null) {
+  if (status === "revoked" || connection?.revoked_at !== null) {
     return false;
   }
   if (status === "draft") {
@@ -189,7 +189,7 @@ function connectionId(connection) {
  *     combination the projection refuses to paint green.
  */
 function evidenceClassForUnmeasured(entry) {
-  if (entry?.coverage_strategy == null) {
+  if (entry?.coverage_strategy === null) {
     return "strategy_declaration_missing";
   }
   return "runtime_evidence_missing";

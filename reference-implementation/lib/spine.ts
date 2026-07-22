@@ -1185,7 +1185,7 @@ function hasPendingRunInteraction(events: readonly SpineEventRecord[], status: s
 
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
-    if (!event || event.event_type !== "run.interaction_required") {
+    if (event?.event_type !== "run.interaction_required") {
       continue;
     }
     if (typeof event.interaction_id !== "string" || event.interaction_id.length === 0) {

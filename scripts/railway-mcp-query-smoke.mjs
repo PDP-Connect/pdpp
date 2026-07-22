@@ -173,7 +173,7 @@ export function parseMcpResponseText(contentType, text) {
 // out without caring which envelope nesting the version uses.
 export function extractRecordsFromQueryResult(rpc) {
   const structured = rpc?.result?.structuredContent?.data;
-  if (structured == null) {
+  if (structured === null) {
     return [];
   }
   // Canonical RS read body: { data: [...] } or a bare array.
@@ -197,7 +197,7 @@ export function assertSeedRecordsPresent(rpc, expectedRecords = SEED_RECORDS) {
   }
   const returned = extractRecordsFromQueryResult(rpc);
   const returnedKeys = new Set(
-    returned.map((entry) => entry?.key ?? entry?.id ?? entry?.data?.id).filter((k) => k != null)
+    returned.map((entry) => entry?.key ?? entry?.id ?? entry?.data?.id).filter((k) => k !== null)
   );
   const expectedKeys = expectedRecords.map((record) => record.key);
   const missing = expectedKeys.filter((key) => !returnedKeys.has(key));

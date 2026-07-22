@@ -219,15 +219,15 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-type OwnerConnectionRenameAuditArgs = {
+interface OwnerConnectionRenameAuditArgs {
   connectionId: string;
   connectorKey?: string | null;
   displayNameSupplied?: boolean;
   error?: unknown;
   labelStatus?: string | null;
-  ownerSubjectId?: string | null;
   outcome: "succeeded" | "failed";
-};
+  ownerSubjectId?: string | null;
+}
 
 function buildOwnerConnectionRenameAuditError(error: unknown): Record<string, unknown> {
   if (!error) {

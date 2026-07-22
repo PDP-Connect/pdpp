@@ -428,7 +428,7 @@ function isContentStringField(fieldPath, value) {
   );
 }
 
-function isLargeBase64Field(fieldPath, value) {
+function isLargeBase64Field(_fieldPath, value) {
   if (typeof value !== "string" || value.length < 256) {
     return false;
   }

@@ -159,7 +159,7 @@ export interface MountOwnerConnectionRunContext {
   setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
-type RunAuditArgs = {
+interface RunAuditArgs {
   connectionId?: string | null;
   connectorKey?: string | null;
   error?: unknown;
@@ -168,7 +168,7 @@ type RunAuditArgs = {
   ownerSubjectId?: string | null;
   runId?: string | null;
   selector: "connection_id" | "connector_id";
-};
+}
 
 function projectRunAuditData(
   req: RouteRequest,

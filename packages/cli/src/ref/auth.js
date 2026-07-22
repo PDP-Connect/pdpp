@@ -143,7 +143,7 @@ export async function buildAuthHeaders({ mode, referenceUrl, flags, io, env = pr
 
 async function resolveOwnerToken(flags, io, env) {
   if (flags["owner-token-stdin"]) {
-    return readFirstLine((io && io.stdin) || process.stdin);
+    return readFirstLine(io?.stdin || process.stdin);
   }
   const fromEnv = env.PDPP_OWNER_TOKEN;
   if (typeof fromEnv === "string" && fromEnv.length > 0) {

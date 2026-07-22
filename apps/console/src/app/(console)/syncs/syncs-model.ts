@@ -403,7 +403,7 @@ export function describeDelta(input: { failed: boolean; eventCount: number | nul
     return "sync failed";
   }
   const count = input.eventCount;
-  if (count == null) {
+  if (count === null) {
     return "no recent run";
   }
   if (count <= 0) {

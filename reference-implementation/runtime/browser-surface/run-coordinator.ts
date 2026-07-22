@@ -1394,7 +1394,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
     leaseId: string
   ): Promise<void> {
     const current = leaseManager.getLease(leaseId);
-    if (!current || current.status !== "waiting_for_browser_surface") {
+    if (current?.status !== "waiting_for_browser_surface") {
       return;
     }
     const reclaimedResult = await reclaimCapacityAndPromoteLease(current);

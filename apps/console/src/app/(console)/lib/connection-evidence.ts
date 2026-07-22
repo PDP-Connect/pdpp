@@ -247,6 +247,7 @@ export function formatOutboxAxis(
 export function formatAttentionAxis(
   axis: RefConnectionHealthSnapshot["axes"]["attention"] | null | string | undefined
 ): AxisChip | null {
+  // biome-ignore lint/suspicious/noEqualsToNull: The reference payload may omit this optional axis.
   if (axis == null) {
     return null;
   }
@@ -268,10 +269,12 @@ function formatKnownAxis<T extends string>(
   fallback: T,
   labelPrefix: string
 ): AxisChip {
+  // biome-ignore lint/suspicious/noEqualsToNull: The reference payload may omit this optional axis.
   if (axis != null && Object.hasOwn(labels, axis)) {
     return labels[axis as T];
   }
   const fallbackChip = labels[fallback];
+  // biome-ignore lint/suspicious/noEqualsToNull: The reference payload may omit this optional axis.
   if (axis == null) {
     return fallbackChip;
   }
@@ -462,6 +465,7 @@ const FORWARD_DISPOSITION_LABELS: Record<RefForwardDisposition, ForwardDispositi
 export function formatForwardDisposition(
   disposition: RefForwardDisposition | null | string | undefined
 ): ForwardDispositionSummary | null {
+  // biome-ignore lint/suspicious/noEqualsToNull: The reference payload may omit this optional field.
   if (disposition == null) {
     return null;
   }
@@ -495,7 +499,7 @@ export function formatDominantCondition(
   snapshot: RefConnectionHealthSnapshot | null | undefined
 ): DominantConditionSummary | null {
   const condition = dominantCondition(snapshot);
-  if (!condition || condition.status !== "false") {
+  if (condition?.status !== "false") {
     return null;
   }
   const remediation = condition.remediation?.label ? ` ${condition.remediation.label}.` : "";
@@ -1580,7 +1584,7 @@ function deriveRenderedFailureSummary(
 ): FailureSummary | null {
   const primaryAction = verdict.required_actions[0] ?? null;
   const ownerAction = renderedActionIsOwnerSatisfiable(primaryAction);
-  const statusAction = primaryAction != null && !ownerAction && primaryAction.kind !== "wait";
+  const statusAction = primaryAction !== null && !ownerAction && primaryAction.kind !== "wait";
 
   if (verdict.channel === "calm" && !ownerAction && !statusAction) {
     return null;

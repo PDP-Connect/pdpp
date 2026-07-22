@@ -492,7 +492,7 @@ interface SandboxCompiledFilters {
  * the sandbox API obeys the same canonical request contract as native.
  */
 function compileSandboxFilterForStream(filter: unknown, streamName: string): SandboxCompiledFilters {
-  if (filter == null) {
+  if (filter === null) {
     return { exact: [], streamName };
   }
   if (typeof filter !== "object" || Array.isArray(filter)) {
@@ -626,7 +626,7 @@ export function createSandboxSearchLexicalDependencies(): SearchLexicalDependenc
       // the plan entry for the matched stream.
       const manifestStreamNames = new Set((manifest.streams ?? []).map((s) => s.name));
       const compiledFilter =
-        filter != null && filteredStream != null && manifestStreamNames.has(filteredStream)
+        filter !== null && filteredStream !== null && manifestStreamNames.has(filteredStream)
           ? compileSandboxFilterForStream(filter, filteredStream)
           : null;
       const plan: SearchLexicalPlanEntry[] = [];

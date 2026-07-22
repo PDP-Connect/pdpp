@@ -551,7 +551,7 @@ function readRecoverableAmazonOrderDetailGap(
     return null;
   }
   const locator = gap.detail_locator;
-  if (!locator || locator.kind !== "amazon.order_detail") {
+  if (locator?.kind !== "amazon.order_detail") {
     return null;
   }
   const orderId = locator.order_id;

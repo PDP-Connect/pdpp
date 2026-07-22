@@ -349,17 +349,17 @@ function retainedBytesNeedsRepair(existingEvidence: Row, retainedByteRow: Row | 
   // clean-value-changed case, independent of whatever the `dirty` flag says.
   const storedRetainedBytes = parseJsonColumn<Row | null>(existingEvidence.retained_bytes_json, null);
   const sourceTotalBytes =
-    Number(retainedByteRow!.current_record_json_bytes || 0) +
-    Number(retainedByteRow!.record_history_json_bytes || 0) +
-    Number(retainedByteRow!.blob_bytes || 0);
+    Number(retainedByteRow?.current_record_json_bytes || 0) +
+    Number(retainedByteRow?.record_history_json_bytes || 0) +
+    Number(retainedByteRow?.blob_bytes || 0);
   if (!storedRetainedBytes) {
     return true;
   }
   return (
-    Number(storedRetainedBytes.record_json_bytes || 0) !== Number(retainedByteRow!.current_record_json_bytes || 0) ||
+    Number(storedRetainedBytes.record_json_bytes || 0) !== Number(retainedByteRow?.current_record_json_bytes || 0) ||
     Number(storedRetainedBytes.record_changes_json_bytes || 0) !==
-      Number(retainedByteRow!.record_history_json_bytes || 0) ||
-    Number(storedRetainedBytes.blob_bytes || 0) !== Number(retainedByteRow!.blob_bytes || 0) ||
+      Number(retainedByteRow?.record_history_json_bytes || 0) ||
+    Number(storedRetainedBytes.blob_bytes || 0) !== Number(retainedByteRow?.blob_bytes || 0) ||
     Number(storedRetainedBytes.total_bytes || 0) !== sourceTotalBytes
   );
 }
@@ -751,8 +751,8 @@ function persistFailedEvidenceSqlite(connectorInstanceId: string, failedRow: Row
     )
     .get(connectorInstanceId) as Row | undefined;
   const preserveTerminal = existing && existing.terminal_facts_state === "current";
-  const terminalState = preserveTerminal ? existing!.terminal_facts_state : failedRow.terminal_facts_state;
-  const terminalReason = preserveTerminal ? existing!.terminal_facts_reason_code : failedRow.terminal_facts_reason_code;
+  const terminalState = preserveTerminal ? existing?.terminal_facts_state : failedRow.terminal_facts_state;
+  const terminalReason = preserveTerminal ? existing?.terminal_facts_reason_code : failedRow.terminal_facts_reason_code;
   const updateResult = db
     .prepare(
       `UPDATE connector_summary_evidence
@@ -829,8 +829,8 @@ async function persistFailedEvidencePostgres(connectorInstanceId: string, failed
   );
   const existing = existingResult.rows[0] as Row | undefined;
   const preserveTerminal = existing && existing.terminal_facts_state === "current";
-  const terminalState = preserveTerminal ? existing!.terminal_facts_state : failedRow.terminal_facts_state;
-  const terminalReason = preserveTerminal ? existing!.terminal_facts_reason_code : failedRow.terminal_facts_reason_code;
+  const terminalState = preserveTerminal ? existing?.terminal_facts_state : failedRow.terminal_facts_state;
+  const terminalReason = preserveTerminal ? existing?.terminal_facts_reason_code : failedRow.terminal_facts_reason_code;
   const updateResult = await postgresQuery(
     `UPDATE connector_summary_evidence
         SET record_snapshot_state = $2,
@@ -1178,13 +1178,13 @@ function buildRepairedRow(inputs: RepairInputs): Row {
   const retainedBytesClean = retainedByteRow ? Number(retainedByteRow.dirty || 0) === 0 : false;
   const retainedBytes = retainedBytesClean
     ? {
-        record_json_bytes: Number(retainedByteRow!.current_record_json_bytes || 0),
-        record_changes_json_bytes: Number(retainedByteRow!.record_history_json_bytes || 0),
-        blob_bytes: Number(retainedByteRow!.blob_bytes || 0),
+        record_json_bytes: Number(retainedByteRow?.current_record_json_bytes || 0),
+        record_changes_json_bytes: Number(retainedByteRow?.record_history_json_bytes || 0),
+        blob_bytes: Number(retainedByteRow?.blob_bytes || 0),
         total_bytes:
-          Number(retainedByteRow!.current_record_json_bytes || 0) +
-          Number(retainedByteRow!.record_history_json_bytes || 0) +
-          Number(retainedByteRow!.blob_bytes || 0),
+          Number(retainedByteRow?.current_record_json_bytes || 0) +
+          Number(retainedByteRow?.record_history_json_bytes || 0) +
+          Number(retainedByteRow?.blob_bytes || 0),
       }
     : null;
 

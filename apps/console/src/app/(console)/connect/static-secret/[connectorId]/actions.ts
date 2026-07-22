@@ -74,6 +74,7 @@ function autoResumeRunId(capture: StaticSecretCaptureResult): string | null {
 
 function shouldStartRunAfterCapture(capture: StaticSecretCaptureResult): boolean {
   const autoResume = capture.auto_resume;
+  // biome-ignore lint/suspicious/noEqualsToNull: The API may omit auto_resume as well as return null.
   return autoResume == null || autoResume.status === "no_satisfied_action";
 }
 

@@ -3673,7 +3673,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
   // and the feed claims the freed width — no reserved-empty 420px inspector (the
   // dead-canvas + query-bar/inspector-overlap root cause). `data.peek != null` is
   // the single source of selection truth (selectedPeekParam derives from it).
-  const hasSelection = data.peek != null;
+  const hasSelection = data.peek !== null;
   return (
     <div className={hasSelection ? "rr-x has-selection" : "rr-x"}>
       {/* ── In-page route progress bar ──
@@ -3829,7 +3829,7 @@ export function ExploreCanvas({ data, explorePath, order = "newest", peekRelatio
             Only on the non-search feed when the assembler detected records that
             arrived after the current snapshot anchor. Clicking refreshes to the
             live head (drops anchor + cursor). We do NOT auto-insert rows. */}
-        {!data.fromSearch && data.newSinceAnchor != null && data.newSinceAnchor > 0 ? (
+        {!data.fromSearch && data.newSinceAnchor !== null && data.newSinceAnchor > 0 ? (
           <button className="rr-x-new-pill" onClick={() => navigate({ clearCursor: true })} type="button">
             {data.newSinceAnchor.toLocaleString()} new
           </button>

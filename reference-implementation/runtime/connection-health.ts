@@ -2050,7 +2050,7 @@ function credentialsValidCondition(input: ComputeConnectionHealthInput): Connect
 
 function browserSessionRepairAuthorized(input: ComputeConnectionHealthInput): boolean {
   const context = input.browserSurfaceRepair;
-  if (!context || context.evidence.kind !== "provider_invalidation_proof") {
+  if (context?.evidence.kind !== "provider_invalidation_proof") {
     return false;
   }
   if (context.evidence.provider !== context.provider) {
@@ -2067,7 +2067,7 @@ function browserSessionRepairAuthorized(input: ComputeConnectionHealthInput): bo
 
 function browserSessionRepairAlreadyRecorded(input: ComputeConnectionHealthInput): boolean {
   const context = input.browserSurfaceRepair;
-  if (!context || context.evidence.kind !== "provider_invalidation_proof") {
+  if (context?.evidence.kind !== "provider_invalidation_proof") {
     return false;
   }
   if (context.evidence.provider !== context.provider) {

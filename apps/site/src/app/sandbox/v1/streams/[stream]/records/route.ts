@@ -16,7 +16,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ stream: str
   const url = new URL(request.url);
   const params = readListParams(url);
   const requestParams: Record<string, unknown> = {};
-  if (params.cursor != null) {
+  if (params.cursor !== null) {
     requestParams.cursor = params.cursor;
   }
   if (params.limit !== undefined) {

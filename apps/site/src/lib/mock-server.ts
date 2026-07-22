@@ -96,7 +96,7 @@ export class MockPDPPServer {
 
   revokeGrant(grantId: string): boolean {
     const grant = this.grants.get(grantId);
-    if (!grant || grant.status !== "active") {
+    if (grant?.status !== "active") {
       return false;
     }
     grant.status = "revoked";

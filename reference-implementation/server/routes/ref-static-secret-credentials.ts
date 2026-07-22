@@ -357,7 +357,7 @@ function setupFieldsFromBinding(sourceBinding: unknown): Record<string, string> 
 }
 
 function isStaticSecretDraftInstance(instance: ConnectorInstanceRow | null): instance is ConnectorInstanceRow {
-  if (!instance || instance.status !== "draft") {
+  if (instance?.status !== "draft") {
     return false;
   }
   const binding = instance.sourceBinding;

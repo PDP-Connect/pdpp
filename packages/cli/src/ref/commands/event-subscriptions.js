@@ -178,7 +178,7 @@ export async function runRefEventSubscriptions(argv, io = {}, fetchImpl = global
       err.write(`Callback: ${body.callback_url}\n`);
       err.write(`Disable subscription? Type 'yes' to confirm: `);
       const answer = await readConfirmation(io);
-      if (!answer || answer.toLowerCase() !== "yes") {
+      if (answer?.toLowerCase() !== "yes") {
         err.write("Aborted.\n");
         return 1;
       }

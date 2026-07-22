@@ -114,7 +114,7 @@ function findCurrentStructuredAssistance(
 ): CurrentRunAssistance | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!event || event.event_type !== "run.assistance_requested") {
+    if (event?.event_type !== "run.assistance_requested") {
       continue;
     }
     const id = getEventAssistanceId(event);
@@ -140,7 +140,7 @@ function findCurrentLegacyInteraction(
 ): CurrentRunAssistance | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!event || event.event_type !== "run.interaction_required") {
+    if (event?.event_type !== "run.interaction_required") {
       continue;
     }
     const id = getEventAssistanceId(event);

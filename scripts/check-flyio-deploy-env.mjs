@@ -125,7 +125,7 @@ function main() {
   const violations = evaluateFlyioCoreEnv(loadEnvFile(corePath));
 
   if (jsonOutput) {
-    process.stdout.write(JSON.stringify({ ok: violations.length === 0, violations }, null, 2) + "\n");
+    process.stdout.write(`${JSON.stringify({ ok: violations.length === 0, violations }, null, 2)}\n`);
   } else if (violations.length === 0) {
     process.stdout.write("Fly.io deploy env contract: OK\n");
   } else {

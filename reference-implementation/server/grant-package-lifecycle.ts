@@ -1200,7 +1200,7 @@ export function createGrantPackageLifecycle(deps: GrantPackageLifecycleDeps): Gr
     const store = getGrantPackageStore();
     const packageRow = await store.getPackageById(packageId);
     const grantPackage = normalizePackageRow(packageRow as Record<string, unknown> | null);
-    if (!grantPackage || grantPackage.status !== "active") {
+    if (grantPackage?.status !== "active") {
       return null;
     }
 

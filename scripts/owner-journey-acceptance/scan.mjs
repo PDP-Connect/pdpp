@@ -342,7 +342,7 @@ export function parseCommand(normalized) {
       idx += 1;
     }
     const specifier = tokens[idx] ?? null;
-    if (!(specifier && specifier.startsWith("@"))) {
+    if (!specifier?.startsWith("@")) {
       return null;
     }
     const packageName = specifier.split("@").slice(0, -1).join("@") || specifier;

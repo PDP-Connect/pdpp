@@ -118,9 +118,9 @@ export function drainSurfaceMeasureOnAttach(
  */
 export interface StreamSurfaceMeasureCoordinator {
   /** Ref callback target: call with the attaching node and its surface key. */
-  attachSurface(node: unknown, surfaceKey: string): void;
+  attachSurface: (node: unknown, surfaceKey: string) => void;
   /** Call from the backend_ready handler with the target browserSessionId. */
-  requestBackendReady(surfaceKey: string): void;
+  requestBackendReady: (surfaceKey: string) => void;
 }
 
 export function createStreamSurfaceMeasureCoordinator(

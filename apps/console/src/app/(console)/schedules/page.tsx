@@ -29,7 +29,7 @@ export default async function SchedulesPage() {
     throw err;
   }
 
-  const hasActiveRun = summaries.some((s) => s.schedule?.active_run_id != null);
+  const hasActiveRun = summaries.some((s) => s.schedule?.active_run_id !== null);
 
   return (
     <RecordroomShellWithPalette>

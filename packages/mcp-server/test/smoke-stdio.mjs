@@ -94,7 +94,7 @@ const lines = stdoutBuf.split("\n").filter((line) => line.length > 0);
 const parsed = lines.map((line, index) => {
   try {
     return JSON.parse(line);
-  } catch (error) {
+  } catch {
     throw new Error(`stdout line ${index} is not valid JSON: ${JSON.stringify(line)}`);
   }
 });

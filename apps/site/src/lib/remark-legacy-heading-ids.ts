@@ -37,7 +37,7 @@ function visit(node: TreeNode, visitor: (node: TreeNode) => void) {
 function applyLegacyId(node: HeadingNode) {
   const lastChild = node.children?.[node.children.length - 1];
 
-  if (!lastChild || lastChild.type !== "text" || typeof lastChild.value !== "string") {
+  if (lastChild?.type !== "text" || typeof lastChild.value !== "string") {
     return;
   }
 

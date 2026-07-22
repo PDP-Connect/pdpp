@@ -568,7 +568,7 @@ function readRecoverableHebOrderDetailGap(
     return null;
   }
   const locator = gap.detail_locator;
-  if (!locator || locator.kind !== "heb.order_detail") {
+  if (locator?.kind !== "heb.order_detail") {
     return null;
   }
   const orderId = locator.order_id;

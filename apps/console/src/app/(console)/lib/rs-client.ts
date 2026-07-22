@@ -1403,7 +1403,7 @@ export async function getConnectorOverview(connector: ConnectorManifest): Promis
     ]);
     const lastRun = projectRun(latestResp.data?.[0]);
     const lastSuccessfulRun = projectRun(successResp.data?.[0]);
-    const isRunning = lastRun != null && isActiveConnectorRunSummaryStatus(lastRun.status);
+    const isRunning = lastRun !== null && isActiveConnectorRunSummaryStatus(lastRun.status);
 
     return {
       connector,

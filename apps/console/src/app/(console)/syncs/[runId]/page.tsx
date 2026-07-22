@@ -371,13 +371,13 @@ function LatestProgressSection({
             <dd>{latestProgress.stream}</dd>
           </>
         ) : null}
-        {latestProgress.count == null ? null : (
+        {latestProgress.count === null ? null : (
           <>
             <dt className="text-muted-foreground">count</dt>
             <dd>{String(latestProgress.count)}</dd>
           </>
         )}
-        {latestProgress.total == null ? null : (
+        {latestProgress.total === null ? null : (
           <>
             <dt className="text-muted-foreground">total</dt>
             <dd>{String(latestProgress.total)}</dd>
@@ -943,7 +943,7 @@ function getLatestProgress(events: SpineEvent[]): LatestProgress | null {
   const count = typeof latest.data?.count === "number" ? latest.data.count : null;
   const total = typeof latest.data?.total === "number" ? latest.data.total : null;
   const percentLabel =
-    count != null && total != null && total > 0
+    count !== null && total !== null && total > 0
       ? `${Math.max(0, Math.min(100, Math.round((count / total) * 100)))}%`
       : null;
 

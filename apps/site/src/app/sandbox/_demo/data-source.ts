@@ -636,10 +636,10 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     const groups: AggregateTimeBucket[] = [...counts.entries()]
       .map(([key, count]) => ({ count, key: key === "__null__" ? null : key }))
       .sort((a, b) => {
-        if (a.key == null) {
-          return b.key == null ? 0 : 1;
+        if (a.key === null) {
+          return b.key === null ? 0 : 1;
         }
-        if (b.key == null) {
+        if (b.key === null) {
           return -1;
         }
         return a.key.localeCompare(b.key);
@@ -666,7 +666,7 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     const lastSuccessfulRun = connectorRunRef(lastSuccessfulRunId);
     return {
       connector,
-      isRunning: lastRun != null && new Set(["started", "in_progress"]).has(lastRun.status),
+      isRunning: lastRun !== null && new Set(["started", "in_progress"]).has(lastRun.status),
       lastRun,
       lastSuccessfulRun,
       streams,

@@ -64,7 +64,7 @@ function apiTargets() {
     return [];
   }
   const h = { Authorization: `Bearer ${OWNER_TOKEN}` };
-  const q = (params) => "?" + new URLSearchParams(params).toString();
+  const q = (params) => `?${new URLSearchParams(params).toString()}`;
   return [
     { group: "api", headers: h, name: "schema", url: `${BASE}/v1/schema` },
     { group: "api", headers: h, name: "search.lexical", url: `${BASE}/v1/search${q({ limit: "25", q: "error" })}` },
@@ -153,7 +153,7 @@ async function timeOnce(target) {
     ttfbMs = performance.now() - t0;
     const body = await resp.arrayBuffer();
     bytes = body.byteLength;
-  } catch (err) {
+  } catch {
     status = -1;
   } finally {
     clearTimeout(to);
@@ -175,7 +175,7 @@ function stats(samples) {
   const sum = totals.reduce((a, b) => a + b, 0);
   return {
     bytes: Math.round(samples.reduce((a, s) => a + s.bytes, 0) / samples.length),
-    max: round(totals[totals.length - 1]),
+    max: round(totals.at(-1)),
     mean: round(sum / totals.length),
     min: round(totals[0]),
     n: totals.length,
@@ -186,7 +186,7 @@ function stats(samples) {
   };
 }
 
-const round = (n) => (n == null ? null : Math.round(n * 10) / 10);
+const round = (n) => (n === null ? null : Math.round(n * 10) / 10);
 
 async function benchTarget(target) {
   for (let i = 0; i < WARMUP; i++) {
@@ -266,7 +266,7 @@ function compare(current, priorPath) {
   console.error(`\n# regression vs ${priorPath} (p50 Δ, >15% slower flagged):`);
   for (const r of current.results) {
     const p = byName.get(`${r.group}:${r.name}`);
-    if (!p || p.p50 == null || r.p50 == null) {
+    if (!p || p.p50 === null || r.p50 === null) {
       continue;
     }
     const deltaPct = ((r.p50 - p.p50) / p.p50) * 100;

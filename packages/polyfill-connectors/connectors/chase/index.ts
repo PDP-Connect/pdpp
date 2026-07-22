@@ -1948,7 +1948,7 @@ export function buildServedAccountGapLookup(
       continue;
     }
     const locator = gap.detail_locator;
-    if (!locator || locator.kind !== "chase.account") {
+    if (locator?.kind !== "chase.account") {
       continue;
     }
     const accountId = locator.account_id;

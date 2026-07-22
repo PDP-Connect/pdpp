@@ -336,7 +336,7 @@ function sendRawFile<T>(
     connectionId?: string | null;
     contentType?: string;
     displayName?: string | null;
-    onProgress(percent: number | null): void;
+    onProgress: (percent: number | null) => void;
   }
 ): Promise<T> {
   const url = new URL(path, window.location.origin);
@@ -386,7 +386,7 @@ async function pollArtifactStatus(
     currentFile: number;
     fileName: string;
     totalFiles: number;
-    update(progress: NonNullable<UploadState["progress"]>): void;
+    update: (progress: NonNullable<UploadState["progress"]>) => void;
   }
 ): Promise<ManualUploadArtifactWire> {
   for (let attempt = 0; attempt < 180; attempt += 1) {

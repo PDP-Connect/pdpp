@@ -78,11 +78,9 @@ const PROBE = () => {
 };
 
 async function waitForText(page, text, timeout = 45_000) {
-  await page.waitForFunction(
-    (t) => document.body && document.body.innerText.toLowerCase().includes(t.toLowerCase()),
-    text,
-    { timeout }
-  );
+  await page.waitForFunction((t) => document.body?.innerText.toLowerCase().includes(t.toLowerCase()), text, {
+    timeout,
+  });
 }
 
 async function capture(browser, { name, url, waitText, extraWaitText, probe }) {

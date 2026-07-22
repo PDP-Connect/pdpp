@@ -112,7 +112,7 @@ export default async function RecordsIndexPage({
   // run) only selects the fast vs. idle cadence. Named `runningCount` to match
   // the records-poller mount invariant.
   const runningCount = summaries.filter(
-    (s) => s.last_run != null && isActiveConnectorRunSummaryStatus(s.last_run.status)
+    (s) => s.last_run !== null && isActiveConnectorRunSummaryStatus(s.last_run.status)
   ).length;
 
   return (

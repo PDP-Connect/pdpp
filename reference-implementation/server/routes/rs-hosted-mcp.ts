@@ -264,7 +264,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
     resource: string,
     internalBase: string
   ): Promise<McpServerOptions | null> {
-    const access = await ctx.getGrantPackageAccess(req.tokenInfo!.grant_package_id as string);
+    const access = await ctx.getGrantPackageAccess(req.tokenInfo?.grant_package_id as string);
     if (!access || access.members.length === 0) {
       ctx.pdppError(res, 403, "package_revoked", "Grant package is revoked or has no active members");
       return null;
@@ -283,7 +283,7 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
       serverName: "pdpp-reference-mcp",
       serverVersion: referenceRevision,
     } satisfies McpServerOptions;
-    res.setHeader("x-pdpp-grant-package-id", req.tokenInfo!.grant_package_id as string);
+    res.setHeader("x-pdpp-grant-package-id", req.tokenInfo?.grant_package_id as string);
     res.setHeader("x-pdpp-grant-package-member-count", String(access.members.length));
     return mcpServerOptions;
   }

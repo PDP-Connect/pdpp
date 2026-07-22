@@ -1321,11 +1321,11 @@ async function run() {
           ) &&
           hasEvent(
             debugEvents,
-            (_event, payload, type) => type === "playground.click" || type === "playground.input"
+            (_event, _payload, type) => type === "playground.click" || type === "playground.input"
           ) &&
           hasEvent(
             debugEvents,
-            (_event, payload, type) => type === "stream.input.post.result" || type === "neko.client.start"
+            (_event, _payload, type) => type === "stream.input.post.result" || type === "neko.client.start"
           ),
         "telemetry did not capture both local input path and remote playground events"
       );

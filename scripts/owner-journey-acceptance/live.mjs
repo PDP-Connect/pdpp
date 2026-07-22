@@ -237,7 +237,7 @@ function isHealthyRefreshAdvisory(connector) {
     return false;
   }
   const verdict = renderedVerdict(connector);
-  if (!verdict || verdict.channel !== "advisory") {
+  if (verdict?.channel !== "advisory") {
     return false;
   }
   const pill = verdict.pill && typeof verdict.pill === "object" ? verdict.pill : {};

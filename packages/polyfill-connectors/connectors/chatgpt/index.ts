@@ -2667,7 +2667,7 @@ function safeConversationListItemHint(c: ConversationListItem): Record<string, s
 
 function conversationListItemFromGap(gap: CollectContext["detailGaps"][number]): ConversationListItem | null {
   const locator = gap.detail_locator;
-  if (!locator || locator.kind !== "chatgpt.conversation") {
+  if (locator?.kind !== "chatgpt.conversation") {
     return null;
   }
   const hint = locator.list_item;

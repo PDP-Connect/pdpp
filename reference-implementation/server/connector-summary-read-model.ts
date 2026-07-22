@@ -2172,7 +2172,7 @@ export async function runBoundedSummaryEvidenceSweep(options: {
       cursor = cursorBeforeCurrentPage;
       break;
     }
-    cursor = pageIds[pageIds.length - 1] ?? cursor;
+    cursor = pageIds.at(-1) ?? cursor;
     if (pageIds.length < pageSize) {
       // Short page: this was genuinely the last page of the complete set.
       coveredCompleteSet = true;

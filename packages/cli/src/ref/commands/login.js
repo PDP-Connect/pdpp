@@ -149,7 +149,7 @@ function readSetCookie(resp) {
   }
   if (typeof headers.getSetCookie === "function") {
     const arr = headers.getSetCookie();
-    if (arr && arr.length) {
+    if (arr?.length) {
       return arr;
     }
   }

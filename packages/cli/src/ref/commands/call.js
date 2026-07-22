@@ -68,7 +68,7 @@ export async function runRefCall(argv, io = {}, fetchImpl = globalThis.fetch) {
 
   // Always surface the status line on stderr so machine-readable stdout stays
   // clean. The URL is intentionally the path only — never the cookie/bearer.
-  err.write(`${method} ${path} → ${resp.status} ${resp.statusText || ""}`.trimEnd() + "\n");
+  err.write(`${`${method} ${path} → ${resp.status} ${resp.statusText || ""}`.trimEnd()}\n`);
 
   if (flags["status-only"]) {
     return statusExitCode(resp.status);
@@ -112,7 +112,7 @@ async function resolveBody(flags, io, method) {
   if (hasInline) {
     raw = flags.data;
   } else if (hasStdin) {
-    raw = await readAll((io && io.stdin) || process.stdin);
+    raw = await readAll(io?.stdin || process.stdin);
   } else {
     return;
   }

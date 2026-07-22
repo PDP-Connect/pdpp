@@ -391,9 +391,7 @@ function main(argv) {
     } else if (ok) {
       process.stdout.write(`Railway core env contract satisfied: core=${coreFile}\n`);
     } else {
-      process.stderr.write(
-        "Railway core env contract violations:\n" + violations.map((v) => `- ${v}`).join("\n") + "\n"
-      );
+      process.stderr.write(`Railway core env contract violations:\n${violations.map((v) => `- ${v}`).join("\n")}\n`);
     }
     process.exit(ok ? 0 : 1);
   }
@@ -426,9 +424,7 @@ function main(argv) {
   } else if (ok) {
     process.stdout.write(`Railway deploy env contract satisfied: console=${consoleFile} reference=${referenceFile}\n`);
   } else {
-    process.stderr.write(
-      "Railway deploy env contract violations:\n" + violations.map((v) => `- ${v}`).join("\n") + "\n"
-    );
+    process.stderr.write(`Railway deploy env contract violations:\n${violations.map((v) => `- ${v}`).join("\n")}\n`);
   }
 
   process.exit(ok ? 0 : 1);

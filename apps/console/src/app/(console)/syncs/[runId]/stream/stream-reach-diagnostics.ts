@@ -99,7 +99,7 @@ export function classifyStreamReachFailure(probe: StreamReachProbeResult): Strea
 function classifyReason(probe: StreamReachProbeResult): StreamReachReason {
   // The probe request never reached the server → the origin/route/proxy is
   // unreachable. This is distinct from a server that answered with a status.
-  if (probe.probeError || probe.probeStatus == null) {
+  if (probe.probeError || probe.probeStatus === null) {
     return "unreachable_origin";
   }
   switch (probe.probeStatus) {

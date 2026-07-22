@@ -12,8 +12,8 @@ export interface ViewportWriterContext {
 }
 
 interface PreparedViewportTransport {
-  onEquivalent(): void;
-  post(): void;
+  onEquivalent: () => void;
+  post: () => void;
 }
 
 interface ViewportWritePreparation<Context extends ViewportWriterContext> {

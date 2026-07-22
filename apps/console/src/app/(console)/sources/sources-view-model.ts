@@ -496,7 +496,7 @@ export function toSourceInstanceView(
   // Modality is persisted server authority. A missing heartbeat must not
   // resurrect remote Sync controls for a local-device connection.
   const isLocalDevicePush = summary.source_kind === "local_device";
-  const isRunning = summary.last_run != null && isActiveConnectorRunSummaryStatus(summary.last_run.status);
+  const isRunning = summary.last_run !== null && isActiveConnectorRunSummaryStatus(summary.last_run.status);
   const manualUploadHref = manualUploadHrefForSource(summary, options.manifests);
   const collectionFactsByStream = new Map(
     [...indexCollectionReportByStream(summary.collection_report)].map(([stream, entry]) => [
