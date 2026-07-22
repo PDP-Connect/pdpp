@@ -24,3 +24,11 @@ Modified:
 - The `dialog-not-open` failure phase now has a checkpoint capture that reliably reflects the page state before the Escape-driven dialog dismissal, closing one concrete evidence-timing gap identified from saved live-run evidence.
 - Does not resolve or reclassify the underlying `export_affordance_missing` cause (markup change vs. profile/runtime surface loss) — that still requires a live run captured after this fix deploys.
 - No coupling introduced between Chase and USAA; the fix is scoped to the USAA export ladder only.
+
+## Residual risks
+
+- Owner-authorized post-deploy acceptance remains: a run reaching
+  `dialog-not-open` should produce a non-empty, privacy-safe structural
+  checkpoint fixture for that phase. This is live-environment verification,
+  not an implementation task; record and authorize it through the owner’s
+  issue-tracking process before running it.

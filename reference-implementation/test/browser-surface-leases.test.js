@@ -297,6 +297,30 @@ test("retained browser surface survives routine reap but remains explicitly inva
   assert.equal(leases.getSurface("chatgpt-retained"), undefined);
 });
 
+test("retained browser surface cannot be reclaimed after a stale capacity-pressure plan", () => {
+  const { manager: leases } = manager({
+    config: { surfaceMode: "dynamic", staticProfileKey: undefined, surfaceCap: 1 },
+    initialSurfaces: [
+      {
+        surface_id: "chatgpt-retained",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://chatgpt-retained:9222",
+        stream_base_url: "http://chatgpt-retained:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+        retained: true,
+      },
+    ],
+  });
+
+  assert.deepEqual(leases.completeCapacityPressureReclaim("chatgpt-retained"), {});
+  assert.equal(leases.getSurface("chatgpt-retained")?.health, "ready");
+  assert.equal(leases.getSurface("chatgpt-retained")?.retained, true);
+});
+
 // The three tests below replace a single 0.3.0-era "priority then FIFO
 // determines release pump ordering" test that asserted release-time
 // promotion across three *different* `accountKey`s on one static surface.

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import pg from 'pg';
 import { buildScrubbedTestEnv } from './test-env.js';
+import { isDedicatedPostgresTestDatabaseName } from '../test/helpers/dedicated-postgres-test-url.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
@@ -54,7 +55,11 @@ function deriveDbName(filePath) {
     .toLowerCase()
     .slice(0, 40);
   fileCounter += 1;
-  return `pdpp_test_${base}_${fileCounter}`;
+  const dbName = `pdpp_test_${base}_${fileCounter}`;
+  if (!isDedicatedPostgresTestDatabaseName(dbName)) {
+    throw new Error(`runner derived a database name outside the dedicated test contract: ${dbName}`);
+  }
+  return dbName;
 }
 
 // Per-file databases currently allocated. Tracked so that if the runner

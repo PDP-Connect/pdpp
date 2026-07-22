@@ -82,7 +82,7 @@ test('Railway runbook and template handoff use the one-service core button shape
   const handoff = read('deploy/railway/template.md');
 
   assert.match(readme, /https:\/\/railway\.com\/new\/template\/pdpp-core-template-source/);
-  assert.match(readme, /ghcr\.io\/vana-com\/pdpp\/railway-core/);
+  assert.match(readme, /ghcr\.io\/pdp-connect\/pdpp\/railway-core/);
   assert.match(readme, /one public Core app service/i);
   assert.doesNotMatch(readme, /Settings\s*->\s*Build\s*->\s*Docker\s*->\s*Target Stage/i);
 
@@ -104,7 +104,7 @@ test('Railway runbook and template handoff use the one-service core button shape
 test('Railway handoff documents the public railway-core image-source template shape', () => {
   const handoff = read('deploy/railway/template.md');
 
-  assert.match(handoff, /ghcr\.io\/vana-com\/pdpp\/railway-core/);
+  assert.match(handoff, /ghcr\.io\/pdp-connect\/pdpp\/railway-core/);
   assert.match(handoff, /one application service plus a Postgres plugin/i);
 
   // A concrete version tag must be pinned; latest/moving tags are disallowed.
@@ -115,7 +115,7 @@ test('Railway handoff documents the public railway-core image-source template sh
 test('Railway runbook documents the public railway-core image-source mapping', () => {
   const readme = read('deploy/railway/README.md');
 
-  assert.match(readme, /ghcr\.io\/vana-com\/pdpp\/railway-core/);
+  assert.match(readme, /ghcr\.io\/pdp-connect\/pdpp\/railway-core/);
   assert.match(readme, /console[\s\S]*Railway[\s\S]*\$PORT/i);
   assert.match(readme, /127\.0\.0\.1:7662/);
   assert.match(readme, /127\.0\.0\.1:7663/);

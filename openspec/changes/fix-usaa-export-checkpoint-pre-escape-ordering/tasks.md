@@ -16,4 +16,3 @@
 - [x] `ultracite check` on touched files: clean (after one auto-format fix).
 - [x] `git diff --check`: clean.
 - [x] `openspec validate fix-usaa-export-checkpoint-pre-escape-ordering --strict`: valid. `openspec validate --all --strict`: 77 passed, 0 failed.
-- [ ] Post-deploy live acceptance: a run reaching the `dialog-not-open` phase after this fix deploys should produce a non-empty, privacy-safe structural checkpoint fixture for that phase. Not evidenced yet — requires an owner-authorized live run on the affected USAA connection.
