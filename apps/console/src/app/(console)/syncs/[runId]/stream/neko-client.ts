@@ -1619,12 +1619,11 @@ export function dispatchNekoTouchScrollBoundary(
  */
 export function completeNekoTouchScrollGesture(
   state: NekoTouchScrollTerminalState,
-  terminalTouch: NekoTouchScrollPoint | null | undefined,
+  _terminalTouch: NekoTouchScrollPoint | null | undefined,
   dispatchInput?: NekoTouchScrollInputDispatcher
 ): void {
   // Keep this parameter at the production seam. Its changed coordinates are
   // evidence that the boundary must use state.lastX/state.lastY instead.
-  void terminalTouch;
   if (state.scrolling && dispatchInput) {
     dispatchNekoTouchScrollBoundary(state, dispatchInput);
   }
@@ -2383,8 +2382,8 @@ export async function startNeko(
   }
   configureNekoWebRtcReconnect(neko);
   emitNekoDebug("neko.client.start", {
-    serverPath: config.serverPath,
-    statusPath: config.statusPath,
+    hasServerPath: Boolean(config.serverPath),
+    hasStatusPath: Boolean(config.statusPath),
   });
 
   neko.$mount?.(mountEl);
@@ -2396,6 +2395,9 @@ export async function startNeko(
     await neko.login?.(login.username, login.password);
     selectPreferredNekoVideoStream(neko);
     neko.connect?.();
+    emitNekoDebug("neko.client.webrtc_handoff_requested", {
+      reconnectConfig: NEKO_WEBRTC_RECONNECT_CONFIG,
+    });
     neko.setTouchEnabled?.(true);
     suppressNekoCursorChrome(neko);
     startClipboardWriteGuard();

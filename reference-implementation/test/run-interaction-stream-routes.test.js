@@ -477,6 +477,8 @@ async function withHarness(options, fn) {
     dbPath: ':memory:',
     connectorPathResolver: () => connectorPath,
     streamingCompanionFactory,
+    streamingLogger: harnessOptions.streamingLogger,
+    makeStreamingBrowserSessionId: harnessOptions.makeStreamingBrowserSessionId,
     streamingSessionStore: harnessOptions.streamingSessionStore,
     streamingNow: harnessOptions.streamingNow,
     streamingSetTimeout: harnessOptions.streamingSetTimeout,
@@ -548,6 +550,30 @@ async function cancelRun(asUrl, runId, interactionId) {
     body: JSON.stringify({ interaction_id: interactionId, status: 'cancelled' }),
   });
   await waitForRunTerminal(asUrl, runId);
+}
+
+async function requestNekoUpgrade(asUrl, cookie) {
+  const target = new URL('/neko/socket', asUrl);
+  await new Promise((resolve, reject) => {
+    const request = http.request({
+      host: target.hostname,
+      port: target.port,
+      path: target.pathname,
+      headers: {
+        Connection: 'Upgrade',
+        Cookie: cookie,
+        Upgrade: 'websocket',
+      },
+    });
+    request.once('response', (response) => {
+      assert.equal(response.statusCode, 502);
+      response.resume();
+      response.once('end', resolve);
+    });
+    request.once('upgrade', () => reject(new Error('unexpected successful n.eko upgrade')));
+    request.once('error', reject);
+    request.end();
+  });
 }
 
 test('managed n.eko approval is lease, surface, profile, run, interaction, readiness, and origin scoped', () => {
@@ -1252,9 +1278,10 @@ test('SSE attach delivers an attached event and dispatches frames', async () => 
   });
 });
 
-test('n.eko backend emits iframe path and proxies only after stream-token entry', async () => {
+test('n.eko backend emits bounded, redacted first-load lifecycle observations', async () => {
   let observedUpstreamCookie = null;
   const upstreamRequests = [];
+  const observations = [];
   const upstream = http.createServer((req, res) => {
     observedUpstreamCookie = req.headers.cookie || '';
     upstreamRequests.push({ cookie: req.headers.cookie || '', method: req.method, url: req.url });
@@ -1276,6 +1303,11 @@ test('n.eko backend emits iframe path and proxies only after stream-token entry'
     await withHarness(
       {
         makeCompanion: makeMockNekoCompanion(upstreamOrigin),
+        streamingLogger: {
+          info(record) {
+            observations.push(record);
+          },
+        },
       },
       async ({ asUrl, spotifyManifest }) => {
         const unauthenticatedProxy = await fetchJson(`${asUrl}/neko/echo`);
@@ -1419,6 +1451,24 @@ test('n.eko backend emits iframe path and proxies only after stream-token entry'
         assert.match(proxiedRootHtml, /data-pdpp-neko-embed/);
         assert.match(proxiedRootHtml, /<body>ok<\/body>/);
 
+        const transportEvents = observations.filter((record) => record.event?.startsWith('stream_'));
+        const expectedFirstLoadEvents = [
+          'stream_sse_attach_started',
+          'stream_backend_ready_emitted',
+          'stream_neko_proxy_target_resolved',
+          'stream_neko_client_config_issued',
+        ];
+        for (const event of expectedFirstLoadEvents) {
+          assert.equal(transportEvents.some((record) => record.event === event), true, `missing ${event}`);
+        }
+        for (const record of transportEvents) {
+          assert.equal(record.run_id, started.run_id);
+          assert.equal(record.interaction_id, pending.interaction_id);
+          assert.equal(typeof record.browser_session_id, 'string');
+          assert.equal(JSON.stringify(record).includes(upstreamOrigin), false);
+          assert.equal(JSON.stringify(record).includes(mint.body.token), false);
+        }
+
         assert.ok(
           !String(observedUpstreamCookie).includes('pdpp_neko_stream='),
           'stream token cookie must not be forwarded to n.eko',
@@ -1441,6 +1491,161 @@ test('n.eko backend emits iframe path and proxies only after stream-token entry'
   } finally {
     await new Promise((resolve) => upstream.close(resolve));
   }
+});
+
+test('n.eko diagnostic observations retain finite target and transport discriminators under repeated upstream failures', async () => {
+  const observations = [];
+  const secretBackend = 'neko://operator:credential@private.example';
+  await withHarness(
+    {
+      makeCompanion: ({ browser_session_id }) => ({
+        ...makeMockNekoCompanion('http://127.0.0.1:9')({ browser_session_id }),
+        backend: secretBackend,
+      }),
+      streamingLogger: { info(record) { observations.push(record); } },
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 201);
+
+      const abort = new AbortController();
+      const stream = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: abort.signal });
+      assert.equal(stream.status, 200);
+      const reader = stream.body.getReader();
+      let sse = '';
+      while (!sse.includes('event: backend_ready')) {
+        const { done, value } = await reader.read();
+        assert.equal(done, false, 'SSE must reach backend-ready before proxy diagnostics');
+        sse += new TextDecoder().decode(value, { stream: true });
+      }
+
+      const clientConfig = await fetch(`${asUrl}/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko/session`);
+      assert.equal(clientConfig.status, 200);
+      const cookie = clientConfig.headers.get('set-cookie');
+      assert.ok(cookie);
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const response = await fetch(`${asUrl}/neko/repeated-failure`, { headers: { Cookie: cookie } });
+        assert.equal(response.status, 502);
+      }
+      await requestNekoUpgrade(asUrl, cookie);
+
+      const backendReady = observations.find((record) => record.event === 'stream_backend_ready_emitted');
+      assert.equal(backendReady.backend, 'unknown');
+      const target = observations.find((record) =>
+        record.event === 'stream_neko_proxy_target_resolved' && record.stage === 'neko_client_config');
+      assert.deepEqual(target.target_protocol, 'http');
+      const failures = observations.filter((record) => record.event === 'stream_neko_proxy_upstream_failed');
+      assert.deepEqual(
+        failures.map((record) => ({ error_code: record.error_code, stage: record.stage, transport: record.transport })).sort((a, b) => a.transport.localeCompare(b.transport)),
+        [
+          { error_code: 'ECONNREFUSED', stage: 'neko_proxy_http', transport: 'http_proxy' },
+          { error_code: 'ECONNREFUSED', stage: 'neko_proxy_websocket_upgrade', transport: 'websocket_upgrade' },
+        ],
+      );
+      assert.ok(observations.length <= 12, 'per-session diagnostic key budget must bound 100 failures');
+      assert.ok(Math.max(...observations.map((record) => Buffer.byteLength(JSON.stringify(record)))) < 512);
+      assert.equal(JSON.stringify(observations).includes(secretBackend), false);
+
+      abort.abort();
+      await reader.cancel().catch(() => {});
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    },
+  );
+});
+
+test('n.eko diagnostic observations clamp megabyte companion error codes before logging', async () => {
+  const observations = [];
+  const megabyteCode = `secret-${'x'.repeat(1024 * 1024)}`;
+  await withHarness(
+    {
+      makeCompanion: ({ browser_session_id }) => {
+        const companion = makeMockNekoCompanion('http://127.0.0.1:9')({ browser_session_id });
+        companion.start = async () => {
+          const error = new Error('companion start failed');
+          error.code = megabyteCode;
+          throw error;
+        };
+        return companion;
+      },
+      streamingLogger: { info(record) { observations.push(record); } },
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 201);
+      const stream = await fetch(`${asUrl}${mint.body.viewer_path}`);
+      const reader = stream.body.getReader();
+      let sse = '';
+      while (!sse.includes('event: error')) {
+        const { done, value } = await reader.read();
+        assert.equal(done, false, 'SSE must report the companion start failure');
+        sse += new TextDecoder().decode(value, { stream: true });
+      }
+      const failure = observations.find((record) => record.event === 'stream_companion_start_failed');
+      assert.deepEqual(failure.error_code, 'unknown');
+      assert.ok(Buffer.byteLength(JSON.stringify(failure)) < 512);
+      assert.equal(JSON.stringify(failure).includes(megabyteCode), false);
+      await reader.cancel().catch(() => {});
+    },
+  );
+});
+
+test('companion-less invalidation clears the diagnostic key budget before a browser-session id is reused', async () => {
+  const observations = [];
+  const baseSessionStore = createStreamingSessionStore();
+  let authorizedSession = null;
+  const streamingSessionStore = {
+    ...baseSessionStore,
+    authorize() {
+      return authorizedSession;
+    },
+    mint(request) {
+      const minted = baseSessionStore.mint(request);
+      authorizedSession = minted.session;
+      return minted;
+    },
+  };
+  await withHarness(
+    {
+      makeCompanion: () => null,
+      makeStreamingBrowserSessionId: () => 'bs_reused_without_companion',
+      streamingLogger: { info(record) { observations.push(record); } },
+      streamingSessionStore,
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      for (let pass = 0; pass < 2; pass += 1) {
+        const started = await startRun(asUrl, spotifyManifest.connector_id);
+        const pending = await waitForPendingInteraction(asUrl, started.run_id);
+        const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ interaction_id: pending.interaction_id }),
+        });
+        assert.equal(mint.status, 201);
+        const unavailable = await fetchJson(`${asUrl}/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko/session`);
+        assert.equal(unavailable.status, 401);
+        assert.equal(unavailable.body.error.code, 'companion_unavailable');
+        await cancelRun(asUrl, started.run_id, pending.interaction_id);
+      }
+      const unavailableRecords = observations.filter((record) => record.event === 'stream_neko_proxy_target_unavailable');
+      assert.equal(unavailableRecords.length, 2);
+      assert.deepEqual(
+        unavailableRecords.map((record) => record.browser_session_id),
+        ['bs_reused_without_companion', 'bs_reused_without_companion'],
+      );
+    },
+  );
 });
 
 test('n.eko client config allows allocator-approved dynamic origin without exposing backend URLs', async () => {

@@ -60,6 +60,18 @@ const HOP_BY_HOP_HEADERS = new Set([
   'trailer',
   'transfer-encoding',
 ]);
+const FIRST_TRANSPORT_EVENTS = new Set([
+  'stream_backend_ready_emitted',
+  'stream_neko_client_config_issued',
+  'stream_neko_proxy_target_resolved',
+  'stream_sse_attach_started',
+]);
+const MAX_TRANSPORT_OBSERVATION_KEYS_PER_SESSION = 12;
+const OBSERVATION_BACKENDS = new Set(['cdp', 'neko']);
+const OBSERVATION_STAGES = new Set(['neko_client_config', 'neko_entry', 'neko_proxy_http', 'neko_proxy_websocket_upgrade', 'neko_status']);
+const OBSERVATION_TRANSPORTS = new Set(['http_proxy', 'websocket_upgrade']);
+const OBSERVATION_TARGET_PROTOCOLS = new Set(['http', 'https']);
+const OBSERVATION_ERROR_CODES = new Set(['companion_start_failed', 'companion_unavailable', 'invalid_neko_origin', 'neko_origin_not_allowed', 'neko_proxy_unavailable', 'unknown', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT']);
 
 function pdppError(res, status, code, message, param = null) {
   const body = { error: { type: 'invalid_request_error', code, message } };
@@ -203,7 +215,7 @@ function writeUpgradeError(socket, status, message) {
   socket.destroy();
 }
 
-function proxyUpgradeRequest(rawReq, socket, head, targetUrl, cookieNames) {
+function proxyUpgradeRequest(rawReq, socket, head, targetUrl, cookieNames, observe = () => {}) {
   const useTls = targetUrl.protocol === 'https:';
   const port = Number(targetUrl.port || (useTls ? 443 : 80));
   const headers = buildProxyHeaders(rawReq.headers, targetUrl, cookieNames, { upgrade: true });
@@ -222,8 +234,19 @@ function proxyUpgradeRequest(rawReq, socket, head, targetUrl, cookieNames) {
     upstream.pipe(socket);
     socket.pipe(upstream);
   });
-  upstream.once('error', () => writeUpgradeError(socket, 502, 'Bad Gateway'));
+  upstream.once('error', (err) => {
+    observe('stream_neko_proxy_upstream_failed', {
+      error_code: safeNetworkErrorCode(err),
+      transport: 'websocket_upgrade',
+    });
+    writeUpgradeError(socket, 502, 'Bad Gateway');
+  });
   socket.once('error', () => upstream.destroy());
+}
+
+function safeNetworkErrorCode(err) {
+  const code = typeof err?.code === 'string' ? err.code : null;
+  return code && OBSERVATION_ERROR_CODES.has(code) ? code : 'unknown';
 }
 
 function safeRunId(req) {
@@ -351,6 +374,7 @@ async function resolveCompanionBackend(companion) {
  * @param {Function|null} deps.onPresentationRestoreFailure terminal recovery hook for failed screen restore
  * @param {Function} deps.setTimeoutImpl optional presentation-expiry scheduler for tests
  * @param {Function} deps.clearTimeoutImpl optional presentation-expiry canceller for tests
+ * @param {object|null} deps.logger structured server logger for non-authoritative stream observations
  */
 export function registerStreamingRoutes({
   app,
@@ -374,6 +398,7 @@ export function registerStreamingRoutes({
   onPresentationRestoreFailure = null,
   setTimeoutImpl = setTimeout,
   clearTimeoutImpl = clearTimeout,
+  logger = null,
 }) {
   if (!app || !ownerAuth || !streamingSessions) {
     throw new Error('registerStreamingRoutes: missing dependency');
@@ -418,6 +443,51 @@ export function registerStreamingRoutes({
   // best-effort and never throws back into the page.
   const remoteTelemetrySinks = new Map(); // browser_session_id → unsubscribe fn
   const allowedNekoHosts = parseAllowedHosts(nekoProxyAllowedHosts);
+  const observedTransportKeys = new Map();
+  function clearBrowserSessionDiagnostics(browser_session_id) {
+    observedTransportKeys.delete(browser_session_id);
+    controllingAttachments.delete(browser_session_id);
+    presentationViewportDispatches.delete(browser_session_id);
+    const unsubscribe = remoteTelemetrySinks.get(browser_session_id);
+    remoteTelemetrySinks.delete(browser_session_id);
+    try { unsubscribe?.(); } catch { /* best-effort */ }
+    try { inputTelemetry.drop(browser_session_id); } catch { /* best-effort */ }
+  }
+  // Diagnostic-only transport observations. They never affect auth,
+  // readiness, proxying, or retries. Omit target hosts, URLs, cookies, and tokens.
+  function observeStreamTransport(event, session, fields = {}) {
+    if (!logger || typeof logger.info !== 'function' || !session) return;
+    const stage = OBSERVATION_STAGES.has(fields.stage) ? fields.stage : 'unknown';
+    const transport = OBSERVATION_TRANSPORTS.has(fields.transport) ? fields.transport : 'unknown';
+    const targetProtocol = OBSERVATION_TARGET_PROTOCOLS.has(fields.target_protocol) ? fields.target_protocol : 'unknown';
+    const errorCode = OBSERVATION_ERROR_CODES.has(fields.error_code) ? fields.error_code : 'unknown';
+    const key = `${event}\0${stage}\0${transport}\0${errorCode}`;
+    if (FIRST_TRANSPORT_EVENTS.has(event) || event.endsWith('_failed') || event.endsWith('_unavailable') || event.endsWith('_rejected')) {
+      const seen = observedTransportKeys.get(session.browser_session_id) || new Set();
+      if (seen.has(key)) return;
+      if (seen.size >= MAX_TRANSPORT_OBSERVATION_KEYS_PER_SESSION) return;
+      seen.add(key);
+      observedTransportKeys.set(session.browser_session_id, seen);
+    }
+    try {
+      const record = { event, run_id: session.run_id, interaction_id: session.interaction_id, browser_session_id: session.browser_session_id };
+      if (event === 'stream_backend_ready_emitted') record.backend = OBSERVATION_BACKENDS.has(fields.backend) ? fields.backend : 'unknown';
+      if (event === 'stream_neko_proxy_target_resolved') {
+        record.stage = stage;
+        record.target_protocol = targetProtocol;
+      }
+      if (event.endsWith('_failed') || event.endsWith('_unavailable') || event.endsWith('_rejected')) {
+        record.stage = stage;
+        record.transport = transport;
+        record.error_code = errorCode;
+      }
+      logger.info(record,
+        'stream transport observation',
+      );
+    } catch {
+      /* Observability must not affect streaming. */
+    }
+  }
   const nekoAutoLogin =
     nekoProxyAutoLogin &&
     typeof nekoProxyAutoLogin === 'object' &&
@@ -496,24 +566,9 @@ export function registerStreamingRoutes({
 
   async function destroyCompanion(browser_session_id, { fallbackCompanion = null, propagateStopFailure = false } = {}) {
     const companion = companions.get(browser_session_id) || fallbackCompanion;
+    clearBrowserSessionDiagnostics(browser_session_id);
     if (!companion) return;
     companions.delete(browser_session_id);
-    controllingAttachments.delete(browser_session_id);
-    presentationViewportDispatches.delete(browser_session_id);
-    const unsubscribe = remoteTelemetrySinks.get(browser_session_id);
-    remoteTelemetrySinks.delete(browser_session_id);
-    if (typeof unsubscribe === 'function') {
-      try {
-        unsubscribe();
-      } catch {
-        /* unsubscribe is best-effort */
-      }
-    }
-    try {
-      inputTelemetry.drop(browser_session_id);
-    } catch {
-      /* best-effort */
-    }
     try {
       await companion.stop();
     } catch (err) {
@@ -627,7 +682,8 @@ export function registerStreamingRoutes({
   async function invalidateForInteractionResolved({ run_id, interaction_id, reason }) {
     const lifecycle = presentationLifecycleFor(run_id, interaction_id);
     if (!lifecycle) {
-      streamingSessions.invalidate({ run_id, interaction_id, reason: reason || 'interaction_resolved' });
+      const invalidated = streamingSessions.invalidate({ run_id, interaction_id, reason: reason || 'interaction_resolved' });
+      if (invalidated?.browser_session_id) clearBrowserSessionDiagnostics(invalidated.browser_session_id);
       return;
     }
     await terminalizePresentation(lifecycle, { invalidateBearer: true, reason });
@@ -858,36 +914,51 @@ export function registerStreamingRoutes({
     throw mintError(409, 'no_pending_interaction', 'No pending interaction for this run');
   }
 
-  function getNekoProxySession(token) {
+  function getNekoProxySession(token, stage = 'neko_proxy') {
     const session = streamingSessions.authorize({ token });
     const companion = getCompanion(session.browser_session_id);
     if (!companion || typeof companion.getNekoProxyTarget !== 'function') {
+      observeStreamTransport('stream_neko_proxy_target_unavailable', session, { error_code: 'companion_unavailable', stage });
       const err = new Error('n.eko companion is not available');
       err.code = 'companion_unavailable';
       throw err;
     }
     const target = companion.getNekoProxyTarget();
     if (!target?.origin) {
+      observeStreamTransport('stream_neko_proxy_target_unavailable', session, { error_code: 'neko_proxy_unavailable', stage });
       const err = new Error('n.eko proxy target is not available');
       err.code = 'neko_proxy_unavailable';
       throw err;
     }
-    const origin = assertAllowedNekoOrigin(target.origin, allowedNekoHosts, (parsed) =>
-      typeof isNekoProxyTargetApproved === 'function'
-        ? isNekoProxyTargetApproved(target, { session, origin: parsed })
-        : false,
-    );
+    let origin;
+    try {
+      origin = assertAllowedNekoOrigin(target.origin, allowedNekoHosts, (parsed) =>
+        typeof isNekoProxyTargetApproved === 'function'
+          ? isNekoProxyTargetApproved(target, { session, origin: parsed })
+          : false,
+      );
+    } catch (err) {
+      observeStreamTransport('stream_neko_proxy_target_rejected', session, {
+        error_code: safeNetworkErrorCode(err),
+        stage,
+      });
+      throw err;
+    }
+    observeStreamTransport('stream_neko_proxy_target_resolved', session, {
+      stage,
+      target_protocol: origin.protocol.slice(0, -1),
+    });
     return { session, companion, origin };
   }
 
-  function getNekoCookieSession(req) {
+  function getNekoCookieSession(req, stage = 'neko_proxy_http') {
     const token = parseCookieHeader(req.headers?.cookie).get(nekoProxyCookieName);
     if (!token) {
       const err = new Error('n.eko stream cookie is missing');
       err.code = 'invalid_token';
       throw err;
     }
-    return getNekoProxySession(token);
+    return getNekoProxySession(token, stage);
   }
 
   function isStateChangingNekoProxyMethod(method) {
@@ -966,7 +1037,7 @@ body>p{display:none!important}
   async function handleNekoHttpProxy(req, res) {
     let authorized;
     try {
-      authorized = getNekoCookieSession(req);
+      authorized = getNekoCookieSession(req, 'neko_proxy_http');
     } catch (err) {
       const status =
         err.code === 'session_not_attached' ? 409 : err.code === 'session_expired' ? 410 : 401;
@@ -991,7 +1062,6 @@ body>p{display:none!important}
     ]);
     const body = serializeProxyBody(req, headers);
     const transport = targetUrl.protocol === 'https:' ? https : http;
-
     res.hijack();
     const raw = res.raw;
     const upstream = transport.request(
@@ -1020,7 +1090,12 @@ body>p{display:none!important}
         upstreamRes.pipe(raw);
       },
     );
-    upstream.once('error', () => {
+    upstream.once('error', (err) => {
+      observeStreamTransport('stream_neko_proxy_upstream_failed', authorized.session, {
+        error_code: safeNetworkErrorCode(err),
+        stage: 'neko_proxy_http',
+        transport: 'http_proxy',
+      });
       if (raw.destroyed) return;
       raw.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
       raw.end(JSON.stringify({ error: { type: 'api_error', code: 'neko_proxy_failed' } }));
@@ -1033,12 +1108,16 @@ body>p{display:none!important}
     const parsed = new URL(rawReq.url || '/', 'http://localhost');
     if (parsed.pathname !== '/neko' && !parsed.pathname.startsWith('/neko/')) return false;
     try {
-      const authorized = getNekoCookieSession({ headers: rawReq.headers });
+      const authorized = getNekoCookieSession({ headers: rawReq.headers }, 'neko_proxy_websocket_upgrade');
       const targetUrl = buildNekoTargetUrl(authorized.origin, rawReq.url || nekoProxyPath);
       proxyUpgradeRequest(rawReq, socket, head, targetUrl, [
         nekoProxyCookieName,
         presentationAttachmentCookieNameFor(authorized.session),
-      ]);
+      ], (event, fields) => observeStreamTransport(event, authorized.session, {
+        error_code: fields.error_code,
+        stage: 'neko_proxy_websocket_upgrade',
+        transport: fields.transport,
+      }));
       return true;
     } catch (err) {
       const status = err.code === 'session_expired' ? 410 : err.code === 'session_not_attached' ? 409 : 401;
@@ -1267,6 +1346,7 @@ body>p{display:none!important}
     if (!companion) {
       return pdppError(res, 410, 'companion_unavailable', 'Streaming companion is no longer attached');
     }
+    observeStreamTransport('stream_sse_attach_started', session);
     let controllingAttachment = false;
     try {
       controllingAttachment = attachPresentationController(session, req, res);
@@ -1410,6 +1490,7 @@ body>p{display:none!important}
         await companion.dispatch({ type: 'viewport', ...settledViewport });
       }
     } catch (err) {
+      observeStreamTransport('stream_companion_start_failed', session, { error_code: safeNetworkErrorCode(err) });
       writeEvent('error', { code: err.code || 'companion_start_failed', message: err.message });
       await tearDownSession('companion_start_failed');
       return;
@@ -1422,6 +1503,7 @@ body>p{display:none!important}
       browserOwnerMode: companion.browserOwnerMode?.bind(companion),
       stealthMode: companion.stealthMode?.bind(companion),
     }));
+    observeStreamTransport('stream_backend_ready_emitted', session, { backend });
 
     await emit('run.stream_session_opened', {
       run_id: session.run_id,
@@ -1593,10 +1675,10 @@ body>p{display:none!important}
     };
   }
 
-  function authorizeNekoEntryToken(req, res) {
+  function authorizeNekoEntryToken(req, res, stage) {
     let authorized;
     try {
-      authorized = getNekoProxySession(req.params.token);
+      authorized = getNekoProxySession(req.params.token, stage);
     } catch (err) {
       const status =
         err.code === 'session_not_attached' ? 409 : err.code === 'session_expired' ? 410 : 401;
@@ -1613,7 +1695,7 @@ body>p{display:none!important}
   }
 
   async function handleNekoEntry(req, res) {
-    if (!authorizeNekoEntryToken(req, res)) return;
+    if (!authorizeNekoEntryToken(req, res, 'neko_entry')) return;
     const entryPath = nekoProxyBasePath();
     const params = new URLSearchParams({ pdpp_stream: Math.floor(now()).toString(36), embed: '1' });
     if (nekoAutoLogin) {
@@ -1624,7 +1706,9 @@ body>p{display:none!important}
   }
 
   async function handleNekoClientConfig(req, res) {
-    if (!authorizeNekoEntryToken(req, res)) return;
+    const authorized = authorizeNekoEntryToken(req, res, 'neko_client_config');
+    if (!authorized) return;
+    observeStreamTransport('stream_neko_client_config_issued', authorized.session, { status_code: 200 });
     return res.status(200).json(buildNekoClientConfig());
   }
 
@@ -1636,7 +1720,7 @@ body>p{display:none!important}
   async function handleNekoStatus(req, res) {
     let authorized;
     try {
-      authorized = getNekoCookieSession(req);
+      authorized = getNekoCookieSession(req, 'neko_status');
     } catch (err) {
       const status =
         err.code === 'session_not_attached' ? 409 : err.code === 'session_expired' ? 410 : 401;

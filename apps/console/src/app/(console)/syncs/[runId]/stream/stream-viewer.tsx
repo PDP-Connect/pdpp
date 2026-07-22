@@ -105,7 +105,7 @@ import {
   setNekoViewportLayout,
 } from "./neko-client.ts";
 import { createNekoClientApi } from "./neko-client-api-shim.ts";
-import { fetchNekoClientConfigResponse } from "./neko-client-config.ts";
+import { fetchNekoClientConfigResponse, type NekoClientConfigObservation } from "./neko-client-config.ts";
 import { mountNekoViewer } from "./neko-viewer-mount.ts";
 import {
   claimPlaygroundEvent,
@@ -2103,6 +2103,12 @@ function StreamStage({
         }
         const payload = parsed.value;
         onStatus(LIVE);
+        logDebug("stream_backend_ready_received", {
+          browserSessionId: browserSessionIdRef.current,
+          backend: payload.backend,
+          hasClientConfig: Boolean(payload.client_config_path),
+          hasEntry: Boolean(payload.iframe_path),
+        });
         logDebug("overlay_cleared", {
           backend: payload.backend,
           phase: "backend_ready",
@@ -2379,11 +2385,13 @@ function StreamStage({
     // (not a separate effect) guarantees the refs are set before the first
     // attach attempt.
     const initial = initialSessionRef.current;
+    let currentBrowserSessionId = initial.browser_session_id;
     inputUrlRef.current = initial.input_url;
     viewportUrlRef.current = initial.viewport_url;
     presentationAttachmentReadyRef.current = false;
     viewerUrl = initial.viewer_url;
     logDebug("stream_session_loaded", {
+      browserSessionId: initial.browser_session_id,
       reason: "initial",
       hasInputUrl: Boolean(initial.input_url),
       hasViewportUrl: Boolean(initial.viewport_url),
@@ -2443,7 +2451,9 @@ function StreamStage({
       viewportUrlRef.current = minted.viewport_url;
       presentationAttachmentReadyRef.current = false;
       viewerUrl = minted.viewer_url;
+      currentBrowserSessionId = minted.browser_session_id;
       logDebug("stream_session_minted", {
+        browserSessionId: minted.browser_session_id,
         reason: "reattach",
         hasInputUrl: Boolean(minted.input_url),
         hasViewportUrl: Boolean(minted.viewport_url),
@@ -2555,6 +2565,7 @@ function StreamStage({
       }
       closeCurrentSource();
       logDebug("stream_attach_start", {
+        browserSessionId: currentBrowserSessionId,
         attempt: totalAttempts + 1,
         hasViewerUrl: Boolean(viewerUrl),
         phase: attached ? "reattach-after-attached" : "initial",
@@ -2581,11 +2592,21 @@ function StreamStage({
             return;
           }
           if (attached) {
+            logDebug("stream_sse_transport_error", {
+              browserSessionId: browserSessionIdRef.current,
+              stage: "post_attach",
+              totalAttempts,
+            });
             // Live session, transient blip. EventSource handles its own
             // reconnect; the server keeps the session alive across the gap.
             // Do not close, do not re-attach, do not re-mint.
             return;
           }
+          logDebug("stream_sse_transport_error", {
+            browserSessionId: currentBrowserSessionId,
+            stage: "pre_attach",
+            totalAttempts: totalAttempts + 1,
+          });
           closeCurrentSource();
           handlePreAttachFailure();
         },
@@ -3578,8 +3599,13 @@ function waitForNekoStatusPoll(): Promise<void> {
   });
 }
 
-async function loadNekoClientConfig(clientConfigPath: string): Promise<NekoClientConfig> {
-  const payload = (await fetchNekoClientConfigResponse(clientConfigPath)) as NekoClientConfigResponse;
+async function loadNekoClientConfig(
+  clientConfigPath: string,
+  onObservation: (observation: NekoClientConfigObservation) => void
+): Promise<NekoClientConfig> {
+  const payload = (await fetchNekoClientConfigResponse(clientConfigPath, {
+    onObservation,
+  })) as NekoClientConfigResponse;
   return normalizeNekoClientConfig(payload);
 }
 
@@ -3729,7 +3755,9 @@ function NekoSurface({
       }
     };
 
-    const connection = loadNekoClientConfig(session.clientConfigPath)
+    const connection = loadNekoClientConfig(session.clientConfigPath, (observation) => {
+      logDebug("stream_neko_client_config", { browserSessionId: session.browserSessionId, ...observation });
+    })
       .then(async (config) => {
         if (cancelled) {
           return;
@@ -3741,7 +3769,6 @@ function NekoSurface({
           hasStatusPath: Boolean(config.statusPath),
           retryEpoch,
           serverPathLength: config.serverPath.length,
-          statusPath: config.statusPath,
         });
         const client = createNekoClientApi({
           dispatchInput: (intent) => {
@@ -3860,6 +3887,7 @@ function NekoSurface({
     configLoadRetryEpoch,
     handleViewerDiagnostic,
     logDebug,
+    session.browserSessionId,
     session.clientConfigPath,
     nekoSurfaceAdapterRef,
     keyboardFocusStateRef,
