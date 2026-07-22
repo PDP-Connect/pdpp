@@ -1032,11 +1032,11 @@ function summarizeLocalCoverage(rows: readonly LocalCoverageRow[]): LocalCoverag
 }
 
 function accumulateGapRow(stats: GapStatMap, gap: GapRow): void {
-  if (!gap || gap.status !== "pending") {
+  if (gap?.status !== "pending") {
     return;
   }
   const src = gap.source && typeof gap.source === "object" ? (gap.source as Record<string, unknown>) : null;
-  if (!src || src.kind !== "local_device") {
+  if (src?.kind !== "local_device") {
     return;
   }
   const sourceInstanceId = typeof src.source_instance_id === "string" ? src.source_instance_id : null;
@@ -1363,7 +1363,7 @@ async function resolveAuthorizedDeviceSource(
 ): Promise<{ sourceInstance: SourceInstanceRow; connectorInstance: ConnectorInstanceRow } | null> {
   const store = ctx.deviceExporterStore;
   const sourceInstance = await store.getSourceInstance(deviceId, sourceInstanceId);
-  if (!sourceInstance || sourceInstance.status !== "active") {
+  if (sourceInstance?.status !== "active") {
     ctx.pdppError(
       res,
       notFoundStatus,
@@ -1414,7 +1414,7 @@ async function resolveActiveDeviceConnectorInstance(
     sourceKind: "local_device",
     sourceBindingKey: ctx.makeConnectorInstanceSourceBindingKey(identity),
   });
-  if (!instance || instance.status !== "active") {
+  if (instance?.status !== "active") {
     return null;
   }
   return instance;
@@ -1504,7 +1504,7 @@ export function mountRefDeviceExporterEnroll(app: AppLike, ctx: MountRefDeviceEx
         const enrollmentCode = requireNonEmptyString(body.enrollment_code, "enrollment_code");
         const enrollment = await ctx.deviceExporterStore.findEnrollmentByCodeHash(ctx.hashDeviceSecret(enrollmentCode));
         const now = new Date();
-        if (!enrollment || enrollment.status !== "pending") {
+        if (enrollment?.status !== "pending") {
           ctx.pdppError(res, 400, "invalid_request", "Enrollment code is invalid or already used", "enrollment_code");
           return;
         }
