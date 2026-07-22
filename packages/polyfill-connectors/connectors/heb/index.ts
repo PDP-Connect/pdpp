@@ -52,8 +52,8 @@ const NAV_TIMEOUT_MS = 30_000;
 const LIST_PAGE_WAIT_MS = 10_000;
 // Site-knowledge doc "Politeness that worked": 1500-2500ms fixed waits after
 // every navigation (client-hydrated pages; DOM not ready on `load`).
-const HYDRATION_WAIT_MIN_MS = 1500;
-const HYDRATION_WAIT_MAX_MS = 2500;
+export const HEB_HYDRATION_WAIT_MIN_MS = 1500;
+export const HEB_HYDRATION_WAIT_MAX_MS = 2500;
 // 400-500ms between order-history list pages.
 const LIST_PAGE_POLITE_DELAY_MS = 450;
 const MAX_LIST_PAGES = 50;
@@ -67,11 +67,11 @@ const MS_PER_DAY = 86_400_000;
 // Bounded polite delay after a successful mid-run repair re-probe, before
 // retrying the one affected detail (design.md Decision 4). Reuses the same
 // jitter shape as hydrationWait rather than inventing a second constant pair.
-const REPAIR_RETRY_DELAY_MIN_MS = 1500;
-const REPAIR_RETRY_DELAY_MAX_MS = 2500;
+export const HEB_REPAIR_RETRY_DELAY_MIN_MS = 1500;
+export const HEB_REPAIR_RETRY_DELAY_MAX_MS = 2500;
 
 async function hydrationWait(): Promise<void> {
-  const jitter = HYDRATION_WAIT_MIN_MS + Math.random() * (HYDRATION_WAIT_MAX_MS - HYDRATION_WAIT_MIN_MS);
+  const jitter = HEB_HYDRATION_WAIT_MIN_MS + Math.random() * (HEB_HYDRATION_WAIT_MAX_MS - HEB_HYDRATION_WAIT_MIN_MS);
   await politeDelay(jitter);
 }
 
@@ -183,7 +183,17 @@ async function navigateToOrderDetail(page: Page, url: string): Promise<void> {
   );
 }
 
-export async function fetchOrderDetail(page: Page, orderId: string): Promise<DetailFetchResult> {
+export interface HydrationDeps {
+  /** Optional deterministic seam for unit tests; production omits it and
+   *  therefore keeps the 1500–2500ms polite hydration wait. */
+  waitForHydration?: (() => Promise<void>) | undefined;
+}
+
+export async function fetchOrderDetail(
+  page: Page,
+  orderId: string,
+  deps: HydrationDeps = {}
+): Promise<DetailFetchResult> {
   const url = `https://www.heb.com/my-account/order-history/${orderId}`;
   try {
     await navigateToOrderDetail(page, url);
@@ -205,7 +215,7 @@ export async function fetchOrderDetail(page: Page, orderId: string): Promise<Det
       status: "failed",
     };
   }
-  await hydrationWait();
+  await (deps.waitForHydration ?? hydrationWait)();
 
   const landedUrl = page.url();
   const html = await page.content().catch((): string => "");
@@ -415,7 +425,7 @@ export interface RunFlags {
   sessionRepairRequired: boolean;
 }
 
-export interface EmitDeps {
+export interface EmitDeps extends HydrationDeps {
   capture?: BrowserCollectContext["capture"];
   emit: BrowserCollectContext["emit"];
   emitRecord: BrowserCollectContext["emitRecord"];
@@ -432,9 +442,18 @@ export interface EmitDeps {
  *  from EmitDeps because repair is browser/session-scoped, not
  *  emit/record-scoped, and tests exercising `resolveOrderDetail` without a
  *  repair scenario should not need to stub these. */
-export interface RepairDeps {
+export interface RepairDeps extends HydrationDeps {
   capture?: BrowserCollectContext["capture"];
   sendInteraction: BrowserCollectContext["sendInteraction"];
+  /** Optional deterministic seam for tests; production retains the polite
+   *  1500–2500ms post-repair delay by omitting this dependency. */
+  waitForRepairRetry?: () => Promise<void>;
+}
+
+async function waitForRepairRetry(): Promise<void> {
+  await politeDelay(
+    HEB_REPAIR_RETRY_DELAY_MIN_MS + Math.random() * (HEB_REPAIR_RETRY_DELAY_MAX_MS - HEB_REPAIR_RETRY_DELAY_MIN_MS)
+  );
 }
 
 /**
@@ -469,9 +488,7 @@ async function attemptManualSessionRepair(page: Page, deps: RepairDeps, flags: R
   if (!recovered) {
     return false;
   }
-  await politeDelay(
-    REPAIR_RETRY_DELAY_MIN_MS + Math.random() * (REPAIR_RETRY_DELAY_MAX_MS - REPAIR_RETRY_DELAY_MIN_MS)
-  );
+  await (deps.waitForRepairRetry ?? waitForRepairRetry)();
   return true;
 }
 
@@ -507,7 +524,7 @@ export async function resolveOrderDetail(
       if (recovered) {
         flags.sessionRepairRequired = false;
         flags.detailAttempts++;
-        const retryResult = await fetchOrderDetail(page, orderId);
+        const retryResult = await fetchOrderDetail(page, orderId, repairDeps);
         if (retryResult.status === "failed" && retryResult.failureKind === "session_repair_required") {
           // A second challenge right after a successful re-probe — latch for
           // the rest of the run rather than spending a second attempt.
@@ -533,7 +550,7 @@ export async function resolveOrderDetail(
     });
   }
   flags.detailAttempts++;
-  return fetchOrderDetail(page, orderId);
+  return fetchOrderDetail(page, orderId, repairDeps);
 }
 
 // ─── Old-gap recovery (drains pending order_items detail gaps) ────────────
@@ -560,7 +577,7 @@ function readRecoverableHebOrderDetailGap(
   return { gapId: gap.gap_id, orderDate, orderId, recordKey: gap.record_key ?? orderId };
 }
 
-export interface HebDetailRecoveryDeps {
+export interface HebDetailRecoveryDeps extends HydrationDeps {
   capture?: BrowserCollectContext["capture"];
   detailGaps: readonly BrowserCollectContext["detailGaps"][number][];
   emit: BrowserCollectContext["emit"];
@@ -590,6 +607,7 @@ async function recoverPendingOrderItemDetailGapPage(
     const result = await resolveOrderDetail(page, flags, locator.orderId, {
       ...(deps.capture ? { capture: deps.capture } : {}),
       sendInteraction: deps.sendInteraction,
+      waitForHydration: deps.waitForHydration,
     });
     if (result.status === "hydrated") {
       if (!locator.orderDate) {
@@ -707,6 +725,7 @@ async function fetchDetailAndRecordCoverage(
   const result = await resolveOrderDetail(page, flags, listOrder.orderId, {
     ...(deps.capture ? { capture: deps.capture } : {}),
     sendInteraction: deps.sendInteraction,
+    waitForHydration: deps.waitForHydration,
   });
   if (result.status === "failed" && result.failureKind === "session_repair_required") {
     flags.sessionRepairRequired = true;
@@ -772,7 +791,7 @@ export async function runForwardScan(
   // list/item records and two DETAIL_GAPs for one logical order (S5).
   const seenOrderIds = new Set<string>();
   while (pageNum <= MAX_LIST_PAGES) {
-    const listPage = await loadListPage(page, pageNum, deps.emit);
+    const listPage = await loadListPage(page, pageNum, deps.emit, deps.waitForHydration);
     if (listPage === "terminal") {
       break;
     }
@@ -839,14 +858,15 @@ interface LoadedListPage {
 async function loadListPage(
   page: Page,
   pageNum: number,
-  emit: BrowserCollectContext["emit"]
+  emit: BrowserCollectContext["emit"],
+  waitForHydration?: () => Promise<void>
 ): Promise<LoadedListPage | "terminal"> {
   const url = `https://www.heb.com/my-account/your-orders?page=${pageNum}`;
   const navError = await page
     .goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS })
     .then((): undefined => undefined)
     .catch((e: unknown): unknown => e);
-  await hydrationWait();
+  await (waitForHydration ?? hydrationWait)();
   await page
     .waitForSelector('a[href*="/my-account/order-history/HEB"]', {
       timeout: LIST_PAGE_WAIT_MS,

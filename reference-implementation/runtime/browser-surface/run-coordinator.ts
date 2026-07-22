@@ -1298,7 +1298,7 @@ export function createBrowserSurfaceManager(deps: BrowserSurfaceManagerDeps): Br
       return { kind: "ready", lease: null, env: null };
     }
     await expireBrowserSurfaceWaitsWithoutPromotion();
-    const priorityClass = ctx.options.priorityClass ?? "owner_interactive";
+    const priorityClass = ctx.options.priorityClass ?? "interactive";
     return await acquireManagedBrowserSurfaceAttempt(ctx, priorityClass, { allowReadinessRetry: true });
   }
 

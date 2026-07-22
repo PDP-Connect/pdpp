@@ -154,7 +154,7 @@ export function createReferenceSchedulerManager({
           continue;
         }
         const connectorPath = await Promise.resolve(
-          connectorPathResolver(connectorId, manifest, { priorityClass: 'scheduled_refresh' }),
+          connectorPathResolver(connectorId, manifest, { priorityClass: 'background' }),
         );
         if (!connectorPath) {
           logger?.warn?.(

@@ -99,7 +99,7 @@ function leaseFixture(overrides = {}) {
     profile_key: 'chatgpt',
     run_id: 'run_default',
     status: 'leased',
-    priority_class: 'scheduled_refresh',
+    priority_class: 'background',
     requested_at: '2026-05-19T11:58:00.000Z',
     expires_at: '2026-05-19T12:30:00.000Z',
     fencing_token: 1,

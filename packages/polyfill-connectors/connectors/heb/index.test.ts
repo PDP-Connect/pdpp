@@ -29,6 +29,10 @@ import {
   type EmitDeps,
   emitOrderItemsCoverage,
   fetchOrderDetail,
+  HEB_HYDRATION_WAIT_MAX_MS,
+  HEB_HYDRATION_WAIT_MIN_MS,
+  HEB_REPAIR_RETRY_DELAY_MAX_MS,
+  HEB_REPAIR_RETRY_DELAY_MIN_MS,
   hebAllowsInteractiveAuthRepair,
   newOrderItemsCoverage,
   type OrderItemsCoverage,
@@ -71,6 +75,8 @@ function noopSendInteraction(): ReturnType<BrowserCollectContext["sendInteractio
   throw new Error("sendInteraction should not be called in this test");
 }
 
+const immediateWait = (): Promise<void> => Promise.resolve();
+
 function makeRecordingDeps(overrides: Partial<EmitDeps> = {}): RecordingDeps {
   const harness = makeRecordingEmit(validateRecord);
   const deps: EmitDeps = {
@@ -81,6 +87,7 @@ function makeRecordingDeps(overrides: Partial<EmitDeps> = {}): RecordingDeps {
     ordersFingerprintCursor: undefined,
     progress: (): Promise<void> => Promise.resolve(),
     sendInteraction: noopSendInteraction,
+    waitForHydration: immediateWait,
     wantsItems: true,
     wantsOrders: true,
     ...overrides,
@@ -280,7 +287,7 @@ test("emitOrderItemsCoverage: a skipped order counts toward covered (it's a poli
 
 test("fetchOrderDetail: a password-form response at a non-sign-in URL classifies session_repair_required", async () => {
   const page = makePageStub({ content: PASSWORD_FORM_HTML });
-  const result = await fetchOrderDetail(page, "HEB1000000001");
+  const result = await fetchOrderDetail(page, "HEB1000000001", { waitForHydration: immediateWait });
   assert.equal(result.status, "failed");
   assert.equal(result.failureKind, "session_repair_required");
 });
@@ -315,7 +322,7 @@ test("processListOrder: a password-form detail response latches sessionRepairReq
 test("fetchOrderDetail: a normal detail fetch navigates to exactly one URL and never touches page.on/page.off", async () => {
   const gotoUrls: string[] = [];
   const page = makePageStub({ content: DETAIL_HTML, goto: (url) => gotoUrls.push(url) });
-  const result = await fetchOrderDetail(page, "HEB1000000001");
+  const result = await fetchOrderDetail(page, "HEB1000000001", { waitForHydration: immediateWait });
   assert.equal(result.status, "hydrated");
   assert.deepEqual(
     gotoUrls,
@@ -340,7 +347,7 @@ test("processListOrder: a full order+item run never calls page.on/page.off acros
 
 test("fetchOrderDetail: a single transient navigation failure retries and then succeeds (not immediately exhausted)", async () => {
   const page = makePageStub({ content: DETAIL_HTML, throwsNTimes: 1 });
-  const result = await fetchOrderDetail(page, "HEB1000000001");
+  const result = await fetchOrderDetail(page, "HEB1000000001", { waitForHydration: immediateWait });
   assert.equal(result.status, "hydrated", "one transient failure must not be reported as exhausted");
 });
 
@@ -348,7 +355,7 @@ test("fetchOrderDetail: navigation_retry_exhausted is only reported once the ret
   // throwsNTimes is larger than the retry budget (retries: 2 => 3 total
   // attempts), so every attempt fails and the budget is genuinely exhausted.
   const page = makePageStub({ content: DETAIL_HTML, throwsNTimes: 10 });
-  const result = await fetchOrderDetail(page, "HEB1000000001");
+  const result = await fetchOrderDetail(page, "HEB1000000001", { waitForHydration: immediateWait });
   assert.equal(result.status, "failed");
   assert.equal(result.failureKind, "navigation_retry_exhausted");
 });
@@ -379,7 +386,7 @@ test("fetchOrderDetail: a non-retryable navigation error (e.g. page closed) is n
     }
   ) as Page;
 
-  const result = await fetchOrderDetail(page, "HEB1000000001");
+  const result = await fetchOrderDetail(page, "HEB1000000001", { waitForHydration: immediateWait });
 
   assert.equal(gotoCalls, 1, "a non-retryable error must not consume the retry budget");
   assert.equal(result.status, "failed");
@@ -423,6 +430,23 @@ function fakeSendInteraction(
     });
 }
 
+function immediateRepairDeps(
+  sendInteraction: BrowserCollectContext["sendInteraction"] = fakeSendInteraction()
+): RepairDeps {
+  return {
+    sendInteraction,
+    waitForHydration: immediateWait,
+    waitForRepairRetry: immediateWait,
+  };
+}
+
+test("HEB post-repair delay defaults remain the polite production range", () => {
+  assert.equal(HEB_HYDRATION_WAIT_MIN_MS, 1500);
+  assert.equal(HEB_HYDRATION_WAIT_MAX_MS, 2500);
+  assert.equal(HEB_REPAIR_RETRY_DELAY_MIN_MS, 1500);
+  assert.equal(HEB_REPAIR_RETRY_DELAY_MAX_MS, 2500);
+});
+
 test("resolveOrderDetail: unattended run — sessionRepairRequired latches immediately with zero interaction, no repair spent", async () => {
   const flags: RunFlags = {
     detailAttempts: 0,
@@ -430,7 +454,7 @@ test("resolveOrderDetail: unattended run — sessionRepairRequired latches immed
     manualRepairAttempted: false,
     sessionRepairRequired: true,
   };
-  const repairDeps: RepairDeps = { sendInteraction: fakeSendInteraction() };
+  const repairDeps = immediateRepairDeps();
   const result = await resolveOrderDetail(NEVER_CALLED_PAGE, flags, "HEB1000000001", repairDeps);
   assert.equal(result.status, "deferred");
   assert.equal(result.failureKind, "session_repair_required");
@@ -448,7 +472,7 @@ test("resolveOrderDetail: unattended run never calls manualAction even when repa
     manualRepairAttempted: false,
     sessionRepairRequired: true,
   };
-  const repairDeps: RepairDeps = { sendInteraction: fakeSendInteraction() };
+  const repairDeps = immediateRepairDeps();
   const result = await resolveOrderDetail(NEVER_CALLED_PAGE, flags, "HEB1000000001", repairDeps);
   assert.equal(result.status, "deferred");
 });
@@ -464,11 +488,17 @@ test("resolveOrderDetail: owner-started manual run — successful repair retries
     htmlSequence: [LIVE_ORDERS_HTML],
     detailHtmlAfterRepair: DETAIL_HTML,
   });
-  const repairDeps: RepairDeps = { sendInteraction: fakeSendInteraction() };
+  let repairRetryWaits = 0;
+  const repairDeps = immediateRepairDeps();
+  repairDeps.waitForRepairRetry = () => {
+    repairRetryWaits += 1;
+    return Promise.resolve();
+  };
   const result = await resolveOrderDetail(page, flags, "HEB1000000001", repairDeps);
   assert.equal(flags.manualRepairAttempted, true, "the one shared attempt is now spent");
   assert.equal(result.status, "hydrated", "the retried detail fetch must succeed after a recovered session");
   assert.equal(flags.sessionRepairRequired, false, "a successful repair+retry clears the latch");
+  assert.equal(repairRetryWaits, 1, "the repair retry waits exactly once after a recovered session");
 });
 
 test("resolveOrderDetail: owner-started manual run — manualAction itself fails (sendInteraction errors) latches and defers", async () => {
@@ -497,7 +527,7 @@ test("resolveOrderDetail: owner-started manual run — re-probe still finds a de
     sessionRepairRequired: true,
   };
   const page = makeSessionRepairPageStub({ htmlSequence: [STILL_DEAD_HTML] });
-  const repairDeps: RepairDeps = { sendInteraction: fakeSendInteraction() };
+  const repairDeps = immediateRepairDeps();
   const result = await resolveOrderDetail(page, flags, "HEB1000000001", repairDeps);
   assert.equal(flags.manualRepairAttempted, true);
   assert.equal(result.status, "deferred");
@@ -517,7 +547,7 @@ test("resolveOrderDetail: owner-started manual run — retry of the affected det
   const page = makeSessionRepairPageStub({
     htmlSequence: [LIVE_ORDERS_HTML, STILL_DEAD_HTML],
   });
-  const repairDeps: RepairDeps = { sendInteraction: fakeSendInteraction() };
+  const repairDeps = immediateRepairDeps();
   const result = await resolveOrderDetail(page, flags, "HEB1000000001", repairDeps);
   assert.equal(flags.manualRepairAttempted, true);
   assert.equal(result.status, "failed");
@@ -537,7 +567,7 @@ test("resolveOrderDetail: owner-started manual run — the one shared attempt is
     sessionRepairRequired: true,
   };
   const page = makeSessionRepairPageStub({ htmlSequence: [STILL_DEAD_HTML] });
-  const repairDeps: RepairDeps = { sendInteraction: fakeSendInteraction() };
+  const repairDeps = immediateRepairDeps();
 
   const first = await resolveOrderDetail(page, flags, "HEB1000000001", repairDeps);
   assert.equal(first.status, "deferred");
@@ -581,6 +611,8 @@ test("resolveOrderDetail: no owner-credential persistence — manualAction's mes
         type: "INTERACTION_RESPONSE",
       });
     },
+    waitForHydration: immediateWait,
+    waitForRepairRetry: immediateWait,
   };
   await resolveOrderDetail(page, flags, "HEB1000000001", repairDeps);
   assert.ok(observedMessage);
@@ -968,6 +1000,7 @@ test("recoverPendingOrderItemDetailGaps: hydrates a pending order_items gap and 
       emitRecord: deps.emitRecord,
       emittedAt: deps.emittedAt,
       sendInteraction: deps.sendInteraction,
+      waitForHydration: deps.waitForHydration,
     },
     flags
   );
@@ -998,6 +1031,7 @@ test("recoverPendingOrderItemDetailGaps: a failed recovery re-emits a pending ga
       emitRecord: deps.emitRecord,
       emittedAt: deps.emittedAt,
       sendInteraction: deps.sendInteraction,
+      waitForHydration: deps.waitForHydration,
     },
     flags
   );
@@ -1023,6 +1057,7 @@ test("recoverPendingOrderItemDetailGaps: a session-repair failure stops draining
       emitRecord: deps.emitRecord,
       emittedAt: deps.emittedAt,
       sendInteraction: deps.sendInteraction,
+      waitForHydration: deps.waitForHydration,
     },
     flags
   );
@@ -1053,6 +1088,7 @@ test("recoverPendingOrderItemDetailGaps: a legacy gap with no order_date does NO
       emitRecord: deps.emitRecord,
       emittedAt: deps.emittedAt,
       sendInteraction: deps.sendInteraction,
+      waitForHydration: deps.waitForHydration,
     },
     flags
   );
@@ -1087,6 +1123,7 @@ test("recoverPendingOrderItemDetailGapsBeforeForwardRun: recoveryOnly suppresses
       emitRecord: deps.emitRecord,
       emittedAt: deps.emittedAt,
       sendInteraction: deps.sendInteraction,
+      waitForHydration: deps.waitForHydration,
     },
     flags,
     { recoveryOnly: true, wantsItems: true }
@@ -1108,6 +1145,7 @@ test("recoverPendingOrderItemDetailGapsBeforeForwardRun: order_items out of scop
       emitRecord: deps.emitRecord,
       emittedAt: deps.emittedAt,
       sendInteraction: deps.sendInteraction,
+      waitForHydration: deps.waitForHydration,
     },
     flags,
     { recoveryOnly: false, wantsItems: false }

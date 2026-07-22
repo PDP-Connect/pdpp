@@ -235,7 +235,7 @@ export interface RunNowOptions {
   force?: boolean;
   manifest?: ConnectorManifest;
   ownerToken?: string;
-  priorityClass?: "owner_interactive" | "scheduled_refresh";
+  priorityClass?: "interactive" | "background";
   recoveryContinuationDepth?: number;
   recoveryOnly?: boolean;
   resources?: Readonly<Record<string, readonly string[]>>;
@@ -290,7 +290,7 @@ function buildAutoResumeRunNowOptions(
 ): RunNowOptions {
   const options: RunNowOptions = {
     connectorInstanceId,
-    priorityClass: "owner_interactive",
+    priorityClass: "interactive",
     triggerKind: "manual",
   };
   if (input.manifest !== undefined) {

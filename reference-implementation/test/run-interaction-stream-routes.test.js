@@ -53,7 +53,7 @@ function makeLeaseManager({
       surfaceCap: 1,
       leaseWaitTimeoutMs: 60_000,
       idleTtlMs: 300_000,
-      defaultPriorityClass: 'scheduled_refresh',
+      defaultPriorityClass: 'background',
       priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
       surfaceMode,
       ...(surfaceMode === 'static'
@@ -95,7 +95,7 @@ function makeLeaseManager({
             profile_key: profileKey,
             run_id: runId,
             status: 'leased',
-            priority_class: 'scheduled_refresh',
+            priority_class: 'background',
             requested_at: '2026-05-12T11:00:00.000Z',
             leased_at: '2026-05-12T11:00:01.000Z',
             fencing_token: 1,

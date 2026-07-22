@@ -349,7 +349,7 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     const rows = allDynamicRows<BrowserSurfaceLeaseRow>(
       `SELECT * FROM browser_surface_leases
        WHERE status NOT IN (${TERMINAL_STATUS_SQL})
-       ORDER BY CASE priority_class WHEN 'owner_interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
+       ORDER BY CASE priority_class WHEN 'interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
     return Promise.resolve(rows.map(mapRequiredLease));
   }
@@ -536,7 +536,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     const result = await this.#query(
       `SELECT * FROM browser_surface_leases
        WHERE status NOT IN (${TERMINAL_STATUS_SQL})
-       ORDER BY CASE priority_class WHEN 'owner_interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
+       ORDER BY CASE priority_class WHEN 'interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
     return (result.rows as BrowserSurfaceLeaseRow[]).map(mapRequiredLease);
   }

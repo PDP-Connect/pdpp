@@ -28,7 +28,7 @@
     "postinstall": "node ./scripts/install-patchright-browser.mjs",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "test": "node --test --test-timeout=30000 --import tsx 'bin/**/*.test.ts' 'connectors/**/*.test.ts' 'src/**/*.test.ts'",
+    "test": "node --test --test-concurrency=2 --test-timeout=120000 --import tsx 'bin/**/*.test.ts' 'connectors/**/*.test.ts' 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm check"
   },

@@ -13,5 +13,15 @@
     "allowed_mass": 124,
     "reason": "Port of main's external-tool detection hardening (security fix e6e96933b) + owner-cancel/recovery surfaces from #199/#190 reconciliation; behavior required by main's test contract. Queued for decomposition in the Phase-1 drain.",
     "date": "2026-07-06"
+  },
+  "server/db.js": {
+    "allowed_mass": 173,
+    "reason": "The SQLite migration must inventory recognized enum shapes, preserve dependent objects, rebuild atomically, and fail closed before committing a foreign_key_check. These independent persistence safety branches are necessary to avoid lossy migration of historical schemas.",
+    "date": "2026-07-22"
+  },
+  "server/postgres-storage.js": {
+    "allowed_mass": 117,
+    "reason": "The PostgreSQL migration serializes public legacy bootstraps before catalog discovery with bounded pg_try_advisory_lock polling, distinguishes exact direct legacy/current checks from unrelated compound checks, and performs transactional rollback. The polling/lock classification and fail-closed branches are required to avoid broad constraint deletion, concurrent startup failure, or concurrent-index deadlock.",
+    "date": "2026-07-22"
   }
 }

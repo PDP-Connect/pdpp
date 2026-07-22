@@ -158,7 +158,7 @@ function createManager(options = {}) {
       staticStreamBaseUrl: "http://127.0.0.1:8080",
       leaseWaitTimeoutMs,
       idleTtlMs: 600_000,
-      defaultPriorityClass: "scheduled_refresh",
+      defaultPriorityClass: "background",
       priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
       surfaceMode: staticProfileKey ? "static" : "dynamic",
     },
@@ -901,7 +901,7 @@ test("persisted stopping dynamic surface does not consume cap after rehydration"
         profile_key: "other-managed-profile",
         run_id: "run_after_restart",
         status: "waiting_for_browser_surface",
-        priority_class: "owner_interactive",
+        priority_class: "interactive",
         requested_at: "2026-05-12T12:10:02.000Z",
         expires_at: "2026-05-12T12:40:02.000Z",
         fencing_token: 0,
@@ -1066,7 +1066,7 @@ test("managed cap-full second connector queues and clears its transient reservat
 
   assert.equal(queued.status, "waiting_for_browser_surface");
   assert.equal(queued.browser_surface.browser_surface_wait_reason, "capacity_full");
-  assert.equal(manager.getLease("lease_2").priority_class, "owner_interactive");
+  assert.equal(manager.getLease("lease_2").priority_class, "interactive");
   assert.equal(calls.persistActiveRun, 2);
   assert.equal(calls.registerNonce, 2);
   assert.equal(calls.clearNonce, 1);

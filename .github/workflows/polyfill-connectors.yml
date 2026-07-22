@@ -63,7 +63,7 @@ jobs:
         run: pnpm --dir packages/polyfill-connectors run verify
 
       - name: Test
-        # --test-timeout is baked into the package's test script, but CI's
-        # cold-start tsx compilation is slower than local — the 30s per-test
-        # budget is deliberately wide.
+        # The package script runs at two isolated test-file processes. This
+        # bounds contention from connector tests that launch child processes
+        # while retaining a finite 120s runner timeout for an unguarded hang.
         run: pnpm --dir packages/polyfill-connectors run test

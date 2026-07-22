@@ -6,7 +6,7 @@
 //
 //   T1. A scheduled run for a managed connector acquires the controller
 //       surface lease (runManagedConnectorViaController is called with
-//       priorityClass "scheduled_refresh" and triggerKind "scheduled").
+//       priorityClass "background" and triggerKind "scheduled").
 //       The callback receives PDPP_BROWSER_SURFACE_REQUIRED=neko-shaped opts.
 //
 //   T2. Lease release is inherited via runNow's finally chain — the
@@ -112,7 +112,7 @@ function pressureGap({ attemptCount = 6 } = {}) {
 
 // ── T1 + T2: managed connector acquires surface via callback ────────────────
 
-test('T1+T2: scheduled managed-connector run calls runManagedConnectorViaController with scheduled_refresh priority', async () => {
+test('T1+T2: scheduled managed-connector run calls runManagedConnectorViaController with background priority', async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sched-managed-'));
   try {
     const connectorPath = writeDummyConnector(tmpDir);
@@ -151,7 +151,7 @@ test('T1+T2: scheduled managed-connector run calls runManagedConnectorViaControl
       assert.equal(calls.length >= 1, true, 'runManagedConnectorViaController must be called');
       const call = calls[0];
       assert.equal(call.id, connectorId, 'connectorId forwarded correctly');
-      assert.equal(call.opts.priorityClass, 'scheduled_refresh', 'priorityClass must be scheduled_refresh');
+      assert.equal(call.opts.priorityClass, 'background', 'priorityClass must be background');
       assert.equal(call.opts.triggerKind, 'scheduled', 'triggerKind must be scheduled');
       assert.equal(call.opts.recoveryOnly, false, 'normal scheduled managed run must not become recovery-only');
       assert.equal(call.opts.connectorInstanceId, connectorId, 'connectorInstanceId defaults to connectorId');

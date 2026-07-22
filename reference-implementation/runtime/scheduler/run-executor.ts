@@ -916,7 +916,7 @@ export function createRunExecutor(deps: RunExecutorDeps): RunExecutor {
         runNowResult = await via(connectorId, {
           connectorInstanceId,
           ownerToken,
-          priorityClass: "scheduled_refresh",
+          priorityClass: "background",
           recoveryOnly: options.recoveryOnly === true,
           triggerKind: "scheduled",
           referenceBaseUrl,
