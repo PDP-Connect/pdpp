@@ -96,7 +96,7 @@
     "@pdpp/brand": "workspace:*",
     "@semantic-release/exec": "^7.1.0",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^25.6.0",
+    "@types/node": "^26.1.1",
     "conventional-changelog-conventionalcommits": "^10.2.1",
     "lefthook": "^2.1.6",
     "pdpp-reference-implementation": "workspace:*",
