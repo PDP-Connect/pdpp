@@ -1,17 +1,17 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import type { CollectionRateProgress } from "./connector-runtime-protocol.js";
+import type { CollectionRateProgress } from "./connector-runtime-protocol.ts";
 import {
   type HttpRetryBudget,
   type HttpRetryResponse,
   RetryExhaustedError,
   retryHttp,
   TerminalHttpStatusError,
-} from "./http-retry.js";
-import { type PacingSnapshot, ProviderPacing } from "./provider-pacing.js";
-import type { ProviderPacingProfile } from "./provider-profile.js";
-import type { SendGovernor } from "./send-governor.js";
+} from "./http-retry.ts";
+import { type PacingSnapshot, ProviderPacing } from "./provider-pacing.ts";
+import type { ProviderPacingProfile } from "./provider-profile.ts";
+import type { SendGovernor } from "./send-governor.ts";
 
 /**
  * Shared HTTP request governor for API connectors.

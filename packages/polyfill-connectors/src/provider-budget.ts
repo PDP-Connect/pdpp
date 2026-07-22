@@ -1,9 +1,9 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { type PacingOptions, type PacingSnapshot, ProviderPacing, type ThrottleSignal } from "./provider-pacing.js";
-import { RunBudget, type RunBudgetOptions, type RunBudgetTrip } from "./run-budget.js";
-import type { SendDelayHint } from "./send-governor.js";
+import { type PacingOptions, type PacingSnapshot, ProviderPacing, type ThrottleSignal } from "./provider-pacing.ts";
+import { RunBudget, type RunBudgetOptions, type RunBudgetTrip } from "./run-budget.ts";
+import type { SendDelayHint } from "./send-governor.ts";
 
 export type ProviderBudgetDeferReason = RunBudgetTrip | "circuit_open" | "retry_budget";
 
