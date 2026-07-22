@@ -782,11 +782,11 @@ test("Slice 5: every Explore animation reference sits inside a prefers-reduced-m
     let depth = 0;
     let i = idx + opener.length - 1; // start at the opening brace
     let end = css.length;
-    for (; i < css.length; i++) {
+    for (; i < css.length; i += 1) {
       if (css[i] === "{") {
-        depth++;
+        depth += 1;
       } else if (css[i] === "}") {
-        depth--;
+        depth -= 1;
         if (depth === 0) {
           end = i;
           break;

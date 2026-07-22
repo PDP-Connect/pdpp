@@ -119,7 +119,7 @@ export function useProtocol() {
 
   const addNewPayStatements = useCallback(
     (count: number) => {
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < count; i += 1) {
         const idx = 24 + i;
         const payDate = new Date(Date.UTC(2026, 3, 15 + idx * 14));
         const grossPay = 6420 + i * 110;

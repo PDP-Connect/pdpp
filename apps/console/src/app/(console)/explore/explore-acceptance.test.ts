@@ -503,7 +503,7 @@ test("P3 Load-more trail: second page ACCUMULATES (page 1 stays, page 2 appended
   );
   // Non-increasing emitted_at across the concatenation; no duplicates.
   const times = accumulated.feed.map((e) => Date.parse(e.emittedAt));
-  for (let i = 1; i < times.length; i++) {
+  for (let i = 1; i < times.length; i += 1) {
     assert.ok((times[i] ?? 0) <= (times[i - 1] ?? 0), "feed must stay non-increasing emitted_at");
   }
   const ids = accumulated.feed.map((e) => `${e.connectionId} ${e.stream} ${e.recordId}`);
