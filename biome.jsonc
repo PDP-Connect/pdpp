@@ -40,7 +40,8 @@
       // not product source. It has no TypeScript project or runtime test surface;
       // linting it under the repository's strict application rules produces
       // undeclared-global false positives rather than actionable code findings.
-      "includes": ["docs/design-system/ink-carbon/project/**"],
+      // The rest of docs/design-system is the same exploratory material.
+      "includes": ["docs/design-system/**"],
       "assist": {
         "enabled": false
       },
