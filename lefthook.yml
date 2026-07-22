@@ -18,7 +18,7 @@ pre-commit:
     - name: polyfill-connectors:format
       glob: "packages/polyfill-connectors/**/*.{ts,jsonc,json}"
       root: "packages/polyfill-connectors"
-      run: pnpm exec biome check --write --no-errors-on-unmatched {staged_files}
+      run: ../../node_modules/.bin/biome check --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
 
     # Lint .ts + config files (no-write; the format job already applied
@@ -26,7 +26,7 @@ pre-commit:
     - name: polyfill-connectors:lint
       glob: "packages/polyfill-connectors/**/*.{ts,jsonc,json}"
       root: "packages/polyfill-connectors"
-      run: pnpm exec biome check --no-errors-on-unmatched {staged_files}
+      run: ../../node_modules/.bin/biome check --no-errors-on-unmatched {staged_files}
 
     # Type-check runs on the whole package, not just staged files, because
     # a change in one file can break types in another.
