@@ -1480,6 +1480,7 @@ async function settleServedAttachmentRecoveryAttempt(
         type: "DETAIL_GAP_RECOVERED",
         reference_only: true,
         gap_id: recoveredGap.gap_id,
+        ...(recoveredGap.lease_id ? { lease_id: recoveredGap.lease_id } : {}),
         record_key: hydrated.id,
         stream: "attachments",
       });
@@ -1493,6 +1494,46 @@ async function settleServedAttachmentRecoveryAttempt(
     metadataLookups: state.metadataLookups,
     phase: "settled",
     recovered: state.recovered,
+  });
+}
+
+function buildServedAttachmentRecoveryDeferredGap(
+  gap: DetailGapStartEntry,
+  errorClass: "attachment_lookup_miss" | "run_cap_deferred"
+): EmittedMessage {
+  const locator =
+    gap.detail_locator && typeof gap.detail_locator === "object" && !Array.isArray(gap.detail_locator)
+      ? (gap.detail_locator as DetailGapMessage["detail_locator"])
+      : { kind: "gmail.attachment_detail" };
+  return {
+    type: "DETAIL_GAP",
+    reference_only: true,
+    status: "pending",
+    stream: "attachments",
+    parent_stream: "messages",
+    record_key: gap.record_key ?? gap.gap_id,
+    detail_locator: locator,
+    reason: "temporary_unavailable",
+    retryable: true,
+    last_error: { class: errorClass },
+    gap_id: gap.gap_id,
+    ...(gap.lease_id ? { lease_id: gap.lease_id } : {}),
+  };
+}
+
+async function markServedAttachmentRecoveryAttempt(
+  gap: DetailGapStartEntry,
+  emitProtocol: (msg: EmittedMessage) => Promise<void>
+): Promise<void> {
+  if (!gap.lease_id) {
+    return;
+  }
+  await emitProtocol({
+    type: "DETAIL_GAP_ATTEMPTED",
+    reference_only: true,
+    gap_id: gap.gap_id,
+    lease_id: gap.lease_id,
+    stream: "attachments",
   });
 }
 
@@ -1518,11 +1559,22 @@ async function processServedAttachmentRecoveryGap(
     return false;
   }
 
+  // A metadata lookup is a real provider attempt even when it finds no
+  // matching message/attachment. The host records this explicit outcome; it
+  // never infers attempt status from a successful DONE envelope.
+  if (
+    !state.messageCache.has(locator.messageId) &&
+    state.metadataLookups >= SERVED_ATTACHMENT_RECOVERY_METADATA_LOOKUP_LIMIT
+  ) {
+    return true;
+  }
+  await markServedAttachmentRecoveryAttempt(gap, deps.emitProtocol);
   const loadedMessage = await loadServedAttachmentRecoveryMessage(client, locator.messageId, state);
   if (loadedMessage === "metadata_lookup_limit_reached") {
     return true;
   }
   if (!loadedMessage) {
+    await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "attachment_lookup_miss"));
     return false;
   }
 
@@ -1538,12 +1590,14 @@ async function processServedAttachmentRecoveryGap(
     attachmentDetailGapMatches(gap, candidate, normalizedAttachmentKey)
   );
   if (!attachment) {
+    await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "attachment_lookup_miss"));
     return false;
   }
 
   const attachmentBytes =
     typeof attachment.size_bytes === "number" ? attachment.size_bytes : ATTACHMENT_BACKFILL_UNKNOWN_SIZE_FALLBACK_BYTES;
   if (state.admitted > 0 && state.admittedBytesTotal + attachmentBytes > byteBudget) {
+    await deps.emitProtocol(buildServedAttachmentRecoveryDeferredGap(gap, "run_cap_deferred"));
     return true;
   }
 

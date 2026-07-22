@@ -59,6 +59,8 @@ export interface DetailGapStartEntry {
     [field: string]: unknown;
   } | null;
   gap_id: string;
+  /** Opaque, run-owned token required when settling a served recovery lease. */
+  lease_id?: string;
   record_key?: string | number | null;
   reference_only?: true;
   status: "pending";
@@ -152,12 +154,14 @@ export interface DetailGapMessage {
     kind: string;
     [field: string]: string | number | boolean | null | Record<string, string | number | boolean | null>;
   };
+  gap_id?: string;
   last_error?: {
     class?: string;
     http_status?: number;
     message?: string;
     network_pressure?: DetailGapNetworkPressure;
   };
+  lease_id?: string;
   list_cursor?: unknown;
   parent_stream?: string;
   reason: "rate_limited" | "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
@@ -207,10 +211,19 @@ export interface DetailCoverageMessage {
 
 export interface DetailGapRecoveredMessage {
   gap_id: string;
+  lease_id?: string;
   record_key?: string | number;
   reference_only: true;
   stream: string;
   type: "DETAIL_GAP_RECOVERED";
+}
+
+export interface DetailGapAttemptedMessage {
+  gap_id: string;
+  lease_id: string;
+  reference_only: true;
+  stream: string;
+  type: "DETAIL_GAP_ATTEMPTED";
 }
 
 export interface ProviderBudgetProgress {
@@ -283,6 +296,7 @@ export type EmittedMessage =
       recovery_hint?: string | { action?: string; retryable?: boolean };
     }
   | DetailGapMessage
+  | DetailGapAttemptedMessage
   | DetailCoverageMessage
   | DetailGapRecoveredMessage
   | DetailGapsPageRequestMessage

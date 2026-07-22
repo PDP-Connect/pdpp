@@ -209,10 +209,12 @@ function makeServedRecoveryGap(args: {
   messageId: string;
   partIndex: number;
   attachmentId?: string;
+  leaseId?: string;
 }): DetailGapStartEntry {
   const attachmentId = args.attachmentId ?? `${args.messageId}:${args.partIndex}`;
   return {
     gap_id: args.gapId,
+    ...(args.leaseId ? { lease_id: args.leaseId } : {}),
     reference_only: true,
     status: "pending",
     stream: "attachments",
@@ -1613,6 +1615,7 @@ test("recoverServedAttachmentGaps: 33 distinct lookup misses cap out at 32 uniqu
       gapId: `gap-miss-${index}`,
       messageId: `gmmsgid-miss-${index}`,
       partIndex: 1,
+      leaseId: `lease-miss-${index}`,
     })
   );
   const search = mock.fn(() => Promise.resolve([] as number[]));
@@ -1647,6 +1650,14 @@ test("recoverServedAttachmentGaps: 33 distinct lookup misses cap out at 32 uniqu
   assert.equal(fetchOne.mock.callCount(), 0, "misses never fetch a message body");
   assert.equal(summary.admitted, 0);
   assert.equal(summary.recovered, 0);
+  const attempts = emitHarness.protocolMessages.filter((msg) => msg.type === "DETAIL_GAP_ATTEMPTED");
+  const deferred = emitHarness.protocolMessages.filter((msg) => msg.type === "DETAIL_GAP");
+  assert.equal(attempts.length, 32, "each real metadata lookup is explicitly accounted as an attempt");
+  assert.equal(deferred.length, 32, "each lookup miss explicitly re-defers instead of ending silently");
+  assert.equal(
+    deferred.every((msg) => msg.last_error?.class === "attachment_lookup_miss"),
+    true
+  );
   assert.equal(
     emitHarness.protocolMessages.some((msg) => msg.type === "PROGRESS"),
     false

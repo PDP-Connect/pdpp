@@ -1096,6 +1096,10 @@ export async function bootstrapPostgresSchema({ log = () => {} } = {}) {
         discovered_run_id TEXT,
         last_run_id TEXT,
         recovered_run_id TEXT,
+        lease_run_id TEXT,
+        lease_id TEXT,
+        lease_attempted INTEGER NOT NULL DEFAULT 0,
+        lease_expires_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -2308,6 +2312,37 @@ async function migratePostgresConnectorSyncStateInstanceColumns(client) {
 }
 
 async function migratePostgresConnectorDetailGapInstanceColumns(client) {
+  // A pre-lease schema can contain interrupted in_progress rows with no owner
+  // tuple. Bootstrap is the bounded recovery point: deployment requires zero
+  // active runs and a single-version restart, not mixed-version operation.
+  const needsLeaseMigration = !(await hasPostgresColumn(client, 'connector_detail_gaps', 'lease_run_id'))
+    || !(await hasPostgresColumn(client, 'connector_detail_gaps', 'lease_id'))
+    || !(await hasPostgresColumn(client, 'connector_detail_gaps', 'lease_attempted'))
+    || !(await hasPostgresColumn(client, 'connector_detail_gaps', 'lease_expires_at'));
+  if (needsLeaseMigration) {
+    const activeRuns = await client.query('SELECT COUNT(*)::integer AS count FROM controller_active_runs');
+    if (Number(activeRuns.rows[0]?.count || 0) > 0) {
+      throw new Error('detail-gap lease migration requires zero active connector runs; drain runs and perform a single-version restart');
+    }
+  }
+  if (!(await hasPostgresColumn(client, 'connector_detail_gaps', 'lease_run_id'))) {
+    await client.query('ALTER TABLE connector_detail_gaps ADD COLUMN lease_run_id TEXT');
+  }
+  if (!(await hasPostgresColumn(client, 'connector_detail_gaps', 'lease_id'))) {
+    await client.query('ALTER TABLE connector_detail_gaps ADD COLUMN lease_id TEXT');
+  }
+  if (!(await hasPostgresColumn(client, 'connector_detail_gaps', 'lease_attempted'))) {
+    await client.query('ALTER TABLE connector_detail_gaps ADD COLUMN lease_attempted INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!(await hasPostgresColumn(client, 'connector_detail_gaps', 'lease_expires_at'))) {
+    await client.query('ALTER TABLE connector_detail_gaps ADD COLUMN lease_expires_at TEXT');
+  }
+  await client.query(`
+    UPDATE connector_detail_gaps
+    SET status = 'pending', lease_attempted = 0
+    WHERE status = 'in_progress'
+      AND lease_run_id IS NULL AND lease_id IS NULL AND lease_expires_at IS NULL
+  `);
   const hasInstance = await hasPostgresColumn(client, 'connector_detail_gaps', 'connector_instance_id');
   if (!hasInstance) {
     await client.query('ALTER TABLE connector_detail_gaps ADD COLUMN connector_instance_id TEXT');

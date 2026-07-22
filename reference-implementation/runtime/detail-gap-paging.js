@@ -165,9 +165,10 @@ export function createDetailGapPageReader({
   detailGapStore,
   grantId,
   runId,
-  allServedGapIds,
+  allServedGapLeases,
 }) {
   let observedAverageBytes = DETAIL_GAP_PAGE_ASSUMED_AVG_BYTES;
+  let pageSequence = 0;
 
   return async function readDetailGapPage({ maxBytes = null, streams = null } = {}) {
     const { byteBudget, candidateLimit } = planDetailGapPageRead({
@@ -194,15 +195,45 @@ export function createDetailGapPageReader({
         1,
         Math.round((observedAverageBytes * 0.65) + (pageAverage * 0.35)),
       );
-      // Mark served gaps in_progress so attempt_count increments before the
-      // connector makes any provider requests. Re-deferred gaps (connector
-      // emits DETAIL_GAP again) revert to pending via upsertPendingGap while
-      // keeping the incremented attempt_count. Recovered gaps advance to
-      // 'recovered' via DETAIL_GAP_RECOVERED handling.
-      await Promise.all(servedGapIds.map((gapId) => detailGapStore.markGapStatus(gapId, 'in_progress', { runId })));
-      if (allServedGapIds) {
-        for (const gapId of servedGapIds) allServedGapIds.add(gapId);
+      // Leasing is not an attempt. Every selected gap receives its own
+      // run-owned token; the connector must explicitly report an attempt or
+      // outcome before attempt_count changes. CAS claim prevents a stale page
+      // from serving a row another run already owns, and a per-gap token makes
+      // a swapped same-page gap/token pairing fail closed.
+      if (typeof detailGapStore.claimPendingGaps !== 'function') {
+        throw new Error('detail-gap store must support CAS recovery leases');
       }
+      const pageId = ++pageSequence;
+      const leaseExpiresAt = new Date(Date.now() + (60 * 60 * 1000)).toISOString();
+      const leasesByGapId = new Map();
+      await Promise.all(detailGaps.map(async (gap) => {
+        const leaseId = `${runId}:detail-gap-page:${pageId}:gap:${gap.gap_id}`;
+        const claimed = await detailGapStore.claimPendingGaps([gap.gap_id], { runId, leaseId, leaseExpiresAt });
+        if (claimed.includes(gap.gap_id)) leasesByGapId.set(gap.gap_id, leaseId);
+      }));
+      const claimedDetailGaps = detailGaps
+        .filter((gap) => leasesByGapId.has(gap.gap_id))
+        .map((gap) => ({ ...gap, lease_id: leasesByGapId.get(gap.gap_id) }));
+      if (allServedGapLeases) {
+        for (const gap of claimedDetailGaps) {
+          allServedGapLeases.set(gap.gap_id, {
+            gapId: gap.gap_id,
+            runId,
+            leaseId: gap.lease_id,
+            attempted: false,
+            stream: gap.stream ?? null,
+            recordKey: gap.record_key == null ? null : String(gap.record_key),
+          });
+        }
+      }
+      return {
+        candidateLimit,
+        detailGaps: claimedDetailGaps,
+        servedGapIds: claimedDetailGaps.map((gap) => gap.gap_id),
+        maxBytes: byteBudget,
+        serializedBytes,
+        admission,
+      };
     }
 
     return {

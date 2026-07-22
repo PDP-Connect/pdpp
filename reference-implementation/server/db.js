@@ -1073,6 +1073,10 @@ CREATE TABLE IF NOT EXISTS connector_detail_gaps (
   discovered_run_id   TEXT,
   last_run_id         TEXT,
   recovered_run_id    TEXT,
+  lease_run_id        TEXT,
+  lease_id            TEXT,
+  lease_attempted     INTEGER NOT NULL DEFAULT 0,
+  lease_expires_at    TEXT,
   created_at          TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
   CHECK (status IN ('pending', 'in_progress', 'recovered', 'terminal'))
@@ -2597,6 +2601,40 @@ function migrateLexicalSearchInstanceColumns(raw, opts = {}) {
 }
 
 function migrateConnectorDetailGapInstanceColumns(raw, opts = {}) {
+  // A recovery lease is distinct from a recovery attempt. A pre-lease schema
+  // can contain interrupted work with no owner tuple; schema bootstrap is the
+  // one bounded point that converts that legacy state back to retryable work.
+  // Deployment requires zero active runs and a single-version restart, so this
+  // is not a mixed-version compatibility protocol.
+  const needsLeaseMigration = [
+    'lease_run_id',
+    'lease_id',
+    'lease_attempted',
+    'lease_expires_at',
+  ].some((column) => !hasTableColumn(raw, 'connector_detail_gaps', column));
+  if (needsLeaseMigration) {
+    const activeRuns = raw.prepare('SELECT COUNT(*) AS count FROM controller_active_runs').get();
+    if (Number(activeRuns.count) > 0) {
+      throw new Error('detail-gap lease migration requires zero active connector runs; drain runs and perform a single-version restart');
+    }
+  }
+  addColumnIfMissing(raw, 'connector_detail_gaps', 'lease_run_id', 'TEXT');
+  addColumnIfMissing(raw, 'connector_detail_gaps', 'lease_id', 'TEXT');
+  addColumnIfMissing(raw, 'connector_detail_gaps', 'lease_attempted', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(raw, 'connector_detail_gaps', 'lease_expires_at', 'TEXT');
+  const legacyLeaseLess = raw.prepare(`
+    UPDATE connector_detail_gaps
+    SET status = 'pending', lease_attempted = 0
+    WHERE status = 'in_progress'
+      AND lease_run_id IS NULL AND lease_id IS NULL AND lease_expires_at IS NULL
+  `).run();
+  if (legacyLeaseLess.changes > 0 && typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({
+      name: 'connector_detail_gap_legacy_lease_reclaim',
+      rebuilt: false,
+      backfilledRows: legacyLeaseLess.changes,
+    });
+  }
   const hasInstance = hasTableColumn(raw, 'connector_detail_gaps', 'connector_instance_id');
   if (!hasInstance) {
     addColumnIfMissing(raw, 'connector_detail_gaps', 'connector_instance_id', 'TEXT');

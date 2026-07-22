@@ -234,6 +234,10 @@ function rowToGap(row) {
     discovered_run_id: nullableGapRowValue(row.discovered_run_id),
     last_run_id: nullableGapRowValue(row.last_run_id),
     recovered_run_id: nullableGapRowValue(row.recovered_run_id),
+    lease_run_id: nullableGapRowValue(row.lease_run_id),
+    lease_id: nullableGapRowValue(row.lease_id),
+    lease_attempted: Number(row.lease_attempted || 0) === 1,
+    lease_expires_at: nullableGapRowValue(row.lease_expires_at),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -363,6 +367,16 @@ function normalizeGapStatusMutation(gapId, status, options) {
     lastErrorJson: encodeJson(sanitizeDetailGapMetadata(options.lastError ?? null)),
     runId: nonEmptyString(options.runId),
   };
+}
+
+function normalizeLease(lease) {
+  const gapId = nonEmptyString(lease?.gapId);
+  const runId = nonEmptyString(lease?.runId);
+  const leaseId = nonEmptyString(lease?.leaseId);
+  if (!gapId || !runId || !leaseId) {
+    throw new Error('detail-gap lease requires gapId, runId, and leaseId');
+  }
+  return { gapId, runId, leaseId };
 }
 
 function requeueReasonForQuarantinedGap(gap) {
@@ -755,8 +769,109 @@ export function createSqliteConnectorDetailGapStore() {
       return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [id]));
     },
 
-    // Reset in_progress gaps from prior runs (different runId, same scope) back
-    // to pending so crash leftovers become retryable. Never touches recovered gaps.
+    async claimPendingGaps(gapIds, { runId, leaseId, leaseExpiresAt } = {}) {
+      const owner = normalizeLease({ gapId: 'claim-owner', runId, leaseId });
+      const expiresAt = nonEmptyString(leaseExpiresAt);
+      if (!expiresAt) throw new Error('detail-gap lease requires leaseExpiresAt');
+      const claimedGapIds = [];
+      for (const gapId of gapIds || []) {
+        const id = nonEmptyString(gapId);
+        if (!id) continue;
+        const result = execDynamicSqlAcknowledged(`
+          UPDATE connector_detail_gaps
+          SET status = 'in_progress', lease_run_id = ?, lease_id = ?, lease_attempted = 0,
+              lease_expires_at = ?, updated_at = ?
+          WHERE gap_id = ? AND status = 'pending'
+        `, [owner.runId, owner.leaseId, expiresAt, nowIso(), id]);
+        if (Number(result.changes || 0) === 1) claimedGapIds.push(id);
+      }
+      return claimedGapIds;
+    },
+
+    async markLeasedGapAttempt(lease) {
+      const owner = normalizeLease(lease);
+      const now = nowIso();
+      const result = execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN ? ELSE last_attempt_at END,
+            lease_attempted = 1, updated_at = ?
+        WHERE gap_id = ? AND status = 'in_progress'
+          AND lease_run_id = ? AND lease_id = ?
+      `, [now, now, owner.gapId, owner.runId, owner.leaseId]);
+      if (Number(result.changes || 0) !== 1) return null;
+      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [owner.gapId]));
+    },
+
+    async settleLeasedGapRecovered(lease) {
+      const owner = normalizeLease(lease);
+      const now = nowIso();
+      const result = execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET status = 'recovered', recovered_run_id = ?, last_run_id = ?,
+            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN ? ELSE last_attempt_at END,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = ?
+        WHERE gap_id = ? AND status = 'in_progress'
+          AND lease_run_id = ? AND lease_id = ?
+      `, [owner.runId, owner.runId, now, now, owner.gapId, owner.runId, owner.leaseId]);
+      if (Number(result.changes || 0) !== 1) return null;
+      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [owner.gapId]));
+    },
+
+    async settleLeasedGapPending(lease, input) {
+      const owner = normalizeLease(lease);
+      const gap = normalizeGapInput(input);
+      const detailLocatorJson = encodeJson(gap.detailLocator);
+      const result = execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET source_json = ?, detail_locator_json = ?, list_cursor_json = ?, scope_json = ?, reason = ?,
+            status = 'pending', next_attempt_after = ?, last_error_json = ?, last_run_id = ?,
+            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN ? ELSE last_attempt_at END,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = ?
+        WHERE gap_id = ? AND status = 'in_progress'
+          AND lease_run_id = ? AND lease_id = ?
+      `, [
+        encodeJson(gap.source), detailLocatorJson, encodeJson(gap.listCursor), encodeJson(gap.scope), gap.reason,
+        gap.nextAttemptAfter, encodeJson(gap.lastError), gap.lastRunId, gap.now, gap.now,
+        owner.gapId, owner.runId, owner.leaseId,
+      ]);
+      if (Number(result.changes || 0) !== 1) return null;
+      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [owner.gapId]));
+    },
+
+    async releaseLeasedGaps(leases) {
+      let released = 0;
+      let lost = 0;
+      let attemptedUnsettled = 0;
+      for (const lease of leases || []) {
+        const owner = normalizeLease(lease);
+        const row = firstSqliteRow(`
+          SELECT lease_attempted FROM connector_detail_gaps
+          WHERE gap_id = ? AND status = 'in_progress' AND lease_run_id = ? AND lease_id = ?
+        `, [owner.gapId, owner.runId, owner.leaseId]);
+        if (!row) { lost += 1; continue; }
+        const result = execDynamicSqlAcknowledged(`
+          UPDATE connector_detail_gaps
+          SET status = 'pending', lease_run_id = NULL, lease_id = NULL, lease_attempted = 0,
+              lease_expires_at = NULL, updated_at = ?
+          WHERE gap_id = ? AND status = 'in_progress' AND lease_run_id = ? AND lease_id = ?
+        `, [nowIso(), owner.gapId, owner.runId, owner.leaseId]);
+        if (Number(result.changes || 0) === 1) {
+          released += 1;
+          attemptedUnsettled += Number(row.lease_attempted || 0) === 1 ? 1 : 0;
+        } else {
+          lost += 1;
+        }
+      }
+      return { released, lost, attemptedUnsettled };
+    },
+
+    // Reclaim only an expired owner lease. A different live run is not evidence
+    // of a crash and must never be stolen merely because its run id differs.
     async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }) {
       const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const now = nowIso();
@@ -768,23 +883,8 @@ export function createSqliteConnectorDetailGapStore() {
           AND connector_id = ?
           AND (? IS NULL OR grant_id = ?)
           AND status = 'in_progress'
-          AND (last_run_id IS NULL OR last_run_id != ?)
-      `, [now, cii, connectorId, grantId, grantId, currentRunId]);
-    },
-
-    // Reset still-in_progress gaps served by this run (by gap id) back to pending.
-    // Called in run cleanup/finally. Does not decrement attempt_count.
-    async resetServedInProgressGaps(gapIds) {
-      if (!gapIds || !gapIds.length) return;
-      const now = nowIso();
-      const placeholders = gapIds.map(() => '?').join(', ');
-      // REVIEWED-DYNAMIC: bulk reset of specific in_progress gap ids served this run.
-      execDynamicSqlAcknowledged(`
-        UPDATE connector_detail_gaps
-        SET status = 'pending', updated_at = ?
-        WHERE gap_id IN (${placeholders})
-          AND status = 'in_progress'
-      `, [now, ...gapIds]);
+          AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+      `, [now, cii, connectorId, grantId, grantId, now]);
     },
 
     async requeueQuarantinedTerminalGapsForConnectorInstance(connectorId, connectorInstanceId, options = {}) {
@@ -994,6 +1094,106 @@ export function createPostgresConnectorDetailGapStore() {
       return result.rows[0] ? rowToGap(result.rows[0]) : null;
     },
 
+    async claimPendingGaps(gapIds, { runId, leaseId, leaseExpiresAt } = {}) {
+      const owner = normalizeLease({ gapId: 'claim-owner', runId, leaseId });
+      const expiresAt = nonEmptyString(leaseExpiresAt);
+      if (!expiresAt) throw new Error('detail-gap lease requires leaseExpiresAt');
+      const claimedGapIds = [];
+      for (const gapId of gapIds || []) {
+        const id = nonEmptyString(gapId);
+        if (!id) continue;
+        const result = await postgresQuery(`
+          UPDATE connector_detail_gaps
+          SET status = 'in_progress', lease_run_id = $1, lease_id = $2, lease_attempted = 0,
+              lease_expires_at = $3, updated_at = $4
+          WHERE gap_id = $5 AND status = 'pending'
+          RETURNING gap_id
+        `, [owner.runId, owner.leaseId, expiresAt, nowIso(), id]);
+        if (result.rows[0]?.gap_id) claimedGapIds.push(result.rows[0].gap_id);
+      }
+      return claimedGapIds;
+    },
+
+    async markLeasedGapAttempt(lease) {
+      const owner = normalizeLease(lease);
+      const now = nowIso();
+      const result = await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN $1 ELSE last_attempt_at END,
+            lease_attempted = 1, updated_at = $1
+        WHERE gap_id = $2 AND status = 'in_progress' AND lease_run_id = $3 AND lease_id = $4
+        RETURNING *
+      `, [now, owner.gapId, owner.runId, owner.leaseId]);
+      return result.rows[0] ? rowToGap(result.rows[0]) : null;
+    },
+
+    async settleLeasedGapRecovered(lease) {
+      const owner = normalizeLease(lease);
+      const now = nowIso();
+      const result = await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET status = 'recovered', recovered_run_id = $1, last_run_id = $1,
+            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN $2 ELSE last_attempt_at END,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = $2
+        WHERE gap_id = $3 AND status = 'in_progress' AND lease_run_id = $1 AND lease_id = $4
+        RETURNING *
+      `, [owner.runId, now, owner.gapId, owner.leaseId]);
+      return result.rows[0] ? rowToGap(result.rows[0]) : null;
+    },
+
+    async settleLeasedGapPending(lease, input) {
+      const owner = normalizeLease(lease);
+      const gap = normalizeGapInput(input);
+      const result = await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET source_json = $1::jsonb, detail_locator_json = $2::jsonb, list_cursor_json = $3::jsonb,
+            scope_json = $4::jsonb, reason = $5, status = 'pending', next_attempt_after = $6,
+            last_error_json = $7::jsonb, last_run_id = $8,
+            attempt_count = attempt_count + CASE WHEN lease_attempted = 0 THEN 1 ELSE 0 END,
+            last_attempt_at = CASE WHEN lease_attempted = 0 THEN $9 ELSE last_attempt_at END,
+            lease_run_id = NULL, lease_id = NULL, lease_attempted = 0, lease_expires_at = NULL,
+            updated_at = $9
+        WHERE gap_id = $10 AND status = 'in_progress' AND lease_run_id = $11 AND lease_id = $12
+        RETURNING *
+      `, [
+        JSON.stringify(gap.source), encodeJson(gap.detailLocator), encodeJson(gap.listCursor), JSON.stringify(gap.scope),
+        gap.reason, gap.nextAttemptAfter, encodeJson(gap.lastError), gap.lastRunId, gap.now,
+        owner.gapId, owner.runId, owner.leaseId,
+      ]);
+      return result.rows[0] ? rowToGap(result.rows[0]) : null;
+    },
+
+    async releaseLeasedGaps(leases) {
+      let released = 0;
+      let lost = 0;
+      let attemptedUnsettled = 0;
+      for (const lease of leases || []) {
+        const owner = normalizeLease(lease);
+        const result = await postgresQuery(`
+          WITH leased AS (
+            SELECT gap_id, lease_attempted
+            FROM connector_detail_gaps
+            WHERE gap_id = $2 AND status = 'in_progress' AND lease_run_id = $3 AND lease_id = $4
+            FOR UPDATE
+          )
+          UPDATE connector_detail_gaps
+          SET status = 'pending', lease_run_id = NULL, lease_id = NULL, lease_attempted = 0,
+              lease_expires_at = NULL, updated_at = $1
+          FROM leased
+          WHERE connector_detail_gaps.gap_id = leased.gap_id
+          RETURNING leased.lease_attempted
+        `, [nowIso(), owner.gapId, owner.runId, owner.leaseId]);
+        const row = result.rows[0];
+        if (!row) { lost += 1; continue; }
+        released += 1;
+        attemptedUnsettled += Number(row.lease_attempted || 0) === 1 ? 1 : 0;
+      }
+      return { released, lost, attemptedUnsettled };
+    },
+
     async reclaimStrandedInProgressGaps({ connectorId, connectorInstanceId, grantId, currentRunId }) {
       const cii = nonEmptyString(connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const now = nowIso();
@@ -1004,19 +1204,8 @@ export function createPostgresConnectorDetailGapStore() {
           AND connector_id = $3
           AND ($4::text IS NULL OR grant_id = $4)
           AND status = 'in_progress'
-          AND (last_run_id IS NULL OR last_run_id != $5)
-      `, [now, cii, connectorId, grantId, currentRunId]);
-    },
-
-    async resetServedInProgressGaps(gapIds) {
-      if (!gapIds || !gapIds.length) return;
-      const now = nowIso();
-      await postgresQuery(`
-        UPDATE connector_detail_gaps
-        SET status = 'pending', updated_at = $1
-        WHERE gap_id = ANY($2::text[])
-          AND status = 'in_progress'
-      `, [now, gapIds]);
+          AND lease_expires_at IS NOT NULL AND lease_expires_at <= $5
+      `, [now, cii, connectorId, grantId, now]);
     },
 
     async requeueQuarantinedTerminalGapsForConnectorInstance(connectorId, connectorInstanceId, options = {}) {

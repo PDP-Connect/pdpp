@@ -85,3 +85,88 @@ selected ahead of an unserved, equally-eligible row on a later selection.
 - **AND** each backend's regression SHALL independently fail when only that
   backend's clamp is reverted, proving the two branches are not accidentally
   coupled and that fixing one does not stand in as proof for the other.
+
+### Requirement: Recovery leases and provider attempts SHALL be separate durable facts
+
+The runtime SHALL claim a served detail gap with a unique run-owned lease before
+it sends the row to a connector. Claiming a lease SHALL NOT increment
+`attempt_count` or replace `last_attempt_at`. A connector SHALL explicitly
+report a provider attempt or a terminal recovery outcome; the runtime SHALL NOT
+infer that an otherwise-silent row was unattempted merely from `DONE:succeeded`.
+Lease attempt, recovery, re-deferral, and release mutations SHALL compare the
+same gap, run, and lease identities.
+
+#### Scenario: Legacy lease-less in-progress state is normalized at bootstrap
+
+- **WHEN** bootstrap upgrades a pre-lease schema containing an `in_progress`
+  detail gap with no lease run, lease id, or lease expiry
+- **THEN** bootstrap SHALL return that row to `pending`
+- **AND** it SHALL preserve the row's existing `attempt_count` and
+  `last_attempt_at` as prior real-attempt evidence.
+
+#### Scenario: Lease migration has a bounded mixed-version policy
+
+- **WHEN** the lease migration is deployed
+- **THEN** deployment SHALL drain active connector runs and restart only the
+  new runtime version before bootstrap normalizes legacy lease-less rows
+- **AND** bootstrap SHALL fail closed if the pre-lease schema still has a
+  durable active-run row
+- **AND** mixed old/new runtime operation SHALL be unsupported rather than
+  maintained by a recurring distributed compatibility mechanism.
+
+#### Scenario: A successful bounded prefix leaves its unadmitted suffix unattempted
+
+- **WHEN** a runtime serves multiple pending detail gaps
+- **AND** a connector cleanly completes after reporting a recovery outcome for
+  only an admitted prefix
+- **THEN** each remaining served row SHALL be `pending` with the same
+  `attempt_count` it had before that run
+- **AND** it SHALL retain any prior real `last_attempt_at` value unchanged.
+
+#### Scenario: An explicit attempt survives failed, cancelled, or crashed cleanup
+
+- **WHEN** a connector explicitly reports an attempt and then exits without a
+  recovery outcome
+- **THEN** cleanup SHALL return its owned lease to `pending` while retaining
+  that attempt's count and timestamp.
+
+#### Scenario: Gmail lookup misses explicitly settle an attempted lease
+
+- **WHEN** Gmail receives a served attachment gap with an owned lease
+- **AND** Gmail performs its bounded metadata lookup but cannot find the named
+  attachment
+- **THEN** Gmail SHALL report an explicit provider attempt followed by a
+  lease-owned `temporary_unavailable` re-deferral
+- **AND** the resulting pending row SHALL retain the real attempt evidence
+  rather than relying on a silent successful `DONE` inference.
+
+#### Scenario: Gmail's metadata-cap suffix remains untouched
+
+- **WHEN** Gmail reaches its bounded metadata-lookup cap before it begins a
+  served attachment gap
+- **THEN** it SHALL report neither an attempt nor an outcome for that untouched
+  suffix
+- **AND** runtime cleanup SHALL CAS-release the suffix without changing its
+  prior attempt count or timestamp.
+
+#### Scenario: Stale cleanup cannot release a re-served row
+
+- **WHEN** a lease expires, a later run reclaims and re-serves the gap, and the
+  earlier run subsequently cleans up
+- **THEN** the earlier cleanup SHALL not change the later lease, attempt count,
+  or timestamp on either SQLite or Postgres.
+
+#### Scenario: Same-page lease tokens cannot be swapped
+
+- **WHEN** two detail gaps are served in the same recovery page
+- **THEN** each SHALL receive a distinct `lease_id`
+- **AND** an outcome or explicit attempt naming one gap with the other gap's
+  lease id SHALL fail before settling either row.
+
+#### Scenario: Success awaits accounting
+
+- **WHEN** a connector reports `DONE:succeeded` with outstanding leases
+- **THEN** the runtime SHALL await their durable CAS release before resolving
+  success, committing state, or emitting terminal success evidence
+- **AND** a durable accounting failure or explicitly-attempted lease without an
+  outcome SHALL fail the run.

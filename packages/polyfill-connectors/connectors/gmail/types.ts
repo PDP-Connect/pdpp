@@ -6,6 +6,7 @@
 
 import type {
   DetailCoverageMessage,
+  DetailGapAttemptedMessage,
   DetailGapMessage,
   DetailGapRecoveredMessage,
   DetailGapStartEntry,
@@ -100,7 +101,8 @@ export type EmittedMessage =
   // Reference-only recovery acknowledgement for a served pending attachment
   // gap. The Gmail connector emits this only after the matching attachment
   // record actually lands.
-  | DetailGapRecoveredMessage;
+  | DetailGapRecoveredMessage
+  | DetailGapAttemptedMessage;
 
 export interface AttachmentRecord {
   blob_ref: BlobRef | null;

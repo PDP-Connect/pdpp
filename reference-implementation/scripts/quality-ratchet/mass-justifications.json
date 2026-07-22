@@ -23,5 +23,10 @@
     "allowed_mass": 117,
     "reason": "The PostgreSQL migration serializes public legacy bootstraps before catalog discovery with bounded pg_try_advisory_lock polling, distinguishes exact direct legacy/current checks from unrelated compound checks, and performs transactional rollback. The polling/lock classification and fail-closed branches are required to avoid broad constraint deletion, concurrent startup failure, or concurrent-index deadlock.",
     "date": "2026-07-22"
+  },
+  "server/stores/connector-detail-gap-store.js": {
+    "allowed_mass": 29,
+    "reason": "The SQLite and Postgres implementations must each make the same run-and-lease-owned compare-and-set transitions for claim, explicit attempt, recovery, re-deferral, release, and expired-lease reclaim. The branches preserve the distinction between an untouched issuance and a real provider attempt across durable backend dialects; collapsing them behind a shallow helper would hide the SQL ownership predicates that prevent re-serve races.",
+    "date": "2026-07-22"
   }
 }

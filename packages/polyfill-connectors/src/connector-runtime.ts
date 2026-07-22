@@ -88,6 +88,7 @@ export type {
   AssistanceSensitivity,
   CollectionRateProgress,
   DetailCoverageMessage,
+  DetailGapAttemptedMessage,
   DetailGapMessage,
   DetailGapNetworkPressure,
   DetailGapRecoveredMessage,

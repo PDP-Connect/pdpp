@@ -146,3 +146,56 @@ Modified:
 
 - `reference-implementation-runtime`
 - `polyfill-runtime`
+
+### Superseded revision (live-instance follow-on, 2026-07-22)
+
+The rank clamp fixed selection starvation, but retained run diagnostics exposed
+a separate lease-accounting defect: the runtime marks every byte-page row
+`in_progress` and increments `attempt_count` before Gmail applies its own
+attachment-byte admission. Gmail may cleanly finish after hydrating only a
+small prefix; its untouched suffix is reset to `pending` during cleanup, but
+keeps the synthetic increment. Repeating that successful path makes rows look
+like 45–115 failed attempts even though no attachment hydration was requested,
+distorting rank and allowing a later real failed attempt to quarantine on a
+false budget.
+
+The initial cleanup-based remedy was rejected in independent review: silence
+after `DONE:succeeded` does not prove a Gmail metadata lookup was unattempted,
+and an unowned reset can race a re-serve. It is retained here only as incident
+history.
+
+### Revision (lease-accounting closure, 2026-07-22)
+
+Recovery now records two separate durable facts: a run-owned lease and an
+explicit provider attempt. Serving a page atomically claims rows with
+`(lease_run_id, lease_id, expiry)` but does not change `attempt_count` or
+`last_attempt_at`. A connector reports `DETAIL_GAP_ATTEMPTED` before a real
+lookup; recovery or re-deferral is an explicit lease-owned settlement. Cleanup
+CAS-releases only the same owner lease and therefore never subtracts counts or
+erases a prior timestamp. Expired leases, not merely different run ids, are
+reclaimable.
+
+Gmail now explicitly attempts and re-defers metadata lookup misses, while its
+byte-cap suffix remains untouched and is safely released. Successful run
+completion awaits durable lease release; accounting failure or an attempted
+lease without an explicit outcome fails the run before success evidence/state
+commit. Existing quarantined-gap requeue remains a separate, operator-scoped
+repair and this change does not mutate live rows.
+
+### Revision (Sol migration and identity review, 2026-07-22)
+
+Pre-lease schemas can contain old `in_progress` rows with real historical
+attempt evidence but no lease tuple. Both bootstrap migrations now normalize
+only that lease-less legacy state to `pending`, preserving `attempt_count` and
+`last_attempt_at`; fresh-schema leases remain subject to normal owner/expiry
+rules. The deployment contract is explicit: drain active connector runs, then
+perform a single-version restart. Mixed old/new runtime operation is unsupported
+and no distributed compatibility layer is introduced; bootstrap fails closed
+instead of migrating a pre-lease schema while a durable active run remains.
+
+Each served gap now receives its own run-owned `lease_id`, rather than sharing
+a page token. The runtime carries the token in START and requires the same
+gap/run/token tuple on every settlement, so a same-page swapped token fails
+closed. Real old-schema SQLite and isolated-Postgres upgrade oracles prove the
+legacy conversion; a runtime oracle proves unique same-page tokens and swap
+rejection.

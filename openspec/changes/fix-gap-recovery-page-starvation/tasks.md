@@ -112,3 +112,50 @@ and Postgres (`LEAST`) clamp branches; only the SQLite branch was proven.
       independently covered, not accidentally coupled.
 - [x] Re-run both tests against the fix restored (both green), typecheck,
       `openspec validate --strict`.
+
+## 8. Superseded revision (live closure: successful unattempted lease inflation, 2026-07-22)
+
+- [x] Historical diagnosis: mismatch between runtime recovery-page leasing and Gmail's
+      byte-bounded admitted prefix: cleanly unattempted rows kept the lease
+      increment and false last-attempt timestamp, inflating the no-progress
+      budget without a hydration request.
+- [x] Historical remedy (replaced by §9): on `DONE:succeeded` only, release remaining in-progress leases as
+      unattempted in both SQLite and Postgres; preserve the existing counted
+      lease on failed/cancelled/crashed paths for crash-loop quarantine.
+      (`reference-implementation/runtime/index.js`,
+      `reference-implementation/server/stores/connector-detail-gap-store.js`)
+- [x] Historical regression replaced by the explicit-attempt lease oracles in §9.
+      It covered a successful one-item recovery
+      prefix and an unreported suffix; prove the prefix recovers while the
+      suffix remains pending at its original attempt count with no false
+      `last_attempt_at`.
+      (`reference-implementation/test/connector-detail-gap-store.test.js`)
+- [x] Historical validation run completed before independent review; §9 has
+      the current closure validation.
+      strict OpenSpec validation, and inspect the final diff.
+
+## 9. Revision (independent Sol review: explicit lease accounting, 2026-07-22)
+
+- [x] Replace successful-DONE silence inference with separate durable lease and
+      explicit-attempt facts; Gmail lookup misses explicitly re-defer.
+- [x] Make claim, attempt, settlement, release, and expired-lease reclaim
+      run/lease-owned CAS transitions on SQLite and Postgres.
+- [x] Await successful-run lease accounting before state commit/success
+      evidence; fail an explicitly attempted lease with no outcome.
+- [x] Add SQLite and isolated-Postgres oracles for stale re-serve cleanup and
+      preservation of a prior real attempt timestamp, plus Gmail lookup-miss,
+      multi-page, failed/cancelled/crashed, and delayed-cleanup coverage.
+- [x] Run broad repository gates, strict OpenSpec validation, and final diff
+      review; amend the signed commit and update the closure report.
+
+## 10. Revision (Sol migration and lease-identity review, 2026-07-22)
+
+- [x] Normalize legacy lease-less `in_progress` rows to `pending` during both
+      SQLite and Postgres schema bootstrap without changing historical attempt
+      count or timestamp; document the zero-active-run, single-version restart
+      deployment invariant instead of adding a mixed-version runtime layer.
+- [x] Mint one lease token per served gap and prove a same-page swapped token
+      fails closed.
+- [x] Add real old-schema SQLite and isolated-Postgres upgrade tests, rerun the
+      prior recovery discriminators and broad validation, amend the signed
+      commit, and update the closure report.
