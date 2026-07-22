@@ -1676,16 +1676,18 @@ async function foldConnectorSummaryStreamFactsOnce(
   for (const [instanceId, facts] of factsByInstance) {
     const sourceGenerationCurrent = generationCurrentByInstance.get(instanceId) !== false;
     const terminalFactsCurrent = replayConverged && sourceGenerationCurrent;
+    let terminalFoldReason: string | null = null;
+    if (!terminalFactsCurrent) {
+      terminalFoldReason = sourceGenerationCurrent
+        ? REASON_CODES.TERMINAL_FOLD_INCOMPLETE
+        : REASON_CODES.TERMINAL_FACTS_HISTORICAL;
+    }
     const accepted = await writeParticipantStreamFacts(
       foldStore,
       instanceId,
       facts,
       sourceGenerationCurrent ? writeSeq : (checkpointByInstance.get(instanceId) ?? 0),
-      terminalFactsCurrent
-        ? null
-        : sourceGenerationCurrent
-          ? REASON_CODES.TERMINAL_FOLD_INCOMPLETE
-          : REASON_CODES.TERMINAL_FACTS_HISTORICAL,
+      terminalFoldReason,
       terminalFactsCurrent,
       checkpointByInstance,
       casBaselineByInstance

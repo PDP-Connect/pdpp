@@ -1139,13 +1139,16 @@ function buildRepairedRow(inputs: RepairInputs): Row {
   const streamRecords: StreamEvidence[] = [...unionStreams].sort().map((stream) => {
     const canonical = canonicalByStream.get(stream);
     const retainedCount = retainedByStream.has(stream) ? retainedByStream.get(stream)! : null;
-    const declaration_state: DeclarationState = manifest.ok
-      ? declaredStreams.has(stream)
-        ? "declared"
-        : unexpectedStreams.has(stream)
-          ? "unexpected"
-          : "dormant"
-      : "unavailable";
+    let declaration_state: DeclarationState;
+    if (!manifest.ok) {
+      declaration_state = "unavailable";
+    } else if (declaredStreams.has(stream)) {
+      declaration_state = "declared";
+    } else if (unexpectedStreams.has(stream)) {
+      declaration_state = "unexpected";
+    } else {
+      declaration_state = "dormant";
+    }
     const record_count = canonical ? Number(canonical.record_count || 0) : 0;
     const count_state: CountState = record_count > 0 ? "known" : "known_zero";
     return {

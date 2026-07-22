@@ -4800,13 +4800,14 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
   // distinct from `stale` (an evidence row exists but its snapshot is not
   // current) — both are non-authoritative, but `stale` additionally implies
   // "we once knew a real value, unverified since."
-  const totalRecordsState: ConnectorSummary["total_records_state"] = evidence
-    ? recordSnapshotCurrent
-      ? totalRecords > 0
-        ? "known"
-        : "known_zero"
-      : "stale"
-    : "unobserved";
+  let totalRecordsState: ConnectorSummary["total_records_state"];
+  if (!evidence) {
+    totalRecordsState = "unobserved";
+  } else if (!recordSnapshotCurrent) {
+    totalRecordsState = "stale";
+  } else {
+    totalRecordsState = totalRecords > 0 ? "known" : "known_zero";
+  }
   const retainedBytes = evidence ? evidence.retained_bytes : live.retainedBytes;
   const totalRetainedBytes = evidence ? evidence.total_retained_bytes : (live.retainedBytes?.total_bytes ?? null);
   return {
@@ -4827,12 +4828,15 @@ function synthesizeConnectorSummary(input: ConnectorSummarySynthesisInput): Conn
     // succeeded does the maintained evidence row's own
     // manifest_declaration (or its `unavailable`-on-no-evidence fallback)
     // apply.
-    manifest_declaration:
-      manifestDeclaration.state === "unavailable"
-        ? { state: "unavailable", as_of: null, reason_code: manifestDeclaration.reasonCode }
-        : evidence
-          ? evidence.manifest_declaration
-          : { state: "unavailable", as_of: null, reason_code: "summary_evidence_unavailable" },
+    manifest_declaration: (() => {
+      if (manifestDeclaration.state === "unavailable") {
+        return { state: "unavailable", as_of: null, reason_code: manifestDeclaration.reasonCode };
+      }
+      if (evidence) {
+        return evidence.manifest_declaration;
+      }
+      return { state: "unavailable", as_of: null, reason_code: "summary_evidence_unavailable" };
+    })(),
     manifest_version: manifest.version || null,
     next_action: connectionHealth.next_action,
     owner_state: ownerState,
