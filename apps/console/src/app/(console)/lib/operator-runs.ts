@@ -48,7 +48,9 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
       })
     );
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, { cause: err });
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, {
+      cause: err,
+    });
   }
 }
 
@@ -283,7 +285,7 @@ function isUnavailableErrorBody(body: unknown): boolean {
   if (!body || typeof body !== "object") {
     return false;
   }
-  const { error } = (body as { error?: unknown });
+  const { error } = body as { error?: unknown };
   if (!error || typeof error !== "object") {
     return false;
   }

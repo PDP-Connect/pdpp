@@ -350,8 +350,9 @@ async function clickActivityControl(page: Page): Promise<void> {
         `activity_control_unavailable: selector=${CHASE_QFX_ACTIVITY_SELECT_SELECTOR}: ${truncate(
           errMessage(selectorErr),
           ERROR_MESSAGE_SLICE
-        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
-      , { cause: semanticErr });
+        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`,
+        { cause: semanticErr }
+      );
     }
   }
 }
@@ -390,8 +391,9 @@ async function clickFileTypeControl(page: Page): Promise<void> {
         `file_type_control_unavailable: selector=${CHASE_QFX_FILE_TYPE_SELECT_SELECTOR}: ${truncate(
           errMessage(selectorErr),
           ERROR_MESSAGE_SLICE
-        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`
-      , { cause: semanticErr });
+        )}; combobox=${truncate(errMessage(semanticErr), ERROR_MESSAGE_SLICE)}`,
+        { cause: semanticErr }
+      );
     }
   }
 }

@@ -318,8 +318,9 @@ async function collectConnectorMessages(
     throw new Error(
       `${profile.connectorId} connector failed to start or stream output: ${
         error instanceof Error ? error.message : String(error)
-      }`
-    , { cause: error });
+      }`,
+      { cause: error }
+    );
   }
   if (exitCode !== 0) {
     throw new Error(

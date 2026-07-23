@@ -1203,7 +1203,9 @@ export async function refFetch(
       })
     );
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, { cause: err });
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, {
+      cause: err,
+    });
   }
   if (res.status === 404) {
     throw new RefNotFoundError(`not found: ${path}`);
@@ -2132,7 +2134,9 @@ async function postManualUploadFile(
   try {
     res = await fetch(url.toString(), init);
   } catch (err) {
-    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, { cause: err });
+    throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, {
+      cause: err,
+    });
   }
   if (!res.ok) {
     const body = await res.text();
