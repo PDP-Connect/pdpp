@@ -195,7 +195,7 @@ function consumerProbeSource(manifests) {
   })));
   return `
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { realpathSync, readFileSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
