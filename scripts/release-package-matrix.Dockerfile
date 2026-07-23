@@ -21,7 +21,8 @@ COPY pnpm-lock.yaml ./
 RUN pnpm fetch --frozen-lockfile --store-dir /pdpp-pnpm-store \
   && chmod -R a+rwX /pdpp-pnpm-store
 
-RUN mkdir -p /tmp/npm-seed-v4 /tmp/npm-seed-v3 /pdpp-npm-cache \
-  && npm_config_cache=/pdpp-npm-cache npm install --prefix /tmp/npm-seed-v4 --ignore-scripts --no-audit --no-fund --package-lock=false zod@4.3.6 \
+RUN mkdir -p /tmp/npm-seed-v4-old /tmp/npm-seed-v4-new /tmp/npm-seed-v3 /pdpp-npm-cache \
+  && npm_config_cache=/pdpp-npm-cache npm install --prefix /tmp/npm-seed-v4-old --ignore-scripts --no-audit --no-fund --package-lock=false zod@4.3.6 \
+  && npm_config_cache=/pdpp-npm-cache npm install --prefix /tmp/npm-seed-v4-new --ignore-scripts --no-audit --no-fund --package-lock=false zod@4.4.3 \
   && npm_config_cache=/pdpp-npm-cache npm install --prefix /tmp/npm-seed-v3 --ignore-scripts --no-audit --no-fund --package-lock=false zod@3.25.76 @modelcontextprotocol/sdk@1.29.0 \
   && chmod -R a+rwX /pdpp-npm-cache
