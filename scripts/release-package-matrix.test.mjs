@@ -42,8 +42,8 @@ function row(row) {
     ...PACKAGE_NAMES.map((name) => ({ command: ['pnpm', '--filter', name, 'run', 'build'], cwd: '/workspace' })),
     ...candidates.map(({ name }) => ({ command: ['npm', 'pack', '--json', '--ignore-scripts', '--pack-destination', '/workspace/.release-matrix/candidates'], cwd: `/workspace/packages/${name.slice('@pdpp/'.length)}` })),
     { command: ['npm', 'init', '--yes'], cwd: '/workspace/.release-matrix/consumer' },
-    { command: ['npm', 'install', '--ignore-scripts', '--offline', ...candidates.map(({ tarball }) => `/workspace/.release-matrix/candidates/${tarball.filename}`)], cwd: '/workspace/.release-matrix/consumer' },
-    { command: ['npm', 'ls', '--all', '--json'], cwd: '/workspace/.release-matrix/consumer' },
+    { command: ['pnpm', 'add', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store', ...candidates.map(({ tarball }) => `/workspace/.release-matrix/candidates/${tarball.filename}`)], cwd: '/workspace/.release-matrix/consumer' },
+    { command: ['pnpm', 'list', '--json', '--depth', '-1'], cwd: '/workspace/.release-matrix/consumer' },
     { command: ['/usr/local/bin/node', '/workspace/.release-matrix/consumer/candidate-probe.mjs'], cwd: '/workspace/.release-matrix/consumer' },
   ];
   if (row.exactFloor) {
