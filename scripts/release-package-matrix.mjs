@@ -282,7 +282,7 @@ function runMatrixRow() {
     PDPP_ARTIFACT_GIT_HEAD_SHA: context.headSha,
   };
 
-  runRecorded(commands, 'pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store', ...PACKAGE_NAMES.flatMap((name) => ['--filter', name])], { env });
+  runRecorded(commands, 'pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store'], { env });
   if (row.exactFloor) {
     runRecorded(commands, 'pnpm', ['--filter', '@pdpp/cli', 'run', 'pack-install-run:node-22.14'], { env });
     runRecorded(commands, 'pnpm', ['--filter', '@pdpp/read-core', 'run', 'verify:node-22.14'], { env });
@@ -426,7 +426,7 @@ function assertRowReceipt(rowReceipt, snapshot, receiptRows, expectedContracts) 
   const consumer = `${workspace}/.release-matrix/consumer`;
   const candidatePaths = rowReceipt.candidates.map(({ tarball }) => `${workspace}/.release-matrix/candidates/${tarball.filename}`);
   const expectedCommands = [
-    { command: ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store', ...PACKAGE_NAMES.flatMap((name) => ['--filter', name])], cwd: workspace },
+    { command: ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store'], cwd: workspace },
     ...(configured.exactFloor ? [
       { command: ['pnpm', '--filter', '@pdpp/cli', 'run', 'pack-install-run:node-22.14'], cwd: workspace },
       { command: ['pnpm', '--filter', '@pdpp/read-core', 'run', 'verify:node-22.14'], cwd: workspace },

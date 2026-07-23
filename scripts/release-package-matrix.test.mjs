@@ -38,7 +38,7 @@ function row(row) {
     tarball: { filename: `${name.slice('@pdpp/'.length)}-0.0.0.tgz`, sha256: String.fromCharCode(98 + index).repeat(64), files: ['package.json'] },
   }));
   const commands = [
-    { command: ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store', ...PACKAGE_NAMES.flatMap((name) => ['--filter', name])], cwd: '/workspace' },
+    { command: ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts', '--offline', '--store-dir', '/pdpp-pnpm-store'], cwd: '/workspace' },
     ...PACKAGE_NAMES.map((name) => ({ command: ['pnpm', '--filter', name, 'run', 'build'], cwd: '/workspace' })),
     ...candidates.map(({ name }) => ({ command: ['npm', 'pack', '--json', '--ignore-scripts', '--pack-destination', '/workspace/.release-matrix/candidates'], cwd: `/workspace/packages/${name.slice('@pdpp/'.length)}` })),
     { command: ['npm', 'init', '--yes'], cwd: '/workspace/.release-matrix/consumer' },
