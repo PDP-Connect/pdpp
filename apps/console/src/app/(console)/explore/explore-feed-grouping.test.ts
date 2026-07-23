@@ -684,8 +684,13 @@ test("burst order INVARIANT: scanning units top-to-bottom, latestAt is monotonic
       continue;
     }
     assert.ok(!sawNull, "a dated unit must never follow an undated unit (undated sorts last)");
-    if (prevDated !== null) {
-      assert.ok(at <= prevDated, `monotonic non-increasing: ${at} must be <= previous ${prevDated}`);
+    const previousDated: string = prevDated ?? "";
+    if (previousDated !== "") {
+      const currentDated: string = at;
+      assert.ok(
+        currentDated <= previousDated,
+        `monotonic non-increasing: ${currentDated} must be <= previous ${previousDated}`
+      );
     }
     prevDated = at;
   }

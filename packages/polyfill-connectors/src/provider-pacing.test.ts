@@ -526,8 +526,8 @@ test("ProviderPacing §9-C2 IDEAL: near the ceiling the per-success RATE gain is
   const fullStepRatios: number[] = [];
   while (pacing.currentIntervalMs > ceilingMs) {
     pacing.recordSuccess();
-    const dRate = ratePerMin(pacing.currentIntervalMs) - ratePerMin(prevInterval);
-    const ratio = dRate / calibratedRateStep;
+    const dRate: number = ratePerMin(pacing.currentIntervalMs) - ratePerMin(prevInterval);
+    const ratio: number = dRate / calibratedRateStep;
     if (pacing.currentIntervalMs > ceilingMs) {
       // A full (un-clamped) step — must be in the tight rate-space band.
       fullStepRatios.push(ratio);
