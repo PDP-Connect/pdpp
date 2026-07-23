@@ -5,6 +5,16 @@
   "formatter": {
     "lineWidth": 120
   },
+  // Object insertion order is observable through Object.keys, for-in, and
+  // JSON.stringify. Keep authored query/serialization order; this disables
+  // only Biome's source assist, not a linter rule.
+  "assist": {
+    "actions": {
+      "source": {
+        "useSortedKeys": "off"
+      }
+    }
+  },
   "files": {
     "ignoreUnknown": true,
     // The tracked-source contract includes authored JS/TS/config files;
