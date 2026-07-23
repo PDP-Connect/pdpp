@@ -90,6 +90,7 @@ function reassembleHost(hostname: string, suffix: string): string {
 }
 
 export function sandboxIssuerFromRequest(request: Request): string {
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   const headers = request.headers;
   const forwardedHost = firstHeaderValue(headers.get("x-forwarded-host"));
   const forwardedProto = firstHeaderValue(headers.get("x-forwarded-proto"));

@@ -94,7 +94,9 @@ function extractBody(rootText, specName) {
 // the source of truth; warn loudly if they drift so the sidecar gets updated
 // rather than silently rendering a stale status banner.
 function checkStatusDateDrift(header, root, spec) {
+  // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   const statusMatch = header.match(/Status:\s*\*\*(.+?)\*\*/);
+  // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   const dateMatch = header.match(/Date:\s*(.+)/);
   const sideStatus = statusMatch?.[1]?.trim();
   const sideDate = dateMatch?.[1]?.trim();

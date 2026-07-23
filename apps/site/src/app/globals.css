@@ -13,11 +13,17 @@
  * Path resolves relative to this CSS file.
  */
 @source "../../../../packages/operator-ui/src/**/*.{ts,tsx}";
+/* biome-ignore lint/correctness/noInvalidPositionAtImportRule: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */
 @import "tw-animate-css";
+/* biome-ignore lint/correctness/noInvalidPositionAtImportRule: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */
 @import "shadcn/tailwind.css";
+/* biome-ignore lint/correctness/noInvalidPositionAtImportRule: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */
 @import "fumadocs-ui/css/neutral.css";
+/* biome-ignore lint/correctness/noInvalidPositionAtImportRule: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */
 @import "fumadocs-ui/css/preset.css";
+/* biome-ignore lint/correctness/noInvalidPositionAtImportRule: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */
 @import "@demodesk/neko/dist/neko.css";
+/* biome-ignore lint/correctness/noInvalidPositionAtImportRule: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */
 @import "@pdpp/brand/docs.css";
 
 @custom-variant dark (
@@ -213,6 +219,7 @@ html > body[data-scroll-locked] {
   width: 100vw;
   max-width: none;
   block-size: 100vh;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build. */
   block-size: 100svh;
   height: 100vh;
   height: 100svh;

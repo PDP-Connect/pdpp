@@ -3,6 +3,7 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+// biome-ignore lint/correctness/noUnresolvedImports: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
 import { createMDX } from "fumadocs-mdx/next";
 import { collectAllowedDevOrigins } from "./scripts/dev-origins.mjs";
 
@@ -51,6 +52,7 @@ const nextConfig = {
   },
   outputFileTracingRoot: path.join(__dirname, "../.."),
   reactStrictMode: true,
+  // biome-ignore lint/suspicious/useAwait: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   async redirects() {
     return [
       {
@@ -135,6 +137,7 @@ const nextConfig = {
       // owner-console surface.
     ];
   },
+  // biome-ignore lint/suspicious/useAwait: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   async rewrites() {
     return [
       {

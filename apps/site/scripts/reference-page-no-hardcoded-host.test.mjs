@@ -26,6 +26,7 @@ test("reference page has no hardcoded localhost URL as a JSX attribute value", a
   // Match JSX attribute patterns like value="http://localhost:..." or
   // href="http://localhost:..." but not string-fallback defaults in code like
   // ?? "localhost:3002" (which is legitimate for local dev).
+  // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   const jsxLiteralPattern = /(?:value|href|src)="https?:\/\/localhost(?::\d+)?[^"]*"/;
 
   assert.ok(

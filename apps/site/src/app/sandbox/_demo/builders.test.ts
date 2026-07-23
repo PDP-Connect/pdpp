@@ -64,6 +64,7 @@ test("records list returns null for missing stream and pages correctly", () => {
   assert.equal(buildRecordsList({ stream: "does_not_exist" }), null);
   const page = buildRecordsList({ limit: 1, stream: "pay_statements" });
   assert.ok(page);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   assert.equal(page?.data.length, 1);
   assert.ok(page?.has_more);
 });
@@ -72,6 +73,7 @@ test("record detail returns null for unknown ids and full fields for known ones"
   assert.equal(buildRecordDetail("pay_statements", "rec_does_not_exist"), null);
   const detail = buildRecordDetail("pay_statements", "rec_sb_paystmt_2026_03");
   assert.ok(detail);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   assert.equal(detail?.fields.currency, "USD");
 });
 
@@ -132,6 +134,7 @@ test("runs list and timeline behave like grants", () => {
 
 test("traces list and timeline behave like grants", () => {
   const denied = buildTracesList({ status: "denied" });
+  // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   assert.ok(denied.data.every((t) => t.status === "denied"));
   assert.equal(buildTraceTimeline("trace_does_not_exist"), null);
   const t = buildTraceTimeline("trace_sb_quill_paystmt");

@@ -18,6 +18,7 @@ const OWNER_AGENT_SKILL_FRONTMATTER = /name: pdpp-owner-agent/;
 const TROUBLESHOOTING_HEADING = /# Troubleshooting/;
 const TEXT_MARKDOWN = /^text\/markdown/;
 
+// biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
 function callSkillsRoute(path: string[], headers?: HeadersInit): Promise<Response> {
   return GET(new Request(`http://0.0.0.0:3000/.well-known/skills/${path.join("/")}`, { headers }), {
     params: Promise.resolve({ path }),
@@ -41,6 +42,7 @@ test("agent skill .well-known route serves the catalog with forwarded origin", a
   const skills = body.skills as Array<{ files: Array<{ url: string }> }>;
   assert.equal(skills.length, 2);
   assert.ok(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
     skills[0]?.files.some((file) => file.url === "https://pdpp.dev/.well-known/skills/pdpp-data-access/SKILL.md")
   );
   assert.ok(

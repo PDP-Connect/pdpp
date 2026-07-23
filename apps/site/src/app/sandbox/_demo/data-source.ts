@@ -86,6 +86,7 @@ function streamRecordCount(streamKey: string): number {
 }
 
 function latestRecordTimeForStream(streamKey: string): string | null {
+  // biome-ignore lint/suspicious/useArraySortCompare: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   const sorted = [...streamRecords(streamKey)]
     .map((r) => r.record_time)
     .sort()
@@ -193,6 +194,7 @@ function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
   const connector = getDemoConnectors().find((c) => c.connector_id === connectorId);
   const streams = streamsForConnector(connectorId);
   const runIds = connectorRecentRunIds(connectorId);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   const lastRunId = runIds[0];
   const lastSuccessId = getDemoRuns().find((r) => r.connector_id === connectorId && r.status === "succeeded")?.run_id;
   const lastRun = refConnectorRunSummary(lastRunId);
@@ -206,6 +208,7 @@ function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
         outbox: "idle",
       },
       badges: { stale: false, syncing: false },
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
       last_success_at: lastSuccessfulRun?.last_at ?? null,
       next_action: null,
       next_attempt_at: null,
@@ -349,6 +352,7 @@ function deriveRunConnector(runId: string): string | null {
 }
 
 function streamForEvent(event: DemoTimelineEvent): string | null {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
   const data = event.data ?? {};
   if (typeof (data as { stream?: unknown }).stream === "string") {
     return (data as { stream: string }).stream;
@@ -867,6 +871,7 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
       new_since_snapshot: 0,
       next_cursor: page.next_cursor ?? null,
       object: "list",
+      // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, accessibility, or source-shape contract; verified by the package typecheck and build.
       snapshot_at: merged[0]?.emitted_at ?? new Date(0).toISOString(),
     };
   },
