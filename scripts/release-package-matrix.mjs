@@ -214,7 +214,8 @@ for (const pkg of packages) {
   const resolutions = [];
   for (const subpath of Object.keys(pkg.exports)) {
     const specifier = subpath === '.' ? pkg.name : pkg.name + '/' + subpath.slice(2);
-    const imported = await import(specifier);
+    const jsonExport = targets(pkg.exports[subpath]).some((target) => target.endsWith('.json'));
+    const imported = await import(specifier, jsonExport ? { with: { type: 'json' } } : undefined);
     const resolved = realpathSync(fileURLToPath(import.meta.resolve(specifier)));
     assert.ok(isInside(resolved, root), specifier + ' escaped candidate node_modules package');
     assert.ok(targets(pkg.exports[subpath]).some((target) => resolved === resolve(root, target)), specifier + ' did not resolve a declared candidate target');
