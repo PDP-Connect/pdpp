@@ -12,15 +12,20 @@
     "node": ">=22.14.0"
   },
   "exports": {
-    ".": "./src/index.js"
+    ".": "./dist/index.js"
   },
   "files": [
-    "src/",
+    "dist/",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "verify": "pnpm test"
+    "build": "node scripts/build.mjs",
+    "prepare": "pnpm build",
+    "prepack": "pnpm build",
+    "test": "node scripts/run-tests.mjs",
+    "validate-package": "pnpm build && node scripts/validate-package.mjs",
+    "pack-install-test": "pnpm build && node scripts/pack-install-test.mjs",
+    "verify": "pnpm test && pnpm validate-package && pnpm pack-install-test"
   },
   "keywords": [
     "pdpp",
