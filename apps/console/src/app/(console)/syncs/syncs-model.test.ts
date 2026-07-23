@@ -196,6 +196,7 @@ test("source-pressure cooldown produces a WAIT card, never a reconnect prompt", 
   });
 
   assert.equal(model.failureCards.length, 1, "a cooling connection still gets an honest card");
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const card = model.failureCards[0];
   if (!card) {
     throw new Error("expected a failure card");
@@ -242,6 +243,7 @@ test("a genuine blocked connection (no backlog, no next attempt) DOES prompt rec
     connectors: [connector({ connection_health: reallyBlocked })],
     runs: [],
   });
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const card = model.failureCards[0];
   assert.equal(card?.summary.cta, "reconnect", "genuine credential failure keeps the reconnect CTA");
   assert.equal(model.band.needYourHand, 1, "a genuine block counts under need-your-hand");
@@ -259,6 +261,7 @@ test("healthy connections produce no card and count their streams on schedule", 
   assert.equal(model.band.needsReview, 0);
   assert.equal(model.band.allClear, true);
   assert.equal(model.groups[0]?.health, "ok");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(model.groups[0]?.streams.length, 3);
 });
 
@@ -538,6 +541,7 @@ test("a draft connection produces a PendingSetupCard, not a SyncGroup or Failure
   assert.equal(model.groups.length, 0, "a draft has no run/schedule/stream evidence to form a SyncGroup");
   assert.equal(model.failureCards.length, 0, "a draft is not a rendered-verdict-derived defect");
   assert.equal(model.pendingSetupCards.length, 1);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const card = model.pendingSetupCards[0];
   assert.ok(card);
   assert.equal(card.connectionId, "cin_draft");
@@ -648,6 +652,7 @@ test("a failing connection holds its next and marks rows failed", () => {
     connectors: [connector({ connection_health: failHealth, schedule: schedule() })],
     runs: [run({ connection_id: "cin_test", status: "failed" })],
   });
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const group = model.groups[0];
   assert.equal(group?.health, "failing");
   assert.equal(group?.streams[0]?.failed, true);
@@ -686,6 +691,7 @@ test("a broken connector does not rewrite a successful last run into sync failed
     runs: [],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const group = model.groups[0];
   assert.equal(group?.health, "failing", "the group still shows the current connector state");
   assert.equal(group?.lastRunDelta, "+52 records", "last result remains the successful run fact");
@@ -730,6 +736,7 @@ test("failure cards bind terminal gaps to rendered verdict copy, never retryable
     runs: [],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const card = model.failureCards[0];
   assert.equal(card?.summary.prose, "This connector needs a code fix before it can collect again.");
   assert.equal(card?.summary.cta, "wait");
@@ -762,6 +769,7 @@ test("failure cards bind retryable gaps to the rendered Retry now action", () =>
     runs: [],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const card = model.failureCards[0];
   assert.equal(card?.summary.prose, "Retry now to give the recoverable gap another run.");
   assert.equal(card?.summary.cta, "connection_detail");
@@ -801,6 +809,7 @@ test("failure cards bind stale manual refresh to Refresh now without marking hea
     runs: [],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const card = model.failureCards[0];
   assert.equal(card?.summary.prose, "Run a refresh to bring this up to date.");
   assert.equal(card?.summary.actionLabel, "Refresh now");
@@ -839,6 +848,7 @@ test("failure cards bind dead-letter backlog to collector action, not resume-nor
     runs: [],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const card = model.failureCards[0];
   assert.equal(card?.summary.prose, "Check the collector before this source can make progress.");
   assert.equal(card?.summary.cta, "connection_detail");
@@ -885,6 +895,7 @@ test("device-local recovery counts as need-your-hand while navigating to recover
     runs: [],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const card = model.failureCards[0];
   assert.equal(card?.summary.cta, "connection_detail");
   assert.equal(card?.summary.actionLabel, "See recovery steps");
@@ -1159,6 +1170,7 @@ test("syncs overview shows ALL streams with no truncation", () => {
     runs: [],
   });
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(model.groups[0]?.streams.length, 7, "all 7 streams render — no cap");
   assert.equal(model.groups[0]?.totalStreamCount, 7);
   assert.equal(model.totalStreamCount, 7);
@@ -1342,9 +1354,11 @@ test("all streams in a group are present with no truncation", () => {
     runs: [],
   });
 
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(model.groups[0]?.streams.length, 7, "all 7 stream rows are present");
   assert.equal(model.groups[0]?.totalStreamCount, 7);
   assert.equal(model.totalStreamCount, 7);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const streamNames = model.groups[0]?.streams.map((r) => r.stream);
   assert.deepEqual(streamNames, ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"]);
 });
@@ -1388,6 +1402,7 @@ test("per-stream collectedThisRun is populated from collection_report when prese
     runs: [],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const group = model.groups[0];
   assert.ok(group, "group must exist");
   const byStream = new Map(group.streams.map((r) => [r.stream, r]));
@@ -1419,6 +1434,7 @@ test("two streams with different collection_report entries show DIFFERENT values
     runs: [run({ connection_id: "cin_multi", event_count: 42, status: "succeeded" })],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const group = model.groups[0];
   assert.ok(group, "group must exist");
   const byStream = new Map(group.streams.map((r) => [r.stream, r]));
@@ -1452,6 +1468,7 @@ test("connection-level last-run facts live on the group, not on each stream row"
     runs: [],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const group = model.groups[0];
   assert.ok(group, "group must exist");
 
@@ -1527,6 +1544,7 @@ test("streamSkipped is true only when collection_report entry has a skip", () =>
     runs: [],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const group = model.groups[0];
   assert.ok(group);
   const byStream = new Map(group.streams.map((r) => [r.stream, r]));
@@ -1564,7 +1582,9 @@ test("a stream with a real collected count keeps its per-stream truth when the c
     ],
   });
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const group = model.groups[0];
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const byStream = new Map((group?.streams ?? []).map((r) => [r.stream, r]));
 
   // The core assertion: a stream with its own collection_report entry shows

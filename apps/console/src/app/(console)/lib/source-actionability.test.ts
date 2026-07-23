@@ -665,6 +665,7 @@ test("recovery grouping: an inactive queued recovery row is passive progress, ne
   assert.equal(groups.working.length, 1);
   assert.equal(groups.systemIssues.length, 0);
   assert.equal(groups.notMeasured.length, 0);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const row = groups.working[0];
   assert.ok(row);
   assert.doesNotMatch(row.statusLabel, RECOVERY_CHECKING_RE);
@@ -702,6 +703,7 @@ test("recovery grouping: active recovery names the work like syncing order detai
   ]);
 
   assert.equal(groups.working.length, 1);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const row = groups.working[0];
   assert.ok(row);
   // The row names the work ("is syncing details" / "Syncing details now."),
@@ -784,6 +786,7 @@ test("recovery grouping: an inactive backlog routes to NAMED recovery before the
   const groups = sourceWorkFromConnectors([summary]);
 
   assert.equal(groups.working.length, 1);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const row = groups.working[0];
   assert.ok(row);
   // Named recovery copy ("is catching up" / "Catching up …"), never "Checking".

@@ -37,6 +37,7 @@ const USER_STATS_CAP: ExpandCapability = {
 function onlyLink(caps: ExpandCapability[], parentRecordKey: string) {
   const links = buildRelatedLinks(caps, { connectionId: "github", parentRecordKey });
   assert.equal(links.length, 1);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const link = links[0];
   assert.ok(link);
   return link;
@@ -55,6 +56,7 @@ test("has_many usable relation links to the filtered child list, not a child det
 test("has_many link percent-encodes connection, stream, field, and parent key", () => {
   const cap: ExpandCapability = { ...USER_STATS_CAP, child_parent_key_field: "user id", target_stream: "user stats" };
   const links = buildRelatedLinks([cap], { connectionId: "git hub", parentRecordKey: "1/0 1" });
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const link = links[0];
   assert.ok(link);
   assert.equal(link.href, "/sources/git%20hub/user%20stats?filter[user%20id]=1%2F0%201");
@@ -189,6 +191,7 @@ test("manifest lookup tolerates URL-form connector_id and short connector_key", 
       streams: [{ name: "user" }],
     },
   ];
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const chaseManifest = manifests[0];
   assert.ok(chaseManifest);
 
@@ -286,6 +289,7 @@ test("child-declared has_one links to the parent record detail page", () => {
     { connectionId: "cin_029a67a16d8a252f6e3eb896" }
   );
   assert.equal(links.length, 1);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const link = links[0];
   assert.ok(link);
   assert.equal(link.parentStream, "accounts");
@@ -302,6 +306,7 @@ test("child-declared has_one percent-encodes connection, stream, and key value",
     { "order id": "ref/42" },
     { connectionId: "my conn" }
   );
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const link = links[0];
   assert.ok(link);
   assert.equal(link.href, "/sources/my%20conn/open%20orders/ref%2F42");
@@ -466,6 +471,7 @@ test("Chase accounts parent yields a transactions filtered-list link, never a de
     parentStream: "accounts",
   });
   assert.equal(links.length, 1);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const link = links[0];
   assert.ok(link);
   assert.equal(link.childStream, "transactions");

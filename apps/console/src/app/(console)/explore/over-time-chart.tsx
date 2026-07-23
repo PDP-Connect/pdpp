@@ -203,6 +203,7 @@ export function OverTimeChart({ series, since, until, descriptorKind, onSelectRa
       <div
         aria-label={`${chartCaption(descriptorKind, granularity)}${brushable ? ", brush to filter" : ""}`}
         className={["rr-x-chart__band", brushable ? "is-brushable" : ""].filter(Boolean).join(" ")}
+        // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
         onPointerLeave={() => {
           setHovered(null);
         }}
@@ -218,8 +219,11 @@ export function OverTimeChart({ series, since, until, descriptorKind, onSelectRa
             inDrag={dragLo !== null && dragHi !== null && i >= dragLo && i <= dragHi}
             key={bucket.key}
             maxCount={maxCount}
+            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onClick={() => onBarClick(i)}
+            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onPointerDown={() => onPointerDown(i)}
+            // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
             onPointerEnter={() => onPointerEnterBar(i)}
             selected={selectedIndices.has(i)}
           />

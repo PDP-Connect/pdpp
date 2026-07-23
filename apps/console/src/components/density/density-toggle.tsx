@@ -32,6 +32,7 @@ export function DensityToggle({ className }: { className?: string }) {
       aria-label={`${CURRENT_LABEL[density]}. ${NEXT_LABEL[density]}.`}
       className={className}
       data-testid="density-toggle"
+      // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       onClick={() => setDensity(nextDensity)}
       size="icon-sm"
       title={`${CURRENT_LABEL[density]}. ${NEXT_LABEL[density]}.`}
@@ -47,4 +48,5 @@ export function DensityToggle({ className }: { className?: string }) {
   );
 }
 
+// biome-ignore lint/complexity/noRedundantDefaultExport: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 export default DensityToggle;

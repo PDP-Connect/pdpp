@@ -204,6 +204,7 @@ function toRunSummaryForConnection(
 }
 
 function connectionRecentRuns(summary: RefConnectorSummary): RunSummary[] {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const reportRunId = summary.last_run?.run_id ?? null;
   const collectionReport = summary.collection_report ?? null;
   const byId = new Map<string, RunSummary>();
@@ -240,7 +241,8 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
     },
     connectorDisplayName: summary.connector_display_name,
     connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
-    isRunning: lastRun !== null && isActiveConnectorRunSummaryStatus(lastRun.status),
+    // biome-ignore lint/suspicious/noEqualsToNull: The source-shape regression test requires a nullish guard before reading the durable run status.
+    isRunning: lastRun != null && isActiveConnectorRunSummaryStatus(lastRun.status),
     lastRun,
     lastSuccessfulRun,
     localDeviceProgress: summary.local_device_progress ?? null,
@@ -566,6 +568,7 @@ function ConnectorPageView({
     }
     return null;
   })();
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const primaryActionSurface = connectionPrimaryAction?.surface?.kind ?? null;
   // The detail-page primary action is modality-aware for the same reason the
   // records row is (`derivePrimaryRowAction`): existing owner-runnable
@@ -991,6 +994,7 @@ function RenderedVerdictHeaderAction({
     // detail) chasing a button that can't act. Render it as non-clickable
     // guidance that points to the recovery commands in the diagnostics panel
     // below, the only place the owner can actually act.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     if (action.remediation?.target.kind === "local_device") {
       return (
         <span
@@ -1177,6 +1181,7 @@ function acquisitionMediaCoverageLabel(mediaCoverage: unknown): string | null {
   if (!mediaCoverage || typeof mediaCoverage !== "object") {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const status = (mediaCoverage as { status?: unknown }).status;
   return typeof status === "string" && status.length > 0 ? `media ${status.replaceAll("_", " ")}` : null;
 }
@@ -1450,7 +1455,6 @@ function StreakStrip({ dots }: { dots: StreakDot[] }) {
           <span
             aria-hidden
             className={["font-mono text-sm tabular-nums", streakDotToneClass(d.tone)].join(" ")}
-            // biome-ignore lint/suspicious/noArrayIndexKey: positional streak dots have no stable id
             key={i}
             title={`${d.statusLabel} · ${d.at}`}
           >

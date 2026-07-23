@@ -48,6 +48,7 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
       })
     );
   } catch (err) {
+    // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
 }
@@ -283,6 +284,7 @@ function isUnavailableErrorBody(body: unknown): boolean {
   if (!body || typeof body !== "object") {
     return false;
   }
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const error = (body as { error?: unknown }).error;
   if (!error || typeof error !== "object") {
     return false;

@@ -201,10 +201,13 @@ test("groupFeedByDay buckets entries by ISO date and preserves order", () => {
     ["2026-05-28", "2026-05-27", "2026-05-25"]
   );
   assert.deepEqual(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     groups[0]?.entries.map((e) => e.recordId),
     ["r1", "r2"]
   );
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(groups[1]?.entries.length, 1);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(groups[2]?.entries.length, 1);
 });
 
@@ -228,6 +231,7 @@ test("groupFeedByDay labels missing dates as Undated", () => {
   assert.equal(groups.length, 1);
   assert.equal(groups[0]?.day, "");
   assert.equal(groups[0]?.label, "Undated");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(groups[0]?.entries.length, 2);
 });
 

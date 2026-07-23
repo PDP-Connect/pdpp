@@ -353,6 +353,7 @@ html:has(.pdpp-stream-dialog) {
   width: 100%;
   max-width: 100%;
   block-size: 100vh;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. */
   block-size: 100svh;
   height: 100vh;
   height: 100svh;

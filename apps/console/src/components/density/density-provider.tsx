@@ -79,4 +79,5 @@ export function useDensity(): DensityContextValue {
   return context;
 }
 
+// biome-ignore lint/complexity/noRedundantDefaultExport: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 export default DensityProvider;

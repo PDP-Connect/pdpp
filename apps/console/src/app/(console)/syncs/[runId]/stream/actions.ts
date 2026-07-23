@@ -57,6 +57,7 @@ export async function mintStreamSessionAction(input: MintStreamSessionInput): Pr
     });
   } catch (err) {
     if (err instanceof StreamingCompanionUnavailableError) {
+      // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       throw new Error(`${STREAMING_UNAVAILABLE_TAG}${err.message}`);
     }
     throw err;

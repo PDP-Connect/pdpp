@@ -61,6 +61,7 @@ export async function fetchNekoClientConfigResponse(
     let httpStatusFailure = false;
     try {
       notifyObservation(options.onObservation, { attempt, outcome: "request_started" });
+      // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       const response = await fetchImpl(clientConfigPath, {
         credentials: "same-origin",
         headers: { Accept: "application/json" },

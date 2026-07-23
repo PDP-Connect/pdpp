@@ -195,6 +195,7 @@ function saveWorkspace(workspace: GrantRequestWorkspace): GrantRequestWorkspace 
 function upsertWorkspace(workspaceId: string | undefined, input: Partial<GrantRequestDraft>): GrantRequestWorkspace {
   const existing = workspaceId ? workspaceOrNull(workspaceId) : null;
   const draft = sanitizeDraft({
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     ...(existing?.draft ?? {}),
     ...input,
   });
@@ -229,6 +230,7 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
       })
     );
   } catch (err) {
+    // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
 }

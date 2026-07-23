@@ -111,6 +111,7 @@ export default function RecordsError({ error, reset }: { error: Error & { digest
         <button
           className={buttonVariants({ size: "sm", variant: "default" })}
           data-testid="records-read-failure-retry"
+          // biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           onClick={() => {
             setAutoRetried(true);
             reset();

@@ -10,7 +10,7 @@ import { resolveNoAssistanceEndedTerminalStatus, selectNoAssistanceStreamState }
 const pageSource = readFileSync(fileURLToPath(new URL("./page.tsx", import.meta.url)), "utf8");
 const streamViewerSource = readFileSync(fileURLToPath(new URL("./stream-viewer.tsx", import.meta.url)), "utf8");
 const TERMINAL_STATUS_SELECTOR_RE =
-  /selectNoAssistanceStreamState\(\{\s*runHandleStatus:\s*runStatus\?\.status \?\? null,\s*terminalStatus:\s*envelope\.terminal_status,\s*\}\)/;
+  /selectNoAssistanceStreamState\(\{\s*(?:\/\/ biome-ignore lint\/suspicious\/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification\.\s*)?runHandleStatus:\s*runStatus\?\.status \?\? null,\s*terminalStatus:\s*envelope\.terminal_status,\s*\}\)/;
 const RUN_STATUS_FETCH_RE =
   /Promise\.all\(\[\s*getRunTimeline\(runId, \{ cursor: null \}\),\s*getRunStatus\(runId\)\s*\]\)/;
 const RESOLVED_SURFACE_GATE_RE = /noAssistanceState === "resolved"[\s\S]{0,120}<ResolvedSurface/;

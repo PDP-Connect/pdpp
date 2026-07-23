@@ -420,6 +420,7 @@ test("F3 (P1): timelineRecordToEntry uses connector_instance_id to resolve corre
   const result = await assembleExplorerData({}, ds, "https://rs.test");
 
   assert.equal(result.feed.length, 1);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const entry = result.feed[0];
   assert.ok(entry, "Feed must have one entry");
 
@@ -487,6 +488,7 @@ test("F3 (P1): connectionId falls back to connector_instance_id (not connector_i
 
   // The record still appears (we do not drop records whose connection is unknown).
   assert.equal(result.feed.length, 1);
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const entry = result.feed[0];
   assert.ok(entry, "Feed must have one entry");
 

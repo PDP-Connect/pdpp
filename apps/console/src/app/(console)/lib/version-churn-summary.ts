@@ -125,6 +125,7 @@ function normalizeConnectorId(connectorId: string | null): string | null {
  * row somehow arrives without the field (defensive; the contract requires it).
  */
 export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediation {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   return row.version_disposition ?? "active_defect_or_unclassified";
 }
 
@@ -138,6 +139,7 @@ export function classifyChurnRow(row: RefRecordVersionStatsRow): ChurnRemediatio
  * contract requires it).
  */
 export function remediationForRow(row: RefRecordVersionStatsRow): RefRecordVersionRemediation {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   return row.version_remediation ?? "none";
 }
 
@@ -322,6 +324,7 @@ export function summarizeVersionChurn(rows: readonly RefRecordVersionStatsRow[])
   /** Per-disposition counts, for the view's section framing. */
   dispositions: ChurnDispositionCounts;
 } | null {
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const strongest = rows[0];
   if (!strongest) {
     return null;

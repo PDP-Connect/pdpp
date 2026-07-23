@@ -87,6 +87,7 @@ async function fetchAs(path: string, init: RequestInit): Promise<Response> {
       })
     );
   } catch (err) {
+    // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
 }

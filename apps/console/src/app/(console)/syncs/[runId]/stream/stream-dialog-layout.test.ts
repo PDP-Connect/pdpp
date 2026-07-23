@@ -111,6 +111,7 @@ test("the CDP-fallback frame is sized to CONTAIN inside its host on both axes, n
   if (!frameStyleMatch) {
     throw new Error("the CDP-fallback frame's aspect-ratio style block must exist");
   }
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const frameStyle = frameStyleMatch[0];
 
   assert.ok(

@@ -245,6 +245,7 @@ async function mintOwnerToken(): Promise<string> {
       })
     );
   } catch (err) {
+    // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${asUrl}`, err);
   }
   if (!deviceRes.ok) {

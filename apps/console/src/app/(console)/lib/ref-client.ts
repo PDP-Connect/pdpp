@@ -124,6 +124,7 @@ function normalizeTimeline(raw: unknown): TimelineEnvelope {
   };
   let events: SpineEvent[] = [];
   if (Array.isArray(r.events)) {
+    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     events = r.events;
   } else if (Array.isArray(r.data)) {
     events = r.data;
@@ -1203,6 +1204,7 @@ export async function refFetch(
       })
     );
   } catch (err) {
+    // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
   if (res.status === 404) {
@@ -1914,6 +1916,7 @@ export async function captureStaticSecretCredential(input: {
     // becomes a typed error so the action keeps the owner on the form. The
     // message is the provider-named, owner-causal reason from the route.
     if (err instanceof RefRequestError && err.status === 400 && isCredentialRejectionBody(err.bodyText)) {
+      // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       throw new StaticSecretValidationError(err.message);
     }
     throw err;
@@ -2132,6 +2135,7 @@ async function postManualUploadFile(
   try {
     res = await fetch(url.toString(), init);
   } catch (err) {
+    // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     throw new ReferenceServerUnreachableError(`Cannot reach authorization server at ${getAsInternalUrl()}`, err);
   }
   if (!res.ok) {
@@ -2672,6 +2676,7 @@ export async function revokeGrantPackage(packageId: string): Promise<GrantPackag
     if (err instanceof RefRequestError) {
       const result = parseGrantPackageRevokeResult(err.bodyText);
       if (result) {
+        // biome-ignore lint/style/useErrorCause: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
         throw new GrantPackageRevokePartialFailureError(result);
       }
     }

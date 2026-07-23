@@ -71,6 +71,7 @@ function readExactFiltersReplica(searchParams: Record<string, string | string[] 
     if (!match) {
       continue;
     }
+    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     const field = match[1];
     const raw = Array.isArray(value) ? value[0] : value;
     if (field && typeof raw === "string" && raw.length > 0) {

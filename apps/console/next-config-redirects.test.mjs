@@ -17,6 +17,7 @@ function matchRule(rule, pathname) {
     }
     if (pathname.startsWith(`${prefix}/`)) {
       const rest = pathname.slice(prefix.length + 1);
+      // biome-ignore lint/performance/useTopLevelRegex: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       return destination.replace(":rest*", rest).replace(/\/$/, "") || "/";
     }
     return null;

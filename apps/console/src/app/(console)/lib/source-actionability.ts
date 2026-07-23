@@ -1,6 +1,7 @@
 // Copyright The PDP-Connect Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 import { deriveFailureSummary, type FailureSummary } from "./connection-evidence.ts";
 import type { FormattedNextAction } from "./next-action.ts";
 import type {

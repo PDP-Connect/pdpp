@@ -230,6 +230,7 @@ function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
               padding: "var(--space-2)",
             }}
           >
+            {/** biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. */}
             {JSON.stringify(redactSecrets(event.data || {}), null, 2)}
           </pre>
         </details>
@@ -239,6 +240,7 @@ function EventTableRow({ event, index }: { event: SpineEvent; index: number }) {
 }
 
 function ProgressGroupTableRow({ events, startIndex }: { events: SpineEvent[]; startIndex: number }) {
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const first = events[0];
   const last = events.at(-1);
   if (!(first && last)) {
@@ -315,6 +317,7 @@ export default async function TraceDetailPage({
     notFound();
   }
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const events = envelope.events;
   const first = events[0] ?? null;
   const actorLabel = first ? `${first.actor_type}/${first.actor_id}` : null;

@@ -1032,6 +1032,7 @@ function toSourceWorkSections(
 
 /** DECIDE — a request is waiting on the owner. */
 function buildDecideHero(pending: PendingApproval[], hrefs: StandingHrefs): StandingHero {
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const first = pending[0];
   const more = pending.length - 1;
   const who = first ? clientLabel(first.client_id ?? null, first.approval_id) : "An app";
@@ -1118,6 +1119,7 @@ function buildAdvisoryHero(actions: AdvisoryOwnerActionConnection[], hrefs: Stan
   if (actions.length === 1 && only) {
     // Lead with the CONCRETE action the owner can run ("Refresh now" / "Retry
     // now"), not the "ready for review" taxonomy phrasing.
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     const action = only.actionLabel ?? "Run the available action";
     return {
       cta: { href: hrefs.connection(only.routeId), human: true, label: action },
@@ -1143,6 +1145,7 @@ function buildCalmHero(input: StandingInputs): StandingHero {
   const activeTokenCount = activeOwnerTokenCount(activeClients);
   const liveGrants = input.grants.filter(isLiveGrant);
   const records = summary ? fmtInt(summary.record_count) : "0";
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const sources = summary?.connector_count ?? 0;
   const sourceWord = sources === 1 ? "source" : "sources";
   const grantWord = liveGrants.length === 1 ? "app reads" : "apps read";

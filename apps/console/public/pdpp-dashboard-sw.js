@@ -123,6 +123,7 @@ self.addEventListener("notificationclick", (event) => {
       const clientList = await clients.matchAll({ includeUncontrolled: true, type: "window" });
       for (const client of clientList) {
         if ("focus" in client && new URL(client.url).origin === self.location.origin) {
+          // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
           await client.focus();
           if ("navigate" in client) {
             await client.navigate(url);

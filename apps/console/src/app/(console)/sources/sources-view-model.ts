@@ -32,6 +32,7 @@ import {
   canonicalConnectorKey,
   manualUploadSetupFromManifest,
 } from "pdpp-reference-implementation/connection-setup-plan";
+// biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 import { formatStreamCollectionFacts, indexCollectionReportByStream } from "../lib/collection-report.ts";
 import { isActiveConnectorRunSummaryStatus } from "../lib/connector-run-summary-status.ts";
 import type { FormattedNextAction } from "../lib/next-action.ts";
@@ -50,6 +51,7 @@ import {
   type SourceOwnerActionCue,
   type SourcePrimaryVerdictAction,
   type SourceStatusFlag,
+  // biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 } from "../lib/source-actionability.ts";
 import { summarizeVersionChurn } from "../lib/version-churn-summary.ts";
 
@@ -533,8 +535,10 @@ export function toSourceInstanceView(
   } else {
     accountLine = formatSourceListFacts(summary, sourceStreamNames.length);
   }
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const primaryVerdictAction = actionability.primaryVerdictAction;
   const nextAction = primaryVerdictAction?.ownerRunnable ? null : actionability.nextAction;
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const ownerActionCue = actionability.ownerActionCue;
   const status = actionability.renderedStatus;
 

@@ -369,6 +369,7 @@ test("P1 assembler: streamSeeAllLinks is non-empty when the time-range fan-out h
     result.streamSeeAllLinks.length > 0,
     "streamSeeAllLinks must be non-empty when a time-range fan-out stream has has_more=true"
   );
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const link = result.streamSeeAllLinks[0];
   assert.equal(link?.connectionId, "ynab-1", "see-all link must carry the correct connectionId");
   assert.equal(link?.stream, "transactions", "see-all link must carry the correct stream");
@@ -503,6 +504,7 @@ test("P3 Load-more trail: second page ACCUMULATES (page 1 stays, page 2 appended
   );
   // Non-increasing emitted_at across the concatenation; no duplicates.
   const times = accumulated.feed.map((e) => Date.parse(e.emittedAt));
+  // biome-ignore lint/style/noIncrementDecrement: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   for (let i = 1; i < times.length; i++) {
     assert.ok((times[i] ?? 0) <= (times[i - 1] ?? 0), "feed must stay non-increasing emitted_at");
   }

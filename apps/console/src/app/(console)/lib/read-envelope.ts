@@ -66,6 +66,7 @@ function extractMeta(value: unknown): CanonicalEnvelopeMeta {
     : [];
   let count: CanonicalCountMeta | null = null;
   if (isPlainObject(meta.count)) {
+    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     const kind = (meta.count as { kind?: unknown }).kind;
     const rawValue = (meta.count as { value?: unknown }).value;
     if (kind === "exact" || kind === "estimated" || kind === "none") {

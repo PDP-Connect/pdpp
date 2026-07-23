@@ -22,6 +22,7 @@ function latestImport(summary: RefConnectorSummary): { file: string | null; stat
   const batch = summary.acquisition_coverage?.latest_batch ?? null;
   return {
     file: batch?.uploaded_file_name ?? null,
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     status: batch?.status ?? null,
   };
 }

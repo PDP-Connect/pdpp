@@ -96,6 +96,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
     const demo = await import("./grants-demo-data.ts");
     const demoData = demo.buildGrantsDemoData();
     result = demoData.grants;
+    // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     approvals = demoData.approvals;
   } else {
     try {

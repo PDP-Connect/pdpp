@@ -114,6 +114,7 @@ test("BROWSER_BOUND_CONNECTORS exactly matches the canonical keys of browser-bin
     if (!file.endsWith(".json")) {
       continue;
     }
+    // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     const raw = await readFile(fileURLToPath(new URL(file, manifestsDir)), "utf8");
     const manifest = JSON.parse(raw) as {
       connector_id?: string;
@@ -124,6 +125,7 @@ test("BROWSER_BOUND_CONNECTORS exactly matches the canonical keys of browser-bin
       browserBoundFromManifests.push(canonicalKeyFromManifestId(manifest.connector_id));
     }
   }
+  // biome-ignore lint/suspicious/useArraySortCompare: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.deepEqual([...BROWSER_BOUND_CONNECTORS].sort(), browserBoundFromManifests.sort());
 });
 

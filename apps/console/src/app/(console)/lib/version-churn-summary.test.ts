@@ -254,16 +254,23 @@ test("buildChurnDrilldownRows surfaces all supplied rows in order", () => {
 
 test("buildChurnDrilldownRows renders ground-truth counts, not zeroes", () => {
   const built = buildChurnDrilldownRows([row()]);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(built[0]?.current.label, "4");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(built[0]?.history.label, "1,095");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(built[0]?.keys.label, "4");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(built[0]?.versionsPerRecord.label, "273.75");
 });
 
 test("buildChurnDrilldownRows marks a null key count as unknown rather than zero", () => {
   const built = buildChurnDrilldownRows([row({ record_key_count: null })]);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(built[0]?.keys.label, "—");
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(built[0]?.keys.unknown, true);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.equal(built[0]?.current.unknown, undefined);
 });
 

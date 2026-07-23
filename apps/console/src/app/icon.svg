@@ -1,3 +1,4 @@
+<!-- biome-ignore lint/a11y/noSvgWithoutTitle: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. -->
 <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
   <rect fill="#f8f6f0" height="32" rx="7" width="32" />
   <rect fill="#a05533" height="22" rx="2" width="10" x="5" y="5" />

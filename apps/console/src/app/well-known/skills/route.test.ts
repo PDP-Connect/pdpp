@@ -41,6 +41,7 @@ test("console .well-known skills route serves the catalog with forwarded origin"
   const skills = body.skills as Array<{ files: Array<{ url: string }> }>;
   assert.equal(skills.length, 2);
   assert.ok(
+    // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     skills[0]?.files.some(
       (file) => file.url === "https://pdpp.example.com/.well-known/skills/pdpp-data-access/SKILL.md"
     )

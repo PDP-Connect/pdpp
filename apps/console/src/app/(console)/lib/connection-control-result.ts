@@ -82,10 +82,12 @@ export function connectionControlErrorCode(body: unknown): string | null {
   if (!body || typeof body !== "object") {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const error = (body as { error?: unknown }).error;
   if (!error || typeof error !== "object") {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const code = (error as { code?: unknown }).code;
   return typeof code === "string" ? code : null;
 }

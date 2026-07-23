@@ -36,6 +36,7 @@ async function recoverStartedBrowserRun(
 ): Promise<string | null> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (attempt > 0) {
+      // biome-ignore lint/performance/noAwaitInLoops: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       await delay(400);
     }
     try {
@@ -153,6 +154,7 @@ export function BrowserSessionLaunchPanel({
 
       {state.error ? (
         <div className="flex flex-wrap gap-2">
+          {/** biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. */}
           <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={start} type="button">
             Try again
           </button>

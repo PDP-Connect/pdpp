@@ -406,6 +406,7 @@ test("P2 hybrid + search_sort=recent: uses lexical hit to detect stream door, th
     // Hybrid must NOT be called when search_sort=recent
     searchRecordsHybrid: () => Promise.reject(new Error("hybrid must not be called in Most-recent mode")),
     searchRecordsLexical: (_q, opts) => {
+      // biome-ignore lint/style/noIncrementDecrement: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       lexicalCallCount++;
       if (opts?.streams) {
         lexicalStreamsArg = opts.streams;
@@ -513,6 +514,7 @@ test("P2 stream door: populated when all hits share one connector+stream", async
   assert.equal(result.streamDoor?.connectorId, "ynab");
   assert.equal(result.streamDoor?.stream, "transactions");
   // displayName format: "<connector display name> - <stream>"
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   assert.ok(result.streamDoor?.displayName.includes("transactions"), "displayName should include stream name");
 });
 

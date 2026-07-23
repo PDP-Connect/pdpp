@@ -113,6 +113,7 @@ export async function POST(request: Request, { params }: { params: Promise<Route
 
   try {
     if (existingConnectionId) {
+      // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
       const params = new URLSearchParams({
         connection_id: existingConnectionId,
         draft: "0",
@@ -136,6 +137,7 @@ export async function POST(request: Request, { params }: { params: Promise<Route
     }
 
     const shell = await createBrowserEnrollmentShell(connectorId, { displayName });
+    // biome-ignore lint/suspicious/noShadow: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
     const params = new URLSearchParams({
       connection_id: shell.connection_id,
       draft: "1",

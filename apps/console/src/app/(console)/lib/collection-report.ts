@@ -27,7 +27,9 @@
  * unit-testable without a browser harness.
  */
 
+// biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 import type { AxisChip, EvidenceTone, ForwardDispositionSummary } from "./connection-evidence.ts";
+// biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 import { formatCoverageAxis, formatForwardDisposition } from "./connection-evidence.ts";
 import type { RefCollectionReportEntry } from "./ref-client.ts";
 

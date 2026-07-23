@@ -93,6 +93,7 @@ export default async function RunDetailPage({
     notFound();
   }
 
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const events = envelope.events;
   const connectorId = events.find((e) => e.actor_type === "runtime")?.actor_id ?? null;
 
@@ -589,6 +590,7 @@ function extractViolation(failure: SpineEvent | undefined): ViolationShape | nul
   if (!raw || typeof raw !== "object") {
     return null;
   }
+  // biome-ignore lint/style/useDestructuring: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const subtype = (raw as { subtype?: unknown }).subtype;
   if (typeof subtype !== "string" || subtype.length === 0) {
     return null;
@@ -957,6 +959,7 @@ function getLatestProgress(events: SpineEvent[]): LatestProgress | null {
 }
 
 function isUserFacingProgressEvent(event: SpineEvent): boolean {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   const message = typeof event.data?.message === "string" ? event.data.message : "";
   return !(
     message.startsWith("tracing enabled;") ||

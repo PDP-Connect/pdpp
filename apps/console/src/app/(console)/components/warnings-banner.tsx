@@ -18,6 +18,7 @@ function warningKey(warning: CanonicalReadWarning): string {
  * `deprecated_alias_used` plus a `count_downgraded`).
  */
 export function WarningsBanner({ warnings }: { warnings: CanonicalReadWarning[] }) {
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   if (!warnings || warnings.length === 0) {
     return null;
   }

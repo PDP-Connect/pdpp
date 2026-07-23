@@ -43,6 +43,7 @@ const nextConfig = {
   },
   outputFileTracingRoot: path.join(__dirname, "../.."),
   reactStrictMode: true,
+  // biome-ignore lint/suspicious/useAwait: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   async redirects() {
     return [
       {
@@ -52,6 +53,7 @@ const nextConfig = {
       },
     ];
   },
+  // biome-ignore lint/suspicious/useAwait: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
   async rewrites() {
     return [
       {

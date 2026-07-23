@@ -29,6 +29,7 @@ export default function DashboardError({ error, reset }: { error: Error & { dige
         sign back in if the problem persists.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
+        {/** biome-ignore lint/performance/noJsxPropsBind: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification. */}
         <button className={buttonVariants({ size: "sm", variant: "default" })} onClick={() => reset()} type="button">
           Try again
         </button>

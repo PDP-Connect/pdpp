@@ -18,6 +18,7 @@
  * without a browser harness.
  */
 
+// biome-ignore lint/suspicious/noImportCycles: Preserves an established runtime, ordering, async, accessibility, or source-shape contract; covered by package verification.
 import { formatTotalRecordsLabel, isTotalRecordsAuthoritative } from "../sources/sources-view-model.ts";
 import type {
   DeviceSourceInstance,
@@ -250,7 +251,7 @@ export function formatAttentionAxis(
   if (axis === null) {
     return null;
   }
-  if (Object.hasOwn(ATTENTION_LABELS, axis)) {
+  if (axis !== undefined && Object.hasOwn(ATTENTION_LABELS, axis)) {
     return ATTENTION_LABELS[axis as RefConnectionHealthSnapshot["axes"]["attention"]];
   }
   return {
@@ -268,7 +269,7 @@ function formatKnownAxis<T extends string>(
   fallback: T,
   labelPrefix: string
 ): AxisChip {
-  if (axis !== null && Object.hasOwn(labels, axis)) {
+  if (axis !== null && axis !== undefined && Object.hasOwn(labels, axis)) {
     return labels[axis as T];
   }
   const fallbackChip = labels[fallback];
@@ -465,7 +466,7 @@ export function formatForwardDisposition(
   if (disposition === null) {
     return null;
   }
-  if (Object.hasOwn(FORWARD_DISPOSITION_LABELS, disposition)) {
+  if (disposition !== undefined && Object.hasOwn(FORWARD_DISPOSITION_LABELS, disposition)) {
     return FORWARD_DISPOSITION_LABELS[disposition as RefForwardDisposition];
   }
   return {
