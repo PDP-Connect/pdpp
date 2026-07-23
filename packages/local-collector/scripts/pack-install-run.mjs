@@ -100,7 +100,7 @@ async function assertPackageAbsent(projectDir, packageName) {
   assert.equal(
     await pathExists(candidate),
     false,
-    `unexpected browser-bound package installed: ${packageName}`
+    `unexpected package installed in temp consumer: ${packageName}`
   );
 }
 
@@ -148,6 +148,7 @@ async function main() {
     for (const packageName of forbiddenPackages) {
       await assertPackageAbsent(projectDir, packageName);
     }
+    await assertPackageAbsent(projectDir, "tsx");
     await assertNoBrowserArtifacts(tempRoot);
 
     log("Resolving installed package exports and bin...");

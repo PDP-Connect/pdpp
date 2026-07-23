@@ -32,7 +32,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
     "prepare": "pnpm build",
     "test": "node scripts/run-tests.mjs",
-    "pack-install-run": "node scripts/pack-install-run.mjs",
+    "pack-install-run": "node --import tsx scripts/pack-install-run.mjs",
     "validate:package": "node scripts/validate-package.mjs",
     "verify": "pnpm test && pnpm validate:package"
   },
