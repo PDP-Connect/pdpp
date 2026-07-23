@@ -17,6 +17,7 @@
   display: grid;
   grid-template-columns: var(--pdpp-sidebar-width) 1fr;
   height: 100vh;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: 100vh is the legacy fallback; 100dvh corrects dynamic mobile viewport height where supported. */
   height: 100dvh;
   overflow: hidden;
   font-family: var(--font-sans);

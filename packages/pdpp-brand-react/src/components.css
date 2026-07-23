@@ -1315,6 +1315,7 @@
 .rr-sync-row-shell[open] .rr-sync-row {
   border-bottom-color: transparent;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: the preceding open-state selector intentionally wins by higher specificity. */
 .rr-sync-row {
   cursor: pointer;
   transition: background var(--motion-state);
@@ -1390,6 +1391,7 @@
   .rr-sync .pdpp-table__hrow {
     display: none;
   }
+  /* biome-ignore lint/style/noDescendingSpecificity: the open-state border override must remain more specific across this mobile layout rule. */
   .rr-sync .rr-sync-row {
     display: flex;
     flex-wrap: wrap;
@@ -1696,6 +1698,7 @@
   font-size: 0.64rem;
   color: var(--muted-foreground);
 }
+/* biome-ignore lint/style/noDescendingSpecificity: the bearer-row override intentionally retains its more-specific grid placement. */
 .rr-rel__revoke {
   grid-row: 1 / span 2;
   grid-column: 2;
@@ -4392,6 +4395,7 @@ a.rr-x-row {
 }
 
 /* ─── Record inspector (right column) ─── */
+/* biome-ignore lint/style/noDescendingSpecificity: the earlier no-selection selector intentionally hides the empty inspector. */
 .rr-inspector {
   position: sticky;
   top: 8px;
@@ -4486,6 +4490,7 @@ a.rr-x-row {
   color: var(--muted-foreground);
   white-space: nowrap;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: hover state intentionally outranks the base value color. */
 .rr-x-rel__v {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4504,6 +4509,7 @@ a.rr-x-row {
 .rr-x-rel__row--inert {
   cursor: default;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: hover remains the visual priority when an inert row is hovered. */
 .rr-x-rel__row--inert .rr-x-rel__v {
   color: var(--muted-foreground);
 }
@@ -4556,6 +4562,7 @@ a.rr-x-row {
   .rr-x.has-selection {
     grid-template-columns: 200px minmax(0, 1fr);
   }
+  /* biome-ignore lint/style/noDescendingSpecificity: the no-selection rule remains more specific while this breakpoint changes placement. */
   .rr-x .rr-inspector {
     position: static;
     grid-column: 2;
@@ -4566,6 +4573,7 @@ a.rr-x-row {
   .rr-x.has-selection {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* biome-ignore lint/style/noDescendingSpecificity: the no-selection rule remains more specific while this breakpoint changes placement. */
   .rr-x .rr-inspector {
     grid-column: 1;
   }
@@ -4769,6 +4777,7 @@ a.rr-x-row {
      record detail route, so the inspector is never populated here. This
      eliminates dead scroll depth from both the empty placeholder and any
      previously-selected filled inspector. */
+  /* biome-ignore lint/style/noDescendingSpecificity: the no-selection rule remains more specific while mobile hides every inspector. */
   .rr-x .rr-inspector {
     display: none;
   }
