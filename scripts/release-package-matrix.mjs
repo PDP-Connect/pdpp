@@ -326,7 +326,7 @@ function runMatrixRow() {
     npm_config_audit: 'false',
     npm_config_fund: 'false',
     npm_config_offline: 'true',
-    npm_config_registry: 'http://127.0.0.1:9',
+    npm_config_registry: 'https://registry.npmjs.org',
     npm_config_update_notifier: 'false',
   };
   runRecorded(commands, 'npm', ['init', '--yes'], { cwd: consumer, env: offlineEnv });
@@ -369,7 +369,7 @@ function assertRowReceipt(rowReceipt, snapshot, receiptRows, expectedContracts) 
   assert.equal(rowReceipt.packageManager.sha256, PNPM_ENTRYPOINT_SHA256, 'receipt pnpm bytes drifted');
   assert.equal(rowReceipt.consumer.network, 'none', 'consumer must run with Docker networking disabled');
   assert.equal(rowReceipt.consumer.npmConfig.offline, 'true', 'consumer must use npm offline mode');
-  assert.equal(rowReceipt.consumer.npmConfig.registry, 'http://127.0.0.1:9', 'consumer registry must be a dead fallback endpoint');
+  assert.equal(rowReceipt.consumer.npmConfig.registry, 'https://registry.npmjs.org', 'consumer registry must match the prefetched npm cache identity');
   assert.deepEqual(rowReceipt.candidates.map(({ name }) => name).sort(), [...PACKAGE_NAMES].sort(), 'receipt candidate set drifted');
   const peerRow = receiptRows.find(({ row }) => row.id !== configured.id);
   for (const candidate of rowReceipt.candidates) {

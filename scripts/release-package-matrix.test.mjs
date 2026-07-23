@@ -64,7 +64,7 @@ function row(row) {
     candidates,
     consumer: {
       network: 'none',
-      npmConfig: { offline: 'true', registry: 'http://127.0.0.1:9' },
+      npmConfig: { offline: 'true', registry: 'https://registry.npmjs.org' },
       tree: { dependencies: Object.fromEntries(candidates.map((candidate) => [candidate.name, { version: candidate.version, resolved: `file:/workspace/.release-matrix/candidates/${candidate.tarball.filename}` }])) },
       probe: candidates.map((candidate) => ({
         name: candidate.name,
