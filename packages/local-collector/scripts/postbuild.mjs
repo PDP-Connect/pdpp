@@ -30,7 +30,7 @@ const declarationKeep = new Set(
 );
 
 await rewriteDeclarations(distRoot);
-await rm(path.join(distRoot, "polyfill-connectors", "src", "browser-launch.js"), { force: true });
+await replaceBrowserLauncherWithPublishedGuard();
 await rm(path.join(distRoot, ".tsbuildinfo"), { force: true });
 await chmod(path.join(distRoot, "local-collector", "bin", "pdpp-local-collector.js"), 0o755);
 await stampBuildInfo();
@@ -133,4 +133,39 @@ async function rewriteDeclarations(dir) {
     const text = await readFile(full, "utf8");
     await writeFile(full, text.replace(/((?:\.\.?\/)[^"']+)\.ts(["'])/g, "$1.js$2"));
   }
+}
+
+/**
+ * Replace the private browser launcher with a closure-complete, fail-closed
+ * facade. `connector-runtime.js` keeps a literal lazy import so the generic
+ * runtime can be shared with the workspace, but this package deliberately
+ * ships only filesystem-class connectors. Leaving the target absent turns an
+ * unsupported browser request into ERR_MODULE_NOT_FOUND instead of the typed,
+ * actionable capability failure promised by the package boundary.
+ */
+async function replaceBrowserLauncherWithPublishedGuard() {
+  const target = path.join(distRoot, "polyfill-connectors", "src", "browser-launch.js");
+  const body = `const BROWSER_RUNTIME_UNAVAILABLE_CODE = "browser_runtime_unavailable";
+class HeadedBrowserUnavailableError extends Error {
+    constructor({ message }) {
+        super(message);
+        this.name = "HeadedBrowserUnavailableError";
+        this.code = BROWSER_RUNTIME_UNAVAILABLE_CODE;
+    }
+}
+class CdpAttachSessionRaceExhaustedError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "CdpAttachSessionRaceExhaustedError";
+        this.code = "browser_surface_attach_exhausted";
+    }
+}
+async function acquireBrowserForConnector() {
+    throw new HeadedBrowserUnavailableError({
+        message: "browser runtime unavailable: @pdpp/local-collector bundles filesystem-class connectors only; run browser-bound connectors from the PDPP monorepo until a browser-collector publishability decision lands.",
+    });
+}
+export { CdpAttachSessionRaceExhaustedError, HeadedBrowserUnavailableError, acquireBrowserForConnector };
+`;
+  await writeFile(target, body);
 }

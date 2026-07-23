@@ -2171,23 +2171,38 @@ test('prune-sent CLI keep-count-only no-op reports the actual policy', async () 
  * on the file so a compact has something real to reclaim. Returns once the
  * outbox is closed.
  */
-function seedAndPruneForCompact(path, count, keepCount = 0) {
+function seedAndPruneForCompact(path, count) {
+  // Initialize the real schema first, then seed historical succeeded rows in
+  // one transaction. The compact tests exercise page reclamation, not the
+  // enqueue/claim/ack state machine; per-row public-method calls turn this
+  // fixture setup into thousands of SQLite transactions and starve the rest
+  // of the aggregate test run.
   const outbox = new LocalDeviceOutbox({ path });
+  outbox.close();
+  const db = new DatabaseSync(path);
   try {
     const blob = 'z'.repeat(2000);
-    for (let i = 0; i < count; i++) {
-      outbox.enqueue({
-        id: `c:${i}`,
-        kind: 'record_batch',
-        payload: { records: [{ data: { blob, i }, stream: 'messages' }] },
-        sourceInstanceId: 'src-1',
-      });
-      const [claim] = outbox.claimReady({ holder: 'd', leaseMs: 60_000, sourceInstanceId: 'src-1' });
-      outbox.acknowledge({ holder: 'd', id: claim.id, leaseEpoch: claim.lease_epoch });
+    const stamp = '2026-05-19T12:00:00.000Z';
+    const insert = db.prepare(
+      `INSERT INTO local_device_outbox (
+         id, source_instance_id, kind, status, payload_json, body_hash,
+         attempt_count, next_attempt_at, acknowledged_at, created_at, updated_at
+       ) VALUES (?, 'src-1', 'record_batch', 'succeeded', ?, 'hash', 0, ?, ?, ?, ?)`
+    );
+    db.exec('BEGIN');
+    try {
+      for (let i = 0; i < count; i++) {
+        const payload = JSON.stringify({ records: [{ data: { blob, i }, stream: 'messages' }] });
+        insert.run(`c:${i}`, payload, stamp, stamp, stamp, stamp);
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
-    outbox.pruneSent({ dryRun: false, keepCount, sourceInstanceId: 'src-1' });
+    db.prepare(`DELETE FROM local_device_outbox WHERE source_instance_id = 'src-1' AND status = 'succeeded'`).run();
   } finally {
-    outbox.close();
+    db.close();
   }
 }
 
@@ -2429,11 +2444,22 @@ function seedLegacyV1Outbox(path, rows) {
        ) VALUES (?, ?, 'record_batch', 'succeeded', ?, 'hash', 0, ?, ?, ?)`
     );
     const stamp = '2026-05-19T12:00:00.000Z';
-    for (const row of rows) {
-      const payload = JSON.stringify({
-        records: row.streams.map((stream, index) => ({ data: { id: `${stream}-${index}` }, stream })),
-      });
-      insert.run(row.id, row.sourceInstanceId, payload, stamp, stamp, stamp);
+    // This fixture is intentionally over the legacy bounded-scan budget. Its
+    // setup is not the behavior under test, so seed it in one transaction
+    // rather than paying an fsync for every synthetic row and making the
+    // aggregate suite look like it has leaked an open handle.
+    db.exec('BEGIN');
+    try {
+      for (const row of rows) {
+        const payload = JSON.stringify({
+          records: row.streams.map((stream, index) => ({ data: { id: `${stream}-${index}` }, stream })),
+        });
+        insert.run(row.id, row.sourceInstanceId, payload, stamp, stamp, stamp);
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
   } finally {
     db.close();

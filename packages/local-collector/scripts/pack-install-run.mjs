@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -47,6 +47,34 @@ async function run(command, args, options = {}) {
     }
     throw error;
   }
+}
+
+function runWithInput(command, args, input, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        resolve({ stderr, stdout });
+        return;
+      }
+      const error = new Error(`Command failed: ${command} ${args.join(" ")} (code ${code ?? "null"}${signal ? `, ${signal}` : ""})`);
+      error.stderr = stderr;
+      error.stdout = stdout;
+      reject(error);
+    });
+    child.stdin.end(input);
+  });
 }
 
 async function packPackage(cwd) {
@@ -110,7 +138,10 @@ async function main() {
     await run("npm", ["init", "-y"], { cwd: projectDir, env });
 
     log("Installing packed @pdpp/local-collector in a clean temp npm project...");
-    const install = await run("npm", ["install", collectorTarball], { cwd: projectDir, env });
+    const install = await run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", collectorTarball], {
+      cwd: projectDir,
+      env,
+    });
     const installOutput = `${install.stdout}\n${install.stderr}`;
     for (const pattern of browserArtifactPatterns) {
       assert.equal(pattern.test(installOutput), false, `install output referenced browser artifact ${pattern}`);
@@ -120,8 +151,13 @@ async function main() {
     }
     await assertNoBrowserArtifacts(tempRoot);
 
+    log("Resolving installed package exports and bin...");
+    await assertInstalledEntrypoints(projectDir, env);
+    log("Exercising the installed browser-shaped runtime branch...");
+    await assertInstalledBrowserBranchFailsClosed(projectDir, env);
+
     log("Running pdpp-local-collector advertise from the installed package...");
-    const advertise = await run("npx", ["pdpp-local-collector", "advertise"], { cwd: projectDir, env });
+    const advertise = await run("npx", ["--no-install", "pdpp-local-collector", "advertise"], { cwd: projectDir, env });
     const advertised = JSON.parse(advertise.stdout);
     assert.equal(advertised.runtime, "collector");
     assert.deepEqual([...advertised.bindings].sort(), ["filesystem", "local_device", "network"]);
@@ -131,8 +167,8 @@ async function main() {
     if (await pathExists(path.join(cliPackageRoot, "package.json"))) {
       log("Installing packed @pdpp/cli alongside the collector and checking shim advertise output...");
       const cliTarball = await packPackage(cliPackageRoot);
-      await run("npm", ["install", cliTarball], { cwd: projectDir, env });
-      const shimAdvertise = await run("npx", ["pdpp", "collector", "advertise"], { cwd: projectDir, env });
+      await run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", cliTarball], { cwd: projectDir, env });
+      const shimAdvertise = await run("npx", ["--no-install", "pdpp", "collector", "advertise"], { cwd: projectDir, env });
       assert.deepEqual(JSON.parse(shimAdvertise.stdout), advertised);
       await rm(cliTarball, { force: true });
     } else {
@@ -152,6 +188,74 @@ async function main() {
     await rm(collectorTarball, { force: true });
     await rm(tempRoot, { recursive: true, force: true });
   }
+}
+
+async function assertInstalledEntrypoints(projectDir, env) {
+  const probePath = path.join(projectDir, "assert-installed-entrypoints.mjs");
+  const probe = `import assert from "node:assert/strict";
+import { stat } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const packageRoot = path.join(process.cwd(), "node_modules", "@pdpp", "local-collector");
+for (const specifier of ["@pdpp/local-collector", "@pdpp/local-collector/runner", "@pdpp/local-collector/errors"]) {
+  const resolved = await import.meta.resolve(specifier);
+  assert.ok(fileURLToPath(resolved).startsWith(packageRoot + path.sep), \`\${specifier} resolved outside the installed candidate: \${resolved}\`);
+  await import(specifier);
+}
+const bin = path.join(packageRoot, "dist", "local-collector", "bin", "pdpp-local-collector.js");
+assert.ok((await stat(bin)).mode & 0o111, "installed pdpp-local-collector bin must be executable");
+`;
+  await writeFile(probePath, probe);
+  try {
+    await run(process.execPath, [probePath], { cwd: projectDir, env });
+  } finally {
+    await rm(probePath, { force: true });
+  }
+}
+
+async function assertInstalledBrowserBranchFailsClosed(projectDir, env) {
+  const probePath = path.join(projectDir, "assert-browser-branch.mjs");
+  const runtimePath = path.join(
+    projectDir,
+    "node_modules",
+    "@pdpp",
+    "local-collector",
+    "dist",
+    "polyfill-connectors",
+    "src",
+    "connector-runtime.js"
+  );
+  const probe = `import { runConnector } from ${JSON.stringify(pathToFileURL(runtimePath).href)};
+
+runConnector({
+  browser: { profileName: "artifact-closure-probe" },
+  collect: async () => {},
+  ensureSession: async () => {},
+  name: "artifact-closure-probe",
+  probeSession: async () => ({ authenticated: true }),
+  validateRecord: () => {},
+});
+`;
+  await writeFile(probePath, probe);
+  let failure = null;
+  try {
+    await runWithInput(
+      process.execPath,
+      [probePath],
+      `${JSON.stringify({ type: "START", scope: { streams: [{ name: "probe" }] } })}\n`,
+      { cwd: projectDir, env }
+    );
+  } catch (error) {
+    failure = error;
+  } finally {
+    await rm(probePath, { force: true });
+  }
+  assert.ok(failure, "installed browser-shaped runtime probe must fail closed");
+  const output = `${failure.stdout ?? ""}\n${failure.stderr ?? ""}\n${failure.message ?? ""}`;
+  assert.match(output, /browser_runtime_unavailable/, `browser branch must report its typed capability code: ${output}`);
+  assert.match(output, /filesystem-class connectors only/, `browser branch must explain the published boundary: ${output}`);
+  assert.doesNotMatch(output, /ERR_MODULE_NOT_FOUND/, `browser branch must not fail through a missing emitted module: ${output}`);
 }
 
 /**
@@ -190,6 +294,7 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
     const enroll = await run(
       "npx",
       [
+        "--no-install",
         "pdpp-local-collector",
         "enroll",
         "--base-url",
@@ -227,6 +332,7 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
     const runResult = await run(
       "npx",
       [
+        "--no-install",
         "pdpp-local-collector",
         "run",
         "--base-url",
@@ -314,6 +420,7 @@ async function runProtocolMismatchSmoke({ projectDir, env }) {
       await run(
         "npx",
         [
+          "--no-install",
           "pdpp-local-collector",
           "enroll",
           "--base-url",
